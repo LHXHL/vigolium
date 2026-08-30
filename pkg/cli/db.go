@@ -31,9 +31,13 @@ func getDB() (*database.DB, error) {
 	return clicommon.GetDB(globalConfig, globalDB)
 }
 
-// closeDatabaseOnExit closes the shared database connection on command exit.
+// closeDatabaseOnExit closes the shared database connection on command exit, and
+// removes the scratch file a --glob-db merge or stateless JSONL load was built in
+// (see newScratchDB). Order matters: the file cannot be removed until the handle
+// on it is closed.
 func closeDatabaseOnExit() {
 	clicommon.CloseDatabaseOnExit()
+	removeScratchDB()
 }
 
 // runWithWatch runs fn once, then repeats it every --watch interval if set.

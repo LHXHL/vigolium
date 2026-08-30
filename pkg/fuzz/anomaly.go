@@ -130,10 +130,14 @@ type detector struct {
 // pass instead of once per response: sorting the length and time samples is
 // O(N log N), and doing it inside every score() call made the run O(N² log N)
 // with an O(N) copy held under the lock each time.
+//
+// It carries only scalars. The status and body-hash tallies stay behind the
+// detector's lock and are read per result by countsFor: handing out the live
+// maps let a scoring goroutine read one while another worker's observe wrote
+// it, and copying them per result would restore the O(N²) the snapshot exists
+// to avoid.
 type popStats struct {
 	total          int
-	statusCount    map[int]int
-	hashCount      map[string]int
 	distinctHashes int
 
 	lenMed, lenMAD   int64
@@ -178,6 +182,21 @@ func (d *detector) observe(r *Result) {
 	d.times = append(d.times, r.TimeMs)
 }
 
+// countsFor reports how many observed responses share this result's status and
+// body hash. Both tallies are read under the lock because the streaming pass
+// scores a result while other workers are still folding theirs in.
+func (d *detector) countsFor(r *Result) (statusN, hashN int) {
+	if d == nil {
+		return 0, 0
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if r.ContentHash == "" {
+		return d.statusCount[r.Status], 0
+	}
+	return d.statusCount[r.Status], d.hashCount[r.ContentHash]
+}
+
 // snapshot freezes the population model. withSpread additionally computes the
 // median/MAD pair, which needs a sort — the streaming pass skips it (its
 // verdict is provisional anyway) and the final rescore pass pays for it once.
@@ -190,8 +209,6 @@ func (d *detector) snapshot(withSpread bool) popStats {
 
 	ps := popStats{
 		total:          d.total,
-		statusCount:    d.statusCount,
-		hashCount:      d.hashCount,
 		distinctHashes: len(d.hashCount),
 	}
 	if !withSpread {
@@ -296,12 +313,14 @@ func (d *detector) populationSignals(r *Result, ps popStats) (int, []AnomalyReas
 		reasons = append(reasons, AnomalyReason{Signal: signal, Detail: detail, Weight: weight})
 	}
 
+	statusN, hashN := d.countsFor(r)
+
 	// A status almost nothing else returned.
-	if n := ps.statusCount[r.Status]; n > 0 && rarity(n, ps.total) {
-		add("rare_status", statusRarityDetail(r.Status, n, ps.total), 25)
+	if statusN > 0 && rarity(statusN, ps.total) {
+		add("rare_status", statusRarityDetail(r.Status, statusN, ps.total), 25)
 	}
 	// A body nothing else produced, on a run where bodies otherwise repeat.
-	if r.ContentHash != "" && ps.hashCount[r.ContentHash] == 1 && ps.distinctHashes < ps.total/2 {
+	if r.ContentHash != "" && hashN == 1 && ps.distinctHashes < ps.total/2 {
 		add("unique_body", "no other payload produced this response body", 30)
 	}
 	if !ps.haveSpread {

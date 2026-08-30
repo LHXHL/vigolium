@@ -113,6 +113,31 @@ func (f QueryFilters) UsesRawCorpus() bool {
 		len(f.EffectiveExcludeTerms()) > 0
 }
 
+// UsesLinkedRecords reports whether any active filter reaches into http_records
+// when the query is over FINDINGS. It is the findings-side counterpart to
+// UsesRawCorpus and a strictly wider question: a findings query has no record
+// columns of its own, so host/path/method/status/source all resolve through an
+// EXISTS over the finding_records junction (see applyFindingFilters), and every
+// raw-corpus filter does too.
+//
+// The question does not arise for traffic, whose query is over http_records
+// directly — there the rows are always present by construction.
+//
+// A caller that would otherwise omit the table entirely (globDBSkipSet.Records,
+// MergeOptions.SkipHTTPRecords) MUST check this first. The failure is silent:
+// with no rows to satisfy them, every EXISTS predicate is false, so --host
+// returns nothing and the NOT EXISTS exclude forms return everything.
+//
+// Keep in sync with applyFindingFilters.
+func (f QueryFilters) UsesLinkedRecords() bool {
+	return f.HostPattern != "" ||
+		f.PathPattern != "" ||
+		len(f.Methods) > 0 ||
+		len(f.StatusCodes) > 0 ||
+		f.Source != "" ||
+		f.UsesRawCorpus()
+}
+
 // nonBlank returns the input with empty strings dropped.
 func nonBlank(in []string) []string {
 	var out []string

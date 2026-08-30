@@ -1,7 +1,7 @@
 # Test image WITHOUT chromium installed.
 # Verifies that vigolium gives a clear error message when no browser is available.
 
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 RUN apk add --no-cache git make
 

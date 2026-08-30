@@ -187,35 +187,50 @@ func init() {
 	addFlagAliases(findingCmd, timeFilterAliases)
 }
 
-// findingNeedsRecords reports whether the selected output mode resolves a
-// finding's linked http_records. Only --raw/--burp/--markdown and
-// --json --with-records do; the table, tree, TUI and plain --json views render
-// entirely from the findings row (which carries its own request/response
-// inline). Under --glob-db this decides whether the merge has to copy the
-// http_records blobs at all — see globDBSkipSet.
-func findingNeedsRecords() bool {
-	return findingRaw || findingBurp || findingMarkdown || findingWithRecords ||
-		findingPushToBurp || findingToRepeater
+// findingGlobSkipSet decides what a --glob-db merge may leave out for a findings
+// read. What it leaves out, the evidence-rendering modes fetch from the source
+// files afterwards — openGlobDB records the skip set it ran with, so nothing has
+// to predict this decision a second time (see loadGlobFindingRecords and
+// globMergeOmittedRecords).
+//
+// The merge runs before the first WHERE, so anything it copies is paid for in RAM
+// up front. Two tiers can be dropped:
+//
+//	Records      — the whole table, safe only when no filter resolves through the
+//	               finding_records junction (UsesLinkedRecords).
+//	RecordBodies — the raw request/response, ~96% of the table's bytes, safe
+//	               unless a filter LIKEs over them (UsesRawCorpus).
+//
+// Crucially, an output MODE that renders evidence (--raw/--burp/--markdown/
+// --with-records/--push-to-burp/--to-repeater) is deliberately NOT a reason to
+// keep them. Honouring that copied every matched file's entire corpus in order to
+// hydrate the page of findings on screen — 20.4 GB and 206 seconds of kernel
+// paging on an 854-file glob. Those modes now fetch what they need afterwards, by
+// uuid, which is an indexed primary-key lookup in one source file.
+//
+// Only a FILTER can force records into the merge, because a filter has to run in
+// SQL against them. That asymmetry is the whole design: a filter is not
+// expressible after the fact, an output mode is. Which is also why no output-mode
+// flag is consulted here: every path that resolves a finding's records goes
+// through batchLoadFindingRecords, and the modes that do not never ask.
+//
+// No finding view uses the record→file map, which is traffic-tree only.
+func findingGlobSkipSet(filters database.QueryFilters) globDBSkipSet {
+	return globDBSkipSet{
+		Records:       !filters.UsesLinkedRecords(),
+		RecordBodies:  !filters.UsesRawCorpus(),
+		RecordFileMap: true,
+	}
 }
 
 func runFinding(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 
-	// What the --glob-db merge can skip. The flags this reads are all parsed by
-	// now; the positional "tree" arg routed below doesn't affect the answer (the
-	// tree needs no records either). No finding view uses the record→file map,
-	// which is traffic-tree only.
-	db, err := openReadDB(globDBSkipSet{
-		Records:       !findingNeedsRecords(),
-		RecordFileMap: true,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-
 	var fuzzyTerm string
 	// Argument routing mirrors traffic: "tree" activates tree mode, "ls"/"list"
 	// are no-ops (default table view), anything else is a fuzzy search term.
+	// Routed before openReadDB because a positional fuzzy term is a filter, and
+	// the skip set below has to know which filters are active.
 	if len(args) == 1 {
 		switch strings.ToLower(args[0]) {
 		case "tree":
@@ -225,6 +240,19 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		default:
 			fuzzyTerm = args[0]
 		}
+	}
+
+	// Filters are a pure function of the flags and the positional term, so this
+	// answer cannot change between --watch ticks; the closure below rebuilds them
+	// for the query itself.
+	skipFilters, err := buildFindingFilters(fuzzyTerm)
+	if err != nil {
+		return err
+	}
+
+	db, err := openReadDB(findingGlobSkipSet(skipFilters))
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	return runWithWatch(func() error {

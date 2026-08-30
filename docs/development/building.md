@@ -1,6 +1,6 @@
 # Building & Testing
 
-Vigolium is a Go project (module `github.com/vigolium/vigolium`, **Go 1.26+**).
+Vigolium is a Go project (module `github.com/vigolium/vigolium`, **Go 1.27+**).
 All build and test workflows go through the `Makefile` — it injects version
 metadata and manages embedded assets that a bare `go build` would skip.
 
@@ -13,7 +13,7 @@ metadata and manages embedded assets that a bare `go build` would skip.
 
 | Tool | Why |
 |------|-----|
-| Go 1.26+ | Language toolchain (`go-version` is pinned in `go.mod`) |
+| Go 1.27+ | Language toolchain (`go-version` is pinned in `go.mod`) |
 | [Bun](https://bun.sh) | Compiles the JS analysis engine embedded via `//go:embed` (`make ensure-jstangle`) |
 | Docker | Only for e2e/canary tests against vulnerable apps |
 | `golangci-lint` v2 | Linting (`make lint`); installed automatically by some targets |

@@ -41,7 +41,7 @@ npx @vigolium/vigolium scan -h
 
 ## Build from source
 
-Requires **Go 1.26+**, `git`, and `make`. No C toolchain is needed.
+Requires **Go 1.27+**, `git`, and `make`. No C toolchain is needed.
 
 ```bash
 git clone https://github.com/vigolium/vigolium.git

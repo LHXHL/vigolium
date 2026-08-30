@@ -57,11 +57,30 @@ awk -v ver="$VERSION" '
 [ -s "$notes_file" ] || die "no CHANGELOG.md section found for $VERSION"
 
 # --- Artifacts ----------------------------------------------------------------
+# *.zip is as load-bearing as *.tar.gz: `make public-release` archives Windows
+# targets as zip (tar.gz needs a third-party tool on older Windows), so a
+# tar.gz-only glob publishes a release with no Windows artifact at all - which
+# is what happened to v0.4.3.
 artifacts=()
 while IFS= read -r f; do artifacts+=("$f"); done < <(
-  ls "$PUBLIC_DIST_DIR"/*.tar.gz "$PUBLIC_DIST_DIR"/checksums.txt "$PUBLIC_DIST_DIR"/metadata.json 2>/dev/null
+  ls "$PUBLIC_DIST_DIR"/*.tar.gz "$PUBLIC_DIST_DIR"/*.zip \
+     "$PUBLIC_DIST_DIR"/checksums.txt "$PUBLIC_DIST_DIR"/metadata.json 2>/dev/null
 )
 [ "${#artifacts[@]}" -gt 0 ] || die "no artifacts in $PUBLIC_DIST_DIR/ — run 'make public-release' first"
+
+# checksums.txt is generated from every archive `make public-release` built, so
+# it is the authority on what this release is supposed to carry. Cross-checking
+# the upload set against it turns "an entire platform is silently absent" into a
+# hard error, whatever archive format a future target introduces.
+missing=()
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  case " ${artifacts[*]} " in
+    *" $PUBLIC_DIST_DIR/$name "*) ;;
+    *) missing+=("$name") ;;
+  esac
+done < <(awk '{ print $NF }' "$PUBLIC_DIST_DIR/checksums.txt" 2>/dev/null)
+[ "${#missing[@]}" -eq 0 ] || die "checksums.txt lists artifacts that would not be uploaded: ${missing[*]}"
 
 # --- Git tag (create + push if missing) --------------------------------------
 if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then

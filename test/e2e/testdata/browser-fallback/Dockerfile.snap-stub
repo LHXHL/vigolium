@@ -3,7 +3,7 @@
 # /usr/bin/chromium-browser that prints "requires the chromium snap" and exits.
 # Vigolium should detect this and skip the stub.
 
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 RUN apk add --no-cache git make
 

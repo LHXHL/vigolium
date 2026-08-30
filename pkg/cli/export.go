@@ -361,11 +361,15 @@ func (r *exportRun) reportMeta(ctx context.Context, db *database.DB) (target, du
 // printStats prints the per-format count block. Suppressed in a multi-format run,
 // where every format renders the same result set and the counts are reported once
 // by printMultiExportSummary instead.
-func (r *exportRun) printStats(format, outputPath string, items []any) {
+func (r *exportRun) printStats(format, outputPath string, counts exportCounts) {
 	if r.multi {
 		return
 	}
-	printExportStats(format, outputPath, items)
+	fmt.Fprintf(os.Stderr, "\n%s Export summary (format: %s)\n", terminal.InfoSymbol(), terminal.Cyan(format))
+	if outputPath != "" {
+		fmt.Fprintf(os.Stderr, "  Output: %s\n", terminal.Cyan(outputPath))
+	}
+	printExportTally(counts)
 }
 
 // runFormat materializes one requested format at its resolved path, returning the
@@ -455,7 +459,7 @@ func (r *exportRun) exportReport(ctx context.Context, format, outputPath string)
 	if err := generate(items, outputPath, meta); err != nil {
 		return nil, err
 	}
-	r.printStats(format, outputPath, items)
+	r.printStats(format, outputPath, countExportItems(items))
 	return []exportedFile{{label: format, path: outputPath}}, nil
 }
 
@@ -546,9 +550,19 @@ func (r *exportRun) exportJSONL(ctx context.Context, outputPath string) ([]expor
 		}
 	}
 
-	items, err := r.loadItems(ctx, db)
-	if err != nil {
-		return nil, err
+	// Materialize only when another format in this run will need the same set
+	// anyway (loadItems is the memo that keeps a multi-format run to one database
+	// read). On its own, jsonl has no reason to hold the result set: it writes
+	// each envelope out in the order it is read, so streaming turns a peak
+	// proportional to the whole corpus into a constant one. On an 854-file glob
+	// that is the difference between a 6.1 GB peak and a few hundred MB.
+	var items []any
+	streaming := !r.multi && !r.itemsSet
+	if !streaming {
+		var err error
+		if items, err = r.loadItems(ctx, db); err != nil {
+			return nil, err
+		}
 	}
 
 	// Open output writer
@@ -564,36 +578,56 @@ func (r *exportRun) exportJSONL(ctx context.Context, outputPath string) ([]expor
 		w = os.Stdout
 	}
 
-	if _, err := encodeJSONL(w, items); err != nil {
-		return nil, fmt.Errorf("failed to encode record: %w", err)
+	if streaming {
+		counts, err := streamJSONLExport(ctx, db, w, topExportOmitResponse, "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode record: %w", err)
+		}
+		r.printStats("jsonl", outputPath, counts)
+	} else {
+		if _, err := encodeJSONL(w, items); err != nil {
+			return nil, fmt.Errorf("failed to encode record: %w", err)
+		}
+		r.printStats("jsonl", outputPath, countExportItems(items))
 	}
-
-	r.printStats("jsonl", outputPath, items)
 	if outputPath == "" {
 		return nil, nil // streamed to stdout; nothing to list
 	}
 	return []exportedFile{{label: "jsonl", path: outputPath}}, nil
 }
 
-func printExportStats(format, outputPath string, items []any) {
-	fmt.Fprintf(os.Stderr, "\n%s Export summary (format: %s)\n", terminal.InfoSymbol(), terminal.Cyan(format))
-	if outputPath != "" {
-		fmt.Fprintf(os.Stderr, "  Output: %s\n", terminal.Cyan(outputPath))
-	}
-	printExportCounts(items)
+// exportCounts is the per-type tally behind the export summary. It is a value
+// rather than something derived from the item slice so the streaming path — which
+// never holds that slice — reports the identical block.
+type exportCounts struct {
+	byType map[string]int
+	total  int
 }
 
-// printExportCounts prints the per-type item tally in a stable order, followed by
-// the total. Shared by the single-format block and the multi-format summary, which
-// report the same counts because every format renders one result set.
-func printExportCounts(items []any) {
-	counts := make(map[string]int)
-	for _, item := range items {
-		if env, ok := item.(exportEnvelope); ok {
-			counts[env.Type]++
-		}
-	}
+func newExportCounts() exportCounts {
+	return exportCounts{byType: make(map[string]int)}
+}
 
+// add records one emitted envelope.
+func (c *exportCounts) add(item any) {
+	if env, ok := item.(exportEnvelope); ok {
+		c.byType[env.Type]++
+	}
+	c.total++
+}
+
+// countExportItems tallies an already-materialized item slice, for the formats
+// that render from one.
+func countExportItems(items []any) exportCounts {
+	counts := newExportCounts()
+	for _, item := range items {
+		counts.add(item)
+	}
+	return counts
+}
+
+// printExportTally prints a counted tally in the stable type order.
+func printExportTally(counts exportCounts) {
 	typeOrder := []struct{ key, label string }{
 		{"http_record", "HTTP records"},
 		{"finding", "Findings"},
@@ -604,11 +638,11 @@ func printExportCounts(items []any) {
 		{"scope", "Scopes"},
 	}
 	for _, t := range typeOrder {
-		if c, ok := counts[t.key]; ok && c > 0 {
+		if c, ok := counts.byType[t.key]; ok && c > 0 {
 			fmt.Fprintf(os.Stderr, "  %-20s %d\n", t.label, c)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "  %-20s %d\n", "Total", len(items))
+	fmt.Fprintf(os.Stderr, "  %-20s %d\n", "Total", counts.total)
 }
 
 // printMultiExportSummary reports a multi-format run once: the shared item counts,
@@ -619,7 +653,7 @@ func printMultiExportSummary(formats []string, items []any, outputs []exportedFi
 		return
 	}
 	fmt.Fprintf(os.Stderr, "\n%s Export summary (formats: %s)\n", terminal.InfoSymbol(), terminal.Cyan(strings.Join(formats, ", ")))
-	printExportCounts(items)
+	printExportTally(countExportItems(items))
 	printExportSummary(outputs)
 }
 

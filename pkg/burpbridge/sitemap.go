@@ -20,6 +20,27 @@ type SiteMapSaveResult struct {
 	Errors   []string `json:"errors,omitempty"`
 }
 
+// maxSaveErrors caps the per-record failures any one result reports. A batch that
+// fails wholesale (Burp closed mid-run) would otherwise carry one message per
+// record, and the caller prints every one of them.
+const maxSaveErrors = 10
+
+// Add folds another result into this one, for a save split across several
+// batches — the --glob-db path sends one source file at a time. The error cap is
+// applied to the running total, not per batch, so N batches cannot report N times
+// the limit.
+func (r *SiteMapSaveResult) Add(other SiteMapSaveResult) {
+	r.Selected += other.Selected
+	r.Added += other.Added
+	r.Skipped += other.Skipped
+	for _, message := range other.Errors {
+		if len(r.Errors) >= maxSaveErrors {
+			return
+		}
+		r.Errors = append(r.Errors, message)
+	}
+}
+
 type siteMapSaveResponse struct {
 	Added       int    `json:"added"`
 	URL         string `json:"url"`
@@ -81,7 +102,7 @@ func (c *Client) SaveRecordsToSiteMap(
 	for _, record := range records {
 		if err := c.AddToSiteMap(ctx, record.URL, record.RawRequest, record.RawResponse, "vigolium-db"); err != nil {
 			result.Skipped++
-			if len(result.Errors) < 10 {
+			if len(result.Errors) < maxSaveErrors {
 				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", record.URL, err))
 			}
 			continue

@@ -101,7 +101,7 @@ func SetField(settings *Settings, key string, value string) error {
 func resolveSettingKind(key string) (reflect.Kind, bool) {
 	t := reflect.TypeOf(Settings{})
 	for _, seg := range strings.Split(key, ".") {
-		for t.Kind() == reflect.Ptr {
+		for t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
 		switch t.Kind() {
@@ -119,7 +119,7 @@ func resolveSettingKind(key string) (reflect.Kind, bool) {
 			return reflect.Invalid, false
 		}
 	}
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Kind(), true

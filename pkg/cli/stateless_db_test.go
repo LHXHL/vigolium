@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 )
 
@@ -29,7 +28,7 @@ func TestOpenGlobDBMergesMatches(t *testing.T) {
 
 	// openGlobDB caches its connection process-wide; reset so it doesn't leak
 	// into other tests in this package.
-	defer clicommon.ResetDBCache()
+	defer resetDBCacheForTest()
 
 	db, err := openGlobDB(filepath.Join(dir, "scan-*.jsonl"), globDBSkipSet{})
 	if err != nil {
@@ -63,7 +62,7 @@ func TestOpenGlobDBExpandsHome(t *testing.T) {
 	writeGlobFixture(t, filepath.Join(home, "stryk-a.jsonl"), "a.example", "hash-a", "xss-reflected")
 	writeGlobFixture(t, filepath.Join(home, "stryk-b.jsonl"), "b.example", "hash-b", "sqli-error")
 
-	defer clicommon.ResetDBCache()
+	defer resetDBCacheForTest()
 
 	db, err := openGlobDB("~/stryk-*.jsonl", globDBSkipSet{})
 	if err != nil {
@@ -106,21 +105,21 @@ func TestExpandUserHome(t *testing.T) {
 
 func TestOpenGlobDBErrors(t *testing.T) {
 	t.Run("no match", func(t *testing.T) {
-		defer clicommon.ResetDBCache()
+		defer resetDBCacheForTest()
 		if _, err := openGlobDB(filepath.Join(t.TempDir(), "nope-*.sqlite"), globDBSkipSet{}); err == nil {
 			t.Fatal("expected an error when the glob matches no files")
 		}
 	})
 
 	t.Run("invalid pattern", func(t *testing.T) {
-		defer clicommon.ResetDBCache()
+		defer resetDBCacheForTest()
 		if _, err := openGlobDB("[", globDBSkipSet{}); err == nil {
 			t.Fatal("expected an error for a malformed glob pattern")
 		}
 	})
 
 	t.Run("all matches unimportable", func(t *testing.T) {
-		defer clicommon.ResetDBCache()
+		defer resetDBCacheForTest()
 		dir := t.TempDir()
 		// A matched-but-garbage file is skipped; with none loadable, error out.
 		if err := os.WriteFile(filepath.Join(dir, "junk-1.jsonl"), []byte("not json at all\n"), 0o644); err != nil {

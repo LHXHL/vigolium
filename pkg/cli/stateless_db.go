@@ -37,6 +37,22 @@ var globDBSources []globDBSource
 // reading through --glob-db.
 var globRecordFile map[string]string
 
+// globDBSkipped is the skip set the merge actually ran with, recorded by
+// openGlobDB alongside globDBSources and globRecordFile. Anything that needs a
+// record the merge may have left out asks globMergeOmittedRecords() rather than
+// re-deriving the answer from the flags: the merge is what decided, so a second
+// derivation elsewhere is one that can disagree — and the symptom of disagreeing
+// is silently empty request/response bytes, not an error.
+var globDBSkipped globDBSkipSet
+
+// globMergeOmittedRecords reports whether a --glob-db merge ran and left record
+// rows or bodies out of the result, so evidence has to be fetched from the source
+// files instead (loadGlobFindingRecords). False for a single --db source, which
+// is queried in place with nothing omitted.
+func globMergeOmittedRecords() bool {
+	return len(globDBSources) > 0 && (globDBSkipped.Records || globDBSkipped.RecordBodies)
+}
+
 // globDBSkipSet lets a read command tell openGlobDB which parts of the merge it
 // will never read, so they can be skipped. Every field is a negative opt-in and
 // the zero value merges everything, so a command that passes nothing — or a new
@@ -101,6 +117,67 @@ func expandUserHome(p string) string {
 		return home
 	}
 	return filepath.Join(home, p[2:])
+}
+
+// globDBMatches expands a --glob-db pattern to the local files it names. Shared
+// by every consumer of the flag so one wording of "no such pattern" / "matched
+// nothing" reaches the user regardless of which command asked.
+func globDBMatches(pattern string) ([]string, error) {
+	matches, err := filepath.Glob(expandUserHome(pattern))
+	if err != nil {
+		return nil, fmt.Errorf("invalid --glob-db pattern %q: %w", pattern, err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("--glob-db %q matched no files", pattern)
+	}
+	return matches, nil
+}
+
+// openGlobSourceFile opens one --glob-db match as a queryable database, for the
+// paths that read matches one at a time rather than merging them: the streaming
+// Burp copy (saveGlobToBurp) and the lazy finding-evidence hydration
+// (loadGlobFindingRecords). The returned closer disposes of the handle and of
+// any temp file behind it.
+//
+// A plain SQLite result file is queried in place, with no copy, so the memory
+// cost is the result set rather than the file. Anything else a glob can match (a
+// JSONL export, an archive, an audit folder) has no queryable form on disk and is
+// loaded through the same importer the merged path uses — into a temp file for
+// the same reason the merge uses one, since a single source can be large enough
+// to matter on its own.
+//
+// It deliberately does not go through clicommon.GetDB: that caches one connection
+// process-wide, so the second file — and every file after it — would silently be
+// answered by the first.
+func openGlobSourceFile(ctx context.Context, path string) (*database.DB, func(), error) {
+	if isSQLite, err := database.IsSQLiteFile(path); err == nil && isSQLite {
+		cfg := config.DefaultDatabaseConfig()
+		cfg.Driver = "sqlite"
+		cfg.SQLite.Path = path
+		db, err := database.NewDB(cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		return db, func() { _ = db.Close() }, nil
+	}
+
+	db, dir, err := newTempDB("source")
+	if err != nil {
+		return nil, nil, err
+	}
+	closeDB := func() {
+		_ = db.Close()
+		_ = os.RemoveAll(dir)
+	}
+	if err := db.CreateSchema(ctx); err != nil {
+		closeDB()
+		return nil, nil, fmt.Errorf("initialize scratch schema: %w", err)
+	}
+	if _, err := dbimport.ImportPath(ctx, database.NewRepository(db), path, "", dbimport.Options{}); err != nil {
+		closeDB()
+		return nil, nil, err
+	}
+	return db, closeDB, nil
 }
 
 // globDBSource is one --glob-db file and the findings id range it added.
@@ -274,17 +351,13 @@ func openStatelessDB(skip globDBSkipSet) (*database.DB, error) {
 func loadStatelessJSONL(path string) (*database.DB, error) {
 	ctx := context.Background()
 
-	cfg := config.DefaultDatabaseConfig()
-	cfg.Driver = "sqlite"
-	cfg.SQLite.Path = ":memory:"
-
-	db, err := database.NewDB(cfg)
+	db, err := newScratchDB("stateless")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create in-memory database: %w", err)
+		return nil, err
 	}
 	if err := db.CreateSchema(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("failed to initialize in-memory schema: %w", err)
+		return nil, fmt.Errorf("failed to initialize scratch schema: %w", err)
 	}
 
 	f, err := os.Open(path)
@@ -319,27 +392,20 @@ func loadStatelessJSONL(path string) (*database.DB, error) {
 // with a warning rather than aborting the whole read. Returns an error when the
 // pattern is invalid, matches nothing, or nothing could be loaded.
 func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
-	matches, err := filepath.Glob(expandUserHome(pattern))
+	matches, err := globDBMatches(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("invalid --glob-db pattern %q: %w", pattern, err)
-	}
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("--glob-db %q matched no files", pattern)
+		return nil, err
 	}
 
 	ctx := context.Background()
 
-	cfg := config.DefaultDatabaseConfig()
-	cfg.Driver = "sqlite"
-	cfg.SQLite.Path = ":memory:"
-
-	db, err := database.NewDB(cfg)
+	db, err := newScratchDB("glob")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create in-memory database: %w", err)
+		return nil, err
 	}
 	if err := db.CreateSchema(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("failed to initialize in-memory schema: %w", err)
+		return nil, fmt.Errorf("failed to initialize scratch schema: %w", err)
 	}
 	repo := database.NewRepository(db)
 
@@ -347,6 +413,7 @@ func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
 	// rows import under the default project; callers query with ProjectUUID=""
 	// (no project filter) so everything in every matched file shows.
 	globDBSources = nil
+	globDBSkipped = skip
 	globRecordFile = make(map[string]string)
 	var loaded, totalRecords, totalFindings int
 	for _, m := range matches {

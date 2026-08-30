@@ -4,7 +4,7 @@ This guide walks you through installing Vigolium, running your first scan, and u
 
 ## Prerequisites
 
-- **Go 1.26+**
+- **Go 1.27+**
 - **git**
 - **make**
 

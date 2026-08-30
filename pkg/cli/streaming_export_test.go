@@ -50,9 +50,9 @@ func TestStreamJSONLExportOmitResponse(t *testing.T) {
 
 	t.Run("full fidelity keeps raw bytes", func(t *testing.T) {
 		var buf bytes.Buffer
-		n, err := streamJSONLExport(ctx, db, &buf, false, "")
+		counts, err := streamJSONLExport(ctx, db, &buf, false, "")
 		require.NoError(t, err)
-		require.Positive(t, n)
+		require.Positive(t, counts.total)
 		out := buf.String()
 		assert.Contains(t, out, "\"raw_request\"")
 		assert.Contains(t, out, "\"raw_response\"")
@@ -62,9 +62,9 @@ func TestStreamJSONLExportOmitResponse(t *testing.T) {
 
 	t.Run("omit-response drops raw bytes but keeps metadata", func(t *testing.T) {
 		var buf bytes.Buffer
-		n, err := streamJSONLExport(ctx, db, &buf, true, "")
+		counts, err := streamJSONLExport(ctx, db, &buf, true, "")
 		require.NoError(t, err)
-		require.Positive(t, n)
+		require.Positive(t, counts.total)
 		out := buf.String()
 		assert.NotContains(t, out, "\"raw_request\"")
 		assert.NotContains(t, out, "\"raw_response\"")

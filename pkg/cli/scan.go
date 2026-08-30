@@ -1712,21 +1712,25 @@ func encodeJSONL(w io.Writer, items []any) (int, error) {
 
 // streamJSONLExport streams the unified {"type":...,"data":...} envelope to w,
 // encoding each item as it is read from the database so the full result set is
-// never held in memory. Returns the number of lines written. A mid-stream write
-// error aborts and is returned; callers writing to a file should stage to a temp
-// path (see streamJSONLToFile) so a partial stream never replaces a good file.
-func streamJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitResponse bool, projectUUID string) (int, error) {
+// never held in memory. Returns the per-type tally the export summary prints
+// (counts.total is the number of lines written). A mid-stream write error aborts
+// and is returned; callers writing to a file should stage to a temp path (see
+// streamJSONLToFile) so a partial stream never replaces a good file.
+//
+// SetEscapeHTML(false) is load-bearing and shared with encodeJSONL: payload
+// evidence is full of & < >, which Go escapes by default.
+func streamJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitResponse bool, projectUUID string) (exportCounts, error) {
+	counts := newExportCounts()
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	n := 0
 	err := streamExportData(ctx, db, omitResponse, projectUUID, "", func(item any) error {
 		if err := enc.Encode(item); err != nil {
 			return err
 		}
-		n++
+		counts.add(item)
 		return nil
 	})
-	return n, err
+	return counts, err
 }
 
 // streamJSONLToFile streams the JSONL envelope to outputPath atomically: it
@@ -1734,23 +1738,24 @@ func streamJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitRe
 // partial export never replaces or half-writes the destination file. Returns the
 // number of records written.
 func streamJSONLToFile(ctx context.Context, db *database.DB, outputPath string, omitResponse bool, projectUUID string) (int, error) {
-	var n int
+	var counts exportCounts
 	err := atomicfile.Write(outputPath, func(w *bufio.Writer) error {
 		var werr error
-		n, werr = streamJSONLExport(ctx, db, w, omitResponse, projectUUID)
+		counts, werr = streamJSONLExport(ctx, db, w, omitResponse, projectUUID)
 		return werr
 	})
 	if err != nil {
 		return 0, err
 	}
-	return n, nil
+	return counts.total, nil
 }
 
 // writeJSONLExport streams the (optionally project-scoped) database export to w.
 // projectUUID == "" exports the whole DB. Used for the stdout path, where there
 // is no output file to leave half-written on error.
 func writeJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitResponse bool, projectUUID string) (int, error) {
-	return streamJSONLExport(ctx, db, w, omitResponse, projectUUID)
+	counts, err := streamJSONLExport(ctx, db, w, omitResponse, projectUUID)
+	return counts.total, err
 }
 
 // exportStatelessJSONL writes all records in the (temporary) database to a JSONL

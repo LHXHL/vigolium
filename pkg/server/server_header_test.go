@@ -67,7 +67,7 @@ func TestAuthorHeaderMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if got := resp.Header.Get("X-Author"); got != "@j3ssie" {
 		t.Errorf("X-Author = %q, want %q", got, "@j3ssie")
@@ -84,7 +84,7 @@ func TestAuthorHeaderSkippedWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if _, ok := resp.Header["X-Author"]; ok {
 		t.Errorf("X-Author should be absent when the author is unset, got %q", resp.Header.Get("X-Author"))

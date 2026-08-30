@@ -56,3 +56,45 @@ func TestQueryFilters_UsesRawCorpus(t *testing.T) {
 		}
 	})
 }
+
+// UsesLinkedRecords is the gate on dropping http_records from a --glob-db merge
+// for a FINDINGS read. Every filter listed here resolves through an EXISTS over
+// the finding_records junction in applyFindingFilters, so omitting the table
+// makes it match nothing (or, negated, everything) with no error raised.
+func TestUsesLinkedRecordsCoversEveryRecordBackedFindingFilter(t *testing.T) {
+	if (QueryFilters{}).UsesLinkedRecords() {
+		t.Fatal("an unfiltered read must not drag http_records into the merge")
+	}
+
+	cases := map[string]QueryFilters{
+		"host":           {HostPattern: "api.example"},
+		"path":           {PathPattern: "/admin"},
+		"method":         {Methods: []string{"POST"}},
+		"status":         {StatusCodes: []int{500}},
+		"source":         {Source: "burp"},
+		"search":         {SearchTerms: []string{"jwt"}},
+		"exclude":        {ExcludeTerms: []string{"jwt"}},
+		"fuzzy":          {FuzzyTerm: "jwt"},
+		"header":         {HeaderSearch: "authorization"},
+		"body":           {BodySearch: "password"},
+		"exclude-header": {ExcludeHeaderSearch: "authorization"},
+		"exclude-body":   {ExcludeBodySearch: "password"},
+	}
+	for name, filters := range cases {
+		if !filters.UsesLinkedRecords() {
+			t.Errorf("--%s resolves through http_records but UsesLinkedRecords() is false", name)
+		}
+	}
+}
+
+// The raw-corpus subset is strictly narrower: a metadata filter needs the rows
+// but not the blobs, which is what lets the merge drop ~96% of the bytes.
+func TestUsesLinkedRecordsIsWiderThanUsesRawCorpus(t *testing.T) {
+	metadataOnly := QueryFilters{HostPattern: "api.example", StatusCodes: []int{200}}
+	if !metadataOnly.UsesLinkedRecords() {
+		t.Fatal("host/status need the record rows")
+	}
+	if metadataOnly.UsesRawCorpus() {
+		t.Fatal("host/status must not force the raw bodies into the merge")
+	}
+}

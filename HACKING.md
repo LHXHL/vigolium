@@ -70,7 +70,7 @@ Phases accept aliases: `deparos`/`discover` → `discovery`, `spitolas` → `spi
 
 | Area | Technology | Package |
 |------|-----------|---------|
-| Language | Go 1.26+ | `CGO_ENABLED=0`, pure Go (SQLite via `modernc.org/sqlite`) |
+| Language | Go 1.27+ | `CGO_ENABLED=0`, pure Go (SQLite via `modernc.org/sqlite`) |
 | CLI framework | Cobra | `github.com/spf13/cobra` |
 | REST API server | Fiber v3 | `github.com/gofiber/fiber/v3` |
 | Database ORM | Bun | `github.com/uptrace/bun` (SQLite + PostgreSQL dialects) |
@@ -211,7 +211,7 @@ The output type for findings. Defined in `pkg/output/output.go`. Carries module 
 
 ### Prerequisites
 
-- **Go 1.26+** (the project compiles with `CGO_ENABLED=0`)
+- **Go 1.27+** (the project compiles with `CGO_ENABLED=0`)
 - **git** and **make**
 - **Docker** (only for E2E/canary tests)
 - **golangci-lint** (only for linting)

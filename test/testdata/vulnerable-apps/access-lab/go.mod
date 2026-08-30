@@ -4,4 +4,4 @@
 // in the vigolium binary. Standard-library only — no external dependencies.
 module access-lab
 
-go 1.26
+go 1.27

@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.4.4] - 2026-08-30
+
+A **large-result-set** release: reading a `--glob-db` glob of hundreds of scan databases (854 files / 16 GB / 290k records) no longer collapses into swap, plus the Go 1.27 toolchain bump. No module changes (registry stays at 207 active + 116 passive).
+
+### Performance
+
+- The `--glob-db` merge builds in a temp **file** instead of `:memory:`, so its working set pages against the OS cache instead of competing with the process heap (18.7 GB RSS, 149s of kernel paging, never finished).
+- `finding` no longer copies every matched file's record corpus to hydrate the findings on screen (20.4 GB); `--raw/--burp/--markdown/--with-records/--push-to-burp/--to-repeater` fetch evidence afterwards by uuid.
+- `traffic --save-to-burp --glob-db` streams file-by-file instead of merging, bounding peak memory by the largest single file (16 GB → 417 MB).
+- A single-format `export` streams envelopes instead of materializing the whole set (6.1 GB); the summary tally is accumulated on the way past.
+- Scratch databases stranded by a killed run are reaped (age-based) on the next open.
+
+### Fixed
+
+- `--glob-db` findings filters resolving through `finding_records` (`--host`, `--path`, `--method`, `--status`, `--source`) silently returned nothing — or everything, for the negated forms — when the merge omitted the record table.
+- `make github-release` published no Windows artifact (the upload glob was `*.tar.gz`-only); the upload set is now cross-checked against `checksums.txt` and a gap is a hard error.
+- OpenAPI 3.1 spells `exclusiveMinimum` as a number rather than a boolean modifier, so generated examples ignored it and the target rejected the body built to probe it.
+- The fuzz anomaly detector's population snapshot handed out the live status/body-hash maps, racing a scoring goroutine against another worker's `observe`.
+- A Burp Site map save split across batches could report the 10-error cap once per batch; the cap now applies to the running total.
+
+### Changed
+
+- Go 1.27 toolchain across `go.mod`, both Dockerfiles, the e2e images and the docs; the CI golangci-lint pin moves v2.9.0 → v2.13.2.
+- `platform/` is excluded from linting — it holds external tooling and vendored node deps, including a stray Go package under `node_modules`.
+- `traffic --glob-db --save-to-burp` prints per-file progress, and carries dedup, `--offset` and the `-n` budget across files instead of over one merged table.
+
 ## [v0.4.3] - 2026-08-19
 
 A **Windows support** release: vigolium now ships a windows/amd64 build, and every path that quietly assumed POSIX (shell, browser discovery, installers, line endings) is platform-aware. No module changes (registry stays at 207 active + 116 passive).

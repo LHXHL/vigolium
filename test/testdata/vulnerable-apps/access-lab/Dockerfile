@@ -1,6 +1,6 @@
 # Deliberately vulnerable app — do not deploy. Stdlib-only, so the build is tiny
 # and offline.
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod .
 COPY main.go .

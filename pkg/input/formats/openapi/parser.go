@@ -827,9 +827,16 @@ func openAPIExample(schema *openapi3.Schema, cache map[*openapi3.Schema]*cachedS
 		value := 0.0
 		if schema.Min != nil && *schema.Min > value {
 			value = *schema.Min
-			if schema.ExclusiveMin {
+			if schema.ExclusiveMin.IsTrue() {
 				value++
 			}
+		}
+		// OpenAPI 3.1 spells the exclusive bound as the number itself rather than
+		// as a boolean modifier on "minimum", so it raises the floor on its own -
+		// without this an example for `exclusiveMinimum: 5` would generate 0 and
+		// the target would reject the body we built to probe it.
+		if eb := schema.ExclusiveMin; eb.Value != nil && *eb.Value >= value {
+			value = *eb.Value + 1
 		}
 		if schema.Max != nil && *schema.Max < value {
 			value = *schema.Max

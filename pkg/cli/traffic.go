@@ -259,6 +259,17 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// --glob-db + --save-to-burp never merges. The merged in-memory database would
+	// hold every matched file's raw request/response at once — and this is the one
+	// mode that cannot skip those bodies, since they are what gets sent (see
+	// saveGlobToBurp). Handled before openReadDB so the merge is never paid for,
+	// and outside runWithWatch so --watch cannot re-post the whole corpus on every
+	// tick, matching how --replay is dispatched below.
+	if trafficSaveToBurp && strings.TrimSpace(globalGlobDB) != "" {
+		return saveGlobToBurp(context.Background(), globalGlobDB, filters)
+	}
+
 	rendersRaw := trafficRendersRawBodies()
 
 	// What the --glob-db merge can skip. traffic always needs the record rows

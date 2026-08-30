@@ -65,7 +65,7 @@ cd vigolium
 make build         # build and install to $GOPATH/bin
 ```
 
-Requires **Go 1.26+** and **bun 1.3.11+**. See [HACKING.md](HACKING.md#build-and-run) for prerequisites and build details.
+Requires **Go 1.27+** and **bun 1.3.11+**. See [HACKING.md](HACKING.md#build-and-run) for prerequisites and build details.
 
 </details>
 

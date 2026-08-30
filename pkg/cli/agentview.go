@@ -454,6 +454,12 @@ func batchLoadFindingRecords(ctx context.Context, db *database.DB, findings []*d
 	if len(uuids) == 0 {
 		return nil
 	}
+	// When the --glob-db merge left record rows or bodies out, the evidence has to
+	// come from the source files instead. See loadGlobFindingRecords for why the
+	// merge cannot simply keep them.
+	if globMergeOmittedRecords() {
+		return loadGlobFindingRecords(ctx, findings, uuids)
+	}
 	records, err := database.NewRepository(db).GetRecordsByUUIDs(ctx, uuids)
 	if err != nil {
 		return nil

@@ -3,7 +3,7 @@
 # and that spidering can use the downloaded browser.
 # NOTE: Only works on linux/amd64 — CfT has no linux/arm64 builds.
 
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 RUN apk add --no-cache git make
 

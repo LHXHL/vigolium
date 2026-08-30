@@ -149,7 +149,7 @@ func (r *exportRun) exportBundle(ctx context.Context, outputPath string) ([]expo
 	if len(includedSessions) > 0 {
 		entry.detail = fmt.Sprintf("%d sessions", len(includedSessions))
 	}
-	r.printStats("bundle", outputPath, items)
+	r.printStats("bundle", outputPath, countExportItems(items))
 	if entry.detail != "" && !r.multi {
 		fmt.Fprintf(os.Stderr, "  Sessions:           %d included\n", len(includedSessions))
 	}

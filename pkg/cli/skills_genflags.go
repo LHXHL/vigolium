@@ -124,7 +124,7 @@ func renderFlagsReference(root *cobra.Command) string {
 	b.WriteString("## Contents\n\n")
 	b.WriteString("- [Global Flags](#global-flags)\n")
 	for _, s := range sections {
-		b.WriteString(fmt.Sprintf("- [%s](#%s)\n", s.Path, anchorize(s.Path)))
+		fmt.Fprintf(&b, "- [%s](#%s)\n", s.Path, anchorize(s.Path))
 	}
 	b.WriteString("\n---\n\n")
 
@@ -133,7 +133,7 @@ func renderFlagsReference(root *cobra.Command) string {
 	writeFlagTable(&b, globals)
 
 	for _, s := range sections {
-		b.WriteString(fmt.Sprintf("\n## %s\n\n", s.Path))
+		fmt.Fprintf(&b, "\n## %s\n\n", s.Path)
 		if s.Short != "" {
 			b.WriteString(s.Short + "\n\n")
 		}

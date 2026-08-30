@@ -126,17 +126,17 @@ type OASTFlusher interface {
 
 // ExecutorConfig configures the Executor behavior.
 type ExecutorConfig struct {
-	Workers               int
-	OnResult              func(*output.ResultEvent)
-	OnCandidate           func(*output.ResultEvent)
-	OnObservation         func(*output.ResultEvent)
-	OnTraffic             func(method, url string, statusCode int, contentType string) // Optional: called for each processed item
-	Services              *services.Services
-	HTTPRequester         *http.Requester
-	Repository            *database.Repository    // Optional: database storage
-	RecordWriter          *database.RecordWriter  // Optional: batched record writer (preferred over Repository.SaveRecord)
-	FindingWriter         *database.FindingWriter // Optional: batched finding writer (preferred over Repository.SaveFinding)
-	ScanUUID              string
+	Workers       int
+	OnResult      func(*output.ResultEvent)
+	OnCandidate   func(*output.ResultEvent)
+	OnObservation func(*output.ResultEvent)
+	OnTraffic     func(method, url string, statusCode int, contentType string) // Optional: called for each processed item
+	Services      *services.Services
+	HTTPRequester *http.Requester
+	Repository    *database.Repository    // Optional: database storage
+	RecordWriter  *database.RecordWriter  // Optional: batched record writer (preferred over Repository.SaveRecord)
+	FindingWriter *database.FindingWriter // Optional: batched finding writer (preferred over Repository.SaveFinding)
+	ScanUUID      string
 	// ProjectUUID owns every record and finding this executor writes. An empty
 	// value is silently coerced to the DEFAULT project by the repository (see
 	// database.defaultProjectUUID), so a config carrying a Repository/

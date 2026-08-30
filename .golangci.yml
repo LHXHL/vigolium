@@ -29,6 +29,11 @@ linters:
   exclusions:
     # Keep golangci-lint's built-in sensible exclusions (e.g. generated files).
     generated: lax
+    paths:
+      # platform/ holds external tooling (the workbench UI and vendored node
+      # dependencies, including a stray Go package under node_modules). It is
+      # not ours to fix, so it is not ours to lint.
+      - platform/
     rules:
       # The rod package is vendored/generated browser-automation glue and is
       # already excluded from `go vet` in the Makefile/CI; don't lint it here.
