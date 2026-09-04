@@ -196,4 +196,5 @@ Classes: `cmdi`, `crlf`, `lfi`, `open_redirect`, `path_traversal`, `sqli`,
 - **secret-scan safelists placeholders.** `AKIA…EXAMPLE` and `123456`-sequence
   tokens are treated as benign — use real-looking values to test.
 - **Exit 3 gates.** `secret-scan --fail-on-match` and `jwt-crack --fail-on-crack`
-  exit 3 on a hit; everything else exits 0/1.
+  exit 3 on a hit. Otherwise 0 success, 1 error, 2 usage error — see
+  [agent-loop.md → Exit codes](agent-loop.md#exit-codes).

@@ -125,6 +125,38 @@ func (r *Repository) aggregateScanFindings(ctx context.Context, scanUUID string)
 	return sc
 }
 
+// ScanSeverityTally returns a scan's persisted finding counts keyed by severity
+// name, omitting severities with no findings. It reads the same rows the scan
+// row's own counters are computed from, so a consumer reading the machine event
+// stream's scan.finished and a consumer querying the database afterwards agree.
+func (r *Repository) ScanSeverityTally(ctx context.Context, scanUUID string) map[string]int {
+	sc := r.aggregateScanFindings(ctx, scanUUID)
+	out := map[string]int{}
+	for name, n := range map[string]int64{
+		"critical": sc.Critical,
+		"high":     sc.High,
+		"medium":   sc.Medium,
+		"low":      sc.Low,
+		"suspect":  sc.Suspect,
+		"info":     sc.Info,
+	} {
+		if n > 0 {
+			out[name] = int(n)
+		}
+	}
+	return out
+}
+
+// CountRecordsForScan returns how many HTTP records this scan persisted.
+func (r *Repository) CountRecordsForScan(ctx context.Context, projectUUID, scanUUID string) (int64, error) {
+	q := r.db.NewSelect().TableExpr("http_records").Where("scan_uuid = ?", scanUUID)
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
+	n, err := q.Count(ctx)
+	return int64(n), err
+}
+
 // applySeverityCounts sets severity count fields on an UPDATE query builder.
 func applySeverityCounts(q *bun.UpdateQuery, sc scanSeverityCounts) *bun.UpdateQuery {
 	// total_findings is set unconditionally alongside the severity counts: a
@@ -310,7 +342,7 @@ func (r *Repository) AdvanceScanCursorBy(ctx context.Context, scanUUID string, r
 	}
 	// Format cursor_at to match SQLite's CURRENT_TIMESTAMP format (no timezone suffix).
 	// Go's time.Time serialization adds timezone info that breaks SQLite text comparison.
-	cursorAt := dbTimestampString(recordCreatedAt)
+	cursorAt := dbTimestampString(r.db.Driver(), recordCreatedAt)
 	_, err := r.db.NewUpdate().
 		Model((*Scan)(nil)).
 		Set("cursor_at = ?", cursorAt).

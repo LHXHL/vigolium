@@ -24,6 +24,14 @@ import (
 // rather than inlined so it is greppable — it is the only way to reach the hook.
 const envSQLTrace = "VIGOLIUM_SQL_TRACE"
 
+// driverPostgres / driverSQLite are the values DB.driver takes. Named so the
+// driver-conditional branches (timestamp precision, DDL adaptation, upserts)
+// are greppable rather than scattered string literals.
+const (
+	driverPostgres = "postgres"
+	driverSQLite   = "sqlite"
+)
+
 // DB wraps bun.DB with additional metadata
 type DB struct {
 	*bun.DB
@@ -386,6 +394,11 @@ func (db *DB) adaptDDL(ddl string) string {
 // constant time regardless of how many records it holds (rather than re-scanning
 // every table and rebuilding the covering index on every process start).
 const currentSchemaVersion = 1
+
+// CurrentSchemaVersion exposes the schema revision this binary expects, so a
+// consumer can fail loudly on drift at startup (`vigolium version --json`)
+// rather than discovering it as a query error mid-run.
+func CurrentSchemaVersion() int { return currentSchemaVersion }
 
 // schemaVersion reads the recorded schema version, or 0 when unset (a fresh
 // database, or one created before versioning). Requires schema_meta to exist.

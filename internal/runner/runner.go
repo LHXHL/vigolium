@@ -71,6 +71,13 @@ type Runner struct {
 
 	closeOnce sync.Once   // guards one-time resource release (Close/Discard may race)
 	finalized atomic.Bool // set once RunNativeScan has written the terminal scan status
+
+	// currentPhase is the machine event stream's tracker for the phase running
+	// right now, or nil between phases. Findings arrive on worker goroutines that
+	// know nothing about phases, so the phase they belong to is read from here
+	// rather than threaded through every module callback. Atomic because the
+	// phase loop swaps it while those workers are still draining.
+	currentPhase atomic.Pointer[phaseTracker]
 }
 
 // Finalized reports whether RunNativeScan already wrote the scan's terminal

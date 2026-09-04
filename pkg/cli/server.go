@@ -135,7 +135,7 @@ func init() {
 		"Mirror ingested traffic + findings to a live flat filesystem tree under this dir (<dir>/traffic, <dir>/findings), in addition to the database — readable by an external agent with ls/grep/jq")
 
 	// Scan-on-receive group (runServerCmd reads these globals)
-	flags.BoolVarP(&globalScanOnReceive, "scan-on-receive", "S", false,
+	registerScanOnReceiveFlags(flags,
 		"Continuously scan new HTTP records as they arrive in the database")
 	flags.BoolVar(&globalFullNativeScanOnReceive, "full-native-scan-on-receive", false,
 		"Run the full native scan pipeline (discovery + spidering + dynamic-assessment) continuously on received records, instead of dynamic-assessment only")

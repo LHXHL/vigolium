@@ -17,6 +17,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/scanevents"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
 )
@@ -67,6 +68,16 @@ func (r *Runner) echoLiveFinding(phaseTag string, result *output.ResultEvent) {
 // shared by every scan front-end so the message and the "unrecognized vendor"
 // fallback stay identical whether the scan runs through the Runner or the direct
 // scan-url/scan-request path.
+// NoticeMarkerBlock and NoticeMarkerPacing are the bracketed tags the two
+// operator notices are rendered with. Exported because a reader has to find them
+// again in a rendered log (`vigolium log` reprints any that fell above the tail
+// window) — matching on the marker rather than the prose is deliberate, since
+// the prose is a sentence that gets reworded and the marker is what it tags.
+const (
+	NoticeMarkerBlock  = "[waf-block-detected]"
+	NoticeMarkerPacing = "[waf-pacing-armed]"
+)
+
 func FormatBlockNoticeLine(n http.BlockNotice) string {
 	vendor := n.WAFType
 	if vendor == "" || vendor == "generic" {
@@ -74,7 +85,7 @@ func FormatBlockNoticeLine(n http.BlockNotice) string {
 	}
 	return fmt.Sprintf("%s %s %s %s %s %s\n",
 		terminal.BoldYellow(terminal.SymbolWarning),
-		terminal.BoldYellow("[waf-block-detected]"),
+		terminal.BoldYellow(NoticeMarkerBlock),
 		terminal.HiBlue(n.Host),
 		terminal.Muted("→"),
 		terminal.Yellow(fmt.Sprintf("%s (HTTP %d)", vendor, n.Status)),
@@ -88,12 +99,23 @@ func FormatBlockNoticeLine(n http.BlockNotice) string {
 // traffic and results against that host are likely incomplete. Fires across every
 // phase (discovery, spidering, dynamic-assessment) since all traffic flows
 // through the shared requester. No-op in silent mode or without a requester.
+// The machine event stream is NOT gated on Silent: --silent asks for a quiet
+// terminal, and a driver that passed both --silent and --events wants exactly
+// that — no console, full stream. So the notifier is installed whenever either
+// consumer wants it, and each consumer decides for itself.
 func (r *Runner) attachWAFBlockNotifier(requester *http.Requester) {
-	if r.options.Silent || requester == nil {
+	if requester == nil {
+		return
+	}
+	console := !r.options.Silent
+	if !console && !scanevents.On() {
 		return
 	}
 	requester.SetBlockNotifier(func(n http.BlockNotice) {
-		r.emitNoticeLine(FormatBlockNoticeLine(n))
+		if console {
+			r.emitNoticeLine(FormatBlockNoticeLine(n))
+		}
+		emitBlockEvent(n)
 	})
 }
 
@@ -118,7 +140,7 @@ func FormatEdgePaceLine(n hostlimit.PreArmNotice) string {
 		n.From, n.Start)
 	return fmt.Sprintf("%s %s %s %s %s %s\n",
 		terminal.Yellow(terminal.SymbolSnow),
-		terminal.BoldYellow("[waf-pacing-armed]"),
+		terminal.BoldYellow(NoticeMarkerPacing),
 		terminal.HiBlue(n.Host),
 		terminal.Muted("→"),
 		terminal.Yellow(fmt.Sprintf("%s edge", vendor)),
@@ -133,13 +155,21 @@ func FormatEdgePaceLine(n hostlimit.PreArmNotice) string {
 // hangs off the limiter — the single shared object every requester feeds — so it fires
 // exactly once per host no matter which requester (heuristics, auth prep, discovery)
 // first tripped the pre-arm. The throttle itself is applied regardless; this only
-// surfaces the operator warning. No-op in silent mode or without a limiter.
+// surfaces the operator warning. No-op without a limiter, or when neither the
+// console (silent mode) nor the machine event stream wants the notice.
 func (r *Runner) attachWAFPacingNotifier(limiter *hostlimit.HostRateLimiter) {
-	if r.options.Silent || limiter == nil {
+	if limiter == nil {
+		return
+	}
+	console := !r.options.Silent
+	if !console && !scanevents.On() {
 		return
 	}
 	limiter.SetPreArmNotifier(func(n hostlimit.PreArmNotice) {
-		r.emitNoticeLine(FormatEdgePaceLine(n))
+		if console {
+			r.emitNoticeLine(FormatEdgePaceLine(n))
+		}
+		emitPacingEvent(n.Host, n.Vendor, n.From, n.Start)
 	})
 }
 

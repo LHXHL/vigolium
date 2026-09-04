@@ -101,6 +101,13 @@ type Requester struct {
 	// via httptrace. Pointer field so WithContext copies and anonymous views share
 	// one scan-wide instance. Always non-nil after NewRequester.
 	poolStats *poolStats
+	// sent counts requests that actually reached the network on this requester
+	// (and every WithContext clone of it — pointer field, one instance per scan).
+	// It is the numerator of the machine event stream's phase.progress: a
+	// consumer watching a 15-minute crawl learns it is moving from this slope and
+	// nothing else. Incremented on the executeDirectly path only, so a clusterer
+	// cache hit — which sends nothing — correctly does not count.
+	sent *atomic.Int64
 }
 
 // edgePacer fingerprints the CDN/WAF edge fronting a host from ordinary (non-block)
@@ -300,6 +307,16 @@ func (r *Requester) SetResponseObserver(sink func(ObservedResponse)) {
 		return
 	}
 	r.respObserver.sink.Store(&sink)
+}
+
+// RequestsSent returns how many requests this requester (and every clone
+// sharing its counter) has put on the wire. Safe on a nil Requester and from any
+// goroutine; the counter is monotonic for the life of the scan.
+func (r *Requester) RequestsSent() int64 {
+	if r == nil || r.sent == nil {
+		return 0
+	}
+	return r.sent.Load()
 }
 
 // SetBlockNotifier installs a sink invoked once per host the first time a
@@ -573,6 +590,7 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 		respObserver:     &responseObserver{},
 		edgePacer:        &edgePacer{},
 		poolStats:        poolStats,
+		sent:             &atomic.Int64{},
 	}
 
 	// Keep the edge-pacer's once-per-host dedup in sync with the limiter's entry
@@ -859,6 +877,11 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 	}
 
 	start := time.Now()
+	// Counted before the send, not after a successful one: a request that timed
+	// out or was refused still hit the network, and a progress counter that only
+	// moves on success reads as a stalled scan against a host that is failing —
+	// the exact case a consumer most needs to see moving.
+	r.sent.Add(1)
 	resp, err := r.doRequest(ctx, input, opts)
 	if err != nil {
 		if r.services.HostErrors != nil {

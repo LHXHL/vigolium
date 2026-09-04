@@ -22,7 +22,10 @@ import (
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
-var importBurpBridgeURL string
+var (
+	importBurpBridgeURL string
+	importSearchFilter  string
+)
 
 var importCmd = &cobra.Command{
 	Use:   "import [path|gs://...] [more-paths...]",
@@ -80,6 +83,7 @@ mirror 'vigolium export', so a single import step can emit a fully-branded repor
 func init() {
 	registerBridgeURLFlag(importCmd, &importBurpBridgeURL,
 		"Import live Burp/Caido proxy history from this loopback bridge URL into the database")
+	registerImportBridgeFilterFlags(importCmd.Flags())
 	importCmd.Flags().Bool("upload", false, "Upload the local import source to cloud storage after import")
 	importCmd.Flags().String("upload-key", "", "Explicit storage key for --upload (default: imports/<basename>-<ts>.<ext>)")
 	importCmd.Flags().StringVar(&globalGlobDB, "glob-db", "", "Glob of local files to import alongside any positional paths (use one format per run), e.g. --glob-db 'prefix-*.sqlite' or '*.jsonl'")
@@ -93,7 +97,11 @@ func init() {
 	importCmd.Flags().String("report-generated-at", "", "ISO timestamp for report generation (e.g. \"2026-04-18T03:00:00Z\")")
 	importCmd.Flags().String("report-url", "", "URL for the \"Raw Report URL\" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL)")
 	importCmd.Flags().String("severity", "", "Filter report findings by severity (comma-separated: critical,high,medium,low,info)")
-	importCmd.Flags().String("search", "", "Fuzzy search filter across finding fields included in the report")
+	// Bound to a package var, not read back via Flags().GetString: the bridge
+	// path needs this value too (see importBridgeSearchTerm), and reaching for
+	// importCmd from a function runImport calls would make importCmd's own
+	// initializer cyclic.
+	importCmd.Flags().StringVar(&importSearchFilter, "search", "", "Fuzzy search filter across finding fields included in the report; under --burp-bridge-url, narrows which records are imported")
 	rootCmd.AddCommand(importCmd)
 }
 
@@ -198,14 +206,33 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 	repo := database.NewRepository(db)
 	if bridgeURL != "" {
+		// Build (and therefore validate) the query BEFORE the banner: announcing
+		// an import that is about to be refused reads as a run that started and
+		// then broke, rather than as a command that was never going to run.
+		query, qErr := buildImportBridgeQuery(projectUUID)
+		if qErr != nil {
+			return qErr
+		}
 		if !globalJSON {
 			fmt.Fprint(os.Stderr, GetBanner())
 			fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(),
 				terminal.BoldCyan(fmt.Sprintf("Importing live bridge traffic from %s ...", bridgeURL)))
 		}
-		result, err := importBurpTrafficToDB(ctx, repo, bridgeURL, burpbridge.Query{
-			Location: "proxy_history",
-		}, projectUUID)
+		client, cErr := burpbridge.New(bridgeURL)
+		if cErr != nil {
+			return fmt.Errorf("--burp-bridge-url: %w", cErr)
+		}
+		// Count first, write second. An operator who asked for one host and is
+		// shown 12,400 records across their whole history stops here — which is
+		// only possible because nothing has been written yet.
+		proceed, pErr := preflightImportBridge(ctx, client, query)
+		if pErr != nil {
+			return pErr
+		}
+		if !proceed {
+			return nil
+		}
+		result, err := importBurpTrafficToDB(ctx, repo, bridgeURL, query, projectUUID)
 		if err != nil {
 			return fmt.Errorf("import Burp traffic: %w", err)
 		}
@@ -264,7 +291,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 		reportGeneratedAt, _ := cmd.Flags().GetString("report-generated-at")
 		reportURL, _ := cmd.Flags().GetString("report-url")
 		reportSeverity, _ := cmd.Flags().GetString("severity")
-		reportSearch, _ := cmd.Flags().GetString("search")
+		reportSearch := importSearchFilter
 		opts := importReportOpts{
 			title:       reportTitle,
 			target:      reportTarget,

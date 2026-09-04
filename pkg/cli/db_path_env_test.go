@@ -140,7 +140,7 @@ func TestApplyDBPathEnv(t *testing.T) {
 			}
 			explicitStateless := globalStateless
 
-			applyDBPathEnv(tc.cmd)
+			_ = applyDBPathEnv(tc.cmd)
 
 			// The invariant that keeps the scan family clear of its
 			// --stateless/--db mutual exclusion: this never writes the flag
@@ -167,7 +167,7 @@ func TestDBPathEnvSkipsStatelessWhenFileMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "not-yet.sqlite")
 	t.Setenv(dbPathEnvVar, path)
 
-	applyDBPathEnv(statelessCmd("traffic"))
+	_ = applyDBPathEnv(statelessCmd("traffic"))
 
 	assert.Equal(t, path, globalDB)
 	assert.False(t, dbPathEnvAutoStateless)
@@ -181,7 +181,7 @@ func TestDBPathEnvDrivesStatelessReadRequested(t *testing.T) {
 	t.Setenv(dbPathEnvVar, seedDBFile(t))
 	require.False(t, statelessReadRequested())
 
-	applyDBPathEnv(statelessCmd("finding"))
+	_ = applyDBPathEnv(statelessCmd("finding"))
 
 	assert.True(t, statelessReadRequested())
 }
@@ -192,7 +192,7 @@ func TestDBPathEnvExpandsHome(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv(dbPathEnvVar, "~/session.sqlite")
 
-	applyDBPathEnv(statelessCmd("scan"))
+	_ = applyDBPathEnv(statelessCmd("scan"))
 
 	assert.Equal(t, filepath.Join(home, "session.sqlite"), globalDB)
 }
@@ -201,7 +201,7 @@ func TestDBPathEnvUnsetIsNoOp(t *testing.T) {
 	resetDBPathEnvGlobals(t)
 	t.Setenv(dbPathEnvVar, "")
 
-	applyDBPathEnv(statelessCmd("finding"))
+	_ = applyDBPathEnv(statelessCmd("finding"))
 
 	assert.Empty(t, globalDB)
 	assert.False(t, dbPathEnvAutoStateless)

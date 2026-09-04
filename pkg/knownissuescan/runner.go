@@ -26,6 +26,14 @@ import (
 )
 
 // Config holds configuration for a known-issue scan.
+// Unattended defaults for the two pace knobs. Named rather than inline so the
+// value the phase actually opens at, the value documented on --rate-limit, and
+// the value reported in the scan.started event cannot drift apart.
+const (
+	defaultHostConcurrency = 10
+	defaultRateLimit       = 20
+)
+
 type Config struct {
 	Targets      []string      // scheme://host:port URLs to scan
 	Concurrency  int           // nuclei host concurrency (default: 5)
@@ -52,6 +60,11 @@ type Config struct {
 	Repository        *database.Repository      // for saving findings
 	ScanUUID          string
 	ProjectUUID       string
+	// Edge connects this phase to the scan's shared pacing infrastructure. nuclei
+	// runs its own HTTP stack, so without these hooks known-issue-scan is the one
+	// active phase outside the per-host limiter and the WAF block notice. See
+	// edge.go for what each hook buys and why a transport port is not on offer.
+	Edge Edge
 }
 
 // Run executes the known-issue scan using the nuclei Go library.
@@ -60,12 +73,21 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("knownissuescan: no targets provided")
 	}
 
-	// Apply defaults
+	// Apply defaults.
+	//
+	// These are the values that apply when the operator says NOTHING, and they
+	// are the phase's only protection in that case: nuclei does not pace itself,
+	// does not back off, and until the Edge hooks below could not report that it
+	// had been blocked. Opening an unknown target at 100 rps / 50 hosts because
+	// nobody passed a flag is the fail-open direction, so the unattended defaults
+	// are deliberately conservative. An operator who wants the old throughput
+	// asks for it (--rate-limit / --concurrency), which is a decision on the
+	// record rather than an accident of silence.
 	if cfg.Concurrency <= 0 {
-		cfg.Concurrency = 50
+		cfg.Concurrency = defaultHostConcurrency
 	}
 	if cfg.RateLimit <= 0 {
-		cfg.RateLimit = 100
+		cfg.RateLimit = defaultRateLimit
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Minute
@@ -81,6 +103,28 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := ensureTemplates(cfg.TemplatesDir); err != nil {
 		return err
 	}
+
+	// Edge pre-flight: probe each target host through the SHARED requester before
+	// nuclei opens. Every other phase learns about a filtering edge this way; this
+	// is the seam that gives known-issue-scan the same knowledge. A host that is
+	// already blocking is dropped rather than scanned — pushing template traffic
+	// through a wall of challenge pages produces no findings and arms the rate
+	// limiter further.
+	if kept, blockedHosts := preflightHosts(ctx, cfg.Targets, cfg.Edge.Probe); len(blockedHosts) > 0 {
+		zap.L().Warn("KnownIssueScan: skipping hosts whose edge is already filtering scan traffic",
+			zap.Strings("blocked_hosts", blockedHosts),
+			zap.Int("targets_before", len(cfg.Targets)),
+			zap.Int("targets_after", len(kept)))
+		cfg.Targets = kept
+		if len(cfg.Targets) == 0 {
+			return nil
+		}
+	}
+
+	// Narrow nuclei's own knobs to the per-host verdict the limiter has already
+	// reached, so a CDN-fronted host makes this phase open narrow from its first
+	// request instead of bursting the edge into a rate-based block.
+	cfg.Concurrency, cfg.RateLimit = pacedFor(cfg.Targets, cfg.Edge.HostLimit, cfg.Concurrency, cfg.RateLimit)
 
 	// Create a properly initialized logger for nuclei to avoid nil pointer
 	// panics from the bare default logger in nuclei's DefaultOptions().
@@ -121,6 +165,16 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("knownissuescan: failed to create nuclei engine: %w", err)
 	}
+
+	// Re-probe while the scan runs: a host that starts filtering mid-phase is the
+	// case the pre-flight cannot catch, and the one that silently hollows out the
+	// results. Each probe rides the shared requester, so the operator notice and
+	// the waf.block event fire exactly as they do in every other phase.
+	//
+	// Started AFTER the engine exists: NewNucleiEngineCtx can sit behind a
+	// multi-minute first-run template clone, and a sentinel armed before it would
+	// spend that whole window probing a target nuclei has not touched yet.
+	defer cfg.Edge.sentinel(scanCtx, cfg.Targets, cancel)()
 
 	// Load targets
 	ne.LoadTargets(cfg.Targets, false)
@@ -398,9 +452,20 @@ func ensureTemplates(customDir string) error {
 		return nil
 	}
 
+	// Announced on stderr, not only through zap.
+	//
+	// This is an unannounced network fetch of a multi-hundred-megabyte git repo
+	// into shared global state OUTSIDE the pinned database, triggered by the first
+	// known-issue-scan a machine ever runs. Logging it at Info level meant it was
+	// invisible without --verbose, so what the operator actually experienced was a
+	// scan that hung for minutes on its first run with no explanation. A clone
+	// that takes that long has to say so while it is happening.
+	fmt.Fprintf(os.Stderr, "%s nuclei templates not found at %s — cloning them now (one-time, several hundred MB; pin a directory with --known-issue-scan-templates-dir to skip)\n",
+		"[known-issue-scan]", dir)
 	zap.L().Info("KnownIssueScan: nuclei templates not found, attempting to download",
 		zap.String("path", dir))
 
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -412,6 +477,8 @@ func ensureTemplates(customDir string) error {
 			dir, strings.TrimSpace(string(out)), dir)
 	}
 
+	fmt.Fprintf(os.Stderr, "%s nuclei templates ready at %s (took %s)\n",
+		"[known-issue-scan]", dir, time.Since(started).Round(time.Second))
 	zap.L().Info("KnownIssueScan: nuclei templates downloaded successfully", zap.String("path", dir))
 	return nil
 }

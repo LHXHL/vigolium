@@ -28,6 +28,7 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	flags.BoolVar(&scanOpts.OmitResponse, "omit-response", false, "Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files)")
 	flags.StringVar(&scanReportSharedURL, "report-url", "",
 		"URL for the \"Raw Report URL\" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL)")
+	registerEventsFlag(flags)
 
 	// Optimization group
 	flags.IntVar(&scanOpts.Retries, "retries", 1, "Number of retry attempts for failed requests")
@@ -40,7 +41,14 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	// Content discovery flags
 	flags.BoolVar(&scanOpts.DiscoverEnabled, "discover", false, "Enable content discovery phase before scanning")
 	flags.DurationVar(&scanOpts.DiscoverMaxDuration, "discover-max-time", 1*time.Hour, "Max time for content discovery per target")
-	flags.StringVar(&scanOpts.FuzzWordlistPath, "fuzz-wordlist", "", "Custom fuzz wordlist path for discovery (enables fuzzing on the fly)")
+	// --discovery-wordlist seeds the DISCOVERY phase. It was called
+	// --fuzz-wordlist, which collided in name with `vigolium fuzz -w` — a
+	// different knob on a different command, taking builtin list names as well as
+	// paths, and not interchangeable with this one. The names promised a
+	// relationship that does not exist, so the scan-phase knob is renamed and the
+	// old spelling kept as a deprecated alias (registered via addFlagAliases, so
+	// both spellings drive ONE flag and neither can silently overwrite the other).
+	flags.StringVar(&scanOpts.FuzzWordlistPath, "discovery-wordlist", "", "Custom wordlist path seeding the discovery phase (enables fuzzing on the fly). Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'.")
 	flags.BoolVar(&scanOpts.NoPrefixBreaker, "no-prefix-breaker", false, "Disable per-prefix circuit breaker that stops discovery from recursing into trap directories")
 	flags.BoolVar(&scanOpts.FollowSubdomains, "follow-subdomains", false, "Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep)")
 	flags.StringVar(&scanOpts.PortSweepPorts, "port-sweep-ports", "", "Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; sweep runs at --intensity deep or --follow-subdomains)")
@@ -63,7 +71,11 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	flags.StringSliceVar(&scanOpts.KnownIssueScanTags, "known-issue-scan-tags", nil, "Nuclei template tags to include (comma-separated)")
 	flags.StringSliceVar(&scanOpts.KnownIssueScanExcludeTags, "known-issue-scan-exclude-tags", nil, "Nuclei template tags to exclude (comma-separated)")
 	flags.StringSliceVar(&scanOpts.KnownIssueScanSeverities, "known-issue-scan-severities", nil, "Filter Nuclei templates by severity (critical,high,medium,low,info)")
-	flags.StringVar(&scanOpts.KnownIssueScanTemplatesDir, "known-issue-scan-templates-dir", "", "Custom Nuclei templates directory")
+	// Pinning this per-run is the way to avoid the first-run clone into the shared
+	// ~/nuclei-templates (see ensureTemplates). --templates-dir is the short
+	// spelling, registered as an alias rather than a second flag so both drive one
+	// value.
+	flags.StringVar(&scanOpts.KnownIssueScanTemplatesDir, "known-issue-scan-templates-dir", "", "Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates.")
 
 	// OAST flags
 	flags.StringVar(&scanOpts.OastURL, "oast-url", "", "Fixed out-of-band callback URL (overrides auto-generated interactsh URL)")

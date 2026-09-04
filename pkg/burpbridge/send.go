@@ -183,7 +183,7 @@ func (c *Client) SendToRepeater(ctx context.Context, rawURL, ref string, rawRequ
 	if err != nil {
 		return RepeaterResult{}, err
 	}
-	if tab := sanitizeLabel(opts.TabName, 64); tab != "" {
+	if tab := sanitizeLabel(opts.TabName, MaxRepeaterTabName); tab != "" {
 		args["tab_name"] = tab
 	}
 	if opts.Send {
@@ -261,10 +261,10 @@ func (c *Client) SendToOrganizer(ctx context.Context, rawURL, ref string, rawReq
 		}
 		args["http_response_base64"] = base64.StdEncoding.EncodeToString(rawResponse)
 	}
-	if source := sanitizeLabel(opts.Source, 80); source != "" {
+	if source := sanitizeLabel(opts.Source, MaxOrganizerSource); source != "" {
 		args["source"] = source
 	}
-	if notes := sanitizeLabel(opts.Notes, 200); notes != "" {
+	if notes := sanitizeLabel(opts.Notes, MaxOrganizerNote); notes != "" {
 		args["notes"] = notes
 	}
 	if opts.Highlight != "" {
@@ -439,8 +439,39 @@ func sanitizeLabel(value string, max int) string {
 	}
 	value = strings.ReplaceAll(value, "\r", " ")
 	value = strings.ReplaceAll(value, "\n", " ")
-	if len(value) > max {
-		value = value[:max]
-	}
-	return strings.TrimSpace(value)
+	return truncateLabel(value, max)
 }
+
+// truncateLabel shortens value to max characters, marking the cut with an
+// ellipsis so a reader in Burp can tell a clipped note from a short one.
+//
+// Counted in RUNES, not bytes: a byte slice at a fixed offset can land in the
+// middle of a multi-byte character and produce a note ending in a replacement
+// glyph. Failing the whole push because a note is long is the wrong severity —
+// the note is metadata attached to evidence, and losing its tail is strictly
+// better than losing the evidence — so this never errors.
+func truncateLabel(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= max {
+		return strings.TrimSpace(value)
+	}
+	const ellipsis = "…"
+	keep := max - len([]rune(ellipsis))
+	if keep < 1 {
+		keep = max
+		return strings.TrimSpace(string(runes[:keep]))
+	}
+	return strings.TrimSpace(string(runes[:keep])) + ellipsis
+}
+
+// MaxOrganizerNote and MaxRepeaterTabName are the label caps the bridge applies.
+// Exported so a caller can say what it is about to clip instead of discovering
+// the clip in Burp's UI.
+const (
+	MaxOrganizerNote   = 200
+	MaxOrganizerSource = 80
+	MaxRepeaterTabName = 64
+)

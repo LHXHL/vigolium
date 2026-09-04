@@ -68,6 +68,12 @@ func init() {
 	registerScanPipelineFlags(flags)
 	registerSpecFlags(flags)
 	registerNativeScanFlags(flags, true)
+	// Deprecated spelling kept working for one minor version. See the
+	// --discovery-wordlist comment in registerNativeScanFlags.
+	addFlagAliases(scanCmd, map[string]string{
+		"fuzz-wordlist": "discovery-wordlist",
+		"templates-dir": "known-issue-scan-templates-dir",
+	})
 }
 
 // allKnownIssueScanSeverities is the full nuclei severity set. A known-issue-scan
@@ -147,15 +153,19 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.Concurrency = globalConcurrency
 	scanOpts.MaxPerHost = globalMaxPerHost
 	scanOpts.NoWafPacing = globalNoWafPacing
-	scanOpts.ConcurrencyExplicitlySet = cmd.Flags().Changed("concurrency")
-	scanOpts.MaxPerHostExplicitlySet = cmd.Flags().Changed("max-per-host")
-	// --rate-limit is enforced only when the operator sets it explicitly, so
-	// default scans keep their current throughput. When set it drives the native
-	// token-bucket cap here; the known-issue-scan / nuclei limiter is wired from
-	// the same value once settings load below.
-	if cmd.Flags().Changed("rate-limit") {
-		scanOpts.RateLimit = globalRateLimit
-	}
+	// globalChanged, not cmd.Flags().Changed: pflag marks a flag Changed when only
+	// its PHASE-QUALIFIED form was typed, so `--concurrency known-issue-scan=5`
+	// would read as an explicit global concurrency — which makes the runner refuse
+	// to read the very per-phase value that flag just wrote.
+	scanOpts.ConcurrencyExplicitlySet = concurrencyKnob.globalChanged()
+	scanOpts.MaxPerHostExplicitlySet = maxPerHostKnob.globalChanged()
+	// --rate-limit applies whether or not it was typed. It used to be copied only
+	// under cmd.Flags().Changed, which left an unset flag meaning "no cap at all"
+	// while its own help text advertised a default of 100 — silence resolving to
+	// unlimited, i.e. the fail-OPEN direction on a safety knob, and a documented
+	// default the code never applied. The no-cap case now requires asking for it
+	// (--rate-limit 0); negative values are rejected by the flag parser.
+	scanOpts.RateLimit = globalRateLimit
 	scanOpts.MaxHostError = globalMaxHostError
 	scanOpts.MaxFindingsPerModule = globalMaxFindingsPerModule
 	scanOpts.Verbose = globalVerbose
@@ -171,6 +181,12 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.ScopeOriginMode = globalScopeOrigin
 	scanOpts.NoTechFilter = globalNoTechFilter
 	scanOpts.OutputFormats = parseFormats(globalFormat)
+	// Validated here, before any network or database work: a typo in --events
+	// should fail in milliseconds, not after a 15-minute crawl whose whole reason
+	// for running was the stream it never produced.
+	if err := validateEventsFlag(scanOpts.Events); err != nil {
+		return asUsageError(err)
+	}
 	projectUUID, err := resolveProjectUUID()
 	if err != nil {
 		return err
@@ -244,10 +260,13 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		settings.Scope.CLIOriginMode = scanOpts.ScopeOriginMode
 	}
 
-	// Propagate an explicit --rate-limit into the scanning pace so the
-	// known-issue-scan / nuclei limiter honors it (previously it read only its
-	// config default and the flag was dropped for native scans entirely).
-	if cmd.Flags().Changed("rate-limit") {
+	// Propagate --rate-limit into the scanning pace so the known-issue-scan /
+	// nuclei limiter honors it. Copied unconditionally for the same reason as
+	// scanOpts.RateLimit above: the flag's default IS the applied default, and a
+	// config file that wants a different one sets scanning_pace.rate_limit, which
+	// this only overrides when the operator typed the flag.
+	scanOpts.RateLimitExplicitlySet = rateLimitKnob.globalChanged()
+	if scanOpts.RateLimitExplicitlySet {
 		settings.ScanningPace.RateLimit = globalRateLimit
 	}
 
@@ -332,6 +351,11 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		if !cmd.Flags().Changed("external-harvest") {
 			scanOpts.ExternalHarvestEnabled = phases.ExternalHarvesting
 		}
+		// A strategy is a narrowing request, so its pace ceiling applies before
+		// the per-phase overrides below and before the pace validation. Without
+		// this `lite` selected fewer modules and opened the crawl exactly as wide
+		// as `balanced`.
+		applyStrategyPace(settings, phases, scanOpts)
 		zap.L().Debug("Applied scanning strategy",
 			zap.String("strategy", strategyName),
 			zap.Bool("external_harvest", scanOpts.ExternalHarvestEnabled))
@@ -402,6 +426,12 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		scanOpts.ScanMaxDuration = globalScanningMaxDuration
 	}
 
+	// Per-phase pace qualifiers (`--rate-limit known-issue-scan=20`) land in the
+	// matching scanning_pace section, so ResolvePhase stays the one place
+	// per-phase pace is merged. Applied after the phase selection is settled so a
+	// qualifier naming a phase this run skips can be reported.
+	applyPhasePaceOverrides(settings, scanOpts)
+
 	// Validate and apply scanning_pace centralized speed control
 	if err := settings.ScanningPace.Validate(); err != nil {
 		return fmt.Errorf("invalid scanning_pace configuration: %w", err)
@@ -414,6 +444,13 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	}
 	if !scanOpts.MaxPerHostExplicitlySet && pace.MaxPerHost > 0 {
 		scanOpts.MaxPerHost = pace.MaxPerHost
+	}
+	// The rate limit follows the same rung as its two siblings. It used to be the
+	// odd one out: only a typed flag reached scanOpts, so a config file that set
+	// scanning_pace.rate_limit paced known-issue-scan while the native scan ran
+	// at the flag default — one invocation, two different documented rates.
+	if !scanOpts.RateLimitExplicitlySet && pace.RateLimit > 0 {
+		scanOpts.RateLimit = pace.RateLimit
 	}
 
 	// Apply scanning_pace.discovery.max_duration (precedence 3) to scanOpts
@@ -624,6 +661,17 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	// Pin the scan UUID before the banner so the config summary can show it and
 	// the runner reuses the same identifier instead of minting its own.
 	scanOpts.ScanUUID = pinnedOrNewUUID(scanOpts.ScanUUID)
+
+	// Machine event stream (--events). Installed here, after the uuid is pinned
+	// and the database is open, so scan.started can name both. Registered as the
+	// OUTERMOST deferred emitter among the post-scan defers below, so the
+	// terminal scan.finished is the last line on the stream — a consumer treats
+	// it as end-of-stream, and anything emitted after it would be unreadable.
+	finishEvents, evErr := beginScanEventStream(db, scanOpts, settings, strategyName, scanStart)
+	if evErr != nil {
+		return evErr
+	}
+	defer func() { finishEvents(err) }()
 	// Print scan summary banner (after DB init so we can show HTTP record count)
 	printScanSummary(scanOpts, settings, strategyName, repo, "")
 	scanOpts.ScanConfigPrinted = true

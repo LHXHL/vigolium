@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.4.5] - 2026-09-04
+
+A **machine-interface** release: vigolium is now readable by a program while it runs, its safety dials do what their names say, and the shapes a driver parses stopped drifting per command. Sourced from a downstream driver's workaround list — every item below replaces code someone wrote to recover a fact vigolium already knew. No module changes (registry stays at 207 active + 116 passive).
+
+### Added
+
+- `--events ndjson` on `scan`/`run`/`scan-url`/`scan-request`: a live event stream on stdout (`scan.started`, `phase.started|progress|finished`, `waf.block`, `waf.pacing`, `finding.new`, `error`, `scan.finished`) while the human console keeps stderr unchanged.
+- The three pace dials take a repeatable phase qualifier — `--rate-limit known-issue-scan=20` caps nuclei without capping the native modules that pace themselves.
+- Tool shims: `vigolium ffuf|nuclei|katana|gau|arjun` take each tool's own argv, print the translation, and run the native phase into the pinned database.
+- Batch ingest: `-i` is repeatable and `--dir`/`--dir-glob` walk a directory, so N specs cost one process instead of N.
+- `vigolium version --json` reports `schema_version` and `db_schema_version`, so a consumer fails on contract drift at startup instead of at parse time.
+- `import -B` accepts the filter set `traffic -B` already had (`--host`, `--path`, `--method`, `--status`, `--search`, `--from`/`--to`, `-n`), plus `--all-hosts` and `--yes`.
+
+### Fixed
+
+- **`import -B` no longer copies the operator's entire proxy history** — every host they have browsed, with those hosts' cookies and tokens — into the destination database; an unfiltered pull is refused unless `--all-hosts` is passed, after a pre-flight count.
+- `traffic -B --save-to-vigolium-db` silently truncated an import at 100 records, because `-n`'s listing default also bounded the write.
+- `--rate-limit` was applied only when explicitly typed, so silence meant *unlimited* while the help text advertised 100; negative values now fail instead of reading as no cap.
+- `--strategy lite` opened a crawl exactly as hard as `balanced` — same concurrency, same per-host ceiling — and now carries a real pace ceiling.
+- `known-issue-scan` ran nuclei outside the shared requester with no back-off and no block notice, so a filtered edge returned a thin surface indistinguishable from a clean target.
+- `vigolium log` rejected `-S` outright ("unknown shorthand flag"), and auto-followed forever on a `running` row left behind by a killed scan.
+- WAF notices fire early in a scan, so the default 200-line log tail was the wrong end of the file to look for them.
+- `$VIGOLIUM_DB_PATH` pointing at an unusable path silently fell through to the shared default database.
+- Bumped `bytedance/sonic` v1.15.0 → v1.15.3 (and its loader), which was falling back to `encoding/json` with a warning on Go 1.27.
+
+### Changed
+
+- **Exit codes are a table:** `0` success, `1` error, `2` usage error, `3` `fuzz --fail-on-match`, `4` `--fail-on` gate tripped. `1` used to mean both "the scan crashed" and "the scan worked and found something".
+- **One `-j` envelope for every command** — `{schema_version, command, project_uuid, db_path, total, offset, limit, items, query}`, with each command's old row key kept as a deprecated alias. `db stats -j` is no longer an exception.
+- Machine-output timestamps carry exactly three fractional digits plus an epoch-millisecond sibling; microsecond precision broke lexical comparison against a millisecond clock.
+- `-S` means `--stateless` everywhere and is accepted as a no-op where meaningless; on `server`/`ingest` it is a deprecated alias for `--scan-on-receive` that warns.
+- `--fuzz-wordlist` is now `--discovery-wordlist` (old spelling kept as a deprecated alias) — it collided in name with `vigolium fuzz -w`, which is a different knob.
+- `finding --push-to-burp` and `--to-repeater` compose instead of being mutually exclusive, matching `replay`.
+- An over-long `--notes` is truncated with an ellipsis and warned about rather than failing the whole push.
+- The first-run `nuclei-templates` clone announces itself instead of looking like a hung scan; `--templates-dir` pins it per run.
+- Every `-j` envelope and `scan.started` names the database it opened, so a driver can assert the store rather than trust a pin.
+
 ## [v0.4.4] - 2026-08-30
 
 A **large-result-set** release: reading a `--glob-db` glob of hundreds of scan databases (854 files / 16 GB / 290k records) no longer collapses into swap, plus the Go 1.27 toolchain bump. No module changes (registry stays at 207 active + 116 passive).

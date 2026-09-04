@@ -101,13 +101,50 @@ func DefaultSessionStrategyConfig() *SessionStrategyConfig {
 	}
 }
 
-// StrategyPhases defines which phases are enabled for a strategy.
+// StrategyPhases defines which phases are enabled for a strategy, and how hard
+// that strategy is allowed to open.
 type StrategyPhases struct {
 	ExternalHarvesting bool `yaml:"external_harvesting"`
 	Discovery          bool `yaml:"discovery"`
 	Spidering          bool `yaml:"spidering"`
 	KnownIssueScan     bool `yaml:"known_issue_scan"`
 	DynamicAssessment  bool `yaml:"dynamic-assessment"`
+
+	// Pace is the strategy's speed ceiling. Without it the dial selected which
+	// modules ran and nothing else: `lite` and `balanced` opened a crawl
+	// identically — concurrency 40, max-per-host 40, the same wordlists — so a
+	// name every operator reads as "gentler on the target" was gentler in module
+	// count alone. See StrategyPace for how it merges.
+	Pace StrategyPace `yaml:"pace"`
+}
+
+// StrategyPace is a strategy's speed ceiling. Zero fields mean "this strategy
+// imposes no ceiling of its own"; the built-in `balanced` and `deep` leave all
+// three at zero, which is what keeps their behaviour unchanged.
+//
+// A ceiling NARROWS, it never widens: NarrowPace takes the minimum of the
+// configured value and the strategy's, so choosing `lite` cannot make a scan
+// faster than scanning_pace already allowed, and a config that is already
+// gentler than `lite` is not dragged back up to it.
+type StrategyPace struct {
+	Concurrency int `yaml:"concurrency"`
+	RateLimit   int `yaml:"rate_limit"`
+	MaxPerHost  int `yaml:"max_per_host"`
+}
+
+// NarrowPace applies the strategy's ceiling to a configured value. A zero
+// ceiling (or a zero configured value, which means "unlimited" for rate_limit)
+// leaves the input untouched.
+func NarrowPace(configured, ceiling int) int {
+	if ceiling <= 0 {
+		return configured
+	}
+	if configured <= 0 {
+		// 0 is "no cap" for rate_limit. A strategy ceiling is exactly the thing
+		// that should turn no-cap into a cap, so the ceiling wins here.
+		return ceiling
+	}
+	return min(configured, ceiling)
 }
 
 // DefaultScanningStrategyConfig returns default configuration with balanced as default.
@@ -125,6 +162,12 @@ func DefaultScanningStrategyConfig() *ScanningStrategyConfig {
 			Discovery:          false,
 			KnownIssueScan:     false,
 			DynamicAssessment:  true,
+			// The only strategy that ships a ceiling. `balanced` is the baseline
+			// (its pace IS scanning_pace) and `deep` is explicitly the one that
+			// opens wide, so a ceiling on either would just restate or contradict
+			// the config. `lite` is the one whose name promises restraint, and it
+			// is the one that had none.
+			Pace: StrategyPace{Concurrency: 10, RateLimit: 20, MaxPerHost: 10},
 		},
 		Balanced: StrategyPhases{
 			ExternalHarvesting: false,

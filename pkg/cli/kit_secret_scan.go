@@ -173,7 +173,7 @@ func runKitSecretScan(cmd *cobra.Command, args []string) error {
 	}
 
 	if kitSecretFailOnMatch && report.Count > 0 {
-		os.Exit(3)
+		os.Exit(ExitFuzzMatch)
 	}
 	return nil
 }

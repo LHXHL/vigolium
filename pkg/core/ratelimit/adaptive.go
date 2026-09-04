@@ -41,6 +41,32 @@ func (h *HostRateLimiter) CeilingPerHost() int {
 	return h.ceilingPerHost
 }
 
+// CurrentLimit reports the concurrency currently allowed for host, and the
+// ceiling it is measured against. Both are 0 when the host is untracked or the
+// limiter runs in static mode, where there is no per-host verdict to read.
+//
+// It exists for a consumer that dispatches its own traffic and cannot page
+// through Acquire/Release — known-issue-scan, whose nuclei engine owns its HTTP
+// stack. Such a consumer can at least SIZE itself to the verdict the limiter has
+// already reached, so a host the scan proactively paced does not get opened wide
+// again by the one phase that does not go through the limiter.
+//
+// Read-only and lock-free: it never creates an entry, because asking about a
+// host must not be the thing that starts tracking it.
+func (h *HostRateLimiter) CurrentLimit(host string) (limit int, ceiling int) {
+	if h == nil || host == "" || !h.usesAdaptiveEntries() {
+		return 0, 0
+	}
+	shard := h.shardFor(host)
+	shard.mu.RLock()
+	entry, ok := shard.hosts[host]
+	shard.mu.RUnlock()
+	if !ok || entry == nil {
+		return 0, 0
+	}
+	return int(entry.limit.Load()), h.ceilingPerHost
+}
+
 // PreArmable reports whether PreArm can throttle a host — true only when hosts use
 // adaptive token pools (plain Adaptive or WafAutoArm) AND proactive pacing has not
 // been disabled (--no-waf-pacing). It lets a caller skip the per-response edge

@@ -778,10 +778,29 @@ type HostTarget struct {
 	Port     int    `bun:"port"`
 }
 
-// dbTimestampString formats t to the DB's second-precision UTC timestamp string, matching
-// how created_at/cursor timestamps are stored and compared (so the comparison works on
-// SQLite text columns as well as Postgres).
-func dbTimestampString(t time.Time) string {
+// dbTimestampString renders t the way `driver` stores created_at/cursor_at, so a
+// keyset comparison matches the very row the value was read back from.
+//
+// The two drivers need different precision and neither tolerates the other's:
+//
+// SQLite holds these columns as TEXT written by CURRENT_TIMESTAMP — second
+// precision, "2006-01-02 15:04:05" — and compares them lexically. A fractional
+// part appended there sorts after every stored value, so `created_at = ?` would
+// match nothing.
+//
+// PostgreSQL holds a real `timestamp` with microsecond precision and compares
+// numerically. Truncating to seconds moves a bound read out of the database to
+// *before* every row written in that same second, making both `created_at < ?`
+// and `created_at = ?` false. That is not a narrower window, it is a total one:
+// the dynamic-assessment phase reports "0 items" against a database full of
+// records, and the scan finishes clean because it never looked at anything.
+//
+// Callers all hold a *DB; take the driver from it rather than defaulting, so a
+// new driver has to make this decision explicitly instead of inheriting SQLite's.
+func dbTimestampString(driver string, t time.Time) string {
+	if driver == driverPostgres {
+		return t.UTC().Format("2006-01-02 15:04:05.000000")
+	}
 	return t.UTC().Format("2006-01-02 15:04:05")
 }
 
@@ -797,7 +816,7 @@ func (r *Repository) GetDistinctHosts(ctx context.Context, projectUUID string, s
 		q = q.Where("project_uuid = ?", projectUUID)
 	}
 	if len(since) > 0 && !since[0].IsZero() {
-		q = q.Where("created_at >= ?", dbTimestampString(since[0]))
+		q = q.Where("created_at >= ?", dbTimestampString(r.db.Driver(), since[0]))
 	}
 	err := q.Scan(ctx, &hosts)
 	if err != nil {

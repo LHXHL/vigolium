@@ -767,6 +767,9 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 	if err := validateRunnerScanOutput(opts); err != nil {
 		return err
 	}
+	if err := validateEventsFlag(opts.Events); err != nil {
+		return asUsageError(err)
+	}
 	if opts.Stateless && globalDB != "" {
 		return fmt.Errorf("--stateless and --db are mutually exclusive")
 	}
@@ -859,6 +862,16 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 		return fmt.Errorf("failed to create database schema: %w", err)
 	}
 	repo := database.NewRepository(db)
+
+	// Machine event stream (--events). Registered before the export defers so its
+	// terminal scan.finished is the last line written — a consumer treats it as
+	// end-of-stream.
+	opts.ScanUUID = pinnedOrNewUUID(opts.ScanUUID)
+	finishEvents, evErr := beginScanEventStream(db, opts, settings, opts.ScanningStrategy, scanStart)
+	if evErr != nil {
+		return evErr
+	}
+	defer func() { finishEvents(err) }()
 
 	// Stateless + -o: suppress StandardWriter's live file output and materialize
 	// every requested format from the temp DB post-scan (mirrors executeNativeScan).

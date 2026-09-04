@@ -314,7 +314,7 @@ func (s *DBInputSource) fetchNextBatch(ctx context.Context) ([]*HTTPRecord, erro
 		Column(scanRecordColumns...)
 
 	if !s.readCursorAt.IsZero() {
-		cursorAt := dbTimestampString(s.readCursorAt)
+		cursorAt := dbTimestampString(s.db.Driver(), s.readCursorAt)
 		q = q.Where("(created_at > ? OR (created_at = ? AND uuid > ?))",
 			cursorAt, cursorAt, s.readCursorUUID)
 	}
@@ -687,7 +687,7 @@ func (s *RiskPrioritizedDBInputSource) captureBoundLocked(ctx context.Context) e
 	}
 	q := s.db.NewSelect().Model((*HTTPRecord)(nil)).Column("created_at", "uuid")
 	if !s.resumeAt.IsZero() {
-		at := dbTimestampString(s.resumeAt)
+		at := dbTimestampString(s.db.Driver(), s.resumeAt)
 		q = q.Where("(created_at > ? OR (created_at = ? AND uuid > ?))", at, at, s.resumeID)
 	}
 	q = applyHostScopeFilter(q, s.hostScopes)
@@ -720,10 +720,10 @@ func (s *RiskPrioritizedDBInputSource) pageColumns() []string {
 // after the durable resume cursor and at/before the captured snapshot bound.
 func (s *RiskPrioritizedDBInputSource) applyResumeAndBound(q *bun.SelectQuery) *bun.SelectQuery {
 	if !s.resumeAt.IsZero() {
-		at := dbTimestampString(s.resumeAt)
+		at := dbTimestampString(s.db.Driver(), s.resumeAt)
 		q = q.Where("(created_at > ? OR (created_at = ? AND uuid > ?))", at, at, s.resumeID)
 	}
-	boundAt := dbTimestampString(s.boundAt)
+	boundAt := dbTimestampString(s.db.Driver(), s.boundAt)
 	q = q.Where("(created_at < ? OR (created_at = ? AND uuid <= ?))", boundAt, boundAt, s.boundID)
 	return applyProjectFilter(q, s.projectUUID)
 }
@@ -742,7 +742,7 @@ func (s *RiskPrioritizedDBInputSource) nextPageRowsLocked(ctx context.Context) (
 	if s.started {
 		// Keyset for (risk_score DESC, created_at ASC, uuid ASC): rows after the
 		// last one are lower-risk, or same-risk with a later (created_at, uuid).
-		at := dbTimestampString(s.keyAt)
+		at := dbTimestampString(s.db.Driver(), s.keyAt)
 		q = q.Where("(risk_score < ? OR (risk_score = ? AND (created_at > ? OR (created_at = ? AND uuid > ?))))",
 			s.keyScore, s.keyScore, at, at, s.keyID)
 	}

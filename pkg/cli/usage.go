@@ -220,14 +220,14 @@ var scanFlagGroups = []flagGroup{
 	{"Spec Options", []string{"spec-url", "spec-header", "spec-var", "spec-default"}},
 	{"Module Selection", []string{"modules", "module-tag", "module-id", "passive-only", "no-passive", "no-tech-filter"}},
 	{"Scanning", []string{"only", "skip", "strategy", "scanning-profile", "intensity", "scope-origin", "scanning-max-duration", "heuristics-check", "skip-heuristics", "oast-url"}},
-	{"Discovery", []string{"discover", "discover-max-time", "fuzz-wordlist", "no-prefix-breaker", "follow-subdomains", "port-sweep-ports"}},
+	{"Discovery", []string{"discover", "discover-max-time", "discovery-wordlist", "no-prefix-breaker", "follow-subdomains", "port-sweep-ports"}},
 	{"Spidering", []string{"spider", "spider-max-time", "browser-engine", "browsers", "headless", "headed", "no-cdp", "no-forms", "no-carry-browser-session"}},
 	{"Harvest", []string{"external-harvest"}},
 	{"KnownIssueScan", []string{"known-issue-scan", "known-issue-scan-tags", "known-issue-scan-exclude-tags", "known-issue-scan-severities", "known-issue-scan-templates-dir"}},
 	{"Request", []string{"method", "body", "header", "advanced-options", "retries", "stream"}},
 	{"Authentication", []string{"auth", "auth-file"}},
 	{"Speed Control", []string{"timeout", "concurrency", "rate-limit", "max-per-host", "no-waf-pacing", "max-host-error", "max-findings-per-module", "no-clustering"}},
-	{"Output", []string{"output", "stats", "fail-on", "include-response", "omit-response", "report-url", "upload-results", "print-finding", "print-traffic", "print-traffic-tree"}},
+	{"Output", []string{"output", "stats", "fail-on", "events", "include-response", "omit-response", "report-url", "upload-results", "print-finding", "print-traffic", "print-traffic-tree"}},
 	{"Stateless & Parallel", []string{"stateless", "split-by-host", "db-isolate", "parallel", "resume"}},
 }
 
@@ -373,7 +373,7 @@ var ingestFlagGroups = []flagGroup{
 	{"Target & Input", []string{"target", "target-file", "input", "input-mode", "input-read-timeout"}},
 	{"Spec Options", []string{"spec-url", "spec-header", "spec-var", "spec-default"}},
 	{"Module Selection", []string{"modules", "module-tag", "no-tech-filter"}},
-	{"Ingestion", []string{"server", "scan-on-receive", "full-native-scan-on-receive", "disable-fetch-response", "scope-origin", "intensity"}},
+	{"Ingestion", []string{"server", "scan-on-receive", "full-native-scan-on-receive", "disable-fetch-response", "scope-origin", "intensity", "dir", "dir-glob"}},
 	{"Speed Control", []string{"timeout", "concurrency", "rate-limit", "max-per-host", "max-host-error", "max-findings-per-module", "no-clustering", "no-waf-pacing"}},
 }
 
@@ -400,6 +400,10 @@ var importFlagGroups = []flagGroup{
 	{"Filter", []string{"search", "severity"}},
 	{"Report Metadata", []string{"report-title", "report-target", "report-duration", "report-generated-at", "report-url"}},
 	{"Source & Upload", []string{"glob-db", "upload", "upload-key", "burp-bridge-url"}},
+	// Bridge-pull narrowing. An unfiltered -B pull copies the operator's entire
+	// proxy history — every host they have browsed, with its cookies — so these
+	// get their own titled block rather than being buried under "Filter".
+	{"Bridge Pull Filter", []string{"host", "path", "method", "status", "exclude-search", "from", "to", "limit", "all-hosts", "yes"}},
 }
 
 // commandFlagGroups maps a command to the flag-group table used to render its

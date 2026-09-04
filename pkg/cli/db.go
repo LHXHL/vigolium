@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
+	"strings"
 )
 
 var dbCmd = &cobra.Command{
@@ -43,4 +44,15 @@ func closeDatabaseOnExit() {
 // runWithWatch runs fn once, then repeats it every --watch interval if set.
 func runWithWatch(fn func() error) error {
 	return clicommon.RunWithWatch(globalWatchRaw, fn)
+}
+
+// resolvedReadDBPath names the database the current command actually opened, for
+// the -j envelope's db_path. Under --glob-db it names the pattern instead of the
+// scratch file: a temp path the caller cannot reopen is worse than useless as an
+// assertion target, while the pattern is what the caller asked for.
+func resolvedReadDBPath() string {
+	if pattern := strings.TrimSpace(globalGlobDB); pattern != "" {
+		return pattern
+	}
+	return clicommon.OpenedDBPath()
 }

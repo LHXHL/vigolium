@@ -239,6 +239,19 @@ func readChildStatsSQLite(output string) (childStats, bool) {
 // when every target failed (a partial success is still a success); --soft-fail
 // overrides that to exit 0 for CI wrappers, just as it does for a single scan.
 func runStatelessTargetsParallel(cmd *cobra.Command, settings *config.Settings, strategyName string, targets []string) error {
+	// --events cannot cross the fan-out: each child's stdout is redirected to its
+	// own per-target console log, so the parent's stdout — the one a driver is
+	// reading — would receive nothing at all, and the NDJSON would instead
+	// contaminate a file meant to be a human transcript. Refuse rather than
+	// silently produce an empty stream, which is the exact failure mode the flag
+	// exists to remove. Per-target streams are still available by running the
+	// targets as separate invocations.
+	if strings.TrimSpace(scanOpts.Events) != "" {
+		return asUsageError(fmt.Errorf(
+			"--events is not supported with a parallel fan-out (-P/--parallel over -T): each child's stdout is captured to its own log, so no events would reach yours.\n" +
+				"Run the targets as separate invocations, or drop -P to scan them in one process"))
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("cannot locate the vigolium binary for parallel fan-out: %w", err)
@@ -597,6 +610,19 @@ func fanOutTargetScans(ctx context.Context, exe string, targets []string, parall
 // each child writes into a temporary staging directory (never the operator's
 // --output prefix); the staging directory is removed when the batch finishes.
 func runIsolatedTargetsParallel(cmd *cobra.Command, settings *config.Settings, strategyName string) error {
+	// --events cannot cross the fan-out: each child's stdout is redirected to its
+	// own per-target console log, so the parent's stdout — the one a driver is
+	// reading — would receive nothing at all, and the NDJSON would instead
+	// contaminate a file meant to be a human transcript. Refuse rather than
+	// silently produce an empty stream, which is the exact failure mode the flag
+	// exists to remove. Per-target streams are still available by running the
+	// targets as separate invocations.
+	if strings.TrimSpace(scanOpts.Events) != "" {
+		return asUsageError(fmt.Errorf(
+			"--events is not supported with a parallel fan-out (-P/--parallel over -T): each child's stdout is captured to its own log, so no events would reach yours.\n" +
+				"Run the targets as separate invocations, or drop -P to scan them in one process"))
+	}
+
 	targets, err := readTargetFilesLines(scanOpts.TargetsFilePaths)
 	if err != nil {
 		return err

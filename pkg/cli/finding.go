@@ -171,7 +171,7 @@ func init() {
 	f.BoolVar(&findingPushToBurp, "push-to-burp", false,
 		"Push the selected finding(s)' evidence request+response to Burp's Organizer for manual confirmation; requires --burp-bridge-url")
 	f.BoolVar(&findingToRepeater, "to-repeater", false,
-		"Push to a Burp Repeater tab instead of the Organizer (respects Burp's 30-tabs/min cap)")
+		"Also stage the selected finding(s) in a Burp Repeater tab (respects Burp's 30-tabs/min cap). Composes with --push-to-burp, like 'vigolium replay'.")
 	f.BoolVar(&findingSendViaBurp, "send-via-burp", false,
 		"With --push-to-burp/--to-repeater: re-issue the request through Burp's engine and store the fresh response")
 	registerBridgeURLFlag(findingCmd, &findingBurpBridgeURL,
@@ -603,13 +603,16 @@ func printActiveFindingFilters(filters database.QueryFilters, fuzzyTerm string) 
 
 func displayFindingsJSON(ctx context.Context, db *database.DB, findings []*database.Finding, total int64, projectUUID string) error {
 	opts := agentViewOptionsFromFlags()
-	return writeAgentJSON(map[string]any{
-		"project_uuid": projectUUID,
-		"total":        total,
-		"offset":       findingOffset,
-		"limit":        findingLimit,
-		"findings":     findingViews(ctx, db, findings, opts, findingWithRecords),
-	})
+	env := newAgentEnvelope("finding", "findings",
+		findingViews(ctx, db, findings, opts, findingWithRecords), total, findingOffset, findingLimit)
+	env.ProjectUUID = projectUUID
+	env.DBPath = resolvedReadDBPath()
+	// A --compact survey's next step is the drill into one finding's evidence; a
+	// listing that already carries records has nowhere obvious to go.
+	if !findingWithRecords && len(findings) > 0 {
+		env.WithQuery(fmt.Sprintf("vigolium finding -u %s --json --with-records", findings[0].FindingHash))
+	}
+	return writeAgentJSON(env)
 }
 
 // displayFindingsBurp shows findings with their associated HTTP records in Burp-style format.

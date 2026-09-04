@@ -29,9 +29,7 @@ func registerInputSourceFlags(flags *pflag.FlagSet) {
 // every command that makes HTTP requests.
 func registerHTTPClientFlags(flags *pflag.FlagSet) {
 	flags.DurationVar(&globalTimeout, "timeout", 15*time.Second, "HTTP request timeout (e.g. 30s, 1m, 2h)")
-	flags.IntVarP(&globalConcurrency, "concurrency", "c", 50, "Number of concurrent scan workers")
-	flags.IntVarP(&globalRateLimit, "rate-limit", "r", 100, "Global requests/second cap, enforced across native scanning and known-issue-scan when set (unset = per-host concurrency only)")
-	flags.IntVar(&globalMaxPerHost, "max-per-host", 50, "Maximum concurrent requests allowed per host")
+	registerPaceFlags(flags)
 	flags.BoolVar(&globalNoWafPacing, "no-waf-pacing", false, "Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies")
 	flags.IntVar(&globalMaxHostError, "max-host-error", 30, "Skip host after reaching this many consecutive errors")
 	flags.IntVar(&globalMaxFindingsPerModule, "max-findings-per-module", 10, "Stop reporting after N findings per module (0 = unlimited)")
@@ -85,6 +83,18 @@ func registerLightweightScanIOFlags(flags *pflag.FlagSet) {
 	flags.BoolVar(&scanPrintFinding, "print-finding", false, "After the scan, print each finding to stdout as Markdown (description + matched evidence + request/response), like 'vigolium finding --markdown'. Pairs well with -S and --silent for a quick single-target scan.")
 	flags.BoolVar(&scanPrintTrafficTree, "print-traffic-tree", false, "After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent.")
 	flags.BoolVar(&scanPrintTraffic, "print-traffic", false, "After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent.")
+	registerEventsFlag(flags)
+}
+
+// registerEventsFlag declares --events. One definition, shared by the full scan
+// commands and the lightweight ones: registering it twice with different help
+// text meant `scan --help` and `scan-url --help` documented the same flag
+// differently.
+func registerEventsFlag(flags *pflag.FlagSet) {
+	flags.StringVar(&scanOpts.Events, "events", "",
+		"Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). "+
+			"The human console stays on stderr, so a driver reads the stream with 2>/dev/null. "+
+			"Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished.")
 }
 
 // markFlagDeprecated hides oldName from --help and makes pflag emit a one-time

@@ -107,7 +107,7 @@ Stateless mode is great for ephemeral CI/CD runs — it creates a temp SQLite fi
 |------|------|---------|-------------|
 | `--discover` | bool | `false` | Enable content discovery phase before scanning |
 | `--discover-max-time` | duration | `1h` | Max time for content discovery per target |
-| `--fuzz-wordlist` | string | — | Custom fuzz wordlist path (enables fuzzing during discovery) |
+| `--discovery-wordlist` | string | — | Custom wordlist seeding the discovery phase (enables fuzzing on the fly). Formerly `--fuzz-wordlist`, still accepted as a deprecated alias. **Not** the same knob as `vigolium fuzz -w`. |
 | `--no-prefix-breaker` | bool | `false` | Disable per-prefix circuit breaker that stops trap-directory recursion |
 | `--port-sweep-ports` | string | — | Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; the sweep runs at `--intensity deep` or with `--follow-subdomains`) |
 
@@ -188,8 +188,14 @@ vigolium scan -t https://example.com --fail-on high
 # With proxy
 vigolium scan -t https://example.com --proxy http://127.0.0.1:8080
 
-# Speed tuning
+# Speed tuning (bare form applies to the whole invocation)
 vigolium scan -t https://example.com -c 100 --rate-limit 200
+
+# Per-phase speed: cap the nuclei phase only
+vigolium scan -t https://example.com --rate-limit known-issue-scan=20
+
+# Watch it run from a program (human console stays on stderr)
+vigolium scan -t https://example.com --events ndjson 2>/dev/null | jq -c .
 
 # Source-aware / whitebox scanning is an agent feature (see agent-modes.md)
 vigolium agent autopilot -t https://example.com --source ./src
@@ -426,10 +432,58 @@ Source-aware / whitebox scanning is **not** a strategy — it is an agent featur
 
 Speed settings have a layered precedence:
 
-1. CLI flags (`-c`, `--rate-limit`, `--max-per-host`) — highest
-2. `--scanning-max-duration` — overrides `scanning_pace.max_duration`
-3. Config `scanning_pace` section — per-phase max_duration and duration_factor
-4. Built-in defaults — lowest
+1. A **phase-qualified** CLI flag (`--rate-limit known-issue-scan=20`) — highest
+2. A bare CLI flag (`-c`, `--rate-limit`, `--max-per-host`)
+3. `--scanning-max-duration` — overrides `scanning_pace.max_duration`
+4. Config `scanning_pace` section — per-phase max_duration and duration_factor
+5. The strategy's own pace ceiling (`lite` only — see below)
+6. Built-in defaults — lowest
+
+**The pace flags apply whether or not you type them.** `--rate-limit` used to be
+enforced only when passed, so silence meant *unlimited* while the help text
+advertised 100. It now applies at its documented default; pass `--rate-limit 0`
+for genuinely no cap. A negative value is a usage error (exit 2), not
+"unlimited".
+
+**Each of the three dials takes an optional phase qualifier, repeatable and
+mixable with the bare form:**
+
+```bash
+# Cap nuclei without capping the ~200 native modules, which pace themselves.
+vigolium scan -t https://target.example \
+  --only known-issue-scan,dynamic-assessment \
+  --rate-limit known-issue-scan=20
+
+# Bare form, unchanged.
+vigolium scan -t https://target.example --rate-limit 50
+
+# Mixed: 50 rps everywhere, 20 for the nuclei phase.
+vigolium scan -t https://target.example --rate-limit 50 --rate-limit kis=20
+```
+
+Qualifiers accept the same phase aliases as `--only`/`--skip` (`kis`, `cve`,
+`deparos`, `dast`, …). A qualifier naming a phase this run does not execute
+warns rather than failing. Resolution per phase is phase-scoped → global →
+strategy/config default, and `scan.started` (under `--events`) reports the
+resolved `pace` plus a `phase_pace` table for any phase that differs — assert
+what applied instead of inferring it from the flags you passed.
+
+**`--strategy lite` carries a pace ceiling** (concurrency 10 / rate 20 /
+max-per-host 10) on top of selecting fewer phases. Previously `lite` and
+`balanced` opened a crawl identically, so a name every operator reads as
+"gentler on the target" was gentler in module count alone. The ceiling only ever
+*narrows*: an explicit `--concurrency` overrules it, and a config already gentler
+than `lite` is not dragged up to it. `balanced` is the baseline and `deep` ships
+no ceiling.
+
+**`known-issue-scan` opens conservatively when unattended.** It runs nuclei,
+which owns its own HTTP stack and does not pace itself, so its no-flags defaults
+are 20 rps / 10 host-concurrency. Before its phase starts, vigolium probes each
+target host through the shared requester: a host whose edge is already filtering
+is **dropped from the target list** (and reported as a `waf.block` event) rather
+than scanned, and the per-host limiter's verdict narrows nuclei's own knobs. A
+sentinel re-probes during the run and curtails the phase if a majority of hosts
+start filtering.
 
 ### CI Output
 
@@ -520,6 +574,46 @@ A coding agent will instinctively reach for `nuclei`, `ffuf`, `katana`, `httpx`,
 the win is that instead of piping four uninstalled binaries together, one binary
 runs the phases into one DB you query with `-j/--json`.
 
+**Do not go hunting the host for those binaries.** You will often *find* them,
+and then the run's whole mapping happens outside the pinned traffic DB, outside
+the phase model, with flags nobody scoped - invisible to every later `finding`,
+`traffic` and `replay` call.
+
+### Tool shims: type the argv you already know
+
+You do not have to remember the native spelling. Vigolium accepts each tool's
+own command line and routes it:
+
+```bash
+$ vigolium ffuf -u https://target.example/FUZZ -w words.txt
+◆ routed to: vigolium run discovery -t https://target.example --discovery-wordlist words.txt
+```
+
+| Shim | Routes to |
+|---|---|
+| `vigolium ffuf -u <url>/FUZZ -w <list>` | `run discovery --discovery-wordlist` |
+| `vigolium nuclei -u <url> -severity high -tags cve` | `run known-issue-scan --known-issue-scan-*` |
+| `vigolium katana -u <url>` | `run spidering` |
+| `vigolium gau <domain>` | `run external-harvest` |
+| `vigolium arjun -u <url>` | `fuzz --fuzz param-name --anomaly` |
+
+Mapped flags include the pace knobs (`-t`/`-threads`/`-c` -> `--concurrency`,
+`-rate`/`-rl` -> `--rate-limit`), headers, proxy, and each tool's own selectors.
+Both `-u X` and `-u=X` parse.
+
+Two behaviours to expect:
+
+- **An unmapped argument is a hard error naming the native command**, never a
+  silent drop - a dropped flag is a scan that ran with a scope nobody chose.
+  `vigolium ffuf --mc 200` tells you to run `vigolium run discovery --help`.
+- **Where a concept does not exist, the shim says so rather than approximating.**
+  `katana -d 3` errors: vigolium's spider is a state machine over DOM snapshots,
+  not a depth-limited link follower, so bound it with `--spider-max-time`
+  instead.
+
+The shims are a redirect for muscle memory, not a full port. Once you know the
+native form, prefer it - it takes every vigolium flag, the shims only a subset.
+
 ### The pattern
 
 ```bash
@@ -555,7 +649,10 @@ vigolium fuzz https://target.example/FUZZ -w file-long --match-status-code 200,3
 ```
 
 For dir/content discovery folded into a scan, use the discovery phase with a
-wordlist: `vigolium run discovery --fuzz-wordlist words.txt -t <url>`.
+wordlist: `vigolium run discovery --discovery-wordlist words.txt -t <url>`.
+
+Or just type ffuf's own argv — `vigolium ffuf -u https://t/FUZZ -w words.txt`
+translates to exactly that and prints what it ran (see "Tool shims" below).
 
 ### katana / gospider / hakrawler -> spidering
 

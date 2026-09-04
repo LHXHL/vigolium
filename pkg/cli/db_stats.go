@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -72,10 +70,15 @@ func runDBStats(cmd *cobra.Command, args []string) error {
 
 		// Output statistics
 		if globalJSON {
-			// JSON output
-			encoder := json.NewEncoder(os.Stdout)
-			encoder.SetIndent("", "  ")
-			if err := encoder.Encode(stats); err != nil {
+			// `db stats -j` used to be a documented EXCEPTION to the -j contract:
+			// it emitted its raw stats struct with no envelope, so a consumer had
+			// to special-case it forever. A contract with a hole in it is not a
+			// contract, so the struct now rides under `items` like every other
+			// command's payload.
+			env := newAgentEnvelope("db stats", "stats", stats, 1, 0, 1)
+			env.DBPath = resolvedReadDBPath()
+			env.WithQuery("vigolium finding --json --min-severity high")
+			if err := writeAgentJSON(env); err != nil {
 				return fmt.Errorf("failed to encode JSON: %w", err)
 			}
 		} else {

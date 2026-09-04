@@ -1,14 +1,13 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/logger"
+	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
@@ -19,7 +18,7 @@ var (
 	Description        = "High-fidelity vulnerability scanner that combines speed, modularity, and precision"
 	Author             = "@j3ssie"
 	InitialContributor = "@theblackturtle"
-	Version            = "v0.4.4"
+	Version            = "v0.4.5"
 	Commit             = ""
 	BuildTime          = ""
 )
@@ -124,9 +123,16 @@ func printVersionJSON() {
 		commit = commit[:7]
 	}
 
-	info := map[string]string{
+	// The two version numbers a consumer actually needs are the ones that were
+	// missing: schema_version says which -j envelope contract this binary speaks,
+	// and db_schema_version says which database layout it expects. Without them a
+	// drift is discovered as a parse failure in production; with them it is a
+	// check at startup.
+	info := map[string]any{
 		"name":                Name,
 		"version":             getVersion(),
+		"schema_version":      AgentSchemaVersion,
+		"db_schema_version":   database.CurrentSchemaVersion(),
 		"author":              Author,
 		"initial_contributor": InitialContributor,
 		"website":             "https://www.vigolium.com",
@@ -139,9 +145,7 @@ func printVersionJSON() {
 		info["commit"] = commit
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(info)
+	_ = writeAgentJSON(info)
 }
 
 func initLogger(verbose, silent, debug, dumpTraffic bool, logFile string) *zap.Logger {

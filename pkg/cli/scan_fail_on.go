@@ -92,9 +92,14 @@ func markFailOnTriggered(n int, silent bool) {
 
 // failOnGateError returns a non-nil error when --fail-on tripped, so the scan
 // exits non-zero. --soft-fail still forces exit 0 (handled in Execute).
+//
+// Wrapped as a gateError so Execute exits 4 rather than 1: a scan that ran
+// cleanly and found a high-severity finding is the OPPOSITE outcome from a scan
+// that failed to start, and a consumer that cannot tell them apart either
+// ignores real breakage or treats every finding as an outage.
 func failOnGateError() error {
 	if failOnGateTriggered {
-		return fmt.Errorf("--fail-on %s: matching findings were found", scanFailOn)
+		return gateError{err: fmt.Errorf("--fail-on %s: matching findings were found", scanFailOn)}
 	}
 	return nil
 }

@@ -445,7 +445,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if fuzzFailOnMatch && report != nil && report.Matched > 0 {
-		os.Exit(3)
+		os.Exit(ExitFuzzMatch)
 	}
 	return nil
 }

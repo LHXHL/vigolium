@@ -326,13 +326,12 @@ func runListFindings(ctx context.Context, db *database.DB) error {
 	}
 
 	if globalJSON {
-		return writeAgentJSON(map[string]any{
-			"project_uuid": projectUUID,
-			"total":        total,
-			"offset":       listOffset,
-			"limit":        listLimit,
-			"findings":     findingViews(ctx, db, findings, agentViewOptionsFromFlags(), false),
-		})
+		env := newAgentEnvelope("db ls", "findings",
+			findingViews(ctx, db, findings, agentViewOptionsFromFlags(), false), total, listOffset, listLimit)
+		env.ProjectUUID = projectUUID
+		env.DBPath = resolvedReadDBPath()
+		env.WithQuery("vigolium finding --json --with-records --min-severity medium")
+		return writeAgentJSON(env)
 	}
 
 	// Build severity and confidence breakdown summary
@@ -411,12 +410,9 @@ func runListScans(ctx context.Context, db *database.DB) error {
 	views := buildScanViews(scans)
 
 	if globalJSON {
-		return writeAgentJSON(map[string]any{
-			"total":  total,
-			"offset": listOffset,
-			"limit":  listLimit,
-			"scans":  views,
-		})
+		env := newAgentEnvelope("db ls", "scans", views, total, listOffset, listLimit)
+		env.DBPath = resolvedReadDBPath()
+		return writeAgentJSON(env)
 	}
 
 	fmt.Printf("Showing %d-%d of %d scans\n\n",
@@ -567,14 +563,10 @@ func runListGenericTable(ctx context.Context, db *database.DB, tableName string)
 	}
 
 	if globalJSON {
-		return writeAgentJSON(map[string]any{
-			"table":   tableName,
-			"total":   total,
-			"offset":  listOffset,
-			"limit":   listLimit,
-			"columns": headers,
-			"rows":    rows,
-		})
+		env := newAgentEnvelope("db ls", "rows", rows, total, listOffset, listLimit)
+		env.DBPath = resolvedReadDBPath()
+		env.With("table", tableName).With("columns", headers)
+		return writeAgentJSON(env)
 	}
 
 	fmt.Printf("Showing %d-%d of %d rows from %s\n\n",
@@ -628,13 +620,16 @@ func displayJSON(records []*database.HTTPRecord, total int64, offset, limit int)
 	if err != nil {
 		return err
 	}
-	return writeAgentJSON(map[string]any{
-		"project_uuid": projectUUID,
-		"total":        total,
-		"offset":       offset,
-		"limit":        limit,
-		"records":      recordViews(records, agentViewOptionsFromFlags()),
-	})
+	env := newAgentEnvelope("traffic", "records",
+		recordViews(records, agentViewOptionsFromFlags()), total, offset, limit)
+	env.ProjectUUID = projectUUID
+	env.DBPath = resolvedReadDBPath()
+	// The obvious next step from a traffic row is to re-send it, so hand back the
+	// command that does. See agentEnvelope.Query.
+	if len(records) > 0 {
+		env.WithQuery(fmt.Sprintf("vigolium replay -u %s", records[0].UUID))
+	}
+	return writeAgentJSON(env)
 }
 
 func displayRaw(records []*database.HTTPRecord) error {

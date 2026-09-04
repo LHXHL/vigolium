@@ -85,4 +85,8 @@ func init() {
 	registerScanPipelineFlags(flags)
 	registerSpecFlags(flags)
 	registerNativeScanFlags(flags, true)
+	addFlagAliases(runCmd, map[string]string{
+		"fuzz-wordlist": "discovery-wordlist",
+		"templates-dir": "known-issue-scan-templates-dir",
+	})
 }

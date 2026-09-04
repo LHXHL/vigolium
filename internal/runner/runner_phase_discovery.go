@@ -232,7 +232,7 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 
 	if fuzzEnabled, _ := r.discoveryFuzzingState(); !fuzzEnabled && !r.options.Silent {
 		fmt.Fprintf(os.Stderr, "  %s %s %s\n",
-			terminal.TipPrefix(), terminal.Gray("enable on-the-fly directory fuzzing with a custom wordlist via"), terminal.HiCyan("--fuzz-wordlist <path>"))
+			terminal.TipPrefix(), terminal.Gray("enable on-the-fly directory fuzzing with a custom wordlist via"), terminal.HiCyan("--discovery-wordlist <path>"))
 	}
 
 	enrichTargetsEnabled := false
@@ -465,7 +465,7 @@ func (r *Runner) discoveryFuzzingSummary() string {
 	w := r.resolveDiscoveryWordlists()
 	src := "embedded default"
 	if r.options.FuzzWordlistPath != "" {
-		src = "via --fuzz-wordlist"
+		src = "via --discovery-wordlist"
 	}
 	list := terminal.HiTeal("fuzz.txt")
 	if w.fuzz != "" {

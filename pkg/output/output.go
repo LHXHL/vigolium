@@ -248,6 +248,17 @@ type StandardWriter struct {
 	IncludeResponseInOutput bool
 	JSONOutput              bool
 	PhaseTag                string // Phase label for console output prefix (e.g. "scan", "known-issue-scan")
+	// OnEvent, when set, is invoked for every finding this writer emits, before
+	// any rendering. It exists so a single seam can observe the whole finding
+	// stream — the machine event stream (--events) counts and reports findings
+	// through it — instead of each of the runner's ~six OnResult callbacks
+	// growing its own copy, which is how one of them ends up missed.
+	//
+	// It runs on the emitting goroutine BEFORE the writer takes its mutex, so it
+	// is NOT serialized against other writers — a hook must be concurrency-safe
+	// on its own, cheap, and must not call back into the writer. (Calling it
+	// under the lock would put a stdout write inside the writer's mutex.)
+	OnEvent func(*ResultEvent)
 }
 
 func NewStandardWriter(options *types.Options) (*StandardWriter, error) {
@@ -286,6 +297,15 @@ func NewStandardWriter(options *types.Options) (*StandardWriter, error) {
 	if options.DeferredJSONLExport && !options.HasFormat("console") && !options.CapturedConsole {
 		disableStdout = true
 	}
+	// --events owns stdout outright. Its whole contract is that a consumer can
+	// pipe stdout through a JSON parser and see nothing else, so a human finding
+	// line landing there would break every line-oriented reader on the first
+	// finding. The render is not lost: with stdout suppressed, ShowsFindingsOnStdout
+	// goes false and the runner's echoLiveFinding puts the same line on stderr,
+	// where the rest of the console already lives.
+	if options.Events != "" {
+		disableStdout = true
+	}
 
 	// CapturedConsole renders the live finding stream in the human-readable
 	// console format even when jsonl set JSONOutput: the captured per-target log
@@ -313,6 +333,10 @@ func (w *StandardWriter) Write(event *ResultEvent) error {
 
 	// Ensure MatcherStatus is true for findings
 	event.MatcherStatus = true
+
+	if w.OnEvent != nil {
+		w.OnEvent(event)
+	}
 
 	// Only marshal JSON when it is actually consumed: JSON stdout or a live
 	// output file. Console-only runs — the common CLI path — render via

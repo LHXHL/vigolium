@@ -194,7 +194,7 @@ func init() {
 	f.StringVar(&replayRepeaterTab, "repeater-tab", "", "Repeater tab name for --to-repeater (default: vigolium)")
 	f.BoolVar(&replayToOrganizer, "to-organizer", false,
 		"Store the replayed request + response in Burp's Organizer for manual follow-up; requires --burp-bridge-url")
-	f.StringVar(&replayNotes, "notes", "", "Note attached to the --to-organizer item (<=200 chars)")
+	f.StringVar(&replayNotes, "notes", "", fmt.Sprintf("Note attached to the --to-organizer item (longer than %d chars is truncated with an ellipsis, not rejected)", burpbridge.MaxOrganizerNote))
 	f.StringVar(&replayHighlight, "highlight", "",
 		"Highlight colour for the --to-organizer item: none|red|orange|yellow|green|cyan|blue|pink|magenta|gray")
 
@@ -325,6 +325,13 @@ func validateReplayFlags() error {
 		if strings.TrimSpace(replayBurpBridgeURL) == "" {
 			return fmt.Errorf("--save-to-burp/--send-via-burp/--to-repeater/--to-organizer require --burp-bridge-url")
 		}
+	}
+
+	// An over-long note is clipped, not rejected — but say so, so the operator is
+	// not left wondering why Burp shows a shorter note than they typed.
+	if n := len([]rune(strings.TrimSpace(replayNotes))); n > burpbridge.MaxOrganizerNote {
+		fmt.Fprintf(os.Stderr, "%s --notes is %d chars; Burp's Organizer caps it at %d — it will be truncated with an ellipsis\n",
+			terminal.WarnPrefix(), n, burpbridge.MaxOrganizerNote)
 	}
 
 	// --in-replace updates whichever store the records were read from, so under

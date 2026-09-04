@@ -110,7 +110,15 @@ func OnlyPhaseSet(raw string) map[string]bool {
 	return set
 }
 
+// NormalizeNativePhase maps every accepted spelling of a phase to its canonical
+// id. Input is trimmed and lowercased first: --only already trimmed, --skip did
+// not, so `--skip Discovery` (or ` discovery`) reached the switch verbatim, fell
+// through to default, and was reported as an invalid phase. Aliases are extra
+// surface for a driver to get subtly wrong; normalizing here means every caller
+// — --only, --skip, `run <phase>`, the pace-flag qualifiers, and the
+// scan.started event's canonical phase list — agrees on what a spelling means.
 func NormalizeNativePhase(phase string) string {
+	phase = strings.ToLower(strings.TrimSpace(phase))
 	switch phase {
 	case "deparos":
 		return "discovery"

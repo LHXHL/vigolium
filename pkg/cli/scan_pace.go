@@ -1,0 +1,141 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+	"sort"
+
+	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/scanevents"
+	"github.com/vigolium/vigolium/pkg/terminal"
+	"github.com/vigolium/vigolium/pkg/types"
+)
+
+// paceEnabledPhases lists the paceable phases this invocation will actually run,
+// in execution order. Only phases that will run appear in the scan.started pace
+// table — a table naming a phase the scan skipped is one a consumer has to
+// filter before it can trust.
+//
+// Derived from the scan plan rather than from a copied set of predicates:
+// BuildNativeScanPlan already answers "does this run phase X", and a second
+// answer in this package would drift the first time a phase gate changes.
+func paceEnabledPhases(opts *types.Options) []string {
+	var out []string
+	for _, phase := range plannedPhaseIDs(opts) {
+		if pacePhases[phase] {
+			out = append(out, phase)
+		}
+	}
+	return out
+}
+
+// applyStrategyPace narrows the invocation-wide pace to the strategy's ceiling.
+// Only values the operator did NOT type on the command line are narrowed: an
+// explicit --concurrency 40 alongside --strategy lite is an operator overruling
+// the preset, which is the whole point of having both.
+func applyStrategyPace(settings *config.Settings, phases config.StrategyPhases, opts *types.Options) {
+	ceiling := phases.Pace
+	if ceiling == (config.StrategyPace{}) {
+		return
+	}
+	pace := &settings.ScanningPace
+	// globalChanged, not cmd.Flags().Changed — see paceKnob.globalChanged. A
+	// phase-qualified value is not an operator overruling the preset's
+	// invocation-wide ceiling, and reading it as one skipped the ceiling entirely.
+	if !concurrencyKnob.globalChanged() {
+		pace.Concurrency = config.NarrowPace(pace.Concurrency, ceiling.Concurrency)
+		opts.Concurrency = pace.Concurrency
+	}
+	if !rateLimitKnob.globalChanged() {
+		pace.RateLimit = config.NarrowPace(pace.RateLimit, ceiling.RateLimit)
+		opts.RateLimit = pace.RateLimit
+	}
+	if !maxPerHostKnob.globalChanged() {
+		pace.MaxPerHost = config.NarrowPace(pace.MaxPerHost, ceiling.MaxPerHost)
+		opts.MaxPerHost = pace.MaxPerHost
+	}
+}
+
+// applyPhasePaceOverrides copies every `--flag phase=N` qualifier into the
+// matching scanning_pace section, so one invocation can run two phases at
+// different rates.
+//
+// Iterating each knob's own map (rather than packing the three into a struct
+// first) keeps PRESENCE and VALUE together. Packing them lost the per-knob "was
+// set" bit, so the writer had to re-derive it with `> 0` — which silently
+// dropped `--rate-limit known-issue-scan=0`, the one value the flag's own error
+// text documents as meaningful ("0 means unlimited").
+func applyPhasePaceOverrides(settings *config.Settings, opts *types.Options) {
+	running := map[string]bool{}
+	for _, p := range paceEnabledPhases(opts) {
+		running[p] = true
+	}
+	for _, knob := range []struct {
+		k     *paceKnob
+		field func(*config.PhasePace) *int
+	}{
+		{rateLimitKnob, func(p *config.PhasePace) *int { return &p.RateLimit }},
+		{concurrencyKnob, func(p *config.PhasePace) *int { return &p.Concurrency }},
+		{maxPerHostKnob, func(p *config.PhasePace) *int { return &p.MaxPerHost }},
+	} {
+		for _, phase := range sortedKeys(knob.k.perPhase) {
+			if !running[phase] {
+				// A warning rather than an error: --only/--skip and the strategy
+				// all change which phases run, and failing a scan because a pace
+				// qualifier outlived a phase selection would make the flag hostile
+				// to reuse across invocations. But say it loudly — silence here is
+				// the failure mode the flag exists to remove.
+				fmt.Fprintf(os.Stderr, "%s --%s override for phase %q ignored — this scan does not run that phase\n",
+					terminal.WarnPrefix(), knob.k.flagName, phase)
+				continue
+			}
+			// Section is never nil here: pacePhases is derived from the same
+			// vocabulary, and Set already rejected anything outside it.
+			if section := settings.ScanningPace.Section(phase); section != nil {
+				*knob.field(section) = knob.k.perPhase[phase]
+			}
+		}
+	}
+}
+
+// sortedKeys returns a map's keys in a stable order, so warnings and applied
+// overrides do not reorder run to run.
+func sortedKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// resolvedPaceTable returns the effective pace of every phase this scan runs,
+// keyed by canonical phase id. Entries identical to the global pace are dropped:
+// the table exists to show where a phase DIFFERS, and one that restates the
+// global values for five phases buries the one line that matters.
+func resolvedPaceTable(settings *config.Settings, opts *types.Options) (scanevents.Pace, map[string]scanevents.Pace) {
+	globalPace := scanevents.Pace{
+		RateLimit:   opts.RateLimit,
+		Concurrency: opts.Concurrency,
+		MaxPerHost:  opts.MaxPerHost,
+	}
+	if settings == nil {
+		return globalPace, nil
+	}
+	table := map[string]scanevents.Pace{}
+	for _, phase := range paceEnabledPhases(opts) {
+		resolved := settings.ScanningPace.ResolvePhase(phase)
+		entry := scanevents.Pace{
+			RateLimit:   resolved.RateLimit,
+			Concurrency: resolved.Concurrency,
+			MaxPerHost:  resolved.MaxPerHost,
+		}
+		if entry != globalPace {
+			table[phase] = entry
+		}
+	}
+	if len(table) == 0 {
+		return globalPace, nil
+	}
+	return globalPace, table
+}

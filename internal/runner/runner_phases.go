@@ -84,6 +84,9 @@ func (r *Runner) RunNativeScan() (err error) {
 	// single requester), so the notice fires once per host regardless of which
 	// requester — heuristics, auth prep, discovery — first tripped the pre-arm.
 	r.attachWAFPacingNotifier(infra.hostLimiter)
+	// Route every finding the writer emits onto the machine event stream. One
+	// seam rather than one per OnResult callback; see attachEventObserver.
+	r.attachEventObserver()
 
 	// Initialize scan logger (must happen before printScanConfig so the tee captures it)
 	r.scanLogger = database.NewScanLogger(r.repository, infra.scanUUID)
@@ -326,7 +329,23 @@ func (r *Runner) RunNativeScan() (err error) {
 	return nil
 }
 
-func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phase NativePhase) error {
+func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phase NativePhase) (err error) {
+	// One tracker per phase, wrapped around the whole switch rather than
+	// duplicated into its nine arms: the arms disagree about what an error means
+	// (most log and continue, discovery and seed return), and a per-arm emitter
+	// would have to restate that disagreement nine times. Here the tracker sees
+	// the same outcome the caller does.
+	//
+	// r.currentPhase is set so the module result callbacks — which run on worker
+	// goroutines with no idea which phase they belong to — can count a finding
+	// against the phase that produced it.
+	tracker := r.beginPhase(ctx, string(phase), infra.httpRequester)
+	r.currentPhase.Store(tracker)
+	defer func() {
+		r.currentPhase.Store((*phaseTracker)(nil))
+		tracker.finish(ctx, err)
+	}()
+
 	switch phase {
 	case PhaseHeuristicsCheck:
 		r.setPhaseTag("heuristics")
@@ -335,6 +354,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		if err != nil {
 			zap.L().Error("HeuristicsCheck phase failed", zap.Error(err))
 			r.scanLogger.Error("heuristics", "phase failed: "+err.Error())
+			tracker.noteError(err)
 		} else {
 			r.heuristicsResults = results
 			r.scanLogger.Info("heuristics", "phase completed")
@@ -345,6 +365,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		if err := r.runPortSweepPhase(ctx, infra); err != nil {
 			zap.L().Error("PortSweep phase failed", zap.Error(err))
 			r.scanLogger.Error("port-sweep", "phase failed: "+err.Error())
+			tracker.noteError(err)
 		} else {
 			r.scanLogger.Info("port-sweep", "phase completed")
 		}
@@ -354,6 +375,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		if err := r.runExternalHarvestPhase(ctx, infra); err != nil {
 			zap.L().Error("ExternalHarvest phase failed", zap.Error(err))
 			r.scanLogger.Error("harvest", "phase failed: "+err.Error())
+			tracker.noteError(err)
 		} else {
 			r.scanLogger.Info("harvest", "phase completed")
 		}
@@ -363,6 +385,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		if err := r.runSpideringPhase(ctx, infra); err != nil {
 			zap.L().Error("Spidering phase failed", zap.Error(err))
 			r.scanLogger.Error("spidering", "phase failed: "+err.Error())
+			tracker.noteError(err)
 		} else {
 			r.scanLogger.Info("spidering", "phase completed")
 		}
@@ -371,6 +394,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		r.scanLogger.Info("discovery", "phase started")
 		if err := r.runDiscoveryPhase(ctx, infra); err != nil {
 			r.scanLogger.Error("discovery", "phase failed: "+err.Error())
+			tracker.noteError(err)
 			return fmt.Errorf("discovery phase failed: %w", err)
 		}
 		r.scanLogger.Info("discovery", "phase completed")
@@ -383,6 +407,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		if err := r.runTargetedReSpiderPhase(ctx, infra); err != nil {
 			zap.L().Error("Targeted re-spider phase failed", zap.Error(err))
 			r.scanLogger.Error("respider", "phase failed: "+err.Error())
+			tracker.noteError(err)
 		} else {
 			r.scanLogger.Info("respider", "phase completed")
 		}
@@ -400,6 +425,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		if err := r.runKnownIssueScanPhase(ctx, infra); err != nil {
 			zap.L().Error("KnownIssueScan phase failed", zap.Error(err))
 			r.scanLogger.Error("known-issue-scan", "phase failed: "+err.Error())
+			tracker.noteError(err)
 		} else {
 			r.scanLogger.Info("known-issue-scan", "phase completed")
 			r.deduplicateFindings(ctx, "KnownIssueScan")
@@ -415,6 +441,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 			if err := r.runDynamicAssessmentPhase(ctx, infra, activeModules, passiveModules); err != nil {
 				zap.L().Error("Dynamic-assessment phase failed", zap.Error(err))
 				r.scanLogger.Error("dynamic-assessment", "phase failed: "+err.Error())
+				tracker.noteError(err)
 			} else {
 				r.scanLogger.Info("dynamic-assessment", "phase completed")
 			}
@@ -828,7 +855,7 @@ func (r *Runner) runKnownIssueScanPhase(ctx context.Context, infra *phaseInfra) 
 	// curtailment, not a failure.
 	nucleiCtx, nucleiCancel := phaseDeadline(ctx, kisMaxDuration)
 	defer nucleiCancel()
-	if err := r.runKnownIssueScan(nucleiCtx, onResult, inScopeHosts); err != nil {
+	if err := r.runKnownIssueScan(nucleiCtx, infra, onResult, inScopeHosts); err != nil {
 		if nucleiCtx.Err() != nil {
 			zap.L().Warn("KnownIssueScan: Nuclei scan stopped at phase max_duration", zap.Error(nucleiCtx.Err()))
 		} else {
@@ -1703,7 +1730,7 @@ func (r *Runner) waitForNewRecords(ctx context.Context, scanUUID string, pollInt
 // inScopeHosts restricts targets to the current scan's in-scope origins (scheme/host/port;
 // empty = project-wide pass, mirroring DynamicAssessment), so records left in the project
 // by prior scans of other origins don't leak into this scan's targets.
-func (r *Runner) runKnownIssueScan(ctx context.Context, onResult func(*output.ResultEvent), inScopeHosts []database.HostTarget) error {
+func (r *Runner) runKnownIssueScan(ctx context.Context, infra *phaseInfra, onResult func(*output.ResultEvent), inScopeHosts []database.HostTarget) error {
 	if r.repository == nil {
 		return fmt.Errorf("known-issue-scan: database repository required")
 	}
@@ -1744,6 +1771,12 @@ func (r *Runner) runKnownIssueScan(ctx context.Context, onResult func(*output.Re
 		Headers:     r.options.Headers,
 		OnResult:    onResult,
 		Repository:  r.repository,
+		// nuclei owns its own HTTP stack, so it cannot page through the shared
+		// requester. These hooks give it the next best thing: the shared
+		// requester's block detection and the limiter's per-host verdict, so this
+		// phase stops being the one active phase that can neither slow down nor
+		// say that it was blocked.
+		Edge: r.knownIssueScanEdge(infra),
 	}
 
 	// Apply YAML settings

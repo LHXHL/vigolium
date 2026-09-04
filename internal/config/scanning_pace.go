@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -107,21 +108,52 @@ func (p *PhasePace) MaxDurationParsed() time.Duration {
 	return d
 }
 
+// Section returns the per-phase pace slot for a canonical phase id, or nil when
+// the phase has none.
+//
+// It is the ONE place the phase→section vocabulary lives. It used to be spelled
+// out in ResolvePhase and again in Validate, and a third copy in the CLI
+// promptly disagreed with both — it said "external-harvest" where these said
+// "external_harvester", so a per-phase override for that phase was written to
+// the struct and then never read back. Both spellings are accepted here for
+// exactly that reason: `external_harvester` is the YAML key operators already
+// have in their config files, and `external-harvest` is the canonical phase id
+// every other surface (--only/--skip, `run <phase>`, the event stream) uses.
+func (c *ScanningPaceConfig) Section(phase string) *PhasePace {
+	switch phase {
+	case "discovery":
+		return &c.Discovery
+	case "spidering":
+		return &c.Spidering
+	case "known-issue-scan":
+		return &c.KnownIssueScan
+	case "external-harvest", "external_harvester":
+		return &c.ExternalHarvester
+	case "dynamic-assessment":
+		return &c.DynamicAssessment
+	default:
+		return nil
+	}
+}
+
+// PhaseSectionNames lists the canonical phase ids Section accepts, sorted. It
+// derives from Section itself, so a caller's list of paceable phases cannot
+// drift from the sections that actually exist.
+func PhaseSectionNames() []string {
+	names := []string{
+		"discovery", "spidering", "known-issue-scan",
+		"external-harvest", "dynamic-assessment",
+	}
+	sort.Strings(names)
+	return names
+}
+
 // ResolvePhase merges common values with per-phase overrides for the named phase.
 // Non-zero per-phase values win over common values.
 func (c *ScanningPaceConfig) ResolvePhase(phase string) ResolvedPhasePace {
 	var pp PhasePace
-	switch phase {
-	case "discovery":
-		pp = c.Discovery
-	case "spidering":
-		pp = c.Spidering
-	case "known-issue-scan":
-		pp = c.KnownIssueScan
-	case "external_harvester":
-		pp = c.ExternalHarvester
-	case "dynamic-assessment":
-		pp = c.DynamicAssessment
+	if section := c.Section(phase); section != nil {
+		pp = *section
 	}
 
 	resolved := ResolvedPhasePace{
@@ -198,14 +230,8 @@ func (c *ScanningPaceConfig) Validate() error {
 		}
 	}
 
-	phases := map[string]*PhasePace{
-		"discovery":          &c.Discovery,
-		"spidering":          &c.Spidering,
-		"known-issue-scan":   &c.KnownIssueScan,
-		"external_harvester": &c.ExternalHarvester,
-		"dynamic-assessment": &c.DynamicAssessment,
-	}
-	for name, pp := range phases {
+	for _, name := range PhaseSectionNames() {
+		pp := c.Section(name)
 		if pp.Concurrency < 0 {
 			return fmt.Errorf("scanning_pace.%s.concurrency must be >= 0", name)
 		}

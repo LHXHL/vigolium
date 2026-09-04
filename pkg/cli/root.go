@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -191,9 +192,17 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 			return fmt.Errorf("--project-uuid and --project-name are mutually exclusive")
 		}
 
+		// Fold the retiring -S on server/ingest into --scan-on-receive before
+		// anything reads it. Must run before applyDBPathEnv, which asks whether
+		// the command wants a throwaway database and would otherwise see a
+		// half-resolved flag state.
+		applyDeprecatedScanOnReceive(cmd)
+
 		// Env var fallback for --db (and -S on the read commands), so a shell
 		// can be pinned to one session database.
-		applyDBPathEnv(cmd)
+		if err := applyDBPathEnv(cmd); err != nil {
+			return err
+		}
 
 		// Initialize Vigolium on first run (skip when `init` is invoked explicitly)
 		if cmd.Name() != "init" {
@@ -289,6 +298,7 @@ func init() {
 	pf.BoolVar(&globalSkipDependencyCheck, "skip-dependency-check", false, "Skip the first-run dependency check (chromium, nuclei templates) and stamp ~/.vigolium/initialized immediately")
 	pf.BoolVar(&globalSoftFail, "soft-fail", false, "Always exit 0, even when a command fails (error is still printed to stderr; keeps wrapping scripts/CI from being interrupted)")
 	pf.IntVar(&globalWidth, "width", 70, "Maximum column width for table output")
+	registerStatelessRootFlag(rootCmd)
 
 	pf.StringVar(&globalScanUUID, "scan-uuid", "", "Pin scan UUID for this session (use to sync results across nodes; defaults to a freshly-minted UUID)")
 	pf.StringVar(&globalFormat, "format", "console", "Output format (comma-separated for multiple): console, jsonl, html, sarif, sqlite (needs -S), fs (alias: file-system; flat traffic/finding tree)")
@@ -332,6 +342,12 @@ func applyScanMemLimit(cmd *cobra.Command) {
 }
 
 func Execute() {
+	// Give every command that lacks one a local -S/--stateless, so the letter
+	// means one thing across the whole surface. Done here rather than in init:
+	// it walks the finished command tree, and every subcommand must already be
+	// registered for the walk to reach it.
+	addStatelessShorthand(rootCmd)
+
 	// ExecuteC (not Execute) so we get the command that actually ran back —
 	// the agent-family setup hint below needs to know which one failed.
 	cmd, err := rootCmd.ExecuteC()
@@ -355,10 +371,41 @@ func Execute() {
 		// bound during Execute()'s arg parsing, so its value is populated here
 		// for every error except a flag-parse failure (which stays non-zero).
 		if globalSoftFail {
-			os.Exit(0)
+			os.Exit(ExitSuccess)
 		}
-		os.Exit(1)
+		code := classifyExitCode(err)
+		// A flag-parse failure never reaches a RunE, so it cannot be wrapped as a
+		// usageError at its source; cobra surfaces it as a plain error from
+		// ExecuteC with the command still unresolved. Recognising it here is what
+		// keeps "unknown flag" at 2 instead of collapsing into the generic 1.
+		if code == ExitError && isFlagParseError(err) {
+			code = ExitUsageError
+		}
+		os.Exit(code)
 	}
+}
+
+// isFlagParseError recognises the errors cobra/pflag raise for a malformed
+// command line. Matched on message prefix because pflag returns bare
+// fmt.Errorf values with no sentinel to compare against; the set is small and
+// stable, and a miss only means the old exit code (1), never a wrong success.
+func isFlagParseError(err error) bool {
+	msg := err.Error()
+	for _, prefix := range []string{
+		"unknown flag",
+		"unknown shorthand flag",
+		"unknown command",
+		"invalid argument",
+		"flag needs an argument",
+		"bad flag syntax",
+		"accepts ",
+		"required flag",
+	} {
+		if strings.HasPrefix(msg, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveModules resolves globalModules patterns and globalModuleTags into exact

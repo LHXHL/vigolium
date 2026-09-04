@@ -110,7 +110,7 @@ func runKitJWTCrack(cmd *cobra.Command, args []string) error {
 	}
 
 	if kitJWTFailOnCrack && ok {
-		os.Exit(3)
+		os.Exit(ExitFuzzMatch)
 	}
 	return nil
 }

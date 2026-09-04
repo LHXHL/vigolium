@@ -207,6 +207,9 @@ func init() {
 
 func runTraffic(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
+	// -n governs the listing page size; the import path needs to know whether the
+	// operator asked for that number or merely inherited the default.
+	limitTyped := cmd.Flags().Changed("limit")
 	if trafficSaveToVigoliumDB && strings.TrimSpace(trafficBurpBridgeURL) == "" {
 		return fmt.Errorf("--save-to-vigolium-db requires --burp-bridge-url")
 	}
@@ -322,17 +325,29 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 			if !burpbridge.Eligible(filters) {
 				return fmt.Errorf("the active source/risk/remark filters exclude live Burp traffic")
 			}
+			// The -n/--limit default of 100 bounds the BRIDGE query too, so a pull
+			// without -a used to silently import the first 100 records of a host's
+			// history and report nothing unusual. Silent truncation is tolerable on
+			// a LISTING; on an IMPORT it leaves the destination store quietly
+			// incomplete, and everything downstream that reads it — a DAST pass, a
+			// fuzz target list, a proof engine's replay — works from a fraction of
+			// the evidence without knowing it. So the write path gets its own limit
+			// (importLimitFor), which defaults to unlimited and only narrows when
+			// the operator typed -n on purpose.
+			importFilters := filters
+			importFilters.Limit = importLimitFor(filters.Limit, limitTyped)
 			result, err := importBurpTrafficToDB(
 				ctx,
 				database.NewRepository(db),
 				trafficBurpBridgeURL,
-				burpbridge.QueryFromFilters(filters, false),
+				burpbridge.QueryFromFilters(importFilters, false),
 				filters.ProjectUUID,
 			)
 			if err != nil {
 				return fmt.Errorf("import Burp traffic: %w", err)
 			}
 			writeBurpImportResult(os.Stderr, trafficBurpBridgeURL, result, false)
+			warnImportTruncated(result, importFilters.Limit)
 		}
 		tuiActive, tuiErr := tui.Active(trafficTUI, trafficNoTUI, globalJSON)
 		if tuiErr != nil {

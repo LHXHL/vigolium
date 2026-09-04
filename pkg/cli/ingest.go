@@ -62,12 +62,16 @@ func init() {
 	flags := ingestCmd.Flags()
 
 	flags.StringVarP(&ingestOpts.ServerURL, "server", "s", "", "Server URL for remote ingestion (omit for local mode)")
-	flags.BoolVarP(&globalScanOnReceive, "scan-on-receive", "S", false, "Continuously scan new HTTP records as they arrive in the database")
+	registerScanOnReceiveFlags(flags, "Continuously scan new HTTP records as they arrive in the database")
 	flags.BoolVar(&globalFullNativeScanOnReceive, "full-native-scan-on-receive", false, "Run the full native scan pipeline (discovery + spidering + dynamic-assessment) continuously on received records, instead of dynamic-assessment only")
 	flags.BoolVar(&globalDisableFetchResponse, "disable-fetch-response", false, "Store requests without fetching responses during ingestion")
 	flags.StringVar(&globalScopeOrigin, "scope-origin", "", "Host scope strictness: all, relaxed, balanced, strict")
 
 	registerInputSourceFlags(flags)
+	registerIngestBatchFlags(flags)
+	// Make a repeated -i accumulate rather than overwrite. Installed after the
+	// flag exists, and only on ingest: `scan -i` is single-source by design.
+	installIngestRepeatableInput(ingestCmd)
 	registerHTTPClientFlags(flags)
 	registerScanModuleFlags(flags)
 	registerSpecFlags(flags)
@@ -123,14 +127,44 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--target/-t and --spec-url are mutually exclusive")
 	}
 
+	// Resolve the full source list (repeated -i plus --dir). One process handles
+	// all of them: N subprocesses against one SQLite file is the shape this
+	// removes, not a concurrency problem to tune.
+	sources, srcErr := ingestInputSources(ingestOpts.Input)
+	if srcErr != nil {
+		return asUsageError(srcErr)
+	}
+
 	// Branch: remote vs local mode
+	run := runLocalIngest
 	if ingestOpts.ServerURL != "" {
 		if globalScanOnReceive {
 			zap.L().Warn("--scan-on-receive/-S is ignored in remote mode; the server handles scanning independently")
 		}
-		return runRemoteIngest(cmd, args)
+		run = runRemoteIngest
 	}
-	return runLocalIngest(cmd, args)
+
+	if len(sources) <= 1 {
+		return run(cmd, args)
+	}
+
+	// Multi-source: run the same path once per source, swapping only the input.
+	// A failing source does not discard its siblings — the point of a batch is
+	// that one bad HAR in fifty does not cost the other forty-nine — but the
+	// command still exits non-zero and names how many failed.
+	announceIngestBatch(sources)
+	failed := 0
+	for _, src := range sources {
+		ingestOpts.Input = src
+		if err := run(cmd, args); err != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "%s ingest %s: %v\n", terminal.WarnPrefix(), src, err)
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d ingest source(s) failed", failed, len(sources))
+	}
+	return nil
 }
 
 // runRemoteIngest sends requests to a remote vigolium server (existing behavior).
@@ -483,14 +517,13 @@ func runLocalIngest(cmd *cobra.Command, _ []string) error {
 
 		total := count + directSaved
 		if globalJSON {
-			out := map[string]interface{}{
-				"records_ingested": total,
-				"duration_ms":      time.Since(startTime).Milliseconds(),
-				"source":           inputFormat,
-			}
-			encoder := json.NewEncoder(os.Stdout)
-			encoder.SetIndent("", "  ")
-			return encoder.Encode(out)
+			env := newAgentEnvelope("ingest", "", nil, int64(total), 0, 0)
+			env.DBPath = resolvedReadDBPath()
+			env.With("records_ingested", total).
+				With("duration_ms", time.Since(startTime).Milliseconds()).
+				With("source", inputFormat).
+				WithQuery(fmt.Sprintf("vigolium traffic --json --source %s -n 20", inputFormat))
+			return writeAgentJSON(env)
 		}
 
 		elapsed := time.Since(startTime).Seconds()
@@ -535,14 +568,14 @@ func runLocalIngest(cmd *cobra.Command, _ []string) error {
 		summarySource = string(detectedFormat)
 	}
 	if globalJSON {
-		out := map[string]interface{}{
-			"records_ingested": totalIngested,
-			"duration_ms":      time.Since(startTime).Milliseconds(),
-			"source":           summarySource,
-		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(out)
+		env := newAgentEnvelope("ingest", "", nil, totalIngested, 0, 0)
+		env.DBPath = resolvedReadDBPath()
+		env.With("records_ingested", totalIngested).
+			With("duration_ms", time.Since(startTime).Milliseconds()).
+			With("source", summarySource).
+			// The obvious next step after an ingest is to look at what landed.
+			WithQuery(fmt.Sprintf("vigolium traffic --json --source %s -n 20", summarySource))
+		return writeAgentJSON(env)
 	}
 
 	elapsed := time.Since(startTime).Seconds()

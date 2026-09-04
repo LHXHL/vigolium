@@ -50,8 +50,28 @@ func GetDB(configPath, dbPath string) (*database.DB, error) {
 	}
 
 	dbConn = db
+	openedDBPath = config.ExpandPath(settings.Database.SQLite.Path)
+	if settings.Database.Driver != "sqlite" {
+		openedDBPath = settings.Database.Driver
+	}
 	return db, nil
 }
+
+// openedDBPath records which database the cached connection actually opened.
+//
+// The open order is --db → $VIGOLIUM_DB_PATH → config → the built-in default,
+// and that last rung is ONE SHARED FILE under a single default project — so a
+// command that falls through to it is reading every target that ever landed
+// there. That is a cross-engagement mixing hazard a consumer cannot detect from
+// the outside, which is why the resolved path is reported in every -j envelope
+// (and in scan.started): a driver can then assert the store it read rather than
+// trusting that its pin survived a subprocess chain.
+var openedDBPath string
+
+// OpenedDBPath returns the resolved path of the database currently open, or ""
+// before any open. For a non-SQLite driver it returns the driver name, since
+// there is no single file to name.
+func OpenedDBPath() string { return openedDBPath }
 
 // CloseDatabaseOnExit closes the cached connection if open. Safe to defer.
 func CloseDatabaseOnExit() {

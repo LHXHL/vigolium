@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -70,10 +71,16 @@ func statelessWriteRequested(cmd *cobra.Command) bool {
 // stateless read stats its source and fails when it is missing, so a session
 // whose database has not been written yet would otherwise error on the first
 // `vigolium finding` instead of printing an empty table.
-func applyDBPathEnv(cmd *cobra.Command) {
+//
+// Returns an error when the pinned path is set but unusable. A pin that cannot
+// be honored must NOT silently fall through to the built-in default: that
+// default is one shared file under one default project, so the fall-through
+// quietly redirects an engagement's reads and writes into a store holding every
+// other target that ever landed there. Failing is the only safe answer.
+func applyDBPathEnv(cmd *cobra.Command) error {
 	raw := strings.TrimSpace(os.Getenv(dbPathEnvVar))
 	if raw == "" {
-		return
+		return nil
 	}
 
 	// An explicit --db wins. Say so when the two disagree — silently preferring
@@ -84,16 +91,22 @@ func applyDBPathEnv(cmd *cobra.Command) {
 			dbPathEnvNotice(fmt.Sprintf("--db overrides %s (using %s)",
 				terminal.BoldCyan(dbPathEnvVar), terminal.BoldYellow(terminal.ShortenHome(explicit))))
 		}
-		return
+		return nil
 	}
 
 	if statelessWriteRequested(cmd) {
 		dbPathEnvNotice(fmt.Sprintf("%s: ignoring %s (results go to a temporary database)",
 			terminal.BoldCyan("--stateless"), terminal.BoldCyan(dbPathEnvVar)))
-		return
+		return nil
 	}
 
 	path := config.ExpandPath(raw)
+	if err := dbPathEnvUsable(path); err != nil {
+		return fmt.Errorf("%s=%s is unusable (%w).\n"+
+			"Refusing to fall back to the default database: it is one shared file holding every target that has ever been scanned into it, "+
+			"so a silent redirect there would mix this session with unrelated work. Fix the path or unset %s",
+			dbPathEnvVar, raw, err, dbPathEnvVar)
+	}
 	globalDB = path
 
 	notice := fmt.Sprintf("%s → %s",
@@ -103,6 +116,35 @@ func applyDBPathEnv(cmd *cobra.Command) {
 		notice += terminal.Gray(" (reads: project scoping off)")
 	}
 	dbPathEnvNotice(notice)
+	return nil
+}
+
+// dbPathEnvUsable reports why the pinned path cannot back a database, or nil.
+//
+// A path that does not exist yet is FINE — the first scan of a session creates
+// it, and refusing there would make the pin unusable for its main purpose. What
+// is not fine is a path whose parent directory cannot be created or written:
+// that one can never become a database, so honoring the pin is impossible and
+// the fall-through is exactly what must not happen.
+func dbPathEnvUsable(path string) error {
+	if info, err := os.Stat(path); err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("path is a directory")
+		}
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("cannot create parent directory %s: %w", dir, err)
+	}
+	probe, err := os.OpenFile(filepath.Join(dir, ".vigolium-write-probe"), os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("parent directory %s is not writable: %w", dir, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return nil
 }
 
 // dbPathEnvNotice prints one informational line to stderr, staying quiet in the

@@ -82,6 +82,12 @@ type Options struct {
 	// progress ticker is suppressed (it's repetitive noise in a file). Set by the
 	// parent on each child via the hidden --captured-console flag; never user-set.
 	CapturedConsole bool
+	// Events selects the machine event stream written to stdout ("ndjson", or ""
+	// for none). It is orthogonal to OutputFormats: formats decide what a scan
+	// LEAVES BEHIND, Events decides what it REPORTS WHILE RUNNING. The human
+	// console keeps stderr either way, so a driver reads the stream off stdout
+	// with `2>/dev/null` and an interactive operator sees no difference.
+	Events string
 
 	Timeout time.Duration
 	Retries int
@@ -219,6 +225,11 @@ type Options struct {
 	ConcurrencyExplicitlySet bool
 	// MaxPerHostExplicitlySet tracks whether the CLI --max-per-host flag was explicitly provided
 	MaxPerHostExplicitlySet bool
+	// RateLimitExplicitlySet tracks whether the CLI --rate-limit flag was
+	// explicitly provided. RateLimit itself always carries a value now (the
+	// documented default applies when the flag is absent), so "did the operator
+	// ask for this rate" can no longer be read off the value.
+	RateLimitExplicitlySet bool
 
 	// RateLimit is the global outbound requests-per-second cap for native scanning,
 	// set only when the operator explicitly passes --rate-limit (0 = unlimited, the

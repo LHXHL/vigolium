@@ -97,7 +97,16 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 		settings = config.DefaultSettings()
 	}
 
-	db, err := getDB()
+	// openReadDB, not getDB: `vigolium log` is a read command, so a shell pinned
+	// with $VIGOLIUM_DB_PATH (or an explicit -S --db) must reach that session's
+	// database with project scoping off, exactly like finding/traffic. Reading
+	// through getDB was what left `log` outside the pinning contract — and what
+	// made -S an "unknown shorthand flag" there.
+	//
+	// Records:true because `log` reads scans, agentic_scans and scan_logs and
+	// never touches http_records; under --glob-db that skip is the difference
+	// between merging a session listing and copying every file's whole corpus.
+	db, err := openReadDB(globDBSkipSet{Records: true})
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -303,10 +312,19 @@ func showLogForUUID(uuid string, followExplicit bool) error {
 		return err
 	}
 
-	// Auto-follow when the session is still running, unless the user explicitly
-	// set --follow=false on the command line.
+	// Auto-follow when the session is still running — but only for an interactive
+	// reader.
+	//
+	// A scan reaped by a deadline or SIGKILL leaves its row saying "running"
+	// forever, so an omitted --follow used to park the read until the CALLER's
+	// own timeout, on precisely the runs that already timed out. That turned a
+	// bounded log read into a multi-minute stall on the sweeps that most needed
+	// reading. Two gates fix it: a non-TTY stdout (a pipe — i.e. a program, which
+	// wants the log and an exit) never auto-follows, and a row whose scan is no
+	// longer live (logSourceIsStale) is not treated as running even on a TTY.
+	// An explicitly typed --follow still wins in both directions.
 	follow := logFollow
-	if !followExplicit && src.status == "running" {
+	if !followExplicit && src.status == "running" && terminal.IsTerminal() && !globalJSON && !logSourceIsStale(src) {
 		follow = true
 	}
 
@@ -340,6 +358,11 @@ type logSource struct {
 	transcriptPath string // absolute path to transcript.jsonl (agentic only, "" when absent)
 	fromDB         bool   // true when falling back to scan_logs table
 	scanUUID       string // UUID used for DB queries
+	// updatedAt is the row's own last-write time, the liveness signal used when
+	// there is no log file to stat. A status column alone cannot say whether a
+	// "running" scan is still running — a process killed by a deadline or SIGKILL
+	// leaves that column saying running forever. See logSourceIsStale.
+	updatedAt time.Time
 }
 
 func (s *logSource) originLabel() string {
@@ -359,7 +382,7 @@ func resolveLogSource(uuid string, settings *config.Settings) (*logSource, error
 	nativeLog := resolveSessionLogPath(nativeDir)
 	agenticLog := resolveSessionLogPath(agenticDir)
 
-	db, dbErr := getDB()
+	db, dbErr := openReadDB(globDBSkipSet{Records: true})
 	var repo *database.Repository
 	ctx := context.Background()
 	if dbErr == nil {
@@ -369,30 +392,37 @@ func resolveLogSource(uuid string, settings *config.Settings) (*logSource, error
 		repo = database.NewRepository(db)
 	}
 
-	nativeStatus := func() string {
+	nativeStatus := func() (string, time.Time) {
 		if repo == nil {
-			return ""
+			return "", time.Time{}
 		}
 		if scan, err := repo.GetScanByUUID(ctx, uuid); err == nil && scan != nil {
-			return scan.Status
+			return scan.Status, scan.UpdatedAt
 		}
-		return ""
+		return "", time.Time{}
 	}
-	agenticStatus := func() string {
+	agenticStatus := func() (string, time.Time) {
 		if repo == nil {
-			return ""
+			return "", time.Time{}
 		}
 		if run, err := repo.GetAgenticScan(ctx, uuid); err == nil && run != nil {
-			return run.Status
+			// AgenticScan has no updated_at; StartedAt is the closest liveness
+			// anchor it carries. That makes the staleness window measure "how
+			// long since the run began" for a file-less agentic session, which
+			// is conservative in the right direction: it only ever declines to
+			// auto-follow, never forces one.
+			return run.Status, run.StartedAt
 		}
-		return ""
+		return "", time.Time{}
 	}
 
 	if nativeLog != "" {
-		return &logSource{kind: "native", status: nativeStatus(), filePath: nativeLog, scanUUID: uuid}, nil
+		status, updated := nativeStatus()
+		return &logSource{kind: "native", status: status, updatedAt: updated, filePath: nativeLog, scanUUID: uuid}, nil
 	}
 	if agenticLog != "" {
-		return &logSource{kind: "agentic", status: agenticStatus(), filePath: agenticLog, transcriptPath: resolveTranscriptPath(agenticDir), scanUUID: uuid}, nil
+		status, updated := agenticStatus()
+		return &logSource{kind: "agentic", status: status, updatedAt: updated, filePath: agenticLog, transcriptPath: resolveTranscriptPath(agenticDir), scanUUID: uuid}, nil
 	}
 
 	// Neither convention path (~/.vigolium/agent-sessions/<uuid>/) has a
@@ -496,6 +526,9 @@ func streamLogFile(path string, follow bool) error {
 		if _, seekErr := f.Seek(startOffset, io.SeekStart); seekErr != nil {
 			return fmt.Errorf("failed to seek log file: %w", seekErr)
 		}
+		// WAF notices fire early, so the tail is the wrong end of the log for
+		// them. Surface any that the window elided rather than requiring --full.
+		printElidedNotices(path, startOffset)
 	}
 
 	writer := os.Stdout
@@ -644,7 +677,7 @@ func streamLogFromDB(src *logSource, follow bool) error {
 		tailLines = -1
 	}
 
-	db, err := getDB()
+	db, err := openReadDB(globDBSkipSet{Records: true})
 	if err != nil {
 		return err
 	}

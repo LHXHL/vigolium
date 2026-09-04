@@ -82,6 +82,14 @@ Requires **Go 1.27+** and **bun 1.3.11+**. See [HACKING.md](HACKING.md#build-and
 |:---:|:---:|
 | ![Native scan](https://github.com/vigolium/docs/blob/main/images/vigolium-cli-native-scan.png?raw=true) | ![Agentic Scan](https://github.com/vigolium/docs/blob/main/images/vigolium-cli-agent-audit-1.png?raw=true) |
 
+## Sponsor
+
+<p align="center">
+  <a href="https://www.daytona.io"><img alt="Daytona" src="https://github.com/vigolium/docs/blob/main/images/sponsors/daytona.png?raw=true" height="28" /></a>
+  <br />
+  <sub>Thank you to <a href="https://www.daytona.io">Daytona</a> for sponsoring the sandbox infrastructure</sub>
+</p>
+
 ## Key Features
 
 ### Native Scan

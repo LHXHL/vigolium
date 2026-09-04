@@ -184,7 +184,7 @@ func wordlistDir() string {
 }
 
 // resolvedDiscoveryWordlists holds the effective deparos wordlist paths after
-// layering: YAML config → CLI --fuzz-wordlist → embedded defaults. The two
+// layering: YAML config → CLI --discovery-wordlist → embedded defaults. The two
 // usingX flags drive the header label so it can distinguish operator-supplied
 // lists from the bundled fallbacks.
 type resolvedDiscoveryWordlists struct {
@@ -194,7 +194,7 @@ type resolvedDiscoveryWordlists struct {
 }
 
 // resolveDiscoveryWordlists computes the wordlist paths feeding deparos. Operator
-// config (YAML, then the --fuzz-wordlist CLI override) wins; any gap is filled
+// config (YAML, then the --discovery-wordlist CLI override) wins; any gap is filled
 // from the embedded defaults — short file/dir lists on every scan, and the heavy
 // long lists plus fuzz.txt (which deparos turns into a full /FUZZ brute of the
 // root) only at --intensity deep. This is shared by buildDeparosConfig and the
@@ -217,7 +217,7 @@ func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 		w.longDir = expand(wl.LongDirPath)
 		w.fuzz = expand(wl.FuzzWordlistPath)
 	}
-	// --fuzz-wordlist is an explicit operator override and wins over YAML.
+	// --discovery-wordlist is an explicit operator override and wins over YAML.
 	if r.options.FuzzWordlistPath != "" {
 		w.fuzz = config.ExpandPath(r.options.FuzzWordlistPath)
 		w.usingConfigured = true
@@ -266,13 +266,13 @@ func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 // discoveryFuzzingState reports whether deparos FUZZ fuzzing is enabled for this
 // run, with a short reason for the header. Fuzzing makes deparos auto-append
 // /FUZZ and brute-force the (large) fuzz wordlist at each directory, so it is ON
-// only when the operator clearly wants it: --fuzz-wordlist supplied, --intensity
+// only when the operator clearly wants it: --discovery-wordlist supplied, --intensity
 // deep, or discovery selected as an explicit phase (e.g. `vigolium run discover`,
 // which sets Options.OnlyPhase). It stays OFF on balanced/lite full scans.
 func (r *Runner) discoveryFuzzingState() (bool, string) {
 	switch {
 	case r.options.FuzzWordlistPath != "":
-		return true, "via --fuzz-wordlist"
+		return true, "via --discovery-wordlist"
 	case strings.EqualFold(r.options.Intensity, "deep"):
 		return true, "intensity=deep"
 	case r.options.OnlyPhase != "" && OnlyPhaseSet(r.options.OnlyPhase)["discovery"]:
@@ -280,7 +280,7 @@ func (r *Runner) discoveryFuzzingState() (bool, string) {
 	case r.autoFuzzDiscovery:
 		return true, "auto-enabled (low-yield/SSO target)"
 	default:
-		return false, "off on balanced/lite full scans (enable via `run discover`, --intensity deep, or --fuzz-wordlist)"
+		return false, "off on balanced/lite full scans (enable via `run discover`, --intensity deep, or --discovery-wordlist)"
 	}
 }
 
@@ -485,7 +485,7 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 		// MaxDuration is resolved via scanning_pace (applied to r.options by scan.go)
 	}
 
-	// Resolve wordlist paths: YAML config → CLI --fuzz-wordlist → embedded
+	// Resolve wordlist paths: YAML config → CLI --discovery-wordlist → embedded
 	// defaults (short file/dir always; long lists + fuzz.txt only at --intensity
 	// deep). Done here, outside the settings block above, so the embedded defaults
 	// still apply when no YAML config is loaded.
