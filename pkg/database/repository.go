@@ -110,6 +110,15 @@ func appendUniqueEvidence(existing []string, primary string, candidates ...strin
 		seen[c] = struct{}{}
 		out = append(out, c)
 	}
+	// The cap belongs here, with the constant, because this is the only function
+	// that grows the list. Leaving it to each caller is what let
+	// appendRecordsToFinding accumulate evidence without bound while its three
+	// sibling merge sites all capped. A caller comparing len(out) to len(existing)
+	// to decide whether to write also gets the right answer for free: an already-
+	// capped list comes back unchanged, so it issues no pointless UPDATE.
+	if len(out) > maxAdditionalEvidence {
+		out = out[:maxAdditionalEvidence]
+	}
 	return out
 }
 

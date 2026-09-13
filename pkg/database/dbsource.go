@@ -25,6 +25,7 @@ const (
 	RecordSourceIngestProxy  = "ingest-proxy"  // transparent ingest proxy capture
 	RecordSourceIngestCLI    = "ingest-cli"    // `vigolium ingest ...` command
 	RecordSourceScanner      = "scanner"       // executor feedback re-injection
+	RecordSourceProbe        = "probe"         // `vigolium run probe` host sweep (one request per target, no fuzzing)
 	RecordSourceFinding      = "finding"       // request/response attached to a finding
 	RecordSourceBurp         = "burp"          // Burp Suite, via the loopback bridge or a push to /api/ingest-http
 	RecordSourceCaido        = "caido"         // Caido, via the loopback bridge or a push to /api/ingest-http
@@ -786,12 +787,10 @@ func (s *RiskPrioritizedDBInputSource) fillNextPageLocked(ctx context.Context) (
 		last := rows[len(rows)-1]
 
 		// Coalesce the page in priority order; survivors are the UUIDs to scan.
-		surviving := make([]string, 0, len(rows))
-		for i := range rows {
-			if s.coalescer.keep(rows[i].desc()) {
-				surviving = append(surviving, rows[i].UUID)
-			}
-		}
+		// Selection does not mutate the coalescer — choosing survivors consumes
+		// per-shape sample slots, and the fetch below can still fail, so the plan is
+		// only committed once this page is actually served. See keepPlan.
+		surviving, plan := s.coalescer.selectKeepers(rows)
 		if len(surviving) == 0 {
 			// Whole page coalesced away — nothing to fetch, so it's safe to step the
 			// keyset past it and pull the next page.
@@ -825,9 +824,16 @@ func (s *RiskPrioritizedDBInputSource) fillNextPageLocked(ctx context.Context) (
 			// surfaced retries the exact same survivors — a transient failure becomes
 			// retryable coverage instead of a silent hole committed as "complete".
 			// Return the error rather than counting survivors as skipped.
+			//
+			// The uncommitted plan is simply discarded: had those choices been
+			// recorded, the re-pull would see every row as a duplicate of itself,
+			// survive nothing, and fall into the "whole page coalesced away" branch
+			// above — stepping the keyset past a page that was never served.
 			return false, fmt.Errorf("risk-prioritized page record fetch failed: %w", ferr)
 		}
-		// Fetch succeeded: now it's safe to advance the keyset and count survivors.
+		// Fetch succeeded: the page is ours, so the coalescing choices stick and it
+		// is safe to advance the keyset and count survivors.
+		s.coalescer.commit(plan)
 		s.advanceKeyLocked(last)
 		s.total += len(surviving)
 

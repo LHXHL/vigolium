@@ -106,7 +106,12 @@ func (r *Repository) saveFindingIDB(ctx context.Context, idb bun.IDB, finding *F
 		}
 	}
 
-	r.insertFindingRecords(ctx, idb, finding.ID, httpRecordUUIDs)
+	// A finding row without its evidence links is a finding whose proof cannot be
+	// resolved, so surface the failure rather than committing a half-written one.
+	// Inside a transaction this rolls the row back with it.
+	if err := r.insertFindingRecords(ctx, idb, finding.ID, httpRecordUUIDs); err != nil {
+		return false, err
+	}
 
 	return true, nil
 }
@@ -228,9 +233,12 @@ func firstResultErr(results []FindingSaveResult) error {
 
 // insertFindingRecords batch-inserts finding↔record junction rows in a single
 // statement using the given bun.IDB (the shared *DB or a transaction).
-func (r *Repository) insertFindingRecords(ctx context.Context, idb bun.IDB, findingID int64, recordUUIDs []string) {
+// It returns the insert error instead of only logging it: a finding whose
+// junction rows failed to write looks complete in the findings table while its
+// evidence links are missing, and the caller could not tell.
+func (r *Repository) insertFindingRecords(ctx context.Context, idb bun.IDB, findingID int64, recordUUIDs []string) error {
 	if len(recordUUIDs) == 0 {
-		return
+		return nil
 	}
 
 	// Driver is a property of the connection, identical for *DB and any tx.
@@ -257,7 +265,9 @@ func (r *Repository) insertFindingRecords(ctx context.Context, idb bun.IDB, find
 		zap.L().Warn("Failed to insert finding_records",
 			zap.Int64("finding_id", findingID),
 			zap.Error(err))
+		return fmt.Errorf("insert finding_records for finding %d: %w", findingID, err)
 	}
+	return nil
 }
 
 // appendRecordsToFinding looks up an existing finding by (project, hash) and appends new
@@ -280,7 +290,9 @@ func (r *Repository) appendRecordsToFinding(ctx context.Context, idb bun.IDB, pr
 		return fmt.Errorf("failed to look up existing finding: %w", err)
 	}
 
-	r.insertFindingRecords(ctx, idb, existing.ID, newUUIDs)
+	if err := r.insertFindingRecords(ctx, idb, existing.ID, newUUIDs); err != nil {
+		return err
+	}
 
 	merged := mergeUniqueStrings(existing.HTTPRecordUUIDs, newUUIDs)
 	q := idb.NewUpdate().Model((*Finding)(nil)).
@@ -301,7 +313,12 @@ func (r *Repository) appendRecordsToFinding(ctx context.Context, idb bun.IDB, pr
 	// Skip evidence that just duplicates the survivor's own primary
 	// request/response (or an entry it already has) — otherwise re-emitting the
 	// same finding shows its response twice (primary + Additional Evidence).
-	if evidence != "" {
+	//
+	// Gated on the cap as well: appendUniqueEvidence enforces it, but reaching it
+	// still costs a concat of the survivor's whole primary pair plus a hash of
+	// every retained pair — on a finding re-detected thousands of times across a
+	// large host, all to produce a list that cannot change.
+	if evidence != "" && len(existing.AdditionalEvidence) < maxAdditionalEvidence {
 		primary := buildEvidence(existing.Request, existing.Response)
 		if updated := appendUniqueEvidence(existing.AdditionalEvidence, primary, evidence); len(updated) > len(existing.AdditionalEvidence) {
 			q = q.Set("additional_evidence = ?", updated)

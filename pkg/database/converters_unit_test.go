@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -582,4 +583,146 @@ func TestFinding_FromResultEvent_SmallStaticResponseUnchanged(t *testing.T) {
 	if f.Response != raw {
 		t.Errorf("small static body must be stored whole, got %q", f.Response)
 	}
+}
+
+// TestLookupHostnameSplitsFamilies covers the split that makes the a/aaaa
+// columns distinct from the single `ip`: an IPv4-only name must not populate
+// aaaa, a literal must resolve to itself in its own family, and `ip` must be
+// the first A when one exists (the dialer's near-certain choice on a dual-stack
+// host, so the column keeps describing where the request actually went).
+func TestLookupHostnameSplitsFamilies(t *testing.T) {
+	t.Run("ipv4 literal", func(t *testing.T) {
+		e := literalIPEntry("192.0.2.1")
+		if e.ip != "192.0.2.1" {
+			t.Errorf("ip = %q, want the literal", e.ip)
+		}
+		if len(e.a) != 1 || e.a[0] != "192.0.2.1" {
+			t.Errorf("a = %v, want the literal in the v4 family", e.a)
+		}
+		if len(e.aaaa) != 0 {
+			t.Errorf("aaaa = %v, want empty for a v4 literal", e.aaaa)
+		}
+		if len(e.cname) != 0 {
+			t.Errorf("cname = %v, want empty — a literal is not aliased", e.cname)
+		}
+	})
+
+	t.Run("ipv6 literal", func(t *testing.T) {
+		e := literalIPEntry("2001:db8::1")
+		if len(e.aaaa) != 1 || e.aaaa[0] != "2001:db8::1" {
+			t.Errorf("aaaa = %v, want the literal in the v6 family", e.aaaa)
+		}
+		if len(e.a) != 0 {
+			t.Errorf("a = %v, want empty for a v6 literal", e.a)
+		}
+	})
+
+	t.Run("unresolvable name is negative, not empty-positive", func(t *testing.T) {
+		e := lookupHostname("definitely-not-a-real-host.invalid-tld-xyz", true)
+		if e.ip != "" || len(e.a) != 0 || len(e.aaaa) != 0 {
+			t.Errorf("got ip=%q a=%v aaaa=%v, want an empty (negative) entry", e.ip, e.a, e.aaaa)
+		}
+		// The short negative TTL is what lets a briefly-dead host be retried
+		// instead of being pinned unresolved for the process lifetime.
+		if ttl := time.Until(e.expiry); ttl > dnsNegativeTTL {
+			t.Errorf("negative entry TTL = %v, want <= the negative TTL %v", ttl, dnsNegativeTTL)
+		}
+	})
+}
+
+// TestMeasuredMillisFloor pins the one rule every response-time column depends
+// on: 0 means "never measured", so a real measurement can never report 0.
+func TestMeasuredMillisFloor(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Duration
+		want int64
+	}{
+		{"unmeasured", 0, 0},
+		{"negative is unmeasured", -5 * time.Millisecond, 0},
+		{"sub-millisecond floors to 1", 120 * time.Microsecond, 1},
+		{"exactly 1ns floors to 1", time.Nanosecond, 1},
+		{"whole milliseconds pass through", 250 * time.Millisecond, 250},
+		{"truncates rather than rounds", 1999 * time.Microsecond, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := httpmsg.MeasuredMillis(tt.in); got != tt.want {
+				t.Errorf("MeasuredMillis(%v) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHostFactsAreOutputOnlyNotPersistedAndNotImplicit pins two decisions at
+// once: the full DNS/TLS answer is never a column, AND it is never attached by
+// HTTPRecord.MarshalJSON.
+//
+// The second half is the one that bites. Attaching inside MarshalJSON reads as
+// convenient — every JSON path gets it free — but the caches are process-global
+// and hostname-keyed, so the ingest server (which marshals []*HTTPRecord
+// straight to its HTTP response) would decorate one project's rows with a name
+// resolved at an unknown time while ingesting another's. Emit sites that know
+// this process probed opt in through WithHostFacts instead.
+func TestHostFactsAreOutputOnlyNotPersistedAndNotImplicit(t *testing.T) {
+	const host = "dns-view.example.invalid"
+	dnsCache.Add(host, dnsEntry{
+		ip:     "192.0.2.10",
+		a:      []string{"192.0.2.10", "192.0.2.11"},
+		aaaa:   []string{"2001:db8::a"},
+		cname:  []string{"origin.example.invalid"},
+		expiry: time.Now().Add(time.Hour),
+	})
+	t.Cleanup(func() { dnsCache.Remove(host) })
+
+	rec := &HTTPRecord{UUID: "u1", Hostname: host, URL: "https://" + host + "/", Method: "GET"}
+
+	// Marshaling the record ALONE must not reach into the cache.
+	bare := marshalToMap(t, rec)
+	for _, key := range []string{"a", "aaaa", "cname", "tls"} {
+		if _, ok := bare[key]; ok {
+			t.Errorf("%q attached by MarshalJSON; host facts must be an explicit opt-in", key)
+		}
+	}
+	// The struct carries no DNS arrays either — that is what keeps them out of
+	// the database, since bun persists fields, not the JSON view.
+	for _, col := range []string{"dns_a", "dns_aaaa", "dns_cname"} {
+		if _, ok := bare[col]; ok {
+			t.Errorf("%q leaked into the record; the full answer must not become a column", col)
+		}
+	}
+
+	// Opting in merges the fact keys into the record's own object, so a consumer
+	// reads them next to the record's fields rather than under a wrapper.
+	decorated := marshalToMap(t, WithHostFacts(rec))
+	for _, key := range []string{"a", "aaaa", "cname"} {
+		if _, ok := decorated[key]; !ok {
+			t.Errorf("WithHostFacts did not attach %q", key)
+		}
+	}
+	if decorated["uuid"] != "u1" {
+		t.Errorf("uuid = %v, want the record's own fields preserved alongside the facts", decorated["uuid"])
+	}
+
+	// A host this process never observed opts in to nothing: "unknown" and "no
+	// records" stay different answers, and the bare record is returned unchanged.
+	other := &HTTPRecord{UUID: "u2", Hostname: "never-resolved.example.invalid", Method: "GET"}
+	for key, v := range marshalToMap(t, WithHostFacts(other)) {
+		if key == "a" || key == "aaaa" || key == "cname" || key == "tls" {
+			t.Errorf("%q = %v present for a host that was never observed", key, v)
+		}
+	}
+}
+
+func marshalToMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return out
 }

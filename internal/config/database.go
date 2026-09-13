@@ -21,6 +21,19 @@ type SQLiteConfig struct {
 	Synchronous  string `yaml:"synchronous"`
 	CacheSize    int    `yaml:"cache_size"`
 	MaxOpenConns int    `yaml:"max_open_conns"`
+
+	// ReadOnly opens the file without touching it: no parent-directory creation,
+	// no journal-mode PRAGMA, no startup WAL checkpoint, and the driver's own
+	// read-only mode. It is not persisted to YAML — it is set by the read
+	// commands for the duration of one process.
+	//
+	// Opening a database used to be a write whatever the command did with it:
+	// `traffic -S --db evidence.sqlite -j` rewrote the file's header (flipping
+	// journal_mode from delete to wal), changed its SHA-256, and dropped -shm /
+	// -wal siblings next to it — while a chmod 444 file could not be read at all.
+	// For a store that is evidence rather than working state, a read that alters
+	// the artifact is the one thing it must never do.
+	ReadOnly bool `yaml:"-"`
 }
 
 // PostgresConfig holds PostgreSQL-specific settings

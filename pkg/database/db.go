@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,11 @@ type DB struct {
 	// nil otherwise). Closed once by Close().
 	ckptStop     chan struct{}
 	ckptStopOnce sync.Once
+
+	// readOnly is set when the handle was opened with SQLiteConfig.ReadOnly. It
+	// makes CreateSchema a no-op: a read-only source cannot be migrated, and the
+	// read commands call CreateSchema unconditionally on open.
+	readOnly bool
 }
 
 // SQLite WAL tuning. wal_autocheckpoint runs an automatic PASSIVE checkpoint
@@ -94,8 +100,9 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 	}
 
 	db := &DB{
-		DB:     bunDB,
-		driver: driver,
+		DB:       bunDB,
+		driver:   driver,
+		readOnly: driver == "sqlite" && cfg.SQLite.ReadOnly,
 	}
 
 	// Per-statement SQL logging is opt-in on top of debug level, not implied by it.
@@ -110,7 +117,9 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 	// Periodically truncate the WAL for file-backed SQLite so it can't grow
 	// without bound over a long-running process. No-op for Postgres and
 	// in-memory SQLite (no WAL file). Stopped by Close().
-	if driver == "sqlite" && !strings.Contains(cfg.SQLite.Path, ":memory:") {
+	// Never on a read-only handle: the checkpointer's whole job is to rewrite the
+	// WAL, which is exactly the mutation read-only mode exists to prevent.
+	if driver == "sqlite" && !strings.Contains(cfg.SQLite.Path, ":memory:") && !cfg.SQLite.ReadOnly {
 		db.startWALCheckpointer()
 	}
 
@@ -151,10 +160,62 @@ func NewDBFromBun(bunDB *bun.DB, driver string) *DB {
 	return &DB{DB: bunDB, driver: driver}
 }
 
+// openSQLiteReadOnly opens an existing SQLite file without modifying it.
+//
+// Three things are deliberately omitted relative to the read-write path, because
+// each one is a write to the artifact:
+//
+//   - no os.MkdirAll — a missing file is an error, not a new database;
+//   - no journal_mode PRAGMA — setting it rewrites the header, which is what
+//     flipped evidence files from `delete` to `wal` and changed their hash;
+//   - no startup wal_checkpoint(TRUNCATE) — that rewrites both the main file and
+//     the -wal sidecar.
+//
+// `mode=ro` is the driver's own read-only mode; it still reads a pre-existing
+// -wal sidecar, so a database another process left mid-WAL is read correctly
+// rather than as a stale snapshot. `immutable=1` would be faster and is
+// deliberately NOT used: it tells SQLite to assume the file cannot change, which
+// silently returns wrong data if it does.
+func openSQLiteReadOnly(path string, cfg *config.SQLiteConfig) (*sql.DB, error) {
+	if path == ":memory:" {
+		return nil, errors.New("read-only mode requires a file-backed database, not :memory: storage")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("database file not readable: %w", err)
+	}
+
+	dsn := fmt.Sprintf(
+		"file:%s?mode=ro&_pragma=busy_timeout(%d)&_pragma=query_only(1)&_pragma=cache_size(%d)&_pragma=temp_store(memory)&_pragma=mmap_size(%d)",
+		path, cfg.BusyTimeout, cfg.CacheSize, sqliteMmapSize,
+	)
+	sqldb, err := sql.Open(sqliteshim.ShimName, dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := sqldb.Ping(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("failed to open database read-only: %w", err)
+	}
+	maxConns := cfg.MaxOpenConns
+	if maxConns <= 0 {
+		maxConns = 8
+	}
+	sqldb.SetMaxOpenConns(maxConns)
+	sqldb.SetMaxIdleConns(maxConns)
+	return sqldb, nil
+}
+
 // openSQLite creates SQLite connection with optimized settings
 func openSQLite(cfg *config.SQLiteConfig) (*sql.DB, error) {
 	// Expand path (handle ~ and environment variables)
 	path := expandPath(cfg.Path)
+
+	// A read-only open must not bring the file (or its directory) into existence:
+	// creating a parent for a path that was mistyped is how a read silently
+	// becomes a new empty database instead of an error.
+	if cfg.ReadOnly {
+		return openSQLiteReadOnly(path, cfg)
+	}
 
 	// Ensure parent directory exists (skip for in-memory databases)
 	if path != ":memory:" {
@@ -418,8 +479,21 @@ func (db *DB) setSchemaVersion(ctx context.Context, v int) {
 		v)
 }
 
-// CreateSchema creates all database tables and indexes if they don't exist
+// CreateSchema creates all database tables and indexes if they don't exist.
+//
+// It is a no-op on a read-only handle. The read commands call it on open to
+// self-heal a fresh project database; against a source opened --read-only that
+// would be a schema write to someone else's evidence, and a source genuinely
+// missing the tables surfaces as a query error rather than being silently
+// migrated into the current shape.
 func (db *DB) CreateSchema(ctx context.Context) error {
+	if db.readOnly {
+		// A read-only handle cannot be migrated — `mode=ro` refuses DDL — so the
+		// best it can do is report a schema it will not be able to query. Without
+		// this the caller's first SELECT fails with a bare
+		// "no such column: r.surface_score", which names a symptom and no remedy.
+		return db.checkSchemaCurrent(ctx)
+	}
 	tables := []string{
 		// Schema versioning: lets CreateSchema skip one-time O(rows) backfills once
 		// a database is current (see currentSchemaVersion). Single row, id always 1.
@@ -525,7 +599,8 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 			is_authenticated INTEGER NOT NULL DEFAULT 0,
 			parent_uuid TEXT,
 			remarks TEXT,
-			risk_score INTEGER DEFAULT 0
+			risk_score INTEGER DEFAULT 0,
+			surface_score INTEGER DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS analysis_artifacts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -769,6 +844,7 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 		"CREATE INDEX IF NOT EXISTS idx_records_project_host_method_status ON http_records(project_uuid, hostname, method, status_code)",
 		"CREATE INDEX IF NOT EXISTS idx_records_project_scheme_host_port ON http_records(project_uuid, scheme, hostname, port)",
 		"CREATE INDEX IF NOT EXISTS idx_records_project_risk_score ON http_records(project_uuid, risk_score)",
+		"CREATE INDEX IF NOT EXISTS idx_records_project_surface_score ON http_records(project_uuid, surface_score)",
 		// Covering index for findDuplicateRecord: the duplicate probe filters on
 		// (project_uuid, method, hostname, path, url[, request_hash]) and selects
 		// only uuid. Indexing all of those plus uuid lets the lookup resolve
@@ -911,106 +987,7 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 	// idx_records_norm_hash → http_records.response_norm_hash. The index loop
 	// aborts CreateSchema on the first error, so building a new column's index
 	// before the column exists fails schema init entirely and leaves repo nil.
-	// Migrations for existing databases
-	db.addColumnIfNotExists(ctx, "findings", "request", "TEXT")
-	db.addColumnIfNotExists(ctx, "findings", "response", "TEXT")
-	db.addColumnIfNotExists(ctx, "http_records", "request_authorization", "TEXT")
-	db.addColumnIfNotExists(ctx, "http_records", "response_title", "TEXT")
-	db.addColumnIfNotExists(ctx, "http_records", "response_words", "INTEGER DEFAULT 0")
-	db.addColumnIfNotExists(ctx, "http_records", "response_norm_hash", "TEXT")
-	db.addColumnIfNotExists(ctx, "http_records", "source", "TEXT DEFAULT ''")
-	db.addColumnIfNotExists(ctx, "http_records", "remarks", "TEXT")
-	db.addColumnIfNotExists(ctx, "http_records", "risk_score", "INTEGER DEFAULT 0")
-
-	// Finding schema migrations
-	db.addColumnIfNotExists(ctx, "findings", "confidence", "TEXT NOT NULL DEFAULT 'firm'")
-	db.addColumnIfNotExists(ctx, "findings", "scan_uuid", "TEXT")
-	db.addColumnIfNotExists(ctx, "findings", "module_type", "TEXT DEFAULT ''")
-	db.addColumnIfNotExists(ctx, "findings", "finding_source", "TEXT DEFAULT ''")
-	db.addColumnIfNotExists(ctx, "findings", "record_kind", "TEXT NOT NULL DEFAULT 'finding'")
-	db.addColumnIfNotExists(ctx, "findings", "evidence_grade", "TEXT DEFAULT ''")
-	db.addColumnIfNotExists(ctx, "findings", "module_short", "TEXT DEFAULT ''")
-
-	// Scan cursor tracking migrations
-	db.addColumnIfNotExists(ctx, "scans", "scan_source", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "scan_mode", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "start_cursor_at", "TIMESTAMP")
-	db.addColumnIfNotExists(ctx, "scans", "start_cursor_uuid", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "cursor_at", "TIMESTAMP")
-	db.addColumnIfNotExists(ctx, "scans", "cursor_uuid", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "processed_count", "INTEGER DEFAULT 0")
-
-	// Agent runs schema migrations
-	db.addColumnIfNotExists(ctx, "agentic_scans", "session_id", "TEXT")
-
-	// -- New field migrations (v2) --
-
-	// Projects
-	db.addColumnIfNotExists(ctx, "projects", "tags", "TEXT")
-	db.addColumnIfNotExists(ctx, "projects", "default_target", "TEXT")
-	db.addColumnIfNotExists(ctx, "projects", "last_scan_at", "TIMESTAMP")
-
-	// Scans
-	db.addColumnIfNotExists(ctx, "scans", "profile", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "source_path", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "source_type", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "http_record_uuid", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "tags", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "triggered_by", "TEXT")
-	db.addColumnIfNotExists(ctx, "scans", "agentic_scan_uuid", "TEXT")
-
-	// HTTP Records
-	db.addColumnIfNotExists(ctx, "http_records", "scan_uuid", "TEXT")
-	db.addColumnIfNotExists(ctx, "http_records", "technology", "TEXT")
-	db.addColumnIfNotExists(ctx, "http_records", "content_hash", "TEXT")
-	db.addColumnIfNotExists(ctx, "http_records", "is_authenticated", "INTEGER NOT NULL DEFAULT 0")
-	db.addColumnIfNotExists(ctx, "http_records", "parent_uuid", "TEXT")
-
-	// Findings
-	db.addColumnIfNotExists(ctx, "findings", "agentic_scan_uuid", "TEXT")
-	db.addColumnIfNotExists(ctx, "findings", "url", "TEXT")
-	db.addColumnIfNotExists(ctx, "findings", "hostname", "TEXT")
-	db.addColumnIfNotExists(ctx, "findings", "status", "TEXT DEFAULT 'triaged'")
-	db.addColumnIfNotExists(ctx, "findings", "remediation", "TEXT")
-	db.addColumnIfNotExists(ctx, "findings", "cwe_id", "TEXT")
-	db.addColumnIfNotExists(ctx, "findings", "cvss_score", "REAL DEFAULT 0")
-	db.addColumnIfNotExists(ctx, "findings", "source_file", "TEXT")
-	db.addColumnIfNotExists(ctx, "findings", "repo_name", "TEXT")
-
-	// Agent Runs
-	db.addColumnIfNotExists(ctx, "agentic_scans", "source_path", "TEXT")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "token_usage", "TEXT")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "retry_count", "INTEGER DEFAULT 0")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "parent_run_uuid", "TEXT")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "input_record_count", "INTEGER DEFAULT 0")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "session_dir", "TEXT")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "protocol", "TEXT")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "model", "TEXT")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "total_input_tokens", "INTEGER NOT NULL DEFAULT 0")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "total_output_tokens", "INTEGER NOT NULL DEFAULT 0")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0")
-
-	db.addColumnIfNotExists(ctx, "scans", "storage_url", "TEXT")
-	db.addColumnIfNotExists(ctx, "agentic_scans", "storage_url", "TEXT")
-
-	// OAST Interactions
-	db.addColumnIfNotExists(ctx, "oast_interactions", "finding_id", "INTEGER")
-	db.addColumnIfNotExists(ctx, "oast_interactions", "payload", "TEXT")
-
-	// Scopes
-	db.addColumnIfNotExists(ctx, "scopes", "content_type_pattern", "TEXT")
-	db.addColumnIfNotExists(ctx, "scopes", "hit_count", "INTEGER DEFAULT 0")
-	db.addColumnIfNotExists(ctx, "scopes", "last_matched_at", "TIMESTAMP")
-
-	// Session Hostnames
-	db.addColumnIfNotExists(ctx, "authentication_hostnames", "session_token", "TEXT")
-	db.addColumnIfNotExists(ctx, "authentication_hostnames", "hydrated_at", "TIMESTAMP")
-
-	// Project UUID migration for existing databases (backfill with default project)
-	projectTables := []string{"scans", "http_records", "findings", "scopes", "oast_interactions", "scan_logs"}
-	for _, table := range projectTables {
-		db.addColumnIfNotExists(ctx, table, "project_uuid", fmt.Sprintf("TEXT NOT NULL DEFAULT '%s'", DefaultProjectUUID))
-	}
+	db.runColumnMigrations(ctx)
 
 	// Create indexes now that all column migrations above have run — some indexes
 	// reference newly added columns (e.g. idx_records_norm_hash → response_norm_hash).
@@ -1028,7 +1005,7 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 		// Backfill empty project_uuid values — Bun ORM inserts explicit empty strings
 		// which bypass the column DEFAULT, so rows created before ProjectUUID was
 		// propagated through all code paths end up with project_uuid = ''.
-		for _, table := range projectTables {
+		for _, table := range projectUUIDMigrationTables {
 			db.execBestEffort(ctx, "backfill project_uuid on "+table,
 				fmt.Sprintf("UPDATE %s SET project_uuid = ? WHERE project_uuid = ''", table),
 				DefaultProjectUUID)
@@ -1183,6 +1160,233 @@ func (db *DB) addColumnIfNotExists(ctx context.Context, table, column, definitio
 			zap.L().Warn("Failed to add column", zap.String("column", column), zap.Error(err))
 		}
 	}
+}
+
+// projectUUIDMigrationTables are the tables that predate multi-tenancy and so
+// need project_uuid added (and backfilled) on an existing database.
+//
+// Deliberately NARROWER than projectOwnedTables: analysis_artifacts,
+// agentic_scans and authentication_hostnames are project-scoped too, but they
+// were created with the column in their own CREATE TABLE, so they need neither
+// the ALTER nor the O(rows) backfill. Widening this to projectOwnedTables would
+// add a full-table UPDATE per open for three tables that cannot need it.
+var projectUUIDMigrationTables = []string{
+	"scans", "http_records", "findings", "scopes", "oast_interactions", "scan_logs",
+}
+
+// runColumnMigrations applies every additive column migration. It is the SINGLE
+// list of columns this binary expects on an existing database — CreateSchema
+// calls it to apply them, and checkSchemaCurrent calls it in dry-run mode to
+// report the ones a read-only handle is missing. Keeping one list is what stops
+// the read-only check from drifting into a stale copy that passes a database the
+// queries then fail on.
+// columnMigration is one additive column an existing database may be missing.
+type columnMigration struct{ Table, Column, Def string }
+
+// columnMigrations is the SINGLE list of columns this binary expects on an
+// existing database. Data rather than a sequence of method calls, because it has
+// two consumers that must never disagree: CreateSchema APPLIES it, and
+// missingColumns ASKS it. Expressing "ask instead of apply" as a mode flag on
+// the mutating method meant a field on the shared *DB handle that silently
+// turned every addColumn into a no-op for whoever else held that handle.
+//
+// Notes that used to sit on individual calls:
+//   - surface_score is separate from risk_score deliberately: risk_score holds
+//     anomaly_ranking's batch percentile, a different scale from different
+//     inputs, and one column cannot carry both without the later writer silently
+//     erasing the other. DEFAULT 0 reads as "no surface signals", the correct
+//     floor for every row that predates the column.
+//   - The project_uuid entries are appended at init from
+//     projectUUIDMigrationTables, which is narrower than projectOwnedTables: the
+//     newer project-scoped tables declare the column in their own CREATE TABLE
+//     and need neither the ALTER nor the O(rows) backfill.
+var columnMigrations = []columnMigration{
+	{"findings", "request", "TEXT"},
+	{"findings", "response", "TEXT"},
+	{"http_records", "request_authorization", "TEXT"},
+	{"http_records", "response_title", "TEXT"},
+	{"http_records", "response_words", "INTEGER DEFAULT 0"},
+	{"http_records", "response_norm_hash", "TEXT"},
+	{"http_records", "source", "TEXT DEFAULT ''"},
+	{"http_records", "remarks", "TEXT"},
+	{"http_records", "risk_score", "INTEGER DEFAULT 0"},
+	{"http_records", "surface_score", "INTEGER DEFAULT 0"},
+	{"findings", "confidence", "TEXT NOT NULL DEFAULT 'firm'"},
+	{"findings", "scan_uuid", "TEXT"},
+	{"findings", "module_type", "TEXT DEFAULT ''"},
+	{"findings", "finding_source", "TEXT DEFAULT ''"},
+	{"findings", "record_kind", "TEXT NOT NULL DEFAULT 'finding'"},
+	{"findings", "evidence_grade", "TEXT DEFAULT ''"},
+	{"findings", "module_short", "TEXT DEFAULT ''"},
+	{"scans", "scan_source", "TEXT"},
+	{"scans", "scan_mode", "TEXT"},
+	{"scans", "start_cursor_at", "TIMESTAMP"},
+	{"scans", "start_cursor_uuid", "TEXT"},
+	{"scans", "cursor_at", "TIMESTAMP"},
+	{"scans", "cursor_uuid", "TEXT"},
+	{"scans", "processed_count", "INTEGER DEFAULT 0"},
+	{"agentic_scans", "session_id", "TEXT"},
+	{"projects", "tags", "TEXT"},
+	{"projects", "default_target", "TEXT"},
+	{"projects", "last_scan_at", "TIMESTAMP"},
+	{"scans", "profile", "TEXT"},
+	{"scans", "source_path", "TEXT"},
+	{"scans", "source_type", "TEXT"},
+	{"scans", "http_record_uuid", "TEXT"},
+	{"scans", "tags", "TEXT"},
+	{"scans", "triggered_by", "TEXT"},
+	{"scans", "agentic_scan_uuid", "TEXT"},
+	{"http_records", "scan_uuid", "TEXT"},
+	{"http_records", "technology", "TEXT"},
+	{"http_records", "content_hash", "TEXT"},
+	{"http_records", "is_authenticated", "INTEGER NOT NULL DEFAULT 0"},
+	{"http_records", "parent_uuid", "TEXT"},
+	{"findings", "agentic_scan_uuid", "TEXT"},
+	{"findings", "url", "TEXT"},
+	{"findings", "hostname", "TEXT"},
+	{"findings", "status", "TEXT DEFAULT 'triaged'"},
+	{"findings", "remediation", "TEXT"},
+	{"findings", "cwe_id", "TEXT"},
+	{"findings", "cvss_score", "REAL DEFAULT 0"},
+	{"findings", "source_file", "TEXT"},
+	{"findings", "repo_name", "TEXT"},
+	{"agentic_scans", "source_path", "TEXT"},
+	{"agentic_scans", "token_usage", "TEXT"},
+	{"agentic_scans", "retry_count", "INTEGER DEFAULT 0"},
+	{"agentic_scans", "parent_run_uuid", "TEXT"},
+	{"agentic_scans", "input_record_count", "INTEGER DEFAULT 0"},
+	{"agentic_scans", "session_dir", "TEXT"},
+	{"agentic_scans", "protocol", "TEXT"},
+	{"agentic_scans", "model", "TEXT"},
+	{"agentic_scans", "total_input_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"agentic_scans", "total_output_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"agentic_scans", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0"},
+	{"scans", "storage_url", "TEXT"},
+	{"agentic_scans", "storage_url", "TEXT"},
+	{"oast_interactions", "finding_id", "INTEGER"},
+	{"oast_interactions", "payload", "TEXT"},
+	{"scopes", "content_type_pattern", "TEXT"},
+	{"scopes", "hit_count", "INTEGER DEFAULT 0"},
+	{"scopes", "last_matched_at", "TIMESTAMP"},
+	{"authentication_hostnames", "session_token", "TEXT"},
+	{"authentication_hostnames", "hydrated_at", "TIMESTAMP"},
+}
+
+func init() {
+	for _, table := range projectUUIDMigrationTables {
+		columnMigrations = append(columnMigrations, columnMigration{
+			Table: table, Column: "project_uuid",
+			Def: fmt.Sprintf("TEXT NOT NULL DEFAULT '%s'", DefaultProjectUUID),
+		})
+	}
+}
+
+// runColumnMigrations applies every additive column migration.
+func (db *DB) runColumnMigrations(ctx context.Context) {
+	for _, m := range columnMigrations {
+		db.addColumnIfNotExists(ctx, m.Table, m.Column, m.Def)
+	}
+}
+
+// ErrSchemaOutdated marks a database written by an older vigolium that this
+// handle cannot migrate because it was opened read-only. It is a distinct error
+// because it is FATAL to the command — every query that follows would fail on a
+// missing column — whereas a migration failure on a writable handle is
+// best-effort and worth only a warning.
+var ErrSchemaOutdated = errors.New("database schema is older than this vigolium and --read-only cannot migrate it")
+
+// EnsureSchemaCurrent brings an existing database up to date, doing NOTHING when
+// it already is.
+//
+// The "do nothing" path is the whole point. CreateSchema issues DDL, and DDL
+// takes SQLite's WRITE lock — so calling it unconditionally on every open makes
+// every read command queue behind any concurrent writer for up to busy_timeout
+// (60s by default). Detecting staleness first is a read-only question, so the
+// common case takes no lock at all.
+//
+// A read-only handle cannot be migrated (mode=ro refuses DDL); CreateSchema's
+// own read-only branch turns that into ErrSchemaOutdated naming the missing
+// columns, so it is reached through the same call rather than special-cased
+// here.
+//
+// Indexes are deliberately not part of the check: they are a performance
+// concern, not a correctness one, and the write commands still call CreateSchema
+// directly. Only a missing TABLE or COLUMN can make a query fail outright.
+func (db *DB) EnsureSchemaCurrent(ctx context.Context) error {
+	missing, err := db.missingColumns(ctx)
+	if err == nil && len(missing) == 0 {
+		return nil
+	}
+	return db.CreateSchema(ctx)
+}
+
+// checkSchemaCurrent reports a read-only handle's missing columns as an error
+// naming them and how to proceed, or nil when it is current.
+//
+// Without it the caller's first SELECT fails with a bare "no such column:
+// r.surface_score" — a symptom naming no remedy. A brand-new/empty file is not
+// "outdated": it has no tables at all, and every read of it correctly returns
+// nothing.
+func (db *DB) checkSchemaCurrent(ctx context.Context) error {
+	missing, err := db.missingColumns(ctx)
+	if err != nil || len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w (missing: %s)\n"+
+		"  drop --read-only to upgrade it in place, or copy the file first if it must not change",
+		ErrSchemaOutdated, strings.Join(missing, ", "))
+}
+
+// missingColumns reports which entries of columnMigrations this database lacks,
+// as "table.column". Read-only: it never takes a write lock.
+//
+// One catalog query PER TABLE, not one existence probe per column. There are ~75
+// migrated columns across 8 tables, so probing each individually cost ~75 round
+// trips on every process start — negligible on SQLite, but ~75 network RTTs on a
+// Postgres deployment, paid by every CLI invocation.
+//
+// A returned error means the catalog could not be read at all (an empty or
+// unopenable file); callers treat that as "cannot tell" rather than as "stale",
+// since a fresh database legitimately has no tables yet.
+func (db *DB) missingColumns(ctx context.Context) ([]string, error) {
+	// An absent core table means a fresh (or empty) file: it needs the full
+	// CreateSchema, and being new it has no concurrent writer to contend with.
+	if !db.tableExists(ctx, "http_records") {
+		return nil, errSchemaNotInitialized
+	}
+
+	existing := make(map[string]map[string]bool)
+	var missing []string
+	for _, m := range columnMigrations {
+		cols, ok := existing[m.Table]
+		if !ok {
+			cols = make(map[string]bool)
+			// A table that does not exist yet reports no columns, so every one of
+			// its migrations lands in `missing` and CreateSchema creates it.
+			if infos, err := ListColumns(ctx, db, m.Table); err == nil {
+				for _, info := range infos {
+					cols[info.Name] = true
+				}
+			}
+			existing[m.Table] = cols
+		}
+		if !cols[m.Column] {
+			missing = append(missing, m.Table+"."+m.Column)
+		}
+	}
+	return missing, nil
+}
+
+// errSchemaNotInitialized marks a database with no core table — a fresh file,
+// not a stale one.
+var errSchemaNotInitialized = errors.New("schema not initialized")
+
+// tableExists reports whether a table is present.
+func (db *DB) tableExists(ctx context.Context, table string) bool {
+	var n int
+	err := db.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE 1=0", table)).Scan(&n)
+	return err == nil
 }
 
 // expandPath handles ~ expansion and environment variables

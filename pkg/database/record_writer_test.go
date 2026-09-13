@@ -18,7 +18,7 @@ import (
 )
 
 // newTestDB creates an in-memory SQLite database with schema for testing.
-func newTestDB(t *testing.T) *DB {
+func newTestDB(t testing.TB) *DB {
 	t.Helper()
 
 	sqldb, err := sql.Open(sqliteshim.ShimName, ":memory:?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")

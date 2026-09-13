@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net"
 	neturl "net/url"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +17,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -35,6 +36,9 @@ const (
 // lookup failed (negative cache).
 type dnsEntry struct {
 	ip     string
+	a      []string // IPv4 addresses
+	aaaa   []string // IPv6 addresses
+	cname  []string // canonical-name chain (empty when the name is not aliased)
 	expiry time.Time
 }
 
@@ -47,16 +51,20 @@ func mustNewDNSCache() *lru.Cache[string, dnsEntry] {
 	return c
 }
 
-// dnsInflight dedupes concurrent background resolves so each unresolved
-// hostname spawns at most one in-flight lookup at a time.
-var dnsInflight = struct {
-	sync.Mutex
-	m map[string]struct{}
-}{m: make(map[string]struct{})}
+// dnsGroup collapses concurrent resolves of one hostname into a single lookup
+// whose result every caller receives. See resolveAndCache.
+var dnsGroup singleflight.Group
 
 // dnsResolveSem bounds how many background DNS lookups run concurrently, so a
 // broad subdomain scan can't fan out into thousands of simultaneous resolvers.
 var dnsResolveSem = make(chan struct{}, 16)
+
+// dnsKey normalizes a hostname into the cache key. Every entry point takes it,
+// so the write path and the read path cannot key the same host differently —
+// which would make a resolved answer invisible to the reader that wanted it.
+func dnsKey(hostname string) string {
+	return strings.ToLower(strings.TrimSpace(hostname))
+}
 
 // resolveHostnameIP returns the cached IP for a hostname if known and fresh, and
 // otherwise returns "" (or a stale value while refreshing) while scheduling the
@@ -70,63 +78,231 @@ var dnsResolveSem = make(chan struct{}, 16)
 // record for that host picks up the cached value. Literal IPs are still
 // resolved synchronously (no DNS involved).
 func resolveHostnameIP(hostname string) string {
-	if e, ok := dnsCache.Get(hostname); ok {
+	key := dnsKey(hostname)
+	if e, ok := dnsCache.Get(key); ok {
 		if time.Now().Before(e.expiry) {
 			return e.ip // fresh hit (may be "" for a still-negative host)
 		}
 		// Expired: refresh off the write path, but serve the stale value meanwhile
 		// so records aren't briefly stripped of a known IP on every TTL boundary.
-		scheduleHostnameResolve(hostname)
+		scheduleHostnameResolve(key)
 		return e.ip
 	}
 
 	// If the hostname is already an IP address, cache and return it directly.
-	if parsed := net.ParseIP(hostname); parsed != nil {
-		dnsCache.Add(hostname, dnsEntry{ip: hostname, expiry: time.Now().Add(dnsPositiveTTL)})
-		return hostname
+	if net.ParseIP(key) != nil {
+		dnsCache.Add(key, literalIPEntry(key))
+		return key
 	}
 
 	// Not cached and needs a real DNS lookup: schedule it off the write path.
-	scheduleHostnameResolve(hostname)
+	scheduleHostnameResolve(key)
 	return ""
 }
 
-// scheduleHostnameResolve kicks off a single background DNS resolve for hostname
-// (deduped via dnsInflight, concurrency-bounded via dnsResolveSem) and caches
-// the result with a TTL — a short negative TTL for failures so dead hosts are
-// retried rather than pinned forever.
-func scheduleHostnameResolve(hostname string) {
-	dnsInflight.Lock()
-	if _, busy := dnsInflight.m[hostname]; busy {
-		dnsInflight.Unlock()
-		return
-	}
-	dnsInflight.m[hostname] = struct{}{}
-	dnsInflight.Unlock()
-
-	go func() {
-		dnsResolveSem <- struct{}{}
-		addrs, err := net.LookupHost(hostname)
-		<-dnsResolveSem
-
-		resolved := ""
-		if err == nil && len(addrs) > 0 {
-			resolved = addrs[0]
-		}
-		ttl := dnsPositiveTTL
-		if resolved == "" {
-			ttl = dnsNegativeTTL
-		}
-		dnsCache.Add(hostname, dnsEntry{ip: resolved, expiry: time.Now().Add(ttl)})
-
-		dnsInflight.Lock()
-		delete(dnsInflight.m, hostname)
-		dnsInflight.Unlock()
-	}()
+// scheduleHostnameResolve kicks off a background resolve for hostname and
+// returns immediately. Address-only: the CNAME chain is read exclusively by the
+// host-sweep output path, and asking for it here would double the query volume
+// and the semaphore hold of every scan that writes a record, for an answer
+// nothing on this path reads.
+func scheduleHostnameResolve(key string) {
+	go func() { _, _ = resolveAndCache(key, false) }()
 }
 
-// FromHttpRequestResponse populates an HTTPRecord from httpmsg.HttpRequestResponse
+// ResolveHostnameNow resolves hostname synchronously and caches the answer,
+// returning the addresses found. Returns the cached value when one is fresh.
+//
+// This is the DNS-prefetch entry point for a host sweep, where DNS is part of
+// the ANSWER rather than incidental metadata: the probe phase resolves its whole
+// target list through here (bounded, before any HTTP) so every record it writes
+// carries a complete A/AAAA/CNAME set. Every other path keeps using the
+// background best-effort resolver, because on a normal scan's write path a
+// blocking lookup would stall the record writer for a full DNS timeout per dead
+// host.
+func ResolveHostnameNow(hostname string) (ipv4, ipv6 []string) {
+	key := dnsKey(hostname)
+	if key == "" {
+		return nil, nil
+	}
+	if e, ok := dnsCache.Get(key); ok && time.Now().Before(e.expiry) {
+		return e.a, e.aaaa
+	}
+	// Literal IPs need no lookup, and must not be handed to the resolver.
+	if net.ParseIP(key) != nil {
+		e := literalIPEntry(key)
+		dnsCache.Add(key, e)
+		return e.a, e.aaaa
+	}
+	entry, _ := resolveAndCache(key, true)
+	return entry.a, entry.aaaa
+}
+
+// resolveAndCache performs one resolution per hostname at a time and gives every
+// concurrent caller the SAME answer.
+//
+// singleflight rather than a hand-rolled in-flight claim: a claim only
+// suppresses the duplicate query, it does not share the result, so a prefetch
+// that lost the race to the background write-path resolver returned empty — the
+// host was counted unresolved and its record carried no addresses, which is the
+// exact failure the prefetch stage exists to remove. Do makes the loser block on
+// and receive the winner's entry.
+//
+// wantCNAME asks for the canonical-name chain as well. It is a parameter rather
+// than always-on because the CNAME is a second query, and only the sweep's
+// output reads it.
+func resolveAndCache(key string, wantCNAME bool) (dnsEntry, error) {
+	v, err, _ := dnsGroup.Do(key, func() (any, error) {
+		dnsResolveSem <- struct{}{}
+		entry := lookupHostname(key, wantCNAME)
+		<-dnsResolveSem
+		dnsCache.Add(key, entry)
+		return entry, nil
+	})
+	if err != nil {
+		return dnsEntry{}, err
+	}
+	entry, _ := v.(dnsEntry)
+	return entry, nil
+}
+
+// CachedDNS returns the full DNS answer this PROCESS resolved for hostname, or
+// nothing when it never looked it up (or the entry has aged out).
+//
+// Deliberately not persisted. `ip` — one address per record — is the only DNS
+// the schema stores. A host sweep writes many records per host (a redirect chain
+// alone is three), and a corpus of thousands of records across a few hundred
+// hosts would otherwise store the same A/AAAA/CNAME arrays thousands of times,
+// inflating the database for data that is identical on every row and stale the
+// moment the TTL expires. Resolving is cheap and repeatable; storing it is not.
+//
+// So this is a read-time attachment: the run that did the resolving reports the
+// full answer inline in its output, and reading the same database back later in
+// a fresh process correctly shows only `ip`. Expiry is deliberately NOT checked
+// — this reports what was resolved for the records being emitted, and a sweep
+// long enough to cross the TTL should still describe the rows it wrote.
+func CachedDNS(hostname string) (a, aaaa, cname []string) {
+	key := dnsKey(hostname)
+	if key == "" {
+		return nil, nil, nil
+	}
+	e, ok := dnsCache.Get(key)
+	if !ok {
+		return nil, nil, nil
+	}
+	return e.a, e.aaaa, e.cname
+}
+
+// lookupHostname performs the actual resolution: addresses split by family, plus
+// the CNAME chain. Never returns an error — a failure is a negative cache entry,
+// which is the same thing every caller does with it.
+//
+// ip is the FIRST address, matching what the single `ip` column has always
+// meant. IPv4 is preferred for it because that is what the dialer will almost
+// always pick on a dual-stack host, so the column keeps describing where the
+// request actually went.
+func lookupHostname(hostname string, wantCNAME bool) dnsEntry {
+	entry := dnsEntry{expiry: time.Now().Add(dnsNegativeTTL)}
+
+	addrs, err := net.LookupHost(hostname)
+	if err == nil {
+		for _, a := range addrs {
+			switch ip := net.ParseIP(a); {
+			case ip == nil:
+				continue
+			case ip.To4() != nil:
+				entry.a = append(entry.a, a)
+			default:
+				entry.aaaa = append(entry.aaaa, a)
+			}
+		}
+	}
+	switch {
+	case len(entry.a) > 0:
+		entry.ip = entry.a[0]
+	case len(entry.aaaa) > 0:
+		entry.ip = entry.aaaa[0]
+	}
+	if entry.ip != "" {
+		entry.expiry = time.Now().Add(dnsPositiveTTL)
+	}
+
+	// A name that is its own canonical name is not aliased; reporting it as a
+	// CNAME of itself would be noise on every non-aliased host. LookupCNAME
+	// returns a trailing dot.
+	if !wantCNAME {
+		return entry
+	}
+	if cname, cerr := net.LookupCNAME(hostname); cerr == nil {
+		if trimmed := strings.TrimSuffix(cname, "."); trimmed != "" && !strings.EqualFold(trimmed, hostname) {
+			entry.cname = []string{trimmed}
+		}
+	}
+	return entry
+}
+
+// literalIPEntry builds the cache entry for a hostname that is already an IP
+// literal: it resolves to itself, in its own family, with no CNAME.
+func literalIPEntry(hostname string) dnsEntry {
+	e := dnsEntry{ip: hostname, expiry: time.Now().Add(dnsPositiveTTL)}
+	if ip := net.ParseIP(hostname); ip != nil && ip.To4() != nil {
+		e.a = []string{hostname}
+	} else {
+		e.aaaa = []string{hostname}
+	}
+	return e
+}
+
+// FromHttpRequestResponse populates an HTTPRecord from httpmsg.HttpRequestResponse.
+//
+// The record OWNS its RawRequest/RawResponse: both are copied out of the source
+// message rather than aliased. This is a lifetime requirement, not a style
+// choice. A converted record routinely outlives the call that produced it —
+// RecordWriter.admit hands it to a shard channel and returns, the flush goroutine
+// inserts it later, and Repository.emitRecordSaved passes it to the filesystem
+// mirror, which writes it from yet another goroutine. Meanwhile the executor
+// builds its responses over a POOLED buffer (see pkg/core, getResponseBuffer)
+// that processItem returns to the pool as soon as it is done with the item.
+// Aliasing therefore let a record be persisted or mirrored with another
+// response's bytes whenever the write outlived the caller — on scan cancellation
+// the caller stops waiting while the record is still queued, which is exactly
+// when this happened.
+//
+// The copy (bytes.Clone below) costs one memcpy per converted record, which is
+// small next to the two SHA-256 passes below, and is only paid for records that
+// get enriched at all.
+//
+// Conversion is split in two halves, and a caller that deduplicates should use
+// them separately rather than calling this: PrepareIdentity fills only the
+// columns that decide WHICH row this is, and EnrichFromHttpRequestResponse does
+// the expensive response-derived work. See PrepareIdentity.
 func (r *HTTPRecord) FromHttpRequestResponse(ctx *httpmsg.HttpRequestResponse) error {
+	if err := r.PrepareIdentity(ctx); err != nil {
+		return err
+	}
+	return r.EnrichFromHttpRequestResponse(ctx)
+}
+
+// PrepareIdentity fills the columns that establish a record's identity — the
+// ones recordDedupKey builds its key from and findDuplicateRecordUUIDs matches
+// on — and nothing else. Cheap: a URL parse, a few header reads, and one SHA-256
+// over the raw request.
+//
+// It exists so a duplicate can be recognized WITHOUT paying for enrichment.
+// EnrichFromHttpRequestResponse runs two more passes over the response body
+// (a normalized-body-hash regex, a word count), tokenizes HTML to pull out a
+// title, and copies the raw bytes. Profiling a 64 KiB HTML response put ~57% of
+// conversion CPU in the normalizing regex alone, and the whole conversion at
+// ~2.6ms and ~786 KiB allocated. On duplicate-heavy ingestion — discovery and
+// spidering re-encountering the same URLs, which is the case the dedup cache was
+// added for — all of that was spent on records thrown away microseconds later.
+//
+// Deliberately NOT here: hostname resolution. The IP is stored metadata, not
+// identity, and scheduling it from this half would spawn a background DNS
+// goroutine for every duplicate too.
+//
+// Callers must set Source (and ProjectUUID) before building a dedup key from the
+// result: recordDedupKey consults both.
+func (r *HTTPRecord) PrepareIdentity(ctx *httpmsg.HttpRequestResponse) error {
 	if ctx == nil || ctx.Request() == nil {
 		return fmt.Errorf("invalid HttpRequestResponse")
 	}
@@ -137,26 +313,21 @@ func (r *HTTPRecord) FromHttpRequestResponse(ctx *httpmsg.HttpRequestResponse) e
 		return fmt.Errorf("failed to parse URL: %w", err)
 	}
 
-	// Generate UUID
-	r.UUID = uuid.New().String()
-
 	// Host info
 	r.Scheme = u.Scheme
 	r.Hostname = u.Hostname()
 	port := 0
 	if u.Port() != "" {
-		_, _ = fmt.Sscanf(u.Port(), "%d", &port)
+		// strconv, not fmt.Sscanf: this runs for every record before the dedup
+		// check, and Sscanf costs ~1us and several allocations (the &port escapes
+		// through an `any`) where Atoi costs ~20ns and none.
+		port, _ = strconv.Atoi(u.Port())
 	} else if u.Scheme == "https" {
 		port = 443
 	} else {
 		port = 80
 	}
 	r.Port = port
-
-	// Resolve hostname to IP (cached per hostname)
-	if ip := resolveHostnameIP(r.Hostname); ip != "" {
-		r.IP = ip
-	}
 
 	// Request fields
 	r.Method = req.Method()
@@ -167,6 +338,41 @@ func (r *HTTPRecord) FromHttpRequestResponse(ctx *httpmsg.HttpRequestResponse) e
 	r.RequestContentType = req.Header("Content-Type")
 	r.RequestContentLength = int64(len(req.Body()))
 
+	// Request hash. Hashing reads the raw bytes without retaining them, so this
+	// half can work straight off the caller's buffer; the owned copy is taken in
+	// the enrichment half, which is where the record starts outliving its caller.
+	hash := sha256.Sum256(req.Raw())
+	r.RequestHash = hex.EncodeToString(hash[:])
+
+	return nil
+}
+
+// EnrichFromHttpRequestResponse fills everything PrepareIdentity left out: the
+// owned raw bytes, all response-derived columns, request authorization,
+// parameters, resolved IP, and timestamps. Run it only for a record that is
+// actually going to be stored. Safe to call on a record whose identity half has
+// already run; it does not recompute it.
+func (r *HTTPRecord) EnrichFromHttpRequestResponse(ctx *httpmsg.HttpRequestResponse) error {
+	if ctx == nil || ctx.Request() == nil {
+		return fmt.Errorf("invalid HttpRequestResponse")
+	}
+
+	req := ctx.Request()
+
+	// The UUID is assigned here, not in PrepareIdentity: nothing between the two
+	// halves reads it (recordDedupKey does not), so generating one for a record
+	// the dedup cache is about to discard would burn a crypto/rand read and a
+	// 36-byte string per duplicate.
+	r.UUID = uuid.New().String()
+
+	// Resolve hostname to IP (cached per hostname). Only the single address is
+	// persisted; the full A/AAAA/CNAME sets stay in the process-local cache and
+	// are attached at serialization time (see CachedDNS) so a corpus of many
+	// records per host does not store the same answer thousands of times.
+	if ip := resolveHostnameIP(r.Hostname); ip != "" {
+		r.IP = ip
+	}
+
 	// Request authorization (prefer Authorization header, fall back to Cookie)
 	if auth := req.Header("Authorization"); auth != "" {
 		r.RequestAuthorization = auth
@@ -174,11 +380,7 @@ func (r *HTTPRecord) FromHttpRequestResponse(ctx *httpmsg.HttpRequestResponse) e
 		r.RequestAuthorization = cookie
 	}
 
-	r.RawRequest = req.Raw()
-
-	// Request hash
-	hash := sha256.Sum256(r.RawRequest)
-	r.RequestHash = hex.EncodeToString(hash[:])
+	r.RawRequest = bytes.Clone(req.Raw())
 
 	// Response (if available)
 	if ctx.HasResponse() {
@@ -189,7 +391,7 @@ func (r *HTTPRecord) FromHttpRequestResponse(ctx *httpmsg.HttpRequestResponse) e
 
 		r.ResponseContentType = resp.Header("Content-Type")
 		r.ResponseContentLength = int64(len(resp.Body()))
-		r.RawResponse = resp.Raw()
+		r.RawResponse = bytes.Clone(resp.Raw())
 
 		respBody := resp.Body()
 		if strings.Contains(strings.ToLower(r.ResponseContentType), "html") {
@@ -204,7 +406,14 @@ func (r *HTTPRecord) FromHttpRequestResponse(ctx *httpmsg.HttpRequestResponse) e
 		// may echo back (e.g. an error page that mirrors the requested URI) and
 		// collapse dynamic runs, so probes that differ only by the reflected target
 		// dedup together instead of surviving as N near-identical records.
-		r.ResponseNormHash = modkit.NormalizedBodyHash(string(respBody), r.Path, r.URL)
+		// BodyToString is memoized on the response, and the passive stage has
+		// usually materialized it already — string(respBody) would copy the whole
+		// body again for an identical value, and so an identical hash.
+		r.ResponseNormHash = modkit.NormalizedBodyHash(resp.BodyToString(), r.Path, r.URL)
+
+		// Zero stays zero and means "not measured"; see httpmsg.MeasuredMillis,
+		// which owns that rule for every column that stores it.
+		r.ResponseTimeMs = httpmsg.MeasuredMillis(resp.Duration())
 
 		r.ReceivedAt = time.Now()
 	}

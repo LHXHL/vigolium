@@ -120,32 +120,92 @@ func newParamShapeCoalescer(maxSamples int) *paramShapeCoalescer {
 	}
 }
 
-// keep reports whether the record described by d should be scanned. A nil
-// coalescer, a non-coalescable request, keep every record; a coalescable one is
-// kept only until its shape's value-distinct sample cap is reached.
-func (c *paramShapeCoalescer) keep(d recordURLDesc) bool {
+// keepPlan is the result of selectKeepers: the rows that survive coalescing,
+// plus the bookkeeping that must be applied for those choices to stick.
+//
+// Selection is separated from commitment because a page's survivors are chosen
+// BEFORE its full records are fetched, and that fetch can fail. On failure the
+// caller leaves the keyset unadvanced so the page is re-pulled — but if the
+// choices had already been recorded, every row would look like a duplicate of
+// itself on the re-pull, nothing would survive, and the caller would take its
+// "whole page coalesced away" branch and step the keyset past a page it never
+// served. A transient SQLITE_BUSY would silently drop those records from the scan.
+//
+// Commit-on-success rather than undo-on-failure: a plan that is never committed
+// needs no cleanup, so a future early return between selection and commit cannot
+// reintroduce that hole by forgetting to unwind.
+type keepPlan struct {
+	added   []shapeValue
+	dropped int
+}
+
+type shapeValue struct {
+	shapeKey string
+	valueSig string
+}
+
+// selectKeepers decides which of rows survive coalescing WITHOUT mutating the
+// coalescer. Apply the returned plan with commit once the caller has committed to
+// the page. A nil coalescer keeps every row.
+func (c *paramShapeCoalescer) selectKeepers(rows []riskPageRow) (surviving []string, plan keepPlan) {
+	surviving = make([]string, 0, len(rows))
 	if c == nil {
-		return true
+		for i := range rows {
+			surviving = append(surviving, rows[i].UUID)
+		}
+		return surviving, plan
 	}
-	shapeKey, valueSig, coalescable := paramShapeRepresentative(d)
-	if !coalescable {
-		return true
+	// Values chosen earlier in THIS page must be visible to later rows, or a page
+	// carrying the same shape twice would keep both against a cap of one.
+	pending := make(map[string]map[string]struct{}, len(rows))
+	plan.added = make([]shapeValue, 0, len(rows))
+
+	for i := range rows {
+		shapeKey, valueSig, coalescable := paramShapeRepresentative(rows[i].desc())
+		if !coalescable {
+			surviving = append(surviving, rows[i].UUID)
+			continue
+		}
+		committed := c.seenByShape[shapeKey]
+		staged := pending[shapeKey]
+		if _, dup := committed[valueSig]; dup {
+			plan.dropped++
+			continue
+		}
+		if _, dup := staged[valueSig]; dup {
+			plan.dropped++
+			continue
+		}
+		if len(committed)+len(staged) >= c.maxSamples {
+			plan.dropped++
+			continue
+		}
+		if staged == nil {
+			staged = make(map[string]struct{})
+			pending[shapeKey] = staged
+		}
+		staged[valueSig] = struct{}{}
+		plan.added = append(plan.added, shapeValue{shapeKey: shapeKey, valueSig: valueSig})
+		surviving = append(surviving, rows[i].UUID)
 	}
-	seen := c.seenByShape[shapeKey]
-	if seen == nil {
-		seen = make(map[string]struct{})
-		c.seenByShape[shapeKey] = seen
+	return surviving, plan
+}
+
+// commit applies a plan returned by selectKeepers, consuming its sample slots for
+// the rest of the stream. A plan that is never committed leaves no trace.
+func (c *paramShapeCoalescer) commit(plan keepPlan) {
+	if c == nil {
+		return
 	}
-	if _, dup := seen[valueSig]; dup {
-		c.dropped++
-		return false
+	for _, sv := range plan.added {
+		seen := c.seenByShape[sv.shapeKey]
+		if seen == nil {
+			seen = make(map[string]struct{})
+			c.seenByShape[sv.shapeKey] = seen
+		}
+		seen[sv.valueSig] = struct{}{}
 	}
-	if len(seen) >= c.maxSamples {
-		c.dropped++
-		return false
-	}
-	seen[valueSig] = struct{}{}
-	return true
+	c.dropped += plan.dropped
 }
 
 // coalesceUUIDsByParamShape walks uuids in their given (priority) order and

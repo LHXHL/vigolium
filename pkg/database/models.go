@@ -197,7 +197,7 @@ type HTTPRecord struct {
 	Scheme   string `bun:"scheme,notnull" json:"scheme"`
 	Hostname string `bun:"hostname,notnull" json:"hostname"`
 	Port     int    `bun:"port,notnull" json:"port"`
-	IP       string `bun:"ip,nullzero" json:"ip,omitempty"` // resolved IP address (cached per hostname)
+	IP       string `bun:"ip,nullzero" json:"ip,omitempty"` // resolved IP address the request went to (httpx: host_ip)
 
 	// Request fields
 	Method               string `bun:"method,notnull" json:"method"`
@@ -243,6 +243,19 @@ type HTTPRecord struct {
 	// Risk labeling (populated by background analysis)
 	Remarks   []string `bun:"remarks,type:jsonb,nullzero" json:"remarks,omitempty"`
 	RiskScore int      `bun:"risk_score,default:0" json:"risk_score"`
+
+	// SurfaceScore is the deterministic attack-surface score (0-100) written by
+	// the surface_scoring passive module, which owns the signal set and the
+	// points-per-signal scale — see pkg/modules/passive/surface_scoring. It
+	// answers "is this record worth attacking" from properties of the record
+	// itself, and is reproducible across scans.
+	//
+	// Deliberately NOT merged into RiskScore: that column holds anomaly_ranking's
+	// rank-within-batch percentile, which measures statistical rarity against
+	// whichever records happened to be flushed alongside it. The two are different
+	// scales from different inputs; sharing one column would mean whichever module
+	// flushed last silently overwrote the other.
+	SurfaceScore int `bun:"surface_score,default:0" json:"surface_score"`
 }
 
 // AnalysisArtifact stores immutable derived content linked to an HTTP record.

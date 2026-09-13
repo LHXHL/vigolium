@@ -25,6 +25,19 @@ import (
 // Returns the UUID of the saved record. If a matching record already exists (same method,
 // hostname, path, URL, and request body), the existing UUID is returned without inserting.
 func (r *Repository) SaveRecord(ctx context.Context, httpRR *httpmsg.HttpRequestResponse, source string, projectUUID string) (string, error) {
+	return r.SaveRecordWithParent(ctx, httpRR, source, projectUUID, "")
+}
+
+// SaveRecordWithParent is SaveRecord with an explicit parent_uuid link, used to
+// chain the hops of a followed redirect into one walkable sequence.
+//
+// On a duplicate hit the existing row's parent is BACKFILLED but never
+// overwritten (see AdoptRecordParent). A row can lose the race to its own
+// chain: a passive module reporting on the final response persists it as
+// finding evidence before the item's own save runs, and that earlier row then
+// wins the dedup — leaving the last link of the chain dangling unless the
+// parent is applied after the fact.
+func (r *Repository) SaveRecordWithParent(ctx context.Context, httpRR *httpmsg.HttpRequestResponse, source string, projectUUID string, parentUUID string) (string, error) {
 	if httpRR == nil || httpRR.Request() == nil {
 		return "", fmt.Errorf("invalid HttpRequestResponse")
 	}
@@ -35,8 +48,10 @@ func (r *Repository) SaveRecord(ctx context.Context, httpRR *httpmsg.HttpRequest
 	}
 	record.Source = source
 	record.ProjectUUID = defaultProjectUUID(projectUUID)
+	record.ParentUUID = parentUUID
 
 	if existingUUID, err := r.findDuplicateRecord(ctx, record); err == nil && existingUUID != "" {
+		r.AdoptRecordParent(ctx, existingUUID, parentUUID)
 		return existingUUID, nil
 	}
 
@@ -46,6 +61,34 @@ func (r *Repository) SaveRecord(ctx context.Context, httpRR *httpmsg.HttpRequest
 
 	r.emitRecordSaved(record)
 	return record.UUID, nil
+}
+
+// AdoptRecordParent links an existing record to a parent, but ONLY when it has
+// none. A no-op for an empty uuid or parent.
+//
+// Backfill-never-overwrite is the whole contract. Filling an empty parent adds
+// information and cannot contradict anything. Overwriting a set one would let
+// the most recent scan to traverse a shared redirect target silently re-parent
+// it out of the chain it was first recorded in, rewriting history for every
+// earlier chain that ran through the same URL.
+//
+// Best-effort: a failure to link leaves a shorter chain, which reads correctly
+// as less lineage rather than as wrong lineage, and must not fail the save that
+// prompted it.
+func (r *Repository) AdoptRecordParent(ctx context.Context, uuid, parentUUID string) {
+	if uuid == "" || parentUUID == "" || uuid == parentUUID {
+		return
+	}
+	_, err := r.db.NewUpdate().
+		Model((*HTTPRecord)(nil)).
+		Set("parent_uuid = ?", parentUUID).
+		Where("uuid = ?", uuid).
+		Where("parent_uuid IS NULL OR parent_uuid = ''").
+		Exec(ctx)
+	if err != nil {
+		zap.L().Debug("failed to backfill record parent",
+			zap.String("uuid", uuid), zap.String("parent", parentUUID), zap.Error(err))
+	}
 }
 
 // UpsertSnapshotRecord stores a Burp snapshot record idempotently. When an
@@ -266,8 +309,12 @@ func (r *Repository) SaveRecordBatch(ctx context.Context, records []*httpmsg.Htt
 
 	projectUUID = defaultProjectUUID(projectUUID)
 	dbRecords := make([]*HTTPRecord, 0, len(records))
+	// converted[i] is the model for input record i, or nil when it failed
+	// conversion and was never sent to the database. SaveRecordsBatch stamps each
+	// model's UUID in place, so this doubles as the index back onto the input.
+	converted := make([]*HTTPRecord, len(records))
 
-	for _, rr := range records {
+	for i, rr := range records {
 		rec := &HTTPRecord{}
 		if err := rec.FromHttpRequestResponse(rr); err != nil {
 			zap.L().Debug("SaveRecordBatch: skipping record", zap.Error(err))
@@ -275,10 +322,45 @@ func (r *Repository) SaveRecordBatch(ctx context.Context, records []*httpmsg.Htt
 		}
 		rec.Source = source
 		rec.ProjectUUID = projectUUID
+		converted[i] = rec
 		dbRecords = append(dbRecords, rec)
 	}
 
-	return r.SaveRecordsBatch(ctx, dbRecords)
+	if _, err := r.SaveRecordsBatch(ctx, dbRecords); err != nil {
+		return nil, err
+	}
+
+	// The returned slice MUST stay positionally aligned with records, with "" for
+	// a record that was skipped. Callers zip the result back onto their input by
+	// index (discovery's saveAndEmitWithUUIDs assigns uuids[i] to records[i]), so
+	// returning the compacted slice shifted every UUID after a conversion failure
+	// onto the PRECEDING request — silently linking that record's findings to the
+	// wrong HTTP exchange in finding_records, the fs/HTML/SARIF evidence and the
+	// live mirror. A malformed discovered URL is enough to trigger it, and the
+	// conversion failure itself is only logged at Debug. This also matches the
+	// alignment RecordWriter.SaveRecordBatch already promises for the same
+	// interface, so the two implementations no longer disagree.
+	out := make([]string, len(records))
+	for i, rec := range converted {
+		if rec != nil {
+			out[i] = rec.UUID
+		}
+	}
+	return out, nil
+}
+
+// CountSaved reports how many records in a SaveRecordBatch result were actually
+// persisted. The result is index-aligned with the input and carries "" for a
+// record that was skipped, so len() over-reports — this is the only correct way
+// to turn that slice into a count.
+func CountSaved(uuids []string) int {
+	n := 0
+	for _, u := range uuids {
+		if u != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // SaveRecordsBatch inserts multiple HTTP records in a single transaction.
@@ -1072,9 +1154,32 @@ func (r *Repository) AppendRemarks(ctx context.Context, annotations map[string][
 	return firstErr
 }
 
+// Score columns on http_records that updateScoreColumn may write. They are
+// package constants rather than caller-supplied strings because the column name
+// is interpolated straight into the UPDATE statement: a name that could reach
+// here from outside the package would be an injection point.
+const (
+	scoreColumnRisk    = "risk_score"
+	scoreColumnSurface = "surface_score"
+)
+
 // UpdateRiskScores batch-updates risk_score on HTTPRecords identified by UUID.
 // Uses CASE/WHEN SQL to update up to 500 records per statement, minimizing roundtrips.
 func (r *Repository) UpdateRiskScores(ctx context.Context, scores map[string]int) error {
+	return r.updateScoreColumn(ctx, scoreColumnRisk, scores)
+}
+
+// UpdateSurfaceScores batch-updates surface_score on HTTPRecords identified by
+// UUID. Written by the surface_scoring passive module; see HTTPRecord.SurfaceScore
+// for why this is a separate column from risk_score rather than a second writer
+// of the same one.
+func (r *Repository) UpdateSurfaceScores(ctx context.Context, scores map[string]int) error {
+	return r.updateScoreColumn(ctx, scoreColumnSurface, scores)
+}
+
+// updateScoreColumn batch-updates one integer score column on HTTPRecords
+// identified by UUID. column must be one of the scoreColumn* constants.
+func (r *Repository) updateScoreColumn(ctx context.Context, column string, scores map[string]int) error {
 	if len(scores) == 0 {
 		return nil
 	}
@@ -1092,7 +1197,7 @@ func (r *Repository) UpdateRiskScores(ctx context.Context, scores map[string]int
 			if end > len(uuids) {
 				end = len(uuids)
 			}
-			if err := updateRiskScoreBatch(ctx, tx, scores, uuids[i:end]); err != nil {
+			if err := updateScoreBatch(ctx, tx, column, scores, uuids[i:end]); err != nil {
 				return err
 			}
 		}
@@ -1100,14 +1205,20 @@ func (r *Repository) UpdateRiskScores(ctx context.Context, scores map[string]int
 	})
 }
 
-// updateRiskScoreBatch executes a single CASE/WHEN UPDATE for a batch of UUIDs.
-func updateRiskScoreBatch(ctx context.Context, tx bun.Tx, scores map[string]int, uuids []string) error {
-	// Build: UPDATE http_records SET risk_score = CASE uuid WHEN ? THEN ? ... END WHERE uuid IN (?,...)
+// updateScoreBatch executes a single CASE/WHEN UPDATE for a batch of UUIDs.
+func updateScoreBatch(ctx context.Context, tx bun.Tx, column string, scores map[string]int, uuids []string) error {
+	// Build: UPDATE http_records SET <column> = CASE uuid WHEN ? THEN ? ... END WHERE uuid IN (?,...)
 	// Each UUID contributes 2 args to CASE + 1 arg to IN = 3 args per UUID.
 	// Batch of 500 = 1500 args, well within SQLITE_MAX_VARIABLE_NUMBER (999 default raised in modern builds).
 	args := make([]interface{}, 0, len(uuids)*3)
 	var caseSQL strings.Builder
-	caseSQL.WriteString("UPDATE http_records SET risk_score = CASE uuid ")
+	// ~16 bytes of "WHEN ? THEN ? " and ",?" per uuid plus the fixed clauses. A
+	// 500-uuid batch builds ~8 KB, which from a zero-length Builder costs ~13
+	// doubling reallocations and ~16 KB copied.
+	caseSQL.Grow(len(uuids)*16 + 64)
+	caseSQL.WriteString("UPDATE http_records SET ")
+	caseSQL.WriteString(column)
+	caseSQL.WriteString(" = CASE uuid ")
 	for _, uuid := range uuids {
 		caseSQL.WriteString("WHEN ? THEN ? ")
 		args = append(args, uuid, scores[uuid])
@@ -1124,7 +1235,7 @@ func updateRiskScoreBatch(ctx context.Context, tx bun.Tx, scores map[string]int,
 
 	_, err := tx.ExecContext(ctx, caseSQL.String(), args...)
 	if err != nil {
-		return fmt.Errorf("failed to batch update risk_scores: %w", err)
+		return fmt.Errorf("failed to batch update %s: %w", column, err)
 	}
 	return nil
 }

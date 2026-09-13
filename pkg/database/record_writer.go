@@ -48,9 +48,21 @@ type RecordWriterConfig struct {
 	// DedupCacheSize bounds the in-memory dedup cache (LRU) that maps a record's
 	// dedup key to its UUID. A cache hit lets Write skip the per-record SELECT and
 	// the redundant insert for a key already seen by this writer (common in
-	// discovery/spidering, which re-encounter the same URLs). 0 disables the
-	// cache. Default: 50000.
+	// discovery/spidering, which re-encounter the same URLs). Zero means "unset"
+	// and selects the default of 50000; pass a NEGATIVE size to disable the cache.
 	DedupCacheSize int
+
+	// MaxSubmitRecords and MaxSubmitBytes bound ONE SaveRecordBatch submission:
+	// how many records (and how many raw request+response bytes) it admits before
+	// waiting for that slice to resolve. They cap the peak memory of a bulk caller
+	// that hands over a whole collection at once — without them, peak retention is
+	// set by the caller's corpus size and nothing else.
+	//
+	// Both defaults sit well above BatchSize, so a submission still fills many
+	// writer batches and the coalescing SaveRecordBatch exists for is preserved.
+	// Defaults: 1024 records, 128 MiB.
+	MaxSubmitRecords int
+	MaxSubmitBytes   int64
 }
 
 func (c *RecordWriterConfig) withDefaults() RecordWriterConfig {
@@ -73,6 +85,12 @@ func (c *RecordWriterConfig) withDefaults() RecordWriterConfig {
 	if out.DedupCacheSize == 0 {
 		out.DedupCacheSize = 50000
 	}
+	if out.MaxSubmitRecords <= 0 {
+		out.MaxSubmitRecords = 1024
+	}
+	if out.MaxSubmitBytes <= 0 {
+		out.MaxSubmitBytes = 128 << 20
+	}
 	return out
 }
 
@@ -80,6 +98,10 @@ func (c *RecordWriterConfig) withDefaults() RecordWriterConfig {
 type writeRequest struct {
 	record *HTTPRecord
 	result chan<- WriteResult
+	// dedupKey is recordDedupKey(record), computed once by admit. Carried here so
+	// the flush loop's within-batch grouping reuses it instead of rebuilding the
+	// same string for every record it handles.
+	dedupKey string
 }
 
 // WriteResult is the outcome of a single record write.
@@ -89,9 +111,16 @@ type WriteResult struct {
 }
 
 // RecordWriterMetrics exposes counters for monitoring.
+//
+// Flushed and FlushFailed partition the batch entries that reached a terminal
+// outcome: Flushed counts entries that ended up persisted or deduplicated onto
+// an existing row, FlushFailed counts entries whose insert transaction failed.
+// FlushErrors counts failing BATCHES, so it is not comparable with either —
+// one failed batch fails every entry in it.
 type RecordWriterMetrics struct {
 	Enqueued    int64
 	Flushed     int64
+	FlushFailed int64
 	FlushErrors int64
 	BatchCount  int64
 	BufferDepth int64
@@ -116,6 +145,7 @@ type RecordWriter struct {
 	// aggregate metrics (sum across shards)
 	enqueued    atomic.Int64
 	flushed     atomic.Int64
+	flushFailed atomic.Int64
 	flushErrors atomic.Int64
 	batchCount  atomic.Int64
 
@@ -221,15 +251,24 @@ type pendingWrite struct {
 // to its shard through the admission gate WITHOUT waiting. Shared by Write (one
 // record) and SaveRecordBatch (admit all, then await all), so a lone bulk caller
 // fills real writer batches instead of paying one flush interval per record.
-func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestResponse, source, projectUUID string) pendingWrite {
+func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestResponse, source, projectUUID, parentUUID string) pendingWrite {
 	if rr == nil || rr.Request() == nil {
 		return pendingWrite{err: fmt.Errorf("invalid HttpRequestResponse"), resolved: true}
 	}
+	// Identity first, enrichment only if this record survives the dedup cache.
+	// The expensive half of conversion — normalized body hash, HTML title parse,
+	// word count, response hashing, owning the raw bytes — is pure waste for a key
+	// the cache is about to resolve from memory. See HTTPRecord.PrepareIdentity.
 	record := &HTTPRecord{}
-	if err := record.FromHttpRequestResponse(rr); err != nil {
+	if err := record.PrepareIdentity(rr); err != nil {
 		return pendingWrite{err: fmt.Errorf("failed to convert request: %w", err), resolved: true}
 	}
 	record.Source = source
+	// Lineage is applied to a NEW row only; a dedup hit below returns the
+	// existing row untouched. Deliberate: a shared redirect target already has
+	// whatever chain it was first written under, and re-parenting it to the most
+	// recent traversal would rewrite history for every earlier chain.
+	record.ParentUUID = parentUUID
 	// Default the project UUID before the dedup lookup so it matches what
 	// SaveRecordsBatch persists. Otherwise an empty projectUUID makes the lookup
 	// filter on project_uuid="" while inserts land under DefaultProjectUUID, and
@@ -242,8 +281,22 @@ func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestRespons
 	dedupKey := recordDedupKey(record)
 	if w.dedupCache != nil {
 		if existingUUID, ok := w.dedupCache.Get(dedupKey); ok {
+			// The in-memory fast path skips the SELECT and the insert, so it must
+			// also carry the lineage the flush path would have applied — otherwise
+			// whether a redirect chain links up depends on cache residency.
+			if record.ParentUUID != "" {
+				w.repo.AdoptRecordParent(ctx, existingUUID, record.ParentUUID)
+			}
 			return pendingWrite{uuid: existingUUID, resolved: true}
 		}
+	}
+
+	// Cache miss: this record may really be stored, so finish converting it. This
+	// is also where it takes ownership of its raw bytes, which it must do before
+	// being handed to the shard channel below — from that point it outlives this
+	// call. See HTTPRecord.FromHttpRequestResponse.
+	if err := record.EnrichFromHttpRequestResponse(rr); err != nil {
+		return pendingWrite{err: fmt.Errorf("failed to convert request: %w", err), resolved: true}
 	}
 
 	// Admission gate: once admitted, Close() waits for this enqueue to finish
@@ -264,7 +317,7 @@ func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestRespons
 	// w.ctx.Done() case here releases the blocked send (resolved as closed) so
 	// shutdown can complete. The caller's own ctx can also abandon the send.
 	select {
-	case shard.ch <- writeRequest{record: record, result: resultCh}:
+	case shard.ch <- writeRequest{record: record, result: resultCh, dedupKey: dedupKey}:
 		w.admitWG.Done() // admitted; the drain now owns delivering our result
 		return pendingWrite{dedupKey: dedupKey, resultCh: resultCh}
 	case <-ctx.Done():
@@ -300,10 +353,17 @@ func (w *RecordWriter) await(ctx context.Context, p pendingWrite) (string, error
 // It blocks until the record is persisted (or the context is cancelled).
 // This is safe to call from multiple goroutines concurrently.
 func (w *RecordWriter) Write(ctx context.Context, rr *httpmsg.HttpRequestResponse, source string, projectUUID string) (string, error) {
+	return w.WriteWithParent(ctx, rr, source, projectUUID, "")
+}
+
+// WriteWithParent is Write with an explicit parent_uuid link, used to chain the
+// hops of a followed redirect into one walkable sequence. See admit for why the
+// link is applied to new rows only.
+func (w *RecordWriter) WriteWithParent(ctx context.Context, rr *httpmsg.HttpRequestResponse, source string, projectUUID string, parentUUID string) (string, error) {
 	if w.closed.Load() {
 		return "", ErrRecordWriterClosed
 	}
-	return w.await(ctx, w.admit(ctx, rr, source, projectUUID))
+	return w.await(ctx, w.admit(ctx, rr, source, projectUUID, parentUUID))
 }
 
 // cacheDedup records a dedup key → UUID mapping so a later Write of the same key
@@ -360,6 +420,7 @@ func (w *RecordWriter) Metrics() RecordWriterMetrics {
 	return RecordWriterMetrics{
 		Enqueued:    w.enqueued.Load(),
 		Flushed:     w.flushed.Load(),
+		FlushFailed: w.flushFailed.Load(),
 		FlushErrors: w.flushErrors.Load(),
 		BatchCount:  w.batchCount.Load(),
 		BufferDepth: bufferDepth,
@@ -371,7 +432,7 @@ func (w *RecordWriter) SaveRecord(ctx context.Context, rr *httpmsg.HttpRequestRe
 	return w.Write(ctx, rr, source, projectUUID)
 }
 
-// SaveRecordBatch enqueues every record to its shard BEFORE awaiting any result,
+// SaveRecordBatch enqueues records to their shards BEFORE awaiting any result,
 // so a single bulk producer's records land in the same writer batch instead of
 // paying one flush interval per record (the trap of a Write-in-a-loop: Write
 // blocks until its record is flushed, so a lone producer never fills a batch).
@@ -379,6 +440,15 @@ func (w *RecordWriter) SaveRecord(ctx context.Context, rr *httpmsg.HttpRequestRe
 // to records[i] — including deduplicated, invalid, and failed entries, so callers
 // can't misassociate a UUID. The first error encountered is returned alongside
 // the (still complete) uuid slice.
+//
+// Submissions are admitted in BOUNDED slices rather than all at once. Callers
+// hand this whole collections: discovery submits an entire provenance group in
+// one call, which on a large corpus is tens of thousands of records. Admitting
+// them together made every one of their converted HTTPRecords — each owning a
+// full raw request and response — plus a result channel each live simultaneously,
+// so peak memory scaled with the corpus rather than with anything configured.
+// Slices stay large enough to fill many writer batches, so the coalescing this
+// method exists for is unaffected.
 func (w *RecordWriter) SaveRecordBatch(ctx context.Context, records []*httpmsg.HttpRequestResponse, source string, projectUUID string) ([]string, error) {
 	uuids := make([]string, len(records))
 	if len(records) == 0 {
@@ -388,23 +458,61 @@ func (w *RecordWriter) SaveRecordBatch(ctx context.Context, records []*httpmsg.H
 		return uuids, ErrRecordWriterClosed
 	}
 
-	// Phase 1: admit ALL records without waiting, so they sit in the shard channels
-	// together and the flush loop coalesces them into real batches.
-	pend := make([]pendingWrite, len(records))
-	for i, rr := range records {
-		pend[i] = w.admit(ctx, rr, source, projectUUID)
-	}
-
-	// Phase 2: collect results in input order.
 	var firstErr error
-	for i := range pend {
-		uuid, err := w.await(ctx, pend[i])
-		uuids[i] = uuid
-		if err != nil && firstErr == nil {
-			firstErr = err
+
+	for start := 0; start < len(records); {
+		end := w.submitSliceEnd(records, start)
+
+		// Phase 1: admit this slice without waiting, so its records sit in the
+		// shard channels together and the flush loop coalesces them.
+		pend := make([]pendingWrite, 0, end-start)
+		for _, rr := range records[start:end] {
+			pend = append(pend, w.admit(ctx, rr, source, projectUUID, ""))
 		}
+
+		// Phase 2: collect this slice's results in input order.
+		for i, p := range pend {
+			uuid, err := w.await(ctx, p)
+			uuids[start+i] = uuid
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		start = end
 	}
 	return uuids, firstErr
+}
+
+// submitSliceEnd returns the exclusive end of the next submission slice starting
+// at start, bounded by both record count and total wire bytes. It always takes at
+// least one record, so a single oversized record is submitted on its own rather
+// than stalling the batch forever.
+func (w *RecordWriter) submitSliceEnd(records []*httpmsg.HttpRequestResponse, start int) int {
+	var bytes int64
+	for end := start; end < len(records); end++ {
+		size := recordWireSize(records[end])
+		if end > start && (end-start >= w.cfg.MaxSubmitRecords || bytes+size > w.cfg.MaxSubmitBytes) {
+			return end
+		}
+		bytes += size
+	}
+	return len(records)
+}
+
+// recordWireSize estimates what one record will retain once converted: its raw
+// request and response bytes, which dominate everything else on the record.
+func recordWireSize(rr *httpmsg.HttpRequestResponse) int64 {
+	if rr == nil {
+		return 0
+	}
+	var n int64
+	if req := rr.Request(); req != nil {
+		n += int64(len(req.Raw()))
+	}
+	if resp := rr.Response(); resp != nil {
+		n += int64(len(resp.Raw()))
+	}
+	return n
 }
 
 // Close stops accepting new writes, flushes remaining records, and returns.
@@ -481,14 +589,14 @@ func (w *RecordWriter) flushLoop(ctx context.Context, s *writerShard) {
 			batch = append(batch, req)
 			if len(batch) >= w.cfg.BatchSize {
 				w.flush(context.Background(), batch)
-				batch = batch[:0]
+				batch = resetBatch(batch)
 				ticker.Reset(w.cfg.FlushInterval)
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
 				w.flush(context.Background(), batch)
-				batch = batch[:0]
+				batch = resetBatch(batch)
 			}
 
 		case <-ctx.Done():
@@ -502,7 +610,7 @@ func (w *RecordWriter) flushLoop(ctx context.Context, s *writerShard) {
 					batch = append(batch, req)
 					if len(batch) >= w.cfg.BatchSize {
 						w.flush(drainCtx, batch)
-						batch = batch[:0]
+						batch = resetBatch(batch)
 					}
 				default:
 					if len(batch) > 0 {
@@ -514,6 +622,16 @@ func (w *RecordWriter) flushLoop(ctx context.Context, s *writerShard) {
 			}
 		}
 	}
+}
+
+// resetBatch empties a flushed batch for reuse, clearing the entries first.
+// A plain batch[:0] keeps the backing array's pointers live, so between a flush
+// and the next record the loop would still pin up to BatchSize HTTPRecords —
+// each holding a full raw request and response. At an idle shard that retention
+// lasts as long as the idle does.
+func resetBatch(batch []writeRequest) []writeRequest {
+	clear(batch)
+	return batch[:0]
 }
 
 // flush resolves a batch of records and notifies callers. It first runs one
@@ -556,7 +674,7 @@ func (w *RecordWriter) flush(ctx context.Context, batch []writeRequest) {
 		if existing[i] != "" {
 			continue
 		}
-		key := recordDedupKey(records[i])
+		key := batch[i].dedupKey
 		repIdx, ok := groups[key]
 		if !ok {
 			repIdx = i
@@ -578,17 +696,50 @@ func (w *RecordWriter) flush(ctx context.Context, batch []writeRequest) {
 			zap.Error(insErr))
 	}
 
-	w.flushed.Add(int64(len(batch)))
+	// Flushed counts entries that reached a real terminal outcome (persisted or
+	// deduplicated onto an existing row); failed entries go to FlushFailed. Adding
+	// len(batch) unconditionally here used to report every record of a failed
+	// insert as flushed, so a run that silently lost a whole batch still showed
+	// enqueued == flushed — the one number an operator would check.
+	var okCount, failCount int64
+
+	// Lineage backfills for records that deduped onto an existing row, collected
+	// here and applied AFTER every caller has its result. Each one is its own
+	// UPDATE round trip, and running them inline made a duplicate-heavy batch
+	// deliver results at the pace of up to BatchSize serial statements — with
+	// every other caller in the batch blocked behind them. Deferring is safe
+	// because adoption is a backfill that only ever fills an empty parent (see
+	// Repository.AdoptRecordParent): it adds information the caller does not read
+	// back, and it can never contradict what is already stored.
+	// Batch indices only: existing[i] and records[i].ParentUUID are both still
+	// live and unmutated below, so there is nothing to copy out.
+	var adoptions []int
 
 	for i, req := range batch {
 		switch {
 		case existing[i] != "":
+			// A record that deduped onto an earlier row can still contribute its
+			// lineage: the earlier row may have been written as finding evidence,
+			// before the chain that contains it existed.
+			if records[i].ParentUUID != "" {
+				adoptions = append(adoptions, i)
+			}
+			okCount++
 			req.result <- WriteResult{UUID: existing[i]}
 		case insErr != nil:
+			failCount++
 			req.result <- WriteResult{Err: fmt.Errorf("batch insert failed: %w", insErr)}
 		default:
 			// The representative record carries the freshly assigned UUID.
+			okCount++
 			req.result <- WriteResult{UUID: records[rep[i]].UUID}
 		}
 	}
+
+	for _, i := range adoptions {
+		w.repo.AdoptRecordParent(ctx, existing[i], records[i].ParentUUID)
+	}
+
+	w.flushed.Add(okCount)
+	w.flushFailed.Add(failCount)
 }

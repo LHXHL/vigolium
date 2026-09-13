@@ -671,9 +671,6 @@ func (r *Repository) DeduplicateFindings(ctx context.Context, projectUUID string
 			if len(merged) == len(g.existingEvidence) {
 				continue // nothing new after dropping duplicates of the primary pair
 			}
-			if len(merged) > maxAdditionalEvidence {
-				merged = merged[:maxAdditionalEvidence]
-			}
 			if _, err := tx.NewUpdate().Model((*Finding)(nil)).
 				Set("additional_evidence = ?", merged).
 				Where("id = ?", g.survivorID).
@@ -953,9 +950,6 @@ func (r *Repository) GroupFindingsByValue(ctx context.Context, projectUUID strin
 			}
 			primary := buildEvidence(g.survivorRequest, g.survivorResponse)
 			mergedEvidence := appendUniqueEvidence(g.existingEvidence, primary, g.dupEvidence...)
-			if len(mergedEvidence) > maxAdditionalEvidence {
-				mergedEvidence = mergedEvidence[:maxAdditionalEvidence]
-			}
 			upd := tx.NewUpdate().Model((*Finding)(nil)).Where("id = ?", g.survivorID)
 			if len(mergedMatched) > 0 {
 				upd = upd.Set("matched_at = ?", mergedMatched)

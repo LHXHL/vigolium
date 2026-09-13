@@ -99,6 +99,13 @@ func (r *HTTPRecord) MarshalJSON() ([]byte, error) {
 	type alias HTTPRecord
 	reqHeaders, respHeaders, reqBody, respBody := r.ParsedView()
 
+	// Host facts (the full DNS answer, TLS certificate) are deliberately NOT
+	// attached here. They live in process-local caches, and a Marshaler that
+	// consults global mutable state attaches them to every record every caller
+	// serializes — including the ingest server's GET /api/records, which would
+	// then decorate one project's rows with a name resolved at an unknown time
+	// while ingesting another's. Emit sites that know the current process probed
+	// opt in explicitly via WithHostFacts.
 	return json.Marshal(&struct {
 		*alias
 		RequestHeaders  map[string][]string `json:"request_headers,omitempty"`

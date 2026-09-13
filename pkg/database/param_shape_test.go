@@ -153,3 +153,106 @@ func TestCoalesceUUIDsByParamShape_PriorityOrderWins(t *testing.T) {
 		t.Errorf("priority record must win the slot, got kept=%v dropped=%d", kept, dropped)
 	}
 }
+
+// searchShapePage is one page of rows sharing a param shape, differing by value.
+func searchShapePage(values ...string) []riskPageRow {
+	rows := make([]riskPageRow, 0, len(values))
+	for _, v := range values {
+		rows = append(rows, riskPageRow{
+			UUID:   "uuid-" + v,
+			Method: "GET",
+			URL:    "https://a.com/search?q=" + v,
+		})
+	}
+	return rows
+}
+
+// TestSelectKeepersDoesNotMutateUntilCommit is the regression guard for the
+// silent page drop: survivors are chosen before the full-record fetch, so an
+// uncommitted selection must leave no trace. When the choices were recorded
+// eagerly, the re-pull after a failed fetch saw every row as a duplicate of
+// itself, kept nothing, and the caller stepped the keyset past a page it never
+// served.
+func TestSelectKeepersDoesNotMutateUntilCommit(t *testing.T) {
+	c := newParamShapeCoalescer(5)
+
+	first, plan := c.selectKeepers(searchShapePage("1", "2", "3"))
+	if len(first) != 3 {
+		t.Fatalf("first pass: want 3 survivors, got %d (%v)", len(first), first)
+	}
+	// The fetch failed, so the plan is discarded rather than committed.
+	if c.dropped != 0 || len(c.seenByShape) != 0 {
+		t.Errorf("selection mutated the coalescer: dropped=%d shapes=%d", c.dropped, len(c.seenByShape))
+	}
+	_ = plan
+
+	// Re-pulling the same page must reproduce the same survivors.
+	retry, retryPlan := c.selectKeepers(searchShapePage("1", "2", "3"))
+	if len(retry) != len(first) {
+		t.Fatalf("after a discarded plan: want %d survivors on retry, got %d (%v)", len(first), len(retry), retry)
+	}
+	for i := range first {
+		if retry[i] != first[i] {
+			t.Errorf("retry survivor %d = %q, want %q", i, retry[i], first[i])
+		}
+	}
+
+	// Committing makes the choices stick for the rest of the stream.
+	c.commit(retryPlan)
+	if len(c.seenByShape) != 1 {
+		t.Errorf("commit recorded %d shapes, want 1", len(c.seenByShape))
+	}
+}
+
+// A committed page consumes its shape's sample slots, so a later page of the
+// same shape coalesces away.
+func TestCommitConsumesSampleSlots(t *testing.T) {
+	c := newParamShapeCoalescer(3)
+
+	kept, plan := c.selectKeepers(searchShapePage("1", "2", "3"))
+	if len(kept) != 3 {
+		t.Fatalf("first page: want 3 survivors, got %d", len(kept))
+	}
+	c.commit(plan)
+
+	kept, plan = c.selectKeepers(searchShapePage("4", "5"))
+	if len(kept) != 0 {
+		t.Fatalf("second page: want 0 survivors past the cap, got %d (%v)", len(kept), kept)
+	}
+	c.commit(plan)
+	if c.dropped != 2 {
+		t.Errorf("dropped = %d, want 2", c.dropped)
+	}
+}
+
+// Rows sharing a shape WITHIN one page must respect the cap between themselves,
+// not just against already-committed state.
+func TestSelectKeepersAppliesCapWithinOnePage(t *testing.T) {
+	c := newParamShapeCoalescer(2)
+	kept, _ := c.selectKeepers(searchShapePage("1", "2", "3", "4"))
+	if len(kept) != 2 {
+		t.Errorf("want 2 survivors under a cap of 2, got %d (%v)", len(kept), kept)
+	}
+}
+
+// A duplicate value inside one page is dropped even before commit.
+func TestSelectKeepersDropsIntraPageDuplicates(t *testing.T) {
+	c := newParamShapeCoalescer(5)
+	kept, plan := c.selectKeepers(searchShapePage("1", "1", "2"))
+	if len(kept) != 2 {
+		t.Errorf("want 2 survivors (one duplicate dropped), got %d (%v)", len(kept), kept)
+	}
+	if plan.dropped != 1 {
+		t.Errorf("plan.dropped = %d, want 1", plan.dropped)
+	}
+}
+
+// A nil coalescer (coalescing disabled) keeps every row and commits safely.
+func TestSelectKeepersNilCoalescerKeepsEverything(t *testing.T) {
+	var c *paramShapeCoalescer // newParamShapeCoalescer(0) returns nil
+	kept, plan := c.selectKeepers(searchShapePage("1", "2", "3"))
+	if len(kept) != 3 {
+		t.Errorf("nil coalescer must keep every record, got %d", len(kept))
+	}
+	c.commit(plan) // must not panic
+}

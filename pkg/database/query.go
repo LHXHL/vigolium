@@ -15,6 +15,15 @@ type QueryFilters struct {
 	// Project scoping
 	ProjectUUID string // Required: filter all queries to this project
 
+	// Identity filtering. RecordUUIDs selects exact stored records by UUID and is
+	// applied as a SQL predicate, so it narrows BEFORE pagination — a record is
+	// never reported absent merely because it fell outside the current page.
+	// Without it the read surface had no identity selector at all: the only flags
+	// that took a record UUID (`replay -u`, `fuzz -u`) both send traffic, and a
+	// UUID passed as the fuzzy search term matched zero rows because that term
+	// searches URL/path/body, not identity.
+	RecordUUIDs []string
+
 	// Host filtering
 	HostPattern string // Hostname pattern (supports wildcards)
 
@@ -30,9 +39,10 @@ type QueryFilters struct {
 	ContentType string // Filter by response content type
 
 	// Risk filtering
-	MinRiskScore int      // Minimum risk score filter
-	Remark       string   // Filter by remark substring (single)
-	Remarks      []string // Filter by multiple remarks (AND: record must have all)
+	MinRiskScore    int      // Minimum risk score filter (anomaly_ranking's batch percentile)
+	MinSurfaceScore int      // Minimum attack-surface score filter (surface_scoring's 0-100 signal score)
+	Remark          string   // Filter by remark substring (single)
+	Remarks         []string // Filter by multiple remarks (AND: record must have all)
 
 	// Finding filtering
 	FindingID      int      // Filter by finding ID
@@ -261,9 +271,18 @@ func (qb *QueryBuilder) Execute(ctx context.Context) ([]*HTTPRecord, error) {
 }
 
 // ExecuteWithCount runs the filtered query and returns the matching page of
-// records alongside the total unfiltered count in a single round-trip via
-// Bun's ScanAndCount. Use this for paginated views instead of Execute + Count,
-// which issues two separate queries.
+// records alongside the total count for the same filters.
+//
+// It is NOT one round trip, despite what this comment used to claim. Bun's
+// ScanAndCount collapses to a single statement only when there is no limit and
+// no offset; a paginated call — the only reason to use this method — takes the
+// two-query path, and with no explicit conn it runs the scan and the count
+// CONCURRENTLY, so it occupies two pool connections for its duration. On SQLite
+// that is worth remembering when this runs alongside a busy RecordWriter.
+//
+// Still preferable to Execute + Count, which serializes the same two queries.
+// Callers that do not need an exact total on every refresh should use Execute
+// alone rather than paying the count.
 func (qb *QueryBuilder) ExecuteWithCount(ctx context.Context) ([]*HTTPRecord, int64, error) {
 	records := make([]*HTTPRecord, 0)
 	count, err := qb.BuildRecordsQuery().ScanAndCount(ctx, &records)
@@ -278,6 +297,13 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 	// Project scoping (always applied when set)
 	if qb.filters.ProjectUUID != "" {
 		query.Where("r.project_uuid = ?", qb.filters.ProjectUUID)
+	}
+
+	// Exact identity. Deliberately an equality IN (), never a LIKE: an identity
+	// selector that silently widened into a prefix match would turn "this record"
+	// into "records whose id starts like this".
+	if len(qb.filters.RecordUUIDs) > 0 {
+		query.Where("r.uuid IN (?)", bun.List(qb.filters.RecordUUIDs))
 	}
 
 	// Host filtering (direct column, no join)
@@ -323,6 +349,11 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 	// Risk score filtering
 	if qb.filters.MinRiskScore > 0 {
 		query.Where("r.risk_score >= ?", qb.filters.MinRiskScore)
+	}
+
+	// Attack-surface score filtering
+	if qb.filters.MinSurfaceScore > 0 {
+		query.Where("r.surface_score >= ?", qb.filters.MinSurfaceScore)
 	}
 
 	// Remark filtering (single)
@@ -481,6 +512,8 @@ func (qb *QueryBuilder) mapSortColumn(name string) string {
 		return "r.source"
 	case "risk_score", "risk":
 		return "r.risk_score"
+	case "surface_score", "surface":
+		return "r.surface_score"
 	default:
 		return "r.created_at"
 	}
@@ -547,29 +580,40 @@ func (db *DeleteBuilder) DeleteRecords(ctx context.Context, dryRun bool) (int64,
 	return rowsAffected, nil
 }
 
-// DeleteOrphans deletes orphaned findings (findings where none of the http_record_uuids exist in http_records)
+// DeleteOrphans deletes orphaned findings (findings where none of the
+// http_record_uuids exist in http_records).
+//
+// It honors filters.ProjectUUID. Orphan cleanup reads as store maintenance, but
+// the rows it removes belong to projects: an unscoped sweep run from one
+// engagement deleted another engagement's findings, which is the same
+// cross-project leak the scoped delete paths exist to prevent. With no project
+// filter set the behavior is unchanged and the whole store is swept.
 func (db *DeleteBuilder) DeleteOrphans(ctx context.Context, dryRun bool) (int64, error) {
 	orphanCondition := "NOT EXISTS (SELECT 1 FROM finding_records fr INNER JOIN http_records r ON r.uuid = fr.record_uuid WHERE fr.finding_id = f.id)"
 
 	if dryRun {
-		count, err := db.db.NewSelect().
-			Model((*Finding)(nil)).
-			Where(orphanCondition).
-			Count(ctx)
+		q := db.db.NewSelect().Model((*Finding)(nil)).Where(orphanCondition)
+		if db.filters.ProjectUUID != "" {
+			q = q.Where("f.project_uuid = ?", db.filters.ProjectUUID)
+		}
+		count, err := q.Count(ctx)
 		return int64(count), err
 	}
 
-	result, err := db.db.NewDelete().
-		Model((*Finding)(nil)).
-		Where(orphanCondition).
-		Exec(ctx)
+	del := db.db.NewDelete().Model((*Finding)(nil)).Where(orphanCondition)
+	if db.filters.ProjectUUID != "" {
+		del = del.Where("f.project_uuid = ?", db.filters.ProjectUUID)
+	}
+	result, err := del.Exec(ctx)
 	if err != nil {
 		return 0, err
 	}
 
 	rows, _ := result.RowsAffected()
 
-	// Clean up orphaned junction rows
+	// Clean up junction rows whose finding is now gone. This is keyed on the
+	// findings table rather than on the project, so it stays correct whether or
+	// not the delete above was scoped.
 	if _, err := db.db.NewRaw("DELETE FROM finding_records WHERE finding_id NOT IN (SELECT id FROM findings)").Exec(ctx); err != nil {
 		zap.L().Debug("failed to clean up orphaned finding_records", zap.Error(err))
 	}
@@ -1083,27 +1127,20 @@ func CountFindingsBySeverity(ctx context.Context, db *DB, projectUUID string, ho
 // (empty = every row, e.g. a --glob-db merge). Keys are the column values as
 // text. Powers the traffic listing's status/method/content-type summary.
 func CountRecordsByColumn(ctx context.Context, db *DB, projectUUID, column string) (map[string]int64, error) {
-	switch column {
-	case "method", "status_code", "response_content_type":
-	default:
-		return nil, fmt.Errorf("CountRecordsByColumn: unsupported column %q", column)
+	// One aggregate implementation, one allowlist. This used to carry its own
+	// copy of both — the same GROUP BY, and a private three-column switch that
+	// overlapped GroupRecordsBy's eight. Two allowlists over one table is a
+	// column added to one and silently missing from the other, and two
+	// key-normalization rules is the same command bucketing the same column two
+	// ways depending on which view asked.
+	grouping, err := NewQueryBuilder(db, QueryFilters{ProjectUUID: projectUUID}).
+		GroupRecordsBy(ctx, column, 0)
+	if err != nil {
+		return nil, fmt.Errorf("CountRecordsByColumn: %w", err)
 	}
-	var rows []struct {
-		Key   string `bun:"key"`
-		Count int64  `bun:"count"`
-	}
-	q := db.NewSelect().
-		Model((*HTTPRecord)(nil)).
-		ColumnExpr("CAST(? AS TEXT) AS key, COUNT(*) AS count", bun.Ident(column))
-	if projectUUID != "" {
-		q = q.Where("project_uuid = ?", projectUUID)
-	}
-	if err := q.GroupExpr(column).Scan(ctx, &rows); err != nil {
-		return nil, err
-	}
-	out := make(map[string]int64, len(rows))
-	for _, r := range rows {
-		out[r.Key] = r.Count
+	out := make(map[string]int64, len(grouping.Groups))
+	for _, g := range grouping.Groups {
+		out[g.Value] = g.Count
 	}
 	return out, nil
 }
