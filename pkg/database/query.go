@@ -2,7 +2,9 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -148,6 +150,21 @@ func (f QueryFilters) UsesLinkedRecords() bool {
 		f.UsesRawCorpus()
 }
 
+// UsesLinkedFindings reports whether any active filter reaches into findings
+// when the query is over HTTP RECORDS. It is the mirror of UsesLinkedRecords:
+// records have no finding columns of their own, so --severity resolves through a
+// join over the finding_records junction (see applyFilters).
+//
+// A caller that would otherwise omit the finding tables entirely
+// (globDBSkipSet.Findings, MergeOptions.SkipFindings) MUST check this first.
+// The failure is silent: with no findings to join, a --severity record listing
+// returns nothing rather than erroring.
+//
+// Keep in sync with applyFilters.
+func (f QueryFilters) UsesLinkedFindings() bool {
+	return len(f.Severity) > 0
+}
+
 // nonBlank returns the input with empty strings dropped.
 func nonBlank(in []string) []string {
 	var out []string
@@ -157,6 +174,22 @@ func nonBlank(in []string) []string {
 		}
 	}
 	return out
+}
+
+// ftsPrefixQuery renders term as an FTS5 prefix query, safely.
+//
+// The MATCH argument is an FTS5 *expression*, not a literal: bare AND/OR/NOT/NEAR
+// are operators, and ", (, ), :, ^, - and * are syntax. Appending "*" to a raw
+// user term therefore produced a query that could mean something other than the
+// term — or, for an unbalanced quote, a syntax error that failed the whole
+// listing rather than the one predicate.
+//
+// Wrapping in a double-quoted string (with "" escaping an embedded quote) turns
+// the whole term into a phrase, so every character is data; the trailing * then
+// applies prefix matching to its last token. A term that tokenizes to nothing
+// simply matches nothing, which the OR-ed LIKE predicates beside it still cover.
+func ftsPrefixQuery(term string) string {
+	return `"` + strings.ReplaceAll(term, `"`, `""`) + `"*`
 }
 
 // Search-corpus predicates — the single source of truth for "what --search
@@ -393,16 +426,28 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 	// Fuzzy search (broad, across metadata + full request/response content)
 	if qb.filters.FuzzyTerm != "" {
 		if qb.db.HasFTS() && qb.db.Driver() != "postgres" {
-			// FTS5 MATCH (url/path/hostname tokens) is orders of magnitude faster
-			// than CAST LIKE for metadata hits. The raw_request/raw_response
-			// corpus is no longer in the FTS index (it was dropped to halve ingest
-			// write cost — see db.go), so body matches fall back to a CAST LIKE
-			// scan here, plus the metadata columns that were never in the index.
+			// FTS5 MATCH over url/path/hostname is an ACCELERATOR here, not a
+			// replacement for the LIKE predicates on those same columns — it is
+			// OR-ed with them rather than standing in for them.
+			//
+			// The two do not match the same things. MATCH is token/prefix based,
+			// so "admin" finds /admin/ but not /superadmin/ or ?x=isadmin, which a
+			// substring LIKE does find. When the FTS branch omitted the metadata
+			// LIKEs, the same --fuzzy term returned different rows depending on
+			// whether the handle had discovered the index — a difference in how a
+			// database was opened silently changed the answer.
+			//
+			// Keeping both is nearly free: the raw_request/raw_response LIKEs
+			// below already force a scan of every candidate row (that corpus was
+			// dropped from the index to halve ingest write cost — see db.go), so
+			// the metadata LIKEs add comparisons to a scan that happens anyway,
+			// while MATCH still short-circuits the common metadata hit.
 			p := "%" + qb.filters.FuzzyTerm + "%"
 			query.Where(`(r.rowid IN (SELECT rowid FROM http_records_fts WHERE http_records_fts MATCH ?)
+				OR r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ?
 				OR r.method LIKE ? OR r.request_content_type LIKE ? OR r.response_content_type LIKE ? OR r.source LIKE ?
 				OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?)`,
-				qb.filters.FuzzyTerm+"*", p, p, p, p, p, p)
+				ftsPrefixQuery(qb.filters.FuzzyTerm), p, p, p, p, p, p, p, p, p)
 		} else if qb.db.HasFTS() && qb.db.Driver() == "postgres" {
 			p := "%" + qb.filters.FuzzyTerm + "%"
 			query.Where(`(r.search_vector @@ plainto_tsquery('english', ?)
@@ -533,11 +578,39 @@ func NewDeleteBuilder(db *DB, filters QueryFilters) *DeleteBuilder {
 	}
 }
 
-// DeleteRecords deletes HTTP records matching filters
+// DeleteRecords deletes the HTTP records matching filters, along with the
+// findings whose only evidence they were.
+//
+// The order below is the policy, and it is not the obvious one. Deleting every
+// finding that merely *touches* a deleted record destroys findings that also
+// cite records the caller is keeping — one module reporting the same issue
+// across five endpoints would lose the whole finding because one endpoint was
+// pruned. So the junction is narrowed first, and a finding is removed only once
+// nothing it links to survives:
+//
+//  1. collect the findings linked to the doomed records (bounded by findings
+//     touched, not by records deleted);
+//  2. drop those records' junction rows, so the junction describes surviving
+//     evidence only;
+//  3. delete the records;
+//  4. delete the collected findings that now link to nothing.
+//
+// Step 4 is scoped to the collected candidates rather than sweeping every
+// evidence-less finding, because a finding with no HTTP record is normal — audit
+// and source-scan findings never have one, and this is not the command that
+// removes them (see DeleteOrphans).
+//
+// Every IN() list is chunked (see SQLChunkSize). The filters can select an
+// unbounded number of records, and bun renders a list as SQL literals rather
+// than bound parameters — so an unchunked delete builds one statement holding
+// every uuid as text, tens of megabytes of it on a large corpus.
 func (db *DeleteBuilder) DeleteRecords(ctx context.Context, dryRun bool) (int64, error) {
 	qb := NewQueryBuilder(db.db, db.filters)
 	query := qb.BuildRecordsQuery().Column("uuid")
 
+	// The uuids are materialized rather than counted in SQL because the filters
+	// carry the caller's LIMIT: a COUNT(*) would report (and a subquery delete
+	// would remove) every match rather than the page the caller asked for.
 	var uuids []string
 	if err := query.Scan(ctx, &uuids); err != nil {
 		return 0, fmt.Errorf("failed to get record UUIDs: %w", err)
@@ -551,32 +624,56 @@ func (db *DeleteBuilder) DeleteRecords(ctx context.Context, dryRun bool) (int64,
 		return int64(len(uuids)), nil
 	}
 
-	// Delete associated findings first (no FK cascade). Best-effort: a failure
-	// here leaves orphan findings but must not block deleting the records
-	// themselves, so we log rather than abort (matching the junction cleanup
-	// below). A silent drop here previously hid orphaned-finding bugs.
-	if _, err := db.db.NewDelete().
-		Model((*Finding)(nil)).
-		Where("id IN (SELECT finding_id FROM finding_records WHERE record_uuid IN (?))", bun.List(uuids)).
-		Exec(ctx); err != nil {
-		zap.L().Warn("failed to delete findings for deleted records (orphans may remain)", zap.Error(err))
-	}
+	// One transaction: the intermediate states below are inconsistent by
+	// construction (records gone, their findings not yet reconsidered), and a
+	// reader or a crash must not observe one. It also collapses what would
+	// otherwise be one auto-commit per chunk into a single commit.
+	var rowsAffected int64
+	err := db.db.RunInTx(ctx, &sql.TxOptions{}, func(ctx context.Context, tx bun.Tx) error {
+		// (1) Findings that cite any of the doomed records, collected before the
+		// junction is touched. DISTINCT is per chunk, so the same finding can be
+		// reported by several chunks — sort and compact, or step (3) re-deletes it
+		// once per chunk it appeared in.
+		var candidateFindings []int64
+		for chunk := range slices.Chunk(uuids, SQLChunkSize) {
+			var ids []int64
+			if err := tx.NewRaw(
+				"SELECT DISTINCT finding_id FROM finding_records WHERE record_uuid IN (?)",
+				bun.List(chunk)).Scan(ctx, &ids); err != nil {
+				return fmt.Errorf("failed to identify findings for deleted records: %w", err)
+			}
+			candidateFindings = append(candidateFindings, ids...)
+		}
+		slices.Sort(candidateFindings)
+		candidateFindings = slices.Compact(candidateFindings)
 
-	// Clean up junction rows for deleted records
-	if _, err := db.db.NewRaw("DELETE FROM finding_records WHERE record_uuid IN (?)", bun.List(uuids)).Exec(ctx); err != nil {
-		zap.L().Debug("failed to clean up finding_records for deleted records", zap.Error(err))
-	}
+		// (2) The doomed records and their junction rows. Shared with the dedup
+		// passes so "delete these records" means one thing in this package.
+		if err := deleteRecordsByUUIDsTx(ctx, tx, uuids); err != nil {
+			return err
+		}
+		// The selection and the delete share this transaction, so every selected
+		// uuid was deleted — which also makes the reported count agree with the
+		// number --dry-run promised.
+		rowsAffected = int64(len(uuids))
 
-	// Delete records
-	result, err := db.db.NewDelete().
-		Model((*HTTPRecord)(nil)).
-		Where("uuid IN (?)", bun.List(uuids)).
-		Exec(ctx)
+		// (3) Candidates left with no surviving evidence. The junction is already
+		// narrowed, so NOT EXISTS asks exactly "is anything still citing this".
+		for chunk := range slices.Chunk(candidateFindings, SQLChunkSize) {
+			if _, err := tx.NewDelete().
+				Model((*Finding)(nil)).
+				Where("id IN (?)", bun.List(chunk)).
+				Where("NOT EXISTS (SELECT 1 FROM finding_records fr WHERE fr.finding_id = f.id)").
+				Exec(ctx); err != nil {
+				return fmt.Errorf("failed to delete findings left without evidence: %w", err)
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("failed to delete records: %w", err)
+		return 0, err
 	}
 
-	rowsAffected, _ := result.RowsAffected()
 	return rowsAffected, nil
 }
 
@@ -643,22 +740,14 @@ func (db *DeleteBuilder) DeleteFindings(ctx context.Context, dryRun bool) (int64
 		return int64(len(ids)), nil
 	}
 
-	// Delete junction rows first
-	if _, err := db.db.NewRaw("DELETE FROM finding_records WHERE finding_id IN (?)", bun.List(ids)).Exec(ctx); err != nil {
-		zap.L().Debug("failed to delete finding_records junction rows", zap.Error(err))
-	}
-
-	// Delete findings
-	result, err := db.db.NewDelete().
-		Model((*Finding)(nil)).
-		Where("id IN (?)", bun.List(ids)).
-		Exec(ctx)
-	if err != nil {
+	// Shared with the finding-dedup passes: one owner for "delete these findings
+	// and their evidence links", chunked, in one transaction.
+	if err := db.db.RunInTx(ctx, &sql.TxOptions{}, func(ctx context.Context, tx bun.Tx) error {
+		return deleteFindingsByIDsTx(ctx, tx, ids)
+	}); err != nil {
 		return 0, fmt.Errorf("failed to delete findings: %w", err)
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	return rowsAffected, nil
+	return int64(len(ids)), nil
 }
 
 // cleanableTable defines a table that can be cleaned via `db clean --table`.

@@ -3,13 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
-	"strings"
+	"slices"
 
 	"github.com/uptrace/bun"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -19,33 +17,16 @@ import (
 // headers do not fit in this much is not one worth rendering a destination for.
 const redirectHeaderPrefixBytes = 8192
 
-// redirectLookupChunk bounds one uuid IN (...) lookup. SQLite's default host
-// parameter limit is 999 and bun.List expands to one placeholder per element, so
-// an unchunked list of a whole 3xx corpus is not a slow query, it is an error.
-const redirectLookupChunk = 400
-
-// redirectLocation returns the Location a 3xx response points at, or "" when the
-// record is not a redirect or its raw response was not fetched.
+// redirectLocation returns where a 3xx record points, for the renderers.
 //
-// It reads the stored bytes rather than a column because there is no Location
-// column: the destination is only ever recoverable from the response itself.
-func redirectLocation(rec *database.HTTPRecord) string {
-	if rec == nil || !isRedirectStatus(rec.StatusCode) || len(rec.RawResponse) == 0 {
-		return ""
-	}
-	loc, err := httpmsg.GetHeaderValue(rec.RawResponse, "Location")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(loc)
-}
+// A thin delegation on purpose: the column-first / raw-fallback rule and the
+// "what counts as a redirect" rule both live beside the write path that fills
+// the column, so the read path cannot drift from it.
+func redirectLocation(rec *database.HTTPRecord) string { return rec.RedirectLocation() }
 
 // isRedirectStatus reports whether a status code is one that carries a Location.
-// 304 is excluded: it is a cache validator, not a redirect, and has no
-// destination to show.
-func isRedirectStatus(code int) bool {
-	return code >= 300 && code < 400 && code != http.StatusNotModified
-}
+// Delegates for the same reason as redirectLocation.
+func isRedirectStatus(code int) bool { return database.IsRedirectStatus(code) }
 
 // hydrateRedirectHeaders fills in the raw response headers of the redirect
 // records in the page, for the render paths that asked the query to leave the
@@ -65,9 +46,18 @@ func isRedirectStatus(code int) bool {
 func hydrateRedirectHeaders(ctx context.Context, db *database.DB, records []*database.HTTPRecord) {
 	pending := make(map[string]*database.HTTPRecord)
 	for _, rec := range records {
-		if rec != nil && rec.HasResponse && isRedirectStatus(rec.StatusCode) && len(rec.RawResponse) == 0 {
-			pending[rec.UUID] = rec
+		if rec == nil || !rec.HasResponse || !isRedirectStatus(rec.StatusCode) {
+			continue
 		}
+		// The stored destination makes the whole fetch unnecessary. Only records
+		// written before response_location existed still need their bytes read
+		// back, so on a current corpus this loop selects nothing and the work
+		// below — a query per chunk, or a source-file reopen per file under
+		// --glob-db — does not happen at all.
+		if rec.ResponseLocation != "" || len(rec.RawResponse) > 0 {
+			continue
+		}
+		pending[rec.UUID] = rec
 	}
 	if len(pending) == 0 {
 		return
@@ -79,6 +69,7 @@ func hydrateRedirectHeaders(ctx context.Context, db *database.DB, records []*dat
 	// question — re-deriving it from the flags here is how the two disagree and
 	// the destination silently renders empty.
 	if globMergeOmittedRecords() {
+		resolveGlobRecordSources(ctx, db, records)
 		hydrateRedirectHeadersFromGlob(ctx, pending)
 		return
 	}
@@ -136,8 +127,12 @@ func readRedirectHeaders(ctx context.Context, db *database.DB, pending map[strin
 		uuids = append(uuids, uuid)
 	}
 
-	for start := 0; start < len(uuids); start += redirectLookupChunk {
-		end := min(start+redirectLookupChunk, len(uuids))
+	// database.SQLChunkSize, not a local constant: this used to be 400, chosen
+	// against SQLite's pre-3.32 limit of 999 bound parameters. Neither number
+	// applies — bun renders a list as SQL literals, so there is no parameter
+	// ceiling here at all and what needs bounding is the generated SQL's length,
+	// which is the one policy SQLChunkSize owns.
+	for chunk := range slices.Chunk(uuids, database.SQLChunkSize) {
 		var rows []struct {
 			UUID        string `bun:"uuid"`
 			RawResponse []byte `bun:"raw_response"`
@@ -146,7 +141,7 @@ func readRedirectHeaders(ctx context.Context, db *database.DB, pending map[strin
 			Model((*database.HTTPRecord)(nil)).
 			ColumnExpr("uuid").
 			ColumnExpr("substr(raw_response, 1, ?) AS raw_response", redirectHeaderPrefixBytes).
-			Where("uuid IN (?)", bun.List(uuids[start:end])).
+			Where("uuid IN (?)", bun.List(chunk)).
 			Scan(ctx, &rows)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s redirect targets unavailable: %v\n", terminal.WarningSymbol(), err)

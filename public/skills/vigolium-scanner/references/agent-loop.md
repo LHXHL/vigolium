@@ -162,7 +162,7 @@ jq -r 'select(.type=="http_record") | .data
 ```
 
 Each record carries `status_code`, `response_time_ms`, `response_title`,
-`response_words`, `surface_score` (0-100, 10 per signal), `ip`, and the full DNS
+`response_words`, `surface_score` (0-100, percent of the surface signals present), `ip`, and the full DNS
 answer (`a`/`aaaa`/`cname`). Add `--tls-probe` for the certificate (`tls` object:
 version, cipher, subject/SANs, issuer, validity, fingerprints). Field names match
 httpx's, so an existing consumer reads them unmodified.
@@ -561,6 +561,15 @@ vigolium finding --min-severity high      # reads acme.sqlite, scoping off
 vigolium scan -t https://acme.example     # writes into acme.sqlite
 ```
 
+The scoping-off flip is conditional: it applies once the pinned file **exists and
+is a usable vigolium store**. Run that `finding` before the first scan of the
+session and the read stays project-scoped against a store it just created — which
+is the right behavior (it prints an empty table instead of erroring), but means
+`project_scoped` is the field to check, not something to assume. A pin that can
+never *become* a database — a directory, or a parent dir that cannot be created —
+is a hard error rather than a silent fall-through to the shared default; a path
+that merely does not exist yet is fine.
+
 A stateless scan emits that `.sqlite` directly with `--format sqlite` (aliases
 `sqlite3`, `db`) — it dumps the per-run DB via `VACUUM INTO`, fully
 checkpointed, no WAL/SHM sidecars:
@@ -694,14 +703,18 @@ they used to arrive as one indistinguishable failure:
 
 | `error.code` | What the file is | What to do |
 |---|---|---|
-| `source_missing` | nothing at that path | fix the path |
+| `source_missing` | nothing at that path (**needs `--read-only`** — see below) | fix the path |
 | `source_unreadable` | not a database, or corrupt | treat it as damaged evidence; do not "recover" it by reading somewhere else |
-| `source_incompatible` | **valid SQLite that is not a vigolium store** — it opens, passes an integrity check, and every read fails on a missing table | you are pointed at the wrong file (a zero-byte stub, another tool's database) |
-| *(no error, `total: 0`)* | a real vigolium store with no matching rows | nothing has scanned this yet — go scan it |
+| `source_incompatible` | **valid SQLite that is not a vigolium store** — it opens, passes an integrity check, and every read fails on a missing table (**needs `--read-only`**) | you are pointed at the wrong file (a zero-byte stub, another tool's database) |
+| *(no error, `total: 0`)* | a real vigolium store with no matching rows — **or**, without `--read-only`, a path that was wrong | nothing has scanned this yet — go scan it, after confirming the path |
 
-The last row is the one worth guarding: a store that was never a vigolium
-database and a target nobody has scanned are opposite facts, and reporting the
-first as "no traffic found" turns a wrong path into a thin attack surface.
+The last row is the one worth guarding, and it is wider than it looks. A store
+that was never a vigolium database and a target nobody has scanned are opposite
+facts, and reporting the first as "no traffic found" turns a wrong path into a
+thin attack surface. By default the two are genuinely indistinguishable: a read
+against a missing path *creates* an empty store there and returns `total: 0`,
+exit 0. Pass **`--read-only`** on reads that must hit an existing store and the
+two source codes above start firing; see the exit-code table for the full matrix.
 
 ```jsonc
 {
@@ -766,17 +779,33 @@ On the read commands:
 | Read | Exit | `error.code` |
 |---|---:|---|
 | `--fields bogus` | `2` | `usage_error` (lists the valid names) |
-| `--db <missing file>` | `1` | `source_missing` |
 | `--db <not a sqlite file>` | `1` | `source_unreadable` |
-| `--db <sqlite, but not a vigolium store>` | `1` | `source_incompatible` |
+| `--db <missing file>` | **`0`** | **none** — the file is *created*, `{"total":0,"items":[]}` |
+| `--db <missing file> --read-only` | `1` | `source_missing` |
+| `--db <sqlite, but not a vigolium store>` | **`0`** | **none** — vigolium's tables are created *inside it*, `{"total":0,"items":[]}` |
+| `--db <foreign sqlite, unwritable> --read-only` | `1` | `source_incompatible` |
 | `finding --id <a UUID>` | `2` | `usage_error` (names the flag that reads that namespace) |
 | `traffic --group-by <unknown field>` | `2` | `usage_error` (lists the groupable fields) |
 | `--id 999999` (no such finding) | `0` | —, `{"total":0,"items":[]}` |
 | `--search zzzznomatch` (genuine zero hits) | `0` | —, `{"total":0,"items":[]}` |
 
-The last two are still the same result: "I asked for an id that does not exist"
-and "the query legitimately matched nothing" both report zero matches. If you
-need that distinction, check `total` against a second query you know matches.
+**The bolded rows are the trap.** Opening a database writes to it — that is what
+lets `scan --db ~/new.sqlite` work on a fresh path — so a *read* against a wrong
+path does not fail. It creates the store, finds nothing in it, and reports
+`total: 0` with exit 0, indistinguishable from a target nobody has scanned. The
+foreign-store case is worse: vigolium creates its own tables inside another
+tool's SQLite file.
+
+`source_missing` and `source_incompatible` therefore only reach you when the open
+is prevented from writing. **Add `--read-only` to any read whose store is
+supposed to already exist** — it is the flag that converts both silent zeroes
+into the error you wanted, and it costs nothing on a store that is really there.
+`source_unreadable` needs no such help: a non-SQLite file fails either way.
+
+Failing that, assert the envelope's `db_path`, and check `total` against a second
+query you know matches — the same technique that separates "`--id 999999` does
+not exist" from "`--search` legitimately matched nothing", which are also one
+result.
 
 Always check the exit code before parsing — and never `2>&1` into a JSON parser:
 the machine object is on stdout, the human line on stderr, and merging them
@@ -795,9 +824,10 @@ parent batch fails only when every target fails.
   commands where it has no meaning — no per-command acceptance table needed. The
   one holdout is deprecated: on `server`/`ingest` it is still an alias for
   `--scan-on-receive` and warns. Use the long `--scan-on-receive` there.
-- `$VIGOLIUM_DB_PATH` pointing at an **unusable** path is now a hard error, not a
-  silent fall-through to the shared default database. Read `db_path` off any
-  `-j` envelope to confirm which store you actually got.
+- `$VIGOLIUM_DB_PATH` pointing at a path that can never hold a database (a
+  directory, an uncreatable parent) is a hard error, not a silent fall-through to
+  the shared default. A path that simply does not exist yet is created. Read
+  `db_path` off any `-j` envelope to confirm which store you actually got.
 - `vigolium log <uuid> | cat` terminates promptly even when the scan row still
   says `running` (a deadline or SIGKILL leaves it that way forever). Auto-follow
   is off for a non-TTY stdout and for a stale row; pass `--follow` to force it.

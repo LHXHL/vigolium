@@ -618,7 +618,7 @@ List database records (default: http_records)
 | `--list-tables` | - | bool | `false` | List all database table names |
 | `--method` | - | stringSlice | - | Filter records by HTTP method (can be specified multiple times) |
 | `--min-risk` | - | int | `0` | Show only records with risk score at or above this value |
-| `--min-surface` | - | int | `0` | Show only records with attack-surface score at or above this value (0-100, 10 per signal) |
+| `--min-surface` | - | int | `0` | Show only records with attack-surface score at or above this value (0-100, percent of the attack-surface signals present) |
 | `--module-type` | - | string | - | Filter findings by module type (active, passive, nuclei, agent, source-tools, oast, extension) |
 | `--offset` | - | int | `0` | Number of records to skip before displaying |
 | `--path` | - | string | - | Filter records by URL path pattern |
@@ -1385,6 +1385,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--discover-max-time` | - | duration | `1h0m0s` | Max time for content discovery per target |
 | `--discovery-wordlist` | - | string | - | Custom wordlist path seeding the discovery phase (enables fuzzing on the fly). Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
+| `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|low\|medium\|high\|critical) — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
@@ -1471,6 +1472,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--discover-max-time` | - | duration | `1h0m0s` | Max time for content discovery per target |
 | `--discovery-wordlist` | - | string | - | Custom wordlist path seeding the discovery phase (enables fuzzing on the fly). Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
+| `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|low\|medium\|high\|critical) — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |

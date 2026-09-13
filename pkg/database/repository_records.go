@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	neturl "net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -140,6 +141,7 @@ func (r *Repository) UpsertSnapshotRecord(ctx context.Context, httpRR *httpmsg.H
 		Set("response_norm_hash = ?", record.ResponseNormHash).
 		Set("response_words = ?", record.ResponseWords).
 		Set("response_title = ?", record.ResponseTitle).
+		Set("response_location = ?", record.ResponseLocation).
 		Set("content_hash = ?", record.ContentHash).
 		Set("has_response = ?", true).
 		Set("received_at = ?", time.Now()).
@@ -518,17 +520,27 @@ var scanRecordColumns = []string{"uuid", "created_at", "url", "raw_request", "ra
 
 // getRecordsByUUIDs fetches HTTP records matching uuids. With no columns it loads
 // the full model; passing columns projects the SELECT to just those.
+//
+// The lookup is chunked because callers pass whatever list they hold — a whole
+// scan feed's batch, an export's finding references — and bun renders an IN()
+// list as SQL literals, so an unchunked call builds one statement carrying every
+// uuid as text. Order across chunks is not guaranteed, which matches the
+// unchunked behavior: this has always been a set lookup with no ORDER BY.
 func (r *Repository) getRecordsByUUIDs(ctx context.Context, uuids []string, columns ...string) ([]*HTTPRecord, error) {
 	if len(uuids) == 0 {
 		return nil, nil
 	}
-	var records []*HTTPRecord
-	q := r.db.NewSelect().Model(&records).Where("uuid IN (?)", bun.List(uuids))
-	if len(columns) > 0 {
-		q = q.Column(columns...)
-	}
-	if err := q.Scan(ctx); err != nil {
-		return nil, fmt.Errorf("failed to get records by UUIDs: %w", err)
+	records := make([]*HTTPRecord, 0, len(uuids))
+	for chunk := range slices.Chunk(uuids, SQLChunkSize) {
+		var page []*HTTPRecord
+		q := r.db.NewSelect().Model(&page).Where("uuid IN (?)", bun.List(chunk))
+		if len(columns) > 0 {
+			q = q.Column(columns...)
+		}
+		if err := q.Scan(ctx); err != nil {
+			return nil, fmt.Errorf("failed to get records by UUIDs: %w", err)
+		}
+		records = append(records, page...)
 	}
 	return records, nil
 }
@@ -554,15 +566,19 @@ func (r *Repository) ExistingRecordUUIDs(ctx context.Context, projectUUID string
 	if len(uuids) == 0 {
 		return nil, nil
 	}
-	var out []string
-	err := r.db.NewSelect().
-		Model((*HTTPRecord)(nil)).
-		Column("uuid").
-		Where("uuid IN (?)", bun.List(uuids)).
-		Where("project_uuid = ?", defaultProjectUUID(projectUUID)).
-		Scan(ctx, &out)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get record UUIDs: %w", err)
+	out := make([]string, 0, len(uuids))
+	for chunk := range slices.Chunk(uuids, SQLChunkSize) {
+		var page []string
+		err := r.db.NewSelect().
+			Model((*HTTPRecord)(nil)).
+			Column("uuid").
+			Where("uuid IN (?)", bun.List(chunk)).
+			Where("project_uuid = ?", defaultProjectUUID(projectUUID)).
+			Scan(ctx, &page)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get record UUIDs: %w", err)
+		}
+		out = append(out, page...)
 	}
 	return out, nil
 }
@@ -1082,17 +1098,80 @@ func (r *Repository) GetDistinctPaths(ctx context.Context, projectUUID string, h
 	return paths, nil
 }
 
+// SetRecordTechnology batch-writes the detected technology stack onto
+// HTTPRecords identified by UUID, replacing whatever the column held.
+//
+// Replace rather than merge (the shape AppendRemarks uses) because technology is
+// not accumulated analyst annotation: it is the fingerprint modules' verdict
+// about the host, recomputed from scratch on every scan, and a merge would make
+// a record carry a stack the target stopped running two scans ago.
+//
+// Records are grouped by their technology list before writing, because the
+// source is host-scoped: every record on one host shares one list, so a corpus
+// of N records over H hosts costs H UPDATEs rather than N. The per-value UUID
+// set is still chunked so a single busy host cannot build an IN() clause past
+// the driver's parameter limit.
+func (r *Repository) SetRecordTechnology(ctx context.Context, technology map[string][]string) error {
+	if len(technology) == 0 {
+		return nil
+	}
+
+	// Group UUIDs by their technology list, keyed on a cheap join rather than on
+	// the marshaled JSON. Marshaling to build the key would encode once per
+	// RECORD to produce a handful of distinct values - on a 200k-record scan with
+	// one detected stack that is 200k throwaway encodings to learn what five
+	// would have said. The JSON is produced once per group, at the point it is
+	// written.
+	byValue := make(map[string][]string, len(technology))
+	for uuid, tech := range technology {
+		if uuid == "" || len(tech) == 0 {
+			continue
+		}
+		byValue[strings.Join(tech, "\x00")] = append(byValue[strings.Join(tech, "\x00")], uuid)
+	}
+	if len(byValue) == 0 {
+		return nil
+	}
+
+	const batchSize = 500
+	return r.db.RunInTx(ctx, &sql.TxOptions{}, func(ctx context.Context, tx bun.Tx) error {
+		for key, uuids := range byValue {
+			encoded, err := json.Marshal(strings.Split(key, "\x00"))
+			if err != nil {
+				continue
+			}
+			for chunk := range slices.Chunk(uuids, batchSize) {
+				if _, err := tx.NewUpdate().
+					Model((*HTTPRecord)(nil)).
+					Set("technology = ?", string(encoded)).
+					Where("uuid IN (?)", bun.List(chunk)).
+					Exec(ctx); err != nil {
+					return fmt.Errorf("failed to set record technology: %w", err)
+				}
+			}
+		}
+		return nil
+	})
+}
+
 // AppendRemarks batch-appends remarks to HTTPRecords identified by UUID.
 // Existing remarks are preserved and duplicates within each record are deduplicated.
+//
+// The read and the merged write happen in ONE transaction. Remarks are a growing
+// set written by several analysis passes against the same records, and reading
+// the current value outside the transaction turns every append into a read-
+// modify-write race: two passes both read ["a"], both write their own merge, and
+// whichever commits second silently drops the other's remark. The symptom is a
+// missing annotation, which looks like the analysis never fired.
+//
+// SQLite's write lock serializes the transactions outright. On PostgreSQL the
+// rows are locked FOR UPDATE, so a concurrent appender blocks on the read rather
+// than proceeding from a stale copy.
 func (r *Repository) AppendRemarks(ctx context.Context, annotations map[string][]string) error {
 	if len(annotations) == 0 {
 		return nil
 	}
 
-	// Batch-load the current remarks for every target UUID in one query rather
-	// than issuing one SELECT per record (the old N+1). The updates still carry
-	// per-record merged values, so they run individually — but inside a single
-	// transaction to collapse N commits into one.
 	uuids := make([]string, 0, len(annotations))
 	for uuid, newRemarks := range annotations {
 		if len(newRemarks) > 0 {
@@ -1103,24 +1182,32 @@ func (r *Repository) AppendRemarks(ctx context.Context, annotations map[string][
 		return nil
 	}
 
-	var existing []HTTPRecord
-	if err := r.db.NewSelect().
-		Model(&existing).
-		Column("uuid", "remarks").
-		Where("uuid IN (?)", bun.List(uuids)).
-		Scan(ctx); err != nil {
-		return fmt.Errorf("failed to load existing remarks: %w", err)
-	}
-	existingByUUID := make(map[string][]string, len(existing))
-	for i := range existing {
-		existingByUUID[existing[i].UUID] = existing[i].Remarks
-	}
-
 	// Track the first update failure so a systemic problem surfaces to the
 	// caller (every caller logs the returned error) while a single bad record
 	// doesn't abort annotation of the rest.
 	var firstErr error
 	err := r.db.RunInTx(ctx, &sql.TxOptions{}, func(ctx context.Context, tx bun.Tx) error {
+		// Load the current remarks in the same transaction that writes the merge,
+		// batched (rather than one SELECT per record) and chunked so a large
+		// annotation pass does not build one enormous IN() list.
+		existingByUUID := make(map[string][]string, len(uuids))
+		for chunk := range slices.Chunk(uuids, SQLChunkSize) {
+			var existing []HTTPRecord
+			q := tx.NewSelect().
+				Model(&existing).
+				Column("uuid", "remarks").
+				Where("uuid IN (?)", bun.List(chunk))
+			if r.db.Driver() == "postgres" {
+				q = q.For("UPDATE")
+			}
+			if err := q.Scan(ctx); err != nil {
+				return fmt.Errorf("failed to load existing remarks: %w", err)
+			}
+			for i := range existing {
+				existingByUUID[existing[i].UUID] = existing[i].Remarks
+			}
+		}
+
 		for _, uuid := range uuids {
 			current, ok := existingByUUID[uuid]
 			if !ok {

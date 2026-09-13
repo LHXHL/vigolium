@@ -119,7 +119,7 @@ func registerListFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&listScanUUID, "scan-uuid", "", "Filter records by scan UUID")
 	cmd.Flags().StringVar(&listSeverity, "severity", "", "Filter findings by severity: critical,high,medium,low,suspect,info (comma-separated; single-letter shorthands ok, e.g. 'h,c')")
 	cmd.Flags().IntVar(&listMinRisk, "min-risk", 0, "Show only records with risk score at or above this value")
-	cmd.Flags().IntVar(&listMinSurface, "min-surface", 0, "Show only records with attack-surface score at or above this value (0-100, 10 per signal)")
+	cmd.Flags().IntVar(&listMinSurface, "min-surface", 0, "Show only records with attack-surface score at or above this value (0-100, percent of the attack-surface signals present)")
 	cmd.Flags().StringVar(&listRemark, "remark", "", "Filter records containing this text in remarks")
 	cmd.Flags().StringVar(&listModuleType, "module-type", "", "Filter findings by module type (active, passive, nuclei, agent, source-tools, oast, extension)")
 	cmd.Flags().StringVar(&listFindingSource, "finding-source", "", "Filter findings by source (dynamic-assessment, spa, agent, oast, source-tools, extension)")
@@ -305,11 +305,11 @@ func runListHTTPRecords(ctx context.Context, db *database.DB) error {
 	}
 
 	if globalJSON {
-		return displayJSON(records, total, listOffset, listLimit)
+		return displayJSON(ctx, db, records, total, listOffset, listLimit)
 	} else if listRaw {
 		return displayRaw(records)
 	} else if listTree {
-		return displayTree(records)
+		return displayTree(ctx, db, records)
 	} else {
 		return displayTable(records, total, listOffset, listLimit)
 	}
@@ -674,15 +674,21 @@ func runListGenericTable(ctx context.Context, db *database.DB, tableName string)
 	return nil
 }
 
-func displayJSON(records []*database.HTTPRecord, total int64, offset, limit int) error {
+func displayJSON(ctx context.Context, db *database.DB, records []*database.HTTPRecord, total int64, offset, limit int) error {
 	// effectiveProjectUUID, not resolveProjectUUID: under -S scoping is off and
 	// the rows span every project, so naming one here was a false claim.
 	projectUUID, err := effectiveProjectUUID()
 	if err != nil {
 		return err
 	}
+	// No scan is named: this is a project-scoped read, so the most recent stored
+	// observation per endpoint is the right answer. Without it the DNS/TLS keys
+	// appeared only when THIS process happened to have probed the host and not
+	// yet evicted it - so reading a database back showed nothing, and reading a
+	// large sweep back showed facts for its last hosts only.
+	opts := agentViewOptionsFromFlags().withHostFacts(ctx, db, projectUUID, "")
 	env := newAgentEnvelope("traffic", "records",
-		recordViews(records, agentViewOptionsFromFlags()), total, offset, limit)
+		recordViews(records, opts), total, offset, limit)
 	env.WithProjectScope(projectUUID)
 	env.DBPath = resolvedReadDBPath()
 	// The hint from a READ is another read. It used to be `replay -u <uuid>`,
@@ -742,8 +748,8 @@ func warnIfCapped(shown int, total int64) {
 // composed from its ancestors' prefixes (via treeBranch) so the vertical guide
 // lines stay aligned all the way down. Under --glob-db there is one db-path root
 // per merged source file so each record's origin is visible.
-func displayTree(records []*database.HTTPRecord) error {
-	for _, root := range splitRecordsBySource(records) {
+func displayTree(ctx context.Context, db *database.DB, records []*database.HTTPRecord) error {
+	for _, root := range splitRecordsBySource(ctx, db, records) {
 		fmt.Println(terminal.Bold(root.label))
 		renderRecordHostTree(root.records)
 	}
@@ -760,10 +766,14 @@ type recordRoot struct {
 // DB path) for a plain read, or one root per --glob-db source file (in merge
 // order) so each record is shown beneath the database it came from. Records that
 // can't be attributed fall back to a shared root.
-func splitRecordsBySource(records []*database.HTTPRecord) []recordRoot {
+func splitRecordsBySource(ctx context.Context, db *database.DB, records []*database.HTTPRecord) []recordRoot {
 	if globDBMergedCount() == 0 {
 		return []recordRoot{{label: displayDBPath(), records: records}}
 	}
+	// Attribution is resolved for the rows about to be printed, not for the whole
+	// merged corpus. Idempotent, so the tree's earlier redirect hydration may
+	// already have covered these.
+	resolveGlobRecordSources(ctx, db, records)
 	byFile := make(map[string][]*database.HTTPRecord)
 	var unattributed []*database.HTTPRecord
 	for _, rec := range records {

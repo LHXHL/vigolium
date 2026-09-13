@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/uptrace/bun"
@@ -366,9 +367,10 @@ func (r *Repository) FindingProjectUUID(ctx context.Context, id int64) (string, 
 // HydrateFindingRequests populates the Request field on findings that were
 // loaded without it — the list query (FindingsQueryBuilder) omits the
 // request/response blobs for speed. It fetches id→request for the given findings
-// in a single round-trip; findings that already carry a Request, or that have no
-// id, are skipped. Used by display paths that need a finding's own PoC request
-// (e.g. the tree's attack-URL rendering) without pulling the full raw view.
+// in as few round-trips as one statement's worth of ids allows; findings that
+// already carry a Request, or that have no id, are skipped. Used by display
+// paths that need a finding's own PoC request (e.g. the tree's attack-URL
+// rendering) without pulling the full raw view.
 func (r *Repository) HydrateFindingRequests(ctx context.Context, findings []*Finding) {
 	idx := make(map[int64]*Finding, len(findings))
 	ids := make([]int64, 0, len(findings))
@@ -382,17 +384,19 @@ func (r *Repository) HydrateFindingRequests(ctx context.Context, findings []*Fin
 	if len(ids) == 0 {
 		return
 	}
-	var loaded []*Finding
-	if err := r.db.NewSelect().
-		Model(&loaded).
-		Column("id", "request").
-		Where("id IN (?)", bun.List(ids)).
-		Scan(ctx); err != nil {
-		return
-	}
-	for _, row := range loaded {
-		if f, ok := idx[row.ID]; ok {
-			f.Request = row.Request
+	for chunk := range slices.Chunk(ids, SQLChunkSize) {
+		var loaded []*Finding
+		if err := r.db.NewSelect().
+			Model(&loaded).
+			Column("id", "request").
+			Where("id IN (?)", bun.List(chunk)).
+			Scan(ctx); err != nil {
+			return
+		}
+		for _, row := range loaded {
+			if f, ok := idx[row.ID]; ok {
+				f.Request = row.Request
+			}
 		}
 	}
 }

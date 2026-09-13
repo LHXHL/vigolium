@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+	"github.com/vigolium/vigolium/pkg/tlsprobe"
 )
 
 // User represents a system user.
@@ -224,6 +225,23 @@ type HTTPRecord struct {
 	HasResponse           bool   `bun:"has_response,notnull,default:false" json:"has_response"`
 	ResponseTitle         string `bun:"response_title,nullzero" json:"response_title,omitempty"`
 
+	// ResponseLocation is the Location header of a 3xx response, stored verbatim
+	// — relative values included, because rewriting them to absolute would be
+	// this column asserting something the server did not say.
+	//
+	// It exists because the redirect tree needs exactly one header out of a
+	// response whose body it has no use for. Without a column the destination is
+	// only recoverable by reading raw_response back, which on a `--glob-db` read
+	// means reopening every source file the selected redirects came from and
+	// holding an 8 KiB prefix per row until rendering finishes. Parsing it once at
+	// ingestion and storing ~30 bytes replaces all of that.
+	//
+	// Empty means "no Location", which for a record written by this version is
+	// also the answer for a non-redirect. It does NOT distinguish "not backfilled"
+	// on a record written before this column existed — see
+	// redirectLocationsAreBackfilled for how the read path handles that.
+	ResponseLocation string `bun:"response_location,nullzero" json:"response_location,omitempty"`
+
 	// Parameters (JSON array, replaces http_parameters table)
 	Parameters []EmbeddedParam `bun:"parameters,type:jsonb,nullzero" json:"parameters,omitempty"`
 
@@ -246,7 +264,7 @@ type HTTPRecord struct {
 
 	// SurfaceScore is the deterministic attack-surface score (0-100) written by
 	// the surface_scoring passive module, which owns the signal set and the
-	// points-per-signal scale — see pkg/modules/passive/surface_scoring. It
+	// scale — see pkg/modules/passive/surface_scoring. It
 	// answers "is this record worth attacking" from properties of the record
 	// itself, and is reproducible across scans.
 	//
@@ -276,6 +294,49 @@ type AnalysisArtifact struct {
 	Content        []byte    `bun:"content,type:bytea,notnull" json:"content,omitempty"`
 	Metadata       string    `bun:"metadata,type:jsonb,nullzero" json:"metadata,omitempty"`
 	CreatedAt      time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
+}
+
+// HostObservation is what one scan observed about one endpoint: the full DNS
+// answer and, under --tls-probe, the handshake and leaf certificate.
+//
+// It is the durable counterpart to the process-local caches HostFacts reads.
+// Those caches are bounded (8192 entries each) and evict in insertion order, so
+// on a sweep larger than that the hosts resolved FIRST had their answers dropped
+// before the export that wanted them - the work was done, the answer was known,
+// and the output silently omitted it. A row here survives eviction, the process,
+// and the run.
+//
+// One row per (scan, hostname, port). Re-probing a host adds an observation, it
+// does not replace one: the addresses a host resolved to during an earlier scan
+// are that scan's evidence, and an upsert keyed on the host alone would erase it.
+type HostObservation struct {
+	bun.BaseModel `bun:"table:host_observations,alias:ho" json:"-"`
+
+	ID          int64     `bun:"id,pk,autoincrement" json:"id"`
+	ProjectUUID string    `bun:"project_uuid,notnull" json:"project_uuid"`
+	ScanUUID    string    `bun:"scan_uuid,nullzero" json:"scan_uuid,omitempty"`
+	Hostname    string    `bun:"hostname,notnull" json:"hostname"`
+	Port        int       `bun:"port,notnull" json:"port"`
+	ObservedAt  time.Time `bun:"observed_at,notnull,default:current_timestamp" json:"observed_at"`
+
+	// DNS answers as jsonb columns, the same way Finding.Tags and
+	// HTTPRecord.Technology store their slices. Stored whole rather than as three
+	// child tables: they are read as a whole or not at all, and never queried by
+	// element.
+	DNSA     []string `bun:"dns_a,type:jsonb,nullzero" json:"dns_a,omitempty"`
+	DNSAAAA  []string `bun:"dns_aaaa,type:jsonb,nullzero" json:"dns_aaaa,omitempty"`
+	DNSCNAME []string `bun:"dns_cname,type:jsonb,nullzero" json:"dns_cname,omitempty"`
+
+	// TLS is the handshake and leaf certificate, absent when the endpoint was not
+	// handshaked (no --tls-probe, or a plaintext endpoint).
+	TLS *tlsprobe.Info `bun:"tls,type:jsonb,nullzero" json:"tls,omitempty"`
+
+	// Complete reports that the lookup actually ran to an answer. False marks an
+	// observation the run never finished - a cancelled or budget-limited
+	// prefetch - which is a different fact from a host that genuinely resolves to
+	// nothing, and the two are indistinguishable without it.
+	Complete  bool      `bun:"complete,notnull" json:"complete"`
+	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
 }
 
 // EmbeddedParam represents a parameter stored as JSON within HTTPRecord

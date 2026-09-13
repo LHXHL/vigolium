@@ -2,6 +2,7 @@ package database
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -40,6 +41,14 @@ type dnsEntry struct {
 	aaaa   []string // IPv6 addresses
 	cname  []string // canonical-name chain (empty when the name is not aliased)
 	expiry time.Time
+
+	// cnameChecked distinguishes "this name is not aliased" from "nobody asked".
+	// Both leave cname empty, and without the flag they are indistinguishable to
+	// the next reader - so an address-only background resolve (the write path,
+	// which never wants the chain) would satisfy a later sweep caller that does,
+	// and the host's CNAME would be silently missing from the output. The flag is
+	// what makes such an entry a miss for a CNAME-wanting caller.
+	cnameChecked bool
 }
 
 // dnsCache is a bounded, TTL'd hostname → resolution cache (LRU is internally
@@ -55,9 +64,29 @@ func mustNewDNSCache() *lru.Cache[string, dnsEntry] {
 // whose result every caller receives. See resolveAndCache.
 var dnsGroup singleflight.Group
 
-// dnsResolveSem bounds how many background DNS lookups run concurrently, so a
-// broad subdomain scan can't fan out into thousands of simultaneous resolvers.
-var dnsResolveSem = make(chan struct{}, 16)
+// dnsBackgroundSem bounds the one caller that has no bound of its own:
+// scheduleHostnameResolve, which spawns a naked goroutine per record on the
+// write path, so a broad scan could otherwise fan out into thousands of
+// simultaneous resolvers.
+//
+// It is charged there rather than inside resolveAndCache, which is what lets a
+// self-bounded caller resolve at its own width. The probe's prefetch stage runs
+// a worker pool capped at probeDNSConcurrencyMax and does nothing else while it
+// waits; charging it against this budget too meant its 128 workers funnelled
+// into 16 slots, so the stage ran at an eighth of its stated concurrency - and
+// because it is a barrier ahead of the first request, that showed up as
+// time-to-first-result on every sweep of a large list. A second, wider semaphore
+// for those callers would have been ceremony: sized to the prefetch ceiling it
+// could never deny a slot, and it coupled a constant here to one in the runner.
+var dnsBackgroundSem = make(chan struct{}, 16)
+
+// dnsLookupTimeout bounds one resolution attempt.
+//
+// net.Resolver applies no deadline of its own without a context, so a lookup
+// inherited whatever the system resolver chose - on a misconfigured resolv.conf,
+// tens of seconds - while holding a semaphore slot for all of it. A slow
+// resolver should cost a slot briefly, not remove it from the pool.
+const dnsLookupTimeout = 5 * time.Second
 
 // dnsKey normalizes a hostname into the cache key. Every entry point takes it,
 // so the write path and the read path cannot key the same host differently —
@@ -106,11 +135,28 @@ func resolveHostnameIP(hostname string) string {
 // and the semaphore hold of every scan that writes a record, for an answer
 // nothing on this path reads.
 func scheduleHostnameResolve(key string) {
-	go func() { _, _ = resolveAndCache(key, false) }()
+	// context.Background(): nothing is waiting on this, so there is no caller
+	// whose cancellation should end it. Its bound is dnsLookupTimeout, applied
+	// inside the flight.
+	//
+	// The concurrency budget is charged HERE because this is the caller that
+	// needs one - a goroutine per record, with nothing else bounding the fan-out.
+	// Callers that block on their answer already bound themselves.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), dnsLookupTimeout)
+		defer cancel()
+		select {
+		case dnsBackgroundSem <- struct{}{}:
+		case <-ctx.Done():
+			return // congestion, not an answer; the next record retries
+		}
+		defer func() { <-dnsBackgroundSem }()
+		_, _ = resolveAndCache(ctx, key, false)
+	}()
 }
 
 // ResolveHostnameNow resolves hostname synchronously and caches the answer,
-// returning the addresses found. Returns the cached value when one is fresh.
+// returning the full answer. Returns the cached value when one is fresh.
 //
 // This is the DNS-prefetch entry point for a host sweep, where DNS is part of
 // the ANSWER rather than incidental metadata: the probe phase resolves its whole
@@ -119,22 +165,34 @@ func scheduleHostnameResolve(key string) {
 // background best-effort resolver, because on a normal scan's write path a
 // blocking lookup would stall the record writer for a full DNS timeout per dead
 // host.
-func ResolveHostnameNow(hostname string) (ipv4, ipv6 []string) {
+//
+// ctx cancels the WAIT, not the lookup: a resolution in flight is shared with
+// every other caller asking the same question, so one caller walking away must
+// not take the answer with it. The lookup itself is bounded by dnsLookupTimeout.
+func ResolveHostnameNow(ctx context.Context, hostname string) (ipv4, ipv6, cname []string) {
 	key := dnsKey(hostname)
 	if key == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
-	if e, ok := dnsCache.Get(key); ok && time.Now().Before(e.expiry) {
-		return e.a, e.aaaa
+	// cnameChecked is part of the hit condition, not just freshness: an entry left
+	// by the background write-path resolver is fresh and complete for addresses
+	// while carrying no chain, and accepting it here would return the sweep an
+	// answer that is missing the half it came for.
+	if e, ok := dnsCache.Get(key); ok && e.cnameChecked && time.Now().Before(e.expiry) {
+		return e.a, e.aaaa, e.cname
 	}
 	// Literal IPs need no lookup, and must not be handed to the resolver.
 	if net.ParseIP(key) != nil {
 		e := literalIPEntry(key)
 		dnsCache.Add(key, e)
-		return e.a, e.aaaa
+		return e.a, e.aaaa, e.cname
 	}
-	entry, _ := resolveAndCache(key, true)
-	return entry.a, entry.aaaa
+	// The chain is returned, not just the addresses: the sweep wants the whole
+	// answer, and resolveAndCache already has it in hand. Returning half of it
+	// forced the caller into a second CachedDNS round trip to read back the entry
+	// this call had just written.
+	entry, _ := resolveAndCache(ctx, key, true)
+	return entry.a, entry.aaaa, entry.cname
 }
 
 // resolveAndCache performs one resolution per hostname at a time and gives every
@@ -150,19 +208,50 @@ func ResolveHostnameNow(hostname string) (ipv4, ipv6 []string) {
 // wantCNAME asks for the canonical-name chain as well. It is a parameter rather
 // than always-on because the CNAME is a second query, and only the sweep's
 // output reads it.
-func resolveAndCache(key string, wantCNAME bool) (dnsEntry, error) {
-	v, err, _ := dnsGroup.Do(key, func() (any, error) {
-		dnsResolveSem <- struct{}{}
-		entry := lookupHostname(key, wantCNAME)
-		<-dnsResolveSem
+//
+// ctx bounds how long THIS caller waits. The flight itself deliberately runs on
+// a detached context: singleflight hands one lookup's result to every caller
+// waiting on it, so honouring the first caller's cancellation would cancel the
+// resolution out from under all the others. dnsLookupTimeout is what bounds the
+// flight, and an abandoned flight still finishes and populates the cache, which
+// is the useful outcome for the next caller.
+func resolveAndCache(ctx context.Context, key string, wantCNAME bool) (dnsEntry, error) {
+	// The singleflight key carries wantCNAME. Sharing one flight per hostname
+	// meant an in-flight address-only resolve could hand its (chain-less) result
+	// to a caller that asked for the chain - the same completeness hole as the
+	// cache read, one layer up. Two concurrent lookups for one host is the price,
+	// and only for the rare overlap of a sweep and a write-path resolve.
+	group := key
+	if wantCNAME {
+		group = key + "\x00cname"
+	}
+	ch := dnsGroup.DoChan(group, func() (any, error) {
+		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dnsLookupTimeout)
+		defer cancel()
+		entry := lookupHostname(lctx, key, wantCNAME)
+		entry.cnameChecked = wantCNAME
+		if !wantCNAME {
+			// Carry forward a chain this process already observed rather than
+			// overwriting it with "unknown": an address-only refresh learns
+			// nothing about aliasing, so it has no business unlearning it.
+			if prev, ok := dnsCache.Get(key); ok && prev.cnameChecked {
+				entry.cname = prev.cname
+				entry.cnameChecked = true
+			}
+		}
 		dnsCache.Add(key, entry)
 		return entry, nil
 	})
-	if err != nil {
-		return dnsEntry{}, err
+	select {
+	case <-ctx.Done():
+		return dnsEntry{}, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return dnsEntry{}, res.Err
+		}
+		entry, _ := res.Val.(dnsEntry)
+		return entry, nil
 	}
-	entry, _ := v.(dnsEntry)
-	return entry, nil
 }
 
 // CachedDNS returns the full DNS answer this PROCESS resolved for hostname, or
@@ -200,10 +289,14 @@ func CachedDNS(hostname string) (a, aaaa, cname []string) {
 // meant. IPv4 is preferred for it because that is what the dialer will almost
 // always pick on a dual-stack host, so the column keeps describing where the
 // request actually went.
-func lookupHostname(hostname string, wantCNAME bool) dnsEntry {
+func lookupHostname(ctx context.Context, hostname string, wantCNAME bool) dnsEntry {
 	entry := dnsEntry{expiry: time.Now().Add(dnsNegativeTTL)}
 
-	addrs, err := net.LookupHost(hostname)
+	// The Resolver's context form, not the package-level net.LookupHost: that one
+	// takes no deadline and inherits whatever the system resolver was configured
+	// with, so a misconfigured resolv.conf turned every dead host into a
+	// multi-second hold on a concurrency slot that nothing could interrupt.
+	addrs, err := net.DefaultResolver.LookupHost(ctx, hostname)
 	if err == nil {
 		for _, a := range addrs {
 			switch ip := net.ParseIP(a); {
@@ -232,7 +325,7 @@ func lookupHostname(hostname string, wantCNAME bool) dnsEntry {
 	if !wantCNAME {
 		return entry
 	}
-	if cname, cerr := net.LookupCNAME(hostname); cerr == nil {
+	if cname, cerr := net.DefaultResolver.LookupCNAME(ctx, hostname); cerr == nil {
 		if trimmed := strings.TrimSuffix(cname, "."); trimmed != "" && !strings.EqualFold(trimmed, hostname) {
 			entry.cname = []string{trimmed}
 		}
@@ -243,7 +336,10 @@ func lookupHostname(hostname string, wantCNAME bool) dnsEntry {
 // literalIPEntry builds the cache entry for a hostname that is already an IP
 // literal: it resolves to itself, in its own family, with no CNAME.
 func literalIPEntry(hostname string) dnsEntry {
-	e := dnsEntry{ip: hostname, expiry: time.Now().Add(dnsPositiveTTL)}
+	// cnameChecked: an address is not a name and cannot be aliased, so the empty
+	// chain is a final answer rather than an unasked question. Without it every
+	// IP-literal target would re-resolve on each sweep read.
+	e := dnsEntry{ip: hostname, expiry: time.Now().Add(dnsPositiveTTL), cnameChecked: true}
 	if ip := net.ParseIP(hostname); ip != nil && ip.To4() != nil {
 		e.a = []string{hostname}
 	} else {
@@ -392,6 +488,14 @@ func (r *HTTPRecord) EnrichFromHttpRequestResponse(ctx *httpmsg.HttpRequestRespo
 		r.ResponseContentType = resp.Header("Content-Type")
 		r.ResponseContentLength = int64(len(resp.Body()))
 		r.RawResponse = bytes.Clone(resp.Raw())
+
+		// The redirect destination, parsed once here rather than re-read out of
+		// raw_response every time a tree renders. Stored verbatim: a relative
+		// Location stays relative, since resolving it would record a URL the
+		// server never sent.
+		if IsRedirectStatus(r.StatusCode) {
+			r.ResponseLocation = strings.TrimSpace(resp.Header("Location"))
+		}
 
 		respBody := resp.Body()
 		if strings.Contains(strings.ToLower(r.ResponseContentType), "html") {

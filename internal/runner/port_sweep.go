@@ -189,29 +189,47 @@ func (r *Runner) collectSweepHosts() (hosts []string, existing map[string]struct
 // default (https→443, http→80). Returns an empty host when the target cannot be
 // parsed into one.
 func hostAndPort(target string) (host, port string) {
+	host, port, _ = hostPortScheme(target)
+	return host, port
+}
+
+// hostPortScheme is hostAndPort plus the target's TRANSPORT: whether the sweep
+// will speak TLS to it.
+//
+// The scheme is returned rather than re-derived from the port because the port
+// does not carry it. A caller that guesses "TLS unless port 80" gets
+// http://host:8080 wrong (a plaintext service handed a TLS handshake, which is a
+// guaranteed timeout) and https://host:80 wrong in the other direction (a TLS
+// service never handshaked). Both forms appear in real target lists.
+//
+// A schemeless target defaults to https, matching the prefix applied below.
+func hostPortScheme(target string) (host, port string, https bool) {
 	raw := strings.TrimSpace(target)
 	if raw == "" {
-		return "", ""
+		return "", "", false
 	}
 	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw
 	}
 	u, err := neturl.Parse(raw)
 	if err != nil || u.Hostname() == "" {
-		return "", ""
+		return "", "", false
 	}
 	host = strings.ToLower(u.Hostname())
+	scheme := strings.ToLower(u.Scheme)
+	https = scheme != "http"
 	if p := u.Port(); p != "" {
-		return host, p
+		return host, p, https
 	}
-	switch strings.ToLower(u.Scheme) {
+	// Only the DEFAULT PORT is left to decide; the scheme already answered the
+	// transport above. Deciding both here is what let the two answers disagree.
+	switch scheme {
 	case "http":
-		return host, "80"
+		port = "80"
 	case "https":
-		return host, "443"
-	default:
-		return host, ""
+		port = "443"
 	}
+	return host, port, https
 }
 
 // parsePortList parses a comma-separated port list, ignoring blanks and

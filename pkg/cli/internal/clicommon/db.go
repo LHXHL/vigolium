@@ -83,6 +83,11 @@ func GetDB(configPath, dbPath string) (*database.DB, error) {
 		// with an error that names no remedy. Any other migration failure is
 		// best-effort — the schema may already be usable — so it only warns.
 		if errors.Is(schemaErr, database.ErrSchemaOutdated) {
+			// Close before returning: the handle never reaches dbConn on this
+			// path, so nothing downstream can close it, and a long-lived process
+			// that retries the open would leak a connection pool (and, on a
+			// writable handle, a WAL checkpointer goroutine) per attempt.
+			_ = db.Close()
 			return nil, schemaErr
 		}
 		zap.L().Warn("Failed to bring database schema up to date", zap.Error(schemaErr))

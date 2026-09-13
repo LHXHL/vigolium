@@ -10,6 +10,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/core"
+	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/database"
 	vighttp "github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/input/source"
@@ -70,6 +71,24 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	r.printPhaseStart("Probe", "sweep targets for liveness, technology, and attack surface")
 
 	pace := r.probePace()
+
+	// The phase budget has to start HERE, not inside the executor.
+	//
+	// MaxDuration reaches the executor as ExecutorConfig.MaxDuration, whose clock
+	// starts in Execute - which runs after the DNS prefetch barrier below. A
+	// sweep of a large list of dead hostnames could therefore spend an unbounded
+	// stretch resolving before the budget that was supposed to cap the phase had
+	// begun counting. Wrapping the phase context makes the number mean what it
+	// says: every stage of the probe, prefetch included. phaseDeadline keeps the
+	// earlier deadline, so an outer scan-wide cap still wins.
+	if pace.MaxDuration > 0 {
+		var phaseCancel context.CancelFunc
+		ctx, phaseCancel = phaseDeadline(ctx, pace.MaxDuration)
+		defer phaseCancel()
+	}
+
+	infra, releasePace := r.probePaceInfra(infra, pace)
+	defer releasePace()
 	r.printPhaseDetail(fmt.Sprintf("Speed: concurrency=%s, rate-limit=%s, max-per-host=%s",
 		terminal.HiBlue(fmt.Sprintf("%d", pace.Concurrency)),
 		terminal.HiBlue(fmt.Sprintf("%d", pace.RateLimit)),
@@ -80,6 +99,12 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 		terminal.HiTeal(fmt.Sprintf("%d", len(passive))),
 		terminal.HiTeal("no fuzzing"),
 		terminal.HiTeal(r.probeRedirectDesc())))
+	// Where the two outputs land. Stated because both are columns on the record
+	// rather than findings, so an operator reading a "0 findings" summary would
+	// otherwise conclude the sweep produced nothing.
+	r.printPhaseDetail(fmt.Sprintf("Output: per-record %s and %s on each http_record row",
+		terminal.HiTeal("surface_score"),
+		terminal.HiTeal("technology")))
 	// Proactive edge pacing is off by default here (one request per host has no
 	// burst to pre-empt). Stated rather than assumed: it is a safety default
 	// being turned off, and an operator who wants it back needs to know it went.
@@ -105,7 +130,7 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	// It is a separate stage rather than work folded into the request because
 	// resolution and fetching have different natural concurrencies and different
 	// failure modes: a host that does not resolve never needs a socket.
-	r.prefetchProbeTargets(ctx, pace.Concurrency)
+	r.prefetchProbeTargets(ctx, pace.Concurrency, infra.scanUUID)
 
 	// A dedicated writer so the phase's rows are flushed and counted on its own
 	// boundary, mirroring the discovery phase. Closed before the processed-count
@@ -143,9 +168,6 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 			}
 		},
 	}
-	if pace.MaxDuration > 0 {
-		executorCfg.MaxDuration = pace.MaxDuration
-	}
 
 	// The CLI target list directly — no deparos source, which is the whole
 	// difference from the discovery phase.
@@ -167,12 +189,25 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	}
 
 	elapsed := time.Since(phaseStart)
-	r.printPhaseComplete("Probe", fmt.Sprintf("completed — %s of %s targets answered in %s",
-		terminal.Orange(fmt.Sprintf("%d", executor.Processed())),
+	// Responded(), not Processed(): the executor's processed counter ticks once
+	// per item it took off the queue, including the ones whose fetch failed, so
+	// on a sweep of a stale host list it would report every dead host as a target
+	// that answered. Both are printed when they disagree, because "700 attempted,
+	// 300 answered" is itself the result of a liveness sweep.
+	answered := executor.Responded()
+	attempted := executor.Processed()
+	summary := fmt.Sprintf("completed — %s of %s targets answered in %s",
+		terminal.Orange(fmt.Sprintf("%d", answered)),
 		terminal.HiTeal(fmt.Sprintf("%d", len(r.options.Targets))),
-		terminal.HiPurple(fmtDuration(elapsed))))
+		terminal.HiPurple(fmtDuration(elapsed)))
+	if attempted > answered {
+		summary += terminal.Gray(fmt.Sprintf(" (%d attempted, %d did not respond)",
+			attempted, attempted-answered))
+	}
+	r.printPhaseComplete("Probe", summary)
 	zap.L().Info("Probe: completed",
-		zap.Int64("processed", executor.Processed()),
+		zap.Int64("answered", answered),
+		zap.Int64("processed", attempted),
 		zap.Int("targets", len(r.options.Targets)))
 
 	if !r.options.Silent {
@@ -222,6 +257,73 @@ func (r *Runner) probePace() config.ResolvedPhasePace {
 	return out
 }
 
+// probePaceInfra resolves the infrastructure the sweep actually runs on,
+// honouring the phase's rate-limit and per-host dials.
+//
+// Those two dials had no effect before this: the shared infrastructure is built
+// ONCE per run from the global options, and only Concurrency travels separately
+// (to ExecutorConfig.Workers). RateLimit and MaxPerHost live inside the
+// requester's services, so `--rate-limit probe=5` reached the phase header and
+// stopped there - the printed number was a promise the sweep did not keep.
+//
+// An override gets its OWN services copy and its own requester rather than
+// mutating infra's. One phaseInfra is shared by every phase in a run, so writing
+// the probe's limiter into it would silently re-pace the scan that follows. The
+// common no-override path returns infra untouched, so no run that does not ask
+// for phase-local pacing pays for a second transport.
+func (r *Runner) probePaceInfra(infra *phaseInfra, pace config.ResolvedPhasePace) (*phaseInfra, func()) {
+	noop := func() {}
+	// A displaced value is exactly what probePace() returns when the phase
+	// section overrode the global one, so no extra plumbing is needed to detect it.
+	if pace.RateLimit == r.options.RateLimit && pace.MaxPerHost == r.options.MaxPerHost {
+		return infra, noop
+	}
+
+	// Shallow copy: HostErrors, Notifier and DedupManager are deliberately shared
+	// with the rest of the run - they accumulate cross-phase knowledge, and
+	// forking them would make the sweep forget what earlier phases learned.
+	local := *infra.svc
+	local.RateLimiter = buildScanRateLimiter(pace.RateLimit)
+
+	var ownedLimiter *hostlimit.HostRateLimiter
+	if pace.MaxPerHost != r.options.MaxPerHost && pace.MaxPerHost > 0 {
+		ownedLimiter = newHostLimiter(pace.MaxPerHost, r.settings, r.options.NoWafPacing)
+		local.HostLimiter = ownedLimiter
+	}
+
+	// Built after the limiter: NewRequester reads HostLimiter.CeilingPerHost() to
+	// size its connection pool, so constructing it first would size the pool from
+	// the limiter the phase is replacing.
+	requester, err := vighttp.NewRequester(r.options, &local)
+	if err != nil {
+		zap.L().Warn("Probe: phase-local pacing unavailable, using scan-wide limits",
+			zap.Error(err))
+		if ownedLimiter != nil {
+			_ = ownedLimiter.Close()
+		}
+		return infra, noop
+	}
+
+	// A derived phaseInfra rather than a loose pair of components: the phase runs
+	// on ONE infra object, and the caller cannot accidentally pass the forked
+	// services alongside the original requester. Everything else is carried over
+	// by value and stays owned by the original, which is why nothing here closes
+	// it - only the two members this function created are released below.
+	paced := *infra
+	paced.svc = &local
+	paced.httpRequester = requester
+	if ownedLimiter != nil {
+		paced.hostLimiter = ownedLimiter
+	}
+
+	return &paced, func() {
+		requester.CloseIdleConnections()
+		if ownedLimiter != nil {
+			_ = ownedLimiter.Close()
+		}
+	}
+}
+
 // probeRedirectDesc renders the effective redirect policy for the phase header.
 // It is shown unconditionally because "did this sweep follow the 301 or record
 // it" changes what every row in the output means.
@@ -259,6 +361,13 @@ const (
 	probeDNSConcurrencyMax    = 128
 )
 
+// hostObservationSaveTimeout bounds the one write that persists the stage's
+// observations. It runs on a context detached from the phase's, so that a
+// cancelled sweep still keeps what it already resolved - which means it needs a
+// bound of its own or a wedged database could outlive the scan that was told to
+// stop.
+const hostObservationSaveTimeout = 30 * time.Second
+
 // sweepEndpoint is one distinct endpoint to prefetch: a hostname, plus the port
 // and scheme the sweep will contact it on.
 type sweepEndpoint struct {
@@ -271,6 +380,13 @@ type sweepEndpoint struct {
 // --tls-probe, completes a TLS handshake against every HTTPS endpoint — before
 // the sweep sends its first request.
 //
+// This stage is a barrier: nothing is fetched until it finishes, so its duration
+// is the sweep's time to first result. That makes its concurrency load-bearing,
+// and it used to be a fiction — the worker pool below scales to 128, but every
+// lookup was charged against a 16-slot semaphore shared with the background
+// write-path resolver, so the stage ran at an eighth of its stated width. It now
+// charges dnsSweepSem, which is sized for exactly this caller.
+//
 // One pass over the target list rather than a stage each, because both are
 // per-host facts keyed the same way and both feed the same serialization-time
 // attachment. Splitting them would walk the list twice and pay two goroutine
@@ -281,7 +397,7 @@ type sweepEndpoint struct {
 // (ProbeStatus false) rather than dropped — "this host does not speak TLS" is an
 // answer a sweep wants. Honours ctx so a cancelled scan stops prefetching
 // instead of walking the whole list.
-func (r *Runner) prefetchProbeTargets(ctx context.Context, requestConcurrency int) {
+func (r *Runner) prefetchProbeTargets(ctx context.Context, requestConcurrency int, scanUUID string) {
 	targets := r.distinctSweepEndpoints()
 	if len(targets) == 0 {
 		return
@@ -292,65 +408,145 @@ func (r *Runner) prefetchProbeTargets(ctx context.Context, requestConcurrency in
 	workers = min(workers, len(targets))
 
 	start := time.Now()
-	var resolved, tlsOK atomic.Int64
+	var resolved, tlsOK, attempted atomic.Int64
 	queue := make(chan sweepEndpoint)
+
+	// Observations are collected here, at the point of observation, rather than
+	// re-read from the process caches at emit time.
+	//
+	// That re-read is what made a large sweep lose its own work: the DNS and TLS
+	// caches hold 8192 entries each and evict in insertion order, so past that
+	// size the hosts resolved FIRST had their answers dropped before the export
+	// that wanted them - resolved successfully, then silently absent from the
+	// output. Capturing the answer while it is in hand and persisting it makes
+	// the output independent of what a bounded cache happens to still hold.
+	var obsMu sync.Mutex
+	observations := make([]database.HostObservationInput, 0, len(targets))
+
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Each worker collects into its own slice and they are concatenated
+			// after the pool drains, so the stage needs no lock on the hot path.
+			var mine []database.HostObservationInput
+			defer func() {
+				obsMu.Lock()
+				observations = append(observations, mine...)
+				obsMu.Unlock()
+			}()
+
 			for t := range queue {
-				if v4, v6 := database.ResolveHostnameNow(t.host); len(v4)+len(v6) > 0 {
+				attempted.Add(1)
+				obs := database.HostObservationInput{Hostname: t.host, Port: t.port}
+				obs.A, obs.AAAA, obs.CNAME = database.ResolveHostnameNow(ctx, t.host)
+				if len(obs.A)+len(obs.AAAA) > 0 {
 					resolved.Add(1)
 				}
+				// Complete means the lookup ran to an answer, not that the answer
+				// was positive: a host that genuinely resolves to nothing is a
+				// complete observation, and only a cancelled stage is not.
+				obs.Complete = ctx.Err() == nil
+
 				// Only HTTPS endpoints are handshaked: a TLS probe against a
 				// plaintext port is a guaranteed timeout, and on a large sweep
 				// those timeouts would dominate the stage.
 				if tlsProbe && t.https {
-					if info := tlsprobe.Probe(ctx, t.host, t.port, tlsprobe.DefaultTimeout); info != nil && info.ProbeStatus {
-						tlsOK.Add(1)
+					if info := tlsprobe.Probe(ctx, t.host, t.port, tlsprobe.DefaultTimeout); info != nil {
+						if info.ProbeStatus {
+							tlsOK.Add(1)
+						}
+						// Stored even on a failed handshake: "this endpoint does
+						// not speak TLS" is an answer a sweep wants, and it is
+						// exactly the one that cannot be re-derived later.
+						obs.TLS = info
 					}
+				}
+
+				if !obs.Empty() {
+					mine = append(mine, obs)
 				}
 			}
 		}()
 	}
+	cancelled := false
+feed:
 	for _, t := range targets {
 		select {
 		case <-ctx.Done():
-			close(queue)
-			wg.Wait()
-			return
+			cancelled = true
+			break feed
 		case queue <- t:
 		}
 	}
 	close(queue)
 	wg.Wait()
 
+	// Persisted on a context detached from the phase's, so a cancelled or
+	// budget-exhausted sweep still keeps the observations it already paid for.
+	// The rows it writes are marked incomplete, which is what tells a later
+	// reader the stage did not finish.
+	stored := 0
+	if r.repository != nil && len(observations) > 0 {
+		saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(ctx), hostObservationSaveTimeout)
+		if err := r.repository.SaveHostObservations(saveCtx, r.options.ProjectUUID, scanUUID, observations); err != nil {
+			zap.L().Warn("Probe: failed to persist host observations", zap.Error(err))
+		} else {
+			stored = len(observations)
+		}
+		saveCancel()
+	}
+
 	detail := fmt.Sprintf("DNS: resolved %s of %s hostname(s)",
 		terminal.Orange(fmt.Sprintf("%d", resolved.Load())),
 		terminal.HiTeal(fmt.Sprintf("%d", len(targets))))
+	// A cut-short prefetch is stated rather than left to be inferred from a
+	// low resolved count: the records for the endpoints never reached carry no
+	// DNS at all, and "the stage ran out of budget" is a different fact about
+	// the output than "those hosts do not resolve".
+	if cancelled {
+		detail += terminal.Gray(fmt.Sprintf(" (stopped early — %d of %d endpoints reached)",
+			attempted.Load(), len(targets)))
+	}
 	if tlsProbe {
 		detail += fmt.Sprintf(" | TLS: %s handshake(s) completed",
 			terminal.Orange(fmt.Sprintf("%d", tlsOK.Load())))
+	}
+	// Stated because it is what makes the sweep's DNS/TLS output survive: the
+	// process caches these were read from hold 8192 entries, so without the
+	// stored rows a bigger sweep would emit facts for its last hosts and nothing
+	// for its first.
+	if stored > 0 {
+		detail += fmt.Sprintf(" | stored %s endpoint observation(s)",
+			terminal.Orange(fmt.Sprintf("%d", stored)))
 	}
 	r.printPhaseDetail(detail + " in " + terminal.HiPurple(fmtDuration(time.Since(start))))
 }
 
 // distinctSweepEndpoints reduces the CLI target list to one entry per
-// host:port, preserving order. A sweep routinely carries several URLs on one
-// host; resolving or handshaking it once per URL would multiply the stage's
+// scheme+host:port, preserving order. A sweep routinely carries several URLs on
+// one host; resolving or handshaking it once per URL would multiply the stage's
 // cost for an answer that cannot differ.
 //
-// Parsing goes through hostAndPort (port_sweep.go) rather than a second URL
+// Parsing goes through hostPortScheme (port_sweep.go) rather than a second URL
 // parser: that one prefixes a missing scheme before parsing, and without the
 // prefix a schemeless `example.com:8443` parses as Scheme="example.com" with no
 // port — so the endpoint would be resolved and handshaked on 443 while the
 // port-sweep phase read the same line as 8443. One parser, one answer.
+//
+// The scheme comes from the target rather than from its port. Deriving it
+// ("anything but 80 is TLS") inverted both mixed-port forms: http://host:8080
+// was handed a TLS handshake, which is the guaranteed timeout this stage skips
+// plaintext ports to avoid, and https://host:80 was never handshaked at all. It
+// is part of the dedup key for the same reason — a host offering both schemes on
+// one port is two endpoints, and letting the first one seen answer for both
+// would drop whichever came second.
 func (r *Runner) distinctSweepEndpoints() []sweepEndpoint {
 	out := make([]sweepEndpoint, 0, len(r.options.Targets))
-	seen := make(map[string]struct{}, len(r.options.Targets))
+	seen := make(map[sweepEndpoint]struct{}, len(r.options.Targets))
 	for _, raw := range r.options.Targets {
-		host, portStr := hostAndPort(raw)
+		host, portStr, https := hostPortScheme(raw)
 		if host == "" {
 			continue
 		}
@@ -358,15 +554,12 @@ func (r *Runner) distinctSweepEndpoints() []sweepEndpoint {
 		if err != nil || port <= 0 {
 			continue
 		}
-		key := host + ":" + portStr
-		if _, dup := seen[key]; dup {
+		ep := sweepEndpoint{host: host, port: port, https: https}
+		if _, dup := seen[ep]; dup {
 			continue
 		}
-		seen[key] = struct{}{}
-		// hostAndPort defaults a schemeless target to https, so "is this TLS"
-		// is answered by the port it resolved rather than by re-reading the
-		// scheme. 80 is the only plaintext default it produces.
-		out = append(out, sweepEndpoint{host: host, port: port, https: port != 80})
+		seen[ep] = struct{}{}
+		out = append(out, ep)
 	}
 	return out
 }

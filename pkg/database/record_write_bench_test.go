@@ -5,8 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/sqlitedialect"
@@ -104,15 +105,13 @@ func BenchmarkRecordWriterAdmitDuplicate(b *testing.B) {
 // BenchmarkRecordWriterUniqueWrites is the counterpart: every record is new, so
 // it pays conversion AND the insert. Kept alongside the duplicate benchmark
 // because an optimization that helps duplicates must not tax unique rows.
-// A single Write blocks until its batch flushes, so the default 50ms
-// FlushInterval would make this benchmark a measurement of the timer. Flush
-// immediately instead, to measure conversion plus insert.
+// BatchSize=1 so each Write commits on its own, measuring conversion plus
+// insert rather than any batching effect.
 func BenchmarkRecordWriterUniqueWrites(b *testing.B) {
 	db := newTestDB(b)
 	repo := NewRepository(db)
 	w := NewRecordWriter(repo, RecordWriterConfig{
-		BatchSize:     1,
-		FlushInterval: time.Millisecond,
+		BatchSize: 1,
 	})
 	defer w.Close()
 
@@ -166,6 +165,72 @@ func BenchmarkSaveRecordBatch(b *testing.B) {
 				_ = db.Close()
 				b.StartTimer()
 			}
+		})
+	}
+}
+
+// BenchmarkRecordWriterConcurrentWriters measures the shape a scan actually
+// produces: N workers each blocking on their own Write, at the DEFAULT
+// BatchSize.
+//
+// This is the case the other write benchmarks deliberately configure away.
+// BenchmarkRecordWriterUniqueWrites sets BatchSize=1 so it can measure
+// conversion and insert without the timer; that also hides the coupling this
+// benchmark exists for. Write is admit-then-await, so a worker cannot enqueue
+// its next row until the current one commits, which caps in-flight rows at the
+// worker count - well under the default BatchSize of 128. The batch-full branch
+// was therefore unreachable on any ordinary scan and every row waited out the
+// flush ticker, at a cost paid per redirect hop because a hop's UUID is the next
+// hop's parent.
+//
+// Reported per write.
+// Before the flush loop drained what was already queued and committed it
+// (darwin/arm64, in-memory SQLite, 2000 writes):
+//
+//	workers=1    49,994,022 ns/op -> 274,523 ns/op
+//	workers=8     6,244,486 ns/op ->  92,613 ns/op
+//	workers=40    1,247,306 ns/op ->  70,825 ns/op
+//
+// The old figures are the former 50ms flush interval divided by the worker
+// count, to three digits - the signature of a batch that only ever flushed on
+// the timer.
+func BenchmarkRecordWriterConcurrentWriters(b *testing.B) {
+	for _, workers := range []int{1, 8, 40} {
+		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
+			db := newTestDB(b)
+			repo := NewRepository(db)
+			// Default batching on purpose - the defaults are what a scan runs.
+			w := NewRecordWriter(repo, RecordWriterConfig{})
+			defer w.Close()
+
+			ctx := context.Background()
+			pairs := make([]*httpmsg.HttpRequestResponse, b.N)
+			for i := range pairs {
+				pairs[i] = benchPair(i, 4<<10)
+			}
+
+			var next atomic.Int64
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			var wg sync.WaitGroup
+			for range workers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						i := next.Add(1) - 1
+						if i >= int64(b.N) {
+							return
+						}
+						if _, err := w.Write(ctx, pairs[i], "bench", DefaultProjectUUID); err != nil {
+							b.Error(err)
+							return
+						}
+					}
+				}()
+			}
+			wg.Wait()
 		})
 	}
 }

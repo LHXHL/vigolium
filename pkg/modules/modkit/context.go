@@ -80,6 +80,18 @@ type SurfaceScoreUpdater interface {
 	UpdateSurfaceScores(ctx context.Context, scores map[string]int) error
 }
 
+// TechnologyAnnotator persists detected technology stacks onto HTTP records.
+//
+// Separate from RemarksAnnotator because it writes a different column with
+// different semantics: remarks are free-form analyst tags merged over time,
+// technology is the fingerprint modules' verdict about the host and is replaced
+// wholesale each time it is written.
+type TechnologyAnnotator interface {
+	// SetRecordTechnology writes the technology list for each record UUID,
+	// replacing whatever the column held.
+	SetRecordTechnology(ctx context.Context, technology map[string][]string) error
+}
+
 // RemarksAnnotator appends semantic tags (remarks) to HTTP records in the database.
 type RemarksAnnotator interface {
 	// AppendRemarks merges the given remarks into existing remarks for each record UUID.
@@ -173,6 +185,7 @@ type ScanContext struct {
 	RiskScoreUpdater    RiskScoreUpdater
 	SurfaceScoreUpdater SurfaceScoreUpdater
 	RemarksAnnotator    RemarksAnnotator
+	TechAnnotator       TechnologyAnnotator
 	RecordRewriter      RecordResponseRewriter
 	ArtifactWriter      DerivedArtifactWriter
 	RequestUUIDResolver RequestUUIDResolver

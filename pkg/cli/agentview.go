@@ -81,6 +81,24 @@ type agentViewOptions struct {
 	// allowlist applied to a record row would prune it to nothing.
 	recordFields []string
 	recordLimit  int // max embedded records per finding; 0 = no cap
+
+	// hostFacts serves each record's DNS/TLS observations. nil falls back to the
+	// process caches, which is all a caller without a database handle can offer -
+	// and all this view had before observations were stored, with the cache's
+	// 8192-entry eviction quietly deciding which records got facts. Every method
+	// is nil-safe, so consumers never branch on it.
+	hostFacts *database.StoredHostFacts
+}
+
+// withHostFacts returns a copy of opts that serves host facts from a run's
+// stored observations. A database without them yields a reader that answers from
+// the process caches, so this is always safe to call.
+func (o agentViewOptions) withHostFacts(ctx context.Context, db *database.DB, projectUUID, scanUUID string) agentViewOptions {
+	if db == nil {
+		return o
+	}
+	o.hostFacts = database.NewStoredHostFacts(ctx, database.NewRepository(db), projectUUID, scanUUID)
+	return o
 }
 
 // agentViewOptionsFromFlags reads the shared flags into an options struct.
@@ -534,9 +552,12 @@ func compactRecordView(rec *database.HTTPRecord, opts agentViewOptions) map[stri
 	}
 	// Host facts (full DNS answer, TLS certificate) through the one owner, so
 	// this view and the JSONL export cannot disagree about which keys exist or
-	// when they appear. Output-only: populated for the run that probed, absent
-	// when reading a database back in a fresh process.
-	maps.Copy(m, database.LookupHostFacts(rec.Hostname, rec.Port).AsMap())
+	// when they appear. Served from the run's stored observations when the caller
+	// supplied them, and otherwise from this process's caches — which is what
+	// made the keys appear for a sweep's last hosts and not its first, since
+	// those caches evict at 8192 entries. FactsMap memoizes the rendered map, so
+	// the JSON round trip it costs is paid per endpoint rather than per record.
+	maps.Copy(m, opts.hostFacts.FactsMap(rec.Hostname, rec.Port))
 	if rec.RiskScore != 0 {
 		m["risk_score"] = rec.RiskScore
 	}

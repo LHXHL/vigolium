@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/internal/runner"
 	vighttp "github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -26,6 +27,54 @@ func applyProbeFlags(opts *types.Options, cmd *cobra.Command) error {
 	}
 	opts.RecordRedirectChainSet = cmd.Flags().Changed("record-redirect-chain")
 	opts.NoWafPacingSet = cmd.Flags().Changed("no-waf-pacing")
+	return nil
+}
+
+// scanExportOnly backs --export-only: the raw flag values, as typed.
+var scanExportOnly []string
+
+// scanExportScope is the resolved scope for a run's jsonl envelope, consumed by
+// streamJSONLExport and nothing else.
+//
+// Deliberately NOT the `export` command's topExportOnly. That global is read by
+// streamExportData for EVERY format - html, report, pdf, sarif, bundle and the
+// stateless console dump all stream through the same gate - so writing it here
+// made `run probe -o report.html --format html` render a report with its
+// findings silently removed. A flag that documents itself as narrowing the jsonl
+// envelope has to reach only the jsonl envelope.
+var scanExportScope = fullExportScope
+
+// applyExportScope resolves which record types this run's jsonl envelope carries.
+//
+// An explicit --export-only always wins. Otherwise a probe-only run defaults to
+// http records alone, because on that run the two envelope types are the same
+// information twice: the only modules a sweep runs are the 26 fingerprint ones
+// (whose findings are all "Technology Detected: X") and surface-scoring (which
+// emits nothing), and the fingerprint verdict now lands on the record itself in
+// http_records.technology. Emitting both doubles the file to restate what the
+// record already says.
+//
+// Any other run keeps the full envelope: a real scan's findings are not
+// derivable from its records, so narrowing there would silently drop results.
+//
+// The probe default is resolved here rather than in runner.ApplyNativePhaseSelection
+// (where applyProbeOnlyDefaults lives) because it governs a CLI-only output path:
+// the REST API and the programmatic launcher never reach streamExportData, so
+// there is no second caller for the two to disagree about.
+//
+// Called AFTER phase selection, which is what resolves ProbeEnabled.
+func applyExportScope(opts *types.Options) error {
+	if len(scanExportOnly) > 0 {
+		scope := newExportScope(scanExportOnly)
+		if err := scope.validate("--export-only"); err != nil {
+			return asUsageError(err)
+		}
+		scanExportScope = scope
+		return nil
+	}
+	if runner.IsProbeOnlyRun(opts) {
+		scanExportScope = newExportScope([]string{"http"})
+	}
 	return nil
 }
 

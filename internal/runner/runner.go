@@ -204,28 +204,14 @@ func BuildSharedInfra(opts *types.Options, settings *config.Settings, repo *data
 	}
 
 	maxPerHost := opts.MaxPerHost
-	if settings != nil && !opts.MaxPerHostExplicitlySet && settings.ScanningPace.MaxPerHost > 0 {
-		maxPerHost = settings.ScanningPace.MaxPerHost
+	if opts.MaxPerHostExplicitlySet {
+		// An explicit -c/--max-per-host wins outright; otherwise newHostLimiter
+		// falls back to the common scanning_pace value.
+		maxPerHost = max(maxPerHost, 1)
+	} else {
+		maxPerHost = 0
 	}
-	if maxPerHost <= 0 {
-		maxPerHost = 10
-	}
-	adaptive, minPerHost, ceilingPerHost := adaptiveHostLimiterSettings(settings)
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:     maxPerHost,
-		MaxEntries:     1000,
-		EvictAfter:     30 * time.Second,
-		EvictInterval:  10 * time.Second,
-		Adaptive:       adaptive,
-		MinPerHost:     minPerHost,
-		CeilingPerHost: ceilingPerHost,
-		// Throttle a host only once it starts returning WAF/CDN blocks; a non-WAF
-		// scan is unaffected. The constructor drops this when Adaptive is on.
-		WafAutoArm: true,
-		// --no-waf-pacing turns off only the proactive edge pre-arm; reactive
-		// WAF-block back-off stays on.
-		DisablePreArm: opts.NoWafPacing,
-	})
+	hostLimiter := newHostLimiter(maxPerHost, settings, opts.NoWafPacing)
 	svc.HostLimiter = hostLimiter
 	infra.HostLimiter = hostLimiter
 	infra.Services = svc

@@ -60,8 +60,7 @@ func TestRecordWriter_SaveRecordBatch_TrueBatch(t *testing.T) {
 	db := newTestDB(t)
 	repo := NewRepository(db)
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		FlushInterval: 50 * time.Millisecond,
-		BatchSize:     128,
+		BatchSize: 128,
 	})
 	defer writer.Close()
 	ctx := context.Background()
@@ -107,10 +106,9 @@ func TestRecordWriter_10000ConcurrentWrites(t *testing.T) {
 	repo := NewRepository(db)
 
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		BufferSize:    8192,
-		BatchSize:     200,
-		FlushInterval: 25 * time.Millisecond,
-		Shards:        1, // Single shard for in-memory SQLite test
+		BufferSize: 8192,
+		BatchSize:  200,
+		Shards:     1, // Single shard for in-memory SQLite test
 	})
 	defer writer.Close()
 
@@ -235,10 +233,9 @@ func TestRecordWriter_DirectRepoComparison(t *testing.T) {
 
 	// --- Phase 2: RecordWriter (the new way) ---
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		BufferSize:    4096,
-		BatchSize:     100,
-		FlushInterval: 25 * time.Millisecond,
-		Shards:        1, // Single shard for in-memory SQLite test
+		BufferSize: 4096,
+		BatchSize:  100,
+		Shards:     1, // Single shard for in-memory SQLite test
 	})
 
 	var writerErrors atomic.Int64
@@ -281,10 +278,9 @@ func TestRecordWriter_GracefulShutdown(t *testing.T) {
 	repo := NewRepository(db)
 
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		BufferSize:    4096,
-		BatchSize:     500,              // large batch — most records will be pending at shutdown
-		FlushInterval: 10 * time.Second, // long interval — only shutdown flush matters
-		Shards:        1,                // Single shard for in-memory SQLite test
+		BufferSize: 4096,
+		BatchSize:  500, // large batch — most records will be pending at shutdown
+		Shards:     1,   // Single shard for in-memory SQLite test
 	})
 
 	const total = 1000
@@ -347,10 +343,9 @@ func TestRecordWriter_WriteAfterClose(t *testing.T) {
 	repo := NewRepository(db)
 
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		BufferSize:    32,
-		BatchSize:     8,
-		FlushInterval: 10 * time.Millisecond,
-		Shards:        1,
+		BufferSize: 32,
+		BatchSize:  8,
+		Shards:     1,
 	})
 	writer.Close()
 
@@ -369,10 +364,9 @@ func TestRecordWriter_SmallBatchConfig(t *testing.T) {
 
 	// Tiny batches to stress the flush path
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		BufferSize:    64,
-		BatchSize:     5,
-		FlushInterval: 5 * time.Millisecond,
-		Shards:        1, // Single shard for in-memory SQLite test
+		BufferSize: 64,
+		BatchSize:  5,
+		Shards:     1, // Single shard for in-memory SQLite test
 	})
 	defer writer.Close()
 
@@ -489,10 +483,9 @@ func TestRecordWriter_WithFileDB(t *testing.T) {
 
 	repo := NewRepository(db)
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		BufferSize:    8192,
-		BatchSize:     200,
-		FlushInterval: 25 * time.Millisecond,
-		Shards:        1, // Single shard for in-memory SQLite test
+		BufferSize: 8192,
+		BatchSize:  200,
+		Shards:     1, // Single shard for in-memory SQLite test
 	})
 	defer writer.Close()
 

@@ -46,7 +46,7 @@ func maybePrintScanTraffic(ctx context.Context, db *database.DB, projectUUID str
 		return
 	}
 	if scanPrintTrafficTree {
-		if err := displayTree(records); err != nil {
+		if err := displayTree(ctx, db, records); err != nil {
 			zap.L().Warn("--print-traffic-tree: failed to render traffic", zap.Error(err))
 		}
 	}

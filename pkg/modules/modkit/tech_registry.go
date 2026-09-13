@@ -1,6 +1,7 @@
 package modkit
 
 import (
+	"sort"
 	"strings"
 	"sync"
 
@@ -159,17 +160,36 @@ func (r *TechRegistry) Allows(host string, candidates []string) bool {
 	return false
 }
 
-// HostKnown reports whether any tech has been detected for host yet.
-func (r *TechRegistry) HostKnown(host string) bool {
+// Tags returns every tech tag detected for host, sorted, or nil when the host is
+// unknown. Sorted because the result is persisted to http_records.technology and
+// exported: an unstable order would make two identical scans diff.
+//
+// The returned slice is a copy - the registry's own set stays private, so a
+// caller cannot mutate another module's gating data by holding onto it.
+func (r *TechRegistry) Tags(host string) []string {
 	if r == nil {
-		return false
+		return nil
 	}
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
-		return false
+		return nil
 	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	set, ok := r.byHost.Peek(host) // Peek: see Has (avoid LRU write-lock on the read path)
-	return ok && len(set) > 0
+	if !ok || len(set) == 0 {
+		r.mu.RUnlock()
+		return nil
+	}
+	tags := make([]string, 0, len(set))
+	for tag := range set {
+		tags = append(tags, tag)
+	}
+	r.mu.RUnlock()
+	sort.Strings(tags)
+	return tags
+}
+
+// HostKnown reports whether any tech has been detected for host yet.
+func (r *TechRegistry) HostKnown(host string) bool {
+	return len(r.Tags(host)) > 0
 }

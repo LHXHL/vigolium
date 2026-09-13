@@ -17,7 +17,14 @@ import (
 // Returns the open DB and its file path.
 func newFileDB(t *testing.T, name string) (*DB, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
+	return openFileDB(t, filepath.Join(t.TempDir(), name), true)
+}
+
+// openFileDB opens (or reopens) a file-backed test database. seed controls
+// whether SeedDefaults runs, which is what installs the FTS index — the tests
+// that exercise index migration need a database that has NOT been seeded yet.
+func openFileDB(t *testing.T, path string, seed bool) (*DB, string) {
+	t.Helper()
 	cfg := &config.DatabaseConfig{
 		Enabled: true,
 		Driver:  "sqlite",
@@ -37,8 +44,10 @@ func newFileDB(t *testing.T, name string) (*DB, string) {
 	if err := db.CreateSchema(ctx); err != nil {
 		t.Fatalf("CreateSchema: %v", err)
 	}
-	if err := db.SeedDefaults(ctx); err != nil {
-		t.Fatalf("SeedDefaults: %v", err)
+	if seed {
+		if err := db.SeedDefaults(ctx); err != nil {
+			t.Fatalf("SeedDefaults: %v", err)
+		}
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db, path
@@ -137,6 +146,8 @@ func TestMergeSQLiteFile_BasicAndRemap(t *testing.T) {
 //     junction and OAST still merge and remap.
 //   - SkipRecordBodies: the traffic reader's case — every row lands with its
 //     metadata (counts and metadata predicates unaffected) but no bodies.
+//   - SkipFindings: the traffic reader's other case — records land, but the
+//     finding corpus and everything keyed to it stays in the source.
 func TestMergeSQLiteFileOptions(t *testing.T) {
 	const project = DefaultProjectUUID
 	seed := func(t *testing.T) string {
@@ -158,14 +169,16 @@ func TestMergeSQLiteFileOptions(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name        string
-		opts        MergeOptions
-		wantRecords int
-		wantBodies  bool
+		name         string
+		opts         MergeOptions
+		wantRecords  int
+		wantBodies   bool
+		wantFindings bool
 	}{
-		{"default copies everything", MergeOptions{}, 2, true},
-		{"skip http_records", MergeOptions{SkipHTTPRecords: true}, 0, false},
-		{"skip record bodies", MergeOptions{SkipRecordBodies: true}, 2, false},
+		{"default copies everything", MergeOptions{}, 2, true, true},
+		{"skip http_records", MergeOptions{SkipHTTPRecords: true}, 0, false, true},
+		{"skip record bodies", MergeOptions{SkipRecordBodies: true}, 2, false, true},
+		{"skip findings", MergeOptions{SkipFindings: true}, 2, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -184,9 +197,28 @@ func TestMergeSQLiteFileOptions(t *testing.T) {
 				t.Fatalf("http_records rows = %d, want %d", got, tc.wantRecords)
 			}
 
-			// Findings, the junction and OAST always merge and remap to the dest
-			// id, whatever happens to the records.
-			if stats.FindingsMerged != 1 || stats.FindingRecordsMerged != 1 || stats.OASTMerged != 1 || stats.ScansMerged != 1 {
+			// Scans merge regardless — they are uuid-keyed and copied set-based.
+			if stats.ScansMerged != 1 {
+				t.Fatalf("scans not merged: %+v", stats)
+			}
+
+			if !tc.wantFindings {
+				// The three id-remapped tables are the ones SkipFindings drops,
+				// and they are exactly the ones the merge buffers in Go.
+				if stats.FindingsMerged != 0 || stats.FindingRecordsMerged != 0 || stats.OASTMerged != 0 {
+					t.Fatalf("finding tables merged despite SkipFindings: %+v", stats)
+				}
+				for _, table := range []string{"findings", "finding_records", "oast_interactions"} {
+					if got := scalarInt(t, dest, `SELECT COUNT(*) FROM `+table); got != 0 {
+						t.Fatalf("%s has %d rows under SkipFindings, want 0", table, got)
+					}
+				}
+				return
+			}
+
+			// Findings, the junction and OAST otherwise merge and remap to the
+			// dest id, whatever happens to the records.
+			if stats.FindingsMerged != 1 || stats.FindingRecordsMerged != 1 || stats.OASTMerged != 1 {
 				t.Fatalf("finding tables not merged: %+v", stats)
 			}
 			destFID := scalarInt(t, dest, `SELECT id FROM findings WHERE project_uuid = ? AND finding_hash = ?`, project, "fh-1")

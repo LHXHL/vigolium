@@ -14,9 +14,6 @@ func TestRecordWriterConfig_WithDefaults(t *testing.T) {
 	if zero.BatchSize != 128 {
 		t.Errorf("BatchSize default = %d, want 128", zero.BatchSize)
 	}
-	if zero.FlushInterval != 50*time.Millisecond {
-		t.Errorf("FlushInterval default = %v, want 50ms", zero.FlushInterval)
-	}
 	// Shards is intentionally NOT defaulted by withDefaults — NewRecordWriter
 	// sets it driver-aware (1 for SQLite, 4 for PostgreSQL).
 	if zero.Shards != 0 {
@@ -29,11 +26,10 @@ func TestRecordWriterConfig_WithDefaults(t *testing.T) {
 	// Negative values are treated as unset and defaulted (except Shards, which
 	// NewRecordWriter resolves against the driver).
 	neg := (&RecordWriterConfig{
-		BufferSize:    -1,
-		BatchSize:     -1,
-		FlushInterval: -1,
-		Shards:        -1,
-		FlushTimeout:  -1,
+		BufferSize:   -1,
+		BatchSize:    -1,
+		Shards:       -1,
+		FlushTimeout: -1,
 	}).withDefaults()
 	if neg.BufferSize != 4096 || neg.BatchSize != 128 {
 		t.Errorf("negative values not defaulted: %+v", neg)
@@ -41,14 +37,13 @@ func TestRecordWriterConfig_WithDefaults(t *testing.T) {
 
 	// Explicit positive values are preserved.
 	custom := (&RecordWriterConfig{
-		BufferSize:    100,
-		BatchSize:     7,
-		FlushInterval: 5 * time.Second,
-		Shards:        3,
-		FlushTimeout:  30 * time.Second,
+		BufferSize:   100,
+		BatchSize:    7,
+		Shards:       3,
+		FlushTimeout: 30 * time.Second,
 	}).withDefaults()
 	if custom.BufferSize != 100 || custom.BatchSize != 7 || custom.Shards != 3 ||
-		custom.FlushInterval != 5*time.Second || custom.FlushTimeout != 30*time.Second {
+		custom.FlushTimeout != 30*time.Second {
 		t.Errorf("explicit values not preserved: %+v", custom)
 	}
 }
@@ -85,10 +80,9 @@ func TestRecordWriter_Metrics_TrackEnqueuedAndFlushed(t *testing.T) {
 	db := newTestDB(t)
 	repo := NewRepository(db)
 	w := NewRecordWriter(repo, RecordWriterConfig{
-		BufferSize:    256,
-		BatchSize:     16,
-		FlushInterval: 5 * time.Millisecond,
-		Shards:        1,
+		BufferSize: 256,
+		BatchSize:  16,
+		Shards:     1,
 	})
 
 	const n = 50

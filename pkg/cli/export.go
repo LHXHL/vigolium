@@ -86,18 +86,68 @@ func init() {
 		"Export across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S")
 }
 
-// shouldExport returns true if the given data type should be included in the export.
-// When topExportOnly is empty, all types are exported.
-func shouldExport(dataType string) bool {
-	if len(topExportOnly) == 0 {
-		return true
+// exportScope decides which envelope types an export emits.
+//
+// It is passed to streamExportData rather than read from a package global,
+// because the gate is shared by every format - jsonl, html, report, pdf, sarif,
+// bundle and the stateless console dump all stream through that one function.
+// A caller that wants to narrow ONE of them (the scan's `--export-only`, which
+// documents itself as limiting the jsonl envelope) must therefore be able to say
+// so without the other formats seeing it: a global made `run probe -o r.html
+// --format html` render a report with no findings in it.
+//
+// The zero value means "everything", so a caller with no opinion passes
+// fullExportScope and reads as such.
+type exportScope struct {
+	// only lists the types to keep, already trimmed and lowercased. Empty keeps
+	// every type. Normalizing at construction is what lets includes() compare
+	// directly - the previous EqualFold-without-trim comparison silently matched
+	// nothing for `--only " findings"`, which pflag's CSV parser hands through
+	// with its leading space intact.
+	only []string
+}
+
+// fullExportScope emits every envelope type.
+var fullExportScope = exportScope{}
+
+// newExportScope normalizes the raw flag values into a scope.
+func newExportScope(only []string) exportScope {
+	if len(only) == 0 {
+		return fullExportScope
 	}
-	for _, t := range topExportOnly {
-		if strings.EqualFold(t, dataType) {
-			return true
+	norm := make([]string, 0, len(only))
+	for _, t := range only {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			norm = append(norm, t)
 		}
 	}
-	return false
+	return exportScope{only: norm}
+}
+
+// includes reports whether the given data type should be included.
+func (s exportScope) includes(dataType string) bool {
+	return len(s.only) == 0 || slices.Contains(s.only, dataType)
+}
+
+// validate rejects unknown type names, naming the flag that supplied them.
+func (s exportScope) validate(flagName string) error {
+	for _, t := range s.only {
+		if !slices.Contains(validExportTypes, t) {
+			return fmt.Errorf("invalid %s value %q; valid values: %s",
+				flagName, t, strings.Join(validExportTypes, ", "))
+		}
+	}
+	return nil
+}
+
+// topExportScope is the scope the `vigolium export` command's --only builds.
+func topExportScope() exportScope { return newExportScope(topExportOnly) }
+
+// shouldExport returns true if the given data type should be included in the
+// `vigolium export` command's own pre-flight checks (exportNeedsDB). The
+// streaming path takes an explicit exportScope instead.
+func shouldExport(dataType string) bool {
+	return topExportScope().includes(dataType)
 }
 
 // exportEnvelope wraps each exported item with a type tag for JSONL output.
@@ -197,19 +247,7 @@ func validateExportFormatPath(s exportFormatSpec) error {
 
 // validateExportOnly rejects unknown --only table names.
 func validateExportOnly() error {
-	if len(topExportOnly) == 0 {
-		return nil
-	}
-	valid := make(map[string]bool, len(validExportTypes))
-	for _, v := range validExportTypes {
-		valid[v] = true
-	}
-	for _, t := range topExportOnly {
-		if !valid[strings.ToLower(t)] {
-			return fmt.Errorf("invalid --only value %q; valid values: %s", t, strings.Join(validExportTypes, ", "))
-		}
-	}
-	return nil
+	return topExportScope().validate("--only")
 }
 
 // exportNeedsDB reports whether any requested table lives in the database.
@@ -694,7 +732,7 @@ func (r *exportRun) exportFS(ctx context.Context, outputPath string) ([]exported
 // (the `vigolium export` and stateless temp-DB behavior).
 func queryExportData(ctx context.Context, db *database.DB, omitResponse bool, projectUUID, scanUUID string) ([]any, error) {
 	var items []any
-	err := streamExportData(ctx, db, omitResponse, projectUUID, scanUUID, func(item any) error {
+	err := streamExportData(ctx, db, topExportScope(), omitResponse, projectUUID, scanUUID, func(item any) error {
 		items = append(items, item)
 		return nil
 	})
@@ -734,7 +772,7 @@ func exportExcludeSet() map[string]bool {
 // renderers must NOT force this on: they derive the displayed request/response
 // bodies from the raw bytes via HTTPRecord.MarshalJSON before trimming the
 // redundant raw copies, so excluding the columns blanks the report body.
-func streamExportData(ctx context.Context, db *database.DB, omitResponse bool, projectUUID, scanUUID string, emit func(any) error) error {
+func streamExportData(ctx context.Context, db *database.DB, scope exportScope, omitResponse bool, projectUUID, scanUUID string, emit func(any) error) error {
 	excluded := exportExcludeSet()
 	emitItem := func(typ string, data any) error {
 		if excluded[typ] {
@@ -744,7 +782,7 @@ func streamExportData(ctx context.Context, db *database.DB, omitResponse bool, p
 	}
 
 	// --- Scans ---
-	if shouldExport("scans") && db != nil && !excluded["scan"] {
+	if scope.includes("scans") && db != nil && !excluded["scan"] {
 		var scans []*database.Scan
 		q := scopeProjectBun(db.NewSelect().Model(&scans).OrderExpr("created_at DESC"), projectUUID)
 		if topExportSearch != "" {
@@ -766,21 +804,21 @@ func streamExportData(ctx context.Context, db *database.DB, omitResponse bool, p
 	}
 
 	// --- HTTP Records (cursor-streamed) ---
-	if shouldExport("http") && db != nil && !excluded["http_record"] {
-		if err := streamHTTPRecords(ctx, db, omitResponse, projectUUID, emitItem); err != nil {
+	if scope.includes("http") && db != nil && !excluded["http_record"] {
+		if err := streamHTTPRecords(ctx, db, omitResponse, projectUUID, scanUUID, emitItem); err != nil {
 			return err
 		}
 	}
 
 	// --- Findings (cursor-streamed) ---
-	if shouldExport("findings") && db != nil && !excluded["finding"] {
+	if scope.includes("findings") && db != nil && !excluded["finding"] {
 		if err := streamFindings(ctx, db, projectUUID, scanUUID, emitItem); err != nil {
 			return err
 		}
 	}
 
 	// --- Modules (in-memory registry, no DB needed) ---
-	if shouldExport("modules") && !excluded["module"] {
+	if scope.includes("modules") && !excluded["module"] {
 		emCfg := loadEnabledModulesConfig()
 
 		for _, m := range modules.GetActiveModules() {
@@ -820,7 +858,7 @@ func streamExportData(ctx context.Context, db *database.DB, omitResponse bool, p
 	}
 
 	// --- OAST Interactions ---
-	if shouldExport("oast") && db != nil && !excluded["oast_interaction"] {
+	if scope.includes("oast") && db != nil && !excluded["oast_interaction"] {
 		var interactions []*database.OASTInteraction
 		q := scopeProjectBun(db.NewSelect().Model(&interactions).OrderExpr("interacted_at DESC"), projectUUID)
 		if topExportSearch != "" {
@@ -842,7 +880,7 @@ func streamExportData(ctx context.Context, db *database.DB, omitResponse bool, p
 	}
 
 	// --- Scopes ---
-	if shouldExport("scopes") && db != nil && !excluded["scope"] {
+	if scope.includes("scopes") && db != nil && !excluded["scope"] {
 		var scopes []*database.Scope
 		q := scopeProjectBun(db.NewSelect().Model(&scopes).Where("enabled = ?", true).OrderExpr("priority ASC"), projectUUID)
 		if topExportSearch != "" {
@@ -904,7 +942,7 @@ func findingReferencedRecordUUIDs(ctx context.Context, db *database.DB, projectU
 // different same-URL record. omitResponse drops the raw_request/raw_response
 // columns from the SELECT entirely. A query/scan error is logged and ends this
 // table (best-effort); only emit errors are returned.
-func streamHTTPRecords(ctx context.Context, db *database.DB, omitResponse bool, projectUUID string, emitItem func(string, any) error) error {
+func streamHTTPRecords(ctx context.Context, db *database.DB, omitResponse bool, projectUUID, scanUUID string, emitItem func(string, any) error) error {
 	qb := database.NewQueryBuilder(db, database.QueryFilters{
 		ProjectUUID: projectUUID,
 		FuzzyTerm:   topExportSearch,
@@ -923,6 +961,17 @@ func streamHTTPRecords(ctx context.Context, db *database.DB, omitResponse bool, 
 
 	referenced := findingReferencedRecordUUIDs(ctx, db, projectUUID)
 
+	// The run's stored host observations, loaded once for the whole pass.
+	//
+	// Previously each record's DNS/TLS facts were read straight out of the
+	// process caches at emit time, which made the output depend on what those
+	// bounded caches still held: on a sweep past 8192 hosts the ones resolved
+	// first had been evicted, so their facts were silently absent from an export
+	// of the very run that resolved them. The stored rows do not evict, and they
+	// also answer for a process that did no probing at all - an `export` of a
+	// database someone else's scan wrote.
+	facts := database.NewStoredHostFacts(ctx, database.NewRepository(db), projectUUID, scanUUID)
+
 	seen := make(map[string]struct{})
 	for rows.Next() {
 		r := new(database.HTTPRecord)
@@ -937,16 +986,24 @@ func streamHTTPRecords(ctx context.Context, db *database.DB, omitResponse bool, 
 			continue
 		}
 		seen[r.URL] = struct{}{}
-		// WithHostFacts, not the bare record: this is the export of a run that may
-		// have resolved/probed the hosts it recorded, and those observations are
-		// output-only (see database.HostFacts). A process that probed nothing gets
-		// the bare record back unchanged.
-		if err := emitItem("http_record", database.WithHostFacts(r)); err != nil {
+		// WithFacts, not the bare record: this is the export of a run that may
+		// have resolved/probed the hosts it recorded. A process with neither
+		// stored observations nor a warm cache gets the bare record back
+		// unchanged.
+		if err := emitItem("http_record", database.WithFacts(facts, r)); err != nil {
 			return err
 		}
 	}
 	if err := rows.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s Error reading HTTP records: %v\n", terminal.WarningSymbol(), err)
+	}
+	// Incompleteness is reported rather than left to be inferred from absent
+	// keys. HostFacts.Empty() collapses "never probed", "probed and genuinely
+	// empty" and "probed then lost", and only saying so distinguishes an export
+	// that is missing data from hosts that had none.
+	if n := facts.MissingCount(); n > 0 && facts.Stored() > 0 {
+		fmt.Fprintf(os.Stderr, "%s %d endpoint(s) exported without host facts (no stored observation and nothing cached)\n",
+			terminal.WarningSymbol(), n)
 	}
 	return nil
 }

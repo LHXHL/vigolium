@@ -16,7 +16,6 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
@@ -623,28 +622,12 @@ func (r *Runner) buildInfrastructure() (*phaseInfra, error) {
 
 	// Create HostLimiter for per-host concurrency control
 	maxPerHost := r.options.MaxPerHost
-	if r.settings != nil && !r.options.MaxPerHostExplicitlySet && r.settings.ScanningPace.MaxPerHost > 0 {
-		maxPerHost = r.settings.ScanningPace.MaxPerHost
+	if !r.options.MaxPerHostExplicitlySet {
+		// Not chosen on the CLI: let newHostLimiter apply the common
+		// scanning_pace value, then its own floor.
+		maxPerHost = 0
 	}
-	if maxPerHost <= 0 {
-		maxPerHost = 10
-	}
-	adaptive, minPerHost, ceilingPerHost := adaptiveHostLimiterSettings(r.settings)
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:     maxPerHost,
-		MaxEntries:     1000,
-		EvictAfter:     30 * time.Second,
-		EvictInterval:  10 * time.Second,
-		Adaptive:       adaptive,
-		MinPerHost:     minPerHost,
-		CeilingPerHost: ceilingPerHost,
-		// Throttle a host only once it starts returning WAF/CDN blocks; a non-WAF
-		// scan is unaffected. The constructor drops this when Adaptive is on.
-		WafAutoArm: true,
-		// --no-waf-pacing turns off only the proactive edge pre-arm; reactive
-		// WAF-block back-off stays on.
-		DisablePreArm: r.options.NoWafPacing,
-	})
+	hostLimiter := newHostLimiter(maxPerHost, r.settings, r.options.NoWafPacing)
 	svc.HostLimiter = hostLimiter
 	infra.hostLimiter = hostLimiter
 	infra.svc = svc

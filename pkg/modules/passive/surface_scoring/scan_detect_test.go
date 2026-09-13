@@ -40,15 +40,49 @@ type fakeResolver struct {
 
 func (f *fakeResolver) ResolveRequestUUID(hash string) string { return f.byHash[hash] }
 
+// fakeAnnotator captures what the module would have written to
+// http_records.technology.
+type fakeAnnotator struct {
+	mu    sync.Mutex
+	tech  map[string][]string
+	calls int
+}
+
+func newFakeAnnotator() *fakeAnnotator {
+	return &fakeAnnotator{tech: make(map[string][]string)}
+}
+
+func (f *fakeAnnotator) SetRecordTechnology(_ context.Context, technology map[string][]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	for k, v := range technology {
+		f.tech[k] = v
+	}
+	return nil
+}
+
 // scanContextWith builds a ScanContext wired to the fakes plus the real
 // registries, so tests exercise the same lookups production does.
 func scanContextWith(updater *fakeUpdater, resolver *fakeResolver) *modkit.ScanContext {
 	return &modkit.ScanContext{
 		SurfaceScoreUpdater: updater,
 		RequestUUIDResolver: resolver,
+		TechAnnotator:       newFakeAnnotator(),
 		TechStack:           modkit.NewTechRegistry(),
 		ContentClass:        modkit.NewContentClassRegistry(),
 	}
+}
+
+// annotatorFrom pulls the fake back out of a ScanContext built by
+// scanContextWith, so a test can assert on the technology column.
+func annotatorFrom(t *testing.T, scanCtx *modkit.ScanContext) *fakeAnnotator {
+	t.Helper()
+	a, ok := scanCtx.TechAnnotator.(*fakeAnnotator)
+	if !ok {
+		t.Fatalf("TechAnnotator is %T, want *fakeAnnotator", scanCtx.TechAnnotator)
+	}
+	return a
 }
 
 // feed runs one record through the module, registering its request hash with the
@@ -111,18 +145,58 @@ func TestFlushResolvesTechStackSignal(t *testing.T) {
 
 	m.Flush(scanCtx)
 
-	// json + responsive + techstack = 3 signals × 10
-	if got := updater.scores["uuid-1"]; got != 30 {
-		t.Errorf("surface score = %d, want 30 (json + responsive + techstack)", got)
+	// json + responsive + api-surface (the /api/ path) + techstack = 4 of 16.
+	if got := updater.scores["uuid-1"]; got != 23 {
+		t.Errorf("surface score = %d, want 23 (json + responsive + api + techstack)", got)
+	}
+}
+
+// TestFlushWritesTechnology covers the second column the flush owns: the host's
+// detected stack must land on every record of that host, sorted, so a consumer
+// reading http_records never has to cross-reference the findings table to learn
+// what the target runs.
+func TestFlushWritesTechnology(t *testing.T) {
+	updater, resolver := newFakeUpdater(), &fakeResolver{byHash: map[string]string{}}
+	scanCtx := scanContextWith(updater, resolver)
+	annotator := annotatorFrom(t, scanCtx)
+	m := New()
+
+	htmlCT := map[string]string{"Content-Type": "text/html"}
+	feed(t, m, scanCtx, resolver, "uuid-1", "https://example.com/", 200, htmlCT, "<html><body>x</body></html>")
+	feed(t, m, scanCtx, resolver, "uuid-2", "https://example.com/about", 200, htmlCT, "<html><body>y</body></html>")
+
+	// Two fingerprint modules publish, out of alphabetical order.
+	scanCtx.MarkTech("example.com", "nginx")
+	scanCtx.MarkTech("example.com", "django")
+
+	m.Flush(scanCtx)
+
+	want := []string{"django", "nginx"}
+	for _, uuid := range []string{"uuid-1", "uuid-2"} {
+		got := annotator.tech[uuid]
+		if len(got) != len(want) {
+			t.Fatalf("%s technology = %v, want %v", uuid, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("%s technology = %v, want %v (sorted, so two identical scans do not diff)", uuid, got, want)
+			}
+		}
 	}
 }
 
 // TestFlushTechStackIsPerHost verifies the host-scoped signal reaches only the
-// host it was marked on, and that the key includes the port — a stack on :443
+// host it was marked on, and that the key includes the port - a stack on :443
 // must not credit records served from :8443.
+//
+// Asserted on the technology column rather than the score, because the score is
+// a popcount: :8443 earns SignalNonStandardPort in place of SignalTechStack and
+// lands on the same number by a different route, which would let the regression
+// this test exists for pass unnoticed.
 func TestFlushTechStackIsPerHost(t *testing.T) {
 	updater, resolver := newFakeUpdater(), &fakeResolver{byHash: map[string]string{}}
 	scanCtx := scanContextWith(updater, resolver)
+	annotator := annotatorFrom(t, scanCtx)
 	m := New()
 
 	jsonCT := map[string]string{"Content-Type": "application/json"}
@@ -135,14 +209,63 @@ func TestFlushTechStackIsPerHost(t *testing.T) {
 
 	m.Flush(scanCtx)
 
-	if got := updater.scores["on-443"]; got != 30 {
-		t.Errorf("example.com record = %d, want 30", got)
+	if got := annotator.tech["on-443"]; len(got) != 1 || got[0] != "django" {
+		t.Errorf("example.com technology = %v, want [django]", got)
 	}
-	if got := updater.scores["on-8443"]; got != 20 {
-		t.Errorf("example.com:8443 record = %d, want 20 — a stack on :443 must not credit :8443", got)
+	if got := annotator.tech["on-8443"]; len(got) != 0 {
+		t.Errorf("example.com:8443 technology = %v, want none - a stack on :443 must not credit :8443", got)
 	}
-	if got := updater.scores["other-host"]; got != 20 {
-		t.Errorf("other.example record = %d, want 20", got)
+	if got := annotator.tech["other-host"]; len(got) != 0 {
+		t.Errorf("other.example technology = %v, want none", got)
+	}
+
+	// json + responsive + api-surface, plus techstack only on the marked host.
+	if got := updater.scores["on-443"]; got != 23 {
+		t.Errorf("example.com record = %d, want 23", got)
+	}
+	if got := updater.scores["other-host"]; got != 17 {
+		t.Errorf("other.example record = %d, want 17", got)
+	}
+}
+
+// TestFlushSkipsTechnologyForUnknownHost verifies a host no fingerprint module
+// recognised writes nothing rather than blanking the column with an empty list.
+func TestFlushSkipsTechnologyForUnknownHost(t *testing.T) {
+	updater, resolver := newFakeUpdater(), &fakeResolver{byHash: map[string]string{}}
+	scanCtx := scanContextWith(updater, resolver)
+	annotator := annotatorFrom(t, scanCtx)
+	m := New()
+
+	feed(t, m, scanCtx, resolver, "uuid-1", "https://example.com/", 200,
+		map[string]string{"Content-Type": "text/html"}, "<html><body>x</body></html>")
+	m.Flush(scanCtx)
+
+	if annotator.calls != 0 {
+		t.Errorf("annotator called %d times with no tech detected, want 0", annotator.calls)
+	}
+}
+
+// TestManyHostsAreAllScored is the regression guard for the cap rework. The
+// buffer used to be bounded at 1000 distinct hosts, which is exactly the shape a
+// host sweep produces: `run probe -T hosts.txt` buffers one record per host, so
+// a list longer than the cap silently stopped scoring partway through while the
+// module used a trivial amount of memory. The bound is now on total entries.
+func TestManyHostsAreAllScored(t *testing.T) {
+	updater, resolver := newFakeUpdater(), &fakeResolver{byHash: map[string]string{}}
+	scanCtx := scanContextWith(updater, resolver)
+	m := New()
+
+	const hosts = 1200
+	htmlCT := map[string]string{"Content-Type": "text/html"}
+	for i := 0; i < hosts; i++ {
+		feed(t, m, scanCtx, resolver, fmt.Sprintf("uuid-%d", i),
+			fmt.Sprintf("https://host%d.example/", i), 200, htmlCT, "<html><body>x</body></html>")
+	}
+	m.Flush(scanCtx)
+
+	if len(updater.scores) != hosts {
+		t.Errorf("scored %d of %d hosts - a sweep longer than the old 1000-host cap must score every host",
+			len(updater.scores), hosts)
 	}
 }
 
@@ -189,8 +312,8 @@ func TestUUIDIsResolvedAtFlush(t *testing.T) {
 
 	m.Flush(scanCtx)
 
-	if got := updater.scores["uuid-late"]; got != 20 {
-		t.Errorf("surface score = %d, want 20 — the hash must be resolved at flush, not at scan time", got)
+	if got := updater.scores["uuid-late"]; got != 17 {
+		t.Errorf("surface score = %d, want 17 - the hash must be resolved at flush, not at scan time", got)
 	}
 }
 

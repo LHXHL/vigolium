@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
+	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -274,4 +276,36 @@ func (r *Runner) buildModulesString(active []modules.ActiveModule, passive []mod
 		ids = append(ids, m.ID())
 	}
 	return strings.Join(ids, ",")
+}
+
+// newHostLimiter builds the per-host concurrency limiter every scan path uses.
+//
+// One constructor because the config literal is identical everywhere and only
+// its MaxPerHost differs: three hand-written copies had already started to drift
+// (the eviction and WAF-pacing defaults were restated in each, and one dropped
+// the fallback below). maxPerHost <= 0 means "not chosen" and falls back to the
+// common scanning_pace value, then to 10.
+func newHostLimiter(maxPerHost int, settings *config.Settings, noWafPacing bool) *hostlimit.HostRateLimiter {
+	if maxPerHost <= 0 && settings != nil && settings.ScanningPace.MaxPerHost > 0 {
+		maxPerHost = settings.ScanningPace.MaxPerHost
+	}
+	if maxPerHost <= 0 {
+		maxPerHost = 10
+	}
+	adaptive, minPerHost, ceilingPerHost := adaptiveHostLimiterSettings(settings)
+	return hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
+		MaxPerHost:     maxPerHost,
+		MaxEntries:     1000,
+		EvictAfter:     30 * time.Second,
+		EvictInterval:  10 * time.Second,
+		Adaptive:       adaptive,
+		MinPerHost:     minPerHost,
+		CeilingPerHost: ceilingPerHost,
+		// Throttle a host only once it starts returning WAF/CDN blocks; a non-WAF
+		// scan is unaffected. The constructor drops this when Adaptive is on.
+		WafAutoArm: true,
+		// --no-waf-pacing turns off only the proactive edge pre-arm; reactive
+		// WAF-block back-off stays on.
+		DisablePreArm: noWafPacing,
+	})
 }

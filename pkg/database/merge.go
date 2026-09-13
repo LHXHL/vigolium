@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,6 +39,20 @@ type MergeOptions struct {
 	// a renderer that prints it silently prints empty. Ignored when
 	// SkipHTTPRecords is set, which already omits the table.
 	SkipRecordBodies bool
+
+	// SkipFindings omits findings, the finding_records junction, and
+	// oast_interactions from the copy. Safe only for a reader that shows no
+	// finding and filters no record by one.
+	//
+	// It is the only option here that bounds the MERGING process's memory rather
+	// than the destination's size. The three tables it drops are the ones that
+	// cannot be copied set-based — findings.id is AUTOINCREMENT and is referenced
+	// by both the junction and the OAST rows, so the id remapping needs every
+	// source row in Go before the write transaction opens. Each finding row
+	// carries its inline request, response, and additional_evidence, so a corpus
+	// with many findings is buffered in full, per source, whether or not anything
+	// will read one.
+	SkipFindings bool
 }
 
 // recordBodyColumns are the http_records blob columns holding the raw
@@ -130,6 +146,41 @@ func MergeSQLiteFileWithOptions(ctx context.Context, dest *DB, srcPath string, o
 	return stats, err
 }
 
+// attachSpec renders srcPath as a read-only URI filename for ATTACH.
+//
+// A merge only ever reads its source, but a plain-filename ATTACH opens it
+// read-write: the source then shares the connection's write lock, a hot -wal
+// sidecar can be recovered into it, and any statement that named src.* by
+// mistake would modify an engagement's evidence rather than fail. `mode=ro`
+// makes that a driver-level error instead of a convention, so it is applied
+// unconditionally — a guarantee that held only for some paths would be worse
+// than none, because nothing at the call site says which kind of path it has.
+//
+// The path is percent-encoded, which matters because the bundled modernc driver
+// parses EVERY ATTACH filename as a URI — not only ones beginning with "file:",
+// as documented SQLite does with SQLITE_USE_URI. Measured against the driver in
+// go.mod rather than assumed, over paths containing a space, '#', '%' and '?':
+// the encoded form opens the right database read-only in every case except a
+// literal '?', while the unencoded form loses `mode=ro` outright on '?' and
+// attaches a DIFFERENT database on '#'.
+//
+// A '?' in the path is therefore unaddressable and returns an error. That is not
+// a regression: such a path already attached an empty database and reported
+// success, so a merge over it silently copied nothing.
+//
+// Relative paths are made absolute first, since a URI filename resolves against
+// the process CWD rather than the main database's directory.
+func attachSpec(srcPath string) (string, error) {
+	if strings.Contains(srcPath, "?") {
+		return "", fmt.Errorf("cannot attach %q: the SQLite driver cannot address a path containing '?'", srcPath)
+	}
+	abs, err := filepath.Abs(srcPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve source path %q: %w", srcPath, err)
+	}
+	return "file:" + (&url.URL{Path: abs}).EscapedPath() + "?mode=ro", nil
+}
+
 // mergeOnce performs a single merge attempt. Any failure rolls back the
 // transaction (so a retry starts clean) and detaches the source.
 func mergeOnce(ctx context.Context, dest *DB, srcPath string, opts MergeOptions) (*MergeStats, error) {
@@ -144,7 +195,11 @@ func mergeOnce(ctx context.Context, dest *DB, srcPath string, opts MergeOptions)
 	// ATTACH must run outside a transaction. Escape single quotes defensively;
 	// temp paths never contain them, but a quoted literal is safer than relying
 	// on driver parameter support for ATTACH filenames.
-	escaped := strings.ReplaceAll(srcPath, "'", "''")
+	spec, err := attachSpec(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	escaped := strings.ReplaceAll(spec, "'", "''")
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("ATTACH DATABASE '%s' AS src", escaped)); err != nil {
 		return nil, fmt.Errorf("attach source database: %w", err)
 	}
@@ -153,17 +208,30 @@ func mergeOnce(ctx context.Context, dest *DB, srcPath string, opts MergeOptions)
 	// Pre-read the row-by-row tables before opening the write transaction: a
 	// SQLite connection cannot run new statements while a result-set cursor is
 	// open on it, so these reads must be fully drained first.
-	srcFindings, findingCols, err := readRows(ctx, conn, "findings")
-	if err != nil {
-		return nil, fmt.Errorf("read source findings: %w", err)
-	}
-	srcFindingRecords, _, err := readRows(ctx, conn, "finding_records")
-	if err != nil {
-		return nil, fmt.Errorf("read source finding_records: %w", err)
-	}
-	srcOAST, oastCols, err := readRows(ctx, conn, "oast_interactions")
-	if err != nil {
-		return nil, fmt.Errorf("read source oast_interactions: %w", err)
+	//
+	// This is where SkipFindings pays: the read below is the whole of a source's
+	// finding corpus, inline evidence included, resident in Go at once. Skipping
+	// leaves all three nil, and every step downstream is a no-op on empty input.
+	var (
+		srcFindings       []bufferedRow
+		srcFindingRecords []bufferedRow
+		srcOAST           []bufferedRow
+		findingCols       []string
+		oastCols          []string
+	)
+	if !opts.SkipFindings {
+		srcFindings, findingCols, err = readRows(ctx, conn, "findings")
+		if err != nil {
+			return nil, fmt.Errorf("read source findings: %w", err)
+		}
+		srcFindingRecords, _, err = readRows(ctx, conn, "finding_records")
+		if err != nil {
+			return nil, fmt.Errorf("read source finding_records: %w", err)
+		}
+		srcOAST, oastCols, err = readRows(ctx, conn, "oast_interactions")
+		if err != nil {
+			return nil, fmt.Errorf("read source oast_interactions: %w", err)
+		}
 	}
 
 	tx, err := conn.BeginTx(ctx, nil)

@@ -397,6 +397,9 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		return err
 	}
 	warnInertProbeFlags(scanOpts, cmd)
+	if err := applyExportScope(scanOpts); err != nil {
+		return err
+	}
 	if scanOpts.OnlyPhase != "" {
 		zap.L().Info("Phase isolation active", zap.String("only", scanOpts.OnlyPhase))
 	}
@@ -1295,7 +1298,10 @@ func generateReportFromDB(ctx context.Context, db *database.DB, outputPath strin
 	// honor only an explicit --omit-response, never force it on here.
 	if rf.streamGenerate != nil {
 		produce := func(emit func(any) error) error {
-			return streamExportData(ctx, db, omitResponse, projectUUID, scanUUID, emit)
+			// Reports render the whole envelope: --export-only documents itself as
+			// narrowing the jsonl stream, and a report with its findings silently
+			// removed is worse than no report.
+			return streamExportData(ctx, db, fullExportScope, omitResponse, projectUUID, scanUUID, emit)
 		}
 		return rf.streamGenerate(produce, outputPath, meta)
 	}
@@ -1827,7 +1833,7 @@ func streamJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitRe
 	counts := newExportCounts()
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	err := streamExportData(ctx, db, omitResponse, projectUUID, "", func(item any) error {
+	err := streamExportData(ctx, db, scanExportScope, omitResponse, projectUUID, "", func(item any) error {
 		if err := enc.Encode(item); err != nil {
 			return err
 		}
@@ -1950,7 +1956,7 @@ func finishScanJSONLExport(db *database.DB, opts *types.Options) {
 func exportStatelessConsole(ctx context.Context, db *database.DB, outputPath string, omitResponse bool) (exportedFile, bool) {
 	var lines int
 	err := atomicfile.Write(outputPath, func(w *bufio.Writer) error {
-		return streamExportData(ctx, db, omitResponse, "", "", func(item any) error {
+		return streamExportData(ctx, db, fullExportScope, omitResponse, "", "", func(item any) error {
 			env, ok := item.(exportEnvelope)
 			if !ok {
 				return nil

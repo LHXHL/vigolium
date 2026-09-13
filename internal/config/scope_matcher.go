@@ -47,13 +47,39 @@ type originTarget struct {
 
 // ScopeMatcher evaluates whether HTTP records are in scope.
 type ScopeMatcher struct {
-	cfg           ScopeConfig
-	hostCache     sync.Map        // cache: host string -> bool (result of host scope check)
-	dynamicHosts  sync.Map        // hosts allowed at runtime (exact match, lowercased) -> struct{}
-	hasDynamic    atomic.Bool     // true once AllowHost is called; gates the dynamicHosts lookup off the hot path
-	staticExts    map[string]bool // flattened set of static file extensions (lowercase, with leading dot)
-	originMode    string          // "all", "strict", "balanced", "relaxed"
-	originTargets []originTarget  // parsed targets for origin matching
+	cfg          ScopeConfig
+	hostCache    sync.Map        // cache: host string -> bool (result of host scope check)
+	dynamicHosts sync.Map        // hosts allowed at runtime (exact match, lowercased) -> struct{}
+	hasDynamic   atomic.Bool     // true once AllowHost is called; gates the dynamicHosts lookup off the hot path
+	staticExts   map[string]bool // flattened set of static file extensions (lowercase, with leading dot)
+	originMode   string          // "all", "strict", "balanced", "relaxed"
+	originIndex  originIndex     // the CLI targets compiled into mode-specific lookups
+}
+
+// originIndex is the parsed CLI targets rearranged into what each mode asks.
+//
+// The membership question used to be answered by walking every origin target per
+// candidate host, recomputing the CANDIDATE's registrable domain inside that loop
+// for balanced and relaxed mode. On a host sweep that is the worst case in both
+// dimensions: every host is distinct, so the repeat-host cache never helps, and
+// the work is targets × hosts with a public-suffix lookup in the middle of it. A
+// few hundred targets hid it; a list of tens of thousands does not.
+//
+// The sets answer the identical question — see hostMatchesOrigin for the
+// per-mode equivalence — so this is a data-structure change and nothing else. It
+// must stay that way: widening what these sets contain widens the scan's scope.
+type originIndex struct {
+	// exactHosts is every target's hostname. It is the whole answer for strict
+	// mode, and the first half of the answer for the other two: an exact hostname
+	// hit satisfies balanced and relaxed as well, either through their empty-field
+	// fallbacks or because a host is trivially inside its own registrable domain.
+	exactHosts map[string]struct{}
+	// etldPlus1 are the registrable domains balanced mode accepts.
+	etldPlus1 map[string]struct{}
+	// keywords are the distinct registrable labels relaxed mode substring-matches
+	// against the candidate's own registrable label. A slice because Contains is
+	// not a lookup; deduplicated because a target list often repeats one brand.
+	keywords []string
 }
 
 // NewScopeMatcher creates a new ScopeMatcher from configuration.
@@ -81,10 +107,49 @@ func NewScopeMatcher(cfg ScopeConfig, targetHosts ...string) *ScopeMatcher {
 	}
 	m.originMode = mode
 	if mode != "all" && len(targetHosts) > 0 {
-		m.originTargets = parseOriginTargets(targetHosts)
+		m.originIndex = buildOriginIndex(parseOriginTargets(targetHosts), mode)
 	}
 
 	return m
+}
+
+// buildOriginIndex compiles parsed origin targets into the lookups
+// hostMatchesOrigin uses for mode.
+//
+// Only the structures that mode reads are built. Strict mode consults nothing
+// but exactHosts, so on a target list of tens of thousands - the size that
+// motivated the index - building the softened-match sets too would retain two
+// large maps that nothing would ever read.
+func buildOriginIndex(targets []originTarget, mode string) originIndex {
+	idx := originIndex{exactHosts: make(map[string]struct{}, len(targets))}
+	softened := mode == "balanced" || mode == "relaxed"
+	if softened {
+		idx.etldPlus1 = make(map[string]struct{}, len(targets))
+	}
+	seenKeyword := make(map[string]struct{}, len(targets))
+	for i := range targets {
+		ot := &targets[i]
+		idx.exactHosts[ot.exactHost] = struct{}{}
+		// IPs never soften into a domain: they match exactly in every mode, and
+		// parseOriginTargets leaves both derived fields empty for them.
+		if ot.isIP || !softened {
+			continue
+		}
+		if ot.etldPlus1 != "" {
+			idx.etldPlus1[ot.etldPlus1] = struct{}{}
+		}
+		// Checked separately from etldPlus1 rather than folded into it: a
+		// registrable domain can exist while its leading label is empty, and
+		// relaxed mode falls back to the exact host in exactly that case.
+		if ot.keyword == "" {
+			continue
+		}
+		if _, dup := seenKeyword[ot.keyword]; !dup {
+			seenKeyword[ot.keyword] = struct{}{}
+			idx.keywords = append(idx.keywords, ot.keyword)
+		}
+	}
+	return idx
 }
 
 // InvalidateCache clears the cached host scope results.
@@ -278,7 +343,7 @@ func (m *ScopeMatcher) IsPassAll() bool {
 	if m.cfg.MaxRequestBodySize > 0 || m.cfg.MaxResponseBodySize > 0 {
 		return false
 	}
-	if m.originMode != "" && m.originMode != "all" && len(m.originTargets) > 0 {
+	if m.originMode != "" && m.originMode != "all" && len(m.originIndex.exactHosts) > 0 {
 		return false
 	}
 	return isDefaultPassAll(m.cfg.Host) &&
@@ -536,60 +601,68 @@ func extractHostFromTarget(target string) string {
 
 // hostMatchesOrigin checks whether a host matches any of the configured origin targets.
 // Returns true when origin mode is "all" or no targets are configured.
+//
+// The candidate's registrable domain is derived AT MOST ONCE per call. It used
+// to be derived once per origin target, inside a loop over all of them, which
+// made first-visit membership cost targets × public-suffix lookups — invisible
+// on a handful of targets and quadratic on a host list.
+//
+// Each mode below answers exactly what the per-target loop answered:
+//
+//   - strict: literal hostname equality against some target.
+//   - balanced: that, or a shared registrable domain. The exact-host set stays
+//     in play because a target whose registrable domain could not be derived
+//     fell back to comparing hostnames — and for every other target an exact hit
+//     implies the domains match anyway.
+//   - relaxed: that, or the candidate's registrable label containing some
+//     target's. Same reasoning for the exact-host set.
 func (m *ScopeMatcher) hostMatchesOrigin(host string) bool {
-	if m.originMode == "all" || len(m.originTargets) == 0 {
+	if m.originMode == "all" || len(m.originIndex.exactHosts) == 0 {
 		return true
 	}
 	hostLower := strings.ToLower(host)
-	for i := range m.originTargets {
-		if m.hostMatchesSingleOrigin(hostLower, &m.originTargets[i]) {
-			return true
-		}
-	}
-	return false
-}
-
-// hostMatchesSingleOrigin checks if a host matches a single origin target per the current mode.
-func (m *ScopeMatcher) hostMatchesSingleOrigin(host string, ot *originTarget) bool {
-	// IP targets always require exact match regardless of mode
-	if ot.isIP {
-		return host == ot.exactHost
+	if _, ok := m.originIndex.exactHosts[hostLower]; ok {
+		return true
 	}
 
 	switch m.originMode {
 	case "strict":
-		return host == ot.exactHost
-	case "balanced":
-		if ot.etldPlus1 == "" {
-			return host == ot.exactHost
-		}
-		hostETLD, err := publicsuffix.EffectiveTLDPlusOne(host)
-		if err != nil {
-			return false
-		}
-		return hostETLD == ot.etldPlus1
-	case "relaxed":
-		if ot.keyword == "" {
-			return host == ot.exactHost
-		}
-		// Match the keyword against the host's registrable-domain leading label
-		// (the eTLD+1 label), NOT the full hostname. This keeps same-org hosts on
-		// other TLDs / brand domains in scope (e.g. keyword "acme" matches
-		// acme.io, acmegroup.com) while rejecting unrelated third parties whose
-		// subdomain merely contains the keyword — e.g. acmegroup.cloudflareaccess.com,
-		// a Cloudflare SSO wall whose registrable label is "cloudflareaccess", not
-		// a match. A bare strings.Contains(host, keyword) would wrongly admit it.
-		hostETLD, err := publicsuffix.EffectiveTLDPlusOne(host)
-		if err != nil {
-			// No registrable domain (e.g. a single-label internal host) — out of
-			// scope, matching how balanced treats the same case. Falling back to a
-			// full-host substring here would reintroduce the leak this fix closes.
-			return false
-		}
-		return strings.Contains(leadingLabel(hostETLD), ot.keyword)
-	default: // "all"
+		return false
+	case "balanced", "relaxed":
+	default:
+		// An unrecognized mode admits everything, which is what the per-target
+		// switch did through its default arm. Preserved deliberately: a typo in
+		// cli_origin_mode should not quietly narrow a scan's scope.
 		return true
 	}
+
+	// A host with no registrable domain (a single-label internal name, say) is
+	// out of scope in both softened modes: only the exact-host set above could
+	// have admitted it. Falling back to a full-host substring here would
+	// reintroduce the third-party leak the relaxed-mode comment describes.
+	hostETLD, err := publicsuffix.EffectiveTLDPlusOne(hostLower)
+	if err != nil {
+		return false
+	}
+	if m.originMode == "balanced" {
+		_, ok := m.originIndex.etldPlus1[hostETLD]
+		return ok
+	}
+
+	// Relaxed. The keyword is matched against the host's registrable-domain
+	// leading label, NOT the full hostname. This keeps same-org hosts on other
+	// TLDs / brand domains in scope (e.g. keyword "acme" matches acme.io,
+	// acmegroup.com) while rejecting unrelated third parties whose subdomain
+	// merely contains the keyword — e.g. acmegroup.cloudflareaccess.com, a
+	// Cloudflare SSO wall whose registrable label is "cloudflareaccess", not a
+	// match. A bare strings.Contains(host, keyword) would wrongly admit it.
+	label := leadingLabel(hostETLD)
+	for _, keyword := range m.originIndex.keywords {
+		if strings.Contains(label, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 // leadingLabel returns the registrable-domain label of an eTLD+1 — the label

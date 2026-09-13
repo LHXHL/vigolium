@@ -317,6 +317,18 @@ type Executor struct {
 	// confirmed-clean one — re-confirmation never truncates silently.
 	suppressedFindings atomic.Int64
 
+	// responded counts input items for which an HTTP response was actually
+	// received - one per item, not per redirect hop or retry.
+	//
+	// It exists because Processed() cannot answer that question: the worker
+	// increments its stats tracker after processItem returns, and processItem
+	// returns early on a transport failure, a dropped storage-metadata probe, or
+	// a pre-hook rejection. On a normal scan the difference is noise; on a host
+	// sweep, where dead hosts are a large fraction of the input, reporting
+	// Processed() as "targets answered" reports every unreachable host as a
+	// success. An HTTP error status is an answer; a connection failure is not.
+	responded atomic.Int64
+
 	// Database storage (optional)
 	repo          *database.Repository
 	recordWriter  *database.RecordWriter  // batched record writer (preferred over repo.SaveRecord)
@@ -557,12 +569,13 @@ func NewExecutor(
 	}
 	e.pool.passiveTaskSem = make(chan struct{}, passiveTaskLimit)
 
-	// Wire risk/surface score updaters, remarks annotator, record-response
-	// rewriter, and request UUID resolver into ScanContext
+	// Wire risk/surface score updaters, remarks and technology annotators,
+	// record-response rewriter, and request UUID resolver into ScanContext
 	if e.scanCtx != nil && cfg.Repository != nil {
 		e.scanCtx.RiskScoreUpdater = &repoRiskScoreUpdater{repo: cfg.Repository}
 		e.scanCtx.SurfaceScoreUpdater = &repoSurfaceScoreUpdater{repo: cfg.Repository}
 		e.scanCtx.RemarksAnnotator = &repoRemarksAnnotator{repo: cfg.Repository}
+		e.scanCtx.TechAnnotator = &repoTechnologyAnnotator{repo: cfg.Repository}
 		e.scanCtx.RecordRewriter = &repoRecordResponseRewriter{repo: cfg.Repository}
 		e.scanCtx.ArtifactWriter = &repoDerivedArtifactWriter{repo: cfg.Repository}
 		e.scanCtx.RequestUUIDResolver = e
@@ -668,6 +681,14 @@ func (e *Executor) FeedbackDropped() int64 {
 // could not be re-confirmed.
 func (e *Executor) SuppressedFindings() int64 {
 	return e.suppressedFindings.Load()
+}
+
+// Responded returns how many input items produced an HTTP response, which is
+// always <= Processed(). Use this, not Processed(), to report how many targets
+// answered: Processed() counts attempts, including the ones that never reached
+// a server. See the responded field for why the two differ.
+func (e *Executor) Responded() int64 {
+	return e.responded.Load()
 }
 
 // InFlight returns the number of worker goroutines currently processing items.
@@ -1240,6 +1261,10 @@ func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) {
 	if !ok {
 		return
 	}
+	// Counted here rather than at the end of processItem: this is the exact point
+	// where a server answered, and every later return in this function is a
+	// policy decision about an answer we already have.
+	e.responded.Add(1)
 	// pooledBuf is ASSIGNED, never redeclared: the deferred putResponseBuffer
 	// above closes over the outer variable, and a `:=` here would shadow it and
 	// leak the buffer on every item.

@@ -25,10 +25,6 @@ type RecordWriterConfig struct {
 	// Default: 128.
 	BatchSize int
 
-	// FlushInterval is the maximum time a record waits in the buffer before
-	// being flushed, even if the batch isn't full. Default: 50ms.
-	FlushInterval time.Duration
-
 	// Shards is the number of independent flush goroutines. Each shard has its
 	// own channel and flushLoop. Records are routed to shards by hashing the
 	// host name, so writes for the same host are serialized within a shard.
@@ -72,9 +68,6 @@ func (c *RecordWriterConfig) withDefaults() RecordWriterConfig {
 	}
 	if out.BatchSize <= 0 {
 		out.BatchSize = 128
-	}
-	if out.FlushInterval <= 0 {
-		out.FlushInterval = 50 * time.Millisecond
 	}
 	// Shards is defaulted driver-aware in NewRecordWriter (1 for SQLite, 4 for
 	// PostgreSQL); leave a non-positive value untouched here so that decision
@@ -568,57 +561,58 @@ func waitBounded(wg *sync.WaitGroup, timeout time.Duration) bool {
 }
 
 // flushLoop is the goroutine that drains a shard's channel and batch-inserts.
-// Steady-state flushes (batch-full and ticker) use an uncancellable
-// context.Background(): when Close() cancels w.ctx mid-flush, propagating that
-// cancellation would abort the in-flight SQL transaction and lose records that
-// were already pulled from the channel, so a slow insert must never be
-// cancelled during normal operation. The shutdown drain (the ctx.Done() branch)
-// is the only path that bounds its flushes — with a single FlushTimeout budget
-// for the whole drain — so a wedged database can't hang Close() forever while
-// healthy databases still drain in full.
+// Steady-state flushes use an uncancellable context.Background(): when Close()
+// cancels w.ctx mid-flush, propagating that cancellation would abort the
+// in-flight SQL transaction and lose records that were already pulled from the
+// channel, so a slow insert must never be cancelled during normal operation. The
+// shutdown drain (the ctx.Done() branch) is the only path that bounds its
+// flushes — with a single FlushTimeout budget for the whole drain — so a wedged
+// database can't hang Close() forever while healthy databases still drain in
+// full.
+//
+// A batch is formed from what is already queued and committed immediately; see
+// the channel arm for why no timer can help it.
 func (w *RecordWriter) flushLoop(ctx context.Context, s *writerShard) {
 	defer w.wg.Done()
 
 	batch := make([]writeRequest, 0, w.cfg.BatchSize)
-	ticker := time.NewTicker(w.cfg.FlushInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
 		case req := <-s.ch:
 			batch = append(batch, req)
-			if len(batch) >= w.cfg.BatchSize {
-				w.flush(context.Background(), batch)
-				batch = resetBatch(batch)
-				ticker.Reset(w.cfg.FlushInterval)
-			}
-
-		case <-ticker.C:
-			if len(batch) > 0 {
-				w.flush(context.Background(), batch)
-				batch = resetBatch(batch)
-			}
+			// Take everything already queued, then commit. The batch is bounded by
+			// how many producers are actually waiting rather than by a clock, which
+			// is the only thing that can bound it usefully here: Write() is
+			// admit-then-await, so a worker cannot enqueue its next row until this
+			// one commits, and the number of rows that can be in flight is
+			// therefore capped by the worker count. On any scan with fewer workers
+			// than BatchSize - the default is 128, well above the usual concurrency
+			// - the batch-full branch was unreachable and EVERY row waited out a
+			// 50 ms flush ticker. A redirect chain paid that per hop, serialized,
+			// because each hop's parent UUID is the next one's input.
+			//
+			// Under load this still batches: a burst of concurrent producers is
+			// already sitting in the channel and gets drained into one transaction,
+			// up to BatchSize. What it no longer does is hold a finished batch
+			// waiting for company that cannot arrive.
+			batch = drainAvailable(batch, s.ch, w.cfg.BatchSize)
+			w.flush(context.Background(), batch)
+			batch = resetBatch(batch)
 
 		case <-ctx.Done():
 			// Shutdown drain. Bound the total flush time with a single budget so
 			// Close() returns even against a wedged database; against a healthy
 			// one every buffered batch still flushes well within it.
 			drainCtx, cancel := context.WithTimeout(context.Background(), w.cfg.FlushTimeout)
+			defer cancel()
 			for {
-				select {
-				case req := <-s.ch:
-					batch = append(batch, req)
-					if len(batch) >= w.cfg.BatchSize {
-						w.flush(drainCtx, batch)
-						batch = resetBatch(batch)
-					}
-				default:
-					if len(batch) > 0 {
-						w.flush(drainCtx, batch)
-					}
-					cancel()
+				batch = drainAvailable(batch, s.ch, w.cfg.BatchSize)
+				if len(batch) == 0 {
 					return
 				}
+				w.flush(drainCtx, batch)
+				batch = resetBatch(batch)
 			}
 		}
 	}
@@ -632,6 +626,22 @@ func (w *RecordWriter) flushLoop(ctx context.Context, s *writerShard) {
 func resetBatch(batch []writeRequest) []writeRequest {
 	clear(batch)
 	return batch[:0]
+}
+
+// drainAvailable appends everything already sitting in ch to batch, without
+// blocking, stopping at limit. It never waits for a record that has not been
+// sent yet - "already queued" is the whole distinction, and waiting is what the
+// caller is trying to stop doing.
+func drainAvailable(batch []writeRequest, ch <-chan writeRequest, limit int) []writeRequest {
+	for len(batch) < limit {
+		select {
+		case req := <-ch:
+			batch = append(batch, req)
+		default:
+			return batch
+		}
+	}
+	return batch
 }
 
 // flush resolves a batch of records and notifies callers. It first runs one

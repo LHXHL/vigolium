@@ -302,6 +302,12 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	db, err := openReadDB(globDBSkipSet{
 		RecordBodies:  !rendersRaw && !filters.UsesRawCorpus(),
 		RecordFileMap: !trafficTree,
+		// Derived, not hardcoded: traffic renders no finding, so the only way it
+		// can need them is a record predicate that joins findings. Asking the
+		// filters keeps that answer with the type that defines the predicates —
+		// the day traffic grows --severity, this follows without an audit of
+		// every skip-set literal.
+		Findings: !filters.UsesLinkedFindings(),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
@@ -390,7 +396,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		}
 
 		if globalJSON {
-			return displayJSON(records, total, trafficOffset, trafficLimit)
+			return displayJSON(ctx, db, records, total, trafficOffset, trafficLimit)
 		}
 
 		// Echo the active filter conditions (search, host, method, status, …) so
@@ -413,7 +419,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 			// response this query projected away. Fetched by uuid for the
 			// redirects alone rather than by hydrating the whole page.
 			hydrateRedirectHeaders(ctx, db, records)
-			renderErr = displayTree(records)
+			renderErr = displayTree(ctx, db, records)
 		default:
 			warnIfCapped(len(records), total)
 			printTrafficSummary(ctx, db, records, total)

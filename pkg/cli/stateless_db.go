@@ -6,7 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
+
+	"github.com/uptrace/bun"
+	"go.uber.org/zap"
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
@@ -30,11 +35,15 @@ var globalGlobDB string
 // where each finding originated. Empty when not reading through --glob-db.
 var globDBSources []globDBSource
 
-// globRecordFile maps an http_record uuid to the --glob-db file it came from.
-// http_records are keyed by uuid with no exposed integer id, so the traffic tree
-// can't attribute records by id range like findings; instead openGlobDB builds
-// this map during the merge (from each file's fresh rowid range). Empty when not
-// reading through --glob-db.
+// globRecordFile caches the http_record uuid → --glob-db file attribution for
+// the records a renderer has actually selected. It is filled on demand by
+// resolveGlobRecordSources, not during the merge: the merged corpus can be
+// millions of rows and the tree prints a page of them, so an entry per merged
+// row was heap spent to answer a question about a few hundred.
+//
+// http_records are keyed by uuid with no exposed integer id, so attribution goes
+// through the scratch rowid (globDBSource.recordLo/recordHi) rather than the
+// uuid directly. Empty when not reading through --glob-db.
 var globRecordFile map[string]string
 
 // globDBSkipped is the skip set the merge actually ran with, recorded by
@@ -89,6 +98,21 @@ type globDBSkipSet struct {
 	// isn't the traffic tree should skip it. See skipRecordFileMap for how Records
 	// implies this.
 	RecordFileMap bool
+
+	// Findings omits findings, the finding↔record junction, and OAST
+	// interactions. Safe only for a reader that never shows a finding and never
+	// filters records by one — derive the second half from
+	// QueryFilters.UsesLinkedFindings rather than asserting it, since `--severity`
+	// joins findings from the RECORDS query and a skip there matches nothing
+	// without erroring.
+	//
+	// It is the one skip that saves Go heap rather than destination bytes. Those
+	// three tables need finding-id remapping, so unlike the uuid-keyed tables
+	// they cannot be copied set-based: every row is read into a Go slice before
+	// the write transaction opens, and a finding row carries its inline request,
+	// response, and evidence strings. For `traffic`, which never resolves a
+	// finding, that whole corpus is read, held, and copied to be ignored.
+	Findings bool
 }
 
 // skipRecordFileMap reports whether the record→file map should be left unbuilt.
@@ -149,11 +173,20 @@ func globDBMatches(pattern string) ([]string, error) {
 // It deliberately does not go through clicommon.GetDB: that caches one connection
 // process-wide, so the second file — and every file after it — would silently be
 // answered by the first.
+//
+// The SQLite open is read-only, and that is not a precaution — a writable open of
+// someone's engagement archive rewrites it just by being opened: the DSN sets
+// journal_mode=WAL (which rewrites the header of a file left in `delete` mode and
+// changes its hash), the open runs wal_checkpoint(TRUNCATE) over both the main
+// file and its sidecar, a background checkpointer starts truncating the WAL every
+// five minutes, and Close runs PRAGMA optimize to write sqlite_stat1. `--glob-db`
+// is a read: none of that may happen to the files it names.
 func openGlobSourceFile(ctx context.Context, path string) (*database.DB, func(), error) {
 	if isSQLite, err := database.IsSQLiteFile(path); err == nil && isSQLite {
 		cfg := config.DefaultDatabaseConfig()
 		cfg.Driver = "sqlite"
 		cfg.SQLite.Path = path
+		cfg.SQLite.ReadOnly = true
 		db, err := database.NewDB(cfg)
 		if err != nil {
 			return nil, nil, err
@@ -180,11 +213,16 @@ func openGlobSourceFile(ctx context.Context, path string) (*database.DB, func(),
 	return db, closeDB, nil
 }
 
-// globDBSource is one --glob-db file and the findings id range it added.
+// globDBSource is one --glob-db file and the id ranges it added to the scratch
+// database. Each merge runs to completion before the next begins, and rows are
+// inserted with fresh sequential ids/rowids, so a file owns one contiguous range
+// per table.
 type globDBSource struct {
 	file      string
 	findingLo int64 // findings with id in (findingLo, findingHi] came from this file
 	findingHi int64
+	recordLo  int64 // http_records with rowid in (recordLo, recordHi] came from this file
+	recordHi  int64
 }
 
 // globDBMergedCount reports how many files openGlobDB merged.
@@ -193,17 +231,111 @@ func globDBMergedCount() int { return len(globDBSources) }
 // globSourceForFinding returns the source file a merged finding id came from, or
 // "" if it can't be attributed (single-DB read, or a deduped row).
 func globSourceForFinding(id int64) string {
-	for _, s := range globDBSources {
-		if id > s.findingLo && id <= s.findingHi {
-			return s.file
-		}
+	return globSourceInRange(id, func(s globDBSource) (int64, int64) { return s.findingLo, s.findingHi })
+}
+
+// globSourceForRecordRowID maps a scratch-database rowid back to the file whose
+// merge inserted it.
+func globSourceForRecordRowID(rowid int64) string {
+	return globSourceInRange(rowid, func(s globDBSource) (int64, int64) { return s.recordLo, s.recordHi })
+}
+
+// globSourceInRange finds the source whose half-open (lo, hi] range contains id.
+//
+// One implementation for both id spaces so the boundary convention cannot be
+// fixed in one and missed in the other. Binary search rather than a scan: the
+// ranges are appended in merge order and each file's hi is the next file's lo, so
+// they are already sorted — and the caller resolves one id per rendered record,
+// which over an 854-file glob made a linear probe O(records x files).
+func globSourceInRange(id int64, bounds func(globDBSource) (lo, hi int64)) string {
+	i := sort.Search(len(globDBSources), func(i int) bool {
+		_, hi := bounds(globDBSources[i])
+		return id <= hi
+	})
+	if i == len(globDBSources) {
+		return ""
+	}
+	lo, hi := bounds(globDBSources[i])
+	if id > lo && id <= hi {
+		return globDBSources[i].file
 	}
 	return ""
 }
 
 // globSourceForRecord returns the source file a merged http_record uuid came
-// from, or "" when not attributable (single-DB read, or a deduped row).
+// from, or "" when not attributable (single-DB read, a deduped row, or a uuid
+// that resolveGlobRecordSources was not given).
+//
+// It answers from a cache that covers only the records a renderer actually
+// selected — call resolveGlobRecordSources with the page first.
 func globSourceForRecord(uuid string) string { return globRecordFile[uuid] }
+
+// resolveGlobRecordSources fills the uuid → source-file cache for these records
+// and no others. Idempotent: a uuid already resolved is not looked up again, so
+// the tree's two consumers (redirect hydration, then the per-file roots) share
+// one lookup.
+//
+// It exists because the attribution used to be built eagerly, during the merge,
+// by selecting every inserted uuid back out and holding a map entry per row. On
+// the corpora --glob-db is for — hundreds of files, millions of records — that
+// map is hundreds of megabytes of Go heap, allocated to answer a question about
+// the few hundred rows that survive the WHERE clause and get printed.
+//
+// The rowid ranges recorded at merge time replace it: they cost one small struct
+// per FILE, and turning a uuid into a file is then one indexed lookup over the
+// selected page. This mirrors how finding attribution has always worked.
+func resolveGlobRecordSources(ctx context.Context, db *database.DB, records []*database.HTTPRecord) {
+	// No ranges were recorded, so there is nothing any query could resolve —
+	// return before issuing one rather than asking and discarding every row.
+	if db == nil || len(globDBSources) == 0 || globDBSkipped.skipRecordFileMap() {
+		return
+	}
+	if globRecordFile == nil {
+		globRecordFile = make(map[string]string)
+	}
+	pending := make([]string, 0, len(records))
+	for _, rec := range records {
+		if rec == nil {
+			continue
+		}
+		if _, seen := globRecordFile[rec.UUID]; !seen {
+			// Seeded as unattributable so a uuid the query does not return is
+			// still "asked and answered" — otherwise every unattributable record
+			// is re-queried by the next consumer, which is the opposite of the
+			// shared lookup this cache promises.
+			globRecordFile[rec.UUID] = ""
+			pending = append(pending, rec.UUID)
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+
+	for chunk := range slices.Chunk(pending, database.SQLChunkSize) {
+		rows, err := db.NewSelect().
+			Model((*database.HTTPRecord)(nil)).
+			ColumnExpr("uuid").
+			ColumnExpr("rowid").
+			Where("uuid IN (?)", bun.List(chunk)).
+			Rows(ctx)
+		if err != nil {
+			// Attribution is a display detail: without it the tree falls back to
+			// a single shared root, which is the pre---glob-db rendering rather
+			// than a wrong one. Failing the listing over it would be worse.
+			zap.L().Debug("glob record attribution unavailable", zap.Error(err))
+			return
+		}
+		for rows.Next() {
+			var uuid string
+			var rowid int64
+			if err := rows.Scan(&uuid, &rowid); err != nil {
+				continue
+			}
+			globRecordFile[uuid] = globSourceForRecordRowID(rowid)
+		}
+		_ = rows.Close()
+	}
+}
 
 // maxRowID returns the current MAX(col) of a table (0 when empty), used to
 // snapshot per-file id/rowid ranges around each glob merge. col is a fixed
@@ -212,22 +344,6 @@ func maxRowID(ctx context.Context, db *database.DB, table, col string) int64 {
 	var id int64
 	_ = db.SQLDB().QueryRowContext(ctx, fmt.Sprintf("SELECT COALESCE(MAX(%s), 0) FROM %s", col, table)).Scan(&id)
 	return id
-}
-
-// mapRecordsToFile records that every http_record inserted after afterRowid
-// (i.e. by the file just merged, since no later file has run yet) came from file.
-func mapRecordsToFile(ctx context.Context, db *database.DB, afterRowid int64, file string) {
-	rows, err := db.SQLDB().QueryContext(ctx, "SELECT uuid FROM http_records WHERE rowid > ?", afterRowid)
-	if err != nil {
-		return
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var uuid string
-		if rows.Scan(&uuid) == nil {
-			globRecordFile[uuid] = file
-		}
-	}
 }
 
 // statelessReadRequested reports whether a read/query command should source its
@@ -403,6 +519,12 @@ func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The scratch store is filled once and then only read, which is the one shape
+	// that can postpone the http_records read indexes: during the merge they are
+	// thirteen b-tree insertions per row, keyed mostly on a random uuid, and no
+	// query runs until every file is in. They are built below, once, over the
+	// finished table.
+	db.DeferRecordIndexes()
 	if err := db.CreateSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize scratch schema: %w", err)
@@ -415,33 +537,42 @@ func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
 	globDBSources = nil
 	globDBSkipped = skip
 	globRecordFile = make(map[string]string)
+	// Both decisions are properties of the skip set, not of any one file.
+	trackFiles := !skip.skipRecordFileMap()
+	trackFindings := !skip.Findings
+
+	// Each file's high-water mark is the next file's low-water mark — merges run
+	// strictly in sequence against a private scratch database, so nothing else
+	// can insert between them. Carrying the marks forward halves the probes and,
+	// more importantly, makes the ranges contiguous by construction rather than
+	// by two separate reads agreeing.
+	var fMark, rMark int64
 	var loaded, totalRecords, totalFindings int
 	for _, m := range matches {
-		// Snapshot the findings id / http_records rowid high-water marks before
-		// each file so the rows it adds (fresh sequential ids/rowids, since no
-		// later file has run yet) can be attributed back to it.
-		fLo := maxRowID(ctx, db, "findings", "id")
-		trackFiles := !skip.skipRecordFileMap()
-		var rLo int64
-		if trackFiles {
-			rLo = maxRowID(ctx, db, "http_records", "rowid")
-		}
 		res, impErr := dbimport.ImportPath(ctx, repo, m, "", dbimport.Options{
 			SkipHTTPRecords:  skip.Records,
 			SkipRecordBodies: skip.RecordBodies,
+			SkipFindings:     skip.Findings,
 		})
 		if impErr != nil {
 			fmt.Fprintf(os.Stderr, "%s --glob-db: skipped %s: %v\n", terminal.WarningSymbol(), terminal.Cyan(m), impErr)
 			continue
 		}
-		globDBSources = append(globDBSources, globDBSource{
-			file:      m,
-			findingLo: fLo,
-			findingHi: maxRowID(ctx, db, "findings", "id"),
-		})
-		if trackFiles {
-			mapRecordsToFile(ctx, db, rLo, m)
+		src := globDBSource{file: m}
+		// Recording a range is the whole cost of attribution now: one scalar
+		// probe per file per id space, versus a scan of every inserted row. A
+		// reader resolves ids out of it on demand — see resolveGlobRecordSources.
+		if trackFindings {
+			src.findingLo = fMark
+			fMark = maxRowID(ctx, db, "findings", "id")
+			src.findingHi = fMark
 		}
+		if trackFiles {
+			src.recordLo = rMark
+			rMark = maxRowID(ctx, db, "http_records", "rowid")
+			src.recordHi = rMark
+		}
+		globDBSources = append(globDBSources, src)
 		loaded++
 		totalRecords += res.RecordsImported
 		totalFindings += res.FindingsTotal
@@ -451,11 +582,39 @@ func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
 		return nil, fmt.Errorf("--glob-db %q: none of the %d matched file(s) could be loaded", pattern, len(matches))
 	}
 
-	// With the record copy skipped totalRecords is 0 — report findings alone
-	// rather than claiming the source files held no traffic.
-	counts := fmt.Sprintf("%d finding(s)", totalFindings)
+	// The load is over; build what the reads need. Failing here is not fatal —
+	// without the indexes the queries still answer correctly, just by scanning —
+	// so it warns rather than discarding a merge that may have taken minutes.
+	if err := db.CreateRecordIndexes(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "%s --glob-db: read indexes unavailable, queries will be slower: %v\n",
+			terminal.WarningSymbol(), err)
+	}
+	// Plan against the merged row counts rather than SQLite's defaults; the
+	// statistics the sources carried describe their own tables, not this one.
+	//
+	// Bounded: the scratch store has no sqlite_stat1 and thirteen indexes that
+	// were just built, so a plain `PRAGMA optimize` treats every one as stale and
+	// scans it in full — minutes of b-tree reads over the merged corpus with
+	// nothing rendered yet. analysis_limit is SQLite's documented sampling cap and
+	// gives the planner the same order-of-magnitude estimates in milliseconds.
+	if _, err := db.ExecContext(ctx, "PRAGMA analysis_limit=400"); err != nil {
+		zap.L().Debug("could not bound scratch ANALYZE sampling", zap.Error(err))
+	}
+	db.Optimize(ctx)
+
+	// A skipped table's counter is 0, and printing that would claim the source
+	// files held no traffic (or no findings) when they were simply not copied.
+	// Report only what was actually merged.
+	var parts []string
 	if !skip.Records {
-		counts = fmt.Sprintf("%d HTTP record(s), %s", totalRecords, counts)
+		parts = append(parts, fmt.Sprintf("%d HTTP record(s)", totalRecords))
+	}
+	if !skip.Findings {
+		parts = append(parts, fmt.Sprintf("%d finding(s)", totalFindings))
+	}
+	counts := strings.Join(parts, ", ")
+	if counts == "" {
+		counts = "metadata only"
 	}
 	fmt.Fprintf(os.Stderr, "%s Stateless: merged %d file(s) — %s — from %s\n",
 		terminal.InfoSymbol(), loaded, counts, terminal.Cyan(pattern))

@@ -392,7 +392,24 @@ func runSkillsInstall(names []string) error {
 
 	fmt.Printf("\n%s %d installed, %d skipped. Your agent will auto-trigger on these skills when you mention vigolium.\n",
 		terminal.InfoSymbol(), installed, skipped)
+	// --dir bypasses scope resolution entirely, so the hint would be noise.
+	if skillsOpts.Dir == "" {
+		printSkillsScopeHint(skillsOpts.Scope)
+	}
 	return nil
+}
+
+// printSkillsScopeHint tells the user which scope they just installed into and
+// how to pick the other one, so a project-local install isn't mistaken for a
+// machine-wide one (and vice versa).
+func printSkillsScopeHint(scope string) {
+	if strings.EqualFold(scope, "global") {
+		fmt.Printf("%s Installed globally (home dir) - available in every project. Use %s to install into the current folder instead.\n",
+			terminal.InfoSymbol(), terminal.Gray("--scope project"))
+		return
+	}
+	fmt.Printf("%s Installed for this project only. Use %s to install into your home dir for every project.\n",
+		terminal.InfoSymbol(), terminal.Gray("--scope global"))
 }
 
 // copyEmbeddedSkillBundle recursively copies an embedded bundle directory to

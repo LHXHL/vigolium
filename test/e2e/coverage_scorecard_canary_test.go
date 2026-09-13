@@ -553,6 +553,15 @@ func TestCoverageScorecard_VAmPI(t *testing.T) {
 	catalog := vampiCatalog()
 	res := reportScorecard(t, "vampi", catalog, findings)
 
+	// VAmPI is a single-threaded Flask dev server: when the full canary suite
+	// runs many containers at once it can fall over mid-scan, leaving the scan
+	// with no responses to analyze (hence no reachable-tier catch). A confirmed
+	// unreachable target is environmental, never a scanner regression, so skip
+	// rather than fail. A healthy target still has to clear the floor below.
+	if res.reHit == 0 && !vampiReachable(app.BaseURL) {
+		t.Skip("VAmPI became unreachable during the scan (container died under load); skipping (environmental)")
+	}
+
 	// Honest hard floor: the _debug excessive-data-exposure (cleartext passwords
 	// in the body) is the most reliably detectable VAmPI vuln. SQLi via the
 	// debug=True 500 traceback is reported but not gated (depends on whether the

@@ -76,10 +76,15 @@ Stateless mode is great for ephemeral CI/CD runs — it creates a temp SQLite fi
 
 ### Input Format flags (scan & run)
 
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--required-only` | bool | `false` | Parse only required fields from input format (ignore optional) |
-| `--skip-format-validation` | bool | `false` | Skip validation of input file format |
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--target` | `-t` | []string | — | Target URL. **Repeat the flag** for several targets - commas are *literal*, so a query like `?ids=1,2,3` stays one target instead of splitting into three |
+| `--target-file` | `-T` | []string | — | File of target URLs, one per line. Repeatable for several files; commas in the path are literal too |
+| `--input` | `-i` | string | `-` (stdin) | Spec / export to expand into requests (see `-i` vs `-T` below). A **single** value on `scan`/`run` - repeating it overwrites. Only `vigolium ingest` accumulates repeated `-i` |
+| `--input-mode` | `-I` | string | `urls` | Input format: `urls`, `openapi`, `swagger`, `wsdl`, `burp`, `curl`, `nuclei`, `har` (also `postman`, `burpscope`). `vigolium --list-input-mode` prints the list with examples |
+| `--input-read-timeout` | — | duration | `3m` | Deadline for reading input from stdin or a file; `0` disables it. Raise it when piping a very large export through stdin |
+| `--required-only` | — | bool | `false` | Parse only required fields from input format (ignore optional) |
+| `--skip-format-validation` | — | bool | `false` | Skip validation of input file format |
 
 ### Other flags (scan & run)
 
@@ -88,6 +93,21 @@ Stateless mode is great for ephemeral CI/CD runs — it creates a temp SQLite fi
 | `--auth-file` | []string | — | Path to auth file (YAML/JSON, single session or `sessions:` bundle), or bare name resolved against session_dir. Repeatable. |
 | `--auth` | []string | — | Inline session in `name:Header:value` format. Repeatable. |
 | `--oast-url` | string | — | Fixed out-of-band callback URL (overrides auto-generated interactsh URL) |
+| `--max-findings-per-module` | int | `10` | Stop reporting after N findings **per module** (`0` = unlimited) |
+| `--max-host-error` | int | `30` | Skip a host after this many consecutive errors |
+| `--no-clustering` | bool | `false` | Disable deduplication of identical concurrent HTTP requests |
+
+**`--max-findings-per-module` is a reporting cap that is on by default.** A module
+that fires on 400 URLs reports 10 - which is what you want during triage, and is
+*not* what you want when you are measuring coverage or exporting a full corpus.
+If a finding count looks suspiciously round, check this before concluding the
+module stopped finding things: `--max-findings-per-module 0` lifts it.
+
+`--max-host-error 30` is why a host that goes down mid-scan does not burn the
+rest of the budget. Lower it for a wide `-T` sweep where a dead host should be
+abandoned fast; raise it for a flaky target you still want scanned.
+`--no-clustering` costs real requests - reach for it only when the dedup is
+collapsing requests that the app actually treats as distinct.
 
 ### Parallel, DB & module flags (scan & run)
 
@@ -111,8 +131,19 @@ Stateless mode is great for ephemeral CI/CD runs — it creates a temp SQLite fi
 | `--discover` | bool | `false` | Enable content discovery phase before scanning |
 | `--discover-max-time` | duration | `1h` | Max time for content discovery per target |
 | `--discovery-wordlist` | string | — | Custom wordlist seeding the discovery phase (enables fuzzing on the fly). Formerly `--fuzz-wordlist`, still accepted as a deprecated alias. **Not** the same knob as `vigolium fuzz -w`. |
+| `--no-discovery-fuzz` | bool | `false` | Disable discovery's `/FUZZ` brute-force (alias `--no-fuzz`). See the note below - it beats *every* reason the brute-force would turn itself on |
 | `--no-prefix-breaker` | bool | `false` | Disable per-prefix circuit breaker that stops trap-directory recursion |
 | `--port-sweep-ports` | string | — | Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; the sweep runs at `--intensity deep` or with `--follow-subdomains`) |
+
+**`--no-discovery-fuzz` is the off switch, not a default-setter.** Discovery's
+`/FUZZ` brute-force auto-enables for three independent reasons - `--intensity
+deep`, a discovery-only run (`vigolium run discover`), and the low-yield
+auto-enable when passive extraction turns up little - so "I didn't pass
+`--discovery-wordlist`" is not a guarantee it stayed off. This flag overrides all
+three. It only stops the **brute-force**: link extraction, JS parsing,
+response-word harvesting, and the short dir/file wordlists still run, so
+discovery still finds what the app tells it about. Reach for it when the target
+is rate-limited, metered, or behind a WAF you do not want to trip.
 
 ### Probe / host-sweep flags (scan & run)
 
@@ -715,7 +746,8 @@ add `--silent` for a fully quiet run. One object per record:
  "ip":"104.16.123.96","a":["104.16.123.96","104.16.124.96"],
  "aaaa":["2606:4700::6810:7b60"],"cname":["origin.example.net"],
  "response_title":"Example","response_content_type":"text/html",
- "response_words":118,"surface_score":40,"source":"probe",
+ "response_words":118,"surface_score":43,"technology":["cloudflare","nextjs"],
+ "source":"probe",
  "tls":{"tls_version":"tls13","cipher":"TLS_AES_128_GCM_SHA256",
         "subject_cn":"www.example.com","subject_an":["www.example.com"],
         "issuer_cn":"YE2","not_after":"2026-12-02T07:35:03Z",
@@ -734,22 +766,35 @@ against that output reads these unmodified.
 | `--record-redirect-chain` | Each followed hop becomes its own record, chained by `parent_uuid` (on by default here) |
 | `-c/--concurrency` | Request workers; DNS prefetch runs at `min(c*4, 128)` |
 | `-S/--stateless` | Throwaway DB; combine with `--format sqlite -o <base>` to keep it |
+| `--export-only` | Record types in the JSONL envelope (`http`, `findings`, …); probe-only runs default to `http` |
 
 **Probe-only defaults.** A standalone probe run (`run probe`, `scan --only
 probe`, REST `{"only":"probe"}`) turns on: `--record-redirect-chain`,
 `--redirect-mode same-apex`, the many-hosts connection profile (keep-alives off,
 short header timeout), and **proactive WAF-edge pacing off** — one request per
 host has no burst to pre-empt, and the pacing notice is noise across thousands of
-targets. Reactive back-off after a real WAF block still applies. Each yields to
-an explicit flag (`--no-waf-pacing=false` re-enables pacing). These defaults do
-NOT apply when the probe rides along inside a wider scan.
+targets. Reactive back-off after a real WAF block still applies. It also narrows
+the JSONL envelope to `http_record` objects only: every finding a sweep produces
+is a "Technology Detected" one, and that verdict is already on the record's
+`technology` field, so emitting both says the same thing twice. Each yields to an
+explicit flag (`--no-waf-pacing=false` re-enables pacing, `--export-only
+http,findings` restores the findings). These defaults do NOT apply when the probe
+rides along inside a wider scan.
+
+**Two columns, no findings.** A sweep's output is record metadata, not findings,
+so a "0 findings" summary is expected. `surface_score` is 0-100: the percentage
+of the attack-surface signals present on that exchange (input surface,
+method, session and login surface, non-standard port, response shape, and origin
+posture — dynamic vs edge-cached, permissive CORS, leaked internals, API
+markers). `technology` carries the host's detected stack, written once every
+fingerprint module has settled.
 
 **Not stored, only reported.** `a`/`aaaa`/`cname`/`tls` are output-only: the
 schema keeps a single `ip` column, because a sweep writes several records per
 host and storing the full answer per row would be many copies of one identical,
 TTL-stale blob. Reading the same database back later shows `ip` alone — re-run
-the probe if you need the rest. `surface_score`, `response_time_ms` and
-`parent_uuid` ARE stored.
+the probe if you need the rest. `surface_score`, `technology`, `response_time_ms`
+and `parent_uuid` ARE stored.
 
 Rank a finished sweep:
 

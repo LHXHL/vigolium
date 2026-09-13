@@ -140,6 +140,9 @@ var projectOwnedTables = []string{
 	"agentic_scans",
 	"authentication_hostnames",
 	"scan_logs",
+	// Per-run host observations are project-scoped evidence like any other row:
+	// they reassign and purge with the project rather than outliving it.
+	"host_observations",
 	// Durable-autopilot child tables also carry project_uuid so they reassign /
 	// purge with the project instead of orphaning.
 	"agent_sections",

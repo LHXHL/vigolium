@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -618,7 +619,7 @@ func TestLookupHostnameSplitsFamilies(t *testing.T) {
 	})
 
 	t.Run("unresolvable name is negative, not empty-positive", func(t *testing.T) {
-		e := lookupHostname("definitely-not-a-real-host.invalid-tld-xyz", true)
+		e := lookupHostname(context.Background(), "definitely-not-a-real-host.invalid-tld-xyz", true)
 		if e.ip != "" || len(e.a) != 0 || len(e.aaaa) != 0 {
 			t.Errorf("got ip=%q a=%v aaaa=%v, want an empty (negative) entry", e.ip, e.a, e.aaaa)
 		}
@@ -663,7 +664,7 @@ func TestMeasuredMillisFloor(t *testing.T) {
 // and hostname-keyed, so the ingest server (which marshals []*HTTPRecord
 // straight to its HTTP response) would decorate one project's rows with a name
 // resolved at an unknown time while ingesting another's. Emit sites that know
-// this process probed opt in through WithHostFacts instead.
+// this process probed opt in through WithFacts instead.
 func TestHostFactsAreOutputOnlyNotPersistedAndNotImplicit(t *testing.T) {
 	const host = "dns-view.example.invalid"
 	dnsCache.Add(host, dnsEntry{
@@ -694,10 +695,10 @@ func TestHostFactsAreOutputOnlyNotPersistedAndNotImplicit(t *testing.T) {
 
 	// Opting in merges the fact keys into the record's own object, so a consumer
 	// reads them next to the record's fields rather than under a wrapper.
-	decorated := marshalToMap(t, WithHostFacts(rec))
+	decorated := marshalToMap(t, WithFacts(nil, rec))
 	for _, key := range []string{"a", "aaaa", "cname"} {
 		if _, ok := decorated[key]; !ok {
-			t.Errorf("WithHostFacts did not attach %q", key)
+			t.Errorf("WithFacts did not attach %q", key)
 		}
 	}
 	if decorated["uuid"] != "u1" {
@@ -707,7 +708,7 @@ func TestHostFactsAreOutputOnlyNotPersistedAndNotImplicit(t *testing.T) {
 	// A host this process never observed opts in to nothing: "unknown" and "no
 	// records" stay different answers, and the bare record is returned unchanged.
 	other := &HTTPRecord{UUID: "u2", Hostname: "never-resolved.example.invalid", Method: "GET"}
-	for key, v := range marshalToMap(t, WithHostFacts(other)) {
+	for key, v := range marshalToMap(t, WithFacts(nil, other)) {
 		if key == "a" || key == "aaaa" || key == "cname" || key == "tls" {
 			t.Errorf("%q = %v present for a host that was never observed", key, v)
 		}
@@ -725,4 +726,89 @@ func marshalToMap(t *testing.T, v any) map[string]any {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	return out
+}
+
+// TestResolveHostnameNowRejectsAddressOnlyCacheEntry covers the completeness
+// hole behind the cnameChecked flag: the write path's background resolver asks
+// for addresses only, and its entry is fresh and address-complete. Before the
+// flag it was indistinguishable from a fully collected answer, so the sweep's
+// ResolveHostnameNow accepted it and the host's CNAME silently vanished from the
+// output - on exactly the mixed-phase runs where an earlier phase had already
+// written records for the host.
+func TestResolveHostnameNowRejectsAddressOnlyCacheEntry(t *testing.T) {
+	const host = "addr-only.example.invalid"
+	dnsCache.Add(host, dnsEntry{
+		ip:     "192.0.2.20",
+		a:      []string{"192.0.2.20"},
+		expiry: time.Now().Add(time.Hour),
+		// cnameChecked deliberately false: this is what scheduleHostnameResolve
+		// leaves behind.
+	})
+	t.Cleanup(func() { dnsCache.Remove(host) })
+
+	// A .invalid name cannot resolve, so the forced re-lookup returns nothing and
+	// caches a negative entry. That is the point: the stale address-only entry
+	// must NOT have been served as a complete answer.
+	ResolveHostnameNow(context.Background(), host)
+
+	e, ok := dnsCache.Get(host)
+	if !ok {
+		t.Fatal("entry disappeared from the cache")
+	}
+	if !e.cnameChecked {
+		t.Error("ResolveHostnameNow returned without collecting the chain; " +
+			"an address-only entry was accepted as complete")
+	}
+}
+
+// TestAddressOnlyResolveKeepsObservedCNAME is the other direction: a background
+// address refresh must not unlearn a chain this process already observed. It
+// asked a narrower question, so it has no answer to overwrite the wider one with.
+func TestAddressOnlyResolveKeepsObservedCNAME(t *testing.T) {
+	const host = "keep-chain.example.invalid"
+	dnsCache.Add(host, dnsEntry{
+		ip:           "192.0.2.30",
+		a:            []string{"192.0.2.30"},
+		cname:        []string{"origin.example.invalid"},
+		expiry:       time.Now().Add(time.Hour),
+		cnameChecked: true,
+	})
+	t.Cleanup(func() { dnsCache.Remove(host) })
+
+	if _, err := resolveAndCache(context.Background(), host, false); err != nil {
+		t.Fatalf("resolveAndCache: %v", err)
+	}
+
+	_, _, cname := CachedDNS(host)
+	if len(cname) != 1 || cname[0] != "origin.example.invalid" {
+		t.Errorf("CachedDNS cname = %v, want the previously observed chain", cname)
+	}
+}
+
+// TestResolveHostnameNowHonoursContext covers the cancellation half of the
+// prefetch stage. Resolution used to be uninterruptible: the semaphore send
+// blocked with no context, and net.LookupHost took no deadline, so a cancelled
+// sweep still had to wait out every in-flight lookup at whatever pace the system
+// resolver chose.
+//
+// The caller's wait is what ctx cancels - not the lookup, which is shared with
+// every other caller asking the same question and runs to completion on a
+// detached context.
+func TestResolveHostnameNowHonoursContext(t *testing.T) {
+	// Already cancelled: the lookup still has to reach a resolver, so the
+	// ctx.Done() arm is ready long before the answer is.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ResolveHostnameNow(ctx, "blocked.example.invalid")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResolveHostnameNow ignored a cancelled context")
+	}
 }

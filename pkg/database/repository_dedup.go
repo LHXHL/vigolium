@@ -27,19 +27,11 @@ import (
 // the existing 'deparos' source literals in this file.
 const secretDetectModuleID = "secret-detect"
 
-// dedupDeleteChunk bounds each IN-list delete/select so a dedup pass over a very
-// large duplicate set stays within the driver's bound-parameter limit (SQLite's
-// SQLITE_MAX_VARIABLE_NUMBER is 32766). A deparos discovery phase whose error/echo
-// pages mirror the requested URI can produce tens of thousands of duplicate
-// records — exactly what the deparos dedup passes target — so a single unbounded
-// "uuid IN (?)" would error the whole transaction once the set crossed the limit.
-const dedupDeleteChunk = 10000
-
 // deleteRecordsByUUIDsTx deletes the http_records identified by uuids and their
 // finding_records junction rows inside tx, chunking the IN lists so a large set
 // never exceeds the bound-parameter limit. Shared by the record-dedup passes.
 func deleteRecordsByUUIDsTx(ctx context.Context, tx bun.Tx, uuids []string) error {
-	for chunk := range slices.Chunk(uuids, dedupDeleteChunk) {
+	for chunk := range slices.Chunk(uuids, SQLChunkSize) {
 		if _, err := tx.NewRaw("DELETE FROM finding_records WHERE record_uuid IN (?)", bun.List(chunk)).Exec(ctx); err != nil {
 			return fmt.Errorf("failed to delete finding_records: %w", err)
 		}
@@ -67,7 +59,7 @@ func migrateFindingRecordsTx(ctx context.Context, tx bun.Tx, survivorID int64, d
 	if len(dupIDs) == 0 {
 		return nil
 	}
-	for chunk := range slices.Chunk(dupIDs, dedupDeleteChunk) {
+	for chunk := range slices.Chunk(dupIDs, SQLChunkSize) {
 		if _, err := tx.NewRaw(
 			`INSERT INTO finding_records (finding_id, record_uuid)
 			 SELECT DISTINCT ?, fr.record_uuid
@@ -89,7 +81,7 @@ func migrateFindingRecordsTx(ctx context.Context, tx bun.Tx, survivorID int64, d
 // finding_records junction rows inside tx, chunking the IN lists. Shared by the
 // finding-dedup passes.
 func deleteFindingsByIDsTx(ctx context.Context, tx bun.Tx, ids []int64) error {
-	for chunk := range slices.Chunk(ids, dedupDeleteChunk) {
+	for chunk := range slices.Chunk(ids, SQLChunkSize) {
 		if _, err := tx.NewRaw("DELETE FROM finding_records WHERE finding_id IN (?)", bun.List(chunk)).Exec(ctx); err != nil {
 			return fmt.Errorf("failed to delete finding_records: %w", err)
 		}
@@ -431,7 +423,7 @@ func (r *Repository) deleteRecordsWithStatusBreakdown(ctx context.Context, uuids
 		Count      int64 `bun:"cnt"`
 	}
 	statusCodes := make(map[int]int64)
-	for chunk := range slices.Chunk(uuids, dedupDeleteChunk) {
+	for chunk := range slices.Chunk(uuids, SQLChunkSize) {
 		var counts []statusCount
 		if err := r.db.NewRaw(
 			"SELECT status_code, COUNT(*) AS cnt FROM http_records WHERE uuid IN (?) GROUP BY status_code",
@@ -498,7 +490,7 @@ func (r *Repository) loadFindingBodies(ctx context.Context, ids []int64) (map[in
 	// Chunk the IN list: ids here is the survivor + every duplicate id (a
 	// superset of the delete set), so it can exceed the bound-parameter limit on
 	// the same large dedups the delete legs chunk for.
-	for chunk := range slices.Chunk(ids, dedupDeleteChunk) {
+	for chunk := range slices.Chunk(ids, SQLChunkSize) {
 		var rows []findingBody
 		if err := r.db.NewSelect().Model((*Finding)(nil)).
 			Column("id", "request", "response").

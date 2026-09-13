@@ -37,7 +37,12 @@ const (
 type DB struct {
 	*bun.DB
 	driver string
-	hasFTS bool // true if FTS5 (SQLite) or tsvector (Postgres) is available
+
+	// Full-text search capability, discovered on first use rather than assumed
+	// from how this handle was opened. See HasFTS.
+	ftsMu    sync.Mutex
+	ftsKnown bool
+	hasFTS   bool // true if FTS5 (SQLite) or tsvector (Postgres) is available
 
 	// ckptStop stops the background WAL checkpointer (file-backed SQLite only;
 	// nil otherwise). Closed once by Close().
@@ -48,6 +53,10 @@ type DB struct {
 	// makes CreateSchema a no-op: a read-only source cannot be migrated, and the
 	// read commands call CreateSchema unconditionally on open.
 	readOnly bool
+
+	// deferRecordIndexes postpones the http_records read indexes past CreateSchema
+	// so a bulk load does not maintain them per row. See DeferRecordIndexes.
+	deferRecordIndexes bool
 }
 
 // SQLite WAL tuning. wal_autocheckpoint runs an automatic PASSIVE checkpoint
@@ -369,6 +378,13 @@ func (db *DB) Optimize(ctx context.Context) {
 	if db.DB == nil {
 		return
 	}
+	// `PRAGMA optimize` writes sqlite_stat1. A read-only handle was opened
+	// precisely so browsing a source cannot alter it, and query_only(1) would
+	// reject the write anyway — leaving a debug-level error on every close of
+	// every source file a glob touched.
+	if db.readOnly {
+		return
+	}
 	stmt := "PRAGMA optimize"
 	if db.driver == "postgres" {
 		stmt = "ANALYZE http_records, findings"
@@ -391,6 +407,87 @@ func (db *DB) ftsIndexesBody(ctx context.Context) bool {
 	return strings.Contains(ddl, "raw_request") || strings.Contains(ddl, "raw_response")
 }
 
+// recordSecondaryIndexes are the non-unique read indexes on http_records.
+//
+// They are kept apart from the rest of CreateSchema's index list because they
+// are the only ones a BULK LOAD can safely postpone: nothing depends on them for
+// correctness (uuid is the PRIMARY KEY, and that is what the merge's
+// INSERT OR IGNORE dedups on), and they are the most expensive to maintain
+// incrementally — thirteen b-tree insertions per row, most of them keyed on a
+// random uuid, so every insert dirties thirteen pages in thirteen different
+// places. Building them once after the rows are in lets SQLite sort instead.
+//
+// See DeferRecordIndexes for who postpones them, and CreateRecordIndexes for
+// when they are built.
+var recordSecondaryIndexes = []string{
+	// -- http_records: project-aware composite indexes --
+	"CREATE INDEX IF NOT EXISTS idx_records_project_hostname ON http_records(project_uuid, hostname)",
+	"CREATE INDEX IF NOT EXISTS idx_records_project_created_uuid ON http_records(project_uuid, created_at, uuid)",
+	"CREATE INDEX IF NOT EXISTS idx_records_project_sent_at ON http_records(project_uuid, sent_at)",
+	"CREATE INDEX IF NOT EXISTS idx_records_project_host_method_status ON http_records(project_uuid, hostname, method, status_code)",
+	"CREATE INDEX IF NOT EXISTS idx_records_project_scheme_host_port ON http_records(project_uuid, scheme, hostname, port)",
+	"CREATE INDEX IF NOT EXISTS idx_records_project_risk_score ON http_records(project_uuid, risk_score)",
+	"CREATE INDEX IF NOT EXISTS idx_records_project_surface_score ON http_records(project_uuid, surface_score)",
+	// Covering index for findDuplicateRecord: the duplicate probe filters on
+	// (project_uuid, method, hostname, path, url[, request_hash]) and selects
+	// only uuid. Indexing all of those plus uuid lets the lookup resolve
+	// entirely from the index (no per-candidate table row fetch). The old
+	// 4-column version (…, path) is dropped in CreateSchema so this definition
+	// takes effect on existing databases.
+	"CREATE INDEX IF NOT EXISTS idx_records_dedup ON http_records(project_uuid, method, hostname, path, url, request_hash, uuid)",
+	"CREATE INDEX IF NOT EXISTS idx_records_request_hash ON http_records(request_hash)",
+	"CREATE INDEX IF NOT EXISTS idx_records_response_hash ON http_records(response_hash)",
+	// Supports DeduplicateDeparosByNormHash: narrows the full http_records scan to
+	// the (project, deparos) subset and surfaces response_norm_hash for the
+	// reflected-URL-robust dedup pass run after discovery.
+	"CREATE INDEX IF NOT EXISTS idx_records_norm_hash ON http_records(project_uuid, source, response_norm_hash)",
+	// -- http_records: scan_uuid index --
+	"CREATE INDEX IF NOT EXISTS idx_records_project_scan ON http_records(project_uuid, scan_uuid)",
+	// -- http_records: source-filtered cursor scan (scan-on-receive) --
+	// Supports WHERE source IN (...) AND created_at > cursor filters in
+	// DBInputSource.fetchNextBatch and Repository.CountRecordsAfterCursorBySource.
+	"CREATE INDEX IF NOT EXISTS idx_records_project_source_created ON http_records(project_uuid, source, created_at, uuid)",
+}
+
+// DeferRecordIndexes tells CreateSchema to leave the http_records read indexes
+// uncreated, so a bulk load runs against the primary key alone. The caller MUST
+// call CreateRecordIndexes once loading is done — a store left without them is
+// schema-complete but plans every read as a full scan.
+//
+// Only for disposable stores that are filled once and then read (the --glob-db
+// scratch merge). A persistent store must not defer: it is written to
+// continuously, so there is no "after the load" to build them in.
+func (db *DB) DeferRecordIndexes() { db.deferRecordIndexes = true }
+
+// CreateRecordIndexes builds the http_records read indexes. Idempotent (every
+// statement is IF NOT EXISTS), so calling it on a store that never deferred is
+// harmless.
+func (db *DB) CreateRecordIndexes(ctx context.Context) error {
+	for _, ddl := range recordSecondaryIndexes {
+		if _, err := db.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("failed to create record index: %w", err)
+		}
+	}
+	return nil
+}
+
+// rebuildFTSIfPopulated repopulates the search index from http_records, once,
+// after the index has been created or replaced.
+//
+// It is skipped for an empty table: on a fresh database there is nothing to
+// index and the triggers cover everything from here on, so the common case pays
+// one COUNT rather than a rebuild. Best-effort — a failure leaves searches
+// falling back to the LIKE scan, which is slower but correct.
+func (db *DB) rebuildFTSIfPopulated(ctx context.Context) {
+	var rows int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM http_records").Scan(&rows); err != nil || rows == 0 {
+		return
+	}
+	zap.L().Debug("rebuilding full-text search index", zap.Int64("records", rows))
+	db.execBestEffort(ctx, "rebuild FTS index",
+		"INSERT INTO http_records_fts(http_records_fts) VALUES('rebuild')")
+}
+
 // Driver returns the database driver name
 func (db *DB) Driver() string {
 	return db.driver
@@ -410,9 +507,71 @@ func ExpandPath(path string) string {
 	return expandPath(path)
 }
 
-// HasFTS returns true if full-text search is available (FTS5 for SQLite, tsvector for PostgreSQL).
+// HasFTS reports whether full-text search is available on this handle (FTS5 for
+// SQLite, tsvector for PostgreSQL).
+//
+// It DISCOVERS the answer rather than remembering whether this process created
+// the index. It used to be a plain field assigned only by SeedDefaults, which
+// made the answer depend on how the handle was opened rather than on what the
+// database contains: `vigolium server` seeds and reported true, every read
+// command (traffic, finding, db ls) does not seed and reported false on the very
+// same file. Two commands then took different query paths over one database.
+//
+// Discovery is lazy and cached: a handle that never searches pays nothing, and
+// one that does pays a single sqlite_master lookup.
 func (db *DB) HasFTS() bool {
+	db.ftsMu.Lock()
+	defer db.ftsMu.Unlock()
+	if !db.ftsKnown {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		db.hasFTS = db.detectFTS(ctx)
+		cancel()
+		db.ftsKnown = true
+	}
 	return db.hasFTS
+}
+
+// setFTS records a known capability, for the paths that just created or dropped
+// the index and need not re-discover it.
+func (db *DB) setFTS(available bool) {
+	db.ftsMu.Lock()
+	db.hasFTS = available
+	db.ftsKnown = true
+	db.ftsMu.Unlock()
+}
+
+// detectFTS inspects the database for a USABLE search index.
+//
+// "Usable" is stricter than "present" on SQLite, and deliberately so: the index
+// is an external-content FTS5 table kept current by triggers, so a table without
+// its insert trigger is a table that silently stops matching anything written
+// after the trigger went missing. Reporting false there costs a slower LIKE scan;
+// reporting true costs correct-looking empty results.
+func (db *DB) detectFTS(ctx context.Context) bool {
+	if db.driver == "postgres" {
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM information_schema.columns
+			 WHERE table_name = 'http_records' AND column_name = 'search_vector'`).Scan(&n); err != nil {
+			return false
+		}
+		return n > 0
+	}
+
+	if db.ftsIndexesBody(ctx) {
+		// A legacy body-indexed table is migrated away by SeedDefaults; until then
+		// its column set does not match the queries in query.go.
+		return false
+	}
+	if !db.tableExists(ctx, "http_records_fts") {
+		return false
+	}
+	var triggers int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'http_records_fts_ai'").Scan(&triggers); err != nil {
+		return false
+	}
+	return triggers == 1
 }
 
 // ServerVersion returns the database server version string (e.g. the Postgres
@@ -445,6 +604,7 @@ func (db *DB) adaptDDL(ddl string) string {
 	ddl = strings.ReplaceAll(ddl, "has_response INTEGER NOT NULL DEFAULT 0", "has_response BOOLEAN NOT NULL DEFAULT FALSE")
 	ddl = strings.ReplaceAll(ddl, "is_authenticated INTEGER NOT NULL DEFAULT 0", "is_authenticated BOOLEAN NOT NULL DEFAULT FALSE")
 	ddl = strings.ReplaceAll(ddl, "enabled INTEGER NOT NULL DEFAULT 1", "enabled BOOLEAN NOT NULL DEFAULT TRUE")
+	ddl = strings.ReplaceAll(ddl, "complete INTEGER NOT NULL DEFAULT 0", "complete BOOLEAN NOT NULL DEFAULT FALSE")
 	return ddl
 }
 
@@ -589,6 +749,7 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 			response_words INTEGER DEFAULT 0,
 			has_response INTEGER NOT NULL DEFAULT 0,
 			response_title TEXT,
+			response_location TEXT,
 			parameters TEXT,
 			sent_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			received_at TIMESTAMP,
@@ -755,6 +916,44 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// One row per (run, endpoint): what this scan observed about a HOST, as
+		// opposed to about one exchange with it.
+		//
+		// Normalized rather than stored on http_records. The per-row objection
+		// that keeps the full DNS answer off the record still stands — a sweep
+		// writes several rows per host and a redirect chain alone is three, so
+		// columns would hold many identical copies of one answer — but it is an
+		// argument against DUPLICATING the answer, not against keeping it. Here
+		// it is written once per endpoint per run and referenced by hostname and
+		// port.
+		//
+		// Keyed by scan_uuid so a re-probe RECORDS a new observation instead of
+		// overwriting the old one: "what did the host resolve to when we scanned
+		// it in March" is a question a report has to be able to answer, and an
+		// upsert keyed on hostname alone would destroy the answer every time the
+		// host was scanned again. UNIQUE(scan_uuid, hostname, port) makes a
+		// repeat within ONE run idempotent, which is the only case where
+		// overwriting is correct.
+		//
+		// complete distinguishes a lookup that ran and found nothing from one
+		// that was cut short (a cancelled or budget-limited prefetch). Without
+		// it an empty answer is unreadable: "this host has no AAAA record" and
+		// "we never got to this host" are different facts about the scan.
+		`CREATE TABLE IF NOT EXISTS host_observations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_uuid TEXT NOT NULL,
+			scan_uuid TEXT,
+			hostname TEXT NOT NULL,
+			port INTEGER NOT NULL DEFAULT 0,
+			observed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			dns_a TEXT,
+			dns_aaaa TEXT,
+			dns_cname TEXT,
+			tls TEXT,
+			complete INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(scan_uuid, hostname, port)
+		)`,
 		`CREATE TABLE IF NOT EXISTS scan_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_uuid TEXT NOT NULL,
@@ -837,38 +1036,23 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 	schemaCurrent := db.schemaVersion(ctx) >= currentSchemaVersion
 
 	indexes := []string{
-		// -- http_records: project-aware composite indexes --
-		"CREATE INDEX IF NOT EXISTS idx_records_project_hostname ON http_records(project_uuid, hostname)",
-		"CREATE INDEX IF NOT EXISTS idx_records_project_created_uuid ON http_records(project_uuid, created_at, uuid)",
-		"CREATE INDEX IF NOT EXISTS idx_records_project_sent_at ON http_records(project_uuid, sent_at)",
-		"CREATE INDEX IF NOT EXISTS idx_records_project_host_method_status ON http_records(project_uuid, hostname, method, status_code)",
-		"CREATE INDEX IF NOT EXISTS idx_records_project_scheme_host_port ON http_records(project_uuid, scheme, hostname, port)",
-		"CREATE INDEX IF NOT EXISTS idx_records_project_risk_score ON http_records(project_uuid, risk_score)",
-		"CREATE INDEX IF NOT EXISTS idx_records_project_surface_score ON http_records(project_uuid, surface_score)",
-		// Covering index for findDuplicateRecord: the duplicate probe filters on
-		// (project_uuid, method, hostname, path, url[, request_hash]) and selects
-		// only uuid. Indexing all of those plus uuid lets the lookup resolve
-		// entirely from the index (no per-candidate table row fetch). The old
-		// 4-column version (…, path) is dropped above so this definition takes
-		// effect on existing databases.
-		"CREATE INDEX IF NOT EXISTS idx_records_dedup ON http_records(project_uuid, method, hostname, path, url, request_hash, uuid)",
-		"CREATE INDEX IF NOT EXISTS idx_records_request_hash ON http_records(request_hash)",
-		"CREATE INDEX IF NOT EXISTS idx_records_response_hash ON http_records(response_hash)",
-		// Supports DeduplicateDeparosByNormHash: narrows the full http_records scan to
-		// the (project, deparos) subset and surfaces response_norm_hash for the
-		// reflected-URL-robust dedup pass run after discovery.
-		"CREATE INDEX IF NOT EXISTS idx_records_norm_hash ON http_records(project_uuid, source, response_norm_hash)",
-
-		// -- http_records: scan_uuid index --
-		"CREATE INDEX IF NOT EXISTS idx_records_project_scan ON http_records(project_uuid, scan_uuid)",
 		"CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_project_record ON analysis_artifacts(project_uuid, http_record_uuid)",
 		"CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_scan ON analysis_artifacts(scan_uuid)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_artifacts_record_kind_hash ON analysis_artifacts(http_record_uuid, kind, sha256)",
 
-		// -- http_records: source-filtered cursor scan (scan-on-receive) --
-		// Supports WHERE source IN (...) AND created_at > cursor filters in
-		// DBInputSource.fetchNextBatch and Repository.CountRecordsAfterCursorBySource.
-		"CREATE INDEX IF NOT EXISTS idx_records_project_source_created ON http_records(project_uuid, source, created_at, uuid)",
+		// -- host_observations --
+		// The read is "what did this run see for this endpoint", issued once per
+		// emitted record, so (project, scan, hostname, port) is the exact lookup.
+		// The scan-less variant backs the fallback read for a caller that knows
+		// the project but not which run to trust, which takes the most recent.
+		// The only index this table needs beyond its UNIQUE(scan_uuid, hostname,
+		// port) constraint. It covers the project-wide read - newest observation
+		// for an endpoint, ORDER BY id DESC LIMIT 1 - with id in the index so the
+		// lookup never fetches a table row per observation. The scan-scoped read
+		// is served by the unique constraint's own index, so a third
+		// (project_uuid, scan_uuid, hostname, port) index bought nothing and cost
+		// a b-tree insertion on every observation written.
+		"CREATE INDEX IF NOT EXISTS idx_host_obs_project_host_id ON host_observations(project_uuid, hostname, port, id)",
 
 		// -- findings: project-aware composite indexes --
 		"CREATE INDEX IF NOT EXISTS idx_findings_project_severity ON findings(project_uuid, severity)",
@@ -996,6 +1180,11 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 			return fmt.Errorf("failed to create index: %w", err)
 		}
 	}
+	if !db.deferRecordIndexes {
+		if err := db.CreateRecordIndexes(ctx); err != nil {
+			return err
+		}
+	}
 
 	// One-time O(rows) backfills. Gated on schema version: each scans a whole table
 	// (or every finding's JSON), so re-running them on every open makes startup
@@ -1072,14 +1261,27 @@ func (db *DB) SeedDefaults(ctx context.Context) error {
 	// query.go (applyRawCorpusSearch); see also the legacy-table cleanup below
 	// which drops a previously body-indexed FTS so the slim definition applies.
 	if db.driver != "postgres" {
-		// Drop a legacy body-indexed FTS table (+ its triggers) from older
-		// databases so the metadata-only definition below takes effect. The FTS
-		// content is fully derivable from http_records, so dropping/recreating
-		// loses nothing.
-		db.execBestEffort(ctx, "drop legacy FTS insert trigger", "DROP TRIGGER IF EXISTS http_records_fts_ai")
-		db.execBestEffort(ctx, "drop legacy FTS delete trigger", "DROP TRIGGER IF EXISTS http_records_fts_ad")
-		db.execBestEffort(ctx, "drop legacy FTS update trigger", "DROP TRIGGER IF EXISTS http_records_fts_au")
-		if db.ftsIndexesBody(ctx) {
+		// Whether the index has to be (re)populated is decided BEFORE any DDL
+		// runs, because both answers stop being observable once it has.
+		//
+		// An external-content FTS5 table is created EMPTY: its rows come from the
+		// triggers below, which only fire on writes that happen afterwards. So a
+		// database that already holds traffic — one upgrading from no index, or
+		// from the legacy body-indexed one — gets a table that matches nothing
+		// ever written before this moment, while HasFTS reports the index as
+		// usable. Searches then return zero hits and no error. The one-time
+		// 'rebuild' below is what makes the index describe the table it indexes.
+		legacyBodyIndex := db.ftsIndexesBody(ctx)
+		ftsExisted := db.tableExists(ctx, "http_records_fts")
+
+		if legacyBodyIndex {
+			// Only drop the triggers when the table they write to is going away.
+			// Dropping them on every seed would leave a window — however short —
+			// in which concurrent inserts land in http_records and never reach
+			// the index, permanently invisible to search.
+			db.execBestEffort(ctx, "drop legacy FTS insert trigger", "DROP TRIGGER IF EXISTS http_records_fts_ai")
+			db.execBestEffort(ctx, "drop legacy FTS delete trigger", "DROP TRIGGER IF EXISTS http_records_fts_ad")
+			db.execBestEffort(ctx, "drop legacy FTS update trigger", "DROP TRIGGER IF EXISTS http_records_fts_au")
 			db.execBestEffort(ctx, "drop legacy body-indexed FTS table", "DROP TABLE IF EXISTS http_records_fts")
 		}
 
@@ -1094,8 +1296,8 @@ func (db *DB) SeedDefaults(ctx context.Context) error {
 			)`)
 		if ftsErr != nil {
 			zap.L().Debug("FTS5 not available, falling back to CAST/LIKE searches", zap.Error(ftsErr))
+			db.setFTS(false)
 		} else {
-			db.hasFTS = true
 			ftsTrigs := []string{
 				`CREATE TRIGGER IF NOT EXISTS http_records_fts_ai AFTER INSERT ON http_records BEGIN
 					INSERT INTO http_records_fts(rowid, url, path, hostname)
@@ -1105,12 +1307,39 @@ func (db *DB) SeedDefaults(ctx context.Context) error {
 					INSERT INTO http_records_fts(http_records_fts, rowid, url, path, hostname)
 					VALUES ('delete', old.rowid, old.url, old.path, old.hostname);
 				END`,
+				// The indexed columns are mutable — generic CRUD and the server's
+				// record update can rewrite url/path/hostname — and without this
+				// trigger the index kept the OLD tokens forever: searching the
+				// value now stored found nothing, searching the value that was
+				// replaced found the record. Delete-then-insert is the documented
+				// way to restate a row in an external-content table.
+				`CREATE TRIGGER IF NOT EXISTS http_records_fts_au
+				 AFTER UPDATE OF url, path, hostname ON http_records BEGIN
+					INSERT INTO http_records_fts(http_records_fts, rowid, url, path, hostname)
+					VALUES ('delete', old.rowid, old.url, old.path, old.hostname);
+					INSERT INTO http_records_fts(rowid, url, path, hostname)
+					VALUES (new.rowid, new.url, new.path, new.hostname);
+				END`,
 			}
+			triggersOK := true
 			for _, trig := range ftsTrigs {
 				if _, err := db.ExecContext(ctx, trig); err != nil {
 					zap.L().Debug("Failed to create FTS trigger", zap.Error(err))
+					triggersOK = false
 				}
 			}
+
+			// Rebuild only on the transition — never on an already-current
+			// database, where it would re-tokenize every row on every open and
+			// make startup scale with corpus size.
+			if triggersOK && (legacyBodyIndex || !ftsExisted) {
+				db.rebuildFTSIfPopulated(ctx)
+			}
+
+			// The capability is published last, and only if the triggers that
+			// keep it current are in place. Announcing a half-built index is how
+			// a search returns nothing and looks like an answer.
+			db.setFTS(triggersOK)
 		}
 	} else {
 		// PostgreSQL: use tsvector with GIN index for full-text search.
@@ -1133,7 +1362,7 @@ func (db *DB) SeedDefaults(ctx context.Context) error {
 		} else {
 			db.execBestEffort(ctx, "create http_records search index",
 				"CREATE INDEX IF NOT EXISTS idx_http_records_search ON http_records USING GIN (search_vector)")
-			db.hasFTS = true
+			db.setFTS(true)
 		}
 	}
 
@@ -1207,6 +1436,7 @@ var columnMigrations = []columnMigration{
 	{"http_records", "response_title", "TEXT"},
 	{"http_records", "response_words", "INTEGER DEFAULT 0"},
 	{"http_records", "response_norm_hash", "TEXT"},
+	{"http_records", "response_location", "TEXT"},
 	{"http_records", "source", "TEXT DEFAULT ''"},
 	{"http_records", "remarks", "TEXT"},
 	{"http_records", "risk_score", "INTEGER DEFAULT 0"},

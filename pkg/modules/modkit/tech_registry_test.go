@@ -68,3 +68,47 @@ func TestTechRegistry_ConcurrentWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestTechRegistry_Tags(t *testing.T) {
+	r := NewTechRegistry()
+	r.Mark("example.com", "nginx")
+	r.Mark("example.com", "Django")
+	r.Mark("other.example", "spring")
+
+	got := r.Tags("example.com")
+	want := []string{"django", "nginx"}
+	if len(got) != len(want) {
+		t.Fatalf("Tags() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Tags() = %v, want %v (sorted, so two identical scans do not diff)", got, want)
+		}
+	}
+
+	if got := r.Tags("unknown.example"); got != nil {
+		t.Errorf("Tags(unknown) = %v, want nil", got)
+	}
+	if got := r.Tags(""); got != nil {
+		t.Errorf("Tags(\"\") = %v, want nil", got)
+	}
+	var nilReg *TechRegistry
+	if got := nilReg.Tags("example.com"); got != nil {
+		t.Errorf("nil registry Tags() = %v, want nil", got)
+	}
+}
+
+// TestTechRegistry_TagsIsACopy verifies a caller cannot reach into the
+// registry's own set through the returned slice and corrupt another module's
+// gating data.
+func TestTechRegistry_TagsIsACopy(t *testing.T) {
+	r := NewTechRegistry()
+	r.Mark("example.com", "nginx")
+
+	tags := r.Tags("example.com")
+	tags[0] = "mutated"
+
+	if !r.Has("example.com", "nginx") {
+		t.Fatal("mutating the returned slice changed the registry")
+	}
+}

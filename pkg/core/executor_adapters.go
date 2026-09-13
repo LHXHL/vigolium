@@ -129,6 +129,16 @@ func (u *repoRemarksAnnotator) AppendRemarks(ctx context.Context, annotations ma
 	return u.repo.AppendRemarks(ctx, annotations)
 }
 
+// repoTechnologyAnnotator adapts *database.Repository to
+// modkit.TechnologyAnnotator.
+type repoTechnologyAnnotator struct {
+	repo *database.Repository
+}
+
+func (u *repoTechnologyAnnotator) SetRecordTechnology(ctx context.Context, technology map[string][]string) error {
+	return u.repo.SetRecordTechnology(ctx, technology)
+}
+
 // repoRecordResponseRewriter adapts *database.Repository to
 // modkit.RecordResponseRewriter (used by the passive js-beautify module to
 // overwrite a record's minified JS body with its beautified form).

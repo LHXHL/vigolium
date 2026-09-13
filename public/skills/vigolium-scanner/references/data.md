@@ -2,7 +2,7 @@
 
 > **Related:** [agent-loop.md](agent-loop.md) for the `-j` triage contracts · [flags.generated.md](flags.generated.md) for any flag
 
-Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `module`, `extensions` (alias `ext`), `js`, `config`, `scope`, `source`, `auth`, `project`, `storage`, `strategy`, `export`, and `version` commands.
+Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `module`, `extensions` (alias `ext`), `js`, `config`, `scope`, `source`, `auth`, `project`, `storage`, `strategy`, `export`, `version`, and `update` commands.
 
 ## Table of Contents
 
@@ -40,6 +40,7 @@ Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `modu
 - [storage rm](#storage-rm)
 - [strategy](#strategy)
 - [version](#version)
+- [update](#update)
 
 ---
 
@@ -250,9 +251,22 @@ vigolium log <uuid> -f
 
 Run a health check on the installation: verifies the config and database paths, external binaries (`claude`, `codex`, `nuclei`, `kingfisher`), directory permissions, and extracted preset data. Use this after `vigolium init` or when an `agent` backend refuses to launch.
 
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--fix` | bool | `false` | Auto-install / repair every failing check instead of only reporting it |
+| `--only` | []string | — | Restrict to specific components: `nuclei`, `chrome`, `bun`, `claude`, `agent-browser`, `pi`, `piolium`. With `--fix`, fixes only those - and the output narrows to just those checks |
+
 ```bash
-vigolium doctor
+vigolium doctor                          # report only
+vigolium doctor --json                   # the machine-readable form an agent should gate on
+vigolium doctor --fix                    # install/repair everything that failed
+vigolium doctor --fix --only nuclei,chrome
 ```
+
+`--fix` **downloads and installs software** (a browser, nuclei templates, an
+agent CLI). That is the right move on a fresh box and the wrong one on a
+locked-down runner, so scope it with `--only` rather than firing it blind at a
+single missing check.
 
 ---
 
@@ -311,6 +325,7 @@ List database records with filtering, sorting, and display options. The target t
 | `--scan-uuid` | string | — | Filter by scan session ID |
 | `--severity` | string | — | Filter findings by severity |
 | `--min-risk` | int | `0` | Show only records with risk score at or above this value |
+| `--min-surface` | int | `0` | Show only records with **attack-surface** score at or above this value (0-100, percent of the attack-surface signals present) |
 | `--remark` | string | — | Filter records containing this text in remarks |
 | `--module-type` | string | — | Filter findings by module type (active, passive, nuclei, agent, source-tools, oast, extension) |
 | `--finding-source` | string | — | Filter findings by source (dynamic-assessment, spa, agent, oast, source-tools, extension) |
@@ -338,6 +353,33 @@ Notes on this command:
 - `--uuid <uuid>` selects exact record(s), applied before pagination.
 - `-S`/`--stateless` turns project scoping off here as it does on `finding`/`traffic`, so a standalone export whose rows carry another `project_uuid` is readable.
 - The envelope's `project_scoped` says whether a project filter was actually applied; `project_uuid` is absent when it was not.
+
+**`--min-surface` vs `--min-risk` - two scores, two different questions.** They
+are deliberately separate columns, so filtering on the wrong one quietly gives
+you the wrong shortlist:
+
+| | `--min-surface` (`surface_score`) | `--min-risk` (`risk_score`) |
+|---|---|---|
+| Asks | "is this record *worth attacking*?" | "is this record *unusual*?" |
+| Computed from | the record itself - the percentage of the surface signals present: input carried or advertised, method, uploads, the host's tech stack, legacy handlers, a session, a login boundary, a non-standard port, response shape, and origin posture (dynamic, permissive CORS, leaked internals, API) | rank-within-batch percentile against whichever records were flushed alongside it |
+| Reproducible | **yes** - same record, same score, every scan | no - depends on the batch |
+| Reads back as | percent of surface signals present | a relative percentile |
+
+So `--min-surface 50` means "at least half the signals fired" - a stable
+shortlist for picking fuzz targets out of a big crawl. Treat the number as a
+percentage, not a signal count: the signal set grows between releases and the
+scale rescales with it, so a threshold ports across versions but "N of M
+signals" does not.
+
+A bare host sweep (`run probe`) only ever observes a GET with no session, so the
+signals that need a request *you* shaped - input carried, a mutating method, an
+upload, a session in hand - cannot fire there. Probe scores therefore top out
+well under 100; compare them against each other, not against scores from a full
+scan. Pair it with the matching sort:
+
+```bash
+vigolium db ls --min-surface 50 --sort surface_score -n 20
+```
 
 ### Examples
 
@@ -604,12 +646,25 @@ vigolium finding -j --agentic-scan 550e8400-e29b-41d4-a716-446655440000
 
 **Usage:** `vigolium finding load [file] [flags]`
 
-Import findings from a file or stdin.
+Import findings from a file or stdin. Formats are **auto-detected**: agent output
+(`{"findings":[…]}`, markdown-wrapped variants included), a single finding
+object, Nuclei-compatible ResultEvent JSONL, or raw database `Finding` JSON - so
+you can pipe another tool's output straight in without converting it first.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--finding-file` | string | — | Path to the findings file. Same thing as the positional argument, for callers that would rather name it |
+| `--scan-uuid` | string | — | Associate the imported findings with an existing scan UUID, so they join that run instead of floating unattached |
+
+**Input precedence:** positional argument → `--finding-file` → stdin. They do not
+merge - the first one present wins, so passing both a positional path and
+`--finding-file` silently ignores the flag.
 
 ### Examples
 
 ```bash
 vigolium finding load findings.jsonl
+vigolium finding load --finding-file findings.json --scan-uuid <uuid>
 cat findings.jsonl | vigolium finding load
 ```
 
@@ -635,7 +690,7 @@ probe if you need them. `surface_score`, `response_time_ms` and `parent_uuid`
 **are** stored and queryable.
 
 **`--source probe`** selects a sweep's records; `--sort surface_score` ranks them
-by attackable surface (0-100, 10 per signal). `parent_uuid` chains a followed
+by attackable surface (0-100, percent of the surface signals present). `parent_uuid` chains a followed
 redirect: `a.example` (301) → `www.a.example` (302) → the 200 that answered.
 
 ### Filter flags (persistent, inherited by replay)
@@ -850,6 +905,7 @@ Manage JavaScript extensions for custom scanning logic.
 |---------|---------|-------------|
 | `ext docs [function]` | `doc`, `api` | Show API reference |
 | `ext eval [code]` | `run`, `exec` | Evaluate JavaScript code with vigolium.* APIs available |
+| `ext example [filter]` | `examples`, `templates`, `tpl` | Print self-contained example extensions in every supported format - the authoring template |
 | `ext lint [file]` | — | Validate extension files for syntax errors and unknown API calls |
 | `ext ls [filter]` | `list` | List loaded extensions |
 | `ext preset [name]` | `presets`, `init` | Install example presets |
@@ -866,6 +922,30 @@ Manage JavaScript extensions for custom scanning logic.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--example` | bool | `false` | Show usage examples for each function |
+
+### ext example flags
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--list` | `-l` | bool | `false` | Print only the catalog index (keys + titles), no code |
+| `--lang` | — | string | — | Restrict to one language: `javascript` (`js`), `yaml`, or `json` |
+
+Every example is emitted inside a fenced code block **with its suggested
+filename**, so it can be copied straight into `~/.vigolium/extensions/`. The
+catalog covers JavaScript and YAML modules (active, passive, `pre_hook`,
+`post_hook`), the lightweight quick-check and snippet JSON forms, and the
+auth/session config bundle in both YAML and JSON.
+
+**Start with `-l`.** Bare `ext example` prints *every* example - a large read
+when you only need one shape. List first, then fetch by filter:
+
+```bash
+vigolium ext example -l                  # catalog index only
+vigolium ext example passive             # filter by key, language, type, or title
+vigolium ext example --lang yaml         # only the YAML forms
+```
+
+Writing against the API those examples use: [extensions.md](extensions.md).
 
 ### ext lint flags
 
@@ -1315,4 +1395,25 @@ vigolium st                 # alias for strategy
 
 **Usage:** `vigolium version`
 
-Show version, build time, commit, and author information. Supports `--json` for machine-readable output.
+Show version, build time, commit, and author information. Supports `--json` for machine-readable output, which also reports `db_schema_version` - check both at startup rather than discovering drift at parse time.
+
+---
+
+## update
+
+**Usage:** `vigolium update [flags]`
+
+Re-run the official install script to fetch the latest release binary, then refresh the local nuclei-templates checkout used by `known-issue-scan`. **Both happen by default.**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--skip-binary` | bool | `false` | Only refresh nuclei templates; do not reinstall the binary |
+| `--skip-templates` | bool | `false` | Only reinstall the binary; do not refresh nuclei templates |
+
+```bash
+vigolium update                      # binary + templates
+vigolium update --skip-binary        # templates only - the usual CI refresh
+vigolium update --skip-templates     # binary only
+```
+
+The binary half runs the same installer as `curl -fsSL https://vigolium.com/install.sh | bash`, so it **replaces the running executable** - not something to fire mid-engagement or inside a pinned container image. `--skip-binary` is the safe half: stale nuclei templates are the common reason `known-issue-scan` misses a recent CVE, and refreshing them changes nothing about the tool you are driving.

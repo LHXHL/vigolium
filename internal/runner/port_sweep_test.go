@@ -115,13 +115,19 @@ func TestCollectSweepHosts_Truncates(t *testing.T) {
 // URL parser here resolved a schemeless `example.com:8443` to port 443 (no
 // scheme prefix means url.Parse sees Scheme="example.com"), so the prefetch
 // probed a different service than the one the sweep reported.
+//
+// It also pins where the TLS flag comes from: the target's SCHEME, never its
+// port. Deriving it ("anything but 80 speaks TLS") was wrong in both
+// directions - see the last two targets.
 func TestDistinctSweepEndpointsSharesHostAndPort(t *testing.T) {
 	r := &Runner{options: &types.Options{Targets: []string{
 		"https://a.example",
 		"http://b.example",
-		"c.example:8443",       // schemeless with an explicit port
-		"https://a.example/x",  // same host:port as the first — deduped
-		"https://d.example:80", // explicit plaintext port on an https URL
+		"c.example:8443",         // schemeless with an explicit port -> https default
+		"https://a.example/x",    // same scheme+host:port as the first - deduped
+		"https://d.example:80",   // TLS on a plaintext-looking port
+		"http://e.example:8080",  // plaintext on a non-80 port
+		"https://e.example:8080", // same host:port, other scheme - a separate endpoint
 	}}}
 
 	got := r.distinctSweepEndpoints()
@@ -129,7 +135,15 @@ func TestDistinctSweepEndpointsSharesHostAndPort(t *testing.T) {
 		{host: "a.example", port: 443, https: true},
 		{host: "b.example", port: 80, https: false},
 		{host: "c.example", port: 8443, https: true},
-		{host: "d.example", port: 80, https: false},
+		// Port 80 does not make it plaintext: the operator wrote https://, and a
+		// TLS service on 80 is unusual but real. Classifying it plaintext skipped
+		// the handshake entirely and reported nothing about its certificate.
+		{host: "d.example", port: 80, https: true},
+		// The costlier half of the same bug: this used to be handed a TLS
+		// handshake against a plaintext port, which is the guaranteed timeout the
+		// prefetch stage skips plaintext ports to avoid.
+		{host: "e.example", port: 8080, https: false},
+		{host: "e.example", port: 8080, https: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d endpoints %+v, want %d", len(got), got, len(want))

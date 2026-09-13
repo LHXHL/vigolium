@@ -3,9 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
@@ -58,9 +56,8 @@ func TestRecordWriter_DedupAgainstPreexisting(t *testing.T) {
 	}
 
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		BatchSize:     100,
-		FlushInterval: 20 * time.Millisecond,
-		Shards:        1,
+		BatchSize: 100,
+		Shards:    1,
 	})
 
 	// Write the same request (distinct object, identical bytes) through the writer.
@@ -78,50 +75,63 @@ func TestRecordWriter_DedupAgainstPreexisting(t *testing.T) {
 	}
 }
 
-// TestRecordWriter_WithinBatchDedup verifies that two identical new records that
-// land in the same flush batch collapse to a single insert and share one UUID
-// (rather than racing to insert two rows). The dedup cache is disabled so both
-// writes reach the flush path.
+// TestRecordWriter_WithinBatchDedup verifies that two identical new records in
+// one flush batch collapse to a single insert and share one UUID, rather than
+// racing to insert two rows.
+//
+// flush() is driven directly rather than through two concurrent Write() calls.
+// That older shape depended on both writes landing inside one flush-timer
+// window, and the flush loop no longer waits out a timer before committing — so
+// the two records would usually reach the database in separate batches and be
+// deduplicated by the SQL lookup instead. The assertions still passed, which is
+// the problem: the test would have gone on reporting that within-batch
+// collapsing worked without ever exercising it.
 func TestRecordWriter_WithinBatchDedup(t *testing.T) {
 	db := newTestDB(t)
 	repo := NewRepository(db)
 	ctx := context.Background()
 
 	writer := NewRecordWriter(repo, RecordWriterConfig{
-		BatchSize:      100,                   // never fills, so the ticker flushes
-		FlushInterval:  60 * time.Millisecond, // both writes land in one ticker batch
 		Shards:         1,
-		DedupCacheSize: -1, // disable the cache so both writes hit the batch
+		DedupCacheSize: -1, // disable the cache so nothing resolves before the batch
 	})
+	defer writer.Close()
 
-	var (
-		mu    sync.Mutex
-		uuids []string
-		wg    sync.WaitGroup
-	)
-	// Launch both writes together so they enqueue into the same flush window; the
-	// ticker then coalesces them into one batch while the writer is still open
-	// (each Write returns normally before Close()).
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			u, err := writer.Write(ctx, makeTestRequest(42), "dup", "")
-			if err != nil {
-				t.Errorf("writer.Write: %v", err)
-				return
+	results := make([]chan WriteResult, 2)
+	batch := make([]writeRequest, 0, 2)
+	for i := range results {
+		record := &HTTPRecord{}
+		if err := record.PrepareIdentity(makeTestRequest(42)); err != nil {
+			t.Fatalf("PrepareIdentity: %v", err)
+		}
+		record.Source = "dup"
+		record.ProjectUUID = defaultProjectUUID("")
+		if err := record.EnrichFromHttpRequestResponse(makeTestRequest(42)); err != nil {
+			t.Fatalf("EnrichFromHttpRequestResponse: %v", err)
+		}
+		results[i] = make(chan WriteResult, 1)
+		batch = append(batch, writeRequest{
+			record:   record,
+			result:   results[i],
+			dedupKey: recordDedupKey(record),
+		})
+	}
+
+	writer.flush(ctx, batch)
+
+	uuids := make([]string, len(results))
+	for i, ch := range results {
+		select {
+		case res := <-ch:
+			if res.Err != nil {
+				t.Fatalf("write %d: %v", i, res.Err)
 			}
-			mu.Lock()
-			uuids = append(uuids, u)
-			mu.Unlock()
-		}()
+			uuids[i] = res.UUID
+		default:
+			t.Fatalf("write %d never received a result", i)
+		}
 	}
-	wg.Wait()
-	writer.Close()
 
-	if len(uuids) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(uuids))
-	}
 	if uuids[0] != uuids[1] {
 		t.Errorf("within-batch duplicates got distinct UUIDs %q vs %q", uuids[0], uuids[1])
 	}

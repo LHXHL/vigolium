@@ -33,6 +33,12 @@ func (r *Repository) UpdateRecordResponse(ctx context.Context, uuid string, upda
 		Set("raw_response = ?", update.RawResponse).
 		Set("response_hash = ?", update.ResponseHash).
 		Set("response_time_ms = ?", update.ResponseTimeMs).
+		// Derived from the bytes being written rather than taken from the caller,
+		// so it cannot describe the response this row used to hold: a replayed
+		// redirect that now points somewhere else must not keep rendering the old
+		// destination. Clearing it is as important as setting it — a replay that
+		// turns a 302 into a 200 has no location.
+		Set("response_location = ?", redirectLocationFromRaw(update.StatusCode, update.RawResponse)).
 		Set("has_response = ?", true).
 		Set("received_at = ?", time.Now()).
 		Where("uuid = ?", uuid).
@@ -84,6 +90,7 @@ func (r *Repository) BackfillRecordResponse(ctx context.Context, uuid string, rr
 		Set("response_norm_hash = ?", rec.ResponseNormHash).
 		Set("response_words = ?", rec.ResponseWords).
 		Set("response_title = ?", rec.ResponseTitle).
+		Set("response_location = ?", rec.ResponseLocation).
 		Set("has_response = ?", true).
 		Set("received_at = ?", time.Now()).
 		Where("uuid = ? AND has_response = ?", uuid, false).

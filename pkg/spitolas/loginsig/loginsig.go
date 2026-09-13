@@ -37,6 +37,9 @@ var loginPathMarkers = []string{
 	"/oauth2/authorize", "/oauth/authorize", "/connect/authorize",
 	"/adfs/", "/saml", "/signin", "/login", "/openid", "/sso",
 	"response_type=code", "response_type=token",
+	// Keycloak realm login, and the Azure App Service EasyAuth endpoint - both
+	// front an app with their own wall the same way the markers above do.
+	"/auth/realms", "/.auth/login",
 	// Cloudflare Access portal endpoints (login / verify-code / callback).
 	"/cdn-cgi/access/",
 }

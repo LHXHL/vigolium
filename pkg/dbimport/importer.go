@@ -89,6 +89,12 @@ type Options struct {
 	// SQLite→SQLite merge of http_records; see database.MergeOptions. Ignored by
 	// the JSONL/audit/archive importers.
 	SkipRecordBodies bool
+
+	// SkipFindings omits findings, the finding_records junction, and
+	// oast_interactions from a SQLite→SQLite merge; see database.MergeOptions.
+	// Ignored by the JSONL/audit/archive importers, whose whole payload is
+	// findings.
+	SkipFindings bool
 }
 
 // ImportPath dispatches based on filesystem inspection of path: directory →
@@ -144,6 +150,7 @@ func ImportSQLite(ctx context.Context, repo *database.Repository, srcPath, proje
 		database.MergeOptions{
 			SkipHTTPRecords:  opts.SkipHTTPRecords,
 			SkipRecordBodies: opts.SkipRecordBodies,
+			SkipFindings:     opts.SkipFindings,
 		})
 	if err != nil {
 		return nil, fmt.Errorf("merge SQLite database %s: %w", srcPath, err)
