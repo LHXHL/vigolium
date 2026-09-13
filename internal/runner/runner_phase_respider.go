@@ -211,15 +211,15 @@ func (r *Runner) crawlReSpiderPerSeed(ctx context.Context, chosen []respiderSeed
 		rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
 		seedCtx, cancel := context.WithTimeout(ctx, perSeed)
 		// Watchdog bounds RunSpider + rw.Close so a wedged browser can't hang the phase.
-		result, rerr := runSpiderWatchdog(seedCtx, cfg, rw, perSeed, s.url)
+		oc := runSpiderWatchdog(seedCtx, cfg, rw, perSeed, s.url)
 		cancel()
-		if rerr != nil {
-			zap.L().Warn("Re-spider: crawl failed", zap.String("seed", s.url), zap.Error(rerr))
+		if oc.err != nil {
+			zap.L().Warn("Re-spider: crawl failed", zap.String("seed", s.url), zap.Error(oc.err))
 			continue
 		}
 		crawled++
-		totalRecords += result.RecordsSaved
-		if r.applyReSpiderSSO(result, s.hostKey, ssoSkip) {
+		totalRecords += oc.res.RecordsSaved
+		if r.applyReSpiderSSO(oc.res, s.hostKey, ssoSkip) {
 			ssoHit++
 		}
 	}
@@ -263,14 +263,23 @@ func (r *Runner) crawlReSpiderHostGroup(ctx context.Context, group []respiderSee
 			break
 		}
 		seedCtx, cancel := context.WithTimeout(ctx, perSeed)
-		result, rerr := runReSpiderSessionCrawl(seedCtx, sess, s.url, perSeed)
+		oc := runReSpiderSessionCrawl(seedCtx, sess, s.url, perSeed)
 		cancel()
-		if rerr != nil {
-			zap.L().Warn("Re-spider: session crawl failed; abandoning host session",
-				zap.String("seed", s.url), zap.Error(rerr))
-			abandoned = true
+		if oc.err != nil {
+			// Only a wedged browser is abandoned; see runWithWatchdog. An ordinary
+			// crawl failure leaves a healthy session whose writer still holds this
+			// host's records, so it gets closed (and flushed) like any other.
+			abandoned = oc.wedged
+			if abandoned {
+				zap.L().Warn("Re-spider: browser wedged; abandoning host session (leaks until exit)",
+					zap.String("seed", s.url), zap.Error(oc.err))
+			} else {
+				zap.L().Warn("Re-spider: session crawl failed; closing host session",
+					zap.String("seed", s.url), zap.Error(oc.err))
+			}
 			break
 		}
+		result := oc.res
 		res.crawled++
 		res.records += result.RecordsSaved
 		if result.OffHostRedirect && result.LandingIsLogin {

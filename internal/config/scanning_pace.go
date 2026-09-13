@@ -32,6 +32,7 @@ type ScanningPaceConfig struct {
 	MaxPerHostCeiling int `yaml:"max_per_host_ceiling"`
 
 	Discovery         PhasePace `yaml:"discovery"`
+	Probe             PhasePace `yaml:"probe"`
 	Spidering         PhasePace `yaml:"spidering"`
 	KnownIssueScan    PhasePace `yaml:"known_issue_scan"`
 	ExternalHarvester PhasePace `yaml:"external_harvester"`
@@ -123,6 +124,8 @@ func (c *ScanningPaceConfig) Section(phase string) *PhasePace {
 	switch phase {
 	case "discovery":
 		return &c.Discovery
+	case "probe":
+		return &c.Probe
 	case "spidering":
 		return &c.Spidering
 	case "known-issue-scan":
@@ -136,14 +139,23 @@ func (c *ScanningPaceConfig) Section(phase string) *PhasePace {
 	}
 }
 
-// PhaseSectionNames lists the canonical phase ids Section accepts, sorted. It
-// derives from Section itself, so a caller's list of paceable phases cannot
-// drift from the sections that actually exist.
+// paceSectionNames are the canonical phase ids Section resolves. Only canonical
+// spellings belong here: `external_harvester` is accepted by Section as a
+// legacy YAML key, but advertising it would offer operators a second spelling
+// for a phase that already has one.
+//
+// This list and Section's switch are the one coupling in this file, and
+// TestPhaseSectionNamesMatchSection holds them together — the comment here used
+// to claim the list "derives from Section itself", which it never did, and a
+// claim like that is exactly how a phase gets added to one and not the other.
+var paceSectionNames = []string{
+	"discovery", "probe", "spidering", "known-issue-scan",
+	"external-harvest", "dynamic-assessment",
+}
+
+// PhaseSectionNames lists the canonical phase ids Section accepts, sorted.
 func PhaseSectionNames() []string {
-	names := []string{
-		"discovery", "spidering", "known-issue-scan",
-		"external-harvest", "dynamic-assessment",
-	}
+	names := append([]string(nil), paceSectionNames...)
 	sort.Strings(names)
 	return names
 }

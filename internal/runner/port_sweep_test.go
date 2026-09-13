@@ -109,3 +109,34 @@ func TestCollectSweepHosts_Truncates(t *testing.T) {
 		t.Errorf("truncated = %d, want 10", truncated)
 	}
 }
+
+// TestDistinctSweepEndpointsSharesHostAndPort pins the reuse: the probe
+// prefetch and the port sweep must read a target line the same way. A second
+// URL parser here resolved a schemeless `example.com:8443` to port 443 (no
+// scheme prefix means url.Parse sees Scheme="example.com"), so the prefetch
+// probed a different service than the one the sweep reported.
+func TestDistinctSweepEndpointsSharesHostAndPort(t *testing.T) {
+	r := &Runner{options: &types.Options{Targets: []string{
+		"https://a.example",
+		"http://b.example",
+		"c.example:8443",       // schemeless with an explicit port
+		"https://a.example/x",  // same host:port as the first — deduped
+		"https://d.example:80", // explicit plaintext port on an https URL
+	}}}
+
+	got := r.distinctSweepEndpoints()
+	want := []sweepEndpoint{
+		{host: "a.example", port: 443, https: true},
+		{host: "b.example", port: 80, https: false},
+		{host: "c.example", port: 8443, https: true},
+		{host: "d.example", port: 80, https: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d endpoints %+v, want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("endpoint %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

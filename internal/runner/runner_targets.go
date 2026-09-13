@@ -225,6 +225,16 @@ func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 
 	deep := strings.EqualFold(r.options.Intensity, "deep")
 	fuzzOn, _ := r.discoveryFuzzingState()
+	// A resolved fuzz path IS the switch as far as deparos is concerned
+	// (buildDeparosConfig copies it to cfg.FuzzWordlistPath, and the engine
+	// creates its FuzzTask whenever HasFuzzWordlist()). So fuzzing-off has to
+	// clear the path, not merely decline to materialize the embedded default —
+	// otherwise a discovery.wordlists.fuzz_wordlist_path in the config file
+	// reaches the engine anyway and --no-discovery-fuzz brute-forces the host
+	// while the phase header reports fuzzing as disabled.
+	if !fuzzOn {
+		w.fuzz = ""
+	}
 	needShortFile := w.shortFile == ""
 	needShortDir := w.shortDir == ""
 	needLongFile := w.longFile == "" && deep
@@ -271,6 +281,14 @@ func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 // which sets Options.OnlyPhase). It stays OFF on balanced/lite full scans.
 func (r *Runner) discoveryFuzzingState() (bool, string) {
 	switch {
+	// --no-discovery-fuzz is checked FIRST and wins outright. Every other arm
+	// here is a heuristic switching fuzzing ON; this one is the operator
+	// switching it off, and a heuristic that can overrule an explicit off is a
+	// knob that does nothing on exactly the runs where it was typed on purpose.
+	// It is the reason resolution lives in one function rather than at each of
+	// the four sites that consume the answer.
+	case r.options.NoDiscoveryFuzz:
+		return false, "via --no-discovery-fuzz"
 	case r.options.FuzzWordlistPath != "":
 		return true, "via --discovery-wordlist"
 	case strings.EqualFold(r.options.Intensity, "deep"):
@@ -294,8 +312,17 @@ const lowYieldSpideringRecords = 10
 // already on, deparos discovery is active with CLI targets, spidering actually
 // ran, and spidering came up low-yield — either it bounced off-host to an
 // SSO/login wall or returned fewer than lowYieldSpideringRecords records. Gated
-// by discovery.auto_fuzz_low_yield (nil/absent = on).
+// by discovery.auto_fuzz_low_yield (nil/absent = on), and refused outright under
+// --no-discovery-fuzz.
 func (r *Runner) shouldAutoFuzzDiscovery() bool {
+	// Checked here as well as in discoveryFuzzingState, not only there. The
+	// "already on" guard below reads the state as OFF under --no-discovery-fuzz
+	// and would therefore fall straight through to the auto-enable — setting
+	// r.autoFuzzDiscovery, which drives the "Fuzzing auto-enabled" banner and the
+	// SSO-host scope filtering even though no fuzzing will happen.
+	if r.options.NoDiscoveryFuzz {
+		return false
+	}
 	if r.settings != nil && r.settings.Discovery.AutoFuzzLowYield != nil && !*r.settings.Discovery.AutoFuzzLowYield {
 		return false
 	}

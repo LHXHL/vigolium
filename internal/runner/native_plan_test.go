@@ -3,6 +3,7 @@ package runner
 import (
 	"testing"
 
+	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/types"
 )
 
@@ -24,11 +25,82 @@ func TestNormalizeNativePhase_Aliases(t *testing.T) {
 		{"kis", "known-issue-scan"},
 		{"known-issues", "known-issue-scan"},
 		{"known-issue-scan", "known-issue-scan"},
+		// Symmetry with "discover": the spidering phase used to have no short
+		// spelling, so `run discover` worked and `run spider` was an error.
+		{"spider", "spidering"},
+		{"spidering", "spidering"},
+		{"crawl", "spidering"},
+		{"crawling", "spidering"},
+		{"discovering", "discovery"},
+		{"harvest", "external-harvest"},
+		{"harvesting", "external-harvest"},
+		{"external_harvester", "external-harvest"},
+		{"ingest", "ingestion"},
+		{"assess", "dynamic-assessment"},
+		{"extensions", "extension"},
+		// Case and surrounding whitespace are normalized away.
+		{"  Spider ", "spidering"},
+		{"DISCOVER", "discovery"},
 		{"unknown", "unknown"},
 	}
 	for _, tt := range tests {
 		if got := NormalizeNativePhase(tt.input); got != tt.want {
 			t.Errorf("NormalizeNativePhase(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestPhaseVocabularyIsSelfConsistent locks the property the single table
+// exists for: every spelling the vocabulary advertises resolves, and everything
+// that resolves is advertised. A hand-maintained valid-list is exactly what
+// drifted before — `spider` normalized nowhere while the help text implied a
+// full set of aliases.
+func TestPhaseVocabularyIsSelfConsistent(t *testing.T) {
+	for _, p := range nativePhaseVocabulary {
+		if got := NormalizeNativePhase(p.Canonical); got != p.Canonical {
+			t.Errorf("canonical %q normalized to %q", p.Canonical, got)
+		}
+		if !IsNativePhaseSpelling(p.Canonical) {
+			t.Errorf("canonical %q not recognized as a phase spelling", p.Canonical)
+		}
+		for _, a := range p.Aliases {
+			if got := NormalizeNativePhase(a); got != p.Canonical {
+				t.Errorf("alias %q normalized to %q, want %q", a, got, p.Canonical)
+			}
+			// An alias must be accepted wherever its canonical is, so --only
+			// never rejects a spelling the help text lists.
+			if _, _, err := parseOnlyPhases(a); err != nil {
+				t.Errorf("parseOnlyPhases(%q) rejected an advertised alias: %v", a, err)
+			}
+		}
+	}
+
+	// No spelling may be claimed by two phases: the index would silently keep
+	// whichever entry was built last.
+	seen := make(map[string]string)
+	for _, p := range nativePhaseVocabulary {
+		for _, s := range append([]string{p.Canonical}, p.Aliases...) {
+			if owner, dup := seen[s]; dup {
+				t.Errorf("spelling %q claimed by both %q and %q", s, owner, p.Canonical)
+			}
+			seen[s] = p.Canonical
+		}
+	}
+}
+
+// TestSkippableVocabularyMatchesSkipDispatch keeps the Skippable column honest:
+// it drives the --skip help text and error message, while the actual behaviour
+// lives in ApplyNativePhaseSelection's switch. A phase listed as skippable that
+// the switch rejects would advertise a flag value that always errors.
+func TestSkippableVocabularyMatchesSkipDispatch(t *testing.T) {
+	for _, p := range nativePhaseVocabulary {
+		opts := &types.Options{SkipPhases: []string{p.Canonical}}
+		err := ApplyNativePhaseSelection(opts, nil)
+		if p.Skippable && err != nil {
+			t.Errorf("--skip %s is advertised as skippable but was rejected: %v", p.Canonical, err)
+		}
+		if !p.Skippable && err == nil {
+			t.Errorf("--skip %s is not advertised as skippable but was accepted", p.Canonical)
 		}
 	}
 }
@@ -217,4 +289,88 @@ func TestApplyNativePhaseSelection_OnlyPhaseErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProbeOnlyDefaults pins the defaults a standalone host sweep gives itself,
+// and that each one yields to an operator who asked for something else. They
+// live in ApplyNativePhaseSelection rather than the CLI so that the REST API and
+// the programmatic launcher — which call the same function — run the probe phase
+// identically; a regression here is a phase that behaves differently depending
+// on how it was started.
+func TestProbeOnlyDefaults(t *testing.T) {
+	probeOnly := func() *types.Options {
+		return &types.Options{OnlyPhase: "probe"}
+	}
+
+	t.Run("applied for a probe-only run", func(t *testing.T) {
+		opts := probeOnly()
+		if err := ApplyNativePhaseSelection(opts, nil); err != nil {
+			t.Fatalf("ApplyNativePhaseSelection: %v", err)
+		}
+		if !opts.ProbeEnabled {
+			t.Fatal("ProbeEnabled = false")
+		}
+		if !opts.RecordRedirectChain {
+			t.Error("RecordRedirectChain = false; a sweep is mostly redirects and must record the hops")
+		}
+		if opts.RedirectMode != http.RedirectModeSameApex {
+			t.Errorf("RedirectMode = %q, want same-apex", opts.RedirectMode)
+		}
+		if opts.TransportProfile != http.TransportProfileSweep {
+			t.Errorf("TransportProfile = %q, want sweep", opts.TransportProfile)
+		}
+		if !opts.NoWafPacing {
+			t.Error("NoWafPacing = false; one request per host has no burst for the pre-arm to pre-empt")
+		}
+	})
+
+	t.Run("an explicit choice always wins", func(t *testing.T) {
+		opts := probeOnly()
+		opts.RedirectMode = http.RedirectModeOff
+		opts.TransportProfile = "custom"
+		opts.RecordRedirectChainSet = true // operator typed --record-redirect-chain=false
+		opts.NoWafPacingSet = true         // operator typed --no-waf-pacing=false
+		if err := ApplyNativePhaseSelection(opts, nil); err != nil {
+			t.Fatalf("ApplyNativePhaseSelection: %v", err)
+		}
+		if opts.RedirectMode != http.RedirectModeOff {
+			t.Errorf("RedirectMode = %q, want the operator's off", opts.RedirectMode)
+		}
+		if opts.TransportProfile != "custom" {
+			t.Errorf("TransportProfile = %q, want the operator's custom", opts.TransportProfile)
+		}
+		if opts.RecordRedirectChain {
+			t.Error("RecordRedirectChain was defaulted on over an explicit false")
+		}
+		if opts.NoWafPacing {
+			t.Error("NoWafPacing was defaulted on over an explicit false")
+		}
+	})
+
+	// The defaults are for a STANDALONE sweep. Riding along inside a larger scan
+	// they would silently retune the transport and redirect policy for every
+	// other phase in that scan.
+	t.Run("not applied when the probe rides along in a wider scan", func(t *testing.T) {
+		opts := &types.Options{OnlyPhase: "probe,discovery"}
+		if err := ApplyNativePhaseSelection(opts, nil); err != nil {
+			t.Fatalf("ApplyNativePhaseSelection: %v", err)
+		}
+		if !opts.ProbeEnabled {
+			t.Fatal("ProbeEnabled = false")
+		}
+		if opts.RecordRedirectChain || opts.RedirectMode != "" || opts.TransportProfile != "" || opts.NoWafPacing {
+			t.Errorf("probe-only defaults leaked into a multi-phase scan: chain=%v mode=%q profile=%q nopacing=%v",
+				opts.RecordRedirectChain, opts.RedirectMode, opts.TransportProfile, opts.NoWafPacing)
+		}
+	})
+
+	t.Run("not applied to a scan that never selected the probe", func(t *testing.T) {
+		opts := &types.Options{OnlyPhase: "discovery"}
+		if err := ApplyNativePhaseSelection(opts, nil); err != nil {
+			t.Fatalf("ApplyNativePhaseSelection: %v", err)
+		}
+		if opts.NoWafPacing || opts.TransportProfile != "" {
+			t.Error("probe defaults applied to a non-probe run")
+		}
+	})
 }

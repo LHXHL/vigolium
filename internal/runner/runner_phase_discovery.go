@@ -230,7 +230,10 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 	r.printTargetDetail(r.formatTargetCounts(ctx, len(r.options.Targets)))
 	r.printVerboseTargets(discoveryTargets)
 
-	if fuzzEnabled, _ := r.discoveryFuzzingState(); !fuzzEnabled && !r.options.Silent {
+	// The "turn fuzzing on" tip is for a run that simply didn't ask for it. Under
+	// --no-discovery-fuzz the operator asked for the opposite, and a tip telling
+	// them how to enable what they just disabled reads as the flag not working.
+	if fuzzEnabled, _ := r.discoveryFuzzingState(); !fuzzEnabled && !r.options.NoDiscoveryFuzz && !r.options.Silent {
 		fmt.Fprintf(os.Stderr, "  %s %s %s\n",
 			terminal.TipPrefix(), terminal.Gray("enable on-the-fly directory fuzzing with a custom wordlist via"), terminal.HiCyan("--discovery-wordlist <path>"))
 	}
@@ -266,7 +269,7 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 		// the work item (deparos_discovery.go saveAndEmit); reuse it instead of
 		// issuing a second identical request per URL. Request-only items (spec-
 		// endpoint stubs, which carry no response) still fall through to a single
-		// baseline fetch in fetchBaselineResponse, so routes aren't left empty.
+		// baseline fetch in fetchBaseline, so routes aren't left empty.
 		SkipBaseline: true,
 		OnResult: func(result *output.ResultEvent) {
 			if err := r.output.Write(result); err != nil {
@@ -524,6 +527,12 @@ func (r *Runner) seedCLITargets(ctx context.Context, infra *phaseInfra) error {
 // max-duration; the overall phase deadline is max-duration × min(targets, cap),
 // so a small target list is unaffected while a large merged list (CLI targets +
 // many in-scope DB hosts) can't blow the phase out to len(targets) × max-duration.
+//
+// Exported because it is the number the CLI's fan-out hint quotes: the phase
+// crawls hosts one at a time, so on a target list larger than this the cap — not
+// the pace flags — is what decides how much of the list is reached, and the
+// operator has to be told the figure to act on it. One constant, so the hint and
+// the ceiling it describes cannot drift apart.
 const spideringPhaseBudgetCap = 8
 
 // spideringPhaseCeiling returns the overall wall-clock budget for the spidering
@@ -546,91 +555,104 @@ func spideringPhaseCeiling(maxDuration time.Duration, numTargets int) time.Durat
 const spideringTeardownGrace = 90 * time.Second
 
 // runWithWatchdog runs work in a goroutine and returns its result, or — if work
-// does not finish within timeout — calls onTimeout and returns that instead. The
-// work goroutine is abandoned on timeout (it leaks until it finishes on its own,
-// if ever), which is the whole point: a wedged operation can never block the
-// caller past timeout. The done channel is buffered so a late-finishing
-// abandoned worker never blocks on send. Generic + side-effect-free so it can be
-// unit-tested without a browser.
-func runWithWatchdog[T any](timeout time.Duration, work func() T, onTimeout func() T) T {
+// does not finish within timeout — calls onTimeout and returns that instead,
+// along with whether the watchdog fired. The work goroutine is abandoned on
+// timeout (it leaks until it finishes on its own, if ever), which is the whole
+// point: a wedged operation can never block the caller past timeout. The done
+// channel is buffered so a late-finishing abandoned worker never blocks on send.
+// Generic + side-effect-free so it can be unit-tested without a browser.
+//
+// The wedged bool is returned rather than encoded into the result because it is
+// the one fact only this function knows, and callers need it to decide whether a
+// browser session can still be closed: a wedge must be abandoned (closing an
+// unresponsive browser hangs the very phase the watchdog protects), while an
+// ordinary crawl failure leaves a healthy browser AND a record writer still
+// holding that host's captured traffic. Conflating them leaked a Chrome process
+// per host group and discarded records earlier seeds had already produced.
+// Returning it keeps the distinction impossible to lose in transit.
+func runWithWatchdog[T any](timeout time.Duration, work func() T, onTimeout func() T) (result T, wedged bool) {
 	done := make(chan T, 1)
 	go func() { done <- work() }()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case v := <-done:
-		return v
+		return v, false
 	case <-timer.C:
-		return onTimeout()
+		return onTimeout(), true
 	}
+}
+
+// crawlOutcome is what both watchdog wrappers return: the crawl's own result and
+// error, plus whether the watchdog fired. wedged is NOT derivable from err —
+// both a wedge and an ordinary navigation failure produce a non-nil error, and
+// only the first means the browser cannot be safely closed.
+type crawlOutcome struct {
+	res    *spitolas.SpiderResult
+	err    error
+	wedged bool
+}
+
+// dumpWedgedGoroutines logs the watchdog's diagnosis: which operation hung, and
+// a full goroutine dump so the stuck call site is identifiable after the fact.
+func dumpWedgedGoroutines(what, subject string, budget time.Duration) {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	zap.L().Error(what+" watchdog fired — did not return within budget+grace; abandoning the run (browser/goroutines leak until exit)",
+		zap.String("subject", subject),
+		zap.Duration("budget", budget),
+		zap.Duration("grace", spideringTeardownGrace))
+	zap.L().Warn(what + " watchdog goroutine dump follows:\n" + string(buf[:n]))
 }
 
 // runSpiderWatchdog runs spitolas.RunSpider (and closes rw) under a hard
 // watchdog: it always returns within budget + spideringTeardownGrace. If the run
 // wedges past that, it logs a full goroutine dump (so the stuck call site is
-// diagnosable) and returns an error rather than hanging the scan; the stuck run
-// and its browser are abandoned and leak until the process exits. rw is closed
-// inside the worker so a stuck close is abandoned with it, not awaited.
-func runSpiderWatchdog(ctx context.Context, cfg spitolas.SpiderConfig, rw *database.RecordWriter, budget time.Duration, target string) (*spitolas.SpiderResult, error) {
-	type outcome struct {
-		res *spitolas.SpiderResult
-		err error
-	}
-	oc := runWithWatchdog(
+// diagnosable) and returns wedged=true rather than hanging the scan; the stuck
+// run and its browser are abandoned and leak until the process exits. rw is
+// closed inside the worker so a stuck close is abandoned with it, not awaited.
+func runSpiderWatchdog(ctx context.Context, cfg spitolas.SpiderConfig, rw *database.RecordWriter, budget time.Duration, target string) crawlOutcome {
+	oc, wedged := runWithWatchdog(
 		budget+spideringTeardownGrace,
-		func() outcome {
+		func() crawlOutcome {
 			res, err := spitolas.RunSpider(ctx, cfg, rw)
 			rw.Close()
-			return outcome{res, err}
+			return crawlOutcome{res: res, err: err}
 		},
-		func() outcome {
-			buf := make([]byte, 1<<20)
-			n := runtime.Stack(buf, true)
-			zap.L().Error("Spidering watchdog fired — RunSpider did not return within budget+grace; abandoning the run (browser/goroutines leak until exit)",
-				zap.String("target", target),
-				zap.Duration("budget", budget),
-				zap.Duration("grace", spideringTeardownGrace))
-			zap.L().Warn("Spidering watchdog goroutine dump follows:\n" + string(buf[:n]))
-			return outcome{nil, fmt.Errorf("spidering watchdog timeout for %s (exceeded %s)", target, budget+spideringTeardownGrace)}
+		func() crawlOutcome {
+			dumpWedgedGoroutines("Spidering", target, budget)
+			return crawlOutcome{err: fmt.Errorf("spidering timed out for %s (exceeded %s)", target, budget+spideringTeardownGrace)}
 		},
 	)
-	return oc.res, oc.err
+	oc.wedged = wedged
+	return oc
 }
 
 // runReSpiderSessionCrawl runs one seed on a shared SpiderSession under the same
-// hang-proofing as runSpiderWatchdog: if Crawl does not return within budget+grace
-// the run is abandoned (the shared browser/goroutines leak until exit) and an
-// error is returned so the caller abandons the whole host session.
-func runReSpiderSessionCrawl(ctx context.Context, sess *spitolas.SpiderSession, seedURL string, budget time.Duration) (*spitolas.SpiderResult, error) {
-	type outcome struct {
-		res *spitolas.SpiderResult
-		err error
-	}
-	oc := runWithWatchdog(
+// hang-proofing as runSpiderWatchdog: if Crawl does not return within
+// budget+grace the run is abandoned (the shared browser/goroutines leak until
+// exit) and wedged=true tells the caller not to close the host session.
+func runReSpiderSessionCrawl(ctx context.Context, sess *spitolas.SpiderSession, seedURL string, budget time.Duration) crawlOutcome {
+	oc, wedged := runWithWatchdog(
 		budget+spideringTeardownGrace,
-		func() outcome {
+		func() crawlOutcome {
 			res, err := sess.Crawl(ctx, seedURL)
-			return outcome{res, err}
+			return crawlOutcome{res: res, err: err}
 		},
-		func() outcome {
-			buf := make([]byte, 1<<20)
-			n := runtime.Stack(buf, true)
-			zap.L().Error("Re-spider session-crawl watchdog fired — abandoning the host session (browser/goroutines leak until exit)",
-				zap.String("seed", seedURL),
-				zap.Duration("budget", budget),
-				zap.Duration("grace", spideringTeardownGrace))
-			zap.L().Warn("Re-spider watchdog goroutine dump follows:\n" + string(buf[:n]))
-			return outcome{nil, fmt.Errorf("re-spider session crawl watchdog timeout for %s (exceeded %s)", seedURL, budget+spideringTeardownGrace)}
+		func() crawlOutcome {
+			dumpWedgedGoroutines("Re-spider session-crawl", seedURL, budget)
+			return crawlOutcome{err: fmt.Errorf("re-spider seed timed out for %s (exceeded %s)", seedURL, budget+spideringTeardownGrace)}
 		},
 	)
-	return oc.res, oc.err
+	oc.wedged = wedged
+	return oc
 }
 
 // closeReSpiderSession flushes and tears down a shared SpiderSession (and its
 // backing RecordWriter) under a teardown watchdog, so a wedged browser close
 // can't hang the phase.
 func closeReSpiderSession(sess *spitolas.SpiderSession, rw *database.RecordWriter) {
-	_ = runWithWatchdog(
+	_, _ = runWithWatchdog(
 		spideringTeardownGrace,
 		func() struct{} {
 			_ = sess.Close()
@@ -941,27 +963,38 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 			// The watchdog guarantees this returns within budget+grace even if the
 			// browser/teardown wedges, so a single target can never hang the scan.
 			timeoutCtx, cancel := context.WithTimeout(phaseCtx, maxDuration)
-			var result *spitolas.SpiderResult
-			var err error
+			var oc crawlOutcome
 			if sess != nil {
-				result, err = runReSpiderSessionCrawl(timeoutCtx, sess, target, maxDuration)
+				oc = runReSpiderSessionCrawl(timeoutCtx, sess, target, maxDuration)
 			} else {
 				cfg := r.buildSpiderConfig(target, settingsCfg, maxDuration, infra)
 				rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
-				result, err = runSpiderWatchdog(timeoutCtx, cfg, rw, maxDuration, target)
+				oc = runSpiderWatchdog(timeoutCtx, cfg, rw, maxDuration, target)
 			}
 			cancel()
 
-			if err != nil {
+			if oc.err != nil {
 				zap.L().Error("Spidering failed",
-					zap.String("target", target), zap.Error(err))
+					zap.String("target", target), zap.Error(oc.err))
 				if sess != nil {
-					// The shared browser may be wedged, so the rest of this host's
-					// targets cannot be trusted to it. Abandon the session and move
-					// on rather than replaying the failure per target.
-					zap.L().Warn("Spidering: abandoning shared browser session for host",
-						zap.String("target", target))
-					abandoned = true
+					// Either way the rest of this host's targets are not attempted:
+					// replaying the same failure per target buys nothing. What differs
+					// is whether the session can be closed.
+					//
+					// A wedged browser must be abandoned — closing it would hang the
+					// phase. An ordinary failure must NOT be: the browser is fine, and
+					// the shared writer is still holding this host's captured records.
+					// Abandoning there dropped traffic the earlier seeds had already
+					// produced and leaked a Chrome process, for something as routine as
+					// one unreachable target.
+					abandoned = oc.wedged
+					if abandoned {
+						zap.L().Warn("Spidering: browser wedged, abandoning shared session for host (leaks until exit)",
+							zap.String("target", target))
+					} else {
+						zap.L().Warn("Spidering: crawl failed, closing shared browser session for host",
+							zap.String("target", target))
+					}
 					// The rest of this host's targets are never attempted, so count
 					// them as processed — they are abandoned, not waiting on budget,
 					// and reporting them as "skipped by the ceiling" would misattribute
@@ -971,6 +1004,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 				}
 				continue
 			}
+			result := oc.res
 
 			totalStates += result.StatesDiscovered
 			totalActions += result.ActionsExecuted
@@ -1137,5 +1171,15 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 			terminal.Yellow(fmtDuration(phaseCeiling)))
 	}
 	r.printPhaseComplete("Spidering", completion)
+	// Name the way out at the moment it bit. The ceiling is not a pace the flags
+	// can widen — the phase crawls one host at a time — so an operator told only
+	// that N targets were dropped has no move to make from that line alone. The
+	// flags come from SpiderFanOutSuggestion, the same resolver the pre-scan hint
+	// uses, so both the advice and its preconditions match this run.
+	if flags, ok := SpiderFanOutSuggestion(r.options, len(targets)); ok && skippedTargets > 0 {
+		r.printPhaseDetail(fmt.Sprintf("%s Re-run with %s to scan the list as parallel child processes, each with its own browser and its own budget.",
+			terminal.Yellow(terminal.SymbolArrow),
+			terminal.HiCyan(flags)))
+	}
 	return nil
 }

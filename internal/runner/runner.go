@@ -110,6 +110,13 @@ type phaseInfra struct {
 	jsEngine      *jsext.Engine
 	scanUUID      string
 
+	// borrowedInfra marks this phaseInfra as holding components OWNED by a
+	// SharedInfra (reused across rescans) rather than built for this phase. A
+	// borrower must not close them: the shared limiter would be stopped — and its
+	// shard maps nilled — out from under the next rescan that borrows the same
+	// instance, and a second Close on it is a "close of closed channel" panic.
+	borrowedInfra bool
+
 	// Multi-session support for IDOR/BOLA testing
 	compareSessions []compareSession
 }
@@ -121,8 +128,20 @@ type compareSession struct {
 	Hostname string // hostname this session is associated with (empty = all hosts)
 }
 
-// Close releases infrastructure resources.
+// Close releases infrastructure resources this phase OWNS. Components borrowed
+// from a SharedInfra are left alone; their owner closes them.
 func (p *phaseInfra) Close() {
+	if p.borrowedInfra {
+		return
+	}
+	// Return idle sockets before dropping the requester. This phase owns it
+	// (borrowedInfra is false), so nothing else is still reading through its
+	// transport. Compare-session requesters are separate owners with their own
+	// pools and are released alongside it.
+	p.httpRequester.CloseIdleConnections()
+	for _, cs := range p.compareSessions {
+		cs.Client.CloseIdleConnections()
+	}
 	if p.hostLimiter != nil {
 		_ = p.hostLimiter.Close()
 	}
@@ -145,6 +164,9 @@ type SharedInfra struct {
 
 // Close releases resources held by SharedInfra.
 func (s *SharedInfra) Close() {
+	// The shared requester outlives individual scans (that is the point of
+	// SharedInfra), so its pool is only released when the sharer itself is done.
+	s.HTTPRequester.CloseIdleConnections()
 	if s.HostLimiter != nil {
 		_ = s.HostLimiter.Close()
 	}

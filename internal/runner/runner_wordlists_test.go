@@ -165,6 +165,71 @@ func TestDiscoveryFuzzingState_AutoFuzz(t *testing.T) {
 	}
 }
 
+// TestNoDiscoveryFuzzBeatsEveryAutoEnable is the whole contract of the flag:
+// every other arm of discoveryFuzzingState switches fuzzing ON from a heuristic,
+// and an explicit off that a heuristic can overrule is a knob that silently does
+// nothing on exactly the runs it was typed for.
+func TestNoDiscoveryFuzzBeatsEveryAutoEnable(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Runner)
+	}{
+		{"intensity deep", func(r *Runner) { r.options.Intensity = "deep" }},
+		{"discovery-only run", func(r *Runner) { r.options.OnlyPhase = "discovery" }},
+		{"multi-phase --only containing discovery", func(r *Runner) { r.options.OnlyPhase = "discovery,spidering" }},
+		{"low-yield auto-fuzz already latched", func(r *Runner) { r.autoFuzzDiscovery = true }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newWordlistRunner(&types.Options{NoDiscoveryFuzz: true}, nil)
+			c.mut(r)
+			on, reason := r.discoveryFuzzingState()
+			if on {
+				t.Fatalf("fuzzing on despite --no-discovery-fuzz; reason=%q", reason)
+			}
+			if reason != "via --no-discovery-fuzz" {
+				t.Errorf("reason = %q, want the flag named so the header explains itself", reason)
+			}
+		})
+	}
+
+	// The low-yield auto-enable must not even latch: r.autoFuzzDiscovery also
+	// drives the "Fuzzing auto-enabled" banner and the SSO-host scope filtering,
+	// which would then describe fuzzing that never happens.
+	r := newWordlistRunner(&types.Options{
+		NoDiscoveryFuzz: true,
+		DiscoverEnabled: true,
+		Targets:         []string{"https://t.example.com"},
+	}, nil)
+	r.spidering = spideringOutcome{ran: true, records: 1}
+	if r.shouldAutoFuzzDiscovery() {
+		t.Error("shouldAutoFuzzDiscovery() = true under --no-discovery-fuzz")
+	}
+}
+
+// TestNoDiscoveryFuzzClearsConfiguredWordlist covers the path the flag could
+// have missed: deparos creates its FuzzTask from a non-empty FuzzWordlistPath,
+// so a fuzz list configured in YAML has to be cleared, not merely left
+// un-materialized — otherwise the host is brute-forced while the phase header
+// reports fuzzing as disabled.
+func TestNoDiscoveryFuzzClearsConfiguredWordlist(t *testing.T) {
+	t.Setenv(wordlistDirEnv, t.TempDir())
+
+	settings := &config.Settings{Discovery: *config.DefaultDiscoveryConfig()}
+	settings.Discovery.Wordlists.FuzzWordlistPath = "/custom/my-fuzz.txt"
+
+	// Sanity: without the flag, a discovery-only run does route that list through.
+	on := newWordlistRunner(&types.Options{OnlyPhase: "discovery"}, settings)
+	if w := on.resolveDiscoveryWordlists(); base(w.fuzz) != "my-fuzz.txt" {
+		t.Fatalf("baseline: configured fuzz list should be used, got %q", base(w.fuzz))
+	}
+
+	off := newWordlistRunner(&types.Options{OnlyPhase: "discovery", NoDiscoveryFuzz: true}, settings)
+	if w := off.resolveDiscoveryWordlists(); w.fuzz != "" {
+		t.Errorf("fuzz wordlist = %q under --no-discovery-fuzz, want empty", w.fuzz)
+	}
+}
+
 func TestFilterOutHosts(t *testing.T) {
 	targets := []string{
 		"https://app.example.com/",

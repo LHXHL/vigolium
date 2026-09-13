@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -253,5 +254,43 @@ func TestValidate_ValidConfig(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected valid config, got error: %v", err)
+	}
+}
+
+// TestPhaseSectionNamesMatchSection holds paceSectionNames and Section's switch
+// together. They are two hand-maintained lists of the same vocabulary, and the
+// failure mode when they drift is silent: a phase missing from the names list
+// is never validated and never reachable via a --rate-limit qualifier, while a
+// name with no section makes Validate dereference a nil *PhasePace and panic.
+func TestPhaseSectionNamesMatchSection(t *testing.T) {
+	cfg := &ScanningPaceConfig{}
+
+	// Every advertised name must resolve to a distinct section.
+	seen := map[*PhasePace]string{}
+	for _, name := range PhaseSectionNames() {
+		section := cfg.Section(name)
+		if section == nil {
+			t.Errorf("PhaseSectionNames advertises %q but Section returns nil for it", name)
+			continue
+		}
+		if other, dup := seen[section]; dup {
+			t.Errorf("phases %q and %q resolve to the same section", other, name)
+		}
+		seen[section] = name
+	}
+
+	// Every phase the native scan can run and that is paceable must be
+	// advertised. This is the direction that actually bit: a phase added to the
+	// struct and the switch, but not to the names list, is silently unpaced.
+	for _, name := range []string{
+		"discovery", "probe", "spidering",
+		"known-issue-scan", "external-harvest", "dynamic-assessment",
+	} {
+		if cfg.Section(name) == nil {
+			t.Errorf("Section(%q) returned nil; every paceable phase needs a section", name)
+		}
+		if !slices.Contains(PhaseSectionNames(), name) {
+			t.Errorf("PhaseSectionNames omits %q", name)
+		}
 	}
 }

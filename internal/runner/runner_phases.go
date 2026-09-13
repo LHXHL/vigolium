@@ -389,6 +389,16 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		} else {
 			r.scanLogger.Info("spidering", "phase completed")
 		}
+	case PhaseProbe:
+		r.setPhaseTag("probe")
+		r.scanLogger.Info("probe", "phase started")
+		if err := r.runProbePhase(ctx, infra); err != nil {
+			zap.L().Error("Probe phase failed", zap.Error(err))
+			r.scanLogger.Error("probe", "phase failed: "+err.Error())
+			tracker.noteError(err)
+		} else {
+			r.scanLogger.Info("probe", "phase completed")
+		}
 	case PhaseDiscovery:
 		r.setPhaseTag("discovery")
 		r.scanLogger.Info("discovery", "phase started")
@@ -535,6 +545,8 @@ func (r *Runner) buildInfrastructure() (*phaseInfra, error) {
 
 	// If SharedInfra is available, reuse its components instead of building fresh
 	if r.sharedInfra != nil {
+		// Borrowed, not owned — phaseInfra.Close must leave these to the owner.
+		infra.borrowedInfra = true
 		infra.httpRequester = r.sharedInfra.HTTPRequester
 		infra.scopeMatcher = r.sharedInfra.ScopeMatcher
 		infra.hostLimiter = r.sharedInfra.HostLimiter
