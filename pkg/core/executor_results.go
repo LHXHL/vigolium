@@ -40,6 +40,14 @@ func (e *Executor) processResults(ctx context.Context, results []*output.ResultE
 		// than saving a duplicate. A module that sets its own (mutated) request
 		// leaves baselineReq nil and takes the unchanged parse/save path.
 		var baselineReq *httpmsg.HttpRequest
+		// The item's live response object, carried alongside baselineReq when the
+		// finding adopts the baseline exchange. It differs from
+		// NewHttpResponse([]byte(result.Response)) in one way that matters: it
+		// carries the MEASURED round-trip duration, which raw bytes cannot. A
+		// finding-evidence record dedups onto (or becomes) the item's own record,
+		// so rebuilding from bytes here is how response_time_ms got lost on every
+		// record a passive module happened to report on.
+		var baselineResp *httpmsg.HttpResponse
 		if item != nil {
 			// Whether the module supplied its own request. Captured BEFORE the
 			// request backfill below so we can tell a module-mutated request
@@ -61,6 +69,7 @@ func (e *Executor) processResults(ctx context.Context, results []*output.ResultE
 				if !moduleSuppliedRequest ||
 					(item.Request() != nil && result.Request == string(item.Request().Raw())) {
 					result.Response = string(item.Response().Raw())
+					baselineResp = item.Response()
 				}
 			}
 		}
@@ -73,7 +82,7 @@ func (e *Executor) processResults(ctx context.Context, results []*output.ResultE
 			continue
 		}
 
-		emitted := e.emitResult(ctx, result, baselineReq)
+		emitted := e.emitResult(ctx, result, baselineReq, baselineResp)
 
 		// Cross-module finding dedup: mark (URL, param, vuln_class) as found
 		// so that lower-priority modules with the same vuln class can skip.
@@ -221,7 +230,7 @@ type emissionResult struct {
 	event   *output.ResultEvent
 }
 
-func (e *Executor) emitResult(ctx context.Context, result *output.ResultEvent, baselineReq *httpmsg.HttpRequest) emissionResult {
+func (e *Executor) emitResult(ctx context.Context, result *output.ResultEvent, baselineReq *httpmsg.HttpRequest, baselineResp *httpmsg.HttpResponse) emissionResult {
 	// Run post-hooks (may modify or drop result)
 	if e.hooks != nil {
 		hooked, err := e.hooks.RunPostHooks(result)
@@ -284,13 +293,15 @@ func (e *Executor) emitResult(ctx context.Context, result *output.ResultEvent, b
 				if parseErr != nil {
 					zap.L().Debug("Failed to parse finding request, skipping http_record save", zap.Error(parseErr))
 				} else {
-					findingRR = findingRR.WithResponse(httpmsg.NewHttpResponse([]byte(result.Response)))
+					findingRR = findingRR.WithResponse(findingResponse(result.Response, baselineResp))
+					// RecordKind, not the executor's own source: this row is the
+					// finding's evidence. Normalized by EffectiveRecordKind above,
+					// so never empty. No parent — evidence is not part of a chain.
+					//
+					// Assigned, not redeclared: recordUUID is the outer variable
+					// the finding links through below.
 					var err error
-					if e.recordWriter != nil {
-						recordUUID, err = e.recordWriter.Write(ctx, findingRR, string(result.RecordKind), e.projectUUID)
-					} else {
-						recordUUID, err = e.repo.SaveRecord(ctx, findingRR, string(result.RecordKind), e.projectUUID)
-					}
+					recordUUID, err = e.writeRecord(ctx, findingRR, string(result.RecordKind), "")
 					if err != nil {
 						zap.L().Warn("Failed to save finding http_record", zap.Error(err))
 					} else {
@@ -476,4 +487,21 @@ func (e *Executor) runScanFnGuarded(
 		}
 	}()
 	return fn(ctx)
+}
+
+// findingResponse returns the HttpResponse to store with a finding's evidence
+// record. It prefers the live baseline object when that object IS the finding's
+// response, because only the live one carries the measured round-trip duration —
+// rebuilding from result.Response yields identical bytes and a zero duration,
+// and that record then wins the dedup against the item's own record, erasing
+// the timing for the whole exchange.
+//
+// The byte comparison is the safety check, not an optimization: a module may
+// have replaced result.Response after the backfill, and pairing a stale
+// baseline response with it would record an exchange that never happened.
+func findingResponse(raw string, baseline *httpmsg.HttpResponse) *httpmsg.HttpResponse {
+	if baseline != nil && string(baseline.Raw()) == raw {
+		return baseline
+	}
+	return httpmsg.NewHttpResponse([]byte(raw))
 }

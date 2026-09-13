@@ -175,25 +175,14 @@ func normalizeTechTags(in []string) []string {
 }
 
 // hostFromItem extracts the per-host key used for tech-registry and
-// content-class lookups. It returns the URL host — the bare hostname plus
-// ":port" for non-default ports — because that is exactly the key the write
-// paths use: fingerprint modules publish detections with urlx.Host (==
-// item.URL().Host) via ScanContext.MarkTech, and the content-class registry is
-// seeded from neturl.Parse(target).Host. Keying reads off the bare
-// Service().Host() (which drops the port) let a stack detected on :443 gate
-// modules on :8443 and dropped every non-default-port detection outright. Falls
-// back to the bare service host only when the URL cannot be parsed.
+// content-class lookups. It delegates to modkit.RegistryHostKey, which is the
+// single owner of that key: fingerprint modules publish detections under it via
+// ScanContext.MarkTech, the surface_scoring module reads it back at flush, and
+// the content-class registry is seeded with it. A second derivation here is one
+// that can disagree, and the symptom of disagreeing is a detection that silently
+// never matches.
 func hostFromItem(item *httpmsg.HttpRequestResponse) string {
-	if item == nil {
-		return ""
-	}
-	if u, err := item.URL(); err == nil && u != nil && u.Host != "" {
-		return u.Host
-	}
-	if svc := item.Service(); svc != nil {
-		return svc.Host()
-	}
-	return ""
+	return modkit.RegistryHostKey(item)
 }
 
 // originKeyFromItem returns the canonical origin identity — scheme, host, and

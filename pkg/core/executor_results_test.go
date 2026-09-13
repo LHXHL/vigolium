@@ -354,13 +354,13 @@ func TestSaveToDatabase_BackfillsStubResponse(t *testing.T) {
 
 	// The item carries the untouched stub (no response) + its RecordUUID; req is
 	// the post-fetch copy with the real baseline attached (what the executor
-	// passes to saveToDatabase after fetchBaselineResponse).
+	// passes to saveToDatabase after fetchBaseline).
 	item := work.NewWithModules(stub, nil)
 	item.RecordUUID = uuid
 	req := stub.WithResponse(httpmsg.NewHttpResponse(
 		[]byte("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n{\"error\":\"unauthorized\"}")))
 
-	e.saveToDatabase(ctx, item, req)
+	e.saveToDatabase(ctx, item, req, nil)
 
 	rec, err := e.repo.GetRecordByUUID(ctx, uuid)
 	if err != nil {
@@ -402,7 +402,7 @@ func TestSaveToDatabase_DoesNotClobberExistingResponse(t *testing.T) {
 	req := full.WithResponse(httpmsg.NewHttpResponse(
 		[]byte("HTTP/1.1 500 Internal Server Error\r\n\r\nboom")))
 
-	e.saveToDatabase(ctx, item, req)
+	e.saveToDatabase(ctx, item, req, nil)
 
 	rec, err := e.repo.GetRecordByUUID(ctx, uuid)
 	if err != nil {
@@ -410,5 +410,100 @@ func TestSaveToDatabase_DoesNotClobberExistingResponse(t *testing.T) {
 	}
 	if rec.StatusCode != 200 {
 		t.Errorf("existing response was clobbered: status=%d, want 200", rec.StatusCode)
+	}
+}
+
+// TestSaveToDatabase_PersistsRedirectChain covers --record-redirect-chain end to
+// end at the persistence layer: each hop becomes its own row, oldest first, and
+// the rows form one parent_uuid spine ending at the final response.
+func TestSaveToDatabase_PersistsRedirectChain(t *testing.T) {
+	e, db := newRepoExecutor(t)
+	ctx := context.Background()
+
+	hop := func(path string, status int, location string) *httpmsg.HttpRequestResponse {
+		raw := fmt.Sprintf("HTTP/1.1 %d Moved\r\nLocation: %s\r\n\r\n", status, location)
+		return newStubRecord("example.test", path).WithResponse(httpmsg.NewHttpResponse([]byte(raw)))
+	}
+	hops := []*httpmsg.HttpRequestResponse{
+		hop("/one", 301, "/two"),
+		hop("/two", 302, "/end"),
+	}
+	final := newStubRecord("example.test", "/end").WithResponse(
+		httpmsg.NewHttpResponse([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\narrived")))
+
+	e.saveToDatabase(ctx, work.NewWithModules(final, nil), final, hops)
+
+	if got := countRecords(t, db); got != 3 {
+		t.Fatalf("http_records = %d, want 3 (two hops + the final response)", got)
+	}
+
+	byPath := map[string]*database.HTTPRecord{}
+	recs, err := e.repo.GetRecordsByHostname(ctx, database.DefaultProjectUUID, "example.test", 10)
+	if err != nil {
+		t.Fatalf("GetRecordsByHostname: %v", err)
+	}
+	for _, r := range recs {
+		byPath[r.Path] = r
+	}
+
+	one, two, end := byPath["/one"], byPath["/two"], byPath["/end"]
+	if one == nil || two == nil || end == nil {
+		t.Fatalf("missing rows: one=%v two=%v end=%v", one != nil, two != nil, end != nil)
+	}
+	if one.StatusCode != 301 || two.StatusCode != 302 || end.StatusCode != 200 {
+		t.Errorf("statuses = %d/%d/%d, want 301/302/200", one.StatusCode, two.StatusCode, end.StatusCode)
+	}
+	// The spine. The first hop is the root; everything else points at its
+	// predecessor, so the chain is walkable in either direction from any row.
+	if one.ParentUUID != "" {
+		t.Errorf("first hop has parent %q, want none (it is the root of the chain)", one.ParentUUID)
+	}
+	if two.ParentUUID != one.UUID {
+		t.Errorf("/two parent = %q, want /one (%q)", two.ParentUUID, one.UUID)
+	}
+	if end.ParentUUID != two.UUID {
+		t.Errorf("/end parent = %q, want /two (%q)", end.ParentUUID, two.UUID)
+	}
+}
+
+// TestAdoptRecordParent_BackfillsOnlyWhenEmpty pins the backfill-never-overwrite
+// rule. A row can lose the race to its own chain (a passive module persists the
+// final response as finding evidence before the item's own save runs), so an
+// unparented row must be able to join a chain afterwards — while a row already
+// in one must never be moved out of it by a later scan through the same URL.
+func TestAdoptRecordParent_BackfillsOnlyWhenEmpty(t *testing.T) {
+	e, _ := newRepoExecutor(t)
+	ctx := context.Background()
+
+	save := func(path string) string {
+		uuid, err := e.repo.SaveRecord(ctx, newStubRecord("example.test", path), "probe", database.DefaultProjectUUID)
+		if err != nil {
+			t.Fatalf("SaveRecord(%s): %v", path, err)
+		}
+		return uuid
+	}
+	orphan := save("/orphan")
+	firstParent := save("/first-parent")
+	otherParent := save("/other-parent")
+
+	// Empty parent: adopted.
+	e.repo.AdoptRecordParent(ctx, orphan, firstParent)
+	rec, _ := e.repo.GetRecordByUUID(ctx, orphan)
+	if rec.ParentUUID != firstParent {
+		t.Fatalf("parent = %q, want %q (an empty parent must be backfilled)", rec.ParentUUID, firstParent)
+	}
+
+	// Already parented: left alone.
+	e.repo.AdoptRecordParent(ctx, orphan, otherParent)
+	rec, _ = e.repo.GetRecordByUUID(ctx, orphan)
+	if rec.ParentUUID != firstParent {
+		t.Errorf("parent = %q, want it to stay %q — an existing chain must not be rewritten", rec.ParentUUID, firstParent)
+	}
+
+	// Self-link would make the chain a cycle; refused outright.
+	e.repo.AdoptRecordParent(ctx, otherParent, otherParent)
+	rec, _ = e.repo.GetRecordByUUID(ctx, otherParent)
+	if rec.ParentUUID != "" {
+		t.Errorf("self-parent was written (%q); a row must never be its own parent", rec.ParentUUID)
 	}
 }

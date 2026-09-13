@@ -97,6 +97,52 @@ func putResponseBuffer(buf []byte) {
 	}
 }
 
+// responseBufferGuard records that something still reachable may read the work
+// item's pooled response buffer after processItem returns, so the buffer must NOT
+// go back to the pool.
+//
+// The case it exists for: a module that exceeds its per-module timeout (or is
+// caught by phase cancellation) keeps running — a goroutine cannot be killed —
+// and its scan closure still holds the item, whose response is built over the
+// pooled buffer. Its wrapper meanwhile returns, processItem finishes, and the
+// deferred putResponseBuffer hands that buffer to the next item, which overwrites
+// it underneath the abandoned module. The module then reads another request's
+// response and can report a finding against it.
+//
+// Giving up pooling for such an item is the whole fix: the buffer is simply left
+// for the GC, which is correct however long the abandoned goroutine runs. This
+// costs one allocation on a path that has already lost a module call, and nothing
+// at all on the normal path.
+type responseBufferGuard struct {
+	escaped atomic.Bool
+}
+
+type responseBufferGuardKey struct{}
+
+// withResponseBufferGuard attaches g to ctx for the lifetime of one work item.
+//
+// Carried in the context rather than as a parameter because the two abandonment
+// points sit at the bottom of the active and passive dispatch fan-outs: reaching
+// them explicitly means threading a guard through runActiveStage,
+// runActivePer{Host,Request,InsertionPoint} and the runPassivePer*Filtered
+// helpers, about six signatures, all of which already carry this context. The
+// cost of the context value is ~50 bytes and ~40ns per item, against a per-item
+// baseline of a network round trip plus a record conversion — so the explicit
+// form buys clarity, not speed. If a third consumer of this flag ever appears,
+// prefer the parameter.
+func withResponseBufferGuard(ctx context.Context, g *responseBufferGuard) context.Context {
+	return context.WithValue(ctx, responseBufferGuardKey{}, g)
+}
+
+// markResponseBufferEscaped flags the current item's pooled buffer as unsafe to
+// recycle. A no-op when no guard is attached (an executor path that does not own
+// a pooled buffer, or a unit test calling a wrapper directly).
+func markResponseBufferEscaped(ctx context.Context) {
+	if g, ok := ctx.Value(responseBufferGuardKey{}).(*responseBufferGuard); ok && g != nil {
+		g.escaped.Store(true)
+	}
+}
+
 // moduleFindingTracker tracks finding count and one-time warning for a single module.
 type moduleFindingTracker struct {
 	count  atomic.Int64
@@ -142,13 +188,23 @@ type ExecutorConfig struct {
 	// database.defaultProjectUUID), so a config carrying a Repository/
 	// RecordWriter/FindingWriter MUST set it or its output lands in a project
 	// nobody is reading. Enforced by TestExecutorConfigAlwaysSetsProjectUUID.
-	ProjectUUID           string
-	Hooks                 HookRunner                                                                                                          // Optional: pre/post hooks
-	ScopeMatcher          *config.ScopeMatcher                                                                                                // Optional: scope filtering
-	ScopeOnIngest         bool                                                                                                                // When true, skip both save and scan for out-of-scope items
-	StaticFileMatcher     *config.ScopeMatcher                                                                                                // Optional: always-on static file filtering (independent of ScopeMatcher)
-	FollowSubdomains      bool                                                                                                                // When true, subdomain_harvest adds discovered subdomains to scope and feeds them (needs ScopeMatcher + feedback)
-	SkipBaseline          bool                                                                                                                // When true, skip HTTP fetch if response already attached (Phase 3 DB source)
+	ProjectUUID       string
+	Hooks             HookRunner           // Optional: pre/post hooks
+	ScopeMatcher      *config.ScopeMatcher // Optional: scope filtering
+	ScopeOnIngest     bool                 // When true, skip both save and scan for out-of-scope items
+	StaticFileMatcher *config.ScopeMatcher // Optional: always-on static file filtering (independent of ScopeMatcher)
+	FollowSubdomains  bool                 // When true, subdomain_harvest adds discovered subdomains to scope and feeds them (needs ScopeMatcher + feedback)
+	SkipBaseline      bool                 // When true, skip HTTP fetch if response already attached (Phase 3 DB source)
+	// RecordRedirectChain persists each followed redirect hop as its own record,
+	// chained through parent_uuid, and re-pairs the final response with the
+	// request that actually produced it. Off by default: it multiplies row
+	// counts on every redirecting URL, and only a host-sweep style phase wants
+	// the intermediate hops. See saveRedirectHops.
+	RecordRedirectChain bool
+	// RecordSource is the http_records.source label this executor stamps. Empty
+	// means "scanner", which is what every phase used before the label became
+	// configurable — so a phase that says nothing is unchanged.
+	RecordSource          string
 	OASTProvider          modkit.OASTProvider                                                                                                 // Optional: OAST callback URL generator for blind vuln detection
 	OASTService           OASTFlusher                                                                                                         // Optional: OAST service to flush after scanning
 	PauseCtrl             *PauseController                                                                                                    // Optional: cooperative pause/resume controller
@@ -501,10 +557,11 @@ func NewExecutor(
 	}
 	e.pool.passiveTaskSem = make(chan struct{}, passiveTaskLimit)
 
-	// Wire risk score updater, remarks annotator, record-response rewriter, and
-	// request UUID resolver into ScanContext
+	// Wire risk/surface score updaters, remarks annotator, record-response
+	// rewriter, and request UUID resolver into ScanContext
 	if e.scanCtx != nil && cfg.Repository != nil {
 		e.scanCtx.RiskScoreUpdater = &repoRiskScoreUpdater{repo: cfg.Repository}
+		e.scanCtx.SurfaceScoreUpdater = &repoSurfaceScoreUpdater{repo: cfg.Repository}
 		e.scanCtx.RemarksAnnotator = &repoRemarksAnnotator{repo: cfg.Repository}
 		e.scanCtx.RecordRewriter = &repoRecordResponseRewriter{repo: cfg.Repository}
 		e.scanCtx.ArtifactWriter = &repoDerivedArtifactWriter{repo: cfg.Repository}
@@ -649,6 +706,17 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 		defer e.httpClient.SetResponseObserver(nil)
 	}
 
+	// Give this execution its own cancellation scope, ALWAYS — not only when a
+	// phase timeout is configured. Background loops below (the status callback)
+	// used to exit on the caller's ctx alone, so with MaxDuration == 0 a normal
+	// EOF return left them running: dynamic assessment builds one executor per
+	// round against a phase-long context, so each finished round leaked a ticker
+	// goroutine that kept firing OnStatus — reporting a completed executor's
+	// metrics, and reading the database — until the whole phase ended.
+	execCtx, cancelExec := context.WithCancel(ctx)
+	defer cancelExec()
+	ctx = execCtx
+
 	// Enforce per-phase timeout when configured
 	if e.cfg.MaxDuration > 0 {
 		var cancel context.CancelFunc
@@ -679,8 +747,7 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 		// would otherwise wait the full interval to see anything.
 		var firstTickCh <-chan time.Time
 		if e.cfg.FirstStatusInterval > 0 && e.cfg.FirstStatusInterval < statusInterval {
-			t := time.NewTimer(e.cfg.FirstStatusInterval)
-			firstTickCh = t.C
+			firstTickCh = time.NewTimer(e.cfg.FirstStatusInterval).C
 		}
 
 		fireStatus := func() {
@@ -696,7 +763,9 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 			)
 		}
 
+		statusDone := make(chan struct{})
 		go func() {
+			defer close(statusDone)
 			defer statusTicker.Stop()
 			for {
 				select {
@@ -709,6 +778,13 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 					fireStatus()
 				}
 			}
+		}()
+		// Join before returning, so no status line can be emitted after Execute
+		// has handed back its result. cancelExec runs first (defers are LIFO
+		// relative to this one being registered later), releasing the loop.
+		defer func() {
+			cancelExec()
+			<-statusDone
 		}()
 	}
 
@@ -878,7 +954,7 @@ drainLoop:
 					// The per-module cap is enforced once inside emitResult →
 					// admitFinding; do NOT pre-check moduleFindingAllowed here or each
 					// finding would consume the cap twice (a cap of 15 admits ~7).
-					e.emitResult(ctx, r, nil)
+					e.emitResult(ctx, r, nil, nil)
 				}
 			}
 		}
@@ -1124,9 +1200,15 @@ func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) {
 
 	// Track pooled response buffer for deferred return.
 	// Must be declared before recoverFromPanic defer so it runs first (LIFO).
+	//
+	// guard withholds the buffer from the pool when a module call was abandoned
+	// (per-module timeout or phase cancellation) and may still be reading it. See
+	// responseBufferGuard.
 	var pooledBuf []byte
+	var guard responseBufferGuard
+	ctx = withResponseBufferGuard(ctx, &guard)
 	defer func() {
-		if pooledBuf != nil {
+		if pooledBuf != nil && !guard.escaped.Load() {
 			putResponseBuffer(pooledBuf)
 		}
 	}()
@@ -1145,19 +1227,25 @@ func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) {
 	default:
 	}
 
-	var httpResp *httpmsg.HttpResponse
+	var fetched baselineFetch
 	var ok bool
 	if item.StaticMeta {
 		// Object-storage metadata items record the URL + headers (status,
 		// content-type, content-length), never the (large/binary) object body:
 		// a HEAD, falling back to a ranged GET for origins that reject HEAD.
-		req, httpResp, pooledBuf, ok = e.fetchStaticMetaResponse(ctx, req)
+		fetched, ok = e.fetchStaticMetaResponse(ctx, req)
 	} else {
-		req, httpResp, pooledBuf, ok = e.fetchBaselineResponse(ctx, req)
+		fetched, ok = e.fetchBaseline(ctx, req)
 	}
 	if !ok {
 		return
 	}
+	// pooledBuf is ASSIGNED, never redeclared: the deferred putResponseBuffer
+	// above closes over the outer variable, and a `:=` here would shadow it and
+	// leak the buffer on every item.
+	var httpResp *httpmsg.HttpResponse
+	req, httpResp, pooledBuf = fetched.req, fetched.resp, fetched.pooledBuf
+	redirectHops := fetched.hops
 
 	// Learn object-storage-backed hosts from any storage-signalled response so
 	// the static-file carve-out keeps sibling assets on the same host.
@@ -1251,12 +1339,12 @@ func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) {
 		return
 	}
 	if bodySizeAction == config.BodySizeSkipScan {
-		e.saveToDatabase(ctx, item, req)
+		e.saveToDatabase(ctx, item, req, redirectHops)
 		return
 	}
 	skipActive := bodySizeAction == config.BodySizePassiveOnly
 
-	if !e.persistAndCheckScope(ctx, item, req, inScope) {
+	if !e.persistAndCheckScope(ctx, item, req, inScope, redirectHops) {
 		return
 	}
 
@@ -1271,16 +1359,27 @@ func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) {
 // static asset: a HEAD request, falling back to a ranged GET (Range: bytes=0-0)
 // when the origin rejects HEAD (405/501). The full object body is never
 // downloaded; callers still strip whatever minimal body returns.
-func (e *Executor) fetchStaticMetaResponse(ctx context.Context, base *httpmsg.HttpRequestResponse) (*httpmsg.HttpRequestResponse, *httpmsg.HttpResponse, []byte, bool) {
-	req, httpResp, pooledBuf, ok := e.fetchBaselineResponse(ctx, staticMetaProbe(base, "HEAD", ""))
-	if ok && !headRejectedStatus(httpResp.StatusCode()) {
-		return req, httpResp, pooledBuf, true
+func (e *Executor) fetchStaticMetaResponse(ctx context.Context, base *httpmsg.HttpRequestResponse) (baselineFetch, bool) {
+	out, ok := e.fetchBaseline(ctx, staticMetaProbe(base, "HEAD", ""))
+	if !ok || headRejectedStatus(out.resp.StatusCode()) {
+		// Release the HEAD buffer before retrying with a ranged GET.
+		//
+		// This release needs no responseBufferGuard check, unlike processItem's:
+		// the HEAD response never leaves this function — no module has run
+		// against it and no record has been written from it — so nothing can
+		// still be reading it. Any future code that hands this response to a
+		// module or a writer before this point must take the guard into account.
+		if out.pooledBuf != nil {
+			putResponseBuffer(out.pooledBuf)
+		}
+		out, ok = e.fetchBaseline(ctx, staticMetaProbe(base, "GET", "bytes=0-0"))
 	}
-	// Release the HEAD buffer before retrying with a ranged GET.
-	if pooledBuf != nil {
-		putResponseBuffer(pooledBuf)
-	}
-	return e.fetchBaselineResponse(ctx, staticMetaProbe(base, "GET", "bytes=0-0"))
+	// The point of a static-meta probe is one metadata row per object, not a
+	// chain. Dropped explicitly rather than by a return value the caller happens
+	// not to read — the hops are still WALKED above, which is the cost of saying
+	// it here instead of in fetchBaseline.
+	out.hops = nil
+	return out, ok
 }
 
 // staticMetaProbe builds a header-only probe request from base: a method
@@ -1308,21 +1407,45 @@ func headRejectedStatus(status int) bool {
 	return status == 405 || status == 501
 }
 
-func (e *Executor) fetchBaselineResponse(ctx context.Context, req *httpmsg.HttpRequestResponse) (*httpmsg.HttpRequestResponse, *httpmsg.HttpResponse, []byte, bool) {
+// baselineFetch is the outcome of fetching (or reusing) the response the rest
+// of processItem scans.
+type baselineFetch struct {
+	req       *httpmsg.HttpRequestResponse
+	resp      *httpmsg.HttpResponse
+	pooledBuf []byte
+	// hops are the intermediate redirect responses, oldest first, when
+	// RecordRedirectChain is on and the request was redirected. Each is a
+	// complete request/response pair ready to be written as its own record.
+	hops []*httpmsg.HttpRequestResponse
+}
+
+func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestResponse) (baselineFetch, bool) {
 	if e.cfg.SkipBaseline && req.Response() != nil {
-		return req, req.Response(), nil, true
+		return baselineFetch{req: req, resp: req.Response()}, true
 	}
 
 	// Bind the phase context so a cancelled scan / phase deadline / Ctrl-C aborts
 	// the baseline fetch in flight. The context-less Execute would otherwise fall
 	// back to context.Background() and keep hitting the target after the phase
 	// asked every worker to stop.
-	respChain, _, err := e.httpClient.WithContext(ctx).Execute(req, http.Options{})
+	opts := http.Options{
+		// The request clusterer serves repeats from a SNAPSHOT of the response,
+		// reconstructed as a fresh single-response chain — so the redirect
+		// linkage (resp.Request.Response) is gone and the hops would silently
+		// vanish for every request after the first. Clustering is a
+		// within-500ms duplicate-suppression optimization; hop recording is
+		// evidence. When both are asked for, evidence wins.
+		//
+		// It costs nothing where this matters: a host sweep sends one request
+		// per target, so there are no duplicates for the cache to collapse.
+		NoClustering: e.cfg.RecordRedirectChain,
+	}
+	respChain, elapsed, err := e.httpClient.WithContext(ctx).Execute(req, opts)
 	if err != nil {
 		zap.L().Debug("Failed to fetch baseline response, skipping item",
 			zap.String("url", req.Target()),
 			zap.Error(err))
-		return nil, nil, nil, false
+		return baselineFetch{}, false
 	}
 
 	if blockErr := infra.GetBlockDetectionValidator().Validate(respChain); blockErr != nil {
@@ -1333,7 +1456,7 @@ func (e *Executor) fetchBaselineResponse(ctx context.Context, req *httpmsg.HttpR
 		if e.statsTracker != nil {
 			e.statsTracker.IncrementBlocked()
 		}
-		return nil, nil, nil, false
+		return baselineFetch{}, false
 	}
 
 	// Compose headers+body directly into one pooled buffer. Using
@@ -1346,10 +1469,38 @@ func (e *Executor) fetchBaselineResponse(ctx context.Context, req *httpmsg.HttpR
 	rawResponseCopy := getResponseBuffer(len(headers) + len(body))
 	copy(rawResponseCopy, headers)
 	copy(rawResponseCopy[len(headers):], body)
+
+	// elapsed is the requester's measurement of this send, so this is the one
+	// place in the native-scan path that can populate response_time_ms at all.
+	// Every other construction site rebuilds a response from stored bytes and
+	// correctly leaves the duration at zero ("not measured").
+	httpResp := httpmsg.NewHttpResponseWithDuration(rawResponseCopy, elapsed)
+	out := baselineFetch{req: req.WithResponse(httpResp), resp: httpResp, pooledBuf: rawResponseCopy}
+
+	// Redirect handling, in the only window where the chain is still intact and
+	// the final response has already been copied out of it. Order matters twice
+	// over: FinalRequestOf must run before RedirectChainHops (which rewinds the
+	// chain), and both must run before Close (which reclaims the buffers).
+	//
+	// Without RecordRedirectChain the record keeps the ORIGINAL request paired
+	// with the final response. That is a deliberate hold, not an oversight: the
+	// request URL is part of the record's dedup identity and of scope matching,
+	// so rewriting it for every redirected record in every scan would silently
+	// re-identify existing corpora. Hop recording is the opt-in that makes the
+	// whole chain explicit instead.
+	if e.cfg.RecordRedirectChain && http.WasRedirected(respChain) {
+		// Re-pair the final response with the request that actually produced it.
+		// Without this the record says the ORIGINAL URL while carrying the FINAL
+		// hop's body — one row describing two different servers. The intermediate
+		// URLs are not lost by the swap; they become their own records below.
+		if finalReq := http.FinalRequestOf(respChain, httpResp); finalReq != nil {
+			out.req = finalReq
+		}
+		out.hops = http.RedirectChainHops(respChain)
+	}
 	respChain.Close()
 
-	httpResp := httpmsg.NewHttpResponse(rawResponseCopy)
-	return req.WithResponse(httpResp), httpResp, rawResponseCopy, true
+	return out, true
 }
 
 func (e *Executor) applyPreHooks(req *httpmsg.HttpRequestResponse) (*httpmsg.HttpRequestResponse, bool) {
@@ -1382,7 +1533,7 @@ func (e *Executor) runPassiveStage(ctx context.Context, req *httpmsg.HttpRequest
 	e.runPassivePerRequestFiltered(ctx, req, eligiblePerRequest)
 }
 
-func (e *Executor) persistAndCheckScope(ctx context.Context, item *work.WorkItem, req *httpmsg.HttpRequestResponse, inScope bool) bool {
+func (e *Executor) persistAndCheckScope(ctx context.Context, item *work.WorkItem, req *httpmsg.HttpRequestResponse, inScope bool, redirectHops []*httpmsg.HttpRequestResponse) bool {
 	if e.cfg.ScopeMatcher != nil {
 		if req.Service() == nil {
 			return false
@@ -1392,11 +1543,11 @@ func (e *Executor) persistAndCheckScope(ctx context.Context, item *work.WorkItem
 			return false
 		}
 
-		e.saveToDatabase(ctx, item, req)
+		e.saveToDatabase(ctx, item, req, redirectHops)
 		return inScope
 	}
 
-	e.saveToDatabase(ctx, item, req)
+	e.saveToDatabase(ctx, item, req, redirectHops)
 	return true
 }
 
@@ -1424,7 +1575,7 @@ func (e *Executor) runActiveStage(ctx context.Context, req *httpmsg.HttpRequestR
 }
 
 // saveToDatabase stores the request/response record in the database if enabled.
-func (e *Executor) saveToDatabase(ctx context.Context, item *work.WorkItem, req *httpmsg.HttpRequestResponse) {
+func (e *Executor) saveToDatabase(ctx context.Context, item *work.WorkItem, req *httpmsg.HttpRequestResponse, redirectHops []*httpmsg.HttpRequestResponse) {
 	if e.repo == nil {
 		return
 	}
@@ -1438,7 +1589,7 @@ func (e *Executor) saveToDatabase(ctx context.Context, item *work.WorkItem, req 
 		// executor just fetched a real baseline to scan the endpoint; persist it
 		// so the route shows its actual status/body instead of staying at
 		// status 0 with an empty response in the traffic view. item.Request is
-		// the untouched stub (fetchBaselineResponse returns a copy via
+		// the untouched stub (fetchBaseline returns a copy via
 		// WithResponse), so a nil response there marks a stub even though req now
 		// carries one. The repo update is a no-op once the record has a response.
 		if item.Request != nil && item.Request.Response() == nil && req.Response() != nil {
@@ -1450,19 +1601,67 @@ func (e *Executor) saveToDatabase(ctx context.Context, item *work.WorkItem, req 
 		return
 	}
 
-	// Prefer batched writer for throughput; fall back to individual SaveRecord
-	var recordUUID string
-	var err error
-	if e.recordWriter != nil {
-		recordUUID, err = e.recordWriter.Write(ctx, req, "scanner", e.projectUUID)
-	} else {
-		recordUUID, err = e.repo.SaveRecord(ctx, req, "scanner", e.projectUUID)
-	}
+	// Redirect hops first, oldest to newest, so each one's parent already exists
+	// by the time its child is written. The last hop's UUID becomes the final
+	// record's parent, giving the whole chain one walkable parent_uuid spine.
+	parentUUID := e.saveRedirectHops(ctx, redirectHops)
+
+	recordUUID, err := e.writeRecord(ctx, req, e.recordSource(), parentUUID)
 	if err != nil {
 		zap.L().Debug("Failed to save record to database", zap.Error(err))
 		return
 	}
 	e.caches.requestUUIDs.Store(req.Request().ID(), recordUUID)
+}
+
+// saveRedirectHops persists each intermediate redirect response as its own
+// record, chained through parent_uuid, and returns the UUID of the LAST hop —
+// the parent the final record should point at. Returns "" when there are no
+// hops, or when the first write fails.
+//
+// A hop that fails to write ends the chain rather than aborting the item: the
+// final response is the one that carries the evidence, and losing an
+// intermediate 301 must not cost the 200 behind it. The chain simply stops at
+// the last hop that did persist, which reads correctly as a shorter chain
+// rather than as a wrong one.
+func (e *Executor) saveRedirectHops(ctx context.Context, hops []*httpmsg.HttpRequestResponse) string {
+	parentUUID := ""
+	for _, hop := range hops {
+		if hop == nil || hop.Request() == nil {
+			continue
+		}
+		hopUUID, err := e.writeRecord(ctx, hop, e.recordSource(), parentUUID)
+		if err != nil {
+			zap.L().Debug("Failed to save redirect hop record",
+				zap.String("url", hop.Target()), zap.Error(err))
+			break
+		}
+		parentUUID = hopUUID
+	}
+	return parentUUID
+}
+
+// writeRecord persists one request/response pair, preferring the batched writer
+// for throughput and falling back to an individual insert. parentUUID links the
+// row to its predecessor in a redirect chain; empty means the row is a root.
+//
+// The single owner of "which persistence path does this executor use" — finding
+// evidence (emitResult) goes through it too, so a change to that choice has one
+// place to land.
+func (e *Executor) writeRecord(ctx context.Context, req *httpmsg.HttpRequestResponse, source, parentUUID string) (string, error) {
+	if e.recordWriter != nil {
+		return e.recordWriter.WriteWithParent(ctx, req, source, e.projectUUID, parentUUID)
+	}
+	return e.repo.SaveRecordWithParent(ctx, req, source, e.projectUUID, parentUUID)
+}
+
+// recordSource is the http_records.source label this executor stamps on the
+// records it owns. Finding evidence carries its own record kind instead.
+func (e *Executor) recordSource() string {
+	if e.cfg.RecordSource == "" {
+		return database.RecordSourceScanner
+	}
+	return e.cfg.RecordSource
 }
 
 // filterEligiblePassive pre-filters passive modules by CanProcess and module filter,
@@ -1795,6 +1994,10 @@ func (e *Executor) runPassiveWithTimeout(
 		moduleResultChanPool.Put(ch) // goroutine done; channel drained and safe to reuse
 		return e.recordPassiveResult(module, start, r.events, r.err)
 	case <-timeoutC:
+		// The scan goroutine is still running and still holds item, whose response
+		// is built over the item's pooled buffer. Withhold that buffer from the
+		// pool so this abandoned call cannot be fed another request's bytes.
+		markResponseBufferEscaped(ctx)
 		e.moduleMetrics.Record(module.ID(), time.Since(start), 0, nil)
 		zap.L().Warn("Passive module timed out — skipping",
 			zap.String("module", module.ID()),
@@ -1804,6 +2007,7 @@ func (e *Executor) runPassiveWithTimeout(
 	case <-ctx.Done():
 		// Parent cancellation (scan shutdown / phase deadline) — not a per-module
 		// timeout, so stay quiet; the scan is ending.
+		markResponseBufferEscaped(ctx)
 		e.moduleMetrics.Record(module.ID(), time.Since(start), 0, nil)
 		return nil
 	}
@@ -1927,6 +2131,10 @@ func (e *Executor) runActiveWithTimeout(
 		}
 		return r.events, true
 	case <-timeoutC:
+		// The scan goroutine outlives this wrapper and still holds item, whose
+		// response is built over the item's pooled buffer — keep that buffer out of
+		// the pool so the abandoned module cannot be handed another request's bytes.
+		markResponseBufferEscaped(ctx)
 		// Genuine per-module timeout. Count it only when the parent is still alive,
 		// so cancelling a scan with many modules in flight doesn't inflate the
 		// status-line count with modules that were merely interrupted at the same
@@ -1945,6 +2153,7 @@ func (e *Executor) runActiveWithTimeout(
 	case <-ctx.Done():
 		// Parent cancellation (Ctrl-C, --scanning-max-duration, phase deadline) —
 		// an interruption, not a timed-out module, so it is not counted.
+		markResponseBufferEscaped(ctx)
 		e.moduleMetrics.Record(module.ID(), time.Since(start), 0, nil)
 		return nil, false
 	}

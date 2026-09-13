@@ -23,6 +23,15 @@ func (u *repoRiskScoreUpdater) UpdateRiskScores(ctx context.Context, scores map[
 	return u.repo.UpdateRiskScores(ctx, scores)
 }
 
+// repoSurfaceScoreUpdater adapts *database.Repository to modkit.SurfaceScoreUpdater.
+type repoSurfaceScoreUpdater struct {
+	repo *database.Repository
+}
+
+func (u *repoSurfaceScoreUpdater) UpdateSurfaceScores(ctx context.Context, scores map[string]int) error {
+	return u.repo.UpdateSurfaceScores(ctx, scores)
+}
+
 // feedbackBlockTimeout bounds how long Feed will wait for room in a full feedback
 // channel before dropping. Kept short so a producer (a worker mid-processResults)
 // can never stall the pipeline for long — even in the pathological case where

@@ -173,6 +173,10 @@ type HostRateLimiter struct {
 
 	stopEvict chan struct{}
 	evictWg   conc.WaitGroup
+	// closed guards stopEvict against a double close. A shared limiter can have
+	// several closers (a phase borrowing it closes it on its own defer, as does
+	// the owner), and close() on an already-closed channel panics the process.
+	closed atomic.Bool
 }
 
 // PreArmNotice describes a proactive pacing adjustment. The first time a host is
@@ -683,7 +687,15 @@ func (h *HostRateLimiter) evictIdle() {
 }
 
 // Close stops the eviction goroutine and releases resources.
+//
+// Idempotent and safe to call concurrently: the bare close(h.stopEvict) it used
+// to do panics the process with "close of closed channel" on a second call, and
+// a limiter can legitimately have more than one closer — a phase that BORROWS a
+// shared limiter closes it on its own defer, as does the owner.
 func (h *HostRateLimiter) Close() error {
+	if !h.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 	close(h.stopEvict)
 	// conc re-panics on Wait() if the eviction goroutine panicked.
 	// Absorb it gracefully so Close() doesn't crash the process.

@@ -204,7 +204,7 @@ func TestSaveToDatabase_StampsConfiguredProject(t *testing.T) {
 	req := newStubRecord("api.example.com", "/api/users").WithResponse(
 		httpmsg.NewHttpResponse([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}")))
 
-	e.saveToDatabase(ctx, work.NewWithModules(req, nil), req)
+	e.saveToDatabase(ctx, work.NewWithModules(req, nil), req, nil)
 
 	var records []*database.HTTPRecord
 	if err := db.NewSelect().Model(&records).Scan(ctx); err != nil {

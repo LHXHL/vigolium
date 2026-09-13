@@ -122,7 +122,7 @@ func (e *Executor) drainProbeCorroboration(ctx context.Context) {
 		}
 		r.ModuleType = database.ModuleTypePassive
 		r.FindingSource = database.FindingSourceDynamicAssessment
-		e.emitResult(ctx, r, nil)
+		e.emitResult(ctx, r, nil, nil)
 	}
 }
 
