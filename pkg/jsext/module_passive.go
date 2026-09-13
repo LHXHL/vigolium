@@ -54,7 +54,10 @@ func (m *JSPassiveModule) ScanPerRequest(
 	scanCtx *modkit.ScanContext,
 ) ([]*output.ResultEvent, error) {
 	vm := m.pool.Get()
-	defer m.pool.Put(vm)
+	// poisoned is set when the watchdog interrupted the runtime; such a VM carries
+	// a sticky interrupt flag and must never go back into the pool.
+	poisoned := false
+	defer func() { m.pool.PutUnlessPoisoned(vm, poisoned) }()
 
 	ctxObj := buildRequestContext(vm, ctx)
 	enrichRecordContext(vm, ctxObj, ctx, scanCtx, m.pool.opts.Repository)
@@ -70,7 +73,13 @@ func (m *JSPassiveModule) ScanPerRequest(
 		return nil, fmt.Errorf("scanPerRequest is not a function in %s", m.script.Path)
 	}
 
-	result, err := callable(exports, ctxObj)
+	// Bounded like the active path. Sobek runs JS synchronously with no built-in
+	// cancellation, and the executor's inline passive path assumes a non-contextual
+	// module does bounded work — which arbitrary user JavaScript does not. Calling
+	// the extension unguarded meant one infinite loop in a passive extension pinned
+	// a worker goroutine and a core for the rest of the scan.
+	result, err, timedOut := callJSWithTimeout(vm, callable, exports, ctxObj)
+	poisoned = timedOut
 	if err != nil {
 		return nil, fmt.Errorf("JS error in %s: %w", m.script.Path, err)
 	}
@@ -83,7 +92,8 @@ func (m *JSPassiveModule) ScanPerHost(
 	scanCtx *modkit.ScanContext,
 ) ([]*output.ResultEvent, error) {
 	vm := m.pool.Get()
-	defer m.pool.Put(vm)
+	poisoned := false
+	defer func() { m.pool.PutUnlessPoisoned(vm, poisoned) }()
 
 	ctxObj := buildRequestContext(vm, ctx)
 	enrichRecordContext(vm, ctxObj, ctx, scanCtx, m.pool.opts.Repository)
@@ -99,7 +109,8 @@ func (m *JSPassiveModule) ScanPerHost(
 		return nil, fmt.Errorf("scanPerHost is not a function in %s", m.script.Path)
 	}
 
-	result, err := callable(exports, ctxObj)
+	result, err, timedOut := callJSWithTimeout(vm, callable, exports, ctxObj)
+	poisoned = timedOut
 	if err != nil {
 		return nil, fmt.Errorf("JS error in %s: %w", m.script.Path, err)
 	}

@@ -25,14 +25,15 @@ type Element struct {
 // a wedged/unresponsive renderer. Mirrors the explicit caps on Click/Hover/etc.
 //
 // Do NOT use it for ops that RETURN a reusable rod element/page (e.g. Parent):
-// the returned object would inherit this short timeout context and expire mid-use.
-// Those keep e.rodElem so the result inherits the page (crawl-bound) context.
+// the returned object would inherit this short timeout context and expire
+// mid-use. Those take e.rodElem raw and re-adopt the result (see Page.adopt).
 func (e *Element) boundedElem() *rod.Element {
 	return e.rodElem.Timeout(firstPositiveDuration(e.page.config.ElementTimeout, 5*time.Second))
 }
 
-// Click clicks the element with fresh timeout.
-// Uses config.ElementTimeout to reset context, preventing timeout inheritance from element search.
+// Click clicks the element with fresh timeout. The per-operation Timeout only
+// bounds this call because the element was adopted onto the crawl context first
+// — see Page.adopt.
 func (e *Element) Click() error {
 	return e.rodElem.Timeout(e.page.config.ElementTimeout).Click(proto.InputMouseButtonLeft, 1)
 }
@@ -327,14 +328,15 @@ type Box struct {
 }
 
 // Parent returns the parent element. Intentionally uses the raw e.rodElem (not
-// boundedElem): the returned element must inherit the page's (crawl-bound)
-// context so it stays usable, not a short one-shot timeout that expires mid-use.
+// boundedElem), and re-adopts the result rather than letting it inherit e's own
+// context: an ancestor walk that inherited a lookup deadline is exactly how
+// exclusion checks go quiet partway through a candidate list. See Page.adopt.
 func (e *Element) Parent() (*Element, error) {
 	rodElem, err := e.rodElem.Parent()
 	if err != nil {
 		return nil, err
 	}
-	return &Element{rodElem: rodElem, page: e.page}, nil
+	return e.page.adopt(rodElem), nil
 }
 
 // Children returns child elements with safe timeout.
@@ -348,7 +350,7 @@ func (e *Element) Children() ([]*Element, error) {
 
 	children := make([]*Element, 0, len(rodChildren))
 	for _, rodChild := range rodChildren {
-		children = append(children, &Element{rodElem: rodChild, page: e.page})
+		children = append(children, e.page.adopt(rodChild))
 	}
 
 	return children, nil

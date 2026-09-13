@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -10,11 +11,24 @@ import (
 
 // fakeRecordSaver records everything handed to it so tests can assert the async
 // RepositoryWriter batches and flushes correctly.
+//
+// The optional knobs (block, failAll) let the lifecycle tests in
+// writer_admission_test.go simulate a stalled or failing database without a
+// second RecordSaver implementation — one fake per interface, so a signature
+// change has one place to follow.
 type fakeRecordSaver struct {
 	mu           sync.Mutex
 	singleCalls  int
 	batchCalls   int
 	savedRecords int
+	// block, when non-nil, parks every batch save until it is closed or the
+	// save's own context expires.
+	block chan struct{}
+	// failAll makes every batch fail, exercising the drop-accounting path.
+	failAll bool
+	// sawDeadline records whether the context handed to SaveRecordBatch carried
+	// one — the thing that keeps the drainer making progress.
+	sawDeadline bool
 }
 
 func (f *fakeRecordSaver) SaveRecord(_ context.Context, _ *httpmsg.HttpRequestResponse, _ string, _ string) (string, error) {
@@ -25,10 +39,30 @@ func (f *fakeRecordSaver) SaveRecord(_ context.Context, _ *httpmsg.HttpRequestRe
 	return "id", nil
 }
 
-func (f *fakeRecordSaver) SaveRecordBatch(_ context.Context, records []*httpmsg.HttpRequestResponse, _ string, _ string) ([]string, error) {
+func (f *fakeRecordSaver) SaveRecordBatch(ctx context.Context, records []*httpmsg.HttpRequestResponse, _ string, _ string) ([]string, error) {
+	_, hasDeadline := ctx.Deadline()
+
+	f.mu.Lock()
+	f.batchCalls++
+	if hasDeadline {
+		f.sawDeadline = true
+	}
+	block, failAll := f.block, f.failAll
+	f.mu.Unlock()
+
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if failAll {
+		return nil, errors.New("simulated database failure")
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.batchCalls++
 	f.savedRecords += len(records)
 	ids := make([]string, len(records))
 	for i := range ids {
@@ -41,6 +75,23 @@ func (f *fakeRecordSaver) counts() (single, batch, saved int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.singleCalls, f.batchCalls, f.savedRecords
+}
+
+// unblock releases a saver parked on its block channel.
+func (f *fakeRecordSaver) unblock() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.block != nil {
+		close(f.block)
+		f.block = nil
+	}
+}
+
+// deadlineSeen reports whether any batch save received a bounded context.
+func (f *fakeRecordSaver) deadlineSeen() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sawDeadline
 }
 
 // TestRepositoryWriterFlushesAllOnClose verifies every written record is persisted

@@ -43,6 +43,17 @@ func (p *VMPool) Put(vm *sobek.Runtime) {
 	p.pool.Put(vm)
 }
 
+// PutUnlessPoisoned returns a VM to the pool, or discards it when poisoned — a
+// runtime the execution-timeout watchdog interrupted carries a sticky interrupt
+// flag and must never be reused. One owner for that rule, so a new call site
+// cannot reintroduce a tainted VM to the pool.
+func (p *VMPool) PutUnlessPoisoned(vm *sobek.Runtime, poisoned bool) {
+	if poisoned {
+		return
+	}
+	p.pool.Put(vm)
+}
+
 func (p *VMPool) createVM() *sobek.Runtime {
 	vm := sobek.New()
 

@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"io"
 	"math"
 	nethttp "net/http"
 	"sync"
@@ -61,16 +62,78 @@ type retryRoundTripper struct {
 	config *RetryConfig
 }
 
+// CloseIdleConnections forwards the idle-close to the wrapped transport.
+// See forwardCloseIdle for why every middleware here needs this method.
+func (r *retryRoundTripper) CloseIdleConnections() { forwardCloseIdle(r.next) }
+
+// forwardCloseIdle passes an idle-close down to next when it accepts one.
+//
+// net/http.Client.CloseIdleConnections only calls the method if its Transport
+// implements it, and a middleware chain replaces the Transport with the
+// outermost wrapper. So a single middleware without this method silently
+// swallows every idle-close for the whole chain and the connection pool lives
+// until the process exits. Every RoundTripper in this file must forward.
+//
+// Client.CloseIdleConnections does not rely on this — it holds the transport it
+// built and calls it directly. This path is for a caller holding the bare
+// *nethttp.Client from Client.HTTPClient().
+func forwardCloseIdle(next nethttp.RoundTripper) {
+	if c, ok := next.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
+// maxRetryDrainBytes bounds how much of a discarded intermediate response is read
+// before closing it. Draining to EOF lets the connection go back to the pool, but
+// a large error page must not be read in full just to be thrown away — and an
+// unbounded drain on a slow host stalls the retry loop.
+const maxRetryDrainBytes = 16 << 10
+
+// drainAndClose consumes a bounded prefix of body so the connection is reusable,
+// then closes it exactly once.
+func drainAndClose(body io.ReadCloser) {
+	if body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, maxRetryDrainBytes))
+	_ = body.Close()
+}
+
 func (r *retryRoundTripper) RoundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	var resp *nethttp.Response
 	var err error
 
-	for attempt := 1; attempt <= r.config.MaxAttempts; attempt++ {
-		// Clone request for retry (body may have been consumed)
-		reqClone := req.Clone(req.Context())
+	// A misconfigured MaxAttempts would skip the loop entirely and return
+	// (nil, nil), which every caller of RoundTrip treats as a protocol violation.
+	attempts := r.config.MaxAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	// A body that cannot be replayed must not be retried: a second attempt would
+	// go out empty. Decided once here rather than re-derived per iteration.
+	if req.Body != nil && req.GetBody == nil {
+		attempts = 1
+	}
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		// Attempt 1 sends req untouched; only a RETRY needs its own copy, and a
+		// clone is ~1KB and 5 allocations on a path where retries are the
+		// exception. Clone does NOT duplicate the body stream, so a retry also has
+		// to restore it from GetBody, or it goes out with a consumed (empty) body.
+		sendReq := req
+		if attempt > 1 {
+			sendReq = req.Clone(req.Context())
+			if req.Body != nil {
+				body, berr := req.GetBody()
+				if berr != nil {
+					return resp, err
+				}
+				sendReq.Body = body
+			}
+		}
 
 		// Execute request
-		resp, err = r.next.RoundTrip(reqClone)
+		resp, err = r.next.RoundTrip(sendReq)
 
 		// Check if we should retry
 		shouldRetry := false
@@ -85,15 +148,25 @@ func (r *retryRoundTripper) RoundTrip(req *nethttp.Request) (*nethttp.Response, 
 			for _, code := range r.config.RetryableStatusCodes {
 				if resp.StatusCode == code {
 					shouldRetry = true
-					// Close response body before retry
-					_ = resp.Body.Close()
 					break
 				}
 			}
 		}
 
+		// Whether another attempt is permitted MUST be decided before the response
+		// is disposed of. Closing on retryable status first meant the final attempt
+		// returned a 429/503 whose body was already closed, so the caller read
+		// nothing — against a rate-limiting host discovery silently saw empty
+		// responses instead of the throttling it was being told about.
+		lastAttempt := attempt == attempts
+		if shouldRetry && !lastAttempt && resp != nil {
+			// Intermediate response we are about to discard: drain a bounded prefix
+			// so the connection can be reused, then close.
+			drainAndClose(resp.Body)
+		}
+
 		// If successful or last attempt, return
-		if !shouldRetry || attempt == r.config.MaxAttempts {
+		if !shouldRetry || lastAttempt {
 			if err != nil {
 				return nil, &RequestError{
 					URL:     req.URL.String(),
@@ -176,6 +249,11 @@ type rateLimitRoundTripper struct {
 	config  *RateLimitConfig
 }
 
+// CloseIdleConnections forwards the idle-close to the wrapped transport.
+// See forwardCloseIdle: a middleware that omits this breaks the chain for
+// everything beneath it.
+func (r *rateLimitRoundTripper) CloseIdleConnections() { forwardCloseIdle(r.next) }
+
 func (r *rateLimitRoundTripper) RoundTrip(req *nethttp.Request) (*nethttp.Response, error) {
 	// Wait for token (respects context cancellation)
 	if err := r.limiter.Wait(req.Context()); err != nil {
@@ -201,6 +279,15 @@ type tokenBucket struct {
 }
 
 func newTokenBucket(requestsPerSecond, burstSize int) *tokenBucket {
+	// A zero rate reaches a division by zero below, and a negative one yields a
+	// nonsense interval, so clamp to the documented default rather than panicking
+	// deep inside a middleware chain.
+	if requestsPerSecond < 1 {
+		requestsPerSecond = DefaultRateLimitConfig().RequestsPerSecond
+	}
+	if burstSize < 1 {
+		burstSize = requestsPerSecond
+	}
 	rate := float64(requestsPerSecond)
 	interval := time.Second / time.Duration(requestsPerSecond)
 

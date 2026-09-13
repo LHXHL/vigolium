@@ -840,6 +840,10 @@ func (e *Engine) onResult(result *Result) {
 		}
 
 		builder = builder.WithResponse(resp.StatusCode, headers, bodyCopy, actualContentLength, mimeType, location, title, words, lines)
+		// rc carries the duration only when the sender timed it (Client.Send
+		// does; a chain rebuilt from a prior session's store does not). Zero is
+		// passed through as zero, which the builder reads as "not measured".
+		builder = builder.WithResponseDuration(rc.Duration())
 	}
 
 	storageResult := builder.Build()

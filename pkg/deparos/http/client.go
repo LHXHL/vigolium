@@ -15,6 +15,13 @@ import (
 type Client struct {
 	client     *nethttp.Client
 	middleware []Middleware
+
+	// ownedTransport is the base transport NewClient built for this client, kept
+	// so CloseIdleConnections can reach it directly. The client's Transport field
+	// is the OUTERMOST middleware wrapper, not this transport, so going through
+	// it would depend on every middleware in the chain forwarding the call.
+	// nil when the client was built around a caller-supplied round tripper.
+	ownedTransport *nethttp.Transport
 }
 
 // Middleware represents an HTTP middleware function.
@@ -95,9 +102,33 @@ func NewClient(config *ClientConfig) *Client {
 	}
 
 	return &Client{
-		client:     client,
-		middleware: config.Middleware,
+		client:         client,
+		middleware:     config.Middleware,
+		ownedTransport: transport,
 	}
+}
+
+// CloseIdleConnections releases the keep-alive connections this client owns but
+// is no longer using. Call it when the component that built the client is done
+// with it — idle sockets otherwise sit open until the process exits, which on a
+// run that discovers many hosts means one leaked pool per host.
+//
+// Safe to call more than once, and safe on a client still in use: an in-flight
+// request's connection is not idle, so it is untouched.
+//
+// Only for an OWNED client. A borrowed one belongs to whoever built it; closing
+// its idle connections would drop sockets out from under the other user.
+//
+// Goes straight to the transport that holds the pool rather than through
+// c.client, so it cannot be defeated by a middleware that forgets to forward
+// the call. (The middlewares do forward it — see middleware.go — but that path
+// exists for callers holding the bare client from HTTPClient(), not for this
+// one, which knows exactly which transport it built.)
+func (c *Client) CloseIdleConnections() {
+	if c == nil || c.ownedTransport == nil {
+		return
+	}
+	c.ownedTransport.CloseIdleConnections()
 }
 
 // HTTPClient returns the underlying *nethttp.Client.
@@ -109,6 +140,13 @@ func (c *Client) HTTPClient() *nethttp.Client {
 // Send sends an HTTP request and returns a ResponseChain.
 // Implements domainhttp.HTTPClient interface.
 // CRITICAL: Caller MUST call Close() on the returned ResponseChain when done.
+//
+// ctx is authoritative: it is attached to the outgoing request, overriding
+// whatever context the request was built with. RequestBuilder defaults to
+// context.Background(), and the startup probe and robots loader both build such
+// a request and then pass e.ctx here — so before ctx was attached, cancelling a
+// discovery run left every in-flight request running until the client's own
+// timeout elapsed. Ctrl-C appeared to hang.
 func (c *Client) Send(ctx context.Context, req *nethttp.Request) (*responsechain.ResponseChain, error) {
 	// Set default User-Agent if not already set (configured global override
 	// or the built-in Chrome string for WAF-bypass realism)
@@ -116,7 +154,15 @@ func (c *Client) Send(ctx context.Context, req *nethttp.Request) (*responsechain
 		req.Header.Set("User-Agent", httpmsg.DefaultUserAgent())
 	}
 
+	// Clone rather than mutate: the caller owns req, and WithContext on a shared
+	// request would publish our context to whoever else holds it. Clone is
+	// shallow on the body, which is correct here — this is the only send.
+	if ctx != nil && ctx != req.Context() {
+		req = req.WithContext(ctx)
+	}
+
 	// Execute request
+	start := time.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, &RequestError{
@@ -124,9 +170,11 @@ func (c *Client) Send(ctx context.Context, req *nethttp.Request) (*responsechain
 			Err: err,
 		}
 	}
+	elapsed := time.Since(start)
 
 	// Create ResponseChain and fill buffers
 	rc := responsechain.NewResponseChain(resp, 0)
+	rc.SetDuration(elapsed)
 	if err := rc.Fill(); err != nil {
 		rc.Close()
 		return nil, &RequestError{

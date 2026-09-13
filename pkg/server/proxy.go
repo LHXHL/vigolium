@@ -161,6 +161,7 @@ func (p *proxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward the request
+	upstreamStart := time.Now()
 	resp, err := p.transport.RoundTrip(r)
 	if err != nil {
 		zap.L().Debug("Proxy forward failed", zap.String("url", r.URL.String()), zap.Error(err))
@@ -209,7 +210,11 @@ func (p *proxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		reqBody = reqCap.Bytes()
 	}
 	// Record transaction in background so the client is off the DB-write path.
-	go p.recordTransaction(r, reqBody, resp, respCap.Bytes())
+	// The duration is measured to the END of the client stream, not to
+	// RoundTrip's return: RoundTrip returns once the headers are in, and the
+	// body then arrives while we tee it. Stopping at the header would report a
+	// TTFB as if it were the whole transaction.
+	go p.recordTransaction(r, reqBody, resp, respCap.Bytes(), time.Since(upstreamStart))
 }
 
 // handleConnect handles HTTPS CONNECT. With a MITM CA configured it intercepts
@@ -329,6 +334,7 @@ func (p *proxyHandler) serveDecrypted(tlsConn *tls.Conn, hostPort string) {
 		// scanner than gzipped bytes.
 		req.Header.Del("Accept-Encoding")
 
+		upstreamStart := time.Now()
 		resp, err := p.upstreamTransport.RoundTrip(req)
 		if err != nil {
 			zap.L().Debug("Proxy MITM: upstream round-trip failed",
@@ -368,7 +374,7 @@ func (p *proxyHandler) serveDecrypted(tlsConn *tls.Conn, hostPort string) {
 			if reqCap != nil {
 				reqBody = reqCap.Bytes()
 			}
-			p.recordTransaction(req, reqBody, resp, respCap.Bytes())
+			p.recordTransaction(req, reqBody, resp, respCap.Bytes(), time.Since(upstreamStart))
 		}
 
 		if !keepAlive {
@@ -458,7 +464,7 @@ func writeBadGateway(w io.Writer, cause error) {
 }
 
 // recordTransaction builds an HttpRequestResponse and saves it to the database.
-func (p *proxyHandler) recordTransaction(r *http.Request, reqBody []byte, resp *http.Response, respBody []byte) {
+func (p *proxyHandler) recordTransaction(r *http.Request, reqBody []byte, resp *http.Response, respBody []byte, elapsed time.Duration) {
 	if p.repo == nil {
 		return
 	}
@@ -496,7 +502,7 @@ func (p *proxyHandler) recordTransaction(r *http.Request, reqBody []byte, resp *
 		rawResp.Write(respBody)
 	}
 
-	httpResp := httpmsg.NewHttpResponse([]byte(rawResp.String()))
+	httpResp := httpmsg.NewHttpResponseWithDuration([]byte(rawResp.String()), elapsed)
 	if httpResp != nil {
 		rr = rr.WithResponse(httpResp)
 	}

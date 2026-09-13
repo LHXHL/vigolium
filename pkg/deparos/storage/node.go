@@ -60,6 +60,11 @@ type ResponseData struct {
 	FingerprintAttrs map[uint8]uint32 // Fingerprint attribute ID → hash value
 	Words            int64            // Word count in response body
 	Lines            int64            // Line count in response body
+	// DurationMs is the measured round-trip time for this response, in
+	// milliseconds. Zero means NOT MEASURED, never "instant" — a node reloaded
+	// from a prior session's store, or produced by a path that does not time
+	// its sends, legitimately has none.
+	DurationMs int64
 }
 
 // DiscoveryMetadata tracks how and when the URL was found

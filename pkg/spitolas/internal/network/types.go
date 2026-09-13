@@ -22,6 +22,10 @@ type TrafficEntry struct {
 	Words         int    `json:"-"`
 	Lines         int    `json:"-"`
 	TargetHost    string `json:"-"`
+	// DurationMs is the wall-clock time from the browser issuing the request to
+	// the response arriving. Zero means NOT MEASURED (an entry rebuilt from a
+	// stored capture has no pending timer), never "instant".
+	DurationMs int64 `json:"-"`
 }
 
 // RequestData contains HTTP request information.

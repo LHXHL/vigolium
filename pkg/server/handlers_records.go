@@ -78,6 +78,13 @@ func (h *Handlers) HandleListRecords(c fiber.Ctx) error {
 		}
 	}
 
+	// Attack-surface score
+	if minSurface := c.Query("min_surface"); minSurface != "" {
+		if v, err := strconv.Atoi(minSurface); err == nil {
+			filters.MinSurfaceScore = v
+		}
+	}
+
 	// Remark (single or comma-separated for AND filtering)
 	if remark := c.Query("remark"); remark != "" {
 		if strings.Contains(remark, ",") {
@@ -141,7 +148,15 @@ func (h *Handlers) HandleListRecords(c fiber.Ctx) error {
 		})
 	}
 
-	total, _ := qb.Count(ctx)
+	// A discarded count error reported total=0 while rows were returned, which
+	// also made HasMore compute false — so a paging client stopped at the first
+	// page and a dashboard showed "0 records" above a populated table. Say the
+	// count is unavailable instead of asserting a wrong one.
+	total, countErr := qb.Count(ctx)
+	if countErr != nil {
+		zap.L().Warn("record count failed; total reported as unavailable", zap.Error(countErr))
+		total = 0 // keeps the merge arithmetic below sane; resolved at the response
+	}
 	if bridgeEnabled {
 		client, clientErr := burpbridge.New(h.config.BurpBridgeURL)
 		var live burpbridge.Result
@@ -175,13 +190,22 @@ func (h *Handlers) HandleListRecords(c fiber.Ctx) error {
 		)
 	}
 
+	// With no trustworthy count, report total as -1 ("unknown") rather than the
+	// fabricated 0 a discarded error used to produce, and fall back to page
+	// fullness for HasMore so a paging client still advances instead of stopping
+	// dead on the first page.
+	hasMore := int64(filters.Offset+len(records)) < total
+	if countErr != nil {
+		total, hasMore = -1, filters.Limit > 0 && len(records) >= filters.Limit
+	}
+
 	return c.JSON(PaginatedResponse{
 		ProjectUUID: projectUUID,
 		Data:        records,
 		Total:       total,
 		Limit:       filters.Limit,
 		Offset:      filters.Offset,
-		HasMore:     int64(filters.Offset+len(records)) < total,
+		HasMore:     hasMore,
 	})
 }
 

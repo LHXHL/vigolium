@@ -9,15 +9,7 @@ import (
 )
 
 // ExtractionCoordinator orchestrates all link extractors in the correct order.
-//
-// The coordinator implements the spider's extraction pipeline:
-//  1. Always run inline URL scanner (scans raw bytes)
-//  2. Skip HTML processing if body < 10 bytes
-//  3. Parse HTML if not already parsed
-//  4. Run HTTP header extractor
-//  5. If HTML parsed successfully: run attribute + comment extractors
-//  6. Run robots.txt parser
-//  7. Extract forms
+// The pipeline order is documented once, on Extract.
 type ExtractionCoordinator struct {
 	inlineScanner *InlineURLScanner
 	httpHeaders   *HTTPHeaderExtractor
@@ -62,13 +54,17 @@ func NewExtractionCoordinator(
 //
 // Extraction pipeline order:
 //  1. Inline URL scanner - always runs
-//  2. Check body size >= 10 bytes
-//  3. Parse HTML if needed
-//  4. HTTP header extractor
+//  2. HTTP header extractor - always runs (body-independent)
+//  3. Check body size >= 10 bytes
+//  4. Parse HTML if needed
 //  5. If HTML parsed: HTML attribute + comment extractors
 //  6. Robots.txt parser
 //  7. Regex path extractor
 //  8. Form extractor (new)
+//
+// Steps 1 and 2 are body-independent and therefore precede the size check;
+// everything after it needs a parseable body. A new extractor has to pick a
+// side: landing below the gate means it never runs on a bodyless response.
 //
 // Parameters:
 //   - ctx: Context for cancellation
@@ -122,7 +118,19 @@ func (ec *ExtractionCoordinator) extractInternal(ctx context.Context, baseURL *u
 		return nil, err
 	}
 
-	// Step 2: Check if body is large enough for HTML processing
+	// Step 2: HTTP header extractor.
+	//
+	// Runs BEFORE the short-body return below, because it reads only
+	// response.Headers — nothing it extracts depends on there being a body. It
+	// used to sit after that return, which meant a response with no body could
+	// never contribute a header-derived URL: a 30x carrying only Location, a 204
+	// with Link rel=canonical, an empty 200 with Refresh or Content-Location.
+	// Those are exactly the responses where the header IS the content.
+	if err := ec.httpHeaders.Extract(ctx, baseURL, response, callback); err != nil {
+		return nil, err
+	}
+
+	// Step 3: Check if body is large enough for HTML processing
 	if len(response.Body) < 10 {
 		return &ExtractionResult{
 			Links:           extractURLs(links),
@@ -131,13 +139,8 @@ func (ec *ExtractionCoordinator) extractInternal(ctx context.Context, baseURL *u
 		}, nil
 	}
 
-	// Step 3: Parse HTML if not already parsed (uses sync.Once for caching)
+	// Step 4: Parse HTML if not already parsed (uses sync.Once for caching)
 	_ = response.ParseHTML()
-
-	// Step 4: HTTP header extractor
-	if err := ec.httpHeaders.Extract(ctx, baseURL, response, callback); err != nil {
-		return nil, err
-	}
 
 	// Step 5: HTML-based extractors (only if HTML parsed successfully)
 	if response.HTML != nil {

@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
@@ -36,7 +37,11 @@ func ToHttpRequestResponse(entry *TrafficEntry) (*httpmsg.HttpRequestResponse, e
 	var httpResp *httpmsg.HttpResponse
 	if entry.Response != nil {
 		rawResp := buildRawResponse(entry)
-		httpResp = httpmsg.NewHttpResponse(rawResp)
+		// Browser-captured records are persisted like any other, so the timing
+		// the capture layer measured has to ride along here or it is lost —
+		// the converter cannot recover it from the raw bytes.
+		httpResp = httpmsg.NewHttpResponseWithDuration(rawResp,
+			time.Duration(entry.DurationMs)*time.Millisecond)
 	}
 
 	return httpmsg.NewHttpRequestResponse(httpReq, httpResp), nil

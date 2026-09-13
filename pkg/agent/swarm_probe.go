@@ -219,6 +219,7 @@ func probeSingleRecordWithLimit(ctx context.Context, client *http.Client, rr *ht
 		}
 	}
 
+	start := time.Now()
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		zap.L().Debug("Probe request failed", zap.String("url", targetURL), zap.Error(err))
@@ -244,7 +245,10 @@ func probeSingleRecordWithLimit(ctx context.Context, client *http.Client, rr *ht
 	rawResp.WriteString("\r\n")
 	rawResp.Write(body)
 
-	httpResp := httpmsg.NewHttpResponse(rawResp.Bytes())
+	// Timed to the end of the body read, not to client.Do's return: Do returns
+	// on headers, and the body is read above. Stopping at Do would record a TTFB
+	// under a name that says whole-transaction.
+	httpResp := httpmsg.NewHttpResponseWithDuration(rawResp.Bytes(), time.Since(start))
 	return rr.WithResponse(httpResp)
 }
 

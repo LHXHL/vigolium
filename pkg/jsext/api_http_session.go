@@ -1104,9 +1104,10 @@ func doRawRequestBytes(httpClient *gohttp.Requester, rawReq string) respSlot {
 
 	hrr := httpmsg.NewHttpRequestResponse(req, nil)
 
-	start := time.Now()
-	respChain, _, err := httpClient.Execute(hrr, gohttp.Options{})
-	elapsedMs := time.Since(start).Milliseconds()
+	respChain, elapsed, err := httpClient.Execute(hrr, gohttp.Options{})
+	// The requester's own measurement, which starts after rate/host admission —
+	// so elapsed_ms reports the target's latency rather than vigolium's queue.
+	elapsedMs := elapsed.Milliseconds()
 
 	if err != nil {
 		zap.L().Debug("JS batch HTTP request failed", zap.Error(err))

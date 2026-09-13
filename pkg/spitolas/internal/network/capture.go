@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"go.uber.org/zap"
 )
 
@@ -356,6 +357,7 @@ func (c *Capture) onRequestWillBeSent(e *proto.NetworkRequestWillBeSent, session
 				Status:  e.RedirectResponse.Status,
 				Headers: convertHeaders(e.RedirectResponse.Headers),
 			}
+			prev.entry.DurationMs = elapsedMs(prev.startTime)
 			computeHTTPXFields(prev.entry)
 			if !c.includeResponseBody {
 				prev.entry.Response.Body = nil
@@ -425,15 +427,25 @@ func (c *Capture) onResponseReceived(e *proto.NetworkResponseReceived, sessionID
 		zap.String("mime_type", e.Response.MIMEType))
 }
 
-// computeHTTPXFields extracts httpx fields from response data.
-// Called BEFORE potentially discarding headers/body.
-// These fields are always computed regardless of includeBody/includeHeaders flags.
-func computeHTTPXFields(entry *TrafficEntry) {
+// computeHeaderFields extracts the header-derived httpx fields (Content-Type,
+// Server). Split out from computeHTTPXFields because it must run BEFORE the
+// body-fetch gate, which reads entry.ContentType to decide whether a body is
+// worth pulling over CDP.
+//
+// Ordering here is the whole point. While these fields were populated only after
+// the fetch, entry.ContentType was always "" at the gate, so
+// shouldFetchResponseBody's isBinaryStaticContentType branch was dead code and
+// only the URL suffix could classify a response. An extensionless image/font/
+// video therefore took the text/API path: fetched unconditionally, retained in
+// full, and never subject to the maxStaticBodyFetchBytes cap.
+//
+// Safe to call twice — both assignments are idempotent overwrites from the same
+// header map, and computeHTTPXFields still calls it so pre-existing callers that
+// only invoke the latter keep their behavior.
+func computeHeaderFields(entry *TrafficEntry) {
 	if entry.Response == nil {
 		return
 	}
-
-	// From headers: Content-Type and Server
 	for k, v := range entry.Response.Headers {
 		if strings.EqualFold(k, "Content-Type") {
 			entry.ContentType = v
@@ -442,6 +454,17 @@ func computeHTTPXFields(entry *TrafficEntry) {
 			entry.WebServer = v
 		}
 	}
+}
+
+// computeHTTPXFields extracts httpx fields from response data.
+// Called BEFORE potentially discarding headers/body.
+// These fields are always computed regardless of includeBody/includeHeaders flags.
+func computeHTTPXFields(entry *TrafficEntry) {
+	if entry.Response == nil {
+		return
+	}
+
+	computeHeaderFields(entry)
 
 	// From body: content_length, words, lines
 	if len(entry.Response.Body) > 0 {
@@ -469,6 +492,12 @@ func (c *Capture) onLoadingFinished(e *proto.NetworkLoadingFinished, sessionID p
 	c.mu.Unlock()
 
 	if pending.entry.Response != nil {
+		// Resolve the response MIME type BEFORE the gate below consults it. The
+		// gate is the only consumer of ContentType on this path, and computing it
+		// afterwards (as part of computeHTTPXFields) left the gate reading an empty
+		// string on every single response — see computeHeaderFields.
+		computeHeaderFields(pending.entry)
+
 		// Fetch the body only when it's worth it: HTML/JS/JSON/XML/API responses
 		// (always) or a retained, reasonably-sized static asset. Skipping a static
 		// body we'd discard also skips this response's page enumeration + CDP body
@@ -505,6 +534,8 @@ func (c *Capture) onLoadingFinished(e *proto.NetworkLoadingFinished, sessionID p
 				pending.entry.Response.Body = body
 			}
 		}
+
+		pending.entry.DurationMs = elapsedMs(pending.startTime)
 
 		// Compute httpx fields BEFORE potentially discarding data
 		computeHTTPXFields(pending.entry)
@@ -925,10 +956,17 @@ func (c *Capture) writeEntry(entry *TrafficEntry) {
 		}
 		c.shapeVariants[shapeHash]++
 	}
-	err := c.writer.Write(entry)
-	if err == nil {
-		c.writtenCount++
-	}
+
+	// Snapshot everything the write needs, then RELEASE THE LOCK BEFORE WRITING.
+	//
+	// writer.Write blocks when the persistence queue is full, which is the
+	// intended backpressure. Doing that while holding c.mu turned backpressure
+	// into a deadlock: Capture.Close needs this same mutex to set c.stopped and
+	// reach writer.Close, and writer.Close is the only thing that can drain the
+	// queue this write is waiting on. A stalled database therefore wedged the
+	// capture permanently, with no path out — the crawl could not even be shut
+	// down. Writing outside the lock breaks the cycle.
+	writer := c.writer
 	noColor := c.noColor
 	silent := c.silent
 
@@ -939,10 +977,19 @@ func (c *Capture) writeEntry(entry *TrafficEntry) {
 	}
 	c.mu.Unlock()
 
-	if err != nil {
+	if err := writer.Write(entry); err != nil {
+		// The dedup reservation above is deliberately NOT rolled back. Write fails
+		// only on a conversion error, which is a property of this entry and would
+		// fail identically on a retry; persistence failures are asynchronous and
+		// surface through the writer's own failed counter (and its Close error),
+		// where a capture-side rollback could not help anyway.
 		zap.L().Error("Failed to write traffic entry", zap.Error(err))
 		return
 	}
+
+	c.mu.Lock()
+	c.writtenCount++
+	c.mu.Unlock()
 
 	// Print log OUTSIDE mutex - fmt.Fprintf to stderr is atomic
 	if !alreadyLogged && !silent && c.shouldLogEntry(entry) {
@@ -1144,4 +1191,15 @@ func (c *Capture) Close() error {
 		return writer.Close()
 	}
 	return nil
+}
+
+// elapsedMs converts a pending request's start time into a measured duration in
+// milliseconds. A zero start time — an entry that never went through the
+// pending map — was never measured and correctly reports 0; everything else
+// goes through the shared floor rule.
+func elapsedMs(start time.Time) int64 {
+	if start.IsZero() {
+		return 0
+	}
+	return httpmsg.MeasuredMillis(time.Since(start))
 }

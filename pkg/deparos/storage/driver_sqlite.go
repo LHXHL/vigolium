@@ -3,7 +3,10 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"time"
 
@@ -93,7 +96,26 @@ func (d *SQLiteDriver) GetDialectName() string {
 	return "sqlite"
 }
 
-// CleanupFiles
+// CleanupFiles removes an owned SQLite database file and the sidecars WAL mode
+// leaves beside it. Call it only for a database this process created (SiteMap
+// passes its temp path and nothing else) — never for a user-supplied persistent
+// file.
+//
+// This used to return nil without deleting anything, so every discovery target
+// stranded a sitemap-*.db in the system temp directory for good; a machine doing
+// routine multi-host scans accumulated thousands of them (gigabytes) with nothing
+// to ever collect them.
 func (d *SQLiteDriver) CleanupFiles(basePath string) error {
-	return nil
+	if basePath == "" {
+		return nil
+	}
+	var errs []error
+	// -wal and -shm are recreated by any later open, so remove them alongside the
+	// database rather than leaving orphans pointing at a file that no longer exists.
+	for _, path := range []string{basePath, basePath + "-wal", basePath + "-shm"} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove %s: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
 }

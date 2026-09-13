@@ -187,7 +187,10 @@ type ScanAllRecordsRequest struct {
 	Source       string   `json:"source,omitempty"`         // record source filter
 	Search       string   `json:"search,omitempty"`         // search across URL/path
 	MinRiskScore int      `json:"min_risk_score,omitempty"` // minimum risk score
-	Remark       string   `json:"remark,omitempty"`         // remark substring filter
+	// MinSurfaceScore filters on the deterministic attack-surface score (0-100)
+	// written by the surface_scoring passive module, which owns the scale.
+	MinSurfaceScore int    `json:"min_surface_score,omitempty"`
+	Remark          string `json:"remark,omitempty"` // remark substring filter
 
 	// Force full rescan (ignore cursor, scan all matching records)
 	Force bool `json:"force"`

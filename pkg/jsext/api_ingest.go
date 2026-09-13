@@ -293,7 +293,7 @@ func fetchResponseForIngest(rr *httpmsg.HttpRequestResponse, httpClient *http.Re
 		return rr
 	}
 
-	respChain, _, err := httpClient.Execute(rr, http.Options{})
+	respChain, elapsed, err := httpClient.Execute(rr, http.Options{})
 	if err != nil {
 		zap.L().Debug("Failed to fetch response during extension ingest",
 			zap.String("url", rr.Target()), zap.Error(err))
@@ -305,7 +305,9 @@ func fetchResponseForIngest(rr *httpmsg.HttpRequestResponse, httpClient *http.Re
 	copy(raw, fullResp)
 	respChain.Close()
 
-	return rr.WithResponse(httpmsg.NewHttpResponse(raw))
+	// This record is persisted, and this send is the only chance to record its
+	// timing — the converter cannot recover it from the bytes.
+	return rr.WithResponse(httpmsg.NewHttpResponseWithDuration(raw, elapsed))
 }
 
 // isExtIngestInScope checks whether a request/response pair should be saved.

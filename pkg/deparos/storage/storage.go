@@ -3,6 +3,8 @@ package storage
 import (
 	"net/url"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
 
 // NodeCallback is called for each node during streaming iteration.
@@ -149,6 +151,15 @@ func (b *ResultBuilder) WithResponse(status int, headers map[string]string, body
 	b.result.Response.Title = title
 	b.result.Response.Words = words
 	b.result.Response.Lines = lines
+	return b
+}
+
+// WithResponseDuration records the measured round-trip time for the response.
+// Separate from WithResponse because not every caller times its send, and a
+// caller that does not must leave the value at zero ("not measured") rather
+// than be forced to pass a placeholder.
+func (b *ResultBuilder) WithResponseDuration(d time.Duration) *ResultBuilder {
+	b.result.Response.DurationMs = httpmsg.MeasuredMillis(d)
 	return b
 }
 

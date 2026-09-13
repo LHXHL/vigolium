@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/grafana/sobek"
 	"github.com/vigolium/vigolium/pkg/http"
@@ -181,9 +180,10 @@ func doRawRequest(vm *sobek.Runtime, httpClient *http.Requester, rawReq string) 
 
 	hrr := httpmsg.NewHttpRequestResponse(req, nil)
 
-	start := time.Now()
-	respChain, _, err := httpClient.Execute(hrr, http.Options{})
-	elapsedMs := time.Since(start).Milliseconds()
+	respChain, elapsed, err := httpClient.Execute(hrr, http.Options{})
+	// The requester's own measurement, which starts after rate/host admission —
+	// so elapsed_ms reports the target's latency rather than vigolium's queue.
+	elapsedMs := elapsed.Milliseconds()
 
 	if err != nil {
 		zap.L().Debug("JS HTTP request failed", zap.Error(err))
@@ -195,7 +195,7 @@ func doRawRequest(vm *sobek.Runtime, httpClient *http.Requester, rawReq string) 
 	copy(rawResponseCopy, fullResp)
 	respChain.Close()
 
-	httpResp := httpmsg.NewHttpResponse(rawResponseCopy)
+	httpResp := httpmsg.NewHttpResponseWithDuration(rawResponseCopy, elapsed)
 
 	result := vm.NewObject()
 	_ = result.Set("status", httpResp.StatusCode())

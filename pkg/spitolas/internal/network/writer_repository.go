@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -37,6 +38,43 @@ const (
 	writerFlushInterval = 100 * time.Millisecond
 )
 
+// Shutdown budgets. Variables rather than constants so lifecycle tests can shrink
+// them and still exercise the real code path; nothing in production reassigns
+// them.
+//
+// Worst-case Close latency is writerSaveTimeout (an in-flight batch) +
+// writerDrainTimeout (the final drain), which stays under the runner's 90s
+// spideringTeardownGrace watchdog with room to spare. Raising either without
+// checking that relationship turns a counted, reported loss into an abandoned
+// teardown.
+var (
+	// writerSaveTimeout bounds a single SaveRecordBatch call.
+	//
+	// This is load-bearing for shutdown, not just hygiene. The flush loop is the
+	// only thing that drains the queue, producers block when the queue fills, and
+	// Close waits for in-flight producers before it can proceed. An unbounded save
+	// against a locked SQLite file or a stalled Postgres therefore stops the
+	// drainer, which backs up the queue, which pins a producer, which blocks
+	// Close — a cycle nothing breaks. With a deadline the drainer always makes
+	// progress, so every link in that chain is bounded too.
+	//
+	// Derived from context.Background(), deliberately not from the crawl context:
+	// the final flush must survive crawl cancellation, since that is exactly when
+	// there is a tail of captured records still to persist.
+	writerSaveTimeout = 30 * time.Second
+	// writerDrainTimeout bounds the ENTIRE final drain, not each batch in it.
+	//
+	// Per-batch bounding is not enough on this path: a full 512-record queue is
+	// eight batches, so a stalled store would cost 8 x writerSaveTimeout and Close
+	// would take minutes.
+	writerDrainTimeout = 30 * time.Second
+)
+
+// ErrWriterClosed is returned by Write when the writer has stopped admitting
+// records. It is a refusal, not a failure: the caller learns the record was NOT
+// accepted, instead of receiving nil for a record that will never be persisted.
+var ErrWriterClosed = errors.New("repository writer closed")
+
 // writeItem is one converted record queued for batched persistence, carrying the
 // original entry so spec ingestion can inspect the response body after the record
 // is saved.
@@ -68,9 +106,29 @@ type RepositoryWriter struct {
 	// specSeen tracks already-parsed spec content hashes to avoid re-parsing.
 	specSeen map[string]struct{}
 
-	queue     chan writeItem
-	stop      chan struct{}
-	done      chan struct{}
+	queue chan writeItem
+	// stop is the single shutdown signal: Close closes it, producers stop being
+	// admitted, and the flush loop begins its final drain.
+	stop chan struct{}
+	done chan struct{}
+	// admitMu is the admission barrier between producers and the final drain.
+	//
+	// Producers hold it for READ across their enqueue; the flush loop takes it for
+	// WRITE before draining. Without it, Write's
+	// `select { case queue <- item; case <-stop }` had a real race: when the queue
+	// has room AND stop is already closed, Go picks a ready case at random, so a
+	// late write was enqueued after the drainer had exited about half the time —
+	// accepted, never persisted, and reported to the caller as success. Checking
+	// stop first only narrows that window; it does not close it.
+	//
+	// The barrier lives on the DRAINER rather than in Close, which is what keeps
+	// it deadlock-free. A producer blocked on a full queue holds the read lock and
+	// is released by close(stop) taking its own select branch; the drainer then
+	// acquires the write lock, and from that moment the queue's contents are final
+	// because any producer arriving later sees stop closed and is refused. Had
+	// Close taken the write lock instead, it would have been waiting on the
+	// drainer — which is exactly the thing a stalled database has stopped.
+	admitMu   sync.RWMutex
 	closeOnce sync.Once
 }
 
@@ -89,9 +147,13 @@ func NewRepositoryWriter(repo RecordSaver, source string, projectUUID string) *R
 	return w
 }
 
-// Write converts a TrafficEntry to HttpRequestResponse and enqueues it for batched
-// persistence. It blocks only when the queue is full (natural backpressure) or
-// returns immediately if the writer has been closed.
+// Write converts a TrafficEntry to HttpRequestResponse and enqueues it for
+// batched persistence. It blocks only when the queue is full (natural
+// backpressure), and returns ErrWriterClosed once the writer has stopped
+// admitting.
+//
+// A nil return is a promise: the record was admitted and the drainer will either
+// persist it or count it failed. That promise is what admitMu exists to keep.
 func (w *RepositoryWriter) Write(entry *TrafficEntry) error {
 	if w.ScopeFilter != nil {
 		u, parseErr := url.Parse(entry.Request.URL)
@@ -112,18 +174,40 @@ func (w *RepositoryWriter) Write(entry *TrafficEntry) error {
 		return err
 	}
 
+	// Hold the admission barrier for the whole enqueue, so the final drain cannot
+	// slip between the closed-check and the send. See admitMu.
+	w.admitMu.RLock()
+	defer w.admitMu.RUnlock()
+
+	select {
+	case <-w.stop:
+		// Writer closed — refuse late CDP events rather than blocking forever, and
+		// say so. This mirrors the capture's own post-Close drop of late Loading
+		// events, but the caller can now tell the difference between "stored" and
+		// "arrived too late".
+		return ErrWriterClosed
+	default:
+	}
+
 	select {
 	case w.queue <- writeItem{rr: httpRR, entry: entry}:
+		// Admitted. Even if stop closed concurrently and this case won the coin
+		// flip, the item is safe: the drainer cannot have taken the write lock
+		// while this producer holds the read lock, so the final drain has not
+		// started and will see this item.
+		return nil
 	case <-w.stop:
-		// Writer closed — drop late CDP events rather than blocking forever. This
-		// mirrors the capture's own post-Close drop of late Loading events.
+		// Shutdown began while this producer was blocked on a full queue. Refuse
+		// explicitly rather than returning nil for a record nothing will store —
+		// returning nil here is precisely the bug this whole barrier is about.
+		return ErrWriterClosed
 	}
-	return nil
 }
 
 // flushLoop drains the write queue, coalescing records into SaveRecordBatch calls
 // on size or a short interval, and runs spec ingestion after each batch lands. It
-// exits after Close signals stop and the queue is drained, flushing what remains.
+// exits after Close fences admission and the queue is drained, flushing what
+// remains within one bounded shutdown budget.
 func (w *RepositoryWriter) flushLoop() {
 	defer close(w.done)
 
@@ -132,7 +216,12 @@ func (w *RepositoryWriter) flushLoop() {
 
 	pending := make([]writeItem, 0, writerBatchSize)
 
-	flush := func() {
+	// flush persists the pending batch by the given absolute deadline. During
+	// shutdown every batch shares ONE deadline, so the final drain is bounded as a
+	// whole rather than per batch: a large backlog against a stalled database
+	// would otherwise cost writerSaveTimeout for every 64 records, and Close would
+	// take minutes instead of seconds.
+	flush := func(deadline time.Time) {
 		if len(pending) == 0 {
 			return
 		}
@@ -140,7 +229,10 @@ func (w *RepositoryWriter) flushLoop() {
 		for i, it := range pending {
 			records[i] = it.rr
 		}
-		ids, err := w.repo.SaveRecordBatch(context.Background(), records, w.source, w.projectUUID)
+
+		saveCtx, cancel := context.WithDeadline(context.Background(), deadline)
+		ids, err := w.repo.SaveRecordBatch(saveCtx, records, w.source, w.projectUUID)
+		cancel()
 		if err != nil {
 			zap.L().Warn("Failed to save spidering record batch; records dropped",
 				zap.Int("count", len(records)), zap.Error(err))
@@ -149,7 +241,15 @@ func (w *RepositoryWriter) flushLoop() {
 			w.mu.Unlock()
 		} else {
 			w.mu.Lock()
-			w.count += len(ids)
+			// The result is index-aligned with the input and carries "" for a
+			// record that was skipped, so len(ids) over-reports. Counted inline
+			// rather than via database.CountSaved: this package talks to the
+			// repository through a structural interface and does not import it.
+			for _, id := range ids {
+				if id != "" {
+					w.count++
+				}
+			}
 			w.mu.Unlock()
 		}
 		// Detect and parse API specs (OpenAPI/Swagger/Postman/WSDL) from spidered
@@ -160,26 +260,74 @@ func (w *RepositoryWriter) flushLoop() {
 		pending = pending[:0]
 	}
 
+	// finalDrain empties the queue and persists it under ONE shutdown budget,
+	// counting whatever does not make it as dropped. Close is on the crawl
+	// teardown path, which the runner already caps with its own watchdog, so an
+	// unbounded drain is not "more durable" — it just gets abandoned somewhere
+	// less accountable, with the loss invisible.
+	//
+	// Declared here rather than as a method so it shares `pending` and `flush`
+	// with the loop above instead of aliasing them through a pointer.
+	finalDrain := func() {
+		// Fence admission first: a producer mid-enqueue still holds the read lock,
+		// so this waits it out, and any producer arriving afterwards sees stop
+		// closed and is refused. From here the queue's contents are final.
+		w.admitMu.Lock()
+		w.admitMu.Unlock() //nolint:staticcheck // lock/unlock is the barrier, not a guarded section
+
+		deadline := time.Now().Add(writerDrainTimeout)
+		for time.Now().Before(deadline) {
+			select {
+			case it := <-w.queue:
+				pending = append(pending, it)
+				if len(pending) >= writerBatchSize {
+					flush(deadline)
+				}
+			default:
+				flush(deadline)
+				return
+			}
+		}
+		w.abandonQueued(&pending)
+	}
+
 	for {
 		select {
 		case it := <-w.queue:
 			pending = append(pending, it)
 			if len(pending) >= writerBatchSize {
-				flush()
+				flush(time.Now().Add(writerSaveTimeout))
 			}
 		case <-ticker.C:
-			flush()
+			flush(time.Now().Add(writerSaveTimeout))
 		case <-w.stop:
-			// Drain whatever is still buffered without blocking, then flush and exit.
-			for {
-				select {
-				case it := <-w.queue:
-					pending = append(pending, it)
-				default:
-					flush()
-					return
-				}
+			finalDrain()
+			return
+		}
+	}
+}
+
+// abandonQueued counts everything still buffered or queued as dropped, so the
+// tally Close reports covers records that were admitted and never reached the
+// database — not only those a save actively rejected.
+func (w *RepositoryWriter) abandonQueued(pending *[]writeItem) {
+	dropped := len(*pending)
+	*pending = (*pending)[:0]
+	for {
+		select {
+		case <-w.queue:
+			dropped++
+		default:
+			if dropped > 0 {
+				zap.L().Warn("RepositoryWriter shutdown budget exhausted; queued records abandoned",
+					zap.Int("abandoned", dropped),
+					zap.Duration("budget", writerDrainTimeout),
+					zap.String("source", w.source))
+				w.mu.Lock()
+				w.failed += dropped
+				w.mu.Unlock()
 			}
+			return
 		}
 	}
 }
@@ -236,12 +384,19 @@ func (w *RepositoryWriter) ingestSpecEndpoints(entry *TrafficEntry, httpRR *http
 		return
 	}
 
-	// Batch save parsed endpoints
-	_, saveErr := w.repo.SaveRecordBatch(context.Background(), endpoints, "spec-ingest", w.projectUUID)
+	// Batch save parsed endpoints. Bounded for the same reason as the main flush:
+	// this runs on the drainer goroutine, so an unbounded call here stalls the
+	// queue just as effectively.
+	saveCtx, cancel := context.WithTimeout(context.Background(), writerSaveTimeout)
+	_, saveErr := w.repo.SaveRecordBatch(saveCtx, endpoints, "spec-ingest", w.projectUUID)
+	cancel()
 	if saveErr != nil {
 		zap.L().Debug("Failed to save spec-ingested endpoints",
 			zap.String("source_url", entry.Request.URL),
 			zap.Error(saveErr))
+		w.mu.Lock()
+		w.failed += len(endpoints)
+		w.mu.Unlock()
 		return
 	}
 
@@ -254,24 +409,35 @@ func (w *RepositoryWriter) ingestSpecEndpoints(entry *TrafficEntry, httpRR *http
 		zap.Int("endpoints", len(endpoints)))
 }
 
-// Close signals the flush goroutine to drain and persist any buffered records,
-// then blocks until it has finished so Count() reflects everything saved. Safe to
-// call more than once.
+// Close stops admission, waits for producers already mid-enqueue, then drains
+// and persists whatever is buffered, blocking until the flush goroutine has
+// finished so Count() reflects everything saved. Safe to call more than once.
+//
+// It returns a non-nil error when records were dropped to save failures. It used
+// to return nil unconditionally, which made a crawl that lost its entire corpus
+// to a failing database indistinguishable from a clean one at the only place a
+// caller could have noticed. Existing callers discard or log the error, so the
+// change surfaces the loss without altering control flow.
 func (w *RepositoryWriter) Close() error {
 	w.closeOnce.Do(func() { close(w.stop) })
 	<-w.done
+
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.failed > 0 {
+	saved, failed := w.count, w.failed
+	w.mu.Unlock()
+
+	if failed > 0 {
 		zap.L().Warn("RepositoryWriter closed with dropped records (DB save failures)",
-			zap.Int("records_saved", w.count),
-			zap.Int("records_dropped", w.failed),
+			zap.Int("records_saved", saved),
+			zap.Int("records_dropped", failed),
 			zap.String("source", w.source))
-	} else {
-		zap.L().Debug("RepositoryWriter closed",
-			zap.Int("records_saved", w.count),
-			zap.String("source", w.source))
+		return fmt.Errorf("repository writer: %d record(s) dropped to save failures (%d saved, source %q)",
+			failed, saved, w.source)
 	}
+
+	zap.L().Debug("RepositoryWriter closed",
+		zap.Int("records_saved", saved),
+		zap.String("source", w.source))
 	return nil
 }
 

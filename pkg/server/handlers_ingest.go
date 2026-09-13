@@ -79,7 +79,7 @@ func (h *Handlers) fetchResponseIfNeeded(rr *httpmsg.HttpRequestResponse) *httpm
 		return rr
 	}
 
-	respChain, _, err := h.httpRequester.Execute(rr, http.Options{})
+	respChain, elapsed, err := h.httpRequester.Execute(rr, http.Options{})
 	if err != nil {
 		zap.L().Debug("Failed to fetch response during ingestion",
 			zap.String("url", rr.Target()), zap.Error(err))
@@ -91,7 +91,9 @@ func (h *Handlers) fetchResponseIfNeeded(rr *httpmsg.HttpRequestResponse) *httpm
 	copy(raw, fullResp)
 	respChain.Close()
 
-	return rr.WithResponse(httpmsg.NewHttpResponse(raw))
+	// This record is persisted, and this send is the only chance to record its
+	// timing — the converter cannot recover it from the bytes.
+	return rr.WithResponse(httpmsg.NewHttpResponseWithDuration(raw, elapsed))
 }
 
 // IngestSourceHeader lets a client declare which tool the traffic it is pushing
@@ -154,12 +156,7 @@ func (h *Handlers) saveRecordBatch(ctx context.Context, records []*httpmsg.HttpR
 	} else {
 		uuids, err = h.repo.SaveRecordBatch(ctx, records, source, projectUUID)
 	}
-	saved := 0
-	for _, u := range uuids {
-		if u != "" {
-			saved++
-		}
-	}
+	saved := database.CountSaved(uuids)
 	var errs []string
 	if err != nil {
 		errs = append(errs, err.Error())

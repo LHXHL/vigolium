@@ -183,9 +183,25 @@ func ProbeURL(ctx context.Context, cfg ProbeConfig) (*ProbeResult, error) {
 		capture := network.New(writer, true, true, false, false, false, targetHost, "probe")
 		if startErr := capture.Start(br.RodBrowser()); startErr != nil {
 			zap.L().Debug("ProbeURL: capture start failed", zap.Error(startErr))
+			// NewRepositoryWriter starts its flush goroutine in the constructor, so
+			// the writer owns a goroutine even when the capture never started. The
+			// failure path has to close it or every failed start leaks one.
+			_ = writer.Close()
 		} else {
+			// Close the CAPTURE, not just the writer. Capture.Close is what sets
+			// c.stopped, and c.stopped is the only thing cleanupLoop ever checks —
+			// closing the browser ends CDP event delivery but leaves that loop
+			// polling every 100ms forever, holding the whole Capture (and its
+			// pending/seen/logged maps) live. Each captured probe used to strand
+			// one. Capture.Close also closes the writer, so the writer stops
+			// admitting only after capture has stopped producing.
+			//
+			// Registered after the `defer br.Close()` above, so LIFO runs it first:
+			// capture down, then the browser.
 			defer func() {
-				_ = writer.Close()
+				if cerr := capture.Close(); cerr != nil {
+					zap.L().Debug("ProbeURL: capture close failed", zap.Error(cerr))
+				}
 			}()
 		}
 	}

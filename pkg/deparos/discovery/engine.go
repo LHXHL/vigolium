@@ -1650,6 +1650,12 @@ func (e *Engine) cleanup() {
 	if e.dedupBasePath != "" {
 		_ = os.RemoveAll(e.dedupBasePath)
 	}
+	// Release the idle keep-alive sockets of the client NewEngine built for this
+	// run. Last, so it happens after the workers that were using them have drained.
+	// Deparos runs its own transport (separate from the native requester's shared
+	// one), and nothing else can reach this pool — so without this the sockets for
+	// every host the engine touched stay open for the life of the process.
+	e.httpClient.CloseIdleConnections()
 }
 
 // scanBodyForSecrets scans an eligible response body for secrets inline and

@@ -95,7 +95,7 @@ func (m *JSActiveModule) ScanPerInsertionPoint(
 ) ([]*output.ResultEvent, error) {
 	vm := m.pool.Get()
 	poisoned := false
-	defer func() { m.returnVM(vm, poisoned) }()
+	defer func() { m.pool.PutUnlessPoisoned(vm, poisoned) }()
 
 	// Build context object for JS
 	ctxObj := buildRequestContext(vm, ctx)
@@ -123,16 +123,6 @@ func (m *JSActiveModule) ScanPerInsertionPoint(
 	return parseJSResults(vm, result, ctx), nil
 }
 
-// returnVM returns a VM to the pool, or discards it when poisoned (interrupted
-// by the execution-timeout watchdog) so a runaway extension's tainted runtime is
-// never reused.
-func (m *JSActiveModule) returnVM(vm *sobek.Runtime, poisoned bool) {
-	if poisoned {
-		return
-	}
-	m.pool.Put(vm)
-}
-
 func (m *JSActiveModule) ScanPerRequest(
 	ctx *httpmsg.HttpRequestResponse,
 	_ *http.Requester,
@@ -140,7 +130,7 @@ func (m *JSActiveModule) ScanPerRequest(
 ) ([]*output.ResultEvent, error) {
 	vm := m.pool.Get()
 	poisoned := false
-	defer func() { m.returnVM(vm, poisoned) }()
+	defer func() { m.pool.PutUnlessPoisoned(vm, poisoned) }()
 
 	ctxObj := buildRequestContext(vm, ctx)
 	enrichRecordContext(vm, ctxObj, ctx, scanCtx, m.pool.opts.Repository)
@@ -172,7 +162,7 @@ func (m *JSActiveModule) ScanPerHost(
 ) ([]*output.ResultEvent, error) {
 	vm := m.pool.Get()
 	poisoned := false
-	defer func() { m.returnVM(vm, poisoned) }()
+	defer func() { m.pool.PutUnlessPoisoned(vm, poisoned) }()
 
 	ctxObj := buildRequestContext(vm, ctx)
 	enrichRecordContext(vm, ctxObj, ctx, scanCtx, m.pool.opts.Repository)

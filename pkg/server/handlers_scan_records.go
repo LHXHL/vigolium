@@ -302,15 +302,16 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 
 	// Build query filters from request
 	filters := database.QueryFilters{
-		ProjectUUID:  projectUUID,
-		HostPattern:  req.Hostname,
-		Methods:      req.Methods,
-		PathPattern:  req.Path,
-		StatusCodes:  req.StatusCodes,
-		Source:       req.Source,
-		SearchTerm:   req.Search,
-		MinRiskScore: req.MinRiskScore,
-		Remark:       req.Remark,
+		ProjectUUID:     projectUUID,
+		HostPattern:     req.Hostname,
+		Methods:         req.Methods,
+		PathPattern:     req.Path,
+		StatusCodes:     req.StatusCodes,
+		Source:          req.Source,
+		SearchTerm:      req.Search,
+		MinRiskScore:    req.MinRiskScore,
+		MinSurfaceScore: req.MinSurfaceScore,
+		Remark:          req.Remark,
 	}
 
 	qb := database.NewQueryBuilder(h.db, filters)

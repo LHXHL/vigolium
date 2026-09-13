@@ -401,3 +401,14 @@ func (o *orderRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	*o.order = append(*o.order, o.name)
 	return o.next.RoundTrip(req)
 }
+
+// newTokenBucket must not divide by zero on a zero rate.
+func TestNewTokenBucketClampsZeroRate(t *testing.T) {
+	tb := newTokenBucket(0, 0)
+	if tb.interval <= 0 {
+		t.Errorf("interval = %v, want > 0", tb.interval)
+	}
+	if tb.capacity < 1 {
+		t.Errorf("capacity = %d, want >= 1", tb.capacity)
+	}
+}

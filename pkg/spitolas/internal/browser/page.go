@@ -47,6 +47,30 @@ func (p *Page) crawlCtxDone() bool {
 	return p.rodPage.GetContext().Err() != nil
 }
 
+// adopt wraps a rod element returned by a BOUNDED lookup and rebinds it to the
+// page's own (crawl-bound) context.
+//
+// This rebinding is load-bearing, not tidiness. Every lookup below runs through
+// p.rodPage.Timeout(ElementTimeout), and rod copies that timed context into each
+// element it returns (ElementFromObject: `ctx: p.ctx`). A later
+// Element.Timeout(d) does context.WithTimeout(e.ctx, d) — it DERIVES from the
+// expired lookup deadline rather than replacing it, so the earlier deadline
+// always wins and no per-operation timeout can revive the handle. The whole
+// returned slice therefore shares ONE 5s budget covering its entire life.
+//
+// The visible symptom is silent coverage loss, not an error: candidate
+// extraction pays several CDP round-trips per element (ancestor exclusion walk,
+// GetXPath, Attribute, metadata), and its loops `continue` on error — so on a
+// dense or slow page every element after the deadline is quietly dropped and the
+// crawl reports fewer actions rather than a failure.
+//
+// Binding to p.rodPage.GetContext() keeps cancellation intact (that context is
+// the crawl context installed by Browser.SetCrawlContext) while letting the
+// per-operation Timeout wrappers in element.go actually bound each call.
+func (p *Page) adopt(re *rod.Element) *Element {
+	return &Element{rodElem: re.Context(p.rodPage.GetContext()), page: p}
+}
+
 // Navigate navigates to a URL with timeout.
 func (p *Page) Navigate(url string) error {
 	if err := p.rodPage.Timeout(p.config.PageLoadTimeout).Navigate(url); err != nil {
@@ -330,7 +354,7 @@ func (p *Page) Element(selector string) (*Element, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return &Element{rodElem: rodElem, page: p}, nil
+	return p.adopt(rodElem), nil
 }
 
 // shadowElement re-resolves a single element by a shadow-piercing query.
@@ -345,7 +369,7 @@ func (p *Page) shadowElement(selector string) (*Element, error) {
 	if rodElem == nil {
 		return nil, fmt.Errorf("shadow element not found: %s", selector)
 	}
-	return &Element{rodElem: rodElem, page: p}, nil
+	return p.adopt(rodElem), nil
 }
 
 // ElementPiercing resolves the first element matching selector across both the
@@ -370,7 +394,7 @@ func (p *Page) ShadowElements(selector string) ([]*Element, error) {
 	}
 	elements := make([]*Element, len(rodElems))
 	for i, re := range rodElems {
-		elements[i] = &Element{rodElem: re, page: p}
+		elements[i] = p.adopt(re)
 	}
 	return elements, nil
 }
@@ -388,7 +412,7 @@ func (p *Page) Elements(selector string) ([]*Element, error) {
 
 	elements := make([]*Element, len(rodElems))
 	for i, re := range rodElems {
-		elements[i] = &Element{rodElem: re, page: p}
+		elements[i] = p.adopt(re)
 	}
 	return elements, nil
 }
@@ -403,7 +427,7 @@ func (p *Page) ElementX(xpath string) (*Element, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return &Element{rodElem: rodElem, page: p}, nil
+	return p.adopt(rodElem), nil
 }
 
 // ElementsX finds all elements matching an XPath with safe timeout.
@@ -419,7 +443,7 @@ func (p *Page) ElementsX(xpath string) ([]*Element, error) {
 
 	elements := make([]*Element, len(rodElems))
 	for i, re := range rodElems {
-		elements[i] = &Element{rodElem: re, page: p}
+		elements[i] = p.adopt(re)
 	}
 	return elements, nil
 }
@@ -688,7 +712,8 @@ func (p *Page) HasElementX(xpath string) bool {
 }
 
 // Frames returns all iframe elements in the page with safe timeout.
-// Uses config.ElementTimeout to prevent infinite waits.
+// Uses config.ElementTimeout to prevent infinite waits. Frames are adopted for
+// the same reason elements are — see Page.adopt.
 func (p *Page) Frames() ([]*Page, error) {
 	iframes, err := p.rodPage.Timeout(p.config.ElementTimeout).Elements("iframe")
 	if err != nil {
@@ -704,9 +729,16 @@ func (p *Page) Frames() ([]*Page, error) {
 		if err != nil {
 			continue // Skip iframes that can't be accessed
 		}
-		frames = append(frames, &Page{rodPage: framePage, config: p.config, browser: p.browser})
+		frames = append(frames, p.adoptFrame(framePage))
 	}
 	return frames, nil
+}
+
+// adoptFrame wraps a rod frame page and rebinds it to the parent page's
+// (crawl-bound) context, so recursive frame work is bounded by the crawl rather
+// than by whatever lookup deadline happened to produce the iframe element.
+func (p *Page) adoptFrame(fp *rod.Page) *Page {
+	return &Page{rodPage: fp.Context(p.rodPage.GetContext()), config: p.config, browser: p.browser}
 }
 
 // safeRod runs fn and converts a panic raised inside the go-rod library into an
@@ -776,7 +808,7 @@ func (p *Page) FramesWithInfo() ([]FrameInfo, error) {
 		}
 
 		frames = append(frames, FrameInfo{
-			Page:  &Page{rodPage: framePage, config: p.config, browser: p.browser},
+			Page:  p.adoptFrame(framePage),
 			ID:    frameID,
 			Index: i,
 		})

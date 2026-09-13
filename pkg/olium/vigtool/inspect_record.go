@@ -78,6 +78,7 @@ type inspectRecordOut struct {
 	ResponseLen     int64                 `json:"response_length"`
 	IsAuthenticated bool                  `json:"is_authenticated,omitempty"`
 	Source          string                `json:"source,omitempty"`
+	SurfaceScore    int                   `json:"surface_score,omitempty"`
 	Technology      []string              `json:"technology,omitempty"`
 	Headers         map[string]string     `json:"request_headers,omitempty"`
 	RawRequest      string                `json:"raw_request,omitempty"`
@@ -166,6 +167,7 @@ func (i *inspectRecordTool) Execute(ctx context.Context, args map[string]any, _ 
 		ResponseLen:     rec.ResponseContentLength,
 		IsAuthenticated: rec.IsAuthenticated,
 		Source:          rec.Source,
+		SurfaceScore:    rec.SurfaceScore,
 		Technology:      rec.Technology,
 		Headers:         headers,
 		RawRequest:      rawReq,

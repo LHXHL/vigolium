@@ -43,6 +43,7 @@ type NodeModel struct {
 	RespTitle         sql.NullString `bun:"resp_title"`
 	RespWords         sql.NullInt64  `bun:"resp_words"`
 	RespLines         sql.NullInt64  `bun:"resp_lines"`
+	RespDurationMs    sql.NullInt64  `bun:"resp_duration_ms"`
 
 	// Metadata fields
 	FoundBy          sql.NullString `bun:"found_by"`

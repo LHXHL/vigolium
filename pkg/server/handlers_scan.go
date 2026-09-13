@@ -69,13 +69,6 @@ func resolveAPIModules(modulePatterns, moduleTags []string) []string {
 	return result
 }
 
-// validPhases is the set of valid phase names for --only validation.
-var validPhases = map[string]struct{}{
-	"ingestion": {}, "discovery": {}, "external-harvest": {},
-	"spidering": {}, "known-issue-scan": {}, "dynamic-assessment": {},
-	"extension": {},
-}
-
 // validateRunScanRequest validates the RunScanRequest fields.
 func validateRunScanRequest(req RunScanRequest) error {
 	if req.Strategy != "" {
@@ -92,8 +85,10 @@ func validateRunScanRequest(req RunScanRequest) error {
 			if p == "" {
 				continue
 			}
-			normalized := runner.NormalizeNativePhase(p)
-			if _, ok := validPhases[normalized]; !ok {
+			// The phase vocabulary has one owner (runner.nativePhaseVocabulary);
+			// a local copy of the valid set here is what let the REST API reject
+			// a spelling the CLI accepted.
+			if !runner.IsNativePhaseSpelling(p) {
 				return fmt.Errorf("invalid only %q; valid phases: %s", p, runner.ValidOnlyPhasesDesc)
 			}
 		}

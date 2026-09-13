@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -96,10 +97,19 @@ func NewSiteMap(cfg *StorageConfig) (*SiteMap, error) {
 		cfg = DefaultConfig()
 	}
 
+	// Work on a copy: allocating the temp database below rewrites
+	// Database.FilePath, and mutating the caller's config silently converts a
+	// second NewSiteMap call on the same value from ephemeral into persistent
+	// (it would reuse the first target's database) and makes IsEphemeral() report
+	// false for the database we just created.
+	cfgCopy := *cfg
+	cfg = &cfgCopy
+
 	driver := NewDriver(cfg.Database.Driver)
 	var tempPath string
 
-	// Handle ephemeral SQLite mode
+	// Asked BEFORE FilePath is rewritten below, which would make it answer false
+	// for the database we are about to create.
 	if cfg.IsEphemeral() {
 		f, err := os.CreateTemp("", "sitemap-*.db")
 		if err != nil {
@@ -109,6 +119,17 @@ func NewSiteMap(cfg *StorageConfig) (*SiteMap, error) {
 		cfg.Database.FilePath = tempPath
 		_ = f.Close()
 	}
+
+	// One unwind for every failure past this point, rather than a call at each
+	// return: a startup that fails after creating the temp database strands it
+	// exactly like the missing Close did, and a future early return must not be
+	// able to reintroduce that by forgetting to clean up.
+	ok := false
+	defer func() {
+		if !ok && tempPath != "" {
+			_ = driver.CleanupFiles(tempPath)
+		}
+	}()
 
 	// Ensure parent directory exists for SQLite file paths
 	if cfg.Database.Driver == DriverSQLite && cfg.Database.FilePath != "" {
@@ -144,7 +165,7 @@ func NewSiteMap(cfg *StorageConfig) (*SiteMap, error) {
 		observedRepo:   NewObservedRepository(bunDB),
 		config:         cfg,
 		tempPath:       tempPath,
-		ephemeral:      cfg.IsEphemeral(),
+		ephemeral:      tempPath != "",
 		sessionName:    cfg.SessionName,
 		hostname:       ExtractHostname(cfg.TargetURL),
 	}
@@ -155,6 +176,7 @@ func NewSiteMap(cfg *StorageConfig) (*SiteMap, error) {
 		return nil, fmt.Errorf("failed to ensure session: %w", err)
 	}
 
+	ok = true
 	return s, nil
 }
 
@@ -187,6 +209,7 @@ func migrateSchema(ctx context.Context, db *bun.DB) error {
 			resp_title TEXT,
 			resp_words INTEGER,
 			resp_lines INTEGER,
+			resp_duration_ms INTEGER,
 			found_by TEXT,
 			discovered_at INTEGER,
 			fingerprint_attrs TEXT,
@@ -268,6 +291,7 @@ func migrateSchema(ctx context.Context, db *bun.DB) error {
 		"ALTER TABLE extractions ADD COLUMN source_line INTEGER",
 		"ALTER TABLE extractions ADD COLUMN template_json TEXT",
 		"ALTER TABLE extractions ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE nodes ADD COLUMN resp_duration_ms INTEGER",
 	}
 	for _, ddl := range columnMigrations {
 		if _, err := db.ExecContext(ctx, ddl); err != nil {
@@ -281,6 +305,15 @@ func migrateSchema(ctx context.Context, db *bun.DB) error {
 	indexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_sessions_name ON sessions(session_name)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_hash ON nodes(hash)",
+		// Keyset-walk indexes. These match the ORDER BY and the > predicate of the
+		// paged walkers in repository.go EXACTLY, COALESCE included — an index on
+		// the bare column would not be seekable for a COALESCE predicate, and the
+		// walkers need the COALESCE because both leading columns are nullable.
+		// Without these a walk re-scans and re-sorts the whole table once per page
+		// (reading every row's body to do it), which is worse than the single full
+		// scan paging replaced.
+		"CREATE INDEX IF NOT EXISTS idx_nodes_walk_depth ON nodes(COALESCE(depth, -1), url, id)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_walk_discovered ON nodes(COALESCE(discovered_at, 0), id)",
 		"CREATE INDEX IF NOT EXISTS idx_session_nodes_timestamp ON session_nodes(timestamp)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_hash ON extractions(hash)",
 		"CREATE INDEX IF NOT EXISTS idx_ext_hostname ON extractions(hostname)",
@@ -293,6 +326,15 @@ func migrateSchema(ctx context.Context, db *bun.DB) error {
 
 	for _, idx := range indexes {
 		if _, err := db.ExecContext(ctx, idx); err != nil {
+			// An index over a column this store predates is skipped, not fatal.
+			// Stores created by older versions can be missing a column that a
+			// later index wants, and columnMigrations above only backfills the
+			// ones it knows about. The index is an optimization; refusing to open
+			// an otherwise-usable database over a missing one would be worse than
+			// running the query without it.
+			if strings.Contains(strings.ToLower(err.Error()), "no such column") {
+				continue
+			}
 			return fmt.Errorf("failed to create index: %w", err)
 		}
 	}
@@ -345,16 +387,18 @@ func (s *SiteMap) Close() error {
 	}
 
 	// Close database
-	if err := s.bunDB.Close(); err != nil {
-		return err
-	}
+	closeErr := s.bunDB.Close()
 
-	// Clean up temp files if ephemeral
+	// Clean up the temp database we own. Done even when the close above failed —
+	// otherwise a failing close is a permanent disk leak — but only for tempPath,
+	// never for a user-supplied persistent file.
+	var cleanupErr error
 	if s.tempPath != "" && s.driver != nil {
-		_ = s.driver.CleanupFiles(s.tempPath)
+		cleanupErr = s.driver.CleanupFiles(s.tempPath)
+		s.tempPath = "" // idempotent: a second Close must not re-report
 	}
 
-	return nil
+	return errors.Join(closeErr, cleanupErr)
 }
 
 // computeStats calculates session statistics

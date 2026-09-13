@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/projectdiscovery/utils/conversion"
 	"github.com/projectdiscovery/utils/sync/sizedpool"
@@ -85,9 +86,12 @@ func SetBufferSize(size int64) {
 // If max is less than [DefaultMaxLargeBuffers], it will be set to
 // [DefaultMaxLargeBuffers].
 func SetMaxLargeBuffers(maxBuffers int) {
-	if maxLargeBuffers < DefaultMaxLargeBuffers {
-		maxLargeBuffers = DefaultMaxLargeBuffers
+	// This used to compare maxLargeBuffers against itself and never read its own
+	// argument, so the setter silently did nothing.
+	if maxBuffers < DefaultMaxLargeBuffers {
+		maxBuffers = DefaultMaxLargeBuffers
 	}
+	maxLargeBuffers = maxBuffers
 
 	resetBuffer()
 }
@@ -157,9 +161,16 @@ func getBuffer() *bytes.Buffer {
 // per-instance (via [ResponseChain.maxBodySize]): the buffer pool is shared, so
 // per-instance thresholds would cause confusion, and a single global cap is what
 // prevents memory bloat in typical use-cases.
+// Every buffer taken from bufPool holds one of its semaphore slots (sizedpool
+// acquires in Get, releases only in Put or Discard), so every discard path MUST
+// call Discard. Dropping the buffer instead leaks the slot permanently, eroding
+// the pool's capacity until getBuffer blocks forever on an uncancellable
+// Background acquire. Upstream utils/http/respChain.go, which this file was
+// forked from, carries the same calls for the same reason.
 func putBuffer(buf *bytes.Buffer) {
 	capacity := buf.Cap()
 	if capacity > DefaultMaxBodySize {
+		bufPool.Discard()
 		return
 	}
 
@@ -172,6 +183,7 @@ func putBuffer(buf *bytes.Buffer) {
 		default:
 			// NOTE(dwisiswant0): Pool is full of large buffers, discard this
 			// one. It will be GC'ed, preventing memory accumulation.
+			bufPool.Discard()
 		}
 		return
 	}
@@ -188,6 +200,7 @@ func resetBuffer() {
 		if err != nil || buf == nil {
 			break
 		}
+		bufPool.Discard() // Get took a slot; return it with the buffer
 	}
 
 	setLargeBufferSemSize(maxLargeBuffers)
@@ -225,6 +238,30 @@ type ResponseChain struct {
 	fpOnce sync.Once
 	fpVal  any
 	fpErr  error
+
+	// duration is how long the send that produced this response took. Written
+	// once by the sender immediately after construction, before the chain is
+	// handed to anyone else, and read-only from then on — so it needs no
+	// synchronization despite the memoized fields above. Zero means "not
+	// measured", never "instant".
+	duration time.Duration
+}
+
+// SetDuration records the measured round-trip duration for this chain.
+//
+// Call it exactly once, on the sending goroutine, before the chain is published
+// to any other reader. It exists because NewResponseChain is handed an already
+// completed *http.Response and cannot time the send itself.
+func (r *ResponseChain) SetDuration(d time.Duration) {
+	if d > 0 {
+		r.duration = d
+	}
+}
+
+// Duration returns the measured round-trip duration, or zero when the chain was
+// built from a response nobody timed (see the field comment: zero is unknown).
+func (r *ResponseChain) Duration() time.Duration {
+	return r.duration
 }
 
 // CachedFingerprint lazily computes and caches an opaque fingerprint value
@@ -357,8 +394,16 @@ func (r *ResponseChain) Fill() error {
 	}
 
 	// load headers
+	//
+	// Every terminal path from here on owns r.resp.Body: an early return that
+	// skipped DrainResponseBody left the network body open, and Client.Send's
+	// error path calls Close, which only returns the pooled buffers. The
+	// connection was then held until the server or an idle timeout reclaimed it,
+	// so a run against hosts with truncated or undecodable responses bled
+	// connections.
 	err := DumpResponseIntoBuffer(r.resp, false, r.headers)
 	if err != nil {
+		DrainResponseBody(r.resp)
 		return fmt.Errorf("error dumping response headers: %w", err)
 	}
 
@@ -375,6 +420,7 @@ func (r *ResponseChain) Fill() error {
 		// load body
 		err = readNNormalizeRespBody(r, r.body)
 		if err != nil {
+			DrainResponseBody(r.resp)
 			return fmt.Errorf("error reading response body: %w", err)
 		}
 

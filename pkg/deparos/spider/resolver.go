@@ -18,22 +18,21 @@ func NewURLResolver() *URLResolver {
 	return &URLResolver{}
 }
 
-// urlGarbageChars are characters to remove from URL paths during sanitization.
+// urlGarbageChars are characters to remove from a URL during sanitization.
 // These appear from JavaScript escapes (\/, \") that get URL-encoded.
-var urlGarbageChars = [...]byte{
-	'\\', // Backslash from JS escapes
-	'"',  // Quote from JS strings
-	'\'', // Single quote
-	'`',  // Backtick from template literals
-	'\t', // Tab
-	'\n', // Newline
-	'\r', // Carriage return
-}
+//
+//	\\ backslash from JS escapes   " quote from JS strings
+//	'  single quote                ` backtick from template literals
+//	\t tab, \n newline, \r carriage return
+//
+// A string so stripURLGarbage can hand it to strings.ContainsAny for its
+// fast path; isURLGarbageChar indexes the same source of truth.
+const urlGarbageChars = "\\\"'`\t\n\r"
 
 // isURLGarbageChar checks if byte is a garbage character for URL resolution.
 func isURLGarbageChar(c byte) bool {
-	for _, gc := range urlGarbageChars {
-		if c == gc {
+	for i := 0; i < len(urlGarbageChars); i++ {
+		if c == urlGarbageChars[i] {
 			return true
 		}
 	}
@@ -131,8 +130,68 @@ func (r *URLResolver) sanitizePathForResolution(rawURL string) string {
 		return rawURL
 	}
 
-	// For relative URLs, clean directly
-	return r.cleanPathForResolution(rawURL)
+	// Relative reference. Split the path from the query/fragment and clean each
+	// with the rules that suit it, instead of running the path rules over the
+	// whole string.
+	//
+	// The absolute branch above always did this — url.Parse separated the
+	// components for it — so only relative references were affected, which is the
+	// overwhelming majority of what an href or a mined string looks like. Two of
+	// the path rules actively rewrite query semantics:
+	//
+	//   - PathUnescape turns %26 into a literal '&', so /item?label=a%26b resolved
+	//     to /item?label=a&b: one parameter carrying "a&b" silently became two
+	//     parameters. The same applies to %3D and %2B.
+	//   - The "//" -> "/" collapse destroys an embedded absolute URL, so
+	//     ?next=https://host/x became ?next=https:/host/x.
+	//
+	// Both produce a URL that parses fine and requests something the application
+	// never offered, which is worse than dropping it.
+	path, suffix := splitPathFromQuery(rawURL)
+	return r.cleanPathForResolution(path) + cleanQuerySourceNoise(suffix)
+}
+
+// splitPathFromQuery divides a relative reference at the first '?' or '#',
+// returning the path and the remainder (including the delimiter, or "" if there
+// is none).
+func splitPathFromQuery(rawURL string) (path, suffix string) {
+	if i := strings.IndexAny(rawURL, "?#"); i != -1 {
+		return rawURL[:i], rawURL[i:]
+	}
+	return rawURL, ""
+}
+
+// cleanQuerySourceNoise strips the noise a query picks up from the SOURCE SYNTAX
+// it was mined out of — JS string escapes, stray quotes, embedded newlines — and
+// nothing else.
+//
+// Deliberately narrower than cleanPathForResolution: percent-decoding and slash
+// collapsing are meaningful transformations of a path but corruptions of a
+// query, where the encoding is what separates one parameter value from the next.
+func cleanQuerySourceNoise(suffix string) string {
+	return stripURLGarbage(decodeJSEscapes(suffix))
+}
+
+// stripURLGarbage removes the bytes that are never legal in a URL and only ever
+// arrive from the source syntax a URL was mined out of. Shared by the path and
+// query cleaners so the two cannot drift on what counts as garbage.
+//
+// Returns s unchanged when there is nothing to strip, which is the overwhelming
+// majority of calls — this runs per discovered link, so the scan-and-return is
+// worth more than the builder it avoids. Same fast-path idiom as decodeJSEscapes.
+func stripURLGarbage(s string) string {
+	if !strings.ContainsAny(s, urlGarbageChars) {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if !isURLGarbageChar(s[i]) {
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 // cleanPathForResolution decodes and removes garbage from a path string.
@@ -151,15 +210,7 @@ func (r *URLResolver) cleanPathForResolution(p string) string {
 	decoded = decodeJSEscapes(decoded)
 
 	// Remove garbage characters
-	var b strings.Builder
-	b.Grow(len(decoded))
-	for i := 0; i < len(decoded); i++ {
-		if !isURLGarbageChar(decoded[i]) {
-			b.WriteByte(decoded[i])
-		}
-	}
-
-	result := b.String()
+	result := stripURLGarbage(decoded)
 
 	// Collapse double slashes
 	for strings.Contains(result, "//") {
@@ -284,7 +335,19 @@ func (r *URLResolver) Normalize(u *url.URL) string {
 	return canonical.String()
 }
 
-// normalize returns a normalized copy of the URL
+// normalize returns a normalized copy of the URL.
+//
+// Known limitation, deliberately left as-is: the copy is built from the decoded
+// Path and carries no RawPath, so a percent-encoded path separator (/a%2Fb) is
+// emitted as a real one (/a/b). That is not an oversight here — the path is
+// already percent-decoded upstream by cleanPathForResolution, which is what makes
+// the recovery of JS-escaped strings like "\/trading\/" work at all. Preserving
+// RawPath at this point would have nothing left to preserve.
+//
+// Fixing it properly means not decoding path escapes during sanitization, which
+// changes what this extractor is for. The query is a different matter and IS
+// preserved verbatim below: there, encoding is what keeps one parameter value
+// from becoming two. See cleanQuerySourceNoise.
 func (r *URLResolver) normalize(u *url.URL) *url.URL {
 	if u == nil {
 		return nil
