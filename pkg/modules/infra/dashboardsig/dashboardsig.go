@@ -290,7 +290,15 @@ func LooksLikeSPAShell(body string) bool {
 	if body == "" {
 		return false
 	}
-	ls := strings.ToLower(body)
+	return LooksLikeSPAShellLower(strings.ToLower(body))
+}
+
+// LooksLikeSPAShellLower is LooksLikeSPAShell for a caller that already holds a
+// lowercased body — notably a passive module using httpmsg's memoized
+// BodyLowerString. Re-lowering there is a wasted full-body scan per record, and
+// on a body with invalid UTF-8 (any binary response) strings.ToLower falls into
+// strings.Map and copies the whole thing.
+func LooksLikeSPAShellLower(ls string) bool {
 	if !strings.Contains(ls, "<html") && !strings.Contains(ls, "<!doctype html") && !strings.Contains(ls, "<div") {
 		return false // not an HTML document
 	}

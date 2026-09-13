@@ -168,7 +168,7 @@ func (m *Module) probePolyglot(
 	// fuzzedRaw is well-formed raw, so wrap directly instead of re-parsing on this hot path.
 	fuzzedReq := httpmsg.NewRequestResponseRaw(fuzzedRaw, ctx.Service())
 
-	fuzzedResp, _, err := httpClient.Execute(fuzzedReq, http.Options{})
+	fuzzedResp, _, err := httpClient.Execute(fuzzedReq, probeOptions(false))
 	if err != nil {
 		if errors.Is(err, hosterrors.ErrUnresponsiveHost) {
 			return nil

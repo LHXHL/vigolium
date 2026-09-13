@@ -111,6 +111,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/passive/ssr_hydration_xss"
 	"github.com/vigolium/vigolium/pkg/modules/passive/subdomain_harvest"
 	"github.com/vigolium/vigolium/pkg/modules/passive/subresource_integrity_detect"
+	"github.com/vigolium/vigolium/pkg/modules/passive/surface_scoring"
 	"github.com/vigolium/vigolium/pkg/modules/passive/symfony_fingerprint"
 	"github.com/vigolium/vigolium/pkg/modules/passive/unsafe_html_sink"
 	"github.com/vigolium/vigolium/pkg/modules/passive/verbose_error_stacktrace"
@@ -131,6 +132,7 @@ func registerPassiveModules(r *Registry) {
 	r.RegisterPassive(openredirect_params.New())
 	r.RegisterPassive(oauth_facebook_detect.New())
 	r.RegisterPassive(anomaly_ranking.New())
+	r.RegisterPassive(surface_scoring.New())
 	r.RegisterPassive(secret_detect.New())
 	r.RegisterPassive(sourcemap_detect.New())
 	r.RegisterPassive(security_headers_missing.New())

@@ -2,7 +2,6 @@ package verbose_error_stacktrace
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -13,68 +12,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/types/severity"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
-
-// stackTracePattern defines a detection rule for a technology-specific stack trace.
-type stackTracePattern struct {
-	technology string
-	severity   severity.Severity
-	confidence severity.Confidence
-	pattern    *regexp.Regexp
-}
-
-var stackTracePatterns = []stackTracePattern{
-	// Go stack traces: goroutine N [running]:
-	// main.handler(...)
-	//     /app/server.go:42 +0x1a3
-	{
-		technology: "Go",
-		severity:   severity.Medium,
-		confidence: severity.Certain,
-		pattern:    regexp.MustCompile(`goroutine \d+ \[.*\]:\n.*\n\t(/[^\s]+\.go:\d+)`),
-	},
-	// Java stack traces: at com.example.Class.method(File.java:123)
-	{
-		technology: "Java",
-		severity:   severity.Medium,
-		confidence: severity.Certain,
-		pattern:    regexp.MustCompile(`(?:at\s+[\w.$]+\([\w]+\.java:\d+\)\s*\n){2,}`),
-	},
-	// Python stack traces: File "/app/views.py", line 42, in handler
-	{
-		technology: "Python",
-		severity:   severity.Medium,
-		confidence: severity.Certain,
-		pattern:    regexp.MustCompile(`Traceback \(most recent call last\):[\s\S]*?File "([^"]+)", line \d+`),
-	},
-	// Node.js stack traces: at Object.<anonymous> (/app/server.js:15:3)
-	{
-		technology: "Node.js",
-		severity:   severity.Medium,
-		confidence: severity.Firm,
-		pattern:    regexp.MustCompile(`(?:at\s+[\w.<>\[\] ]+\s+\((?:/[^\s)]+\.(?:js|ts|mjs|cjs):\d+:\d+)\)\s*\n){2,}`),
-	},
-	// .NET/C# stack traces: at Namespace.Class.Method() in /app/File.cs:line 42
-	{
-		technology: ".NET",
-		severity:   severity.Medium,
-		confidence: severity.Certain,
-		pattern:    regexp.MustCompile(`(?:at\s+[\w.]+\(.*?\)\s+in\s+[A-Za-z]?:?[/\\][\w./\\]+:\s*line\s+\d+\s*\n){2,}`),
-	},
-	// Ruby stack traces: /app/controller.rb:42:in `index'
-	{
-		technology: "Ruby",
-		severity:   severity.Medium,
-		confidence: severity.Certain,
-		pattern:    regexp.MustCompile(`(?:/[\w./]+\.rb:\d+:in ` + "`" + `[\w?!]+'\s*\n){2,}`),
-	},
-	// PHP stack traces: #0 /app/index.php(42): Class->method()
-	{
-		technology: "PHP",
-		severity:   severity.Medium,
-		confidence: severity.Certain,
-		pattern:    regexp.MustCompile(`(?:#\d+\s+/[\w./]+\.php\(\d+\):\s+[\w\\]+->[\w]+\(\)\s*\n){2,}`),
-	},
-}
 
 // Module implements the Verbose Error Stack Trace passive scanner.
 type Module struct {
@@ -144,8 +81,8 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 
 	var results []*output.ResultEvent
 
-	for _, stp := range stackTracePatterns {
-		match := stp.pattern.FindString(body)
+	for _, stp := range modkit.StackTracePatterns {
+		match := stp.Regexp.FindString(body)
 		if match == "" {
 			continue
 		}
@@ -153,12 +90,12 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 		kind := output.RecordKindObservation
 		grade := output.EvidenceGradeObservation
 		sev := severity.Info
-		description := fmt.Sprintf("A structured %s stack-trace pattern appears in a successful response. It is retained as reconnaissance context because documentation and examples can contain the same structure.", stp.technology)
+		description := fmt.Sprintf("A structured %s stack-trace pattern appears in a successful response. It is retained as reconnaissance context because documentation and examples can contain the same structure.", stp.Technology)
 		if status := ctx.Response().StatusCode(); status >= 400 && status <= 599 {
 			kind = output.RecordKindCandidate
 			grade = output.EvidenceGradeCandidate
-			sev = stp.severity
-			description = fmt.Sprintf("A structured %s stack trace with file paths appears in an HTTP error response. The disclosure is strongly supported, but no underlying injection or code-execution flaw is inferred.", stp.technology)
+			sev = stp.Severity
+			description = fmt.Sprintf("A structured %s stack trace with file paths appears in an HTTP error response. The disclosure is strongly supported, but no underlying injection or code-execution flaw is inferred.", stp.Technology)
 		}
 
 		results = append(results, &output.ResultEvent{
@@ -171,16 +108,16 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 			Request:       string(ctx.Request().Raw()),
 			Response:      string(ctx.Response().Raw()),
 			ExtractedResults: []string{
-				fmt.Sprintf("Technology: %s", stp.technology),
+				fmt.Sprintf("Technology: %s", stp.Technology),
 				fmt.Sprintf("HTTP status: %d", ctx.Response().StatusCode()),
 				fmt.Sprintf("Stack trace: %s", truncate(match, 200)),
 			},
 			Info: output.Info{
-				Name:        fmt.Sprintf("%s Stack Trace Exposed", stp.technology),
+				Name:        fmt.Sprintf("%s Stack Trace Exposed", stp.Technology),
 				Description: description,
 				Severity:    sev,
-				Confidence:  stp.confidence,
-				Tags:        []string{"passive", "stacktrace", strings.ToLower(stp.technology)},
+				Confidence:  stp.Confidence,
+				Tags:        []string{"passive", "stacktrace", strings.ToLower(stp.Technology)},
 			},
 			Metadata: map[string]any{
 				"status_code":            ctx.Response().StatusCode(),

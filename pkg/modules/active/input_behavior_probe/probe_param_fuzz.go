@@ -30,7 +30,7 @@ func probeParamFuzz(
 		// fuzzedRaw is well-formed raw, so wrap directly instead of re-parsing on this hot path.
 		req := httpmsg.NewRequestResponseRaw(fuzzedRaw, ctx.Service())
 
-		resp, _, err := httpClient.Execute(req, http.Options{})
+		resp, _, err := httpClient.Execute(req, probeOptions(false))
 		if err != nil {
 			if errors.Is(err, hosterrors.ErrUnresponsiveHost) {
 				return results

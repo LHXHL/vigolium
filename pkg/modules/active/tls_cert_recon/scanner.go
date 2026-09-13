@@ -18,6 +18,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/reconsig"
+	"github.com/vigolium/vigolium/pkg/tlsprobe"
 )
 
 // dialTimeout bounds the per-host TLS handshake. The module opens its own
@@ -244,7 +245,7 @@ func fetchLeafCert(host string, port int, timeout time.Duration) (*x509.Certific
 		Config: &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // intentional: we inspect untrusted certs
 			MinVersion:         tls.VersionTLS10,
-			ServerName:         sniName(host),
+			ServerName:         tlsprobe.SNIName(host),
 		},
 	}
 
@@ -273,15 +274,6 @@ func fetchLeafCert(host string, port int, timeout time.Duration) (*x509.Certific
 		}
 	}
 	return state.PeerCertificates[0], resolvedIP, nil
-}
-
-// sniName returns the SNI server name to send. IP literals are not valid SNI
-// values (and Go would drop them), so dial without SNI in that case.
-func sniName(host string) string {
-	if net.ParseIP(host) != nil {
-		return ""
-	}
-	return host
 }
 
 // sanBuckets splits a certificate's SANs into the two recon-relevant sets.

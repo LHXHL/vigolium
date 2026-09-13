@@ -73,6 +73,13 @@ type RiskScoreUpdater interface {
 	UpdateRiskScores(ctx context.Context, scores map[string]int) error
 }
 
+// SurfaceScoreUpdater updates attack-surface scores for HTTP records in the
+// database. Separate from RiskScoreUpdater because the two write different
+// columns on different scales — see database.HTTPRecord.SurfaceScore.
+type SurfaceScoreUpdater interface {
+	UpdateSurfaceScores(ctx context.Context, scores map[string]int) error
+}
+
 // RemarksAnnotator appends semantic tags (remarks) to HTTP records in the database.
 type RemarksAnnotator interface {
 	// AppendRemarks merges the given remarks into existing remarks for each record UUID.
@@ -164,6 +171,7 @@ const paramFindingCacheSize = 65536
 type ScanContext struct {
 	DedupManager        *dedup.Manager
 	RiskScoreUpdater    RiskScoreUpdater
+	SurfaceScoreUpdater SurfaceScoreUpdater
 	RemarksAnnotator    RemarksAnnotator
 	RecordRewriter      RecordResponseRewriter
 	ArtifactWriter      DerivedArtifactWriter

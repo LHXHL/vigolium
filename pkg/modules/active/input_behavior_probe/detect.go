@@ -102,6 +102,26 @@ func measureTagJitter(ctx *httpmsg.HttpRequestResponse, httpClient *http.Request
 	return jitter
 }
 
+// probeOptions is the send policy for EVERY request this module makes. It is one
+// function rather than a literal per call site because both settings are
+// module-wide properties, and splitting them across call sites is how the confirm
+// leg ended up following redirects while the initial probe did not — the same
+// fuzzed request judged under two policies inside one verdict.
+//
+// NoRedirects: every probe here is a differential against one baseline page. A
+// followed redirect would compare that baseline against the redirect's
+// DESTINATION — a different application, reported as a behavior change on this
+// one. The 3xx itself is the signal the guards downstream are written against
+// ("the probe redirected away, it did not behave differently"), and they can only
+// see it if the redirect is left unfollowed.
+//
+// noClustering bypasses the requester's 500ms response cache. Required wherever a
+// request is re-sent to sample variance: a cached replay reports zero variance and
+// defeats both jitter calibration and the confirm re-fetch.
+func probeOptions(noClustering bool) http.Options {
+	return http.Options{NoRedirects: true, NoClustering: noClustering}
+}
+
 // fetchProbeResponse re-issues raw and returns its response status code and body.
 // ok is false on any parse/transport error or nil response. NoClustering bypasses
 // the requester's 500ms response cache so each sample is a genuinely fresh render —
@@ -110,7 +130,7 @@ func measureTagJitter(ctx *httpmsg.HttpRequestResponse, httpClient *http.Request
 func fetchProbeResponse(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester, raw []byte) (int, string, bool) {
 	// raw is well-formed raw, so wrap directly instead of re-parsing on this hot path.
 	req := httpmsg.NewRequestResponseRaw(raw, ctx.Service())
-	resp, _, err := httpClient.Execute(req, http.Options{NoClustering: true})
+	resp, _, err := httpClient.Execute(req, probeOptions(true))
 	if err != nil {
 		return 0, "", false
 	}

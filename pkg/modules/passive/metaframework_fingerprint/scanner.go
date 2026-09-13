@@ -215,6 +215,10 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 		scanCtx.MarkTech(host, strings.ToLower(pat.framework))
 		scanCtx.MarkTech(host, "javascript")
 		scanCtx.MarkTech(host, "nodejs")
+		// These meta-frameworks all hydrate into a client-routed app; see the
+		// matching MarkTech in js_framework_fingerprint for why "spa" is a
+		// descriptive tag rather than a knownTechTags gate.
+		scanCtx.MarkTech(host, "spa")
 
 		return []*output.ResultEvent{
 			{

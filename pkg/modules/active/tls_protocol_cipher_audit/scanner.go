@@ -14,6 +14,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/tlsprobe"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
 
@@ -172,7 +173,7 @@ func (m *Module) ScanPerHost(
 	if _, ok := handshake(host, port, &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // intentional: audit untrusted TLS
 		MinVersion:         tls.VersionTLS10,
-		ServerName:         sniName(host),
+		ServerName:         tlsprobe.SNIName(host),
 	}); !ok {
 		return nil, nil
 	}
@@ -183,7 +184,7 @@ func (m *Module) ScanPerHost(
 			InsecureSkipVerify: true, //nolint:gosec // intentional: audit untrusted TLS
 			MinVersion:         p.minVer,
 			MaxVersion:         p.maxVer,
-			ServerName:         sniName(host),
+			ServerName:         tlsprobe.SNIName(host),
 		}
 		if len(p.ciphers) > 0 {
 			cfg.CipherSuites = p.ciphers
@@ -291,13 +292,4 @@ func handshake(host string, port int, cfg *tls.Config) (tls.ConnectionState, boo
 		return tls.ConnectionState{}, false
 	}
 	return tconn.ConnectionState(), true
-}
-
-// sniName returns the SNI value to send. IP literals are not valid SNI values, so
-// dial without SNI in that case.
-func sniName(host string) string {
-	if net.ParseIP(host) != nil {
-		return ""
-	}
-	return host
 }

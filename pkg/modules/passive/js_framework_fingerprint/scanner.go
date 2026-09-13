@@ -129,6 +129,13 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 			scanCtx.MarkTech(host, "nodejs")
 			scanCtx.MarkTech(host, "javascript")
 		}
+		// Every framework this module recognises client-side-routes the app, so the
+		// host serves one JS-bootstrapped shell for many routes. Recorded as a
+		// descriptive tag for recon output and TechStack.HostKnown; deliberately
+		// NOT in modules.knownTechTags, which would auto-gate any module tagged
+		// "spa" on a detection only this module and metaframework_fingerprint
+		// publish — a gate armed before it has a reader, and half-published.
+		scanCtx.MarkTech(host, "spa")
 
 		routerType := ""
 		if pat.framework == jsframework.NextJS {

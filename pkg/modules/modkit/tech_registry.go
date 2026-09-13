@@ -5,7 +5,30 @@ import (
 	"sync"
 
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
+
+// RegistryHostKey returns the per-host key used by every registry in this
+// package — TechRegistry, ContentClassRegistry, WAFRegistry. It is the URL host:
+// the bare hostname plus ":port" for non-default ports.
+//
+// Read and write paths MUST agree on this key or detections silently go missing,
+// so it lives here rather than being re-derived per caller. The port is part of
+// the key on purpose: keying on the bare hostname let a stack detected on :443
+// gate modules on :8443 and dropped every non-default-port detection outright.
+// Falls back to the bare service host only when the URL cannot be parsed.
+func RegistryHostKey(item *httpmsg.HttpRequestResponse) string {
+	if item == nil {
+		return ""
+	}
+	if u, err := item.URL(); err == nil && u != nil && u.Host != "" {
+		return u.Host
+	}
+	if svc := item.Service(); svc != nil {
+		return svc.Host()
+	}
+	return ""
+}
 
 // TechRegistry tracks technology stack detections per host during a scan.
 // Passive fingerprint modules publish detections (e.g. "nextjs", "spring") and
