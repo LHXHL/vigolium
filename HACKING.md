@@ -100,7 +100,7 @@ internal/
 pkg/
   cli/                  All Cobra commands (scan, server, ingest, db, agent_*, project, ...)
   core/                 Executor, worker pool, rate limiter, services DI container
-  modules/              Module interfaces, registry, 207 active + 116 passive scanners (323 total)
+  modules/              Module interfaces, registry, 207 active + 117 passive scanners (324 total)
     modkit/             Base types, default implementations (BaseActiveModule, etc.)
     active/             Active scanner implementations (XSS, SQLi, SSTI, LFI, framework, CMS, cloud, ...)
     passive/            Passive analyzers (DOM XSS, secrets, headers, cookies, ...)

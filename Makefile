@@ -1396,6 +1396,22 @@ skill-flags:
 	$(GORUN) ./cmd/vigolium skills gen-flags
 	@echo "$(PREFIX) Done. Review the diff before committing."
 
+# Fail when the committed flag reference no longer matches the command tree.
+# The generated file is what an agent reads to find out what exists, so a stale
+# copy is not a cosmetic problem: it is the difference between a flag being
+# discoverable and being invisible.
+skill-flags-check:
+	@echo "$(PREFIX) Checking skill flag reference is current..."
+	@$(GORUN) ./cmd/vigolium skills gen-flags -o /tmp/vigolium-flags-check.md >/dev/null 2>&1
+	@if ! diff -q public/skills/vigolium-scanner/references/flags.generated.md /tmp/vigolium-flags-check.md >/dev/null; then \
+		echo "$(PREFIX) flags.generated.md is stale. Run 'make skill-flags' and commit the result:"; \
+		diff -u public/skills/vigolium-scanner/references/flags.generated.md /tmp/vigolium-flags-check.md | head -40; \
+		rm -f /tmp/vigolium-flags-check.md; \
+		exit 1; \
+	fi
+	@rm -f /tmp/vigolium-flags-check.md
+	@echo "$(PREFIX) Flag reference is current."
+
 # Helper scripts
 SCRIPTS_DIR := internal/resources/scripts
 

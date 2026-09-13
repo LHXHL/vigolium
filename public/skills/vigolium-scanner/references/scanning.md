@@ -12,6 +12,9 @@ Complete flag reference for `scan`, `scan-url`, `scan-request`, and `run` comman
   **one specific request**: it already has full query params, a deep multi-segment
   path, or custom headers/method/body that must be sent verbatim. They scan that
   single request (phases are opt-in via `--discover`/`--spider`).
+- **`run probe -T hosts.txt`** — triage at scale. One request per target, no
+  discovery or fuzzing, JSONL on stdout. This is the httpx replacement: use it to
+  pick which of a thousand hosts deserve a real `scan`.
 
 A full `scan` can exceed 30 min per target — discovery defaults to
 `--discover-max-time 1h`, spidering to `--spider-max-time 30m`, and
@@ -110,6 +113,22 @@ Stateless mode is great for ephemeral CI/CD runs — it creates a temp SQLite fi
 | `--discovery-wordlist` | string | — | Custom wordlist seeding the discovery phase (enables fuzzing on the fly). Formerly `--fuzz-wordlist`, still accepted as a deprecated alias. **Not** the same knob as `vigolium fuzz -w`. |
 | `--no-prefix-breaker` | bool | `false` | Disable per-prefix circuit breaker that stops trap-directory recursion |
 | `--port-sweep-ports` | string | — | Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; the sweep runs at `--intensity deep` or with `--follow-subdomains`) |
+
+### Probe / host-sweep flags (scan & run)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--probe` | bool | `false` | Enable the host-sweep phase (same as `vigolium run probe`) |
+| `--tls-probe` | bool | `false` | Handshake each HTTPS target; report negotiated version/cipher and the leaf certificate inline in `--json`. Not stored |
+| `--redirect-mode` | string | `any` | `off` \| `same-host` \| `same-apex` \| `any`. `same-apex` follows within the registrable domain (`www.example.com` → `example.com` yes, `example.com` → `tracker.example.net` no). Applies to **every** phase, not just probe |
+| `--record-redirect-chain` | bool | `false` | Each followed hop becomes its own `http_records` row, chained by `parent_uuid`. Read by the probe phase |
+| `--no-response` | bool | `false` | Drop raw request/response bytes from output, keep every derived field (alias of `--omit-response`) |
+
+A **probe-only** run (`run probe`, `scan --only probe`) flips its own defaults:
+`--record-redirect-chain` on, `--redirect-mode same-apex`, the many-hosts
+connection profile, and proactive WAF-edge pacing **off**. Each yields to an
+explicit flag. `--tls-probe` / `--record-redirect-chain` on a run without the
+probe phase warn that they are inert rather than doing nothing silently.
 
 ### Browser Spidering flags (scan & run)
 
@@ -359,6 +378,7 @@ Run a single scan phase directly. Equivalent to `vigolium scan --only <phase>`.
 | Phase | Aliases | Description |
 |-------|---------|-------------|
 | `ingestion` | — | Parse and store input into the database |
+| `probe` | `httpx`, `alive`, `sweep`, `probing` | Host sweep: one request per target, passive tech fingerprinting + surface scoring, no content discovery or fuzzing |
 | `discovery` | `deparos`, `discover` | Adaptive content discovery |
 | `external-harvest` | — | Wayback / Common Crawl / OTX URL aggregation |
 | `spidering` | `spitolas` | Headless-browser crawling for JS-driven routes |
@@ -373,6 +393,8 @@ The `run` command accepts the same flag groups as `scan` (Spidering, Discovery, 
 ### Examples
 
 ```bash
+vigolium run probe -T hosts.txt --json --no-response        # host sweep, httpx-style
+vigolium run probe -T hosts.txt --json --tls-probe -c 50    # + TLS certificates
 vigolium run discover -t https://example.com
 vigolium run spidering -t https://example.com
 vigolium run dast -t https://example.com
@@ -495,7 +517,7 @@ start filtering.
 
 The following phases can be used with `--only` and `--skip`:
 
-`ingestion`, `discovery`, `external-harvest`, `known-issue-scan`, `spidering`, `dynamic-assessment` (aliases `audit`, `dast`, `assessment`), `extension`
+`ingestion`, `probe` (aliases `httpx`, `alive`, `sweep`), `discovery`, `external-harvest`, `known-issue-scan`, `spidering`, `dynamic-assessment` (aliases `audit`, `dast`, `assessment`), `extension`
 
 ### HTML Format Constraints
 
@@ -673,21 +695,68 @@ vigolium run external-harvest -t https://target.example   # into the scan DB
 Sources: Wayback, Common Crawl, AlienVault OTX, Arquivo by default; urlscan and
 VirusTotal join when their keys are set under `external_harvester`.
 
-### httpx (probe) -> passive scan + traffic query
+### httpx -> `run probe`
 
-There is **no single prober command**. Get status/title/tech/liveness by running
-a passive-only scan over a host list, then reading the records back:
+`vigolium run probe` is the native prober. One request per target, passive tech
+fingerprinting and attack-surface scoring, no content discovery and no fuzzing —
+built for host lists in the thousands.
 
 ```bash
-vigolium scan -T hosts.txt --passive-only -S --format sqlite -o probe
-vigolium traffic -S --db probe.sqlite -j --compact \
-  --fields url,status_code,response_title,response_content_type,technology
+vigolium run probe -T hosts.txt --json --no-response          # stdout = JSONL
+vigolium run probe -T hosts.txt --json --tls-probe -c 50      # + certificates
+vigolium run probe -T hosts.txt -S --format sqlite -o sweep   # keep the DB
 ```
 
-`-S` on the scan discards the temp DB after export, so the follow-up `traffic`
-must read the exported file (`-S --db`), not the project DB. Passive modules
-fingerprint the tech stack; the traffic rows carry `status_code`,
-`response_title`, `response_content_type`, and `technology` (omitted when empty).
+**stdout is pure JSONL; progress goes to stderr.** Pipe with `2>/dev/null`, or
+add `--silent` for a fully quiet run. One object per record:
+
+```json
+{"url":"https://www.example.com/","status_code":200,"response_time_ms":601,
+ "ip":"104.16.123.96","a":["104.16.123.96","104.16.124.96"],
+ "aaaa":["2606:4700::6810:7b60"],"cname":["origin.example.net"],
+ "response_title":"Example","response_content_type":"text/html",
+ "response_words":118,"surface_score":40,"source":"probe",
+ "tls":{"tls_version":"tls13","cipher":"TLS_AES_128_GCM_SHA256",
+        "subject_cn":"www.example.com","subject_an":["www.example.com"],
+        "issuer_cn":"YE2","not_after":"2026-12-02T07:35:03Z",
+        "fingerprint_hash":{"sha256":"cf80…"},"self_signed":false}}
+```
+
+Field names match httpx's (`a`/`aaaa`/`cname`/`tls`), so a consumer written
+against that output reads these unmodified.
+
+| Flag | Effect |
+|---|---|
+| `--json` | JSONL on stdout (human progress stays on stderr) |
+| `--no-response` | Drop raw request/response bytes; keep every derived field (alias of `--omit-response`) |
+| `--tls-probe` | Handshake each HTTPS target; report version/cipher + leaf certificate |
+| `--redirect-mode` | `off` \| `same-host` \| `same-apex` \| `any` — probe defaults to `same-apex` |
+| `--record-redirect-chain` | Each followed hop becomes its own record, chained by `parent_uuid` (on by default here) |
+| `-c/--concurrency` | Request workers; DNS prefetch runs at `min(c*4, 128)` |
+| `-S/--stateless` | Throwaway DB; combine with `--format sqlite -o <base>` to keep it |
+
+**Probe-only defaults.** A standalone probe run (`run probe`, `scan --only
+probe`, REST `{"only":"probe"}`) turns on: `--record-redirect-chain`,
+`--redirect-mode same-apex`, the many-hosts connection profile (keep-alives off,
+short header timeout), and **proactive WAF-edge pacing off** — one request per
+host has no burst to pre-empt, and the pacing notice is noise across thousands of
+targets. Reactive back-off after a real WAF block still applies. Each yields to
+an explicit flag (`--no-waf-pacing=false` re-enables pacing). These defaults do
+NOT apply when the probe rides along inside a wider scan.
+
+**Not stored, only reported.** `a`/`aaaa`/`cname`/`tls` are output-only: the
+schema keeps a single `ip` column, because a sweep writes several records per
+host and storing the full answer per row would be many copies of one identical,
+TTL-stale blob. Reading the same database back later shows `ip` alone — re-run
+the probe if you need the rest. `surface_score`, `response_time_ms` and
+`parent_uuid` ARE stored.
+
+Rank a finished sweep:
+
+```bash
+vigolium traffic --source probe --sort surface_score -n 50
+vigolium traffic --source probe -j --fields url,status_code,surface_score,ip
+```
 
 ### subfinder / amass -> not covered
 

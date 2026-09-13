@@ -293,10 +293,90 @@ except the indexes are append-only **`index.jsonl`** (one object per line — ta
 it live) and per-host ids resume across server restarts. Point your agent at `./mirror`
 and let it `jq`/`grep` the growing tree.
 
+## Process contract
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| `0` | success |
+| `1` | the work failed |
+| `2` | usage error — bad flag, bad value, rejected combination, or a mutation that needed `--force` and had no terminal to ask |
+| `3` | `--fail-on-match` / `--fail-on-crack` matched (`fuzz`, `kit secret-scan`, `kit jwt-crack`) |
+| `4` | the `--fail-on <severity>` gate tripped |
+
+`3` and `4` are *completed results*, not failures: the output was written before
+the code was chosen. `--soft-fail` forces the process status to `0` for all of
+them while leaving the output intact — under `--json` the error object still
+reports the code that would have been used, plus `"soft_fail": true`.
+
+Under `--json` you get **exactly one document per invocation**, whatever happens:
+
+- Flag order does not matter. `traffic --bad --json` and `traffic --json --bad`
+  both emit one `usage_error` object.
+- A command that already wrote its result does not get an error object appended
+  to it — the exit code carries the outcome.
+- Nothing else is ever written to stdout. Banners, prompts, progress, and
+  warnings all go to stderr.
+
+Confirmation for a destructive command requires a terminal. Without one it
+refuses immediately with exit `2` rather than blocking or reading your data
+stream as the answer; pass `--force` to authorize it non-interactively. `--json`
+is **not** authorization.
+
+Reading stdin is bounded by `--input-read-timeout` (default `3m`, `0` disables).
+A producer that never closes its end will not hang the process.
+
+## Discovering the interface
+
+```bash
+vigolium strategy --json    # strategies, phase names + aliases, intensities,
+                            # agent modes, installed profiles
+vigolium config ls --json   # every setting (credentials redacted)
+vigolium scope view --json  # scope rules
+vigolium module ls --json   # module catalog
+vigolium doctor --json      # environment readiness
+```
+
+`strategy --json` is generated from the same registries the flags are validated
+against, so `phases[].canonical` and `phases[].aliases` are exactly what `--only`,
+`--skip`, and `run <phase>` accept.
+
+## Credentials
+
+`auth list` and `config ls` redact secrets by default — session tokens, auth
+headers, stored login requests, and login bodies. This applies under `--json`
+too, because `--json` output is the output most likely to end up in a transcript.
+Pass `--show-secrets` to reveal them; it prints a warning to stderr.
+
+Redacted rows keep `has_session_token`, `header_names`, and a
+`session_token_fingerprint` (a short stable digest) so you can still tell two
+sessions apart or confirm a rotation landed.
+
+## Following a result
+
+Every `-j` read carries a `query` field: a ready-to-run follow-up pinned to the
+same store and scope, correctly shell-quoted.
+
+```bash
+q=$(vigolium --db ./run.sqlite -S finding --limit 1 --json | jq -r .query)
+eval "$q"    # reaches the same finding in the same database
+```
+
+Finding IDs are per-database autoincrement integers, so the `--db`/`--stateless`/
+`--project-uuid` flags in that string are load-bearing. Under `--glob-db` the
+field is **absent**, because the merged source is a temporary database that no
+argument list can reopen.
+
 ## Gotchas
 
 - `-S` means `--stateless` on `scan` but `--scan-on-receive` on `ingest`.
 - `--json` (compact, single object) ≠ `--format jsonl` (bulk, one line per row).
+- `--json --watch <n>` switches to NDJSON: one compact document per line, no
+  clear-screen, no heading. `--watch` is rejected on a command that writes.
+- `db clean --findings-only`, `--orphans`, `--table`, and `--all` are *modes*,
+  not modifiers. The first two are confined to the active project; the last two
+  address the whole store and reject a narrowing filter rather than ignoring it.
 - With `-P/--parallel`, `--fail-on` is evaluated per child process.
 - Agentic scans need a configured LLM provider (`agent.olium` in
   `vigolium-configs.yaml`); run `vigolium doctor --json` to check.

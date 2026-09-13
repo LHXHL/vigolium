@@ -303,6 +303,7 @@ List database records with filtering, sorting, and display options. The target t
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--uuid` | []string | — | Select exact stored record(s) by UUID (repeatable/comma-separated), applied before pagination |
 | `--host` | string | — | Filter by hostname pattern (wildcard supported) |
 | `--method` | []string | — | Filter by HTTP method |
 | `--status` | []int | — | Filter by HTTP status code |
@@ -323,12 +324,20 @@ List database records with filtering, sorting, and display options. The target t
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--sort` | string | `created_at` | Sort field: uuid, created_at, sent_at, method, status_code, response_time |
+| `--sort` | string | `created_at` | Sort field: uuid, created_at, sent_at, method, status_code, response_time, risk_score, surface_score |
 | `--asc` | bool | `false` | Sort ascending |
 
 ### Agent JSON output flags
 
-With `-j`/`--json`, `db ls` emits the same compact, token-aware object as `finding`/`traffic` and accepts the shared shaping flags: `--compact` (metadata only), `--fields a,b,c` (project top-level keys), `--full-body` (complete bodies). `--with-records` is finding-only. Every `-j` command (including `db stats`) uses the **same envelope** — `{schema_version, command, project_uuid, db_path, total, offset, limit, items, query}`, with `items` canonical and the old row key (`records`/`findings`/`scans`/`rows`) kept as a deprecated alias. See [agent-loop.md → The `-j` envelope](agent-loop.md#the--j-envelope).
+With `-j`/`--json`, `db ls` emits the same compact, token-aware object as `finding`/`traffic` and accepts the shared shaping flags: `--compact` (metadata only), `--fields a,b,c` (project top-level keys), `--full-body` (complete bodies). `--with-records` is finding-only. Most `-j` commands (including `db stats`) use the **same envelope** — `{schema_version, command, project_uuid, db_path, total, offset, limit, items, query}`, with `items` canonical and the old row key (`records`/`findings`/`scans`/`rows`) kept as a deprecated alias that ships a **second full copy of the array** on the wire. See [agent-loop.md → The `-j` envelope](agent-loop.md#the--j-envelope).
+
+Notes on this command:
+
+- `--list-tables` / `--list-columns` honor `-j` and emit the envelope (plain ANSI text without it).
+- `--fields` applies on every table including `scans`, and an unknown name is a usage error (exit 2) listing the valid set.
+- `--uuid <uuid>` selects exact record(s), applied before pagination.
+- `-S`/`--stateless` turns project scoping off here as it does on `finding`/`traffic`, so a standalone export whose rows carry another `project_uuid` is readable.
+- The envelope's `project_scoped` says whether a project filter was actually applied; `project_uuid` is absent when it was not.
 
 ### Examples
 
@@ -396,8 +405,23 @@ Export database records in various formats.
 | `--to` | — | string | — | Export records created before this date (YYYY-MM-DD) |
 | `--limit` | — | int | `0` (unlimited) | Max records to export |
 | `--offset` | — | int | `0` | Records to skip |
-| `--uuid` | — | string | — | Export single record by UUID |
+| `--uuid` | — | string | — | Export exactly one record by UUID. Works on every format including `fs`, resolved in SQL before paging |
 | `--request-only` | — | bool | `false` | Export only HTTP requests, omitting responses (raw format only) |
+
+### Notes
+
+- Flags are validated **before** the destination is opened, so a bad `--format`
+  or date range leaves an existing `-o` file intact.
+- `--uuid` works on every format including `fs`, and is resolved in SQL before
+  paging, so a record outside the current page is found rather than reported
+  missing. It narrows **both halves** of an `fs` tree: the selected record's
+  `.req`/`.resp.headers`/`.resp.body`, and the findings *linked to it* — not
+  every finding in the store beside one request.
+- `--search` binds to the same plain search term on every format.
+- `--format fs` is the **only** export path that decodes a gzip body past 1 MiB.
+  Use it, not `-j`, whenever you need a large body whole — a `-j` body carrying
+  `decoder_capped: true` is a prefix (see
+  [agent-loop.md → Token discipline](agent-loop.md#token-discipline)).
 
 ### Examples
 
@@ -484,7 +508,7 @@ Browse vulnerability findings with fuzzy search, filtering, raw display, and col
 | `--scan-uuid` | — | string | — | Filter by scan session ID |
 | `--module-type` | — | string | — | Filter by module type (active, passive, nuclei, agent, source-tools, oast, extension) |
 | `--finding-source` | — | string | — | Filter by finding source (dynamic-assessment, spa, agent, oast, source-tools, extension) |
-| `--id` | — | int | `0` | Filter by finding ID |
+| `--id` | — | int | — | Filter by finding ID — the **integer** from the ID column. A UUID is rejected with the flag that reads that namespace instead (`traffic --uuid` for a record, `--agentic-scan`/`--scan-uuid` for a run); it is never coerced |
 | `--min-severity` | — | string | — | Show findings at/above this severity (`info`,`suspect`,`low`,`medium`,`high`,`critical`); ignored when `--severity` is set |
 | `--agentic-scan` | — | string | — | Findings from an agent run; one root UUID expands to the whole run tree (audit driver legs / swarm sub-runs) |
 
@@ -539,8 +563,16 @@ With `-j`/`--json`, `finding` emits **one compact, token-aware object** (bodies 
 | `--fields` | — | []string | — | Project only these top-level JSON keys (comma-separated) |
 | `--full-body` | — | bool | `false` | Complete bodies — no preview caps, no binary/static stubbing |
 | `--with-records` | — | bool | `false` | Embed each finding's linked HTTP records as a `records:[…]` triage bundle |
+| `--record-limit` | — | int | `20` | With `--with-records`: max records embedded per finding (`0` = no cap). Over the cap the finding also carries `records_total` and `records_truncated: true` |
+| `--record-fields` | — | []string | — | With `--with-records`: project the **nested** record rows, independently of `--fields` |
 
-`--compact`, `--fields`, and `--full-body` are shared with `traffic` and `db ls`; `--with-records`, `--min-severity`, and `--agentic-scan` are finding-only. See [agent-loop.md → Token discipline](agent-loop.md#token-discipline).
+`--compact`, `--fields`, and `--full-body` are shared with `traffic` and `db ls`; `--with-records`, `--record-limit`, `--record-fields`, `--min-severity`, and `--agentic-scan` are finding-only. See [agent-loop.md → Token discipline](agent-loop.md#token-discipline).
+
+Two behaviours to rely on:
+
+- An unknown `--fields` / `--record-fields` name is a **usage error (exit 2)** listing the valid set for that view — it is never dropped silently. `--fields '?'` is a quick way to print the vocabulary.
+- `--fields` never removes the `records` array: it was requested by `--with-records`, so the projection narrows the finding's own keys only.
+- If the linked records cannot be read, the finding carries `records_error` plus `records_total` rather than looking like a finding with no evidence.
 
 ### Available columns
 
@@ -593,10 +625,24 @@ Browse stored HTTP traffic. Shortcut for `vigolium db ls http_records`. To load
 traffic in, see [ingest.md](ingest.md) / [server.md](server.md); to re-send it,
 see [agent-loop.md](agent-loop.md) → *Bulk replay*.
 
+**Host facts are output-only, not stored.** A `run probe` sweep reports `a`,
+`aaaa`, `cname` and `tls` inline in its own `--json` stream, but the schema keeps
+only the single `ip` column — a sweep writes several records per host, so storing
+the full answer per row would be many copies of one identical, TTL-stale blob.
+Reading the same database back later (here, or with `export`) therefore shows
+`ip` and no `a`/`aaaa`/`cname`/`tls`. That is correct, not a gap: re-run the
+probe if you need them. `surface_score`, `response_time_ms` and `parent_uuid`
+**are** stored and queryable.
+
+**`--source probe`** selects a sweep's records; `--sort surface_score` ranks them
+by attackable surface (0-100, 10 per signal). `parent_uuid` chains a followed
+redirect: `a.example` (301) → `www.a.example` (302) → the 200 that answered.
+
 ### Filter flags (persistent, inherited by replay)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--uuid` | []string | — | Select exact stored record(s) by UUID (repeatable/comma-separated). Applied **before** pagination, so `-n`/`--offset` can never hide a match. A UUID as the *positional* term searches text, not identity — use this flag |
 | `--host` | string | — | Filter by hostname pattern (wildcard supported) |
 | `--method` | []string | — | Filter by HTTP method (repeatable, e.g. --method GET --method POST) |
 | `--status` | []int | — | Filter by HTTP status code (repeatable, e.g. --status 200 --status 404) |
@@ -606,8 +652,8 @@ see [agent-loop.md](agent-loop.md) → *Bulk replay*.
 | `--search` | string | — | Fuzzy search across URLs, paths, and hostnames |
 | `--header` | string | — | Search within HTTP header names and values |
 | `--body` | string | — | Search within HTTP request/response body content |
-| `--source` | string | — | Filter by record source (e.g. scanner, ingest-cli, ingest-server, ingest-proxy, seed) |
-| `--sort` | string | `created_at` | Sort field: uuid, created_at, sent_at, method, status, time |
+| `--source` | string | — | Filter by record source (e.g. scanner, probe, burp, caido, ingest-cli, ingest-server, ingest-proxy, seed) |
+| `--sort` | string | `created_at` | Sort field: uuid, created_at, sent_at, method, status, time, risk_score, surface_score |
 | `--asc` | bool | `false` | Sort in ascending order (default: descending) |
 | `--limit` / `-n` | int | `100` | Maximum records to display |
 | `--offset` | int | `0` | Number of records to skip (for pagination) |
@@ -620,6 +666,8 @@ see [agent-loop.md](agent-loop.md) → *Bulk replay*.
 | `--raw` | bool | `false` | Full raw HTTP request and response |
 | `--burp` | bool | `false` | Burp Suite-style colored format |
 | `--markdown` | bool | `false` | Render matched records as Markdown (request/response in fenced http blocks) to stdout |
+| `--group-by` | string | — | **Count** the matched records by one field instead of listing them: `host`, `method`, `status_code`, `response_content_type`, `source`, `scan_uuid`, `ip`, `is_authenticated`. An unknown name is a usage error listing the set |
+| `--group-limit` | int | `20` | With `--group-by`: maximum buckets, largest first (`0` = every bucket) |
 | `--columns` | []string | — | Columns to show (comma-separated, e.g. HOST,METHOD,PATH,STATUS) |
 | `--exclude-columns` | []string | — | Columns to hide (comma-separated) |
 | `--exclude-search` / `--exclude-header` / `--exclude-body` | []string / string | — | Inverse-search filters (drop records where the term appears) |
@@ -670,7 +718,20 @@ vigolium traffic --source ingest-proxy --tree
 
 # Custom columns
 vigolium traffic --columns HOST,METHOD,PATH,STATUS,AUTH
+
+# Count instead of listing — the same filters, a dozen integers back
+vigolium traffic --group-by status_code --host api.example.com
+vigolium traffic -j --group-by response_content_type --group-limit 5
 ```
+
+**`--group-by` runs the same filters the listing would**, so the buckets describe
+exactly the rows `traffic` would have shown — it is the answer to "how many
+records share this value" without paying for the records. Under `-j`, `items` is
+the bucket list (`{value, count}`), `total` is the number of buckets, and
+`total_records` / `other_groups` / `other_records` state what was counted and
+what the limit left out. It cannot be combined with a flag that renders records
+(`--raw`, `--burp`, `--markdown`, `--tree`, `--replay`, the `--save-to-*` pair):
+one counts, the other prints.
 
 ---
 

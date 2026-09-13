@@ -135,14 +135,45 @@ Note: `--only` and `--skip` cannot be used together.
 
 ## Phase Aliases
 
-Several phases accept shorthand aliases:
+Every phase answers to several spellings. They work identically with `--only`, `--skip`, the `vigolium run <phase>` argument, the per-phase pace qualifiers (`--rate-limit crawl=20`) and the REST API's `only`/`skip` fields. Names are trimmed and lowercased first, so `--skip Spider` and `--skip ' spider'` both resolve.
 
-| Alias | Phase |
-|-------|-------|
-| `deparos`, `discover` | `discovery` |
-| `spitolas` | `spidering` |
-| `ext` | `extension` |
-| `audit`, `dast`, `assessment` | `dynamic-assessment` |
+| Phase | Also accepts |
+|-------|--------------|
+| `ingestion` | `ingest`, `ingesting` |
+| `discovery` | `discover`, `discovering`, `deparos` |
+| `external-harvest` | `harvest`, `harvesting`, `external-harvester`, `external_harvester` |
+| `spidering` | `spider`, `spitolas`, `crawl`, `crawling`, `crawler` |
+| `known-issue-scan` | `cve`, `kis`, `known-issue`, `known-issues` |
+| `dynamic-assessment` | `dast`, `audit`, `assessment`, `assess` |
+| `extension` | `ext`, `extensions` |
+
+`--skip extension` is rejected — the extension phase is opt-in, so there is nothing to skip.
+
+One exception applies to the positional form only: `vigolium run audit` is rejected as ambiguous, because it reads as `vigolium agent audit` (the AI source-code audit) rather than the native module-scanning phase. Use `vigolium run dynamic-assessment` (or `dast`). `--only audit` and `--skip audit` are unaffected.
+
+### `run <phase>` and `scan --only <phase>` are the same thing
+
+`vigolium run discover` is not a lighter variant of `vigolium scan --only discovery` — it is literally the same code path, so the two behave identically in every respect.
+
+What *does* differ is running a phase on its own versus running it inside a full pipeline. The clearest case is discovery's FUZZ brute-force: it is enabled whenever the active `--only` set contains `discovery`, and disabled when discovery runs as one phase of a balanced or lite full scan. The Discovery phase header prints which applies:
+
+```
+◆ Fuzzing: enabled — fuzz.txt (5369) (embedded default), appends /FUZZ [discovery-only run]
+◆ Fuzzing: disabled — off on balanced/lite full scans (enable via `run discover`, --intensity deep, or --discovery-wordlist)
+```
+
+### Turning discovery fuzzing off
+
+`--no-discovery-fuzz` (alias `--no-fuzz`) disables the `/FUZZ` brute-force outright. It is checked before every rule that would switch fuzzing on, so it wins over `--intensity deep`, over a discovery-only run, and over the low-yield auto-enable:
+
+```bash
+vigolium run discover -T hosts.txt --no-fuzz            # content discovery without the 5369-word brute
+vigolium scan -t https://example.com --intensity deep --no-fuzz
+```
+
+The rest of discovery is untouched — link extraction, robots.txt, JS parsing (jstangle, Next.js/Angular/CRA manifests, source maps), response-word harvesting into the observed wordlists, form submission, and the short `dir-short.txt`/`file-short.txt` dictionaries all still run. `--intensity deep` still loads the long dictionaries; only the `/FUZZ` task is removed.
+
+Passing `--no-discovery-fuzz` together with `--discovery-wordlist` is an error rather than a precedence rule — the two state opposite intents, and the outcomes differ by thousands of requests per host.
 
 ## Chaining Phases Manually
 

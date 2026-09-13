@@ -208,3 +208,25 @@ vigolium traffic --source ingest-cli --tree
 After ingesting, records are queryable with `vigolium traffic` (filter by
 `--source ingest-cli` / `ingest-server` / `ingest-proxy`) — see
 [data.md](data.md).
+
+## `ingest -j` output
+
+The standard envelope, with an empty `items` (`[]` — the payload is the sibling
+fields, not a row array):
+
+```jsonc
+{
+  "schema_version": 1, "command": "ingest", "items": [], "total": 1,
+  "records_ingested": 1,
+  "input_format": "har",          // what was PARSED  (har, burp, openapi, urls…)
+  "record_source": "ingest-cli",  // what was STORED in http_records.source
+  "duration_ms": 336,
+  "query": "vigolium traffic --json -n 20"
+}
+```
+
+**`input_format` and `record_source` are two different vocabularies** and must
+not be crossed: `--source` on a read filters by the *record source*, so
+`--source har` matches nothing. This pair replaces a single ambiguous `source`
+field that held the input format — if you parsed `.source` here, read
+`.input_format` now.

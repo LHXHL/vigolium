@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [v0.4.6] - 2026-09-08
+
+A new `vigolium run probe` host sweep, redirects that are actually followed, `-T/--target-file` seeding the scan at last, and a deterministic attack-surface score on every record. Registry moves to 207 active + 117 passive.
+
+### Added
+
+- **`vigolium run probe`** — a host sweep: one request per target, passive fingerprinting only, no content discovery and no fuzzing, so `-T hosts.txt -c 20` reaches thousands of hosts instead of spending the budget on the first handful the way `run discover` does. Aliases: `probing`, `httpx`, `alive`, `sweep`.
+- Probe rows are labelled `probe` (`traffic --source probe`), so a sweep is separable from a real scan in the same project.
+- `--tls-probe` completes a TLS handshake per HTTPS endpoint and reports the negotiated version/cipher plus the leaf certificate — subject/CN, SANs, issuer, validity window, serial, MD5/SHA-1/SHA-256 fingerprints — under an httpx-shaped `tls` key. Validation is deliberately off: an expired or self-signed certificate *is* the result.
+- The probe phase resolves the whole target list's DNS before the first request, so `a`/`aaaa`/`cname` are reported inline in `-j`/JSONL output and the agent view. Only `ip` is stored — the rest is cheap to re-resolve and TTL-stale the moment it is written.
+- `--redirect-mode off|same-host|same-apex|any` (default `any`) replaces the `FollowRedirects`/`FollowHostRedirects` bool pair, which had no spelling for what a host sweep needs. `same-apex` follows `www.example.com → example.com` but not `example.com → tracker.example.net`, and fails closed to exact-host equality when either side has no registrable domain.
+- `--record-redirect-chain` stores each followed hop as its own `http_records` row, chained through the existing `parent_uuid` column (no schema change). On by default under `run probe`.
+- `--no-response` as an alias for `--omit-response`, which on a sweep is the bulk of every row.
+- `traffic --tree` shows where a 3xx points (`↪ https://…`), fetched by uuid for the redirects alone rather than by hydrating the page's raw bodies.
+- `http_records.surface_score`: a deterministic 0-100 attack-surface score (ten signals, 10 points each) written by the new `surface-scoring` passive module — absolute and reproducible, unlike `risk_score`'s per-batch rank.
+- `db ls --min-surface`, `surface_score` as a `db ls --sort` key and a `SURFACE` column in its listing, `min_surface`/`min_surface_score` on the records APIs, and the field in `-j` output, the CSV export and the agent's `inspect_record`.
+- `spa` joins the known tech tags, so a module can gate on "this host client-side-routes".
+- `traffic --group-by <field>` counts matched records by `host`/`method`/`status_code`/`response_content_type`/`source`/`scan_uuid`/`ip`/`is_authenticated`, bounded by `--group-limit` with the tail reported as `other_groups`/`other_records`.
+- `error.code: "source_incompatible"` for a valid SQLite file that is not a vigolium store, instead of the generic `failed`.
+
+### Fixed
+
+- **Redirects were never actually followed.** `doRequest` walked the response chain back to its *oldest* hop, so every caller of `Execute` received the first 3xx instead of the page behind it — a target that redirects to its real application was recorded as a bodyless 3xx and no module ever saw the application. The transport had been following the redirect the whole time.
+- **`response_time_ms` was always 0** — the requester truncated the duration to whole seconds, every caller discarded it, and the response model had nowhere to put it, so `db stats`' p50/p95/p99 were computed over a column of zeros. A measured duration is now floored at 1ms, leaving 0 to mean unambiguously "not measured".
+- Read commands (`traffic`, `finding`, `db ls`, `export`) migrate the schema on open instead of failing an old database's first read with a bare `no such column: r.surface_score`. A read-only handle cannot migrate, so it names the missing columns and how to proceed.
+- `-T/--target-file` now seeds `Options.Targets`, so `run spidering -T hosts.txt` crawls instead of finishing in 0s with a false "Targets: N" banner.
+- Piped URL lists (including explicit `-I urls`) promote into targets the same way a `-T` file does.
+- `TargetSource` skips an unparseable line instead of aborting the whole scan on the first junk URL in a recon export.
+- `verbose_error_stacktrace` never matched a real Java, Node.js or .NET stack trace — every repeated-frame pattern required unindented frames, and all three runtimes indent theirs.
+- `db export --uuid --format fs` narrowed only the traffic half of the tree, writing the one selected `.req` beside every finding in the store; the identity selector now narrows both.
+
+### Changed
+
+- A probe-only run gets its own defaults — redirect hops recorded, `--redirect-mode same-apex`, the `sweep` transport profile, and **proactive WAF-edge pacing off** (a sweep sends one request per host, so there is no burst to pre-empt, while the pre-arm would switch adaptive feedback on for the whole run and print a pacing notice per host). Reactive back-off after an actual block is untouched, and the phase header says so. Resolved in the runner, so the CLI, the REST API and the programmatic launcher all agree.
+- Stack-trace signatures move to `pkg/modules/infra/stacktrace` so `verbose_error_stacktrace` and `surface_scoring` read one table instead of two copies.
+- The `-j` envelope no longer duplicates its rows into the legacy `records`/`findings`/`scans`/`rows`/`stats` key, roughly halving every payload; `--json-legacy-keys` (or `VIGOLIUM_JSON_LEGACY_KEYS=1`) restores the alias for callers still migrating.
+- `finding --id` rejects a UUID with the flag that reads that namespace (`traffic --uuid`, `--agentic-scan`/`--scan-uuid`) instead of a bare `strconv` error.
+
+The column is added by the existing self-healing DDL path, so an existing database gains it on the next open with its rows untouched. `currentSchemaVersion` is deliberately **not** bumped — that would re-run the O(rows) backfills on every database in the field to add one column that needs no backfill.
+
 ## [v0.4.5] - 2026-09-04
 
 A **machine-interface** release: vigolium is now readable by a program while it runs, its safety dials do what their names say, and the shapes a driver parses stopped drifting per command. Sourced from a downstream driver's workaround list — every item below replaces code someone wrote to recover a fact vigolium already knew. No module changes (registry stays at 207 active + 116 passive).
