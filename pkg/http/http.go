@@ -38,6 +38,11 @@ const (
 	// sleeps ~6s) so those responses are never aborted at the transport layer, and
 	// it never drops below the configured request timeout (see respHeaderTimeout).
 	responseHeaderTimeoutFloor = 30 * time.Second
+
+	// TransportProfileSweep is the many-hosts-one-request-each connection
+	// profile. See types.Options.TransportProfile for why the two profiles
+	// cannot be collapsed into one.
+	TransportProfileSweep = "sweep"
 )
 
 // Options per-request
@@ -55,6 +60,22 @@ type Options struct {
 	// "@collab.net/", or a protocol-relative "//collab.net/". Requires
 	// RawRequest=true (it is routed through the rawhttp client); ignored otherwise.
 	RawRequestTarget string
+	// clusterScope partitions the response cache by the sending requester's
+	// credential identity.
+	//
+	// It is needed because computeClusterKey hashes the RAW request bytes, while
+	// the credential surface — customHeaders and the cookie jar — is applied later
+	// in doRequest, AFTER the key exists. When credentials arrive via -H or a
+	// carried browser session rather than in the captured bytes, an authenticated
+	// request and its credential-stripped twin hash identically, and whichever ran
+	// first serves the other from cache inside the 500ms TTL. For an
+	// authorization-differential module that collision IS the measurement: it
+	// reads authenticated == unauthenticated.
+	//
+	// Unexported and stamped by ExecuteContext — callers construct Options with
+	// exported fields only, so it is "" for the primary requester and non-empty
+	// only on a credential-stripped view.
+	clusterScope string
 }
 
 // Requester executes HTTP requests with rate limiting and host error tracking
@@ -66,6 +87,9 @@ type Requester struct {
 	services         *services.Services
 	customHeaders    map[string]string
 	clusterer        *RequestClusterer
+	// clusterScope partitions the shared response cache by credential identity.
+	// Empty on the primary requester; set on credential-stripped views.
+	clusterScope string
 	// defaultCtx, when non-nil, is the context the context-less Execute attaches
 	// to outgoing requests. Set per scan task via WithContext so cancellation
 	// reaches modules that call Execute (not ExecuteContext). nil → Background.
@@ -416,6 +440,25 @@ func getProxyURL(cliProxy string) string {
 	return ""
 }
 
+// defaultRequestTimeout is the fallback when a caller leaves Options.Timeout
+// unset. It matches retryablehttp.DefaultOptionsSpraying's own value, which is
+// what such a caller silently received before the timeout was threaded through —
+// so "said nothing" keeps behaving exactly as it did, and only an explicit value
+// changes anything.
+const defaultRequestTimeout = 30 * time.Second
+
+// effectiveRequestTimeout resolves the one timeout used for the standard client,
+// the retry wrapper and the raw client. A zero or negative value means "not
+// configured" and takes the default rather than becoming an unbounded client:
+// http.Client{Timeout: 0} never gives up, which for a scanner is a hang, not a
+// generous deadline.
+func effectiveRequestTimeout(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return defaultRequestTimeout
+	}
+	return configured
+}
+
 // NewRequester creates a new Requester with all HTTP clients initialized
 func NewRequester(options *types.Options, services *services.Services) (*Requester, error) {
 	dialer := network.CurrentDialer()
@@ -423,7 +466,7 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 		return nil, errors.New("network.Dialer not initialized")
 	}
 
-	timeout := options.Timeout
+	timeout := effectiveRequestTimeout(options.Timeout)
 
 	// TLS config - hardcoded for pentesting (insecure, max compat).
 	//
@@ -478,6 +521,34 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	// making the transport reject every response instantly.
 	respHeaderTimeout := max(timeout, responseHeaderTimeoutFloor)
 
+	// Sweep profile: many hosts, one request each. Every pooling assumption
+	// above inverts here (see types.Options.TransportProfile).
+	//
+	// Keep-alives go off because the pool can almost never be hit — the next
+	// request is to a different host — while each idle socket still holds a file
+	// descriptor for IdleConnTimeout. Across thousands of hosts that is the
+	// difference between a bounded fd count and "dial: too many open files".
+	// Sending Connection: close also makes the SERVER the active closer, so
+	// TIME_WAIT accumulates on their side rather than burning through this
+	// box's ~28k ephemeral ports.
+	//
+	// The MaxIdleConns* values computed above are therefore left as they are and
+	// simply go unused: DisableKeepAlives makes Go refuse every connection at
+	// tryPutIdleConn, so no idle-pool sizing is reachable. Tuning them for this
+	// profile would be configuring a pool that cannot be populated. The cost
+	// accepted here is that a same-host redirect hop or a retry re-handshakes;
+	// that is the trade the fd bound is bought with.
+	//
+	// The response-header timeout drops to the request timeout with no floor.
+	// The floor exists to protect deliberately-delayed responses from
+	// time-based probes; a sweep sends no such probe, and the hosts that accept
+	// a connection and then say nothing are exactly what makes a large sweep
+	// take hours. Here the tail IS the run time.
+	sweep := strings.EqualFold(options.TransportProfile, TransportProfileSweep)
+	if sweep {
+		respHeaderTimeout = timeout
+	}
+
 	// Built before the transport so the dial hooks below can close over it: it is
 	// the transport's own dialers, not httptrace, that see every real connection
 	// (see poolStats.connDialed for why that distinction matters).
@@ -495,13 +566,13 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 			// multiplexing would break. To ever enable h2, the custom
 			// DialTLSContext below must be removed and ALPN wired via the shared
 			// tlsConfig (NextProtos) / http2.ConfigureTransport.
-			ForceAttemptHTTP2: options.ForceAttemptHTTP2,
+			ForceAttemptHTTP2: options.ForceAttemptHTTP2 && !sweep,
 			// Wrapped so every real connection establishment is tallied — httptrace
 			// cannot see them reliably (see poolStats.connDialed).
 			DialContext:            poolStats.countDials(dialer.Dial),
 			DialTLSContext:         poolStats.countDials(dialer.DialTLS),
 			TLSClientConfig:        tlsConfig,
-			DisableKeepAlives:      false,
+			DisableKeepAlives:      sweep,
 			MaxIdleConns:           maxIdleConns,
 			MaxIdleConnsPerHost:    maxIdlePerHost,
 			IdleConnTimeout:        90 * time.Second,
@@ -529,11 +600,27 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	retryOpts := retryablehttp.DefaultOptionsSpraying
 	retryOpts.RetryMax = options.Retries
 	retryOpts.RetryWaitMax = 10 * time.Second
+	// MUST be carried over from options: NewWithHTTPClient hands these options to
+	// retryablehttp.NewClient, which overwrites the supplied http.Client's Timeout
+	// with its own whenever retryOpts.Timeout > 0. DefaultOptionsSpraying carries
+	// 30s, so leaving it alone silently discarded the Timeout set on both clients
+	// below — --timeout was a no-op on this path and every request ran on 30s,
+	// double the flag's own 15s default, in both directions (a short timeout was
+	// ignored, a long one was truncated). DefaultOptionsSpraying also sets
+	// NoAdjustTimeout, so this value is used as-is rather than scaled to 30%.
+	retryOpts.Timeout = timeout
 
 	maxRedir := options.MaxRedirects
 	if maxRedir == 0 {
 		maxRedir = 10
 	}
+
+	// Resolved ONCE and shared by the standard client and both raw clients, so
+	// "which redirects does this scan follow" has a single answer. The raw path
+	// cannot express same-host/same-apex (rawhttp only has a follow/don't bool),
+	// so it follows for any mode except off — documented here rather than
+	// silently diverging.
+	redirectMode := ResolveRedirectMode(options)
 
 	// Single shared transport — connection pooling is a transport-level concern.
 	// Redirect policy is a client-level concern configured via CheckRedirect.
@@ -545,7 +632,7 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 		Transport:     sharedTransport,
 		Timeout:       timeout,
 		Jar:           jar,
-		CheckRedirect: makeRedirectFunc(options.FollowHostRedirects, maxRedir),
+		CheckRedirect: makeRedirectFunc(redirectMode, maxRedir),
 	}, retryOpts)
 
 	// Client without redirects
@@ -569,7 +656,7 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	} else {
 		rawOpts.FastDialer = dialer
 	}
-	rawOpts.FollowRedirects = true
+	rawOpts.FollowRedirects = redirectMode != RedirectModeOff
 	rawOpts.MaxRedirects = maxRedir
 	rawClient := rawhttp.NewClient(&rawOpts)
 
@@ -684,17 +771,32 @@ func parseHeaders(headers []string) map[string]string {
 // (extra TCP/TLS handshakes) and — because it also got a fresh response observer /
 // block state — was invisible to the executor's scan-wide 5xx corroboration and
 // edge pacing. The view fixes both: probes reuse the warm pool and stay observed.
-// The clusterer is safe to share because it keys on the full raw-request hash
-// (computeClusterKey), so a credential-stripped probe never collides with an
-// authenticated request.
+// The clusterer is shared, but NOT because the raw-request hash is sufficient on
+// its own — it is not; see Options.clusterScope. Isolation comes from the scope
+// stamped below, so the shared clusterer only ever coalesces requests that really
+// are equivalent.
 func (r *Requester) CloneWithoutCredentials() (*Requester, error) {
 	view, err := r.cloneSharingTransport()
 	if err != nil {
 		return nil, err
 	}
 	view.customHeaders = stripCredentialHeaderMap(r.customHeaders)
+	// A CONSTANT, not a per-clone id: modules call CloneWithoutCredentials inside
+	// ScanPerRequest, i.e. once per record, so a unique-per-clone scope would give
+	// every probe its own partition and silently switch clustering off for that
+	// whole traffic class. Every view of one requester has the same credential
+	// surface (same stripped headers, empty jar), so they are interchangeable and
+	// must keep coalescing with each other — only the split from the
+	// credential-bearing parent is required, and one clusterer never spans two
+	// parents (CloneForScan mints a fresh one per scan).
+	view.clusterScope = anonymousClusterScope
 	return view, nil
 }
+
+// anonymousClusterScope labels the response-cache partition shared by every
+// credential-stripped view. The primary requester's scope stays "", so the
+// common path adds nothing to the cache key.
+const anonymousClusterScope = "anon"
 
 // CloneForScan returns a per-scan requester that SHARES the expensive
 // transport (connection pool), dialer, and host rate limiter with r, but gives
@@ -759,6 +861,11 @@ func (r *Requester) cloneSharingTransport() (*Requester, error) {
 func cloneRetryClientWithJar(src *retryablehttp.Client, jar http.CookieJar, opts retryablehttp.Options) *retryablehttp.Client {
 	base := *src.HTTPClient // shares Transport + CheckRedirect, keeps Timeout
 	base.Jar = jar
+	// NewWithHTTPClient overwrites base.Timeout with opts.Timeout whenever the
+	// latter is positive, so carrying it across here is what makes the "keeps
+	// Timeout" above true. Done at this single seam rather than at each caller:
+	// this is the only function that can drop it, so it cannot be forgotten.
+	opts.Timeout = base.Timeout
 	return retryablehttp.NewWithHTTPClient(&base, opts)
 }
 
@@ -788,24 +895,12 @@ func credentialHeaderName(name string) bool {
 		strings.HasSuffix(normalized, "-session-id")
 }
 
-func makeRedirectFunc(sameHostOnly bool, maxRedirects int) func(*http.Request, []*http.Request) error {
-	return func(req *http.Request, via []*http.Request) error {
-		if len(via) >= maxRedirects {
-			return http.ErrUseLastResponse
-		}
-		if sameHostOnly && req.URL.Host != via[0].URL.Host {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}
-}
-
 // Execute sends HTTP request with rate limiting, host error tracking,
 // and optional request clustering to deduplicate concurrent identical requests.
 // It uses the context bound via WithContext (if any) so callers that never touch
 // ExecuteContext still honour scan/module cancellation; otherwise it is
 // equivalent to the non-cancellable legacy behaviour.
-func (r *Requester) Execute(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+func (r *Requester) Execute(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 	ctx := r.defaultCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -818,7 +913,7 @@ func (r *Requester) Execute(input *httpmsg.HttpRequestResponse, opts Options) (*
 // timeout) aborts the in-flight request and its retry loop instead of leaving
 // the goroutine to drain on its own. A context.Background() ctx is equivalent to
 // the legacy non-cancellable Execute.
-func (r *Requester) ExecuteContext(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+func (r *Requester) ExecuteContext(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 	// Refuse new work for a module the executor has already given up on. Checked
 	// before the clusterer so an abandoned caller neither starts a request nor
 	// joins a singleflight group it would only abandon again.
@@ -826,11 +921,42 @@ func (r *Requester) ExecuteContext(ctx context.Context, input *httpmsg.HttpReque
 		return nil, 0, ErrRequestAbandoned
 	}
 	if r.clusterer != nil && !opts.NoClustering {
-		return r.clusterer.Execute(input, opts, func(in *httpmsg.HttpRequestResponse, o Options) (*httpUtils.ResponseChain, int, error) {
+		// Stamp this requester's cache partition onto the options copy the
+		// clusterer keys on. Callers never set this field.
+		opts.clusterScope = r.clusterScope
+		return r.clusterer.Execute(input, opts, func(in *httpmsg.HttpRequestResponse, o Options) (*httpUtils.ResponseChain, time.Duration, error) {
 			return r.executeDirectly(ctx, in, o)
 		})
 	}
 	return r.executeDirectly(ctx, input, opts)
+}
+
+// CloseIdleConnections returns this requester's idle keep-alive connections to
+// the OS. Safe to call more than once and on a nil receiver.
+//
+// Call it from the component that OWNS the requester, once its work has
+// drained — never from a WithContext/credential view, which shares the same
+// transport and would pull the sockets out from under the owner. It does not
+// touch the process-global fastdialer (that is reference-counted by
+// network.Init/Close) and does not close the raw clients, whose Close would
+// close a fastdialer they may have only borrowed.
+//
+// Without this, a finished scan left up to MaxIdleConns sockets pinned for
+// IdleConnTimeout (90s). One scan recovers on its own; a server process running
+// scans back to back, or a host sweep that touched thousands of origins,
+// accumulates them.
+func (r *Requester) CloseIdleConnections() {
+	if r == nil {
+		return
+	}
+	for _, c := range []*retryablehttp.Client{r.client, r.clientNoRedir} {
+		if c == nil || c.HTTPClient == nil {
+			continue
+		}
+		if t, ok := c.HTTPClient.Transport.(*http.Transport); ok && t != nil {
+			t.CloseIdleConnections()
+		}
+	}
 }
 
 // Clusterer returns the request clusterer (nil if clustering is disabled).
@@ -840,7 +966,7 @@ func (r *Requester) Clusterer() *RequestClusterer {
 
 // executeDirectly sends HTTP request with rate limiting and host error tracking.
 // ctx is propagated to the outgoing request for cancellation.
-func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 	host := ""
 	if input.Service() != nil {
 		host = input.Service().Host()
@@ -876,6 +1002,13 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 		defer r.services.HostLimiter.Release(host)
 	}
 
+	// The clock starts HERE — after the global rate token and the per-host
+	// permit have been acquired, immediately before the send. Queue time is
+	// vigolium's own saturation, not the target's latency, and folding it in
+	// would make every reported duration a function of --rate-limit and
+	// --concurrency rather than of the host. The returned duration covers the
+	// full logical operation from that point: retries, redirect hops and body
+	// capture included.
 	start := time.Now()
 	// Counted before the send, not after a successful one: a request that timed
 	// out or was refused still hit the network, and a progress counter that only
@@ -919,7 +1052,7 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 		}
 		r.respObserver.report(host, urlStr, input.Request().Raw(), resp, status)
 	}
-	return resp, int(time.Since(start).Seconds()), nil
+	return resp, time.Since(start), nil
 }
 
 // classifyWAFBlock returns the WAF/CDN block classification for resp, or nil if it is
@@ -1138,21 +1271,31 @@ func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestRes
 	}
 
 	respChain := httpUtils.NewResponseChain(resp, MaxBodyRead)
-	for respChain.Has() {
-		if err := respChain.Fill(); err != nil {
-			// NewResponseChain checks two buffers out of projectdiscovery's
-			// global, fixed-size pool (default 10000). On this error path the
-			// chain is never handed to the caller, so nothing downstream will
-			// Close() it — we must release the buffers here or they leak. Because
-			// the pool's getBuffer() acquires with context.Background() (a
-			// non-cancellable wait), enough accumulated leaks exhaust the pool and
-			// every subsequent request blocks forever, deadlocking the whole scan.
-			respChain.Close()
-			return nil, errors.Wrap(err, "could not generate response chain")
-		}
-		if !respChain.Previous() {
-			break
-		}
+	// Fill ONCE, at the response the chain starts on — the FINAL response, i.e.
+	// the one this request actually ended up at.
+	//
+	// This used to be a `for respChain.Has() { Fill(); if !Previous() break }`
+	// loop, which was a silent and total loss of redirect following. Previous()
+	// rewinds the chain in place and Fill() reuses the same two pooled buffers,
+	// so the loop did not "fill the whole chain" — it walked to the OLDEST hop
+	// and returned the chain sitting there. Every caller of Execute therefore
+	// received the first 301 instead of the page behind it: a target that
+	// redirects to its real application was recorded as a bodyless 3xx and no
+	// module ever saw the application at all. The transport had followed the
+	// redirect the whole time; the result was thrown away here.
+	//
+	// Callers that want the intermediate hops walk them deliberately via
+	// RedirectChainHops, which documents that it consumes the chain.
+	if err := respChain.Fill(); err != nil {
+		// NewResponseChain checks two buffers out of projectdiscovery's
+		// global, fixed-size pool (default 10000). On this error path the
+		// chain is never handed to the caller, so nothing downstream will
+		// Close() it — we must release the buffers here or they leak. Because
+		// the pool's getBuffer() acquires with context.Background() (a
+		// non-cancellable wait), enough accumulated leaks exhaust the pool and
+		// every subsequent request blocks forever, deadlocking the whole scan.
+		respChain.Close()
+		return nil, errors.Wrap(err, "could not generate response chain")
 	}
 	return respChain, nil
 }

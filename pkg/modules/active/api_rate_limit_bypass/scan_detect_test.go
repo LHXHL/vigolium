@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,7 @@ import (
 func nonClusteringRequester(t testing.TB) *httpRequester.Requester {
 	t.Helper()
 	opts := types.DefaultOptions()
-	opts.Timeout = 30
+	opts.Timeout = 30 * time.Second
 	opts.Retries = 1
 	opts.MaxHostError = 100
 	opts.MaxPerHost = 20

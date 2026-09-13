@@ -10,12 +10,21 @@ type Options struct {
 	Concurrency int // Number of parallel workers
 
 	TargetsFilePaths []string // target-list files (-T/--target-file, repeatable); lines from all are merged
-	InputFileMode    string   // json, jsonb, list
-	Stream           bool
-	Stdin            bool
-	// Time to wait between each input read operation before closing the stream
-
-	InputReadTimeout time.Duration
+	// TargetsSeededFromFile records that TargetsFilePaths was promoted into
+	// Targets and then cleared. The -P fan-out only splits a -T file, so this is
+	// how a later consumer still knows the run was file-driven — without it, the
+	// fan-out hint would offer -P to a -t-only run, where it degrades back to a
+	// single serial scan with a warning.
+	TargetsSeededFromFile bool
+	InputFileMode         string // json, jsonb, list
+	Stream                bool
+	Stdin                 bool
+	// --input-read-timeout used to land here and go no further: nothing in the
+	// runner ever read this field, so the advertised deadline was inert and a
+	// pipe that never closed hung the process. The deadline is now applied where
+	// the bytes are actually read, by pkg/cli/stdin.go, and it deliberately does
+	// NOT reach the streaming URL-list source: `httpx ... | vigolium scan` keeps
+	// its stdin open for as long as the producer runs, and that is the point.
 	// Output is the file to write found results to.
 	Output string
 	// IncludeResponseInOutput includes HTTP response in output file.
@@ -48,8 +57,14 @@ type Options struct {
 	MaxPerHost int
 	// NoWafPacing disables the proactive CDN/WAF-edge pacing (pre-arming the
 	// per-host limiter when an edge is fingerprinted). The reactive WAF-block back-off
-	// still applies. Wired from the --no-waf-pacing CLI flag.
+	// still applies. Wired from the --no-waf-pacing CLI flag; a probe-only run
+	// turns it on for itself (see runner.ApplyNativePhaseSelection).
 	NoWafPacing bool
+	// NoWafPacingSet records that the operator asked for the value in
+	// NoWafPacing. Same reason as RecordRedirectChainSet: "off" is both the
+	// default and something an operator can deliberately ask for, so a phase
+	// applying its own default cannot tell them apart from the bool alone.
+	NoWafPacingSet bool
 	// MaxHostError is the maximum number of errors allowed for a host
 	MaxHostError int
 	// MaxFindingsPerModule caps findings emitted per module (0 = unlimited)
@@ -117,6 +132,42 @@ type Options struct {
 	FollowHostRedirects bool
 	// DisableRedirects disables following redirects for http request module
 	DisableRedirects bool
+	// TransportProfile selects the connection-pool shape. HTTP client tuning is
+	// bimodal and the two modes want opposite settings, so one profile cannot
+	// serve both:
+	//
+	//   ""      few hosts, many requests each (the scanner's normal shape):
+	//           keep-alives on, a warm idle pool sized to the per-host
+	//           concurrency ceiling, a response-header timeout generous enough
+	//           that a deliberately-delayed response (time-based blind SQLi
+	//           sleeps ~6s) is never cut off at the transport layer.
+	//   "sweep" many hosts, one request each: keep-alives off (the pool never
+	//           pays off and idle sockets hold file descriptors), and a short
+	//           response-header timeout, because the 3% of hosts that accept
+	//           and then stall are what sets the run time.
+	//
+	// See http.TransportProfile*.
+	TransportProfile string
+
+	// RedirectMode selects which redirects the requester follows. It is the
+	// successor to the FollowRedirects/FollowHostRedirects pair, which could not
+	// express "follow within the registrable domain" — the mode a host sweep
+	// wants, where www.example.com -> example.com is the same application but
+	// example.com -> tracker.example.net is not. Empty means "leave the legacy
+	// pair in charge"; see http.ResolveRedirectMode.
+	RedirectMode string
+	// RecordRedirectChain persists every followed redirect hop as its own
+	// http_records row (chained by parent_uuid), instead of keeping only the
+	// final response. Off by default: it multiplies row counts on every scan,
+	// and only a host-sweep style run actually wants the intermediate hops.
+	// A probe-only run turns it on for itself (see runner.ApplyNativePhaseSelection).
+	RecordRedirectChain bool
+	// RecordRedirectChainSet records that the operator asked for the value in
+	// RecordRedirectChain, rather than it being the zero value. Mirrors
+	// RateLimitExplicitlySet, and for the same reason: "off" is both the default
+	// and a thing an operator can deliberately ask for, so a phase applying its
+	// own default cannot tell them apart from the bool alone.
+	RecordRedirectChainSet bool
 
 	// SNI custom hostname
 	SNI string
@@ -158,7 +209,13 @@ type Options struct {
 	DiscoverEnabled     bool
 	DiscoverMaxDuration time.Duration
 	FuzzWordlistPath    string // CLI override for discovery fuzz wordlist (also enables fuzzing)
-	NoPrefixBreaker     bool   // Disable per-prefix circuit breaker (default: enabled)
+	// NoDiscoveryFuzz turns discovery's /FUZZ brute-force OFF unconditionally.
+	// It outranks every reason fuzzing would otherwise switch on (--intensity
+	// deep, a discovery-only run, the low-yield auto-enable), because it is the
+	// operator saying "do not send thousands of guessed paths at this host" and a
+	// preset quietly overruling that is the failure that matters.
+	NoDiscoveryFuzz bool
+	NoPrefixBreaker bool // Disable per-prefix circuit breaker (default: enabled)
 
 	// FollowSubdomains, when set, lets the subdomain_harvest passive module pull
 	// the exact in-scope subdomains it discovers in responses into the scan:
@@ -170,6 +227,19 @@ type Options struct {
 	// --port-sweep-ports, comma-separated). Empty uses the configured/default
 	// list. The sweep itself runs whenever FollowSubdomains or Intensity "deep".
 	PortSweepPorts string
+
+	// ProbeEnabled runs the host-sweep phase: one request per CLI target,
+	// passive modules only, no content discovery and no fuzzing. It is the
+	// `vigolium run probe` entry point (equivalently `scan --only probe`), meant
+	// for answering "which of these thousands of hosts are alive, what are they
+	// running, and which are worth a real scan".
+	ProbeEnabled bool
+
+	// TLSProbe makes the probe phase complete a TLS handshake per HTTPS target
+	// and report the negotiated version/cipher and the leaf certificate inline in
+	// the JSON output. Not persisted — a certificate belongs to the host, not to
+	// any one record (see pkg/tlsprobe).
+	TLSProbe bool
 
 	// Browser-based spidering options
 	SpideringEnabled       bool

@@ -213,7 +213,7 @@ func TestRequestClusterer_Singleflight(t *testing.T) {
 
 	rc := NewRequestClusterer()
 
-	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 		resp, err := http.Get(ts.URL)
 		if err != nil {
 			return nil, 0, err
@@ -297,7 +297,7 @@ func TestRequestClusterer_CacheHit(t *testing.T) {
 
 	rc := NewRequestClusterer()
 
-	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 		resp, err := http.Get(ts.URL)
 		if err != nil {
 			return nil, 0, err
@@ -367,7 +367,7 @@ func TestRequestClusterer_LargeBodyNotCached(t *testing.T) {
 	defer ts.Close()
 
 	rc := NewRequestClusterer()
-	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 		resp, err := http.Get(ts.URL)
 		if err != nil {
 			return nil, 0, err
@@ -425,7 +425,7 @@ func TestRequestClusterer_RetainedBytesTracked(t *testing.T) {
 	defer ts.Close()
 
 	rc := NewRequestClusterer()
-	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 		resp, err := http.Get(ts.URL)
 		if err != nil {
 			return nil, 0, err
@@ -465,7 +465,7 @@ func TestRequestClusterer_CacheExpiry(t *testing.T) {
 
 	rc := NewRequestClusterer()
 
-	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 		resp, err := http.Get(ts.URL)
 		if err != nil {
 			return nil, 0, err
@@ -509,7 +509,7 @@ func TestRequestClusterer_CacheExpiry(t *testing.T) {
 func TestRequestClusterer_ErrorPropagation(t *testing.T) {
 	rc := NewRequestClusterer()
 
-	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+	mockExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 		time.Sleep(50 * time.Millisecond)
 		return nil, 0, fmt.Errorf("connection refused")
 	}
@@ -547,7 +547,7 @@ func TestRequestClusterer_NoClustering(t *testing.T) {
 
 	rc := NewRequestClusterer()
 
-	directExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, int, error) {
+	directExecute := func(input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 		resp, err := http.Get(ts.URL)
 		if err != nil {
 			return nil, 0, err

@@ -97,7 +97,7 @@ func setupTestInfra(t *testing.T) *TestInfra {
 	t.Helper()
 
 	opts := types.DefaultOptions()
-	opts.Timeout = 30
+	opts.Timeout = 30 * time.Second
 	opts.Retries = 1
 	opts.MaxPerHost = 5
 	opts.MaxHostError = 5

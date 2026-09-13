@@ -3,6 +3,7 @@ package code_exec
 import (
 	"net"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
@@ -111,9 +112,11 @@ var langPayloads = map[string][]string{
 //     (initial + this many confirmations). 4 total
 //     independent slow probes before declaring vuln.
 //
-// Note: pkg/http.Requester.Execute returns duration as whole seconds
-// (int(time.Since(start).Seconds())), so all comparisons here operate at
-// 1-second granularity. That's coarse but adequate for a 10s threshold.
+// pkg/http.Requester.Execute reports elapsed time as a time.Duration, so these
+// thresholds are compared in real time. They used to be compared against
+// int(time.Since(start).Seconds()), which truncated — a 9.9s response against
+// the 10s threshold read as 9 and failed the check, losing exactly the delays
+// this module injects.
 const (
 	delaySeconds       = 10
 	baselineMaxSeconds = 5
@@ -261,8 +264,13 @@ func buildBaselineRequest(ctx *httpmsg.HttpRequestResponse, ip httpmsg.Insertion
 }
 
 // isResponseSlow sends req and reports whether the response took at least
-// thresholdSeconds (whole seconds, matching the resolution of the underlying
-// http.Requester).
+// thresholdSeconds.
+//
+// The comparison is in real time, not whole seconds. The requester used to
+// report elapsed time as int(seconds), so a 5.9s response against a 6s
+// threshold truncated to 5 and read as "not slow" — a false negative on
+// exactly the injected delay this module asks for. Now that the requester
+// returns a time.Duration, the threshold means what it says.
 func isResponseSlow(req *httpmsg.HttpRequestResponse, httpClient *http.Requester, thresholdSeconds int) (bool, error) {
 	// NoClustering: timing-based blind RCE re-sends the identical delay payload across
 	// confirmation rounds. The 500ms request-cluster cache keys on raw request bytes,
@@ -283,7 +291,7 @@ func isResponseSlow(req *httpmsg.HttpRequestResponse, httpClient *http.Requester
 		}
 		return false, err
 	}
-	return duration >= thresholdSeconds, nil
+	return duration >= time.Duration(thresholdSeconds)*time.Second, nil
 }
 
 // isResponseTimeout reports whether err means the request timed out waiting on
@@ -341,6 +349,12 @@ func getPayloadsForExtension(request []byte) []string {
 }
 
 // sendTimedRequest sends a request and checks if response took >= delaySeconds.
+//
+// The threshold is converted to a time.Duration explicitly. `duration >=
+// delaySeconds` against an UNTYPED constant compiles fine and silently means
+// ">= 10 nanoseconds", so every response on earth is "slow" — the module went
+// from detecting a 10-second sleep to reporting command injection on any host
+// that answers at all.
 func sendTimedRequest(req *httpmsg.HttpRequestResponse, httpClient *http.Requester) (bool, error) {
 	timeout := false
 	// NoClustering: see isResponseSlow — a clustered re-send of the identical delay
@@ -361,7 +375,7 @@ func sendTimedRequest(req *httpmsg.HttpRequestResponse, httpClient *http.Request
 		}
 	}()
 
-	if duration >= delaySeconds || timeout {
+	if duration >= delaySeconds*time.Second || timeout {
 		return true, nil
 	}
 	return false, nil

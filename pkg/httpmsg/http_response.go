@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"sync"
+	"time"
 )
 
 // HttpResponse represents an HTTP response with raw bytes as source of truth.
@@ -45,14 +46,74 @@ type HttpResponse struct {
 	ratioSig   any
 	ratioSigOK bool
 
+	// duration is how long this response took to arrive, measured by whoever
+	// sent the request. Zero means NOT MEASURED, not "took no time": most
+	// responses in this process are reconstructed from stored bytes (DB
+	// hydration, HAR/Burp import, agent parsers) and have no timing to report.
+	//
+	// Written exactly once, at construction, and never again — that is why it
+	// needs no mutex despite the ~90 passive modules that share one *HttpResponse
+	// concurrently. mu guards the lazily-computed memos above, which are a
+	// different problem; an immutable field published before the fan-out is
+	// already safe under the Go memory model. Keep it that way: do not add a
+	// setter.
+	duration time.Duration
+
 	mu sync.RWMutex
 }
 
-// NewHttpResponse creates a new HttpResponse from raw bytes.
+// NewHttpResponse creates a new HttpResponse from raw bytes, with no timing
+// information. Use NewHttpResponseWithDuration when the response was actually
+// sent and timed.
 func NewHttpResponse(raw []byte) *HttpResponse {
 	return &HttpResponse{
 		raw: raw,
 	}
+}
+
+// NewHttpResponseWithDuration creates a new HttpResponse from raw bytes and the
+// measured round-trip duration. Only callers that performed a real network send
+// should use it — a response rebuilt from stored bytes has no duration to report
+// and must keep the zero that means "unknown".
+func NewHttpResponseWithDuration(raw []byte, d time.Duration) *HttpResponse {
+	if d < 0 {
+		d = 0
+	}
+	return &HttpResponse{
+		raw:      raw,
+		duration: d,
+	}
+}
+
+// Duration returns the measured round-trip duration for this response, or zero
+// when it was never measured (see the field comment: zero is "unknown", never
+// "instant"). Deliberately NOT carried by the With* builders — those return a
+// synthesized copy, and stamping it with the original's timing would report a
+// measurement that never happened.
+func (r *HttpResponse) Duration() time.Duration {
+	return r.duration
+}
+
+// MeasuredMillis converts a measured duration to the milliseconds stored in
+// http_records.response_time_ms (and the equivalent columns the discovery and
+// browser stores carry it through).
+//
+// It owns the one invariant the whole timing feature rests on. Those columns are
+// INTEGER DEFAULT 0 with no NULL to express "never measured", and most responses
+// in this process are rebuilt from stored bytes and genuinely have no timing —
+// so a MEASURED value is floored at 1ms, and only an unmeasured one is allowed
+// to be 0. Without the floor a loopback probe and an un-timed import are the
+// same value, which is what made db stats' p50/p95/p99 a percentile over a
+// column of zeros.
+//
+// Every path that writes one of those columns must go through here. Three
+// hand-written copies of this rule had already drifted into three shapes before
+// it was centralized.
+func MeasuredMillis(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return max(1, d.Milliseconds())
 }
 
 // Raw returns the raw HTTP response bytes.

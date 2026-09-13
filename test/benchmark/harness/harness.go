@@ -49,7 +49,7 @@ var networkInitErr error
 // Network initialization is done once per process to avoid LevelDB close/reopen issues.
 func SetupTestInfra() (*TestInfra, error) {
 	opts := types.DefaultOptions()
-	opts.Timeout = 30
+	opts.Timeout = 30 * time.Second
 	opts.Retries = 2
 	opts.MaxHostError = 10
 	opts.MaxPerHost = 5

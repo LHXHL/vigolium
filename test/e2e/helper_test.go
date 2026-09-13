@@ -43,7 +43,7 @@ type TestInfra struct {
 // SetupTestInfra initializes HTTP client and services for e2e tests
 func SetupTestInfra() (*TestInfra, error) {
 	opts := types.DefaultOptions()
-	opts.Timeout = 30
+	opts.Timeout = 30 * time.Second
 	opts.Retries = 2
 	opts.MaxHostError = 10
 	opts.MaxPerHost = 5

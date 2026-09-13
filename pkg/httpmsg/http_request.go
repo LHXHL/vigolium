@@ -335,6 +335,13 @@ func (r *HttpRequest) ensureParsed() {
 
 // TruncateBody truncates the request body to maxSize bytes.
 // Headers are preserved. No-op if body is already within limit.
+//
+// It rewrites r.raw, so every cache derived from those bytes MUST be dropped.
+// ID() memoizes the SHA-256 of r.raw and was left stale, so a request truncated
+// after its id had been read kept reporting the pre-truncation hash — the value
+// used for record dedup, stored-record lookup, the host-error tracker, the
+// insertion-point cache and the response-cluster key. (Response truncation
+// already invalidates its own body-derived caches.)
 func (r *HttpRequest) TruncateBody(maxSize int) {
 	r.ensureParsed()
 	bodyLen := len(r.raw) - r.bodyOffset
@@ -342,6 +349,10 @@ func (r *HttpRequest) TruncateBody(maxSize int) {
 		return
 	}
 	r.raw = r.raw[:r.bodyOffset+maxSize]
+
+	r.mu.Lock()
+	r.cachedID = ""
+	r.mu.Unlock()
 }
 
 // ============== Immutable Builder Methods ==============

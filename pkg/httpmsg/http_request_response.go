@@ -724,6 +724,101 @@ func GetRawRequestFromURLWithMethod(rawURL, method string, headers map[string]st
 	return NewRequestResponseRaw([]byte(b.String()), service), nil
 }
 
+// FromSentRequest renders an http.Request that has ALREADY been sent into raw
+// request bytes, paired with its Service.
+//
+// Use it instead of FromStdRequest whenever the request's round trip is over.
+// FromStdRequest calls httputil.DumpRequestOut, which renders the wire bytes by
+// running the request through a dummy transport — a real round trip that honours
+// the request's context. http.Client cancels that context when the response body
+// closes, so on a completed request DumpRequestOut fails with "context canceled"
+// and the caller silently gets nothing. Walking a followed redirect chain is the
+// case that exposed this. Rendering directly is also cheaper: no round trip.
+//
+// The body is deliberately not rendered. A sent request's body has already been
+// consumed, and Go drops it entirely when following a 301/302/303, so there is
+// nothing to recover and nothing to claim. Header values containing CR/LF are
+// dropped for the same reason GetRawRequestFromURLWithMethod drops them: a
+// stored header must not be able to smuggle a second request. Host is taken from
+// the request rather than the header map, and header names are emitted in sorted
+// order so the same request renders the same bytes every time — the raw request
+// is hashed into the record's identity, and Go's header map iteration order is
+// random.
+func FromSentRequest(req *http.Request) (*HttpRequestResponse, error) {
+	if req == nil || req.URL == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+	host := req.Host
+	if host == "" {
+		host = req.URL.Host
+	}
+	if host == "" {
+		return nil, fmt.Errorf("request has no host")
+	}
+	method := req.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	target := req.URL.RequestURI()
+	if target == "" {
+		target = "/"
+	}
+	proto := req.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+
+	names := make([]string, 0, len(req.Header))
+	for name := range req.Header {
+		if http.CanonicalHeaderKey(name) == "Host" || strings.ContainsAny(name, "\r\n") {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.Grow(len(method) + len(target) + len(proto) + len(host) + 64 + 48*len(names))
+	b.WriteString(method)
+	b.WriteByte(' ')
+	b.WriteString(target)
+	b.WriteByte(' ')
+	b.WriteString(proto)
+	b.WriteString("\r\n")
+	b.WriteString("Host: ")
+	b.WriteString(host)
+	b.WriteString("\r\n")
+	for _, name := range names {
+		for _, v := range req.Header[name] {
+			if strings.ContainsAny(v, "\r\n") {
+				continue
+			}
+			b.WriteString(name)
+			b.WriteString(": ")
+			b.WriteString(v)
+			b.WriteString("\r\n")
+		}
+	}
+	b.WriteString("\r\n")
+
+	return NewRequestResponseRaw([]byte(b.String()), serviceForURL(req.URL)), nil
+}
+
+// serviceForURL derives the Service (host, effective port, scheme) for a parsed
+// URL: the scheme's default port unless an explicit one is present. Uses
+// Hostname()/Port() rather than splitting on ":" so an IPv6 literal survives.
+func serviceForURL(u *url.URL) *Service {
+	isHTTPS := u.Scheme == "https"
+	port := 80
+	if isHTTPS {
+		port = 443
+	}
+	if p := parsePort(u.Port()); p > 0 {
+		port = p
+	}
+	return NewServiceSecure(u.Hostname(), port, isHTTPS)
+}
+
 // FromStdRequest creates HttpRequestResponse from a standard http.Request.
 func FromStdRequest(req *http.Request) (*HttpRequestResponse, error) {
 	// Check if original request has User-Agent BEFORE dumping

@@ -70,7 +70,7 @@ type CachedResponse struct {
 	Header     http.Header
 	body       []byte
 	Request    *http.Request
-	Duration   int
+	Duration   time.Duration
 	CachedAt   time.Time
 }
 
@@ -80,7 +80,7 @@ func (c *CachedResponse) Body() []byte {
 }
 
 // snapshotResponse captures response data from a ResponseChain before Close().
-func snapshotResponse(resp *httpUtils.ResponseChain, duration int) *CachedResponse {
+func snapshotResponse(resp *httpUtils.ResponseChain, duration time.Duration) *CachedResponse {
 	cr := &CachedResponse{
 		Duration: duration,
 		CachedAt: time.Now(),
@@ -154,15 +154,12 @@ func (c *CachedResponse) ToResponseChain() *httpUtils.ResponseChain {
 	}
 
 	chain := httpUtils.NewResponseChain(resp, MaxBodyRead)
-	// Fill populates the headers and body pooled buffers from the response
-	for chain.Has() {
-		if err := chain.Fill(); err != nil {
-			break
-		}
-		if !chain.Previous() {
-			break
-		}
-	}
+	// Fill populates the headers and body pooled buffers from the response.
+	// Once, not in a Previous() walk: the reconstructed response above carries
+	// no Request.Response, so there is no chain to walk — and the walking form
+	// of this idiom is what silently discarded the final response on the live
+	// path (see doRequest). Leaving a copy of it here would invite it back.
+	_ = chain.Fill()
 	return chain
 }
 
@@ -259,8 +256,8 @@ func (rc *RequestClusterer) Stats() ClustererStats {
 func (rc *RequestClusterer) Execute(
 	input *httpmsg.HttpRequestResponse,
 	opts Options,
-	doExecute func(*httpmsg.HttpRequestResponse, Options) (*httpUtils.ResponseChain, int, error),
-) (*httpUtils.ResponseChain, int, error) {
+	doExecute func(*httpmsg.HttpRequestResponse, Options) (*httpUtils.ResponseChain, time.Duration, error),
+) (*httpUtils.ResponseChain, time.Duration, error) {
 	rc.total.Add(1)
 
 	key := computeClusterKey(input, opts)
@@ -371,7 +368,7 @@ func computeClusterKey(input *httpmsg.HttpRequestResponse, opts Options) string 
 	// the literal request-line target (routing-based SSRF), and collapsing them
 	// would serve the first probe's response for every target.
 	var b strings.Builder
-	b.Grow(len(prefix) + len(opts.RawRequestTarget) + 64)
+	b.Grow(len(prefix) + len(opts.RawRequestTarget) + len(opts.clusterScope) + 80)
 	b.WriteString(prefix)
 	b.WriteString("\x00noRedir=")
 	b.WriteString(strconv.FormatBool(opts.NoRedirects))
@@ -387,6 +384,9 @@ func computeClusterKey(input *httpmsg.HttpRequestResponse, opts Options) string 
 	b.WriteString(strconv.FormatBool(opts.DisableCompression))
 	b.WriteString("\x00rawTarget=")
 	b.WriteString(opts.RawRequestTarget)
+	// Partitions the cache by credential identity; see Options.clusterScope.
+	b.WriteString("\x00scope=")
+	b.WriteString(opts.clusterScope)
 	return b.String()
 }
 
