@@ -114,7 +114,7 @@ var globalFlagGroups = []flagGroup{
 	{"Extensions", []string{"ext", "ext-dir"}},
 	{"Project", []string{"project-uuid", "project-name"}},
 	{"Info", []string{"list-modules", "list-input-mode", "full-example"}},
-	{"Configuration", []string{"config", "db", "force", "scan-uuid", "mem-limit", "skip-dependency-check", "soft-fail"}},
+	{"Configuration", []string{"config", "db", "read-only", "force", "scan-uuid", "mem-limit", "skip-dependency-check", "soft-fail"}},
 }
 
 // groupedFlagSet flattens a group table into the set of flag names it covers.
@@ -220,8 +220,9 @@ var scanFlagGroups = []flagGroup{
 	{"Spec Options", []string{"spec-url", "spec-header", "spec-var", "spec-default"}},
 	{"Module Selection", []string{"modules", "module-tag", "module-id", "passive-only", "no-passive", "no-tech-filter"}},
 	{"Scanning", []string{"only", "skip", "strategy", "scanning-profile", "intensity", "scope-origin", "scanning-max-duration", "heuristics-check", "skip-heuristics", "oast-url"}},
-	{"Discovery", []string{"discover", "discover-max-time", "discovery-wordlist", "no-prefix-breaker", "follow-subdomains", "port-sweep-ports"}},
+	{"Discovery", []string{"discover", "discover-max-time", "discovery-wordlist", "no-discovery-fuzz", "no-prefix-breaker", "follow-subdomains", "port-sweep-ports"}},
 	{"Spidering", []string{"spider", "spider-max-time", "browser-engine", "browsers", "headless", "headed", "no-cdp", "no-forms", "no-carry-browser-session"}},
+	{"Probe (host sweep)", []string{"probe", "tls-probe", "redirect-mode", "record-redirect-chain"}},
 	{"Harvest", []string{"external-harvest"}},
 	{"KnownIssueScan", []string{"known-issue-scan", "known-issue-scan-tags", "known-issue-scan-exclude-tags", "known-issue-scan-severities", "known-issue-scan-templates-dir"}},
 	{"Request", []string{"method", "body", "header", "advanced-options", "retries", "stream"}},
@@ -319,11 +320,11 @@ var agentSessionFlagGroups = []flagGroup{
 // all three (e.g. the Replay group only materializes for traffic, the schema
 // flags only for db ls).
 var listQueryFlagGroups = []flagGroup{
-	{"Filter", []string{"host", "method", "status", "path", "source", "scan-uuid", "module-type", "finding-source", "record-kind", "severity", "min-severity", "confidence", "agentic-scan", "id", "min-risk", "remark"}},
+	{"Filter", []string{"uuid", "host", "method", "status", "path", "source", "scan-uuid", "module-type", "finding-source", "record-kind", "severity", "min-severity", "confidence", "agentic-scan", "id", "min-risk", "min-surface", "remark"}},
 	{"Search", []string{"search", "header", "body", "exclude-search", "exclude-header", "exclude-body"}},
 	{"Date Range", []string{"from", "to"}},
-	{"Display", []string{"tree", "raw", "burp", "markdown", "columns", "exclude-columns", "tui", "no-tui"}},
-	{"Output", []string{"fields", "compact", "full-body", "with-records"}},
+	{"Display", []string{"tree", "raw", "burp", "markdown", "group-by", "group-limit", "columns", "exclude-columns", "tui", "no-tui"}},
+	{"Output", []string{"fields", "compact", "full-body", "with-records", "record-fields", "record-limit"}},
 	{"Pagination & Sort", []string{"limit", "offset", "sort", "asc", "pick", "all"}},
 	{"Data Source", []string{"stateless", "glob-db", "table", "list-tables", "list-columns"}},
 	{"Replay", []string{"replay", "concurrency", "with-browser", "burp-bridge-url", "save-to-vigolium-db", "save-to-burp", "in-replace", "timeout"}},

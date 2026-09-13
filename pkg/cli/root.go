@@ -143,6 +143,14 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 		zapLogger := initLogger(globalVerbose, globalSilent, globalDebug, globalDumpTraffic, globalLogFile)
 		_ = zapLogger // logger is set globally via zap.ReplaceGlobals
 
+		// Applied before anything can open a database. --read-only is refused on
+		// commands that exist to write, rather than silently ignored there: a
+		// flag that looks like a safety control and does nothing is worse than
+		// one that is absent.
+		if err := applyReadOnlyMode(cmd); err != nil {
+			return err
+		}
+
 		// Color is on by default for every command — including output captured to
 		// a file or pipe, such as the -P/--parallel fan-out's per-host
 		// <output>.console.log, which should read like a live console scan instead
@@ -151,6 +159,12 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 		// back out; the -P parent forwards --no-color to each child and children
 		// inherit NO_COLOR via the environment, so the opt-out reaches every log.
 		terminal.EnableCLIColor(globalNoColor, globalCIOutput)
+
+		// The banner goes out here, after parsing, on stderr — not from main()
+		// before cobra has seen the command line. See banner.go for what the old
+		// pre-parse argv scan got wrong and why stderr is the fix rather than a
+		// longer exclusion list.
+		printRootBanner(cmd)
 
 		// The olium agent runtime (providers/engine) doesn't log through zap,
 		// so --debug alone shows nothing for agent commands. Bridge it to the
@@ -280,6 +294,8 @@ func init() {
 	rootCmd.SetFlagErrorFunc(flagErrorFunc)
 
 	pf := rootCmd.PersistentFlags()
+	registerReadOnlyFlag(rootCmd)
+	registerJSONLegacyKeysFlag(rootCmd)
 
 	pf.BoolVarP(&globalVerbose, "verbose", "v", false, "Enable verbose logging output")
 	pf.BoolVar(&globalSilent, "silent", false, "Suppress all output except findings")
@@ -365,14 +381,13 @@ func Execute() {
 	flushUpdateNotice()
 
 	if err != nil {
-		// Cobra has already printed the error to stderr. --soft-fail forces a
-		// successful exit code so wrapping scripts/CI pipelines aren't aborted
-		// by errors the operator considers expected. The persistent flag is
-		// bound during Execute()'s arg parsing, so its value is populated here
-		// for every error except a flag-parse failure (which stays non-zero).
-		if globalSoftFail {
-			os.Exit(ExitSuccess)
-		}
+		// When the failure IS the flag parse, cobra never bound the presentation
+		// flags, so --json/--silent/--soft-fail are all still at their zero
+		// values no matter what the caller typed. Recover them from argv before
+		// deciding anything, so `traffic --bad --json` answers the same way
+		// `traffic --json --bad` does. See presentation_mode.go.
+		resolvePresentationMode(argsForPresentationRecovery())
+
 		code := classifyExitCode(err)
 		// A flag-parse failure never reaches a RunE, so it cannot be wrapped as a
 		// usageError at its source; cobra surfaces it as a plain error from
@@ -380,6 +395,26 @@ func Execute() {
 		// keeps "unknown flag" at 2 instead of collapsing into the generic 1.
 		if code == ExitError && isFlagParseError(err) {
 			code = ExitUsageError
+		}
+
+		// A caller that asked for JSON gets JSON on the way out too. Without this
+		// a failed -j read produced a plain `✖ Error: …` on stderr and NOTHING on
+		// stdout, so a consumer's parse failed for a second, unrelated reason and
+		// the actual cause had to be scraped out of prose.
+		//
+		// This runs BEFORE --soft-fail is applied. Soft-fail is a statement about
+		// the exit CODE — "do not abort my pipeline" — not a request to be told
+		// nothing: the old order exited 0 here and emitted no object at all, so
+		// `--json --soft-fail` reported a silent success for a command that had
+		// failed, which is the one outcome a machine caller cannot recover from.
+		emitJSONError(err, code, cmd)
+
+		// --soft-fail forces a successful exit code so wrapping scripts and CI
+		// pipelines are not aborted by errors the operator considers expected.
+		// The structured diagnosis above still describes what actually happened,
+		// and its exit_code field reports the code that WOULD have been used.
+		if globalSoftFail {
+			os.Exit(ExitSuccess)
 		}
 		os.Exit(code)
 	}

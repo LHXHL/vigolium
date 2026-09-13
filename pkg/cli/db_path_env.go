@@ -150,7 +150,7 @@ func dbPathEnvUsable(path string) error {
 // dbPathEnvNotice prints one informational line to stderr, staying quiet in the
 // output modes that promise a clean stream (--silent, -j/--json, CI).
 func dbPathEnvNotice(msg string) {
-	if globalSilent || globalJSON || globalCIOutput {
+	if machineOutputMode() {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(), msg)

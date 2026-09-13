@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -46,9 +44,15 @@ type doctorOutput struct {
 func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 
+	// --only selects what to FIX, so without --fix it selects nothing. This used
+	// to print a warning to stdout and exit 0, which under -j meant a prose line
+	// on the data channel and a success status for a command that did not run —
+	// a caller had no way to learn its invocation was inert. An ineffective
+	// combination is a bad command line: exit 2, before any check runs.
 	if len(doctorOnly) > 0 && !doctorFix {
-		fmt.Printf("  %s --only has no effect without --fix\n", terminal.Yellow(terminal.SymbolWarning))
-		return nil
+		return usageErrorf("--only selects which checks to repair and has no effect without --fix; "+
+			"add --fix to repair %s, or drop --only to report on every check",
+			strings.Join(doctorOnly, ", "))
 	}
 
 	settings, err := config.LoadSettings(globalConfig)
@@ -80,9 +84,9 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 
 	if !doctorFix {
 		if globalJSON {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(report)
+			// Through the shared writer so this counts as the invocation's one
+			// result document and the error path does not append a second.
+			return writeAgentJSON(report)
 		}
 		printDoctorReport(report)
 		return nil
@@ -122,9 +126,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	ensureInitMarkerIfDepsPresent(updated)
 
 	if globalJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(doctorOutput{
+		return writeAgentJSON(doctorOutput{
 			Report:  report,
 			Fixes:   fixes,
 			Updated: updated,

@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -31,23 +29,15 @@ func runStorageRm(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s Will delete %d object(s) from project %s:\n",
+	fmt.Fprintf(os.Stderr, "%s Will delete %d object(s) from project %s:\n",
 		terminal.WarningSymbol(), len(args), terminal.Cyan(projectUUID))
 	for _, key := range args {
-		fmt.Printf("  - %s\n", terminal.Gray(key))
+		fmt.Fprintf(os.Stderr, "  - %s\n", terminal.Gray(key))
 	}
 
-	if !globalForce {
-		fmt.Print("\nProceed? (type 'yes' to confirm): ")
-		reader := bufio.NewReader(os.Stdin)
-		response, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read input: %w", err)
-		}
-		if strings.TrimSpace(strings.ToLower(response)) != "yes" {
-			fmt.Println("Aborted.")
-			return nil
-		}
+	if done, err := handleConfirmation(fmt.Sprintf("deleting %d stored object(s) from project %s",
+		len(args), projectUUID)); done {
+		return err
 	}
 
 	ctx := context.Background()

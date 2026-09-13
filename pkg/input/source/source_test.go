@@ -174,6 +174,32 @@ func TestTargetSource(t *testing.T) {
 	assert.ErrorIs(t, err, io.EOF)
 }
 
+// TestTargetSource_SkipsUnparseableTargets keeps one junk entry from ending the
+// whole source. A -T/--target-file list is promoted into Targets, so a single
+// malformed line in a recon export used to abort the scan at that point instead
+// of scanning the remaining hosts — the urls format parser logs and continues,
+// and this path must behave the same.
+func TestTargetSource_SkipsUnparseableTargets(t *testing.T) {
+	s := NewTargetSource([]string{
+		"not a url",
+		"http://example.com/a",
+		"http://exa mple.com",
+		"http://example.com/b",
+		"://",
+	}, nil)
+
+	var hosts []string
+	for {
+		item, err := s.Next(context.Background())
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+		hosts = append(hosts, item.Request.Service().Host())
+	}
+	assert.Equal(t, []string{"example.com", "example.com"}, hosts)
+}
+
 func TestTargetSource_ClosedReturnsEOF(t *testing.T) {
 	s := NewTargetSource([]string{"http://example.com/a"}, nil)
 	require.NoError(t, s.Close())
@@ -447,4 +473,35 @@ func TestNewFileSourceURLListUnaffected(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = fs.Close() })
 	assert.Equal(t, "urls", fs.Format().Name())
+}
+
+// TestIsTargetListFormat covers the predicate that decides whether a file's
+// contents can be promoted into Options.Targets. It answers from formatRegistry,
+// so an alias added there is covered without a second edit — a hand-copied alias
+// list that missed one would parse the file fine and then leave every
+// target-seeded phase with nothing to crawl.
+func TestIsTargetListFormat(t *testing.T) {
+	// Empty resolves to the "urls" default, matching resolveFormat.
+	for _, name := range []string{"", "urls", "url", "list", " URLs ", "LIST", "burpscope", "burp-scope", "burp-config", "burp-project-config"} {
+		assert.True(t, IsTargetListFormat(name), "expected %q to be a target list", name)
+	}
+	for _, name := range []string{"har", "http-archive", "openapi", "swagger", "wsdl", "soap", "burpxml", "burp", "burpraw", "raw", "curl", "postman", "nuclei", "deparos"} {
+		assert.False(t, IsTargetListFormat(name), "expected %q not to be a target list", name)
+	}
+	// An unknown name is not a target list; resolveFormat rejects it separately.
+	assert.False(t, IsTargetListFormat("postamn"))
+}
+
+// TestIsTargetListFormatCoversEveryRegistryName keeps the predicate total: every
+// canonical name and alias resolveFormat accepts must get an answer from the same
+// table, so the two can never disagree about which formats exist.
+func TestIsTargetListFormatCoversEveryRegistryName(t *testing.T) {
+	for _, e := range formatRegistry {
+		for _, name := range append([]string{e.canonical}, e.aliases...) {
+			_, err := resolveFormat(name)
+			require.NoError(t, err, "registry name %q must resolve", name)
+			assert.Equal(t, e.targetList, IsTargetListFormat(name),
+				"%q must give the same answer as its registry row", name)
+		}
+	}
 }

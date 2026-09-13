@@ -44,7 +44,7 @@ func init() {
 // human-readable source name ("stdin" or the path) used in output.
 func kitReadInput(arg string) (data []byte, label string, err error) {
 	if arg == "" || arg == "-" {
-		b, rerr := io.ReadAll(os.Stdin)
+		b, rerr := readStdin()
 		if rerr != nil {
 			return nil, "stdin", fmt.Errorf("reading stdin: %w", rerr)
 		}

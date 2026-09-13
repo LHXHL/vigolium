@@ -1,14 +1,13 @@
 package configcmd
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -42,19 +41,9 @@ func runConfigClean(deps Deps) error {
 
 	fmt.Printf("%s This will remove %s (config, database, and all local data)\n", terminal.BoldRed(terminal.SymbolFailed+" Warn:"), terminal.Cyan(displayDir))
 
-	if !deps.Force() {
-		fmt.Print("\nProceed? (type 'yes' to confirm): ")
-		reader := bufio.NewReader(os.Stdin)
-		response, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("failed to read input: %w", err)
-		}
-
-		response = strings.TrimSpace(strings.ToLower(response))
-		if response != "yes" {
-			fmt.Println("Aborted.")
-			return nil
-		}
+	if done, err := clicommon.HandleConfirmation(
+		fmt.Sprintf("removing %s and every file under it", displayDir), deps.Force()); done {
+		return err
 	}
 
 	if err := os.RemoveAll(vigoliumDir); err != nil {

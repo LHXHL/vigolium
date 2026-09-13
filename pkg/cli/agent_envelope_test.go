@@ -36,14 +36,54 @@ func TestEnvelopeCarriesSchemaVersionAndItems(t *testing.T) {
 	}
 }
 
-func TestEnvelopeKeepsLegacyKeyAsAlias(t *testing.T) {
-	// Existing parsers keep working for one minor version; the alias points at
-	// the same slice, and is to be removed rather than added to.
+// withLegacyKeys turns the deprecated row alias on for one test, and pins the
+// env var off so an operator's exported VIGOLIUM_JSON_LEGACY_KEYS cannot decide
+// what these assertions see.
+func withLegacyKeys(t *testing.T, on bool) {
+	t.Helper()
+	t.Setenv(jsonLegacyKeysEnv, "")
+	prev := globalJSONLegacyKeys
+	globalJSONLegacyKeys = on
+	t.Cleanup(func() { globalJSONLegacyKeys = prev })
+}
+
+func TestEnvelopeOmitsLegacyKeyByDefault(t *testing.T) {
+	// `items` is the contract. The pre-envelope alias costs a second copy of
+	// every row on the wire, so it is off unless a migrating caller asks.
+	withLegacyKeys(t, false)
+	got := marshalEnvelope(t, newAgentEnvelope("traffic", "records", []string{"a"}, 1, 0, 100))
+	if _, ok := got["items"]; !ok {
+		t.Error("items missing")
+	}
+	if _, ok := got["records"]; ok {
+		t.Error("legacy alias `records` emitted by default")
+	}
+}
+
+func TestEnvelopeKeepsLegacyKeyAsAliasWhenRequested(t *testing.T) {
+	// The migration window: --json-legacy-keys restores the old name, pointing at
+	// the same content.
+	withLegacyKeys(t, true)
 	got := marshalEnvelope(t, newAgentEnvelope("traffic", "records", []string{"a"}, 1, 0, 100))
 	items, _ := json.Marshal(got["items"])
 	legacy, _ := json.Marshal(got["records"])
 	if string(items) != string(legacy) {
 		t.Errorf("legacy alias diverges: items=%s records=%s", items, legacy)
+	}
+}
+
+func TestJSONLegacyKeysEnvOptsIn(t *testing.T) {
+	// A wrapper that cannot edit its argv gets the same switch, resolved once as
+	// the flag's default. An unparseable value reads as off rather than failing
+	// the command over the spelling of a deprecation switch.
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{{"", false}, {"1", true}, {"true", true}, {"0", false}, {"nonsense", false}} {
+		t.Setenv(jsonLegacyKeysEnv, tc.raw)
+		if got := envBool(jsonLegacyKeysEnv); got != tc.want {
+			t.Errorf("%s=%q: envBool = %v, want %v", jsonLegacyKeysEnv, tc.raw, got, tc.want)
+		}
 	}
 }
 
@@ -95,26 +135,28 @@ func TestAgentTimestampZeroTimeIsEmpty(t *testing.T) {
 }
 
 func TestEnvelopeEncodesRowsOnce(t *testing.T) {
-	// The legacy alias must reuse the bytes `items` already encoded to. Holding a
-	// second reference to the slice serialized every row twice, doubling the size
-	// of every -j payload for a field that is deprecated on arrival.
+	// The default payload carries each row exactly once. It used to carry them
+	// twice — `items` plus the deprecated alias — which on a measured 20-record
+	// compact traffic read was 19,983 bytes against 7,884 of actual rows, paid on
+	// every call by the token-metered consumer this contract exists for.
+	withLegacyKeys(t, false)
 	rows := []string{"aaaaaaaaaa", "bbbbbbbbbb"}
 	raw, err := json.Marshal(newAgentEnvelope("traffic", "records", rows, 2, 0, 100))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := bytes.Count(raw, []byte("aaaaaaaaaa")); n != 2 {
-		t.Errorf("row appears %d times, want 2 (items + one alias)", n)
+	if n := bytes.Count(raw, []byte("aaaaaaaaaa")); n != 1 {
+		t.Errorf("row appears %d times, want 1 (items only): %s", n, raw)
 	}
-	// Both names must still resolve to the same content.
-	var got map[string]any
-	if err := json.Unmarshal(raw, &got); err != nil {
+
+	// Opting back in is what costs the second copy, and it must cost only that.
+	withLegacyKeys(t, true)
+	rawLegacy, err := json.Marshal(newAgentEnvelope("traffic", "records", rows, 2, 0, 100))
+	if err != nil {
 		t.Fatal(err)
 	}
-	items, _ := json.Marshal(got["items"])
-	legacy, _ := json.Marshal(got["records"])
-	if string(items) != string(legacy) {
-		t.Errorf("alias diverged: %s vs %s", items, legacy)
+	if n := bytes.Count(rawLegacy, []byte("aaaaaaaaaa")); n != 2 {
+		t.Errorf("with --json-legacy-keys row appears %d times, want 2", n)
 	}
 }
 
@@ -132,9 +174,13 @@ func TestEnvelopeQueryIsOmittedWhenEmpty(t *testing.T) {
 	if _, ok := got["query"]; ok {
 		t.Error("query present but empty — omitempty should drop it")
 	}
-	env := newAgentEnvelope("traffic", "records", nil, 0, 0, 0).WithQuery("vigolium replay -u x")
+	// WithQuery takes argv, not a hand-written string: the read context
+	// (--db/--stateless/--project) is prepended for us. With no context set,
+	// that leaves just the command.
+	resetReadContext(t)
+	env := newAgentEnvelope("traffic", "records", nil, 0, 0, 0).WithQuery("replay", "-u", "x")
 	if marshalEnvelope(t, env)["query"] != "vigolium replay -u x" {
-		t.Error("query not carried")
+		t.Errorf("query not carried, got %v", marshalEnvelope(t, env)["query"])
 	}
 }
 

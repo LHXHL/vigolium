@@ -65,7 +65,7 @@ func (f *Format) Parse(input string, callback formats.ParseReqRespCallback) erro
 	// Merge collection-level variables into the variable map
 	varMap := f.buildVariableMap(variables)
 
-	f.walkItems(items, varMap, callback)
+	_ = f.walkItems(items, varMap, callback)
 	return nil
 }
 
@@ -77,7 +77,7 @@ func (f *Format) ParseFromData(data []byte, callback formats.ParseReqRespCallbac
 	}
 
 	varMap := f.buildVariableMap(variables)
-	f.walkItems(items, varMap, callback)
+	_ = f.walkItems(items, varMap, callback)
 	return nil
 }
 
@@ -216,13 +216,21 @@ func replaceVariables(s string, vars map[string]string) string {
 }
 
 // walkItems recursively processes items, calling callback for each request found.
-func (f *Format) walkItems(items []item, vars map[string]string, callback formats.ParseReqRespCallback) {
+//
+// It returns false once the callback declines an item, and every level propagates
+// that so the WHOLE traversal stops. Returning void meant a `false` callback only
+// unwound the current recursion frame while the parent folder carried on with its
+// siblings — so ParseFileRecords(..., max) overshot its limit on any nested
+// collection, and a consumer stopping early kept being fed.
+func (f *Format) walkItems(items []item, vars map[string]string, callback formats.ParseReqRespCallback) bool {
 	for i := range items {
 		it := &items[i]
 
 		// Recurse into folders
 		if len(it.Item) > 0 {
-			f.walkItems(it.Item, vars, callback)
+			if !f.walkItems(it.Item, vars, callback) {
+				return false
+			}
 		}
 
 		if it.Request == nil {
@@ -238,9 +246,10 @@ func (f *Format) walkItems(items []item, vars map[string]string, callback format
 		}
 
 		if !callback(rr) {
-			return
+			return false
 		}
 	}
+	return true
 }
 
 // buildRequest converts a Postman request into an HttpRequestResponse.

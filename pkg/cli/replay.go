@@ -206,7 +206,7 @@ func init() {
 	f.StringSliceVar(&replayBulkMethods, "method", nil, "Bulk: filter records by HTTP method (repeatable)")
 	f.IntSliceVar(&replayBulkStatus, "status", nil, "Bulk: filter records by stored status code (repeatable)")
 	f.StringVar(&replayBulkPath, "path", "", "Bulk: filter records by URL path pattern")
-	f.StringVar(&replayBulkSource, "source", "", "Bulk: filter records by source (burp, caido, scanner, ingest-cli, ingest-proxy, seed, ...)")
+	f.StringVar(&replayBulkSource, "source", "", "Bulk: filter records by source (burp, caido, scanner, probe, ingest-cli, ingest-proxy, seed, ...)")
 	f.StringArrayVar(&replayBulkSearch, "search", nil, "Bulk: search across URL, path, and the raw request/response (headers + body); repeatable, AND-combined")
 	// Named --header-search, not --header: -H/--header is the override flag on
 	// this command, so the traffic filter of the same name can't keep its spelling.
@@ -650,7 +650,7 @@ func sourceFromInput(ctx context.Context, repo *database.Repository, inline, fil
 		}
 		data = string(b)
 	case inline == "-":
-		b, err := io.ReadAll(os.Stdin)
+		b, err := readStdin()
 		if err != nil {
 			return nil, fmt.Errorf("read stdin: %w", err)
 		}

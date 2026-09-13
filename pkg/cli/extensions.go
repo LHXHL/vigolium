@@ -83,13 +83,7 @@ var extensionsCmd = &cobra.Command{
 	Short:   "Manage JavaScript extensions",
 	Long:    "Inspect and manage custom JavaScript extension scripts loaded from ~/.vigolium/extensions/. Subcommands list extensions, view the vigolium.* API reference, install starter presets, evaluate ad-hoc code, and lint extension files. Running 'vigolium extensions [filter]' is a shortcut for 'extensions ls [filter]'.",
 	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		filter := ""
-		if len(args) > 0 {
-			filter = args[0]
-		}
-		printExtensionsTable(extOpts, filter)
-	},
+	RunE:    runExtensionsLs,
 }
 
 // Subcommand: vigolium extensions ls [filter]
@@ -99,13 +93,22 @@ var extensionsLsCmd = &cobra.Command{
 	Short:   "List loaded extensions",
 	Long:    "Print a table of every extension loaded from the extensions directory. Filter by substring on id/name/description, or by --type (active, passive, pre_hook, post_hook). Use -v for long descriptions and confirmation criteria.",
 	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		filter := ""
-		if len(args) > 0 {
-			filter = args[0]
-		}
-		printExtensionsTable(extOpts, filter)
-	},
+	RunE:    runExtensionsLs,
+}
+
+// runExtensionsLs backs both `extensions [filter]` and `extensions ls [filter]`.
+// One handler rather than two identical closures, so the -j branch cannot be
+// added to one spelling and forgotten on the other.
+func runExtensionsLs(_ *cobra.Command, args []string) error {
+	filter := ""
+	if len(args) > 0 {
+		filter = args[0]
+	}
+	if globalJSON {
+		return emitExtensionsJSON(extOpts, filter)
+	}
+	printExtensionsTable(extOpts, filter)
+	return nil
 }
 
 // Subcommand: vigolium extensions docs [function]

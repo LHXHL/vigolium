@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -126,7 +125,7 @@ func readFindingInput(args []string) (string, error) {
 		return "", fmt.Errorf("no input provided; use a file path, --finding-file, or pipe data via stdin")
 	}
 
-	data, err := io.ReadAll(os.Stdin)
+	data, err := readStdin()
 	if err != nil {
 		return "", fmt.Errorf("failed to read stdin: %w", err)
 	}

@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"errors"
+	"strings"
+
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
-	"strings"
 )
 
 var dbCmd = &cobra.Command{
@@ -42,8 +44,33 @@ func closeDatabaseOnExit() {
 }
 
 // runWithWatch runs fn once, then repeats it every --watch interval if set.
+//
+// Under -j a repeated read is framed as NDJSON — one compact document per
+// iteration, no clear-screen, no heading — rather than as a single document,
+// because it is not one. Without this, `--json --watch 5` wrote an indented
+// object, then ANSI clear codes and a "Refreshed at ..." line, then another
+// object, forever: not parseable by anything.
 func runWithWatch(fn func() error) error {
-	return clicommon.RunWithWatch(globalWatchRaw, fn)
+	opts := clicommon.WatchOptions{Raw: globalWatchRaw, JSON: globalJSON}
+	if interval, err := clicommon.ParseWatchInterval(globalWatchRaw); err == nil && interval > 0 && globalJSON {
+		jsonStreamMode = true
+		defer func() { jsonStreamMode = false }()
+	}
+	err := clicommon.RunWithWatchOptions(opts, fn)
+	// An unparseable interval and a mode that cannot repeat are both bad command
+	// lines, not failed work: exit 2, so a caller can tell "you typed it wrong"
+	// from "the read broke".
+	if err != nil && isWatchUsageError(err) {
+		return asUsageError(err)
+	}
+	return err
+}
+
+// isWatchUsageError reports whether err came from --watch validation rather than
+// from the command body.
+func isWatchUsageError(err error) bool {
+	return errors.Is(err, clicommon.ErrWatchNotSupported) ||
+		errors.Is(err, clicommon.ErrWatchInterval)
 }
 
 // resolvedReadDBPath names the database the current command actually opened, for

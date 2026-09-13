@@ -77,32 +77,53 @@ type flagDoc struct {
 	Type        string
 	Default     string
 	Description string
+	// Overrides marks a local flag whose NAME collides with a root persistent
+	// flag but which is a different flag with its own type, default, and
+	// vocabulary. `db export --format` (jsonl|json|raw|csv|markdown|bundle|fs,
+	// default jsonl, shorthand -f) is not the root --format, and a reader who
+	// assumes it is will pass a value the command rejects.
+	Overrides bool
 }
 
 // commandDoc is one section of the reference: a command and the flags it owns.
 type commandDoc struct {
-	Path  string // "vigolium agent swarm"
-	Short string
-	Flags []flagDoc
+	Path    string // "vigolium agent swarm"
+	Use     string // "export [flags]" — carries the positional-argument shape
+	Short   string
+	Aliases []string
+	// PassThrough marks a compatibility shim (ffuf, nuclei, katana, gau, arjun)
+	// that parses another tool's argv itself. Its flags are that tool's, not
+	// cobra's, so an empty table there means "not described here", not "none".
+	PassThrough bool
+	Flags       []flagDoc
 }
 
 func renderFlagsReference(root *cobra.Command) string {
-	globals := collectFlags(root.PersistentFlags())
+	globalNames := flagNameSet(root.PersistentFlags())
+	globals := collectFlags(root.PersistentFlags(), nil)
 
 	// Root's persistent flags are inherited everywhere; listing them under
 	// each of ~60 subcommands would triple the file for no new information.
 	// They get one section, and every other command lists only what it adds.
 	var sections []commandDoc
 	walkCommands(root, root.Name(), func(c *cobra.Command, path string) {
-		flags := collectFlags(c.LocalFlags())
-		flags = subtractFlags(flags, globals)
-		if len(flags) == 0 {
-			return
-		}
+		flags := collectFlags(c.LocalFlags(), globalNames)
+		// A command with no flags of its own is still part of the interface.
+		// Dropping it here is how `config set`, `scope set`, `db reset`,
+		// `storage rm`, `kit wordlist`, and 28 other command paths became
+		// invisible to anyone reading this file to find out what exists — the
+		// reference described 67 of the 100 command paths and said nothing
+		// about the gap. The section is emitted regardless; the table says
+		// "no command-specific flags" and the heading still carries the
+		// positional-argument shape, which for `config set <key> <value>` is
+		// the entire interface.
 		sections = append(sections, commandDoc{
-			Path:  path,
-			Short: c.Short,
-			Flags: flags,
+			Path:        path,
+			Use:         c.Use,
+			Short:       c.Short,
+			Aliases:     c.Aliases,
+			PassThrough: c.DisableFlagParsing,
+			Flags:       flags,
 		})
 	})
 	sort.SliceStable(sections, func(i, j int) bool { return sections[i].Path < sections[j].Path })
@@ -130,12 +151,26 @@ func renderFlagsReference(root *cobra.Command) string {
 
 	b.WriteString("## Global Flags\n\n")
 	b.WriteString("Persistent flags available on every command.\n\n")
+	b.WriteString("A command section below may redefine one of these names with a different\n")
+	b.WriteString("type, default, or set of accepted values. Such a row is marked **overrides**\n")
+	b.WriteString("and wins for that command — read it instead of the row here.\n\n")
 	writeFlagTable(&b, globals)
 
 	for _, s := range sections {
 		fmt.Fprintf(&b, "\n## %s\n\n", s.Path)
+		if usage := positionalUsage(s); usage != "" {
+			fmt.Fprintf(&b, "Usage: `%s`\n\n", usage)
+		}
+		if len(s.Aliases) > 0 {
+			fmt.Fprintf(&b, "Aliases: %s\n\n", backtickList(s.Aliases))
+		}
 		if s.Short != "" {
 			b.WriteString(s.Short + "\n\n")
+		}
+		if s.PassThrough {
+			b.WriteString("**Compatibility shim.** This command parses another tool's argv itself " +
+				"rather than through cobra, so it accepts that tool's flags, not the ones listed here. " +
+				"It is a subset: run it with `-h` for what is actually translated.\n\n")
 		}
 		writeFlagTable(&b, s.Flags)
 	}
@@ -143,8 +178,40 @@ func renderFlagsReference(root *cobra.Command) string {
 	return b.String()
 }
 
-// walkCommands visits every non-hidden, runnable command depth-first, passing
-// the full invocation path ("vigolium agent swarm").
+// positionalUsage renders the full invocation including positional arguments.
+// For a command with no flags of its own — `config set <key> <value>`,
+// `storage rm <key>...`, `project create [name]` — the argument shape IS the
+// interface, and a reference that prints only flag tables says nothing at all
+// about it.
+func positionalUsage(s commandDoc) string {
+	use := strings.TrimSpace(s.Use)
+	name := s.Path[strings.LastIndex(s.Path, " ")+1:]
+	args := strings.TrimSpace(strings.TrimPrefix(use, name))
+	// A bare "[flags]" says nothing the table below does not; the line is worth
+	// printing only when it names actual positional arguments.
+	args = strings.TrimSpace(strings.ReplaceAll(args, "[flags]", ""))
+	if args == "" {
+		return ""
+	}
+	return s.Path + " " + args
+}
+
+// backtickList renders names as inline code, comma-separated.
+func backtickList(names []string) string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, "`"+n+"`")
+	}
+	return strings.Join(out, ", ")
+}
+
+// walkCommands visits every non-hidden command depth-first, passing the full
+// invocation path ("vigolium agent swarm").
+//
+// `help` and `completion` are skipped because cobra generates them and their
+// interface is cobra's, not vigolium's. Everything else is visited, including
+// commands with no flags of their own: a parent that only prints help is still
+// part of the surface a caller has to discover.
 func walkCommands(c *cobra.Command, path string, fn func(*cobra.Command, string)) {
 	for _, child := range c.Commands() {
 		if child.Hidden || child.Name() == "help" || child.Name() == "completion" {
@@ -156,37 +223,51 @@ func walkCommands(c *cobra.Command, path string, fn func(*cobra.Command, string)
 	}
 }
 
-func collectFlags(fs *pflag.FlagSet) []flagDoc {
+// collectFlags renders a flagset's rows. globalNames marks a local flag whose
+// name shadows a root persistent flag, so the table can say so; pass nil when
+// rendering the root's own flags.
+//
+// Inheritance needs no filtering here: cobra's LocalFlags() already excludes a
+// flag it merely inherits, comparing POINTERS against the parent flagsets
+// (command.go: `f != c.parentsPflags.Lookup(f.Name)`), so a command that
+// registers its own --format keeps it and one that only inherits --format does
+// not. The bug this replaced was a by-NAME subtraction layered on top of that,
+// which deleted `db export -f/--format` and roughly forty other genuine local
+// flags across eighteen commands for colliding with a root name.
+func collectFlags(fs *pflag.FlagSet, globalNames map[string]struct{}) []flagDoc {
 	var out []flagDoc
 	fs.VisitAll(func(f *pflag.Flag) {
 		if f.Hidden || f.Deprecated != "" {
 			return
 		}
+		_, shadows := globalNames[f.Name]
 		out = append(out, flagDoc{
 			Name:        f.Name,
 			Short:       f.Shorthand,
 			Type:        f.Value.Type(),
 			Default:     f.DefValue,
 			Description: f.Usage,
+			Overrides:   shadows,
 		})
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// subtractFlags drops any flag already documented in the global section.
-func subtractFlags(flags, globals []flagDoc) []flagDoc {
-	seen := make(map[string]struct{}, len(globals))
-	for _, g := range globals {
-		seen[g.Name] = struct{}{}
-	}
-	var out []flagDoc
-	for _, f := range flags {
-		if _, dup := seen[f.Name]; dup {
-			continue
+// flagNameSet indexes a flagset by name, for detecting a local override.
+//
+// It applies the same hidden/deprecated filter collectFlags does. Without that,
+// a local flag shadowing a HIDDEN root flag (--stateless is hidden at root) got
+// tagged "overrides the global --stateless" and sent the reader to look for a
+// row in the global table that is deliberately not printed there.
+func flagNameSet(fs *pflag.FlagSet) map[string]struct{} {
+	out := map[string]struct{}{}
+	fs.VisitAll(func(f *pflag.Flag) {
+		if f.Hidden || f.Deprecated != "" {
+			return
 		}
-		out = append(out, f)
-	}
+		out[f.Name] = struct{}{}
+	})
 	return out
 }
 
@@ -198,18 +279,22 @@ func writeFlagTable(b *strings.Builder, flags []flagDoc) {
 	b.WriteString("| Flag | Short | Type | Default | Description |\n")
 	b.WriteString("|------|-------|------|---------|-------------|\n")
 	for _, f := range flags {
-		short := "—"
+		short := "-"
 		if f.Short != "" {
 			short = "`-" + f.Short + "`"
 		}
-		def := "—"
-		// A bare `""` default reads as "unset"; an em dash says that more
-		// clearly than an empty cell, which looks like a rendering bug.
+		def := "-"
+		// A bare `""` default reads as "unset"; a dash says that more clearly
+		// than an empty cell, which looks like a rendering bug.
 		if f.Default != "" && f.Default != "[]" && f.Default != "map[]" {
 			def = "`" + f.Default + "`"
 		}
+		desc := escapeTableCell(f.Description)
+		if f.Overrides {
+			desc = "**(overrides the global `--" + f.Name + "`)** " + desc
+		}
 		fmt.Fprintf(b, "| `--%s` | %s | %s | %s | %s |\n",
-			f.Name, short, f.Type, def, escapeTableCell(f.Description))
+			f.Name, short, f.Type, def, desc)
 	}
 }
 

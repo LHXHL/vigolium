@@ -833,7 +833,12 @@ func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, targe
 		// Attach response data if available
 		if hasResp {
 			rawResp := httpmsg.BuildRawResponse(resp.StatusCode, resp.Headers, string(resp.Body))
-			httpResp := httpmsg.NewHttpResponse(rawResp)
+			// DurationMs survives the round trip through the deparos store, so a
+			// discovery record carries the real round-trip time rather than the
+			// zero every native-scan record used to have. Zero here still means
+			// "not measured" and is passed through as such.
+			httpResp := httpmsg.NewHttpResponseWithDuration(rawResp,
+				time.Duration(resp.DurationMs)*time.Millisecond)
 			rr = rr.WithResponse(httpResp)
 			rec.rr = rr
 			rec.status = resp.StatusCode

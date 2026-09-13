@@ -77,6 +77,20 @@ func init() {
 	registerSpecFlags(flags)
 }
 
+// ingestFollowUpQuery returns the read that actually shows what an ingest just
+// stored.
+//
+// It used to interpolate the INPUT FORMAT into --source: `--source har`,
+// `--source urls`, `--source openapi`. Those are two disjoint vocabularies that
+// overlap only on the token `burp` — --source takes a record-source label
+// (ingest-cli, ingest-server, ingest-proxy, scanner, finding, burp, caido) — so
+// the hint reliably returned zero rows right after a successful ingest, which
+// reads as "the ingest silently did nothing". A plain recency listing answers
+// the question the hint is for without pretending to filter by provenance.
+func ingestFollowUpQuery() []string {
+	return []string{"traffic", "--json", "-n", "20"}
+}
+
 func runIngestCmd(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 
@@ -240,7 +254,14 @@ func runLocalIngest(cmd *cobra.Command, _ []string) error {
 	var preloadedItems []*httpmsg.HttpRequestResponse
 	var detectedFormat detect.StdinFormat
 	if !cmd.Flags().Changed("input-mode") && inputFormat == "urls" {
-		preloadedItems, detectedFormat = tryPreloadAutoDetect(useStdin, filePath)
+		var preloadErr error
+		preloadedItems, detectedFormat, preloadErr = tryPreloadAutoDetect(useStdin, filePath)
+		// Stdin is consumed here for good; there is no second read to fall back
+		// to. A read that failed must stop the run and say why, not continue to
+		// a streaming source that can only report an empty pipe.
+		if preloadErr != nil {
+			return fmt.Errorf("failed to read ingest input: %w", preloadErr)
+		}
 	}
 
 	if len(preloadedItems) > 0 && detectedFormat != detect.FormatURLs {
@@ -517,12 +538,16 @@ func runLocalIngest(cmd *cobra.Command, _ []string) error {
 
 		total := count + directSaved
 		if globalJSON {
-			env := newAgentEnvelope("ingest", "", nil, int64(total), 0, 0)
+			// items is [] rather than nil: the envelope's contract is that `items`
+			// is the canonical collection, and a JSON null breaks every consumer
+			// that iterates or measures it.
+			env := newAgentEnvelope("ingest", "", []any{}, int64(total), 0, 0)
 			env.DBPath = resolvedReadDBPath()
 			env.With("records_ingested", total).
 				With("duration_ms", time.Since(startTime).Milliseconds()).
-				With("source", inputFormat).
-				WithQuery(fmt.Sprintf("vigolium traffic --json --source %s -n 20", inputFormat))
+				With("input_format", inputFormat).
+				With("record_source", database.RecordSourceIngestCLI).
+				WithQuery(ingestFollowUpQuery()...)
 			return writeAgentJSON(env)
 		}
 
@@ -568,13 +593,14 @@ func runLocalIngest(cmd *cobra.Command, _ []string) error {
 		summarySource = string(detectedFormat)
 	}
 	if globalJSON {
-		env := newAgentEnvelope("ingest", "", nil, totalIngested, 0, 0)
+		env := newAgentEnvelope("ingest", "", []any{}, totalIngested, 0, 0)
 		env.DBPath = resolvedReadDBPath()
 		env.With("records_ingested", totalIngested).
 			With("duration_ms", time.Since(startTime).Milliseconds()).
-			With("source", summarySource).
+			With("input_format", summarySource).
+			With("record_source", database.RecordSourceIngestCLI).
 			// The obvious next step after an ingest is to look at what landed.
-			WithQuery(fmt.Sprintf("vigolium traffic --json --source %s -n 20", summarySource))
+			WithQuery(ingestFollowUpQuery()...)
 		return writeAgentJSON(env)
 	}
 
@@ -600,47 +626,57 @@ func runLocalIngest(cmd *cobra.Command, _ []string) error {
 // only preloaded when the content looks like raw HTTP / burp-pair / curl —
 // URL/HAR/OpenAPI files keep streaming through the existing FileSource. The
 // file branch caps the peek at 4 MiB.
-func tryPreloadAutoDetect(useStdin bool, filePath string) ([]*httpmsg.HttpRequestResponse, detect.StdinFormat) {
+//
+// A stdin read FAILURE is returned rather than folded into the empty result.
+// The old code turned every error into "nothing detected" and let the run
+// continue to the streaming source, which then read an already-exhausted pipe
+// and reported zero items — so a deadline that fired and a genuinely empty pipe
+// were indistinguishable, and the one that needed reporting was the one that
+// looked like success.
+func tryPreloadAutoDetect(useStdin bool, filePath string) ([]*httpmsg.HttpRequestResponse, detect.StdinFormat, error) {
 	const maxPeekBytes = 4 * 1024 * 1024
 
 	var content string
 	switch {
 	case useStdin:
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil || len(data) == 0 {
-			return nil, ""
+		data, err := readStdin()
+		if err != nil {
+			return nil, "", err
+		}
+		if len(data) == 0 {
+			return nil, "", nil
 		}
 		content = string(data)
 	case filePath != "":
 		f, err := os.Open(filePath)
 		if err != nil {
-			return nil, ""
+			return nil, "", nil
 		}
 		defer func() { _ = f.Close() }()
 		buf, err := io.ReadAll(io.LimitReader(f, maxPeekBytes+1))
 		if err != nil || len(buf) == 0 || len(buf) > maxPeekBytes {
-			return nil, ""
+			return nil, "", nil
 		}
 		content = string(buf)
 	default:
-		return nil, ""
+		return nil, "", nil
 	}
 
 	format := detect.DetectStdinFormat(content)
 	// File mode only preloads HTTP-shaped content; URL lists keep streaming.
 	if !useStdin && format == detect.FormatURLs {
-		return nil, ""
+		return nil, "", nil
 	}
 
 	items, err := detect.ParseStdinContent(content, format)
 	if err != nil {
 		zap.L().Debug("ingest: auto-detect parse failed, falling back",
 			zap.String("format", string(format)), zap.Error(err))
-		return nil, ""
+		return nil, "", nil
 	}
 	zap.L().Info("Auto-detected ingest input",
 		zap.String("format", string(format)), zap.Int("records", len(items)))
-	return items, format
+	return items, format, nil
 }
 
 // partitionPreloaded splits items into those carrying an attached response

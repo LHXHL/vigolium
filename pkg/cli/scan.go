@@ -68,12 +68,7 @@ func init() {
 	registerScanPipelineFlags(flags)
 	registerSpecFlags(flags)
 	registerNativeScanFlags(flags, true)
-	// Deprecated spelling kept working for one minor version. See the
-	// --discovery-wordlist comment in registerNativeScanFlags.
-	addFlagAliases(scanCmd, map[string]string{
-		"fuzz-wordlist": "discovery-wordlist",
-		"templates-dir": "known-issue-scan-templates-dir",
-	})
+	addFlagAliases(scanCmd, nativeScanFlagAliases)
 }
 
 // allKnownIssueScanSeverities is the full nuclei severity set. A known-issue-scan
@@ -148,7 +143,6 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.Targets = mergePositionalTargets(args, globalTargets)
 	scanOpts.TargetsFilePaths = globalTargetFiles
 	scanOpts.InputFileMode = globalInputMode
-	scanOpts.InputReadTimeout = globalInputReadTimeout
 	scanOpts.Timeout = globalTimeout
 	scanOpts.Concurrency = globalConcurrency
 	scanOpts.MaxPerHost = globalMaxPerHost
@@ -224,6 +218,13 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	if scanOpts.DBIsolate && scanOpts.Stateless {
 		return fmt.Errorf("--db-isolate and --stateless are mutually exclusive (--stateless discards results; --db-isolate merges them into --db)")
 	}
+	// Supplying a fuzz wordlist and disabling fuzzing states two opposite
+	// intents. Resolving it silently either way leaves the operator believing
+	// the other one took effect, and the two outcomes differ by thousands of
+	// requests per host — so it is an error rather than a precedence rule.
+	if scanOpts.NoDiscoveryFuzz && scanOpts.FuzzWordlistPath != "" {
+		return fmt.Errorf("--no-discovery-fuzz and --discovery-wordlist are mutually exclusive (--discovery-wordlist exists to turn discovery fuzzing on; drop one)")
+	}
 	if err := validateParallelScan(scanOpts); err != nil {
 		return err
 	}
@@ -231,7 +232,12 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		if globalDB != "" {
 			return fmt.Errorf("--stateless and --db are mutually exclusive")
 		}
-		if scanOpts.Output == "" && !scanOpts.Silent && !splitByHostNaming {
+		// Not warned under --json/--ci-output: those stream every record and
+		// finding to stdout as they are written, so the results are NOT
+		// discarded — they have already left the process by the time the
+		// temporary database goes away. Telling an operator piping that stream
+		// that their output is being thrown away is worse than saying nothing.
+		if scanOpts.Output == "" && !scanOpts.Silent && !splitByHostNaming && !globalJSON && !globalCIOutput {
 			fmt.Fprintf(os.Stderr,
 				"%s %s: no %s set — scan results will be discarded with the temporary database. "+
 					"Pass %s %s and %s %s to persist results.\n",
@@ -380,11 +386,17 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	// and before ApplyNativePhaseSelection consumes SkipPhases.
 	autoSkipKnownIssueScanForModuleSelection(scanOpts)
 
+	// Before ApplyNativePhaseSelection: it applies the probe phase's own
+	// defaults, and needs to know whether --record-redirect-chain was typed.
+	if err := applyProbeFlags(scanOpts, cmd); err != nil {
+		return err
+	}
 	if err := runner.ApplyNativePhaseSelection(scanOpts, func() {
 		settings.DynamicAssessment.Extensions.Enabled = true
 	}); err != nil {
 		return err
 	}
+	warnInertProbeFlags(scanOpts, cmd)
 	if scanOpts.OnlyPhase != "" {
 		zap.L().Info("Phase isolation active", zap.String("only", scanOpts.OnlyPhase))
 	}
@@ -730,15 +742,32 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 		return runDBScan(settings, db, repo, scanStart)
 	}
 
-	// Smart stdin detection: if stdin is present and -I was not explicitly set,
-	// peek at the content to detect raw HTTP or curl format
-	if hasStdin && !cmd.Flags().Changed("input-mode") {
-		raw, readErr := io.ReadAll(os.Stdin)
+	// Promote -T/--target-file lines into scanOpts.Targets so the phases that
+	// seed from the CLI target list (spidering's crawl seeds, deparos content
+	// discovery) actually receive them. Runs after the fan-out dispatch in
+	// runNativeScan and after printScanSummary, both of which read
+	// TargetsFilePaths, and before the stdin block so a -T list survives the
+	// raw-stdin SliceSource branch too.
+	if err := seedTargetsFromTargetFiles(scanOpts); err != nil {
+		return err
+	}
+
+	// Smart stdin detection: peek at piped content to detect raw HTTP or curl
+	// format. Skipped when -I names a specific non-list format — that is an
+	// explicit instruction the detector must not overrule — but an explicit
+	// -I urls still comes through here, because the point of this block is to
+	// land a piped URL list in scanOpts.Targets rather than in a StdinSource
+	// the target-seeded phases never see. (An unset -I defaults to "urls", so
+	// the target-list test alone admits the auto-detect case too.)
+	inputModeExplicit := cmd.Flags().Changed("input-mode")
+	if hasStdin && source.IsTargetListFormat(scanOpts.InputFileMode) {
+		raw, readErr := readStdin()
 		if readErr != nil {
 			return fmt.Errorf("failed to read stdin: %w", readErr)
 		}
 		content := strings.TrimSpace(string(raw))
-		if content != "" {
+		// An explicit -I urls pins the format; only an unset -I is auto-detected.
+		if content != "" && !inputModeExplicit {
 			detected := detect.DetectStdinFormat(content)
 			if detected != detect.FormatURLs {
 				// Raw HTTP or curl — parse eagerly and use SliceSource
@@ -772,14 +801,10 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 				return nil
 			}
 		}
-		// URLs detected — fall through to existing runner.New() which handles stdin streaming.
-		// However, we already consumed stdin, so we need to pass the content as targets instead.
-		for _, line := range strings.Split(content, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				scanOpts.Targets = append(scanOpts.Targets, line)
-			}
-		}
+		// URLs — fall through to the runner.New() path below. Stdin is already
+		// drained, so the lines are passed as targets rather than left to a
+		// StdinSource (which would also leave the target-seeded phases empty).
+		seedTargetsFromStdinLines(scanOpts, content)
 		scanOpts.Stdin = false
 	}
 
@@ -994,12 +1019,16 @@ func readTargetFilesLines(paths []string) ([]string, error) {
 	return lines, nil
 }
 
-// targetFileCounts memoizes how many targets each -T file yielded, so the scan
-// banner can report the real total without re-reading (and, for a Burp scope,
-// re-expanding) a file the run has already parsed.
+// targetFileLines memoizes the targets each -T file yielded. One invocation asks
+// for the same file three times — the empty-file guard in runNativeScan, the
+// banner's count, and the promotion into Options.Targets — and each parse is two
+// full reads of the file (burpscope.SniffFile reads it whole, then the line
+// scanner does), so caching the LINES rather than just the count is what keeps a
+// large recon list to one pass. For a Burp scope export it also avoids
+// re-expanding the include rules each time.
 var (
-	targetFileCountsMu sync.Mutex
-	targetFileCounts   = map[string]int{}
+	targetFileLinesMu sync.Mutex
+	targetFileLines   = map[string][]string{}
 )
 
 // countTargetFileTargets returns the number of targets the given -T files
@@ -1010,17 +1039,11 @@ var (
 func countTargetFileTargets(paths []string) int {
 	total := 0
 	for _, p := range paths {
-		targetFileCountsMu.Lock()
-		n, ok := targetFileCounts[p]
-		targetFileCountsMu.Unlock()
-		if !ok {
-			lines, err := readTargetFileLines(p)
-			if err != nil {
-				continue
-			}
-			n = len(lines)
+		lines, err := readTargetFileLines(p)
+		if err != nil {
+			continue
 		}
-		total += n
+		total += len(lines)
 	}
 	return total
 }
@@ -1028,16 +1051,45 @@ func countTargetFileTargets(paths []string) int {
 // readTargetFileLines reads a target file (one URL or address per line),
 // trimming whitespace and skipping blank lines and `#` comments. A Burp Suite
 // scope export is expanded into the URLs its include rules describe instead —
-// see expandBurpScopeTargets.
+// see expandBurpScopeTargets. Repeat calls for the same path are served from
+// targetFileLines.
 func readTargetFileLines(path string) ([]string, error) {
+	targetFileLinesMu.Lock()
+	cached, ok := targetFileLines[path]
+	targetFileLinesMu.Unlock()
+	if ok {
+		return cached, nil
+	}
 	lines, err := parseTargetFileLines(path)
 	if err != nil {
 		return nil, err
 	}
-	targetFileCountsMu.Lock()
-	targetFileCounts[path] = len(lines)
-	targetFileCountsMu.Unlock()
+	targetFileLinesMu.Lock()
+	targetFileLines[path] = lines
+	targetFileLinesMu.Unlock()
 	return lines, nil
+}
+
+// isTargetLine reports whether an already-trimmed line names a target, i.e. is
+// neither blank nor a `#` comment. The -T file reader and the piped-stdin
+// promotion both ask through here, so the two accept the same list verbatim —
+// the contract seedTargetsFromStdinLines documents, with one rule behind it.
+// (The file path stays on a bufio.Scanner rather than sharing targetLinesFrom:
+// it streams, and its buffer cap is what keeps a very long URL line from
+// silently truncating.)
+func isTargetLine(line string) bool {
+	return line != "" && !strings.HasPrefix(line, "#")
+}
+
+// targetLinesFrom splits target-list content into targets under isTargetLine.
+func targetLinesFrom(content string) []string {
+	var lines []string
+	for _, line := range strings.Split(content, "\n") {
+		if line = strings.TrimSpace(line); isTargetLine(line) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 func parseTargetFileLines(path string) ([]string, error) {
@@ -1055,11 +1107,9 @@ func parseTargetFileLines(path string) ([]string, error) {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+		if line := strings.TrimSpace(scanner.Text()); isTargetLine(line) {
+			lines = append(lines, line)
 		}
-		lines = append(lines, line)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("failed to read target file %q: %w", path, err)
@@ -1249,7 +1299,13 @@ func generateReportFromDB(ctx context.Context, db *database.DB, outputPath strin
 		}
 		return rf.streamGenerate(produce, outputPath, meta)
 	}
-	items, err := queryExportData(ctx, db, omitResponse, projectUUID)
+	// Materialized branch: MUST carry scanUUID too. The streaming branch above
+	// already scoped to the current scan, but `report`, `pdf` and `sarif` have no
+	// streaming generator, so they fell through here and rendered the project's
+	// whole finding history as if it were this run's result — contradicting this
+	// function's own contract and, for sarif, re-reporting every historical finding
+	// to GitHub code scanning on each scan.
+	items, err := queryExportData(ctx, db, omitResponse, projectUUID, scanUUID)
 	if err != nil {
 		return err
 	}
@@ -2024,10 +2080,13 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 
 	// Credit the discovery co-authors when the run is discovery/spidering-only
 	// (e.g. `vigolium run discover` or `vigolium scan --only discovery`).
+	// Through emitBanner, so the once-guard covers this and the root hook
+	// together: whichever runs first wins and the other is a no-op, with no
+	// annotation or command list keeping them apart.
 	if isDiscoveryOnlyPhases(opts.OnlyPhase) {
-		fmt.Fprint(os.Stderr, GetDiscoveryBanner())
+		emitBanner(GetDiscoveryBanner())
 	} else {
-		fmt.Fprint(os.Stderr, GetBanner())
+		emitBanner(GetBanner())
 	}
 
 	// Phase status indicators: symbol + colored name + optional pace detail
@@ -2127,7 +2186,8 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 	// -T file alike. Counting only the CLI ones reported "Targets: 0" for a run
 	// driven entirely by a target file, which reads as though nothing was found.
 	fileTargets := countTargetFileTargets(opts.TargetsFilePaths)
-	targetsLine := fmt.Sprintf("Targets: %s", terminal.Orange(fmt.Sprintf("%d", len(opts.Targets)+fileTargets)))
+	seededTargets := len(opts.Targets) + fileTargets
+	targetsLine := fmt.Sprintf("Targets: %s", terminal.Orange(fmt.Sprintf("%d", seededTargets)))
 	if len(opts.Targets) > 0 {
 		targetsLine += fmt.Sprintf(" (CLI: %s)", terminal.HiBlue(summarizeTargetList(opts.Targets, 3)))
 	}
@@ -2262,6 +2322,10 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 			terminal.HiTeal(dest),
 			terminal.Gray("(format: "+formatStr+")"))
 	}
+	// The spidering fan-out hint. Placed with the tips rather than beside the
+	// Phases line because it is advice, not configuration — and printed before
+	// the verbose-only block so it lands whether or not -v is on.
+	printSpiderFanOutTip(opts, seededTargets)
 	if globalVerbose {
 		fmt.Fprintf(os.Stderr, "\n  %s %s %s\n",
 			terminal.TipPrefix(), terminal.Gray("view scope details via"), terminal.HiCyan("vigolium config ls scope"))

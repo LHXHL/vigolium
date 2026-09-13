@@ -110,7 +110,7 @@ func runKitJWTCrack(cmd *cobra.Command, args []string) error {
 	}
 
 	if kitJWTFailOnCrack && ok {
-		os.Exit(ExitFuzzMatch)
+		return asMatchErrorf("--fail-on-crack: the token secret was recovered")
 	}
 	return nil
 }

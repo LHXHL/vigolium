@@ -12,6 +12,29 @@ import (
 // option during scan setup.
 var scanNoCarryBrowserSession bool
 
+// nativeScanFlagAliases are the alternative spellings for flags registered by
+// registerNativeScanFlags, keyed alias -> canonical. Shared by every command
+// that registers those flags (scan, run) rather than copied per command: the two
+// had already been maintained as identical literals, which is a pair that can
+// drift into an alias working on one command and being an unknown flag on the
+// other. Registered with addFlagAliases, so an alias and its canonical name
+// drive ONE flag value and neither can silently overwrite the other.
+var nativeScanFlagAliases = map[string]string{
+	// Deprecated spelling kept working for one minor version. See the
+	// --discovery-wordlist comment in registerNativeScanFlags.
+	"fuzz-wordlist": "discovery-wordlist",
+	"templates-dir": "known-issue-scan-templates-dir",
+	// Short form of --no-discovery-fuzz. "Fuzzing" means two different things in
+	// this CLI (the discovery phase's path brute-force, and `vigolium fuzz`), so
+	// the canonical name is qualified; on a scan command there is only one
+	// fuzzing to turn off, which is what makes the short alias unambiguous here.
+	"no-fuzz": "no-discovery-fuzz",
+	// Short form of --omit-response. The canonical name says what it does to the
+	// output; "no response" is what operators reach for, and on a host sweep
+	// (where the body is the bulk of every row) it is the flag most often typed.
+	"no-response": "omit-response",
+}
+
 func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	// Target-Format group
 	flags.BoolVar(&scanOpts.FormatUseRequiredOnly, "required-only", false, "Parse only required fields from input format (ignore optional)")
@@ -49,9 +72,16 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	// old spelling kept as a deprecated alias (registered via addFlagAliases, so
 	// both spellings drive ONE flag and neither can silently overwrite the other).
 	flags.StringVar(&scanOpts.FuzzWordlistPath, "discovery-wordlist", "", "Custom wordlist path seeding the discovery phase (enables fuzzing on the fly). Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'.")
+	flags.BoolVar(&scanOpts.NoDiscoveryFuzz, "no-discovery-fuzz", false, "Disable discovery's /FUZZ brute-force (alias --no-fuzz). Overrides every reason it would auto-enable — --intensity deep, a discovery-only run such as 'vigolium run discover', and the low-yield auto-enable. Link extraction, JS parsing, response-word harvesting and the short dir/file wordlists still run.")
 	flags.BoolVar(&scanOpts.NoPrefixBreaker, "no-prefix-breaker", false, "Disable per-prefix circuit breaker that stops discovery from recursing into trap directories")
 	flags.BoolVar(&scanOpts.FollowSubdomains, "follow-subdomains", false, "Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep)")
 	flags.StringVar(&scanOpts.PortSweepPorts, "port-sweep-ports", "", "Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; sweep runs at --intensity deep or --follow-subdomains)")
+
+	// Host-sweep (probe) flags
+	flags.BoolVar(&scanOpts.ProbeEnabled, "probe", false, "Enable the host-sweep phase: one request per target, passive tech fingerprinting + surface scoring, no content discovery or fuzzing (same as 'vigolium run probe')")
+	flags.StringVar(&scanOpts.RedirectMode, "redirect-mode", "", "Which redirects to follow: off | same-host | same-apex | any (default any). 'same-apex' follows within the registrable domain, so www.example.com -> example.com follows but example.com -> tracker.example.net does not.")
+	flags.BoolVar(&scanOpts.TLSProbe, "tls-probe", false, "Probe each HTTPS target's TLS: negotiated version/cipher plus the leaf certificate (subject, SANs, issuer, validity, fingerprints), reported inline in --json output and not stored. Read by the probe phase.")
+	flags.BoolVar(&scanOpts.RecordRedirectChain, "record-redirect-chain", false, "Store every followed redirect hop as its own http_records row, chained by parent_uuid, instead of keeping only the final response. Read by the probe phase; on by default under 'run probe'.")
 
 	// Browser-based spidering flags
 	flags.BoolVar(&scanOpts.SpideringEnabled, "spider", false, "Enable browser-based spidering phase before scanning")

@@ -214,7 +214,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 			return qErr
 		}
 		if !globalJSON {
-			fmt.Fprint(os.Stderr, GetBanner())
+			emitBanner(GetBanner())
 			fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(),
 				terminal.BoldCyan(fmt.Sprintf("Importing live bridge traffic from %s ...", bridgeURL)))
 		}
@@ -251,7 +251,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	// findings/records to the DB can take a while for large runs, and without a
 	// progress line the terminal looks frozen until the summary prints.
 	if !globalJSON {
-		fmt.Fprint(os.Stderr, GetBanner())
+		emitBanner(GetBanner())
 		fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(),
 			terminal.BoldCyan(fmt.Sprintf("Importing scan data from %s ...", label)))
 		fmt.Fprintf(os.Stderr, "  %s\n",

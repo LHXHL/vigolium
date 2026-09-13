@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"sort"
@@ -92,6 +91,6 @@ func emitAgentScanJSONSummary(repo *database.Repository, projectUUID, agenticSca
 		"total_findings":     total,
 		"counts_by_severity": counts,
 		"top_findings":       top,
-		"query":              fmt.Sprintf("vigolium finding --agentic-scan %s --json --with-records", agenticScanUUID),
+		"query":              followUpQuery("finding", "--agentic-scan", agenticScanUUID, "--json", "--with-records"),
 	})
 }

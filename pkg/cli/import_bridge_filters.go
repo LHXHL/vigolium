@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/vigolium/vigolium/pkg/burpbridge"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -176,18 +177,20 @@ func preflightImportBridge(ctx context.Context, client *burpbridge.Client, query
 	fmt.Fprintf(os.Stderr, "%s about to import %s record(s) from %s — %s\n",
 		terminal.InfoSymbol(), terminal.BoldYellow(fmt.Sprintf("%d", total)), page.Source, scope)
 
-	// --yes, --force, a non-TTY, and the machine output modes all proceed without
-	// asking: a prompt nobody can answer is a hang, and this runs in CI. The
-	// refusal in buildImportBridgeQuery is the guard that survives all of them —
-	// this prompt is the second, interactive-only layer.
-	if importBridgeYes || globalForce || globalJSON || globalSilent || !terminal.IsTerminal() {
-		return true, nil
+	// --yes, --force, and the machine output modes proceed without asking; the
+	// refusal in buildImportBridgeQuery is the guard that survives all of them,
+	// and this prompt is the second, interactive-only layer.
+	//
+	// Routed through the shared gate so this import is classified like every
+	// other confirmation (a decline is a clean exit, a missing terminal is exit
+	// 2 naming --force) rather than being the one prompt left outside it. The
+	// force argument folds the pre-existing opt-outs in: a non-TTY still needs
+	// no special case here, because Confirm checks for a terminal itself.
+	if err := clicommon.Confirm("importing this traffic", importBridgeYes || globalForce || machineOutputMode()); err != nil {
+		if errors.Is(err, clicommon.ErrAborted) || errors.Is(err, clicommon.ErrConfirmationRequired) {
+			return false, nil
+		}
+		return false, err
 	}
-	fmt.Fprint(os.Stderr, "Continue? (type 'yes' to confirm): ")
-	reader := bufio.NewReader(os.Stdin)
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return false, fmt.Errorf("aborted: interactive confirmation required (pass --yes to skip): %w", err)
-	}
-	return strings.EqualFold(strings.TrimSpace(answer), "yes"), nil
+	return true, nil
 }

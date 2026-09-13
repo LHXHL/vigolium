@@ -8,7 +8,7 @@ var rootExamples = FormatExamples(
 	"# Scan targets from a file with specific modules",
 	"vigolium scan -T targets.txt -m xss-reflected,sqli-error",
 	"# Scan an OpenAPI specification",
-	"vigolium scan -T openapi.yaml -I openapi",
+	"vigolium scan -i openapi.yaml -I openapi",
 	"# Pipe URLs from stdin",
 	"cat urls.txt | vigolium scan",
 	"# Use a scanning strategy preset",
@@ -165,10 +165,8 @@ var serverExamples = FormatExamples(
 	"vigolium server --scan-on-receive",
 	"# Passive modules only (no active traffic; includes secret detection)",
 	"vigolium server --scan-on-receive --passive-only",
-	"# Scan on receive with specific modules and concurrency",
-	"vigolium server --scan-on-receive -m xss-reflected,sqli-error -c 50",
-	"# Scan on receive with more catchup workers",
-	"vigolium server --scan-on-receive --catchup-threads 8",
+	"# Run the full native pipeline on each received record, not just dynamic-assessment",
+	"vigolium server --scan-on-receive --full-native-scan-on-receive",
 	"# Scan on receive without background catchup scan",
 	"vigolium server --scan-on-receive --disable-catchup",
 	"",
@@ -321,8 +319,8 @@ var configLsExamples = FormatExamples(
 	"# Filter with a glob pattern",
 	"vigolium config view 'kno*'",
 	"# Reveal redacted secrets (API keys, tokens, passwords)",
-	"vigolium config ls --force",
-	"vigolium config ls notify -F",
+	"vigolium config ls --show-secrets",
+	"vigolium config ls notify --show-secrets",
 )
 
 var configSetExamples = FormatExamples(
@@ -346,7 +344,7 @@ var configCleanExamples = FormatExamples(
 	"# Reset Vigolium to clean state (with confirmation)",
 	"vigolium config clean",
 	"# Skip confirmation prompt",
-	"vigolium config clean -F",
+	"vigolium config clean --force",
 )
 
 var dbListExamples = FormatExamples(
@@ -400,13 +398,13 @@ var dbCleanExamples = FormatExamples(
 	"# Delete records older than a date",
 	"vigolium db clean --before 2025-01-01",
 	"# Delete records for a specific scan",
-	"vigolium db clean --scan-uuid old-scan -F",
+	"vigolium db clean --scan-uuid old-scan --force",
 	"# Delete all records (VACUUM runs automatically to reclaim space)",
-	"vigolium db clean --all -F",
+	"vigolium db clean --all --force",
 	"# Delete and recreate the database from scratch",
-	"vigolium db reset -F",
+	"vigolium db reset --force",
 	"# Clean orphaned findings",
-	"vigolium db clean --orphans -F",
+	"vigolium db clean --orphans --force",
 )
 
 var trafficExamples = FormatExamples(
@@ -464,7 +462,7 @@ var trafficExamples = FormatExamples(
 	"vigolium traffic --status 401,403,500",
 	"# Filter by URL path pattern",
 	`vigolium traffic --path "/api/*"`,
-	"# Filter by record source (burp, caido, scanner, ingest-cli, ingest-proxy, seed, ...)",
+	"# Filter by record source (burp, caido, scanner, probe, ingest-cli, ingest-proxy, seed, ...)",
 	"vigolium traffic --source ingest-proxy",
 	"# Filter by date range",
 	"vigolium traffic --from 2026-01-01 --to 2026-02-01",
@@ -543,6 +541,23 @@ var scopeViewExamples = FormatExamples(
 )
 
 var runExamples = FormatExamples(
+	"# Host sweep: one request per target, passive fingerprinting only, no fuzzing",
+	"vigolium run probe -T hosts.txt -c 20",
+	"# Sweep a single target",
+	"vigolium run probe -t https://example.com",
+	"# Sweep + TLS: negotiated version/cipher and the leaf certificate per HTTPS host",
+	"vigolium run probe -T hosts.txt --tls-probe -j",
+	"# Sweep to a file, without the raw request/response bytes (much smaller)",
+	"vigolium run probe -T hosts.txt -S --format jsonl -o alive.jsonl --no-response",
+	"# Redirect policy (probe defaults to same-apex and records every hop)",
+	"vigolium run probe -T hosts.txt --redirect-mode any --record-redirect-chain",
+	"# Read the sweep back: probe rows are labelled 'probe'",
+	"vigolium traffic --source probe",
+	"# ...or rank the hosts worth a real scan by attack surface",
+	"vigolium db ls --min-surface 50 --sort surface_score",
+	"# Aliases: probing, httpx, alive, sweep",
+	"vigolium run sweep -T hosts.txt",
+	"",
 	"# Run content discovery phase",
 	"vigolium run discover -t https://example.com",
 	"# Discovery with custom fuzz wordlist",
@@ -580,9 +595,15 @@ var runExamples = FormatExamples(
 	"",
 	"# Short alias",
 	"vigolium r discovery -t https://example.com",
-	"# Phase aliases: deparos=discovery, discover=discovery, spitolas=spidering, dast/assessment=dynamic-assessment, ext=extension",
-	"vigolium run deparos -t https://example.com",
-	"vigolium run dast -t https://example.com",
+	"# Every phase answers to several spellings — run 'vigolium run --help' for the full table",
+	"vigolium run deparos -t https://example.com        # = discovery",
+	"vigolium run discovering -t https://example.com    # = discovery",
+	"vigolium run spider -t https://example.com         # = spidering",
+	"vigolium run crawl -t https://example.com          # = spidering",
+	"vigolium run cve -t https://example.com            # = known-issue-scan",
+	"vigolium run dast -t https://example.com           # = dynamic-assessment",
+	"# 'run <phase>' is the same code path as 'scan --only <phase>' — identical behaviour",
+	"vigolium scan --only spider,discover -t https://example.com",
 	"# 'audit' works on --only/--skip but not here: 'vigolium run audit' is rejected",
 	"# as ambiguous with 'vigolium agent audit' (the AI source-code audit)",
 )
@@ -1169,8 +1190,8 @@ var storageExamples = FormatExamples(
 	"vigolium storage results <scan-uuid>",
 	"# Generate a presigned download URL valid for 30 minutes",
 	"vigolium storage presign --key ugc/scan-bundle.tar.gz --expiry 30m",
-	"# Delete one or more objects (skip prompt with -F)",
-	"vigolium storage rm imports/old-bundle.tar.gz -F",
+	"# Delete one or more objects (skip the prompt with --force)",
+	"vigolium storage rm imports/old-bundle.tar.gz --force",
 )
 
 var storageLsExamples = FormatExamples(
@@ -1220,7 +1241,7 @@ var storageRmExamples = FormatExamples(
 	"# Delete a single object (will prompt for confirmation)",
 	"vigolium storage rm imports/old-bundle.tar.gz",
 	"# Delete several objects, skipping the confirmation prompt",
-	"vigolium storage rm imports/a.tar.gz imports/b.tar.gz -F",
+	"vigolium storage rm imports/a.tar.gz imports/b.tar.gz --force",
 )
 
 var importExamples = FormatExamples(
@@ -1327,9 +1348,9 @@ var projectDeleteExamples = FormatExamples(
 	"# Delete a project and everything tied to it (prompts for confirmation)",
 	"vigolium project delete 9b2f-...",
 	"# Skip the confirmation prompt",
-	"vigolium project delete 9b2f-... -F",
+	"vigolium project delete 9b2f-... --force",
 	"# Delete the project's data but keep its config directory on disk",
-	"vigolium project delete 9b2f-... --keep-config -F",
+	"vigolium project delete 9b2f-... --keep-config --force",
 	"# 'rm' and 'remove' are aliases",
 	"vigolium project rm 9b2f-...",
 )

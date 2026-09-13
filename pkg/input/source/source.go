@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats"
 	"github.com/vigolium/vigolium/pkg/work"
+	"go.uber.org/zap"
 )
 
 // InputSource provides a stream of work items for scanning.
@@ -189,18 +190,28 @@ func (t *TargetSource) Next(ctx context.Context) (*work.WorkItem, error) {
 	default:
 	}
 
-	if t.index >= len(t.targets) {
-		return nil, io.EOF
-	}
+	// Skip targets that don't parse rather than returning on the first bad one. A
+	// single hand-typed -t is not the only caller any more: a -T/--target-file
+	// list is promoted into Targets, and a recon export routinely carries a junk
+	// line. The executor does treat a Next error as continue, so this is not the
+	// difference between scanning and not — it is that the warning here names the
+	// target that was dropped, where the executor's generic "error reading from
+	// source" cannot, and that a run of bad lines no longer trips its
+	// consecutive-error spin guard. Matches the urls format parser, which logs
+	// the offending URL and continues.
+	for t.index < len(t.targets) {
+		target := t.targets[t.index]
+		t.index++
 
-	target := t.targets[t.index]
-	t.index++
-
-	rr, err := httpmsg.GetRawRequestFromURL(target)
-	if err != nil {
-		return nil, err
+		rr, err := httpmsg.GetRawRequestFromURL(target)
+		if err != nil {
+			zap.L().Warn("targets: could not build request from target",
+				zap.String("target", target), zap.Error(err))
+			continue
+		}
+		return work.NewWithModules(rr, t.enableModules), nil
 	}
-	return work.NewWithModules(rr, t.enableModules), nil
+	return nil, io.EOF
 }
 
 // Close marks the source as closed.

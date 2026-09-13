@@ -41,7 +41,6 @@ var (
 	findingModuleType    string
 	findingFindingSource string
 	findingRecordKind    string
-	findingID            int
 
 	// Display-only flags
 	findingRaw         bool
@@ -151,7 +150,10 @@ func init() {
 	pf.StringVar(&findingModuleType, "module-type", "", "Filter by module type (active, passive, nuclei, agent, source-tools, oast, extension)")
 	pf.StringVar(&findingFindingSource, "finding-source", "", "Filter by finding source (dynamic-assessment, spa, agent, oast, source-tools, extension)")
 	pf.StringVar(&findingRecordKind, "record-kind", "", "Filter by record kind (finding, candidate, observation; comma-separated). Default: finding")
-	pf.IntVar(&findingID, "id", 0, "Filter by finding ID")
+	// A string, not an Int: pflag's own parse failure names strconv, while the
+	// mistake this flag actually attracts is a UUID from another namespace. See
+	// finding_id_flag.go.
+	pf.StringVar(&findingIDRaw, "id", "", "Filter by finding ID (the integer from the ID column, e.g. --id 42)")
 
 	// Display-only flags
 	f := findingCmd.Flags()
@@ -180,6 +182,7 @@ func init() {
 		"With --send-via-burp: wire protocol — auto|http1|http2|http2_ignore_alpn (default auto)")
 
 	registerAgentJSONFlags(f)
+	registerAgentRecordFlags(f)
 	tui.AddFlags(findingCmd, &findingTUIFlag, &findingNoTUIFlag)
 
 	// Alternate spellings that resolve to the same flag.
@@ -226,6 +229,12 @@ func findingGlobSkipSet(filters database.QueryFilters) globDBSkipSet {
 func runFinding(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 
+	// Reject an unknown --fields/--record-fields name before opening anything: a
+	// projection typo used to cost a full query and come back as a silently
+	// missing key.
+	if err := validateAgentViewFlags(agentViewOptionsFromFlags(), findingViewFields); err != nil {
+		return err
+	}
 	var fuzzyTerm string
 	// Argument routing mirrors traffic: "tree" activates tree mode, "ls"/"list"
 	// are no-ops (default table view), anything else is a fuzzy search term.
@@ -477,6 +486,16 @@ func buildFindingFilters(fuzzyTerm string) (database.QueryFilters, error) {
 		return database.QueryFilters{}, err
 	}
 
+	// Parsed here rather than stashed in a package variable by the run path: this
+	// is the only consumer, and it already runs upstream of every database open,
+	// so a wrong identifier namespace still costs no query. A second global
+	// holding the parsed form is state that only one caller populates and any
+	// other entry point reads stale.
+	findingID, err := parseFindingID(findingIDRaw)
+	if err != nil {
+		return database.QueryFilters{}, err
+	}
+
 	var severities []string
 	if findingSeverity != "" {
 		severities = parseSeverityList(findingSeverity)
@@ -605,12 +624,16 @@ func displayFindingsJSON(ctx context.Context, db *database.DB, findings []*datab
 	opts := agentViewOptionsFromFlags()
 	env := newAgentEnvelope("finding", "findings",
 		findingViews(ctx, db, findings, opts, findingWithRecords), total, findingOffset, findingLimit)
-	env.ProjectUUID = projectUUID
+	env.WithProjectScope(projectUUID)
 	env.DBPath = resolvedReadDBPath()
 	// A --compact survey's next step is the drill into one finding's evidence; a
 	// listing that already carries records has nowhere obvious to go.
+	// The hint must be a command that EXISTS. This used to emit
+	// `finding -u <FindingHash>`: `-u` is not a flag on finding (it means
+	// "record UUID" on replay/fuzz), and nothing anywhere accepts a FindingHash
+	// as a selector — so following the envelope's own advice exited 2.
 	if !findingWithRecords && len(findings) > 0 {
-		env.WithQuery(fmt.Sprintf("vigolium finding -u %s --json --with-records", findings[0].FindingHash))
+		env.WithQuery("finding", "--id", strconv.FormatInt(findings[0].ID, 10), "--json", "--with-records")
 	}
 	return writeAgentJSON(env)
 }
@@ -618,7 +641,7 @@ func displayFindingsJSON(ctx context.Context, db *database.DB, findings []*datab
 // displayFindingsBurp shows findings with their associated HTTP records in Burp-style format.
 func displayFindingsBurp(db *database.DB, ctx context.Context, findings []*database.Finding) error {
 	// Fetch every referenced record in one query instead of one per finding.
-	byUUID := batchLoadFindingRecords(ctx, db, findings)
+	byUUID := loadFindingRecordsOrWarn(ctx, db, findings)
 	for i, f := range findings {
 		if i > 0 {
 			fmt.Println(terminal.Gray(burpDivider))
@@ -656,7 +679,7 @@ func displayFindingsBurp(db *database.DB, ctx context.Context, findings []*datab
 // displayFindingsRaw shows findings with their associated HTTP records in raw format.
 func displayFindingsRaw(db *database.DB, ctx context.Context, findings []*database.Finding) error {
 	// Fetch every referenced record in one query instead of one per finding.
-	byUUID := batchLoadFindingRecords(ctx, db, findings)
+	byUUID := loadFindingRecordsOrWarn(ctx, db, findings)
 	for _, f := range findings {
 		fmt.Println("──────────────────────────────────────────────────────────────────")
 		fmt.Printf("Finding #%d - %s [%s] %s\n", f.ID, clicommon.ColorSeverity(f.Severity), f.ModuleName, f.ModuleShort)

@@ -36,7 +36,7 @@ func displayFindingsMarkdown(ctx context.Context, db *database.DB, findings []*d
 	compact := !jsonFullBody
 	// Resolve every linked record for the page in one query (not per finding),
 	// mirroring the --json path's findingViews.
-	byUUID := batchLoadFindingRecords(ctx, db, findings)
+	byUUID := loadFindingRecordsOrWarn(ctx, db, findings)
 	var buf strings.Builder
 	for i, f := range findings {
 		if i > 0 {

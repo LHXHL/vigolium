@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync"
@@ -31,7 +30,7 @@ func readStdinIfPiped() (string, bool) {
 	if !stdinIsPiped() {
 		return "", false
 	}
-	data, err := io.ReadAll(os.Stdin)
+	data, err := readStdin()
 	if err != nil || len(data) == 0 {
 		return "", false
 	}
@@ -134,7 +133,7 @@ type ResolvedInput struct {
 func resolveInputAndTarget(target, input string, repo *database.Repository) (*ResolvedInput, error) {
 	inputData := input
 	if inputData == "-" {
-		data, err := io.ReadAll(os.Stdin)
+		data, err := readStdin()
 		if err != nil {
 			return nil, fmt.Errorf("failed to read from stdin: %w", err)
 		}

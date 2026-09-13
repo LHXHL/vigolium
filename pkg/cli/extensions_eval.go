@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,7 +98,7 @@ func resolveEvalSource(args []string) (string, error) {
 
 	switch {
 	case evalStdin:
-		data, err := io.ReadAll(os.Stdin)
+		data, err := readStdin()
 		if err != nil {
 			return "", fmt.Errorf("failed to read stdin: %w", err)
 		}

@@ -173,7 +173,9 @@ func runKitSecretScan(cmd *cobra.Command, args []string) error {
 	}
 
 	if kitSecretFailOnMatch && report.Count > 0 {
-		os.Exit(ExitFuzzMatch)
+		// Returned, not os.Exit: the report above is already written, and the
+		// process boundary owns the exit so defers run and --soft-fail applies.
+		return asMatchErrorf("--fail-on-match: %d secret(s) matched", report.Count)
 	}
 	return nil
 }

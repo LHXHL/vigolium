@@ -60,7 +60,7 @@ func applyDeprecatedScanOnReceive(cmd *cobra.Command) {
 		return
 	}
 	globalScanOnReceive = true
-	if globalSilent || globalJSON || globalCIOutput {
+	if machineOutputMode() {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s %s on %s is deprecated and will be removed — use %s. "+

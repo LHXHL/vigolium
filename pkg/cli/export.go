@@ -341,7 +341,7 @@ func (r *exportRun) loadItems(ctx context.Context, db *database.DB) ([]any, erro
 	if r.itemsSet {
 		return r.items, nil
 	}
-	items, err := queryExportData(ctx, db, topExportOmitResponse, "")
+	items, err := queryExportData(ctx, db, topExportOmitResponse, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -692,9 +692,9 @@ func (r *exportRun) exportFS(ctx context.Context, outputPath string) ([]exported
 // projectUUID is non-empty, every DB-backed query is scoped to that project
 // (used by the per-scan `--format jsonl` export); empty means the whole DB
 // (the `vigolium export` and stateless temp-DB behavior).
-func queryExportData(ctx context.Context, db *database.DB, omitResponse bool, projectUUID string) ([]any, error) {
+func queryExportData(ctx context.Context, db *database.DB, omitResponse bool, projectUUID, scanUUID string) ([]any, error) {
 	var items []any
-	err := streamExportData(ctx, db, omitResponse, projectUUID, "", func(item any) error {
+	err := streamExportData(ctx, db, omitResponse, projectUUID, scanUUID, func(item any) error {
 		items = append(items, item)
 		return nil
 	})
@@ -937,7 +937,11 @@ func streamHTTPRecords(ctx context.Context, db *database.DB, omitResponse bool, 
 			continue
 		}
 		seen[r.URL] = struct{}{}
-		if err := emitItem("http_record", r); err != nil {
+		// WithHostFacts, not the bare record: this is the export of a run that may
+		// have resolved/probed the hosts it recorded, and those observations are
+		// output-only (see database.HostFacts). A process that probed nothing gets
+		// the bare record back unchanged.
+		if err := emitItem("http_record", database.WithHostFacts(r)); err != nil {
 			return err
 		}
 	}

@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,7 +133,7 @@ func resolveJsSource() (string, error) {
 		return "", fmt.Errorf("no input provided; use --code, --code-file, or pipe JS via stdin")
 	}
 
-	data, err := io.ReadAll(os.Stdin)
+	data, err := readStdin()
 	if err != nil {
 		return "", fmt.Errorf("failed to read stdin: %w", err)
 	}

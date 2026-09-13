@@ -34,6 +34,18 @@ func sList() string { return terminal.Orange(terminal.SymbolMenu) }
 func bInfo() string { return terminal.Blue(terminal.SymbolInfo) }
 func bList() string { return terminal.Blue(terminal.SymbolMenu) }
 
+// agentModeCatalog is the one list of agent modes, read by both the human table
+// and the -j discovery view so the two cannot disagree about what exists.
+func agentModeCatalog() []agentModeEntry {
+	return []agentModeEntry{
+		{"query", "Single-shot prompt - code review, endpoint & secret discovery (no scanning)"},
+		{"autopilot", "Autonomous AI-driven vulnerability scanning"},
+		{"swarm", "AI-guided vulnerability swarm; add --discover for full-scope scanning"},
+		{"olium", "Interactive TUI agent (olium engine)"},
+		{"audit", "Source-code security audit (audit / piolium drivers)"},
+	}
+}
+
 func runStrategy(_ *cobra.Command, _ []string) error {
 	settings, err := config.LoadSettings(globalConfig)
 	if err != nil {
@@ -42,6 +54,13 @@ func runStrategy(_ *cobra.Command, _ []string) error {
 
 	cfg := &settings.ScanningStrategy
 	defaultName := cfg.DefaultStrategy
+
+	// This command exists to tell a caller what --strategy/--only/--intensity
+	// accept, which is the first thing a driver needs and the last thing it can
+	// get from an ANSI table. See strategy_json.go.
+	if globalJSON {
+		return emitStrategyJSON(cfg)
+	}
 
 	// Show active scanning profile (native scan data → cyan)
 	activeProfile := terminal.Cyan("none")
@@ -155,22 +174,18 @@ func printScanIntensities() {
 	fmt.Printf("    %s\n\n", terminal.White("agent modes (autopilot/swarm/audit) and native scans push."))
 
 	tbl := terminal.NewTableWithMaxWidth(globalWidth, "INTENSITY", "NATIVE PROFILE", "AUTOPILOT", "SWARM", "AUDIT")
-	for _, in := range []agenttypes.Intensity{agenttypes.IntensityQuick, agenttypes.IntensityBalanced, agenttypes.IntensityDeep} {
-		ap := agenttypes.AutopilotPresets[in]
-		sw := agenttypes.SwarmPresets[in]
-		au := agenttypes.AuditDriverPresets[in]
-
-		label := string(in)
-		if in == agenttypes.IntensityBalanced {
+	for _, in := range scanIntensityCatalog() {
+		label := in.Name
+		if in.Default {
 			label += " *"
 		}
 
 		tbl.AddRow(
 			terminal.Green(label),
-			terminal.Cyan(agenttypes.NativeScanIntensityProfiles[in]),
-			fmt.Sprintf("%d cmd / %s", ap.MaxCommands, humanHours(ap.Timeout)),
-			swarmIntensityCell(sw),
-			strings.Join(au.Modes, "→"),
+			terminal.Cyan(in.NativeProfile),
+			fmt.Sprintf("%d cmd / %s", in.AutopilotMaxCommands, in.AutopilotTimeout),
+			swarmIntensityCell(in),
+			strings.Join(in.AuditModes, "→"),
 		)
 	}
 	tbl.Print()
@@ -183,12 +198,12 @@ func printScanIntensities() {
 
 // swarmIntensityCell summarizes a swarm preset: iteration count plus the flags
 // that flip on as intensity climbs (triage, then auth on deep).
-func swarmIntensityCell(p agenttypes.SwarmIntensityPreset) string {
-	s := fmt.Sprintf("%d iter", p.MaxIterations)
-	if p.Triage {
+func swarmIntensityCell(in intensityEntry) string {
+	s := fmt.Sprintf("%d iter", in.SwarmMaxIterations)
+	if in.SwarmTriage {
 		s += ", triage"
 	}
-	if p.Auth {
+	if in.SwarmAuth {
 		s += ", auth"
 	}
 	return s
@@ -200,18 +215,11 @@ func printAgentModes() {
 	fmt.Printf("  %s %s (%s)\n\n",
 		sInfo(), terminal.Green("Agent Modes"), terminal.White("vigolium agent <mode>"))
 
-	modes := []struct{ name, desc string }{
-		{"query", "Single-shot prompt — code review, endpoint & secret discovery (no scanning)"},
-		{"autopilot", "Autonomous AI-driven vulnerability scanning"},
-		{"swarm", "AI-guided vulnerability swarm; add --discover for full-scope scanning"},
-		{"olium", "Interactive TUI agent (olium engine)"},
-		{"audit", "Source-code security audit (audit / piolium drivers)"},
-	}
-	for _, m := range modes {
+	for _, m := range agentModeCatalog() {
 		fmt.Printf("  %s %s %s\n",
 			sList(),
-			terminal.Green(fmt.Sprintf("%-10s", m.name)),
-			terminal.White("— "+m.desc))
+			terminal.Green(fmt.Sprintf("%-10s", m.Name)),
+			terminal.White("- "+m.Description))
 	}
 	fmt.Printf("%s %s %s\n",
 		sInfo(),

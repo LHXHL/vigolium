@@ -104,6 +104,16 @@ func flattenMap(prefix string, m map[string]any, entries *[]ConfigEntry) {
 // credential-shaped suffix, contains "key" / "token" / "secret" anywhere, or
 // if the value interpolates an environment variable (e.g. "${API_KEY}").
 func isSensitiveEntry(key, value string) bool {
+	return IsSensitiveEntry(key, value)
+}
+
+// IsSensitiveEntry is the exported form, for a caller that holds one key and
+// value and must not flatten the whole settings struct to classify them.
+// `config set` did exactly that: FlattenSettings marshals and re-parses the
+// entire config (~350 entries, ~1.5 MB of garbage) to read one boolean. Sharing
+// this predicate is what keeps the write path's redaction identical to the read
+// path's rather than approximately so.
+func IsSensitiveEntry(key, value string) bool {
 	if isSensitiveKey(key) {
 		return true
 	}

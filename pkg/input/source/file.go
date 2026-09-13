@@ -37,6 +37,14 @@ type FileSource struct {
 	started  bool
 	closed   bool
 	parseErr error
+
+	// countOnce memoizes Count. Counting re-reads and re-parses the WHOLE file
+	// (HAR and Postman unmarshal the entire archive to do it), and Count is asked
+	// more than once per run — the pre-scan banner and progress reporting both
+	// call it. The file is an immutable input for the life of this source, so one
+	// parse is enough; the -T path memoizes its line count for the same reason.
+	countOnce  sync.Once
+	countValue int64
 }
 
 // FileSourceConfig configures FileSource behavior.
@@ -102,21 +110,66 @@ type formatEntry struct {
 	canonical string
 	aliases   []string
 	newParser func() formats.Format
+	// targetList marks the formats whose file IS a list of target URLs rather
+	// than a spec or a traffic export. Only these can be promoted into
+	// Options.Targets (see IsTargetListFormat) — the rest yield records whose
+	// URLs are not seeds a phase can crawl from. Kept as a column here rather
+	// than as a name list elsewhere so a new alias inherits the answer.
+	targetList bool
 }
 
 // formatRegistry lists every supported input format in display order.
 var formatRegistry = []formatEntry{
-	{"urls", []string{"url", "list"}, func() formats.Format { return urls.New() }},
-	{"nuclei", []string{"nuclei-output"}, func() formats.Format { return nuclei.New() }},
-	{"openapi", []string{"swagger"}, func() formats.Format { return openapi.New() }},
-	{"wsdl", []string{"soap", "svc"}, func() formats.Format { return wsdl.New() }},
-	{"postman", nil, func() formats.Format { return postman.New() }},
-	{"curl", nil, func() formats.Format { return curl.New() }},
-	{"burpraw", []string{"burp-raw", "raw"}, func() formats.Format { return burpraw.New() }},
-	{"burpxml", []string{"burp-xml", "burp", "burpstate"}, func() formats.Format { return burpxml.New() }},
-	{"burpscope", []string{"burp-scope", "burp-config", "burp-project-config"}, func() formats.Format { return burpscope.New() }},
-	{"har", []string{"http-archive"}, func() formats.Format { return har.New() }},
-	{"deparos", []string{"deparos-output"}, func() formats.Format { return deparos.New() }},
+	{"urls", []string{"url", "list"}, func() formats.Format { return urls.New() }, true},
+	{"nuclei", []string{"nuclei-output"}, func() formats.Format { return nuclei.New() }, false},
+	{"openapi", []string{"swagger"}, func() formats.Format { return openapi.New() }, false},
+	{"wsdl", []string{"soap", "svc"}, func() formats.Format { return wsdl.New() }, false},
+	{"postman", nil, func() formats.Format { return postman.New() }, false},
+	{"curl", nil, func() formats.Format { return curl.New() }, false},
+	{"burpraw", []string{"burp-raw", "raw"}, func() formats.Format { return burpraw.New() }, false},
+	{"burpxml", []string{"burp-xml", "burp", "burpstate"}, func() formats.Format { return burpxml.New() }, false},
+	{"burpscope", []string{"burp-scope", "burp-config", "burp-project-config"}, func() formats.Format { return burpscope.New() }, true},
+	{"har", []string{"http-archive"}, func() formats.Format { return har.New() }, false},
+	{"deparos", []string{"deparos-output"}, func() formats.Format { return deparos.New() }, false},
+}
+
+// IsTargetListFormat reports whether the given -I/--input-mode name or alias
+// names a format whose file is a list of target URLs. An empty name resolves to
+// the "urls" default, matching resolveFormat; an unknown name is not a target
+// list (resolveFormat rejects it separately).
+//
+// Callers use it to decide whether a file's contents can be promoted into
+// Options.Targets. It reads the same registry row resolveFormat does, so an
+// alias added there is promoted without a second edit — a hand-copied alias list
+// that missed one would parse the file fine and then leave every target-seeded
+// phase with nothing, which is the bug this predicate exists to prevent.
+func IsTargetListFormat(name string) bool {
+	e, ok := lookupFormat(name)
+	return ok && e.targetList
+}
+
+// lookupFormat resolves a format name or alias to its registry row. It is the
+// ONE place the registry's normalization rules live — an empty name defaulting
+// to "urls", case folding, alias scanning — so `resolveFormat` and
+// `IsTargetListFormat` cannot answer from subtly different rules. Two
+// hand-written copies of this loop is exactly the drift the `targetList` column
+// was added to prevent.
+func lookupFormat(name string) (formatEntry, bool) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		key = "urls"
+	}
+	for _, e := range formatRegistry {
+		if key == e.canonical {
+			return e, true
+		}
+		for _, a := range e.aliases {
+			if key == a {
+				return e, true
+			}
+		}
+	}
+	return formatEntry{}, false
 }
 
 // resolveFormat returns the parser for the given format name or alias. An empty
@@ -126,19 +179,8 @@ var formatRegistry = []formatEntry{
 // "postamn") would misparse the input as Nuclei JSONL and yield zero or partial
 // records with no error. Failing fast surfaces the mistake before any scan runs.
 func resolveFormat(name string) (formats.Format, error) {
-	key := strings.ToLower(strings.TrimSpace(name))
-	if key == "" {
-		key = "urls"
-	}
-	for _, e := range formatRegistry {
-		if key == e.canonical {
-			return e.newParser(), nil
-		}
-		for _, a := range e.aliases {
-			if key == a {
-				return e.newParser(), nil
-			}
-		}
+	if e, ok := lookupFormat(name); ok {
+		return e.newParser(), nil
 	}
 	return nil, fmt.Errorf("unknown input format %q; supported formats: %s (see 'vigolium scan --list-input-mode')", name, SupportedFormats())
 }
@@ -273,13 +315,17 @@ func (f *FileSource) Close() error {
 
 // Count returns the total item count if the underlying format supports counting.
 func (f *FileSource) Count() int64 {
-	if counter, ok := f.format.(formats.Counter); ok {
+	f.countOnce.Do(func() {
+		counter, ok := f.format.(formats.Counter)
+		if !ok {
+			return
+		}
 		count, err := counter.Count(f.filePath)
 		if err != nil {
 			zap.L().Debug("FileSource: Count failed", zap.String("file", f.filePath), zap.Error(err))
-			return 0
+			return
 		}
-		return count
-	}
-	return 0
+		f.countValue = count
+	})
+	return f.countValue
 }

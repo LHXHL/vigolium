@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -12,20 +11,27 @@ import (
 )
 
 var (
-	sessionLsHost string
+	sessionLsHost        string
+	sessionLsShowSecrets bool
 )
 
 var sessionLsCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List session authentication configs",
-	Long:    "Print every session authentication config stored for the active project. Each row shows hostname, session name, role (primary/compare), position, token preview, and extract rules. Filter to a single host with --host.",
-	RunE:    runSessionLs,
+	Long: "Print every session authentication config stored for the active project. Each row shows hostname, session name, " +
+		"role (primary/compare), position, a token fingerprint, and extract rules. Filter to a single host with --host.\n\n" +
+		"Session tokens, auth headers, and stored login requests/bodies are redacted by default: they are live credentials, " +
+		"and -j output is routinely piped into an agent transcript or a CI log. Pass --show-secrets to print them in plaintext.",
+	Args: cobra.NoArgs,
+	RunE: runSessionLs,
 }
 
 func init() {
 	authCmd.AddCommand(sessionLsCmd)
 	sessionLsCmd.Flags().StringVar(&sessionLsHost, "host", "", "Filter by hostname")
+	sessionLsCmd.Flags().BoolVar(&sessionLsShowSecrets, "show-secrets", false,
+		"Reveal session tokens, auth headers, and login request/body values in plaintext instead of [redacted]; prints a warning to stderr")
 }
 
 func runSessionLs(cmd *cobra.Command, args []string) error {
@@ -58,14 +64,20 @@ func runSessionLs(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to list session hostnames: %w", err)
 	}
 
+	// The warning goes to stderr in every mode, including -j: stdout is the
+	// caller's data channel, and the operator still needs to see that this
+	// invocation printed live credentials.
+	if sessionLsShowSecrets {
+		fmt.Fprintf(os.Stderr, "%s Revealing session tokens and login credentials in plaintext.\n", terminal.WarningSymbol())
+	}
+	views := newAuthSessionViews(rows, sessionLsShowSecrets)
+
 	if globalJSON {
-		output := map[string]interface{}{
-			"total":    len(rows),
-			"sessions": rows,
-		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(output)
+		env := newAgentEnvelope("auth list", "sessions", views, int64(len(views)), 0, len(views))
+		env.DBPath = resolvedReadDBPath()
+		env.WithProjectScope(projectUUID)
+		env.With("redacted", !sessionLsShowSecrets)
+		return writeAgentJSON(env)
 	}
 
 	if len(rows) == 0 {
@@ -85,16 +97,11 @@ func runSessionLs(cmd *cobra.Command, args []string) error {
 			role = terminal.Yellow(role)
 		}
 
-		token := sh.SessionToken
-		if token == "" {
-			token = "–"
-		} else if len(token) > 40 {
-			token = token[:37] + "..."
-		}
+		token := sessionTokenPreview(sh.SessionToken, sessionLsShowSecrets)
 
 		extractRules := sh.ExtractRules
 		if extractRules == "" {
-			extractRules = "–"
+			extractRules = "-"
 		} else if len(extractRules) > 60 {
 			extractRules = extractRules[:57] + "..."
 		}

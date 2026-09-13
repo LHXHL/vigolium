@@ -1,0 +1,76 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/spf13/cobra"
+	vighttp "github.com/vigolium/vigolium/pkg/http"
+	"github.com/vigolium/vigolium/pkg/terminal"
+	"github.com/vigolium/vigolium/pkg/types"
+)
+
+// applyProbeFlags validates --redirect-mode and records which of the flags a
+// probe-only run defaults were explicitly typed.
+//
+// It deliberately does NOT apply the probe phase's defaults. Those live in
+// runner.ApplyNativePhaseSelection, the one seam the CLI, the REST API and the
+// programmatic launcher all pass through, so a probe run behaves the same
+// whichever way it was started. All this layer owns is the flag surface:
+// rejecting a bad value with a usage error, and answering "did the operator
+// type it" — a question only cobra can answer.
+func applyProbeFlags(opts *types.Options, cmd *cobra.Command) error {
+	if err := validateRedirectMode(opts.RedirectMode); err != nil {
+		return err
+	}
+	opts.RecordRedirectChainSet = cmd.Flags().Changed("record-redirect-chain")
+	opts.NoWafPacingSet = cmd.Flags().Changed("no-waf-pacing")
+	return nil
+}
+
+// warnInertProbeFlags reports probe-phase flags the operator typed on a run that
+// will not execute the probe phase.
+//
+// Neither flag is silent about doing nothing today: --tls-probe is read only by
+// runProbePhase, and RecordRedirectChain reaches only the probe phase's
+// ExecutorConfig. The repo already settled this shape for the pace qualifiers —
+// a qualifier naming a skipped phase "warns loudly rather than failing, but it
+// must not be silent, since that is a cap the operator believes is in force and
+// is not". Same reasoning: an operator who typed --tls-probe believes they are
+// getting certificates.
+//
+// Called AFTER phase selection, which is what resolves ProbeEnabled.
+func warnInertProbeFlags(opts *types.Options, cmd *cobra.Command) {
+	if opts == nil || cmd == nil || opts.ProbeEnabled || opts.Silent {
+		return
+	}
+	for _, f := range []struct{ name, effect string }{
+		{"tls-probe", "no TLS handshake is performed"},
+		{"record-redirect-chain", "redirect hops are not recorded"},
+	} {
+		if flag := cmd.Flags().Lookup(f.name); flag != nil && flag.Changed {
+			fmt.Fprintf(os.Stderr, "%s %s only affects the %s phase, which this run does not include — %s. Add %s or use %s.\n",
+				terminal.WarnPrefix(),
+				terminal.BoldCyan("--"+f.name),
+				terminal.BoldCyan("probe"),
+				f.effect,
+				terminal.BoldCyan("--probe"),
+				terminal.BoldCyan("vigolium run probe"))
+		}
+	}
+}
+
+// validateRedirectMode rejects an unknown --redirect-mode up front. The
+// resolver falls back to "any" on an unrecognised value so a library caller
+// cannot accidentally get "follow nothing" — which is the right default there
+// and the wrong one here, where a typo must not silently change what the scan
+// follows.
+func validateRedirectMode(mode string) error {
+	mode = strings.TrimSpace(mode)
+	if mode == "" || vighttp.ValidRedirectMode(mode) {
+		return nil
+	}
+	return usageErrorf("invalid --redirect-mode value %q; valid modes: %s",
+		mode, strings.Join(vighttp.RedirectModes, ", "))
+}

@@ -34,6 +34,17 @@ func init() {
 	scopeCmd.AddCommand(scopeViewCmd)
 }
 
+// scopeEntry is one scope.* setting, in the shape a machine consumer reads.
+// `component` is split out because it is the axis the whole command is organized
+// around and deriving it from the key means every consumer reimplements the
+// same string split.
+type scopeEntry struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Component string `json:"component"`
+	Empty     bool   `json:"empty"`
+}
+
 func runScopeView(cmd *cobra.Command, args []string) error {
 	settings, err := config.LoadSettings(globalConfig)
 	if err != nil {
@@ -53,23 +64,41 @@ func runScopeView(cmd *cobra.Command, args []string) error {
 		filter = "scope." + strings.ToLower(args[0])
 	}
 
-	count := 0
+	matched := make([]scopeEntry, 0, len(entries))
 	for _, entry := range entries {
 		if !strings.HasPrefix(strings.ToLower(entry.Key), filter) {
 			continue
 		}
-
-		displayValue := entry.Value
-		if entry.Value == "" || entry.Value == "<nil>" {
-			displayValue = "(empty)"
-		}
-
-		colorFn := scopeComponentColor(entry.Key)
-		fmt.Printf("  %s = %s\n", colorFn(entry.Key), displayValue)
-		count++
+		matched = append(matched, scopeEntry{
+			Key:       entry.Key,
+			Value:     entry.Value,
+			Component: scopeComponentOf(entry.Key),
+			Empty:     entry.Value == "" || entry.Value == "<nil>",
+		})
 	}
 
-	if count == 0 {
+	// -j used to be accepted here and produce ANSI-colored prose on stdout with
+	// exit 0 — the worst combination available, because a consumer parsing it
+	// fails for a reason the exit code says nothing about. An empty result is an
+	// empty array, never a warning line.
+	if globalJSON {
+		env := newAgentEnvelope("scope view", "entries", matched, int64(len(matched)), 0, len(matched))
+		env.With("config_path", config.ContractPath(effectiveConfigPath()))
+		if len(args) > 0 {
+			env.With("component_filter", args[0])
+		}
+		return writeAgentJSON(env)
+	}
+
+	for _, e := range matched {
+		displayValue := e.Value
+		if e.Empty {
+			displayValue = "(empty)"
+		}
+		fmt.Printf("  %s = %s\n", scopeComponentColor(e.Key)(e.Key), displayValue)
+	}
+
+	if len(matched) == 0 {
 		if len(args) > 0 {
 			fmt.Printf("%s No scope keys matching %q\n", terminal.WarnPrefix(), args[0])
 		} else {
@@ -84,16 +113,19 @@ func runScopeView(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// scopeComponentOf extracts the component segment from a key like
+// "scope.host.include".
+func scopeComponentOf(key string) string {
+	parts := strings.SplitN(key, ".", 3)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return ""
+}
+
 // scopeComponentColor returns a color function based on the scope component name.
 func scopeComponentColor(key string) func(string) string {
-	// key is like "scope.host.include" — extract the component (second segment)
-	parts := strings.SplitN(key, ".", 3)
-	component := ""
-	if len(parts) >= 2 {
-		component = parts[1]
-	}
-
-	switch component {
+	switch scopeComponentOf(key) {
 	case "host":
 		return terminal.Cyan
 	case "path":

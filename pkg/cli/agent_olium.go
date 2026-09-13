@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -127,7 +126,7 @@ func runAgentOlium(cmd *cobra.Command, args []string) error {
 	// Positional args (with no -p) still seed an interactive session.
 	if prompt := strings.TrimSpace(oliumPrompt); prompt != "" {
 		if prompt == "-" {
-			raw, err := io.ReadAll(os.Stdin)
+			raw, err := readStdin()
 			if err != nil {
 				return fmt.Errorf("read stdin: %w", err)
 			}
@@ -151,7 +150,7 @@ func runAgentOlium(cmd *cobra.Command, args []string) error {
 	// Stdin is auto-detected when piped (not a tty).
 	initial := strings.TrimSpace(strings.Join(args, " "))
 	if initial == "" && (oliumStdin || isStdinPiped()) {
-		raw, err := io.ReadAll(os.Stdin)
+		raw, err := readStdin()
 		if err != nil {
 			return fmt.Errorf("read stdin: %w", err)
 		}

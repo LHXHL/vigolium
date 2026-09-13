@@ -22,9 +22,11 @@ const AgentSchemaVersion = 1
 
 // agentEnvelope is the single JSON shape every -j command emits.
 //
-// `items` is canonical. Each command ALSO writes its historical key pointing at
-// the same slice (see legacyKey) so existing parsers keep working for one minor
-// version; those aliases are to be removed, never added to.
+// `items` is canonical and is the only row array rendered by default. Each
+// command still DECLARES its historical key (see legacyKey), but that alias is
+// rendered only under --json-legacy-keys / $VIGOLIUM_JSON_LEGACY_KEYS — it
+// duplicates the rows on the wire, which is the single largest avoidable cost in
+// the read path. See json_legacy_keys.go.
 type agentEnvelope struct {
 	SchemaVersion int    `json:"schema_version"`
 	Command       string `json:"command"`
@@ -57,11 +59,12 @@ type agentEnvelope struct {
 	// extra carries command-specific fields. Marshaled by MarshalJSON into the
 	// same object.
 	extra map[string]any
-	// legacyKey is the pre-envelope name this command used for its row array. It
-	// is rendered by ALIASING the already-encoded `items` bytes rather than by
-	// holding a second reference to the slice — encoding the rows twice doubled
-	// every -j payload, which on a `traffic -j -n 10000` is tens of MB and a
-	// doubled token bill for a field that is deprecated on arrival.
+	// legacyKey is the pre-envelope name this command used for its row array
+	// ("records", "findings", …). Rendering it means encoding the rows a second
+	// time into the same object, which doubles every -j payload — on a
+	// `traffic -j -n 10000` that is tens of MB, and on any agent-driven read it is
+	// a doubled token bill for a field deprecated on arrival. So it is emitted
+	// only when jsonLegacyKeysEnabled() says a caller is still migrating.
 	legacyKey string
 }
 
@@ -88,6 +91,20 @@ func newAgentEnvelope(command, legacyKey string, items any, total int64, offset,
 	return env
 }
 
+// WithProjectScope records the project filter that was ACTUALLY applied.
+//
+// The envelope used to fill project_uuid from resolveProjectUUID() regardless of
+// the read mode, so a `-S` read — where scoping is off and the result spans
+// every project in the file — still named one project. A consumer reading that
+// field to confirm which engagement it was looking at was being told something
+// untrue, which is the opposite of the assertion the envelope exists to support.
+// project_scoped states whether a filter was applied at all, so "no project
+// filter" is explicit rather than inferred from an absent field.
+func (e *agentEnvelope) WithProjectScope(projectUUID string) *agentEnvelope {
+	e.ProjectUUID = projectUUID
+	return e.With("project_scoped", projectUUID != "")
+}
+
 // With attaches a command-specific field to the envelope.
 func (e *agentEnvelope) With(key string, value any) *agentEnvelope {
 	if e.extra == nil {
@@ -97,9 +114,21 @@ func (e *agentEnvelope) With(key string, value any) *agentEnvelope {
 	return e
 }
 
-// WithQuery attaches the follow-up command.
-func (e *agentEnvelope) WithQuery(q string) *agentEnvelope {
-	e.Query = q
+// WithQuery attaches the follow-up command, pinned to the read context.
+//
+// tail is the command and its own flags — WithQuery("finding", "--id", "5") —
+// and followUpQuery prepends the --db/--stateless/--project flags that make the
+// result reachable. It takes argv rather than a finished string on purpose: the
+// old string form let a caller hand-write "vigolium finding --id 5 --json",
+// which resolves that per-database autoincrement id in whatever store the next
+// process happens to open. Every call site had that bug, and three survived the
+// first sweep. With this signature they cannot.
+//
+// A read that cannot be reproduced (a --glob-db merge reads through a temporary
+// database) yields "", and the field is omitted rather than pointing somewhere
+// it does not lead.
+func (e *agentEnvelope) WithQuery(tail ...string) *agentEnvelope {
+	e.Query = followUpQuery(tail...)
 	return e
 }
 
@@ -127,7 +156,8 @@ func (e *agentEnvelope) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(e.extra) == 0 && e.legacyKey == "" {
+	renderLegacy := e.legacyKey != "" && jsonLegacyKeysEnabled()
+	if len(e.extra) == 0 && !renderLegacy {
 		return base, nil
 	}
 
@@ -143,9 +173,7 @@ func (e *agentEnvelope) MarshalJSON() ([]byte, error) {
 		out = append(out, raw...)
 	}
 
-	// The legacy alias reuses the bytes `items` already encoded to, so the rows
-	// are serialized once no matter how many names point at them.
-	if e.legacyKey != "" {
+	if renderLegacy {
 		itemsJSON, err := jsonMarshalNoEscape(e.Items)
 		if err != nil {
 			return nil, err

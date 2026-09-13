@@ -159,6 +159,65 @@ func TestWriteFSExport(t *testing.T) {
 	assert.Equal(t, "alpha.example/0001", tr[0])
 }
 
+// An identity selector has to narrow both halves of the tree. `db export --uuid
+// <rec> --format fs` used to write the one selected .req beside EVERY finding in
+// the store, producing a directory that reads as "the findings for this request"
+// and is not.
+func TestWriteFSExportUUIDBoundsFindings(t *testing.T) {
+	ctx := context.Background()
+	db := newExportTestDB(t)
+	repo := database.NewRepository(db)
+
+	for _, host := range []string{"alpha", "bravo"} {
+		_, err := db.NewInsert().Model(&database.HTTPRecord{
+			UUID:        "rec-" + host,
+			Scheme:      "https",
+			Hostname:    host + ".example",
+			Port:        443,
+			Method:      "GET",
+			Path:        "/" + host,
+			URL:         "https://" + host + ".example/" + host,
+			HTTPVersion: "HTTP/1.1",
+			RequestHash: "rhash-" + host,
+			StatusCode:  200,
+			HasResponse: true,
+			RawRequest:  []byte("GET /" + host + " HTTP/1.1\r\nHost: " + host + ".example\r\n\r\n"),
+			RawResponse: []byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nok"),
+		}).Exec(ctx)
+		require.NoError(t, err)
+
+		require.NoError(t, repo.SaveFindingDirect(ctx, &database.Finding{
+			HTTPRecordUUIDs: []string{"rec-" + host},
+			ModuleID:        "mod-" + host,
+			ModuleName:      "Module " + host,
+			ModuleType:      "active",
+			Severity:        "high",
+			Confidence:      "firm",
+			FindingHash:     "hash-" + host,
+			URL:             "https://" + host + ".example/" + host,
+			Hostname:        host + ".example",
+			Description:     "Finding on " + host,
+			MatchedAt:       []string{"https://" + host + ".example/" + host},
+		}))
+	}
+
+	base := filepath.Join(t.TempDir(), "out")
+	stats, err := writeFSExport(ctx, db,
+		database.QueryFilters{RecordUUIDs: []string{"rec-alpha"}}, base, fsExportOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Traffic, "only the selected record")
+	assert.Equal(t, 1, stats.Findings, "only the findings linked to the selected record")
+
+	var findings []map[string]any
+	readJSON(t, filepath.Join(base+"-findings", "index.json"), &findings)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "mod-alpha", findings[0]["module"])
+
+	// bravo's finding must not have been written anywhere in the tree.
+	_, err = os.Stat(filepath.Join(base+"-findings", "bravo.example"))
+	assert.True(t, os.IsNotExist(err), "an unlinked finding's host dir must not be created")
+}
+
 // TestWriteFSExportOmitResponse drops the .resp.* files but keeps .req + index.
 func TestWriteFSExportOmitResponse(t *testing.T) {
 	ctx := context.Background()

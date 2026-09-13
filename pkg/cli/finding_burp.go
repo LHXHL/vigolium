@@ -67,7 +67,7 @@ func pushFindingsToBurp(ctx context.Context, db *database.DB, findings []*databa
 	}
 	destination := strings.Join(destinations, " + ")
 
-	byUUID := batchLoadFindingRecords(ctx, db, findings)
+	byUUID := loadFindingRecordsOrWarn(ctx, db, findings)
 	pushed, skipped, failed := 0, 0, 0
 	for _, f := range findings {
 		req, resp, url := findingPushEvidence(f, byUUID)

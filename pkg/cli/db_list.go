@@ -54,6 +54,7 @@ var (
 	listColumns []string
 
 	// Filter flags
+	listUUIDs    []string
 	listHost     string
 	listMethods  []string
 	listStatus   []int
@@ -66,8 +67,9 @@ var (
 	listBody     string
 
 	// Risk filtering flags
-	listMinRisk int
-	listRemark  string
+	listMinRisk    int
+	listMinSurface int
+	listRemark     string
 
 	// Finding type filtering flags
 	listModuleType    string
@@ -108,6 +110,8 @@ func registerListFlags(cmd *cobra.Command) {
 	registerAgentJSONFlags(cmd.Flags())
 
 	// Filter flags
+	cmd.Flags().StringSliceVar(&listUUIDs, "uuid", nil,
+		"Select exact stored record(s) by UUID (repeatable/comma-separated). Applied before pagination")
 	cmd.Flags().StringVar(&listHost, "host", "", "Filter records by hostname pattern (wildcard supported)")
 	cmd.Flags().StringSliceVar(&listMethods, "method", nil, "Filter records by HTTP method (can be specified multiple times)")
 	cmd.Flags().IntSliceVar(&listStatus, "status", nil, "Filter records by HTTP status code (can be specified multiple times)")
@@ -115,6 +119,7 @@ func registerListFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&listScanUUID, "scan-uuid", "", "Filter records by scan UUID")
 	cmd.Flags().StringVar(&listSeverity, "severity", "", "Filter findings by severity: critical,high,medium,low,suspect,info (comma-separated; single-letter shorthands ok, e.g. 'h,c')")
 	cmd.Flags().IntVar(&listMinRisk, "min-risk", 0, "Show only records with risk score at or above this value")
+	cmd.Flags().IntVar(&listMinSurface, "min-surface", 0, "Show only records with attack-surface score at or above this value (0-100, 10 per signal)")
 	cmd.Flags().StringVar(&listRemark, "remark", "", "Filter records containing this text in remarks")
 	cmd.Flags().StringVar(&listModuleType, "module-type", "", "Filter findings by module type (active, passive, nuclei, agent, source-tools, oast, extension)")
 	cmd.Flags().StringVar(&listFindingSource, "finding-source", "", "Filter findings by source (dynamic-assessment, spa, agent, oast, source-tools, extension)")
@@ -129,7 +134,7 @@ func registerListFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&listBody, "body", "", "Search within request or response body content")
 
 	// Sorting flags
-	cmd.Flags().StringVar(&listSort, "sort", "created_at", "Sort results by field: uuid, created_at, sent_at, method, status_code, response_time")
+	cmd.Flags().StringVar(&listSort, "sort", "created_at", "Sort results by field: uuid, created_at, sent_at, method, status_code, response_time, risk_score, surface_score")
 	cmd.Flags().BoolVar(&listAsc, "asc", false, "Sort in ascending order instead of descending")
 
 	addFlagAliases(cmd, timeFilterAliases)
@@ -159,6 +164,22 @@ func runDBList(cmd *cobra.Command, args []string) error {
 		return runListColumns(context.Background(), db, tableName)
 	}
 
+	// Validate --fields against the view this table will actually render. The
+	// scans and generic-table paths emit raw rows whose vocabulary is the table's
+	// own column set rather than a curated view, so each validates against that
+	// set at its own call site (runListScans via projectTypedViews,
+	// runListGenericTable against the headers it already has in hand).
+	switch tableName {
+	case "http_records":
+		if err := validateAgentViewFlags(agentViewOptionsFromFlags(), trafficViewFields); err != nil {
+			return err
+		}
+	case "findings":
+		if err := validateAgentViewFlags(agentViewOptionsFromFlags(), findingViewFields); err != nil {
+			return err
+		}
+	}
+
 	return runWithWatch(func() error {
 		ctx := context.Background()
 
@@ -183,6 +204,16 @@ func runListTables(ctx context.Context, db *database.DB) error {
 		return fmt.Errorf("failed to list tables: %w", err)
 	}
 
+	// Schema discovery is the one surface an agent reaches for BEFORE it knows
+	// anything about the store, so it emitting ANSI-colored text on stdout under
+	// -j was the worst possible exception to the machine contract.
+	if globalJSON {
+		env := newAgentEnvelope("db ls --list-tables", "rows", tables, int64(len(tables)), 0, len(tables))
+		env.DBPath = resolvedReadDBPath()
+		env.WithQuery("db", "ls", "<table>", "--json")
+		return writeAgentJSON(env)
+	}
+
 	if len(tables) == 0 {
 		fmt.Printf("%s No tables found\n", terminal.WarnPrefix())
 		return nil
@@ -199,6 +230,13 @@ func runListColumns(ctx context.Context, db *database.DB, tableName string) erro
 	columns, err := database.ListColumns(ctx, db, tableName)
 	if err != nil {
 		return fmt.Errorf("failed to list columns for %q: %w", tableName, err)
+	}
+
+	if globalJSON {
+		env := newAgentEnvelope("db ls --list-columns", "rows", columns, int64(len(columns)), 0, len(columns))
+		env.DBPath = resolvedReadDBPath()
+		env.With("table", tableName)
+		return writeAgentJSON(env)
 	}
 
 	if len(columns) == 0 {
@@ -228,29 +266,31 @@ func runListHTTPRecords(ctx context.Context, db *database.DB) error {
 		severities = parseSeverityList(listSeverity)
 	}
 
-	projectUUID, err := resolveProjectUUID()
+	projectUUID, err := effectiveProjectUUID()
 	if err != nil {
 		return err
 	}
 
 	filters := database.QueryFilters{
-		ProjectUUID:  projectUUID,
-		HostPattern:  listHost,
-		Methods:      listMethods,
-		StatusCodes:  listStatus,
-		PathPattern:  listPath,
-		Severity:     severities,
-		MinRiskScore: listMinRisk,
-		Remark:       listRemark,
-		DateFrom:     dateFrom,
-		DateTo:       dateTo,
-		SearchTerm:   dbSearch,
-		HeaderSearch: listHeader,
-		BodySearch:   listBody,
-		Limit:        listLimit,
-		Offset:       listOffset,
-		SortBy:       listSort,
-		SortAsc:      listAsc,
+		ProjectUUID:     projectUUID,
+		RecordUUIDs:     listUUIDs,
+		HostPattern:     listHost,
+		Methods:         listMethods,
+		StatusCodes:     listStatus,
+		PathPattern:     listPath,
+		Severity:        severities,
+		MinRiskScore:    listMinRisk,
+		MinSurfaceScore: listMinSurface,
+		Remark:          listRemark,
+		DateFrom:        dateFrom,
+		DateTo:          dateTo,
+		SearchTerm:      dbSearch,
+		HeaderSearch:    listHeader,
+		BodySearch:      listBody,
+		Limit:           listLimit,
+		Offset:          listOffset,
+		SortBy:          listSort,
+		SortAsc:         listAsc,
 	}
 
 	qb := database.NewQueryBuilder(db, filters)
@@ -288,7 +328,7 @@ func runListFindings(ctx context.Context, db *database.DB) error {
 		severities = parseSeverityList(listSeverity)
 	}
 
-	projectUUID, err := resolveProjectUUID()
+	projectUUID, err := effectiveProjectUUID()
 	if err != nil {
 		return err
 	}
@@ -328,9 +368,9 @@ func runListFindings(ctx context.Context, db *database.DB) error {
 	if globalJSON {
 		env := newAgentEnvelope("db ls", "findings",
 			findingViews(ctx, db, findings, agentViewOptionsFromFlags(), false), total, listOffset, listLimit)
-		env.ProjectUUID = projectUUID
+		env.WithProjectScope(projectUUID)
 		env.DBPath = resolvedReadDBPath()
-		env.WithQuery("vigolium finding --json --with-records --min-severity medium")
+		env.WithQuery("finding", "--json", "--with-records", "--min-severity", "medium")
 		return writeAgentJSON(env)
 	}
 
@@ -398,7 +438,7 @@ func runListFindings(ctx context.Context, db *database.DB) error {
 // runListScans handles the scans table listing with a compact summary view.
 func runListScans(ctx context.Context, db *database.DB) error {
 	repo := database.NewRepository(db)
-	projectUUID, err := resolveProjectUUID()
+	projectUUID, err := effectiveProjectUUID()
 	if err != nil {
 		return err
 	}
@@ -410,7 +450,15 @@ func runListScans(ctx context.Context, db *database.DB) error {
 	views := buildScanViews(scans)
 
 	if globalJSON {
-		env := newAgentEnvelope("db ls", "scans", views, total, listOffset, listLimit)
+		// The scans path used to hand its typed views straight to the envelope,
+		// so --fields was accepted and then ignored: `--fields uuid` returned all
+		// 39 keys, byte-identical to no projection. A flag that parses and does
+		// nothing is worse than one that does not exist.
+		rows, err := projectTypedViews(views, normalizeFieldList(jsonFields))
+		if err != nil {
+			return err
+		}
+		env := newAgentEnvelope("db ls", "scans", rows, total, listOffset, listLimit)
 		env.DBPath = resolvedReadDBPath()
 		return writeAgentJSON(env)
 	}
@@ -563,7 +611,18 @@ func runListGenericTable(ctx context.Context, db *database.DB, tableName string)
 	}
 
 	if globalJSON {
-		env := newAgentEnvelope("db ls", "rows", rows, total, listOffset, listLimit)
+		// This path used to accept --fields and ignore it, which is the same
+		// "parses and does nothing" defect the scans path was just fixed for.
+		// The vocabulary here is the table's own column set, already in hand.
+		fields := normalizeFieldList(jsonFields)
+		if err := validateFieldSelection(fields, headers); err != nil {
+			return err
+		}
+		projected := make([]map[string]any, 0, len(rows))
+		for _, r := range rows {
+			projected = append(projected, projectFields(r, fields))
+		}
+		env := newAgentEnvelope("db ls", "rows", projected, total, listOffset, listLimit)
 		env.DBPath = resolvedReadDBPath()
 		env.With("table", tableName).With("columns", headers)
 		return writeAgentJSON(env)
@@ -616,18 +675,23 @@ func runListGenericTable(ctx context.Context, db *database.DB, tableName string)
 }
 
 func displayJSON(records []*database.HTTPRecord, total int64, offset, limit int) error {
-	projectUUID, err := resolveProjectUUID()
+	// effectiveProjectUUID, not resolveProjectUUID: under -S scoping is off and
+	// the rows span every project, so naming one here was a false claim.
+	projectUUID, err := effectiveProjectUUID()
 	if err != nil {
 		return err
 	}
 	env := newAgentEnvelope("traffic", "records",
 		recordViews(records, agentViewOptionsFromFlags()), total, offset, limit)
-	env.ProjectUUID = projectUUID
+	env.WithProjectScope(projectUUID)
 	env.DBPath = resolvedReadDBPath()
-	// The obvious next step from a traffic row is to re-send it, so hand back the
-	// command that does. See agentEnvelope.Query.
+	// The hint from a READ is another read. It used to be `replay -u <uuid>`,
+	// which re-sends the request to the target: a follow-up that a caller may be
+	// running unattended, out of scope, or under a read-only remit must never be
+	// one that puts traffic on the wire. Inspecting the record whole is the
+	// actual next step, and --uuid now exists to express it.
 	if len(records) > 0 {
-		env.WithQuery(fmt.Sprintf("vigolium replay -u %s", records[0].UUID))
+		env.WithQuery("traffic", "--uuid", records[0].UUID, "--json", "--full-body")
 	}
 	return writeAgentJSON(env)
 }
@@ -785,7 +849,7 @@ func groupTreeRecords(records []*database.HTTPRecord, key func(*database.HTTPRec
 }
 
 // treeRecordSuffix renders the response summary shown after a request line in
-// the tree (status, timing/size, content-type, title, risk score).
+// the tree (status, timing/size, content-type, title, redirect target, scores).
 func treeRecordSuffix(rec *database.HTTPRecord) string {
 	if !rec.HasResponse {
 		return ""
@@ -811,8 +875,19 @@ func treeRecordSuffix(rec *database.HTTPRecord) string {
 		suffix += " " + terminal.Cyan(fmt.Sprintf("%q", clicommon.Truncate(rec.ResponseTitle, 40)))
 	}
 
+	// Where a 3xx actually points. Without it every redirect in the tree renders
+	// as an identical bodyless line and the one fact that distinguishes them —
+	// the destination — is the one the reader has to re-query for.
+	if loc := redirectLocation(rec); loc != "" {
+		suffix += " " + terminal.BoldMagenta("↪") + " " + terminal.Blue(loc)
+	}
+
 	if rec.RiskScore > 0 {
 		suffix += " " + terminal.BoldYellow(fmt.Sprintf("[risk_score:%d]", rec.RiskScore))
+	}
+
+	if rec.SurfaceScore > 0 {
+		suffix += " " + terminal.BoldCyan(fmt.Sprintf("[surface:%d]", rec.SurfaceScore))
 	}
 
 	return suffix
@@ -824,7 +899,7 @@ func displayTable(records []*database.HTTPRecord, total int64, offset, _ int) er
 		min(offset+len(records), int(total)),
 		total)
 
-	tbl := terminal.NewTableWithMaxWidth(globalWidth, "HOST", "METHOD", "PATH", "STATUS", "TIME", "SIZE", "WORDS", "CONTENT_TYPE", "TITLE", "RISK")
+	tbl := terminal.NewTableWithMaxWidth(globalWidth, "HOST", "METHOD", "PATH", "STATUS", "TIME", "SIZE", "WORDS", "CONTENT_TYPE", "TITLE", "RISK", "SURFACE")
 
 	for _, rec := range records {
 		host := fmt.Sprintf("%s://%s:%d", rec.Scheme, rec.Hostname, rec.Port)
@@ -846,6 +921,11 @@ func displayTable(records []*database.HTTPRecord, total int64, offset, _ int) er
 			risk = fmt.Sprintf("%d", rec.RiskScore)
 		}
 
+		surface := ""
+		if rec.SurfaceScore > 0 {
+			surface = fmt.Sprintf("%d", rec.SurfaceScore)
+		}
+
 		tbl.AddRow(
 			clicommon.Truncate(host, 30),
 			rec.Method,
@@ -857,6 +937,7 @@ func displayTable(records []*database.HTTPRecord, total int64, offset, _ int) er
 			clicommon.Truncate(rec.ResponseContentType, 25),
 			clicommon.Truncate(rec.ResponseTitle, 30),
 			risk,
+			surface,
 		)
 	}
 

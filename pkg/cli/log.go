@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -139,8 +138,6 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
 		out := make([]map[string]interface{}, 0, len(rows))
 		for _, r := range rows {
 			out = append(out, map[string]interface{}{
@@ -154,7 +151,15 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 				"has_log":    r.hasLog,
 			})
 		}
-		return enc.Encode(out)
+		// This used to emit a BARE ARRAY, the one -j surface that broke the
+		// "parse .items" rule the envelope exists to establish. A contract with a
+		// documented hole is one every consumer special-cases forever.
+		env := newAgentEnvelope("log ls", "rows", out, int64(len(out)), 0, len(out))
+		env.DBPath = resolvedReadDBPath()
+		if len(out) > 0 {
+			env.WithQuery("log", rows[0].uuid)
+		}
+		return writeAgentJSON(env)
 	}
 
 	if len(rows) == 0 {

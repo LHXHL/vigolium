@@ -6,6 +6,8 @@
 package clicommon
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
 	"github.com/vigolium/vigolium/internal/config"
@@ -20,6 +22,12 @@ var dbConn *database.DB
 // configPath is the --config path (may be empty) and dbPath is the --db SQLite
 // override (may be empty). When the database is not explicitly enabled it
 // defaults to SQLite at the standard location.
+// ReadOnlyRequested is set by the CLI before the first GetDB call when the
+// command must not modify its source (--read-only). It is a package var rather
+// than a GetDB parameter because GetDB is called from ~30 sites that would all
+// have to thread a value none of them decides.
+var ReadOnlyRequested bool
+
 func GetDB(configPath, dbPath string) (*database.DB, error) {
 	if dbConn != nil {
 		return dbConn, nil
@@ -44,9 +52,40 @@ func GetDB(configPath, dbPath string) (*database.DB, error) {
 		settings.Database.SQLite.Path = dbPath
 	}
 
+	// Only meaningful for SQLite; Postgres read-only is a server-side grant.
+	if ReadOnlyRequested && settings.Database.Driver == "sqlite" {
+		settings.Database.SQLite.ReadOnly = true
+	}
+
 	db, err := database.NewDB(&settings.Database)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	// Bring the schema up to date on EVERY open, not only on the write commands
+	// that used to call CreateSchema themselves.
+	//
+	// Without this, a database written by an older vigolium fails its first read
+	// with a raw `no such column: r.surface_score` — the read commands
+	// (traffic/finding/db ls/export) never migrated, so any column added since
+	// that file was last written simply was not there. Opening is exactly when a
+	// store should be made current, and the read path is the one most likely to
+	// meet an old file.
+	//
+	// EnsureSchemaCurrent, not CreateSchema: it checks for staleness with
+	// READ-only queries and issues DDL only when something is actually missing.
+	// CreateSchema unconditionally would take SQLite's write lock on every open,
+	// making any read command queue behind a concurrent scan for up to
+	// busy_timeout (measured: 22s for a `traffic` listing).
+	if schemaErr := db.EnsureSchemaCurrent(context.Background()); schemaErr != nil {
+		// An outdated schema on a read-only handle is fatal: it cannot be
+		// migrated, and every query that follows would fail on a missing column
+		// with an error that names no remedy. Any other migration failure is
+		// best-effort — the schema may already be usable — so it only warns.
+		if errors.Is(schemaErr, database.ErrSchemaOutdated) {
+			return nil, schemaErr
+		}
+		zap.L().Warn("Failed to bring database schema up to date", zap.Error(schemaErr))
 	}
 
 	dbConn = db
@@ -72,6 +111,10 @@ var openedDBPath string
 // before any open. For a non-SQLite driver it returns the driver name, since
 // there is no single file to name.
 func OpenedDBPath() string { return openedDBPath }
+
+// SetOpenedDBPath overrides the recorded path. For tests that exercise what is
+// reported about a read without opening a database to produce it.
+func SetOpenedDBPath(path string) { openedDBPath = path }
 
 // CloseDatabaseOnExit closes the cached connection if open. Safe to defer.
 func CloseDatabaseOnExit() {

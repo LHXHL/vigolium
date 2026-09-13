@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
 // This file builds the compact, token-aware JSON views emitted by the read/query
@@ -41,17 +44,31 @@ const (
 // command runs per invocation, so sharing the backing vars is safe (mirrors the
 // existing listHost/findingHost pattern).
 var (
-	jsonFields   []string // --fields: project to these lowercase JSON keys
-	jsonCompact  bool     // --compact: metadata only, drop request/response bodies
-	jsonFullBody bool     // --full-body: include complete bodies (no truncation/stubbing)
+	jsonFields      []string // --fields: project to these lowercase JSON keys
+	jsonCompact     bool     // --compact: metadata only, drop request/response bodies
+	jsonFullBody    bool     // --full-body: include complete bodies (no truncation/stubbing)
+	jsonRecordField []string // --record-fields: projection for NESTED --with-records rows
+	jsonRecordLimit int      // --record-limit: cap embedded records per finding
 )
+
+// defaultRecordLimit bounds how many linked HTTP records one finding embeds
+// under --with-records. Unbounded, a single finding can carry hundreds (422 was
+// observed in the wild), which is a triage bundle nobody asked for.
+const defaultRecordLimit = 20
 
 // registerAgentJSONFlags adds the shared --fields / --compact / --full-body flags
 // to a command's local flag set.
 func registerAgentJSONFlags(flags *pflag.FlagSet) {
-	flags.StringSliceVar(&jsonFields, "fields", nil, "Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url)")
+	flags.StringSliceVar(&jsonFields, "fields", nil, "Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop")
 	flags.BoolVar(&jsonCompact, "compact", false, "With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole")
 	flags.BoolVar(&jsonFullBody, "full-body", false, "Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown")
+}
+
+// registerAgentRecordFlags adds the nested-record controls. Only `finding` embeds
+// records, so only it registers these.
+func registerAgentRecordFlags(flags *pflag.FlagSet) {
+	flags.StringSliceVar(&jsonRecordField, "record-fields", nil, "With --with-records: restrict each embedded HTTP record to these keys (independent of --fields)")
+	flags.IntVar(&jsonRecordLimit, "record-limit", defaultRecordLimit, "With --with-records: max HTTP records embedded per finding (0 = no cap)")
 }
 
 // agentViewOptions controls how compactRecordView / compactFindingView render.
@@ -59,15 +76,32 @@ type agentViewOptions struct {
 	fullBody bool     // include complete bodies (no truncation / binary stubbing)
 	noBodies bool     // omit request/response bodies entirely (metadata only)
 	fields   []string // top-level key projection (lowercase json keys); empty = all
+	// recordFields projects the NESTED records of --with-records. It is separate
+	// from fields because the two describe different entities: a finding-level
+	// allowlist applied to a record row would prune it to nothing.
+	recordFields []string
+	recordLimit  int // max embedded records per finding; 0 = no cap
 }
 
 // agentViewOptionsFromFlags reads the shared flags into an options struct.
 func agentViewOptionsFromFlags() agentViewOptions {
 	return agentViewOptions{
-		fullBody: jsonFullBody,
-		noBodies: jsonCompact,
-		fields:   normalizeFieldList(jsonFields),
+		fullBody:     jsonFullBody,
+		noBodies:     jsonCompact,
+		fields:       normalizeFieldList(jsonFields),
+		recordFields: normalizeFieldList(jsonRecordField),
+		recordLimit:  jsonRecordLimit,
 	}
+}
+
+// validateAgentViewFlags checks the projection names against the view that will
+// render them, before any query runs.
+func validateAgentViewFlags(opts agentViewOptions, supported []string) error {
+	if err := validateFieldSelection(opts.fields, supported); err != nil {
+		return err
+	}
+	// --record-fields always describes an HTTP record, whichever command carries it.
+	return validateFieldSelection(opts.recordFields, trafficViewFields)
 }
 
 func normalizeFieldList(in []string) []string {
@@ -85,10 +119,35 @@ func normalizeFieldList(in []string) []string {
 // becoming < noise.
 func writeAgentJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
+	// In stream mode each document must occupy exactly one line, which is what
+	// makes a repeated read readable with a line-oriented consumer. Indented
+	// output would emit a multi-line object per iteration and the "stream" would
+	// only be splittable by a full JSON parser.
+	if !jsonStreamMode {
+		enc.SetIndent("", "  ")
+	}
 	enc.SetEscapeHTML(false)
-	return enc.Encode(v)
+	err := enc.Encode(v)
+	jsonResultEmitted = true
+	return err
 }
+
+// jsonStreamMode switches -j output from one indented document to NDJSON: one
+// compact document per line. Set only by a repeated read (--watch), where a
+// single document is not the shape of the answer.
+var jsonStreamMode bool
+
+// jsonResultEmitted records that a command has already written its JSON result
+// document to stdout.
+//
+// It exists to keep the --json contract at exactly one document per invocation.
+// The error path in Execute appends a structured error object on any non-nil
+// error, which is right when the command produced nothing — but a --fail-on-match
+// hit, a --fail-on severity gate, and any failure after a partial write all
+// arrive with a complete result already on stdout, and a second top-level object
+// there turns a parseable document into a stream that json.Unmarshal rejects.
+// The exit code still carries the outcome.
+var jsonResultEmitted bool
 
 // splitHeadersBody splits a raw HTTP message into the header block (request/
 // status line + headers) and the body, on the first blank line.
@@ -102,23 +161,108 @@ func splitHeadersBody(raw []byte) (headers string, body []byte) {
 	return string(raw), nil
 }
 
-// maybeGunzip transparently decompresses a gzip-encoded body so previews are
-// readable text instead of a binary blob. Falls back to the original bytes on
-// any error.
-func maybeGunzip(body []byte) []byte {
+// decodeResult describes what came out of gunzipBounded. The distinction it
+// carries is the whole point: `Bytes` is what the caller may show, `FullSize`
+// and `FullSHA256` describe the body that actually exists. Reporting the capped
+// length as the body's size made a partial body indistinguishable from a
+// complete one, and hashing only the retained prefix produced a `body_sha256`
+// that could not be used as the dedupe key it is documented to be.
+type decodeResult struct {
+	Bytes      []byte // decoded bytes, capped at agentGunzipCap
+	FullSize   int    // size of the COMPLETE decoded body (see SizeIsFloor)
+	FullSHA256 string // sha256 over the complete decoded body ("" when unmeasured)
+	Capped     bool   // the decoder stopped at agentGunzipCap; Bytes is a prefix
+	// SizeIsFloor marks FullSize as a lower bound rather than the exact size:
+	// the measuring pass gave up at agentMeasureCap. Reported as
+	// body_size_at_least so a floor is never mistaken for a measurement.
+	SizeIsFloor bool
+}
+
+// agentMeasureCap bounds the measuring pass. DEFLATE reaches ~1032:1, so
+// draining "the rest of the stream" is attacker-controlled work: a 508 KiB
+// stored body expands to 512 MiB and turned a sub-millisecond decode into
+// ~325ms, per response, on bodies that come from the scanned target. 64 MiB
+// keeps the worst case in the tens of milliseconds and is far above any real
+// response, and exceeding it downgrades the answer to a floor rather than
+// spending unbounded CPU to refine it.
+const agentMeasureCap = 64 << 20
+
+// gunzipBounded decompresses a gzip body while holding at most agentGunzipCap
+// bytes in memory.
+//
+// measure asks for the true size and digest of the WHOLE stream, which requires
+// decompressing past the cap; the remainder is drained through a hash and
+// discarded, so the answer costs CPU but not memory. Without that drain the
+// decoder cannot tell a stream that ENDED at the cap from one that was CUT
+// there — io.LimitReader returns io.EOF for both — which is why an oversized
+// body used to come back looking complete.
+//
+// Only bodyView needs the measurement. Text-only callers pass false and pay
+// nothing for fields they would discard.
+func gunzipBounded(body []byte, measure bool) decodeResult {
+	stored := decodeResult{Bytes: body, FullSize: len(body)}
 	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
-		return body
+		return stored
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
-		return body
+		return stored
 	}
 	defer func() { _ = zr.Close() }()
+
 	out, err := io.ReadAll(io.LimitReader(zr, agentGunzipCap))
 	if err != nil || len(out) == 0 {
-		return body
+		// Undecodable or empty: fall back to the stored bytes exactly as before.
+		return stored
 	}
-	return out
+
+	res := decodeResult{Bytes: out, FullSize: len(out)}
+	if len(out) < agentGunzipCap {
+		// The stream ended inside the cap, so what we hold IS the whole body.
+		return res
+	}
+
+	// Exactly at the cap: the stream may or may not continue. One byte settles
+	// it, and that is all a non-measuring caller needs to know.
+	var probe [1]byte
+	n, _ := io.ReadFull(zr, probe[:])
+	if n == 0 {
+		return res
+	}
+	res.Capped = true
+	if !measure {
+		// FullSize would be a floor we are not reporting; leave it at the prefix
+		// length and let Capped carry the meaning.
+		return res
+	}
+
+	h := sha256.New()
+	h.Write(out)
+	h.Write(probe[:n])
+	total := int64(len(out) + n)
+	drained, derr := io.Copy(h, io.LimitReader(zr, agentMeasureCap))
+	total += drained
+	res.FullSize = int(total)
+	switch {
+	case derr != nil:
+		// A mid-stream failure means the total describes only what was readable.
+		res.SizeIsFloor = true
+	case drained == agentMeasureCap:
+		// Hit the measuring bound: more may remain, so the size is a floor and a
+		// digest over a prefix would be worse than none.
+		res.SizeIsFloor = true
+	default:
+		res.FullSHA256 = hex.EncodeToString(h.Sum(nil))
+	}
+	return res
+}
+
+// maybeGunzip transparently decompresses a gzip-encoded body so previews are
+// readable text instead of a binary blob. Falls back to the original bytes on
+// any error. Text-only callers (evidence snippets, Markdown rendering) use this;
+// bodyView calls gunzipBounded directly because it must report completeness.
+func maybeGunzip(body []byte) []byte {
+	return gunzipBounded(body, false).Bytes
 }
 
 // decodedResponseText returns a raw HTTP response with its body gzip-decoded so
@@ -182,15 +326,43 @@ func bodyView(raw []byte, contentType string, max int, opts agentViewOptions) ma
 	if len(body) == 0 {
 		return v
 	}
-	body = maybeGunzip(body)
-	v["body_size"] = len(body)
+
+	dec := gunzipBounded(body, true)
+	body = dec.Bytes
+	// The size of the body that EXISTS, not of the slice we kept — those differ
+	// whenever the gzip decoder capped, and reporting the latter is what let a
+	// 2.5 MB response present as a complete 1 MiB one. When the measuring pass
+	// hit its own bound the number is a floor, and is named as one.
+	if dec.SizeIsFloor {
+		v["body_size_at_least"] = dec.FullSize
+	} else {
+		v["body_size"] = dec.FullSize
+	}
+
 	// Only fingerprint the body when the caller can't see the full bytes
-	// (stubbed or truncated) — that's when an agent needs the hash to dedupe or
-	// decide to re-fetch. Hashing a fully-inlined body would just burn cycles
-	// over (potentially MBs of) bytes the caller already has.
+	// (stubbed, truncated, or decoder-capped) — that's when an agent needs the
+	// hash to dedupe or decide to re-fetch. Hashing a fully-inlined body would
+	// just burn cycles over bytes the caller already has.
 	addHash := func() {
-		sum := sha256.Sum256(body)
-		v["body_sha256"] = hex.EncodeToString(sum[:])
+		switch {
+		case dec.FullSHA256 != "":
+			// Covers the whole decompressed stream, including the part past the
+			// cap that was drained rather than retained.
+			v["body_sha256"] = dec.FullSHA256
+		case !dec.Capped:
+			sum := sha256.Sum256(body)
+			v["body_sha256"] = hex.EncodeToString(sum[:])
+		}
+		// Capped with no measured digest: a hash of the prefix would be a
+		// fingerprint of something the caller never asked about. Emit nothing.
+	}
+
+	// A decoder cap is not a display choice: --full-body cannot lift it, so it is
+	// reported separately from body_truncated and names the escape hatch.
+	if dec.Capped {
+		v["decoder_capped"] = true
+		v["decoder_limit"] = agentGunzipCap
+		v["decoder_hint"] = "body exceeds the JSON decoder limit; export the whole body with: vigolium db export --format fs"
 	}
 
 	if !opts.fullBody && (modkit.IsStaticAssetContentType(contentType) || looksBinaryBytes(body)) {
@@ -198,13 +370,18 @@ func bodyView(raw []byte, contentType string, max int, opts agentViewOptions) ma
 		addHash()
 		return v
 	}
-	if opts.fullBody || len(body) <= max {
-		v["body"] = string(body)
-		return v
+
+	// One exit for the body. "Truncated" is decoder-capped OR sliced for display;
+	// --full-body suppresses only the second, which is why the cap still reports.
+	shown, truncated := body, dec.Capped
+	if !opts.fullBody && len(body) > max {
+		shown, truncated = body[:max], true
 	}
-	v["body"] = string(body[:max])
-	v["body_truncated"] = true
-	addHash()
+	v["body"] = string(shown)
+	if truncated {
+		v["body_truncated"] = true
+		addHash()
+	}
 	return v
 }
 
@@ -246,14 +423,77 @@ func evidenceSnippet(body string, needles []string, win int) string {
 	return snip
 }
 
-// projectFields restricts m to the given top-level keys (when non-empty),
-// silently ignoring unknown keys so an over-broad --fields list still works.
-func projectFields(m map[string]any, fields []string) map[string]any {
+// Public JSON field names each view can emit. These are the SELECTABLE names —
+// the vocabulary --fields is checked against — and they are deliberately not the
+// SQLite column names (`host` here is `hostname` in storage). A key that is only
+// emitted when its value is non-empty still belongs here: "supported but absent"
+// and "not a field" are different answers, and conflating them is what sent
+// callers hunting for `response_body_sha256`, `title` and `sent_at`.
+var (
+	// Host-fact keys are appended from database.HostFactsFieldNames rather than
+	// re-spelled here: a fact added to that struct reaches --fields with its
+	// emitter, instead of being a selectable name nothing ever produces.
+	trafficViewFields = append([]string{
+		"uuid", "method", "url", "host", "status_code",
+		"response_content_type", "response_content_length", "response_time_ms",
+		"response_words", "source", "scan_uuid", "response_title", "ip",
+		"risk_score", "surface_score", "is_authenticated", "technology", "remarks",
+		"request", "response",
+	}, database.HostFactsFieldNames...)
+	findingViewFields = []string{
+		"id", "severity", "confidence", "module_id", "module_name", "module_type",
+		"finding_source", "record_kind", "evidence_grade", "short", "description",
+		"url", "hostname", "matched_at", "extracted_results", "additional_evidence",
+		"tags", "cwe_id", "cvss_score", "remediation", "status", "scan_uuid",
+		"agentic_scan_uuid", "repo_name", "source_file", "found_at",
+		"http_record_uuids", "response_evidence", "request", "response",
+		"records", "records_total", "records_truncated", "records_error",
+	}
+)
+
+// validateFieldSelection rejects a --fields name the view cannot emit, naming the
+// supported set. It runs BEFORE the query, so a typo costs nothing.
+//
+// This used to be a silent drop, which made an unsupported field, a misspelled
+// field and a genuinely null value one indistinguishable outcome: the caller got
+// exit 0 and a row with the key simply missing, and concluded the data was not
+// there. Failing loudly is the only way that distinction reaches a machine.
+func validateFieldSelection(fields, supported []string) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	var unknown []string
+	for _, f := range fields {
+		if !slices.Contains(supported, f) {
+			unknown = append(unknown, f)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	return usageErrorf("unknown --fields name(s): %s\n\nsupported fields: %s",
+		strings.Join(unknown, ", "), strings.Join(supported, ", "))
+}
+
+// projectFields restricts m to the given top-level keys (when non-empty).
+// Unknown names never reach here — validateFieldSelection rejects them up front.
+// always is a set of keys the caller explicitly asked for through another flag
+// and which a projection must therefore not remove (see projectionAlways).
+func projectFields(m map[string]any, fields []string, always ...string) map[string]any {
 	if len(fields) == 0 {
 		return m
 	}
-	out := make(map[string]any, len(fields))
+	out := make(map[string]any, len(fields)+len(always))
 	for _, k := range fields {
+		if v, ok := m[k]; ok {
+			out[k] = v
+		}
+	}
+	// A field allowlist expresses "narrow the columns", not "undo the other flag
+	// I passed". --with-records asks for the linked evidence by name, so a
+	// --fields list that happens not to mention `records` must not delete it:
+	// that combination silently returned a finding with no evidence at all.
+	for _, k := range always {
 		if v, ok := m[k]; ok {
 			out[k] = v
 		}
@@ -292,8 +532,16 @@ func compactRecordView(rec *database.HTTPRecord, opts agentViewOptions) map[stri
 	if rec.IP != "" {
 		m["ip"] = rec.IP
 	}
+	// Host facts (full DNS answer, TLS certificate) through the one owner, so
+	// this view and the JSONL export cannot disagree about which keys exist or
+	// when they appear. Output-only: populated for the run that probed, absent
+	// when reading a database back in a fresh process.
+	maps.Copy(m, database.LookupHostFacts(rec.Hostname, rec.Port).AsMap())
 	if rec.RiskScore != 0 {
 		m["risk_score"] = rec.RiskScore
+	}
+	if rec.SurfaceScore != 0 {
+		m["surface_score"] = rec.SurfaceScore
 	}
 	if rec.IsAuthenticated {
 		m["is_authenticated"] = true
@@ -404,18 +652,39 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 		}
 	}
 
+	// Keys the caller asked for through a flag other than --fields. A projection
+	// narrows columns; it must not silently undo a different flag.
+	pinned := []string{}
 	if len(records) > 0 {
-		// Nested records carry their own shape; finding-level --fields must not
-		// prune their keys, so resolve them with field projection cleared.
+		// Nested records carry their own shape; the finding-level --fields list
+		// describes a finding and would prune a record row to nothing, so nested
+		// rows use their own --record-fields projection instead.
 		recOpts := opts
-		recOpts.fields = nil
+		recOpts.fields = opts.recordFields
+		// A record projection that names no body key means the bodies are about to
+		// be discarded — so don't decode, gunzip and stringify them first.
+		if len(opts.recordFields) > 0 &&
+			!slices.Contains(opts.recordFields, "request") &&
+			!slices.Contains(opts.recordFields, "response") {
+			recOpts.noBodies = true
+		}
 		recViews := make([]map[string]any, 0, len(records))
 		for _, r := range records {
 			recViews = append(recViews, compactRecordView(r, recOpts))
 		}
 		m["records"] = recViews
+		pinned = append(pinned, "records")
+		// State the relation size whenever it differs from what was embedded, so a
+		// bounded bundle is never mistaken for the finding's complete evidence.
+		// These are pinned alongside `records`: a projection that dropped them
+		// would turn a partial bundle back into an apparently complete one.
+		if len(records) < len(f.HTTPRecordUUIDs) {
+			m["records_total"] = len(f.HTTPRecordUUIDs)
+			m["records_truncated"] = true
+			pinned = append(pinned, "records_total", "records_truncated")
+		}
 	}
-	return projectFields(m, opts.fields)
+	return projectFields(m, opts.fields, pinned...)
 }
 
 // findingViews renders a slice of findings, optionally resolving + embedding the
@@ -423,8 +692,9 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 // one query (not per finding) to avoid an N+1 round-trip pattern.
 func findingViews(ctx context.Context, db *database.DB, findings []*database.Finding, opts agentViewOptions, withRecords bool) []map[string]any {
 	var byUUID map[string]*database.HTTPRecord
+	var loadErr error
 	if withRecords {
-		byUUID = batchLoadFindingRecords(ctx, db, findings)
+		byUUID, loadErr = batchLoadFindingRecords(ctx, db, findings, opts.recordLimit)
 	}
 	views := make([]map[string]any, 0, len(findings))
 	for _, f := range findings {
@@ -432,7 +702,15 @@ func findingViews(ctx context.Context, db *database.DB, findings []*database.Fin
 		if withRecords {
 			recs = recordsForFinding(byUUID, f)
 		}
-		views = append(views, compactFindingView(f, recs, opts))
+		v := compactFindingView(f, recs, opts)
+		// "the link query failed" and "this finding has no linked records" used to
+		// be the same empty answer. An agent triaging on that concludes there is no
+		// evidence, when in fact the evidence was never read.
+		if withRecords && loadErr != nil && len(f.HTTPRecordUUIDs) > 0 {
+			v["records_error"] = fmt.Sprintf("linked records could not be loaded: %v", loadErr)
+			v["records_total"] = len(f.HTTPRecordUUIDs)
+		}
+		views = append(views, v)
 	}
 	return views
 }
@@ -440,11 +718,23 @@ func findingViews(ctx context.Context, db *database.DB, findings []*database.Fin
 // batchLoadFindingRecords fetches every HTTP record referenced across the given
 // findings in a single query, keyed by UUID, so embedding records into N
 // findings costs one round-trip instead of N.
-func batchLoadFindingRecords(ctx context.Context, db *database.DB, findings []*database.Finding) map[string]*database.HTTPRecord {
+//
+// The error is returned rather than swallowed: a failed lookup and a finding
+// with no links both produce an empty map, and the caller is the only place that
+// can tell the reader which one happened.
+// perFinding caps how many of each finding's links are fetched. The cap belongs
+// on the QUERY, not on the rendered output: one finding in the wild links 422
+// records, and at ~55 KB of raw request/response each that is ~23 MB read and
+// held to render 20 rows.
+func batchLoadFindingRecords(ctx context.Context, db *database.DB, findings []*database.Finding, perFinding int) (map[string]*database.HTTPRecord, error) {
 	seen := make(map[string]struct{})
 	var uuids []string
 	for _, f := range findings {
-		for _, u := range f.HTTPRecordUUIDs {
+		links := f.HTTPRecordUUIDs
+		if perFinding > 0 && len(links) > perFinding {
+			links = links[:perFinding]
+		}
+		for _, u := range links {
 			if _, ok := seen[u]; !ok {
 				seen[u] = struct{}{}
 				uuids = append(uuids, u)
@@ -452,21 +742,65 @@ func batchLoadFindingRecords(ctx context.Context, db *database.DB, findings []*d
 		}
 	}
 	if len(uuids) == 0 {
-		return nil
+		return nil, nil
 	}
 	// When the --glob-db merge left record rows or bodies out, the evidence has to
 	// come from the source files instead. See loadGlobFindingRecords for why the
 	// merge cannot simply keep them.
 	if globMergeOmittedRecords() {
-		return loadGlobFindingRecords(ctx, findings, uuids)
+		return loadGlobFindingRecords(ctx, findings, uuids), nil
 	}
 	records, err := database.NewRepository(db).GetRecordsByUUIDs(ctx, uuids)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	byUUID := make(map[string]*database.HTTPRecord, len(records))
 	for _, r := range records {
 		byUUID[r.UUID] = r
+	}
+	return byUUID, nil
+}
+
+// projectTypedViews applies a --fields projection to rows that are typed structs
+// rather than maps (the scan views). It round-trips through JSON so the
+// projection sees exactly the keys the envelope would have emitted, and it does
+// so ONLY when a projection was asked for — an unprojected page keeps its
+// original encoding path and pays nothing.
+//
+// An unknown name is rejected against the row's own key set, which is derived
+// from the data rather than a hand-kept list: a second copy of a 39-field struct
+// is a copy that drifts.
+func projectTypedViews(views any, fields []string) (any, error) {
+	if len(fields) == 0 {
+		return views, nil
+	}
+	raw, err := jsonMarshalNoEscape(views)
+	if err != nil {
+		return nil, err
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	if len(rows) > 0 {
+		if err := validateFieldSelection(fields, slices.Sorted(maps.Keys(rows[0]))); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, projectFields(r, fields))
+	}
+	return out, nil
+}
+
+// loadFindingRecordsOrWarn is the human-render counterpart to the -j path's
+// explicit records_error: the render cannot carry a structured field, so a
+// failed lookup is announced on stderr rather than shown as absent evidence.
+func loadFindingRecordsOrWarn(ctx context.Context, db *database.DB, findings []*database.Finding) map[string]*database.HTTPRecord {
+	byUUID, err := batchLoadFindingRecords(ctx, db, findings, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s linked HTTP records could not be loaded: %v\n", terminal.WarnPrefix(), err)
 	}
 	return byUUID
 }

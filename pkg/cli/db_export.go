@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -65,15 +66,92 @@ func init() {
 
 	dbExportCmd.Flags().IntVar(&exportLimit, "limit", 0, "Maximum number of records to export, 0 for unlimited")
 	dbExportCmd.Flags().IntVar(&exportOffset, "offset", 0, "Number of records to skip before exporting")
-	dbExportCmd.Flags().StringVar(&exportRecordUUID, "uuid", "", "Export a single record by its UUID")
+	dbExportCmd.Flags().StringVar(&exportRecordUUID, "uuid", "",
+		"Export exactly one record by its UUID. Honored by every --format (including fs) and resolved before pagination, so a record outside the --limit window is still found")
 
 	dbExportCmd.Flags().BoolVar(&exportRequestOnly, "request-only", false, "Export only HTTP requests, omitting responses (raw format only)")
 	dbExportCmd.Flags().StringVar(&exportReportURL, "report-url", "",
 		"URL for the \"Raw Report URL\" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL)")
 }
 
+// dbExportFormats is the closed set runDBExport accepts, in canonical spelling.
+// Aliases (md, md-table, file-system, …) are resolved by canonicalFormat before
+// the check, so this list and the dispatch switch below agree without either one
+// restating the alias table.
+var dbExportFormats = []string{
+	"jsonl", "json", "raw", "csv", "markdown",
+	"markdown-table", "bundle", "fs",
+}
+
+// validateDBExportFlags rejects everything knowable from the flags alone, before
+// the destination is opened. See the call site for why the ordering matters.
+//
+// It also canonicalizes exportFormat in place. That matters beyond tidiness: the
+// membership test used to fold case while the dispatch switch below matched
+// exactly, so `--format MARKDOWN` passed validation, reached os.Create — which
+// truncates — and only then fell through to "unsupported format". Normalizing
+// once means the value that was validated is the value that is dispatched.
+//
+// The parsed date range is returned so the callers do not re-parse it.
+func validateDBExportFlags() (dateFrom, dateTo *time.Time, err error) {
+	exportFormat = canonicalFormat(exportFormat)
+	if !slices.Contains(dbExportFormats, exportFormat) {
+		return nil, nil, usageErrorf("unsupported export format: %s\n\nsupported formats: %s",
+			exportFormat, strings.Join(dbExportFormats, ", "))
+	}
+	if exportFormat == "bundle" && exportOutput == "" {
+		return nil, nil, usageErrorf("--format bundle requires -o/--output to specify the archive path")
+	}
+	return parseDateRangeFlags(exportFrom, exportTo, timeFilterFromLabel, timeFilterToLabel)
+}
+
+// dbExportFilters builds the record selection shared by every export format.
+// runDBExport and runDBExportFS had byte-identical copies of this, which is how
+// --uuid came to be honored by one and ignored by the other.
+func dbExportFilters(dateFrom, dateTo *time.Time) (database.QueryFilters, error) {
+	projectUUID, err := resolveProjectUUID()
+	if err != nil {
+		return database.QueryFilters{}, err
+	}
+	var severities []string
+	if exportSeverity != "" {
+		severities = strings.Split(exportSeverity, ",")
+	}
+	filters := database.QueryFilters{
+		ProjectUUID: projectUUID,
+		HostPattern: exportHost,
+		Methods:     exportMethods,
+		StatusCodes: exportStatus,
+		PathPattern: exportPath,
+		ScanUUID:    exportScanUUID,
+		Severity:    severities,
+		DateFrom:    dateFrom,
+		DateTo:      dateTo,
+		SearchTerm:  dbSearch,
+		Limit:       exportLimit,
+		Offset:      exportOffset,
+	}
+	// Resolve identity in SQL, before pagination: scanning a returned page for
+	// the UUID reported an existing record as "not found" whenever it fell
+	// outside --limit/--offset.
+	if exportRecordUUID != "" {
+		filters.RecordUUIDs = []string{exportRecordUUID}
+	}
+	return filters, nil
+}
+
 func runDBExport(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
+
+	// Validate EVERYTHING that can reject this run before touching the
+	// destination. os.Create truncates, so validating afterwards meant a typo in
+	// --format or a bad date range destroyed an existing deliverable and only
+	// then printed the error. Nothing below this block may fail for a reason that
+	// was knowable from the flags alone.
+	dateFrom, dateTo, err := validateDBExportFlags()
+	if err != nil {
+		return err
+	}
 
 	db, err := getDB()
 	if err != nil {
@@ -83,7 +161,17 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 	// fs writes a directory tree (filtered by the same flags), not to a single
 	// output file — handle it before opening outputFile so no stray file is made.
 	if exportFormat == "fs" {
-		return runDBExportFS(db)
+		return runDBExportFS(db, dateFrom, dateTo)
+	}
+
+	// bundle requires -o and handles its own file I/O — resolved before the
+	// os.Create below so it never leaves an empty file behind.
+	if exportFormat == "bundle" {
+		projectUUID, err := resolveProjectUUID()
+		if err != nil {
+			return err
+		}
+		return exportBundle(context.Background(), db, projectUUID)
 	}
 
 	// Open output file once (outside the watch loop)
@@ -99,48 +187,10 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 		outputFile = os.Stdout
 	}
 
-	// bundle requires -o and handles its own file I/O
-	if exportFormat == "bundle" {
-		if exportOutput == "" {
-			return fmt.Errorf("--format bundle requires -o/--output to specify the archive path")
-		}
-		projectUUID, err := resolveProjectUUID()
-		if err != nil {
-			return err
-		}
-		return exportBundle(context.Background(), db, projectUUID)
-	}
-
 	return runWithWatch(func() error {
-		dateFrom, dateTo, err := parseDateRangeFlags(exportFrom, exportTo,
-			timeFilterFromLabel, timeFilterToLabel)
+		filters, err := dbExportFilters(dateFrom, dateTo)
 		if err != nil {
 			return err
-		}
-
-		var severities []string
-		if exportSeverity != "" {
-			severities = strings.Split(exportSeverity, ",")
-		}
-
-		projectUUID, err := resolveProjectUUID()
-		if err != nil {
-			return err
-		}
-
-		filters := database.QueryFilters{
-			ProjectUUID: projectUUID,
-			HostPattern: exportHost,
-			Methods:     exportMethods,
-			StatusCodes: exportStatus,
-			PathPattern: exportPath,
-			ScanUUID:    exportScanUUID,
-			Severity:    severities,
-			DateFrom:    dateFrom,
-			DateTo:      dateTo,
-			SearchTerm:  dbSearch,
-			Limit:       exportLimit,
-			Offset:      exportOffset,
 		}
 
 		ctx := context.Background()
@@ -150,19 +200,8 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to query database: %w", err)
 		}
 
-		// Handle specific UUID
-		if exportRecordUUID != "" {
-			var found *database.HTTPRecord
-			for _, rec := range records {
-				if rec.UUID == exportRecordUUID {
-					found = rec
-					break
-				}
-			}
-			if found == nil {
-				return fmt.Errorf("record UUID %s not found", exportRecordUUID)
-			}
-			records = []*database.HTTPRecord{found}
+		if exportRecordUUID != "" && len(records) == 0 {
+			return fmt.Errorf("record UUID %s not found", exportRecordUUID)
 		}
 
 		switch exportFormat {
@@ -174,9 +213,9 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 			return exportRaw(records, outputFile)
 		case "csv":
 			return exportCSV(records, outputFile)
-		case "markdown", "md":
+		case "markdown":
 			return exportMarkdown(records, outputFile)
-		case "markdown-table", "md-table":
+		case "markdown-table":
 			return exportMarkdownTable(records, outputFile)
 		default:
 			return fmt.Errorf("unsupported export format: %s", exportFormat)
@@ -189,36 +228,13 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 // host/method/status/path/scan/severity/date/search/limit filters as the other
 // db export formats, scoped to the active project; the base defaults to
 // "vigolium" in the cwd when no -o is given.
-func runDBExportFS(db *database.DB) error {
-	dateFrom, dateTo, err := parseDateRangeFlags(exportFrom, exportTo,
-		timeFilterFromLabel, timeFilterToLabel)
+func runDBExportFS(db *database.DB, dateFrom, dateTo *time.Time) error {
+	// Same builder as every other format. This branch used to keep its own copy,
+	// which is how it came to bind --search to FuzzyTerm while the others used
+	// SearchTerm, and to ignore --uuid entirely.
+	filters, err := dbExportFilters(dateFrom, dateTo)
 	if err != nil {
 		return err
-	}
-
-	var severities []string
-	if exportSeverity != "" {
-		severities = strings.Split(exportSeverity, ",")
-	}
-
-	projectUUID, err := resolveProjectUUID()
-	if err != nil {
-		return err
-	}
-
-	filters := database.QueryFilters{
-		ProjectUUID: projectUUID,
-		HostPattern: exportHost,
-		Methods:     exportMethods,
-		StatusCodes: exportStatus,
-		PathPattern: exportPath,
-		ScanUUID:    exportScanUUID,
-		Severity:    severities,
-		DateFrom:    dateFrom,
-		DateTo:      dateTo,
-		FuzzyTerm:   dbSearch,
-		Limit:       exportLimit,
-		Offset:      exportOffset,
 	}
 	stats, err := writeFSExport(context.Background(), db, filters, exportOutput, fsExportOptions{omitResponse: exportRequestOnly})
 	if err != nil {
@@ -286,7 +302,7 @@ func exportRaw(records []*database.HTTPRecord, out *os.File) error {
 }
 
 func exportCSV(records []*database.HTTPRecord, out *os.File) error {
-	_, _ = fmt.Fprintln(out, "uuid,hostname,port,method,path,status_code,response_time_ms,content_type,source,risk_score,remarks,created_at")
+	_, _ = fmt.Fprintln(out, "uuid,hostname,port,method,path,status_code,response_time_ms,content_type,source,risk_score,surface_score,remarks,created_at")
 
 	for _, rec := range records {
 		statusCode := ""
@@ -298,7 +314,7 @@ func exportCSV(records []*database.HTTPRecord, out *os.File) error {
 
 		remarks := strings.Join(rec.Remarks, "; ")
 
-		_, _ = fmt.Fprintf(out, "%s,%s,%d,%s,%s,%s,%s,%s,%s,%d,%s,%s\n",
+		_, _ = fmt.Fprintf(out, "%s,%s,%d,%s,%s,%s,%s,%s,%s,%d,%d,%s,%s\n",
 			rec.UUID,
 			rec.Hostname,
 			rec.Port,
@@ -309,6 +325,7 @@ func exportCSV(records []*database.HTTPRecord, out *os.File) error {
 			clicommon.CSVEscape(rec.RequestContentType),
 			clicommon.CSVEscape(rec.Source),
 			rec.RiskScore,
+			rec.SurfaceScore,
 			clicommon.CSVEscape(remarks),
 			rec.CreatedAt.Format(time.RFC3339),
 		)

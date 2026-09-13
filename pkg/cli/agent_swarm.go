@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -837,7 +836,7 @@ func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUI
 
 	if swarmInput != "" {
 		if swarmInput == "-" {
-			data, err := io.ReadAll(os.Stdin)
+			data, err := readStdin()
 			if err != nil {
 				return nil, fmt.Errorf("failed to read from stdin: %w", err)
 			}

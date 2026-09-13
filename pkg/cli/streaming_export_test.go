@@ -102,7 +102,7 @@ func TestGenerateHTMLReportStreamingParity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 
-			legacyItems, err := queryExportData(ctx, db, omit, "")
+			legacyItems, err := queryExportData(ctx, db, omit, "", "")
 			require.NoError(t, err)
 			legacyPath := filepath.Join(dir, "legacy.html")
 			require.NoError(t, output.GenerateHTMLReport(legacyItems, legacyPath, meta))

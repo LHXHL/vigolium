@@ -62,6 +62,35 @@ func runConfigSet(deps Deps, args []string) error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	fmt.Printf("%s Set %s = %s\n", terminal.SuccessSymbol(), terminal.Cyan(key), value)
+	// The confirmation used to echo the supplied value verbatim, so
+	// `config set agent.api_key sk-...` printed the key straight back to stdout
+	// — into the shell history, the CI log, and the agent transcript. `config ls`
+	// redacts the same value; the write path has to agree with the read path.
+	sensitive := config.IsSensitiveEntry(key, value)
+	shown := value
+	if sensitive {
+		shown = clicommon.SecretPlaceholder
+	}
+
+	if deps.jsonRequested() {
+		return deps.WriteJSON("config set", "", []configSetResult{{
+			Key:        key,
+			Value:      shown,
+			Sensitive:  sensitive,
+			Redacted:   sensitive,
+			ConfigPath: config.ContractPath(configPath),
+		}}, 1, map[string]any{"changed": true})
+	}
+
+	fmt.Printf("%s Set %s = %s\n", terminal.SuccessSymbol(), terminal.Cyan(key), shown)
 	return nil
+}
+
+// configSetResult is the machine shape of a completed write.
+type configSetResult struct {
+	Key        string `json:"key"`
+	Value      string `json:"value"`
+	Sensitive  bool   `json:"sensitive"`
+	Redacted   bool   `json:"redacted"`
+	ConfigPath string `json:"config_path"`
 }

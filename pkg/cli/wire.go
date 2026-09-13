@@ -16,6 +16,8 @@ func init() {
 			ConfigFlag:   func() string { return globalConfig },
 			Force:        func() bool { return globalForce },
 			Reinitialize: initializeVigolium,
+			JSON:         func() bool { return globalJSON },
+			WriteJSON:    writeConfigEnvelope,
 		},
 		configcmd.Examples{
 			Parent: configExamples,
@@ -24,4 +26,17 @@ func init() {
 			Clean:  configCleanExamples,
 		},
 	))
+}
+
+// writeConfigEnvelope lets the extracted config group emit through the CLI's
+// shared -j envelope without importing pkg/cli. Passing the writer rather than
+// the envelope type keeps the dependency pointing one way, and means a config
+// result carries the same schema_version/items/generated_at spine as every other
+// machine payload instead of a second shape invented in that package.
+func writeConfigEnvelope(command, legacyKey string, items any, total int, extra map[string]any) error {
+	env := newAgentEnvelope(command, legacyKey, items, int64(total), 0, total)
+	for k, v := range extra {
+		env.With(k, v)
+	}
+	return writeAgentJSON(env)
 }

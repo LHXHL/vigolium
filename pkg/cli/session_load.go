@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -68,7 +67,7 @@ func runSessionLoad(cmd *cobra.Command, args []string) error {
 	var err error
 
 	if len(args) == 0 || args[0] == "-" {
-		data, err = io.ReadAll(os.Stdin)
+		data, err = readStdin()
 		if err != nil {
 			return fmt.Errorf("failed to read from stdin: %w", err)
 		}

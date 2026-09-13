@@ -20,6 +20,24 @@ type Deps struct {
 	Force func() bool
 	// Reinitialize regenerates ~/.vigolium with fresh defaults (used by `config clean`).
 	Reinitialize func() error
+
+	// JSON reports whether the caller asked for machine output. The config
+	// commands accepted the persistent --json flag and ignored it, printing
+	// ANSI-colored prose to stdout and exiting 0 — so a consumer's parse failed
+	// for a reason the exit code did not describe.
+	JSON func() bool
+	// WriteJSON emits a result through the CLI's shared envelope writer, so a
+	// config result has the same schema_version/items/generated_at spine as every
+	// other -j payload rather than a second shape invented here. total is the row
+	// count, which the caller already knows — passing it avoids reflecting over
+	// the slice on the other side of the seam.
+	WriteJSON func(command, legacyKey string, items any, total int, extra map[string]any) error
+}
+
+// jsonRequested reports whether machine output was asked for, tolerating a Deps
+// built without the hooks (older callers, tests).
+func (d Deps) jsonRequested() bool {
+	return d.JSON != nil && d.WriteJSON != nil && d.JSON()
 }
 
 // Examples carries the per-command example blocks, defined in pkg/cli.

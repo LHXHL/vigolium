@@ -146,6 +146,18 @@ func writeFSExport(ctx context.Context, db *database.DB, filters database.QueryF
 	if filters.ProjectUUID != "" {
 		fq = fq.Where("project_uuid = ?", filters.ProjectUUID)
 	}
+	// An identity selector narrows BOTH halves of the tree. Every other filter
+	// here is the findings-side counterpart of a record-side one (--host filters
+	// records by hostname and findings by hostname); --uuid had no counterpart,
+	// so `db export --uuid <one record> --format fs` wrote that one .req beside
+	// every finding in the store — a directory that reads as "these are the
+	// findings for this request" and is not. The counterpart of "this record" is
+	// "the findings linked to it", which is the same relation `db export --format
+	// jsonl` already uses to attach findings to the records it selected.
+	if len(filters.RecordUUIDs) > 0 {
+		fq = fq.Where("id IN (SELECT finding_id FROM finding_records WHERE record_uuid IN (?))",
+			bun.List(filters.RecordUUIDs))
+	}
 	if filters.HostPattern != "" {
 		fq = fq.Where("hostname LIKE ?", fsLikePattern(filters.HostPattern))
 	}

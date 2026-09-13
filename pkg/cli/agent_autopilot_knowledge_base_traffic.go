@@ -287,7 +287,7 @@ func ingestKnowledgeBaseTraffic(ctx context.Context, repo *database.Repository, 
 			terminal.WarningSymbol(), serr)
 		return "", 0
 	}
-	saved = len(uuids)
+	saved = database.CountSaved(uuids)
 	// Collapse exact duplicates within the knowledge-base source (idempotent
 	// across --resume re-ingests). Best-effort — a dedup error doesn't lose the
 	// records, it just leaves duplicates.

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/internal/runner"
 )
 
 // ambiguousRunPhase rejects a phase name that collides with a top-level
@@ -31,11 +32,14 @@ func ambiguousRunPhase(phase string) error {
 }
 
 // isDiscoveryPhaseArg reports whether the given `vigolium run <phase>` arg
-// refers to the discovery or spidering phase (including aliases).
+// refers to the discovery or spidering phase (including aliases). It resolves
+// through runner.NormalizeNativePhase rather than re-listing the spellings, so
+// an alias added to the phase vocabulary is recognized here for free — the
+// hand-copied list this replaced had already fallen behind (`spider` normalized
+// to spidering everywhere except here).
 func isDiscoveryPhaseArg(phase string) bool {
-	switch strings.ToLower(strings.TrimSpace(phase)) {
-	case "discover", "discovery", "deparos",
-		"spidering", "spitolas":
+	switch runner.NormalizeNativePhase(phase) {
+	case "discovery", "spidering":
 		return true
 	}
 	return false
@@ -60,9 +64,12 @@ func isDiscoveryOnlyPhases(raw string) bool {
 var runCmd = &cobra.Command{
 	Use:   "run <phase>",
 	Short: "Run a single native scan phase (alias for scan --only <phase>)",
-	Long: `Run a single scan phase directly. Equivalent to "vigolium scan --only <phase>".
+	Long: `Run a single scan phase directly. Equivalent to "vigolium scan --only <phase>" —
+the same code path, so the two invocations behave identically (including the
+fuzzing that a discovery-only run enables; see "Fuzzing:" in the phase header).
 
-Valid phases: ingestion, discovery (deparos), external-harvest, spidering (spitolas), known-issue-scan (cve, kis), dynamic-assessment (dast, assessment), extension (ext)`,
+Valid phases (canonical name, then the aliases it also answers to):
+  ` + strings.Join(runner.PhaseVocabularyLines(false), "\n  "),
 	Args:    cobra.ExactArgs(1),
 	Aliases: []string{"r"},
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -85,8 +92,5 @@ func init() {
 	registerScanPipelineFlags(flags)
 	registerSpecFlags(flags)
 	registerNativeScanFlags(flags, true)
-	addFlagAliases(runCmd, map[string]string{
-		"fuzz-wordlist": "discovery-wordlist",
-		"templates-dir": "known-issue-scan-templates-dir",
-	})
+	addFlagAliases(runCmd, nativeScanFlagAliases)
 }

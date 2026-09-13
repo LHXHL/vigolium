@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -49,7 +48,7 @@ func runSessionLint(_ *cobra.Command, args []string) error {
 		if len(args) > 0 {
 			return fmt.Errorf("cannot use both --stdin and a file argument")
 		}
-		data, err = io.ReadAll(os.Stdin)
+		data, err = readStdin()
 		if err != nil {
 			return fmt.Errorf("failed to read stdin: %w", err)
 		}

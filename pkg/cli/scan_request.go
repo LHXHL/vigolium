@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -62,7 +61,7 @@ func runScanRequestCmd(_ *cobra.Command, _ []string) error {
 	var err error
 
 	if scanReqInput == "-" {
-		raw, err = io.ReadAll(os.Stdin)
+		raw, err = readStdin()
 	} else {
 		raw, err = os.ReadFile(scanReqInput)
 	}

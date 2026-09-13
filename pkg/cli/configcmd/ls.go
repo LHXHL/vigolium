@@ -31,6 +31,48 @@ func newLsCmd(deps Deps, example string) *cobra.Command {
 	return cmd
 }
 
+// configEntryView is one setting in the shape a machine consumer reads.
+//
+// Value is the REDACTED value under the default policy; Display is what the
+// human table prints. `sensitive` is carried so a consumer can tell a genuinely
+// empty setting from one that was withheld — an inference it would otherwise
+// have to make by string-matching "[redacted]".
+type configEntryView struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Sensitive bool   `json:"sensitive"`
+	Empty     bool   `json:"empty"`
+	Redacted  bool   `json:"redacted"`
+}
+
+// display renders the value for the human table. It is derived rather than
+// stored: "(empty)" is a rendering of Empty, and the redacted case already
+// carries "[redacted]" in Value.
+func (v configEntryView) display() string {
+	if v.Empty {
+		return "(empty)"
+	}
+	return v.Value
+}
+
+func newConfigEntryView(entry config.ConfigEntry, showSecrets bool) configEntryView {
+	empty := entry.Value == "" || entry.Value == "<nil>"
+	v := configEntryView{
+		Key:       entry.Key,
+		Value:     entry.Value,
+		Sensitive: entry.Sensitive,
+		Empty:     empty,
+	}
+	switch {
+	case entry.Sensitive && !showSecrets && !empty:
+		v.Value = clicommon.SecretPlaceholder
+		v.Redacted = true
+	case empty:
+		v.Value = ""
+	}
+	return v
+}
+
 func runConfigLs(deps Deps, args []string, showSecrets bool) error {
 	settings, err := config.LoadSettings(deps.ConfigFlag())
 	if err != nil {
@@ -56,29 +98,34 @@ func runConfigLs(deps Deps, args []string, showSecrets bool) error {
 	if showSecrets {
 		fmt.Fprintf(os.Stderr, "%s Revealing sensitive configuration values in plaintext.\n", terminal.WarningSymbol())
 	}
-	count := 0
+
+	matched := make([]configEntryView, 0, len(entries))
 	for _, entry := range entries {
 		if filter != "" && !keyMatches(strings.ToLower(entry.Key), filter) {
 			continue
 		}
-
-		displayValue := entry.Value
-		if entry.Sensitive && !showSecrets {
-			if entry.Value != "" && entry.Value != "<nil>" {
-				displayValue = "[redacted]"
-			} else {
-				displayValue = "(empty)"
-			}
-		} else if entry.Value == "" || entry.Value == "<nil>" {
-			displayValue = "(empty)"
-		}
-
-		keyColor := sectionKeyColor(entry.Key)
-		fmt.Printf("%s = %s\n", keyColor(entry.Key), colorizeValue(displayValue))
-		count++
+		matched = append(matched, newConfigEntryView(entry, showSecrets))
 	}
 
-	if count == 0 {
+	// -j was accepted here and produced ANSI-colored prose on stdout with exit
+	// 0 — the worst available combination, because a consumer parsing that
+	// fails for a reason nothing in the exit status describes. The redaction
+	// rule is identical in both modes: a machine caller is the LAST consumer
+	// that should be handed plaintext credentials, since -j output routinely
+	// lands in an agent transcript.
+	if deps.jsonRequested() {
+		return deps.WriteJSON("config ls", "entries", matched, len(matched), map[string]any{
+			"config_path": config.ContractPath(clicommon.EffectiveConfigPath(deps.ConfigFlag())),
+			"redacted":    !showSecrets,
+			"filter":      filter,
+		})
+	}
+
+	for _, e := range matched {
+		fmt.Printf("%s = %s\n", sectionKeyColor(e.Key)(e.Key), colorizeValue(e.display()))
+	}
+
+	if count := len(matched); count == 0 {
 		if filter != "" {
 			fmt.Printf("%s No config keys matching %q\n", terminal.WarnPrefix(), filter)
 		} else {
@@ -173,7 +220,7 @@ func subsequenceMatch(s, filter string) bool {
 // get their own hue, and the placeholder "(empty)" is dimmed.
 func colorizeValue(v string) string {
 	switch {
-	case v == "[redacted]":
+	case v == clicommon.SecretPlaceholder:
 		return terminal.BoldRed(v)
 	case v == "(empty)":
 		return terminal.Gray(v)

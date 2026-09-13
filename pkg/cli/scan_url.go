@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"os/signal"
@@ -188,7 +187,7 @@ func runScanURLCmd(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("no URL argument provided and no stdin input detected")
 	}
 
-	raw, err := io.ReadAll(os.Stdin)
+	raw, err := readStdin()
 	if err != nil {
 		return fmt.Errorf("failed to read stdin: %w", err)
 	}
@@ -773,7 +772,9 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 	if opts.Stateless && globalDB != "" {
 		return fmt.Errorf("--stateless and --db are mutually exclusive")
 	}
-	if opts.Stateless && opts.Output == "" && !opts.Silent {
+	// See the same guard in scan.go: --json/--ci-output stream results to stdout,
+	// so they are not discarded and the warning would be false.
+	if opts.Stateless && opts.Output == "" && !opts.Silent && !globalJSON && !globalCIOutput {
 		fmt.Fprintf(os.Stderr,
 			"%s %s: no %s set — scan results will be discarded with the temporary database. "+
 				"Pass %s %s and %s %s to persist results.\n",

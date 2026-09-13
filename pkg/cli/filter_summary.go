@@ -99,6 +99,13 @@ func (s *filterSummary) addConfidences(label string, confs []string) {
 	s.push(label, strings.Join(colored, terminal.Gray(",")))
 }
 
+// String renders just the joined fragments, for a caller that needs the summary
+// inside its own line (the `db clean` preview writes it to stderr under an
+// indented "Filters:" label) rather than as the standalone "Filtered by:" line.
+func (s *filterSummary) String() string {
+	return strings.Join(s.parts, terminal.Gray(" · "))
+}
+
 // print emits the "Filtered by:" line to stdout, or nothing when no filter is
 // set. Callers gate this on text-mode output — JSON must stay clean on stdout.
 func (s *filterSummary) print() {
@@ -108,5 +115,5 @@ func (s *filterSummary) print() {
 	fmt.Printf("%s %s %s\n",
 		terminal.InfoSymbol(),
 		terminal.Bold("Filtered by:"),
-		strings.Join(s.parts, terminal.Gray(" · ")))
+		s.String())
 }

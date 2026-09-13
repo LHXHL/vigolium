@@ -77,7 +77,7 @@ func runDBStats(cmd *cobra.Command, args []string) error {
 			// command's payload.
 			env := newAgentEnvelope("db stats", "stats", stats, 1, 0, 1)
 			env.DBPath = resolvedReadDBPath()
-			env.WithQuery("vigolium finding --json --min-severity high")
+			env.WithQuery("finding", "--json", "--min-severity", "high")
 			if err := writeAgentJSON(env); err != nil {
 				return fmt.Errorf("failed to encode JSON: %w", err)
 			}

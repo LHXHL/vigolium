@@ -122,6 +122,9 @@ var (
 	// listed/replayed. Most useful with --replay to re-send all stored traffic.
 	trafficAll bool
 
+	// trafficUUIDs selects exact stored records by UUID (--uuid).
+	trafficUUIDs []string
+
 	// trafficBurpBridgeURL enables live Burp records as an additional source.
 	trafficBurpBridgeURL    string
 	trafficSaveToVigoliumDB bool
@@ -147,6 +150,8 @@ func init() {
 
 	// Shared filter flags on PersistentFlags (apply to both the listing and --replay)
 	pf := trafficCmd.PersistentFlags()
+	pf.StringSliceVar(&trafficUUIDs, "uuid", nil,
+		"Select exact stored record(s) by UUID (repeatable/comma-separated). Applied before pagination, so a match is never missed because it fell outside -n")
 	pf.StringVar(&trafficHost, "host", "", "Filter by hostname pattern (wildcard supported)")
 	pf.StringSliceVar(&trafficMethods, "method", nil, "Filter by HTTP method (repeatable, e.g. --method GET --method POST)")
 	pf.IntSliceVar(&trafficStatus, "status", nil, "Filter by HTTP status code (repeatable, e.g. --status 200 --status 404)")
@@ -162,7 +167,7 @@ func init() {
 	pf.StringArrayVar(&trafficExcludeSearch, "exclude-search", nil, "Exclude records where the term appears in the URL, path, or raw request/response (repeatable; dropped if ANY term matches — the inverse of --search)")
 	pf.StringVar(&trafficExcludeHeader, "exclude-header", "", "Exclude records whose HTTP header names/values contain the term (inverse of --header)")
 	pf.StringVar(&trafficExcludeBody, "exclude-body", "", "Exclude records whose request/response body contains the term (inverse of --body)")
-	pf.StringVar(&trafficSource, "source", "", "Filter by record source (e.g. burp, caido, scanner, ingest-cli, ingest-server, ingest-proxy, seed)")
+	pf.StringVar(&trafficSource, "source", "", "Filter by record source (e.g. burp, caido, scanner, probe, ingest-cli, ingest-server, ingest-proxy, seed)")
 	pf.StringVar(&trafficSort, "sort", "created_at", "Sort by: uuid, created_at, sent_at, method, status, time")
 	pf.BoolVar(&trafficAsc, "asc", false, "Sort in ascending order (default: descending)")
 	pf.IntVarP(&trafficLimit, "limit", "n", 100, "Maximum records to display")
@@ -170,6 +175,10 @@ func init() {
 
 	// Display-only flags
 	f := trafficCmd.Flags()
+	f.StringVar(&trafficGroupBy, "group-by", "",
+		fmt.Sprintf("Count the matched records by one field instead of listing them (%s). Runs the same filters as the listing", strings.Join(database.GroupableFields(), ", ")))
+	f.IntVar(&trafficGroupLimit, "group-limit", defaultTrafficGroupLimit,
+		"With --group-by: maximum groups to show, largest first (0 = every group). The tail is reported as a count, never dropped")
 	f.BoolVar(&trafficTree, "tree", false, "Display as host/path hierarchy tree")
 	f.BoolVar(&trafficRaw, "raw", false, "Show full raw HTTP request and response")
 	f.BoolVar(&trafficBurp, "burp", false, "Display in Burp Suite-style format (colored request/response)")
@@ -207,6 +216,15 @@ func init() {
 
 func runTraffic(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
+	// Reject an unknown --fields name before opening anything (see runFinding).
+	if err := validateAgentViewFlags(agentViewOptionsFromFlags(), trafficViewFields); err != nil {
+		return err
+	}
+	// Same reason, same place: an unknown --group-by name or a conflicting output
+	// mode is knowable from the flags alone and must not cost a database open.
+	if err := validateTrafficGroupFlags(cmd.Flags().Changed); err != nil {
+		return err
+	}
 	// -n governs the listing page size; the import path needs to know whether the
 	// operator asked for that number or merely inherited the default.
 	limitTyped := cmd.Flags().Changed("limit")
@@ -306,6 +324,11 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 
 	return runWithWatch(func() error {
 		ctx := context.Background()
+		// The aggregate answers a question about the matched rows without
+		// hydrating them, so it runs before anything that would.
+		if strings.TrimSpace(trafficGroupBy) != "" {
+			return runTrafficGroupBy(ctx, db, filters)
+		}
 		if trafficSaveToBurp {
 			records, err := database.NewQueryBuilder(db, filters).Execute(ctx)
 			if err != nil {
@@ -386,6 +409,10 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		case trafficTree:
 			warnIfCapped(len(records), total) // top, so it's seen before a long tree
 			printTrafficSummary(ctx, db, records, total)
+			// The tree shows where a 3xx points, which is only in the raw
+			// response this query projected away. Fetched by uuid for the
+			// redirects alone rather than by hydrating the whole page.
+			hydrateRedirectHeaders(ctx, db, records)
 			renderErr = displayTree(records)
 		default:
 			warnIfCapped(len(records), total)
@@ -424,6 +451,7 @@ func buildTrafficFilters(fuzzyTerm string) (database.QueryFilters, error) {
 
 	return database.QueryFilters{
 		ProjectUUID:         projectUUID,
+		RecordUUIDs:         trafficUUIDs,
 		HostPattern:         trafficHost,
 		Methods:             trafficMethods,
 		StatusCodes:         trafficStatus,

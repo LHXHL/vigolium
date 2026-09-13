@@ -988,6 +988,8 @@ func seedFindings(rng *rand.Rand, records []*database.HTTPRecord) []*database.Fi
 		},
 	}
 
+	findings = append(findings, seedLongFormFindings(now, findRec)...)
+
 	return findings
 }
 
@@ -1013,6 +1015,8 @@ var findingClassification = map[string]moduleClassification{
 	"backslash-transformation": {"CWE-707", 0.0, "Escape sequence interpretation is a behavioural signal — manually confirm if it points to injection."},
 	"suspect-transform":        {"CWE-707", 0.0, "Server-side evaluation of arithmetic expressions is a behavioural signal — confirm with targeted payloads."},
 	"smart-behavior-detection": {"CWE-707", 0.0, "Differential timing/response is a behavioural signal — follow up with targeted injection probes."},
+	"graphql-batch-idor":       {"CWE-639", 9.1, "Enforce object-level authorization per field resolution, not once per operation, and cap alias count and query complexity."},
+	"audit-jwt-trust-chain":    {"CWE-347", 8.1, "Pin the verification algorithm server-side, fail startup without a configured signing secret, and re-enable expiry validation."},
 }
 
 // enrichFindings hydrates denormalized and classification fields based on the

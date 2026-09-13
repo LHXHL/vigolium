@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -355,17 +354,9 @@ var projectDeleteCmd = &cobra.Command{
 			}
 		}
 
-		if !globalForce {
-			fmt.Print("\nProceed? (type 'yes' to confirm): ")
-			reader := bufio.NewReader(os.Stdin)
-			response, readErr := reader.ReadString('\n')
-			if readErr != nil {
-				return fmt.Errorf("failed to read input: %w", readErr)
-			}
-			if strings.TrimSpace(strings.ToLower(response)) != "yes" {
-				fmt.Println("Aborted.")
-				return nil
-			}
+		if done, confErr := handleConfirmation(fmt.Sprintf(
+			"deleting project %s and purging all of its scan data", projectUUID)); done {
+			return confErr
 		}
 
 		if err := repo.PurgeProjectData(ctx, projectUUID); err != nil {
