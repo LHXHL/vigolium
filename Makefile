@@ -1248,6 +1248,10 @@ cdn-sync: prepare-release-scripts generate-metadata
 # npm name, version-suffixed platform builds). See build/npm/build.mjs.
 NPM_OUT_DIR=build/dist-npm
 
+# Reads a publish back from registry.npmjs.org — see the script header for why
+# `npm publish` exiting 0 does not mean the version exists.
+NPM_VERIFY=bash build/scripts/npm-verify-publish.sh
+
 # "yes" when the goreleaser binaries are missing OR were built for a different
 # version than pkg/cli/version.go ($(VERSION)) — i.e. stale after a version bump.
 #
@@ -1290,6 +1294,15 @@ npm-pack:
 # published as `latest` and `latest` is re-asserted + verified afterward), so
 # `npm i -g @vigolium/vigolium` always installs this version.
 #
+# `npm publish` exiting 0 is NOT proof of publication: registry.npmjs.org
+# answers with 202 Accepted and processes the tarball asynchronously, and a
+# queued version can silently never land. That is how 0.4.6 shipped broken —
+# darwin-arm64, linux-arm64 and windows-x64 each got a clean 202, never
+# appeared, and left the main package pointing at optionalDependencies that
+# 404. So every publish is read back from the registry before the next one
+# goes out; a platform package that never lands stops the run *before* the
+# main package is published, instead of after.
+#
 # Auth is handled by your ~/.npmrc line:
 #   //registry.npmjs.org/:_authToken=${NPM_TOKEN}
 # npm reads ~/.npmrc automatically (default userconfig, cwd-independent) and
@@ -1311,30 +1324,28 @@ npm-publish: npm-build
 		for d in $(NPM_OUT_DIR)/vigolium-*/; do \
 			ptag=$$(basename "$$d" | sed 's/^vigolium-//'); \
 			echo "$(PREFIX)   publishing platform package [$$ptag]"; \
+			if [ "$(DRY_RUN)" != "1" ] \
+				&& curl -sS -o /dev/null -w '%{http_code}' -H 'Cache-Control: no-cache' \
+					"https://registry.npmjs.org/@vigolium/vigolium/$(GORELEASER_VERSION)-$$ptag?cb=$$$$" \
+					2>/dev/null | grep -q '^200$$'; then \
+				echo "$(PREFIX)     already on registry — skipping"; \
+				continue; \
+			fi; \
 			( cd "$$d" && npm publish --access public --tag "$$ptag" $$DRY ) \
 				|| { echo "\033[31m[!] publish failed: $$ptag\033[0m"; exit 11; }; \
+			if [ "$(DRY_RUN)" != "1" ]; then \
+				$(NPM_VERIFY) version @vigolium/vigolium "$(GORELEASER_VERSION)-$$ptag" || exit 11; \
+			fi; \
 		done; \
 		echo "$(PREFIX)   publishing $(NPM_OUT_DIR)/vigolium/ (main) [tag=latest]"; \
 		( cd $(NPM_OUT_DIR)/vigolium && npm publish --access public --tag latest $$DRY ) \
 			|| { echo "\033[31m[!] publish failed: main\033[0m"; exit 12; }; \
 		if [ "$(DRY_RUN)" != "1" ]; then \
+			$(NPM_VERIFY) version @vigolium/vigolium "$(GORELEASER_VERSION)" || exit 12; \
 			echo "$(PREFIX)   pointing 'latest' dist-tag at $(GORELEASER_VERSION)"; \
 			npm dist-tag add @vigolium/vigolium@$(GORELEASER_VERSION) latest \
 				|| { echo "\033[31m[!] dist-tag add failed\033[0m"; exit 13; }; \
-			resolved=""; \
-			for i in 1 2 3 4 5 6; do \
-				resolved=$$(npm dist-tag ls @vigolium/vigolium --prefer-online 2>/dev/null \
-					| sed -n 's/^latest: //p'); \
-				[ "$$resolved" = "$(GORELEASER_VERSION)" ] && break; \
-				echo "$(PREFIX)   latest still '$$resolved' (npm registry cache lag) — retry $$i/6 in 10s"; \
-				sleep 10; \
-			done; \
-			if [ "$$resolved" != "$(GORELEASER_VERSION)" ]; then \
-				echo "\033[31m[!] latest resolved to '$$resolved', expected '$(GORELEASER_VERSION)' after retries\033[0m"; \
-				echo "\033[31m    Publish likely succeeded — verify: npm dist-tag ls @vigolium/vigolium\033[0m"; \
-				exit 14; \
-			fi; \
-			echo "$(PREFIX)   verified: latest -> $$resolved"; \
+			$(NPM_VERIFY) dist-tag @vigolium/vigolium latest "$(GORELEASER_VERSION)" || exit 14; \
 		fi
 	@echo "$(PREFIX) npm publish complete"
 
