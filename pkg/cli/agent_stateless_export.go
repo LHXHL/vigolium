@@ -100,9 +100,10 @@ func planAgentStateless(cmd *cobra.Command, cmdLabel string, stateless bool, out
 	if strings.TrimSpace(globalDB) != "" {
 		return plan, fmt.Errorf("--stateless/-S cannot be combined with --db: -S runs into a throwaway temporary database, so the --db you named would never be written")
 	}
-	if globalDBIsolate {
-		return plan, fmt.Errorf("--stateless/-S cannot be combined with --db-isolate: --db-isolate merges its private database back into your project DB, which is the opposite of discarding it")
-	}
+	// Ordered after the --db check above: a database the operator named by hand
+	// stays a hard conflict, while --db-isolate's destination is implicit and
+	// costs nothing to drop.
+	dbIsolateYieldsToStateless(stateless)
 
 	switch {
 	case output != "":

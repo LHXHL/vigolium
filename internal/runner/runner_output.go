@@ -485,38 +485,14 @@ func (r *Runner) printScanConfig() {
 	}
 	fmt.Fprintf(os.Stderr, "  %s %s\n", terminal.Purple(terminal.SymbolTarget), targetsLine)
 
-	// Phase labels with duration info
-	phaseLabel := func(name, phasePaceKey string, enabled bool) string {
-		label := name
-		if !enabled {
-			return terminal.Gray(terminal.SymbolError) + " " + terminal.Gray(label)
-		}
-		resolved := settings.ScanningPace.ResolvePhase(phasePaceKey)
-		var paceDetail string
-		if resolved.MaxDuration > 0 {
-			paceDetail = resolved.MaxDuration.String()
-		}
-		if resolved.DurationFactor > 0 {
-			if paceDetail != "" {
-				paceDetail += fmt.Sprintf(", x%.1f", resolved.DurationFactor)
-			} else {
-				paceDetail = fmt.Sprintf("x%.1f", resolved.DurationFactor)
-			}
-		}
-		if paceDetail != "" {
-			label += " " + terminal.Gray("("+paceDetail+")")
-		}
-		return terminal.Green(terminal.SymbolSuccess) + " " + terminal.HiCyan(label)
-	}
-
 	fmt.Fprintf(os.Stderr, "  %s Phases: %s | %s | %s\n",
 		terminal.Purple(terminal.SymbolInfo),
-		phaseLabel("ExternalHarvest", "external_harvester", opts.ExternalHarvestEnabled),
-		phaseLabel("Spidering", "spidering", opts.SpideringEnabled),
-		phaseLabel("Discovery", "discovery", opts.DiscoverEnabled))
+		PhaseLabel(settings, "ExternalHarvest", "external_harvester", opts.ExternalHarvestEnabled, 0),
+		PhaseLabel(settings, "Spidering", "spidering", opts.SpideringEnabled, SpideringBudget(settings, opts)),
+		PhaseLabel(settings, "Discovery", "discovery", opts.DiscoverEnabled, opts.DiscoverMaxDuration))
 	fmt.Fprintf(os.Stderr, "           %s | %s\n",
-		phaseLabel("KnownIssueScan", "known-issue-scan", opts.KnownIssueScanEnabled),
-		phaseLabel("DynamicAssessment", "dynamic-assessment", !opts.SkipDynamicAssessment))
+		PhaseLabel(settings, "KnownIssueScan", "known-issue-scan", opts.KnownIssueScanEnabled, 0),
+		PhaseLabel(settings, "DynamicAssessment", "dynamic-assessment", !opts.SkipDynamicAssessment, 0))
 
 	// Heuristics
 	heuristicsDesc := map[string]string{

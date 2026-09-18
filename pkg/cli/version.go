@@ -18,7 +18,7 @@ var (
 	Description        = "High-fidelity vulnerability scanner that combines speed, modularity, and precision"
 	Author             = "@j3ssie"
 	InitialContributor = "@theblackturtle"
-	Version            = "v0.4.7"
+	Version            = "v0.4.8"
 	Commit             = ""
 	BuildTime          = ""
 )

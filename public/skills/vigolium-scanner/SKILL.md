@@ -390,13 +390,17 @@ Things `-h` won't tell you:
   per-run DB. For the persisted DB use `vigolium export`.
 - `--format fs` writes two sibling dirs (`<base>-traffic/`, `<base>-findings/`);
   `--split-by-host` is a no-op for it.
-- `--stateless` on a **scan** is mutually exclusive with `--db` and with
-  `--db-isolate`; `-o` is optional (without it results are simply discarded).
+- `--stateless` on a **scan** is mutually exclusive with `--db` (a database you
+  named by hand is never silently discarded). `--db-isolate` is *not* an error
+  alongside it: `-S` wins and the flag is ignored with a warning, since the run
+  keeps no database to merge from. `-o` is optional (without it results are
+  simply discarded).
   On **read** commands (`finding`/`traffic`/`replay`) `-S` reads *from* `--db`.
 - `--fail-on` writes output first, then sets the exit code. `--soft-fail`
   (global) overrides it. Under `-P` it is evaluated per child.
 - `--split-by-host` only applies in stateless multi-target mode (`-S -T file`),
-  and is required for `-P > 1`.
+  where it is required for `-P > 1`. The other way to earn `-P > 1` is
+  `--db-isolate -T` (no `-S`), which needs no per-host files.
 - `-m` and `--module-tag` **merge** (union); `--module-tag` is OR across tags.
 - `--module-id` matches active **and** passive registries exactly; `-m` is a
   fuzzy match on active modules only.
@@ -553,7 +557,11 @@ vigolium import --db combined.sqlite --glob-db 'run-*.sqlite'
 vigolium finding --db combined.sqlite --min-severity high
 ```
 
-`-P` requires `-S -T --split-by-host` (or `--db-isolate -T`). The gate is
+`-P` needs one of two isolation shapes, never a mix of them: `-S -T
+--split-by-host` (per-host output files, nothing persisted) **or** `--db-isolate
+-T` (each target merges into one shared `--db`). `-S` and `--db-isolate` do not
+combine: passing both ignores `--db-isolate` with a warning, since `-S`
+discards the database there would be nothing to merge from. The gate is
 evaluated per child; the batch fails only when every target fails.
 
 ### 4. Triage loop: survey → drill → confirm → report

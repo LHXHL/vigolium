@@ -170,14 +170,10 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 	speedDetail := fmt.Sprintf("Speed: concurrency=%s, max-per-host=%s",
 		terminal.HiBlue(fmt.Sprintf("%d", r.options.Concurrency)),
 		terminal.HiBlue(fmt.Sprintf("%d", r.options.MaxPerHost)))
-	if r.settings != nil {
-		discPace := r.settings.ScanningPace.ResolvePhase("discovery")
-		if discPace.MaxDuration > 0 {
-			speedDetail += fmt.Sprintf(", max-duration=%s", terminal.HiTeal(discPace.MaxDuration.String()))
-		}
-		if discPace.DurationFactor > 0 {
-			speedDetail += fmt.Sprintf(" (duration_factor=%s)", terminal.HiBlue(fmt.Sprintf("%.1f", discPace.DurationFactor)))
-		}
+	// The option is what buildDeparosConfig hands the phase, so it is what gets
+	// reported.
+	if budget := PhaseSpeedDetail(r.settings, "discovery", r.options.DiscoverMaxDuration); budget != "" {
+		speedDetail += ", " + budget
 	}
 	r.printPhaseDetail(speedDetail)
 
@@ -833,10 +829,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 	if utils.EnvTruthy(spitolas.EnvBrowserHeaded) {
 		settingsCfg.Headless = false
 	}
-	maxDuration := settingsCfg.MaxDurationParsed()
-	if r.options.SpideringMaxDuration > 0 {
-		maxDuration = r.options.SpideringMaxDuration
-	}
+	maxDuration := SpideringBudget(r.settings, r.options)
 
 	targets := r.options.Targets
 	dbHosts := r.getInScopeHostURLs(ctx)
@@ -879,18 +872,14 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 	if settingsCfg.NoForms {
 		formsState = "off"
 	}
-	configDetail := fmt.Sprintf("Config: strategy=%s, max-depth=%s, max-states=%s, forms=%s, headless=%s, max-duration=%s",
+	configDetail := fmt.Sprintf("Config: strategy=%s, max-depth=%s, max-states=%s, forms=%s, headless=%s",
 		terminal.HiTeal(settingsCfg.Strategy),
 		terminal.HiTeal(fmt.Sprintf("%d", settingsCfg.MaxDepth)),
 		terminal.HiTeal(fmt.Sprintf("%d", settingsCfg.MaxStates)),
 		terminal.HiTeal(formsState),
-		terminal.HiTeal(fmt.Sprintf("%v", settingsCfg.Headless)),
-		terminal.HiTeal(maxDuration.String()))
-	if r.settings != nil {
-		spiderPace := r.settings.ScanningPace.ResolvePhase("spidering")
-		if spiderPace.DurationFactor > 0 {
-			configDetail += fmt.Sprintf(" (duration_factor=%s)", terminal.HiBlue(fmt.Sprintf("%.1f", spiderPace.DurationFactor)))
-		}
+		terminal.HiTeal(fmt.Sprintf("%v", settingsCfg.Headless)))
+	if budget := PhaseSpeedDetail(r.settings, "spidering", maxDuration); budget != "" {
+		configDetail += ", " + budget
 	}
 	r.printPhaseDetail(configDetail)
 	r.printTargetDetail(r.formatTargetCounts(ctx, len(targets)))

@@ -126,8 +126,10 @@ func TestSpiderFanOutSuggestion(t *testing.T) {
 }
 
 // TestSpiderFanOutSuggestionNeverPairsStatelessWithDBIsolate guards the one
-// combination that is a hard error (`--db-isolate and --stateless are mutually
-// exclusive`): a hint that produces a rejected command is worse than no hint.
+// combination that does not compose: under -S, --db-isolate is ignored with a
+// warning (its database is discarded, so there is nothing to merge). It no
+// longer rejects the command outright, but a hint whose flags get dropped --
+// leaving -P to fail the isolation gate anyway -- is still worse than no hint.
 func TestSpiderFanOutSuggestionNeverPairsStatelessWithDBIsolate(t *testing.T) {
 	for _, split := range []bool{false, true} {
 		flags, ok := SpiderFanOutSuggestion(fromFile(&types.Options{Stateless: true, SplitByHost: split}), 100)

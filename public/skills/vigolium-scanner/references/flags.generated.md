@@ -245,7 +245,7 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 | `--skill` | - | stringSlice | - | Force-load these skills by name, bypassing the pre-flight selection (repeatable or comma-separated) |
 | `--skill-tag` | - | stringSlice | - | Force-load every skill carrying one of these tags (e.g. xss,idor) |
 | `--source` | - | string | - | Path to application source code for source-aware scanning |
-| `--stateless` | `-S` | bool | `false` | Run the whole autopilot into a throwaway temporary database (your project DB is left untouched), then materialize --format outputs from it. Mirrors 'vigolium scan -S'. Not valid with --db, --db-isolate, or --resume. |
+| `--stateless` | `-S` | bool | `false` | Run the whole autopilot into a throwaway temporary database (your project DB is left untouched), then materialize --format outputs from it. Mirrors 'vigolium scan -S'. Not valid with --db or --resume; --db-isolate is ignored alongside it. |
 | `--system-prompt` | - | string | - | Replace the built-in autopilot system prompt with this value (full replace; browser section is not auto-appended) |
 | `--system-prompt-file` | - | string | - | Path to a file whose contents replace the built-in autopilot system prompt (takes precedence over --system-prompt) |
 | `--target` | `-t` | string | - | Target URL (derived from --input if not set) |
@@ -1385,7 +1385,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
 | `--browsers` | `-b` | int | `1` | Number of parallel browser instances for spidering |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
-| `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only, not with --stateless; combine with -P -T to fan out targets and export one unified output from the merged DB) |
+| `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
 | `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
 | `--discover-max-time` | - | duration | `1h0m0s` | Max time for content discovery per target |
 | `--discovery-wordlist` | - | string | - | Custom wordlist path seeding the discovery phase (enables fuzzing on the fly). Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |
@@ -1472,7 +1472,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
 | `--browsers` | `-b` | int | `1` | Number of parallel browser instances for spidering |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
-| `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only, not with --stateless; combine with -P -T to fan out targets and export one unified output from the merged DB) |
+| `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
 | `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
 | `--discover-max-time` | - | duration | `1h0m0s` | Max time for content discovery per target |
 | `--discovery-wordlist` | - | string | - | Custom wordlist path seeding the discovery phase (enables fuzzing on the fly). Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |

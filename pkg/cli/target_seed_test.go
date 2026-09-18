@@ -187,3 +187,13 @@ func TestTargetFileAndStdinAcceptTheSameList(t *testing.T) {
 	assert.Equal(t, fromFile.Targets, fromStdin.Targets)
 	assert.Equal(t, []string{"http://a.example.com", "http://b.example.com"}, fromStdin.Targets)
 }
+
+// A -T file of bare hostnames is the common recon hand-off, and it has to reach
+// the phases as absolute URLs: the browser-based spidering phase fails each
+// schemeless seed while probe and discovery scan the same list fine.
+func TestSeedTargetsFromTargetFileNormalizesSchemelessLines(t *testing.T) {
+	opts := &types.Options{TargetsFilePaths: []string{writeTargetFile(t, "bare.txt", "example.com\n")}}
+	require.NoError(t, seedTargetsFromTargetFiles(opts))
+
+	assert.Equal(t, []string{"http://example.com"}, opts.Targets)
+}

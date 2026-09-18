@@ -14,9 +14,11 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	deparosconfig "github.com/vigolium/vigolium/pkg/deparos/config"
 	"github.com/vigolium/vigolium/pkg/harvester"
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/notify/telegram"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"github.com/vigolium/vigolium/pkg/types"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 	"go.uber.org/zap"
 )
@@ -29,6 +31,24 @@ func (r *Runner) getInScopeDBHosts(ctx context.Context) []database.HostTarget {
 		return nil
 	}
 	return r.repository.InScopeHosts(ctx, r.settings.Scope, r.options.Targets, r.options.ProjectUUID, r.options.ScanUUID)
+}
+
+// normalizeTargetSchemes gives every target in options an explicit scheme.
+//
+// Both constructors call it because this is the one seam every entry point
+// passes: the CLI merges its targets in mergePositionalTargets, but the REST
+// handlers, both agent-swarm paths, `scan-url` and launch.Params all assign
+// options.Targets directly, and a schemeless target reaching the browser phase
+// or targetHostnames below is dropped rather than scanned. Idempotent, so the
+// CLI normalizing first (it needs to, to dedup on the normalized spelling)
+// costs nothing here.
+func normalizeTargetSchemes(options *types.Options) {
+	if options == nil {
+		return
+	}
+	for i, t := range options.Targets {
+		options.Targets[i] = httpmsg.EnsureURLScheme(t, httpmsg.DefaultTargetScheme)
+	}
 }
 
 // targetHostnames extracts unique host:port values from CLI targets.

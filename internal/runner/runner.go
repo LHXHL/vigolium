@@ -268,6 +268,9 @@ func (r *Runner) SetSharedInfra(infra *SharedInfra) {
 
 // New creates a new client for running the enumeration process.
 func New(options *types.Options) (*Runner, error) {
+	// Ahead of the input source, which is built from the same slice.
+	normalizeTargetSchemes(options)
+
 	inputSource, err := source.NewInputSource(source.SourceConfig{
 		Targets:               options.Targets,
 		FilePaths:             options.TargetsFilePaths,
@@ -340,6 +343,8 @@ func parseVariables(variables []string) map[string]string {
 // NewWithInputSource creates a new Runner with a custom InputSource.
 // Used by server mode to provide queue-based input.
 func NewWithInputSource(options *types.Options, inputSource source.InputSource) (*Runner, error) {
+	normalizeTargetSchemes(options)
+
 	if err := network.Init(options); err != nil {
 		return nil, errors.Wrap(err, "failed to initialize network")
 	}

@@ -24,12 +24,15 @@ func newFormatCmd(t *testing.T, formatVal string, formatChanged bool) *cobra.Com
 }
 
 // withGlobals snapshots and restores the process globals planAgentStateless
-// reads, so each case starts clean regardless of order.
+// reads, so each case starts clean regardless of order. globalSilent is pinned
+// on to keep the resolver's advisory warnings off the test log.
 func withGlobals(t *testing.T, format, db string, isolate bool) {
 	t.Helper()
-	sf, sdb, siso := globalFormat, globalDB, globalDBIsolate
-	globalFormat, globalDB, globalDBIsolate = format, db, isolate
-	t.Cleanup(func() { globalFormat, globalDB, globalDBIsolate = sf, sdb, siso })
+	sf, sdb, siso, ssil := globalFormat, globalDB, globalDBIsolate, globalSilent
+	globalFormat, globalDB, globalDBIsolate, globalSilent = format, db, isolate, true
+	t.Cleanup(func() {
+		globalFormat, globalDB, globalDBIsolate, globalSilent = sf, sdb, siso, ssil
+	})
 }
 
 func TestPlanAgentStateless(t *testing.T) {
@@ -106,12 +109,15 @@ func TestPlanAgentStateless(t *testing.T) {
 			wantErr:       "cannot be combined with --db",
 		},
 		{
-			name:          "stateless rejects --db-isolate",
+			// Unlike --db, --db-isolate names no destination of its own, so -S
+			// simply wins and the run proceeds.
+			name:          "stateless ignores --db-isolate instead of failing",
 			format:        "html",
 			formatChanged: true,
 			stateless:     true,
 			dbIsolate:     true,
-			wantErr:       "cannot be combined with --db-isolate",
+			wantActive:    true,
+			wantOutput:    agentStatelessDefaultBase,
 		},
 		{
 			// planAgentStateless shares normalizeScanFormats with the scan
@@ -161,6 +167,12 @@ func TestPlanAgentStateless(t *testing.T) {
 			}
 			if tt.wantFormats != nil && !slices.Equal(plan.formats, tt.wantFormats) {
 				t.Errorf("plan.formats = %v, want %v", plan.formats, tt.wantFormats)
+			}
+			// Asserted on every non-error row, not just the one that pairs the
+			// flags: -S must disarm --db-isolate (dbIsolateBegin runs later off
+			// globalDBIsolate), and a run without -S must leave it alone.
+			if wantIsolate := tt.dbIsolate && !tt.stateless; globalDBIsolate != wantIsolate {
+				t.Errorf("globalDBIsolate = %v, want %v", globalDBIsolate, wantIsolate)
 			}
 		})
 	}

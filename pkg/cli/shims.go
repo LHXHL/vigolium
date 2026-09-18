@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -391,11 +392,11 @@ func translateGau(args []string) ([]string, error) {
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("gau: a target domain is required")
 	}
-	// gau takes a bare domain; every vigolium phase takes a URL.
+	// gau takes a bare domain; every vigolium phase takes a URL. https rather
+	// than the scan default because gau's own callers write bare domains for
+	// sites they reach over TLS.
 	for i, t := range targets {
-		if !strings.Contains(t, "://") {
-			targets[i] = "https://" + t
-		}
+		targets[i] = httpmsg.EnsureURLScheme(t, "https")
 	}
 	return emitTargets(out, targets), nil
 }

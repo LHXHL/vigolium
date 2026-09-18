@@ -29,10 +29,11 @@ const spiderFanOutSuggestedParallel = 5
 // naming a command that gets rejected — or silently degraded back to one serial
 // scan — is worse than no hint. validateParallelScan admits -P > 1 only under
 // --db-isolate or -S --split-by-host (anything else would share a database or an
-// output file across concurrent scans), rejects --db-isolate alongside -S
-// outright, and needs a -T file to split in the first place: a -t-only or piped
-// run has nothing to fan out and is warned back down to Parallel = 1. Flags
-// already present are not repeated back.
+// output file across concurrent scans), and needs a -T file to split in the first
+// place: a -t-only or piped run has nothing to fan out and is warned back down to
+// Parallel = 1. Suggesting --db-isolate to a -S run is pointless for a different
+// reason — runScanCmd drops the flag with a warning there, leaving -P to fail the
+// gate anyway. Flags already present are not repeated back.
 //
 // Lives here rather than in pkg/cli because both the pre-scan banner hint and the
 // phase's own ceiling-reached line quote it, and pkg/cli imports this package

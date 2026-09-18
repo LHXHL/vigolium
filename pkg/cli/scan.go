@@ -24,6 +24,7 @@ import (
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/agent"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats/burpscope"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
 	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
@@ -105,12 +106,17 @@ func shouldWidenKnownIssueScanSeverities(onlyPhase string, severitiesExplicit bo
 
 // mergePositionalTargets combines positional target URLs with repeated --target
 // values, preserving order (positional first) and removing duplicates and blanks.
+// It normalizes the scheme here as well as in runner.NewWithInputSource, where
+// every entry point is caught: doing it before the dedup is what collapses
+// `example.com` and `http://example.com` into one target rather than two, and it
+// is the spelling the banner goes on to print.
 func mergePositionalTargets(positional, flagged []string) []string {
 	seen := make(map[string]bool, len(positional)+len(flagged))
 	out := make([]string, 0, len(positional)+len(flagged))
 	for _, src := range [][]string{positional, flagged} {
 		for _, t := range src {
-			if t = strings.TrimSpace(t); t != "" && !seen[t] {
+			t = httpmsg.EnsureURLScheme(strings.TrimSpace(t), httpmsg.DefaultTargetScheme)
+			if t != "" && !seen[t] {
 				seen[t] = true
 				out = append(out, t)
 			}
@@ -191,9 +197,12 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		return err
 	}
 
-	// Stateless mode validation
+	// Stateless mode validation. The db-isolate precedence runs BEFORE the flag
+	// is copied into Options, so the copy below is already the resolved value and
+	// there is never a second place to clear.
 	scanOpts.Stateless = globalStateless
 	scanOpts.SplitByHost = globalSplitByHost
+	dbIsolateYieldsToStateless(scanOpts.Stateless)
 	scanOpts.DBIsolate = globalDBIsolate
 	scanOpts.Parallel = globalParallel
 	scanOpts.Resume = globalResume
@@ -215,9 +224,6 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	// require -o everywhere else.
 	splitByHostNaming := scanOpts.SplitByHost && scanOpts.Stateless && len(scanOpts.TargetsFilePaths) > 0
 
-	if scanOpts.DBIsolate && scanOpts.Stateless {
-		return fmt.Errorf("--db-isolate and --stateless are mutually exclusive (--stateless discards results; --db-isolate merges them into --db)")
-	}
 	// Supplying a fuzz wordlist and disabling fuzzing states two opposite
 	// intents. Resolving it silently either way leaves the operator believing
 	// the other one took effect, and the two outcomes differ by thousands of
@@ -1648,6 +1654,43 @@ func finishStatelessExport(db *database.DB, opts *types.Options, outputPath stri
 // --stateless, so it keeps its own string.
 const dbIsolateAgentFlagUsage = "Run into a private temporary database, then merge results into --db (or the default DB) at the end — lets parallel runs share one --db without write contention (SQLite only)"
 
+// dbIsolateYieldsToStateless applies the precedence between --db-isolate and
+// --stateless: -S wins and --db-isolate is ignored with a warning.
+//
+// The pair used to be a hard error. It is a warning because tools that compose
+// vigolium's flags pass both, and refusing to start stops a whole workflow over
+// a flag that simply has nothing to do: -S discards the run's database, so there
+// is no database left to merge anywhere. Which side wins is not arbitrary:
+// were --db-isolate to win, a run that asked for -S would begin merging into the
+// operator's project DB, the one thing -S promises will not happen.
+//
+// The flag is dropped outright rather than half-honored, so every remaining
+// combination validates exactly as if it had never been typed: -S --db-isolate
+// --db still reports the --db conflict, and -S --db-isolate -P still meets the
+// -P isolation gate (which asks for --split-by-host). Anything softer would make
+// adding an ignored flag *widen* what the CLI accepts.
+//
+// It clears globalDBIsolate rather than reporting the conflict, because the flag
+// var IS the flag: dbIsolateBegin reads it directly (not an Options field), and
+// by the time that runs the stateless path has already repointed
+// settings.Database/globalDB at its throwaway file — a stale flag there would
+// merge a second scratch database into one that is about to be deleted. Callers
+// that copy the flag into Options must therefore copy it AFTER this runs.
+func dbIsolateYieldsToStateless(stateless bool) {
+	if !stateless || !globalDBIsolate {
+		return
+	}
+	if !machineOutputMode() {
+		fmt.Fprintf(os.Stderr,
+			"%s %s is ignored under %s: this run's database is discarded, so there is nothing to merge into %s.\n",
+			terminal.WarnPrefix(),
+			terminal.BoldCyan("--db-isolate"),
+			terminal.BoldCyan("--stateless"),
+			terminal.BoldCyan("--db"))
+	}
+	globalDBIsolate = false
+}
+
 // dbIsolateDestPath records the real destination database that a --db-isolate
 // run merges into at the end. dbIsolateBegin repoints settings.Database and
 // globalDB at the scratch file, which erases the original destination from
@@ -2095,31 +2138,6 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 		emitBanner(GetBanner())
 	}
 
-	// Phase status indicators: symbol + colored name + optional pace detail
-	phaseLabel := func(name, phasePaceKey string, enabled bool) string {
-		label := name
-		if !enabled {
-			return terminal.Gray(terminal.SymbolError) + " " + terminal.Gray(label)
-		}
-		// Append max_duration / duration_factor if set
-		resolved := settings.ScanningPace.ResolvePhase(phasePaceKey)
-		var paceDetail string
-		if resolved.MaxDuration > 0 {
-			paceDetail = resolved.MaxDuration.String()
-		}
-		if resolved.DurationFactor > 0 {
-			if paceDetail != "" {
-				paceDetail += fmt.Sprintf(", x%.1f", resolved.DurationFactor)
-			} else {
-				paceDetail = fmt.Sprintf("x%.1f", resolved.DurationFactor)
-			}
-		}
-		if paceDetail != "" {
-			label += " " + terminal.Gray("("+paceDetail+")")
-		}
-		return terminal.Green(terminal.SymbolSuccess) + " " + terminal.HiCyan(label)
-	}
-
 	discoveryEnabled := opts.DiscoverEnabled
 	spideringEnabled := opts.SpideringEnabled
 	knownIssueScanEnabled := opts.KnownIssueScanEnabled
@@ -2213,12 +2231,12 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 	fmt.Fprintf(os.Stderr, "  %s %s\n", terminal.Purple(terminal.SymbolTarget), targetsLine)
 	fmt.Fprintf(os.Stderr, "  %s Phases: %s | %s | %s\n",
 		terminal.Purple(terminal.SymbolInfo),
-		phaseLabel("ExternalHarvest", "external_harvester", ehEnabled),
-		phaseLabel("Spidering", "spidering", spideringEnabled),
-		phaseLabel("Discovery", "discovery", discoveryEnabled))
+		runner.PhaseLabel(settings, "ExternalHarvest", "external_harvester", ehEnabled, 0),
+		runner.PhaseLabel(settings, "Spidering", "spidering", spideringEnabled, runner.SpideringBudget(settings, opts)),
+		runner.PhaseLabel(settings, "Discovery", "discovery", discoveryEnabled, opts.DiscoverMaxDuration))
 	fmt.Fprintf(os.Stderr, "           %s | %s\n",
-		phaseLabel("KnownIssueScan", "known-issue-scan", knownIssueScanEnabled),
-		phaseLabel("DynamicAssessment", "dynamic-assessment", daEnabled))
+		runner.PhaseLabel(settings, "KnownIssueScan", "known-issue-scan", knownIssueScanEnabled, 0),
+		runner.PhaseLabel(settings, "DynamicAssessment", "dynamic-assessment", daEnabled, 0))
 	// Total scan-duration budget (from --scanning-max-duration). The per-phase
 	// durations above are factor-scaled slices of this cap and share it — the
 	// whole scan is bounded by it. Under a parallel fan-out (-P > 1) each target

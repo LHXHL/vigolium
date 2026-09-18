@@ -22,14 +22,27 @@ set -euo pipefail
 #   npm-verify-publish.sh version  <package> <version>       # version exists
 #   npm-verify-publish.sh dist-tag <package> <tag> <version> # tag resolves
 #
+# How long to wait: the platform tarballs are ~133 MB each and the registry
+# regularly needs well over 5 minutes to finish processing one. The old 300s
+# budget (30 x 10s) timed out on packages that then landed fine a few minutes
+# later, so a release took several `make npm-publish` re-runs to walk through
+# five platforms one timeout at a time. `version` mode therefore polls for 15
+# minutes; a package that has not appeared by then really is dropped. dist-tag
+# propagation is fast, so that mode keeps the short budget.
+#
 # Env:
-#   NPM_VERIFY_TRIES = poll attempts (default 30)
+#   NPM_VERIFY_TRIES = poll attempts (default 90 for version, 30 for dist-tag)
 #   NPM_VERIFY_SLEEP = seconds between attempts (default 10)
 
 MODE="${1:?usage: npm-verify-publish.sh version|dist-tag ...}"
 PKG="${2:?package name required}"
 
-TRIES="${NPM_VERIFY_TRIES:-30}"
+case "$MODE" in
+version) DEFAULT_TRIES=90 ;;
+*) DEFAULT_TRIES=30 ;;
+esac
+
+TRIES="${NPM_VERIFY_TRIES:-$DEFAULT_TRIES}"
 SLEEP="${NPM_VERIFY_SLEEP:-10}"
 
 # Registry paths take the scope separator escaped: @scope%2fname.

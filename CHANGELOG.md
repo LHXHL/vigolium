@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.4.8] - 2026-09-18
+
+A **target-and-banner correctness** release: schemeless targets reach every phase, the banner prints the budget the phase will actually use, and composed flags stop failing a run over nothing.
+
+### Fixed
+
+- **A schemeless target silently skipped spidering** — `-t example.com` or a bare-hostname `-T` file scanned fine under probe/discovery but net/url rejected the crawl seed, so `--only spidering --soft-fail` exited 0 with 0 records; every entry point now normalizes to an explicit scheme.
+- The banner advertised the `scanning_pace` slice instead of the real budget: `--spider-max-time 5m` printed `6m0s` while the phase crawled for 5m; `--discover-max-time` had the same gap.
+- `--db-isolate` alongside `-S/--stateless` aborted the run; it is now ignored with a warning, since `-S` keeps no database to merge from.
+- npm publish verification timed out at 300s on ~133 MB platform tarballs that landed minutes later, so a release needed several `make npm-publish` re-runs.
+
+### Changed
+
+- **Relicensed under MIT** — `LICENSE`, `THIRD_PARTY_NOTICES.md`, the npm package metadata and the server's license header all updated.
+- Phase-budget rendering moved to one shared `runner.PhaseLabel`/`SpideringBudget` pair, so the pre-scan banner and the phase itself can no longer disagree.
+- `npm-verify-publish.sh version` polls for 15 minutes (90 x 10s); `dist-tag` keeps the short 300s budget.
+- The `gau` shim reuses the shared scheme helper (still defaulting to https, unlike scan targets' http).
+- Skills and flag docs updated for the new `-S` / `--db-isolate` precedence, plus the previously undocumented `autopilot -S`, `-o` and `--prompt-file`.
+
 ## [v0.4.7] - 2026-09-18
 
 A **read-surface correctness** release: search filters that mean what they say, a source pin that refuses a typo, and single-message extraction.

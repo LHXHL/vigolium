@@ -751,17 +751,9 @@ func (r *Runner) runKnownIssueScanPhase(ctx context.Context, infra *phaseInfra) 
 	r.printPhaseStart("KnownIssueScan", "assess security posture with Nuclei templates and third-party validation checks")
 	var kisMaxDuration time.Duration
 	if r.settings != nil {
-		knownIssueScanPace := r.settings.ScanningPace.ResolvePhase("known-issue-scan")
-		kisMaxDuration = knownIssueScanPace.MaxDuration
-		if knownIssueScanPace.MaxDuration > 0 || knownIssueScanPace.DurationFactor > 0 {
-			detail := "Speed:"
-			if knownIssueScanPace.MaxDuration > 0 {
-				detail += fmt.Sprintf(" max-duration=%s", terminal.HiTeal(knownIssueScanPace.MaxDuration.String()))
-			}
-			if knownIssueScanPace.DurationFactor > 0 {
-				detail += fmt.Sprintf(" (duration_factor=%s)", terminal.HiBlue(fmt.Sprintf("%.1f", knownIssueScanPace.DurationFactor)))
-			}
-			r.printPhaseDetail(detail)
+		kisMaxDuration = r.settings.ScanningPace.ResolvePhase("known-issue-scan").MaxDuration
+		if budget := PhaseSpeedDetail(r.settings, "known-issue-scan", 0); budget != "" {
+			r.printPhaseDetail("Speed: " + budget)
 		}
 
 		// Surface the active severity filter and template scope as static detail
@@ -1092,14 +1084,8 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	daSpeedDetail := fmt.Sprintf("Speed: concurrency=%s, max-per-host=%s",
 		terminal.HiBlue(fmt.Sprintf("%d", r.options.Concurrency)),
 		terminal.HiBlue(fmt.Sprintf("%d", r.options.MaxPerHost)))
-	if r.settings != nil {
-		daPace := r.settings.ScanningPace.ResolvePhase("dynamic-assessment")
-		if daPace.MaxDuration > 0 {
-			daSpeedDetail += fmt.Sprintf(", max-duration=%s", terminal.HiTeal(daPace.MaxDuration.String()))
-		}
-		if daPace.DurationFactor > 0 {
-			daSpeedDetail += fmt.Sprintf(" (duration_factor=%s)", terminal.HiBlue(fmt.Sprintf("%.1f", daPace.DurationFactor)))
-		}
+	if budget := PhaseSpeedDetail(r.settings, "dynamic-assessment", 0); budget != "" {
+		daSpeedDetail += ", " + budget
 	}
 	r.printPhaseDetail(daSpeedDetail)
 	r.printTargetDetail(r.formatTargetCounts(ctx, len(r.options.Targets)))
@@ -1821,14 +1807,8 @@ func (r *Runner) runExternalHarvestPhase(ctx context.Context, infra *phaseInfra)
 	ehSpeedDetail := fmt.Sprintf("Speed: concurrency=%s, max-per-host=%s",
 		terminal.HiBlue(fmt.Sprintf("%d", r.options.Concurrency)),
 		terminal.HiBlue(fmt.Sprintf("%d", r.options.MaxPerHost)))
-	if r.settings != nil {
-		ehPace := r.settings.ScanningPace.ResolvePhase("external_harvester")
-		if ehPace.MaxDuration > 0 {
-			ehSpeedDetail += fmt.Sprintf(", max-duration=%s", terminal.HiTeal(ehPace.MaxDuration.String()))
-		}
-		if ehPace.DurationFactor > 0 {
-			ehSpeedDetail += fmt.Sprintf(" (duration_factor=%s)", terminal.HiBlue(fmt.Sprintf("%.1f", ehPace.DurationFactor)))
-		}
+	if budget := PhaseSpeedDetail(r.settings, "external_harvester", 0); budget != "" {
+		ehSpeedDetail += ", " + budget
 	}
 	r.printPhaseDetail(ehSpeedDetail)
 	r.printTargetDetail(r.formatTargetCounts(ctx, len(r.options.Targets)))
