@@ -46,7 +46,7 @@ const LICENSE_SRC = path.join(REPO_ROOT, "LICENSE");
 const VERSION_GO = path.join(REPO_ROOT, "pkg", "cli", "version.go");
 
 const NPM_NAME = "@vigolium/vigolium";
-const LICENSE_ID = "AGPL-3.0-only";
+const LICENSE_ID = "MIT";
 const HOMEPAGE = "https://vigolium.com";
 const DESCRIPTION = "Vigolium - High-fidelity vulnerability scanner fusing agentic AI with native speed, modularity, and precision";
 const KEYWORDS = [

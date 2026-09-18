@@ -131,7 +131,7 @@ func TestHandleAppInfo(t *testing.T) {
 	if resp.Author != "test-author" {
 		t.Errorf("author = %q, want test-author", resp.Author)
 	}
-	if resp.LicenseSPDX != "AGPL-3.0-or-later" {
+	if resp.LicenseSPDX != "MIT" {
 		t.Errorf("license = %q", resp.LicenseSPDX)
 	}
 	if resp.Commit != "abcdef0" {

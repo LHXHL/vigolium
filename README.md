@@ -506,6 +506,6 @@ Vigolium is an offensive security tool, and two parts of it are intentionally pe
 
 ## License
 
-Vigolium is released under the [GNU Affero General Public License v3.0](LICENSE). Derivative works must remain open under the same terms.
+Vigolium is released under the [MIT License](LICENSE).
 
 Crafted with ♥ by [@j3ssie](https://x.com/j3ssie), with [@theblackturtle](https://github.com/theblackturtle) as a core initial contributor.

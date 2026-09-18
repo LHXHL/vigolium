@@ -51,7 +51,7 @@ func TestServerHeaderSingleVPrefix(t *testing.T) {
 // TestServerHeaderOmitsLicense guards the banner against re-growing the license
 // string that used to sit in front of the source URL.
 func TestServerHeaderOmitsLicense(t *testing.T) {
-	if got := serverHeader("v0.4.1"); strings.Contains(got, "AGPL") {
+	if got := serverHeader("v0.4.1"); strings.Contains(got, "MIT") {
 		t.Errorf("serverHeader() should not carry a license string, got %q", got)
 	}
 }

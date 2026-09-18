@@ -2,7 +2,7 @@
   "name": "vigolium-workbench",
   "version": "0.1.0",
   "private": true,
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "scripts": {
     "dev": "NEXT_PUBLIC_API_BASE_URL=http://localhost:9002 next dev --turbopack -p 3002",
     "dev:clean": "rm -rf dist && NEXT_PUBLIC_API_BASE_URL=http://localhost:9002 next dev --turbopack -p 3002",

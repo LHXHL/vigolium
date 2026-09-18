@@ -10,12 +10,12 @@ with individual dependencies and does not replace the complete dependency
 license inventory for transitive packages, generated assets, or bundled
 binaries.
 
-Vigolium itself is licensed under the GNU AGPL-3.0 (see `LICENSE` and
-`NOTICE`). External engines and template sets such as Semgrep, GitHub CodeQL,
-and the ProjectDiscovery nuclei-templates are invoked at runtime as
-user-supplied tools — they are not redistributed as part of Vigolium and
-remain under their own respective licenses. The AGPL terms apply to
-Vigolium's own source code, not to these independently obtained tools.
+Vigolium itself is licensed under the MIT License (see `LICENSE`). External
+engines and template sets such as Semgrep, GitHub CodeQL, and the
+ProjectDiscovery nuclei-templates are invoked at runtime as user-supplied
+tools - they are not redistributed as part of Vigolium and remain under their
+own respective licenses. The MIT terms apply to Vigolium's own source code,
+not to these independently obtained tools.
 
 ## Source-Derived Code And Fixtures
 
