@@ -61,17 +61,3 @@ func requireStorageClient() (*storage.Client, error) {
 	}
 	return sc, nil
 }
-
-// humanBytes formats a byte count for table display.
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for n2 := n / unit; n2 >= unit; n2 /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
-}

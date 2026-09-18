@@ -64,14 +64,16 @@ section.
   prose: `usage_error` · `source_missing` · `source_unreadable` (not a database,
   or corrupt) · `source_incompatible` (valid SQLite that is not a vigolium store)
   · `gate_tripped` · `failed`.
-- **A wrong `--db` path does not error — it reads as empty.** Opening a database
-  *creates* it, so a typo'd or not-yet-scanned path returns `{"total":0,
-  "items":[]}` and **exit 0**, and pointing `--db` at another tool's SQLite file
-  writes vigolium's tables into it. "Nothing found" and "wrong file" are the same
-  output. Add **`--read-only`** to any read whose store must already exist: only
-  then does a missing path become `source_missing` and a foreign store become
-  `source_incompatible`. Otherwise assert `db_path` and sanity-check `total`
-  against a query you know matches.
+- **A wrong `--db` path errors; it no longer reads as empty.** On a pure read
+  (`traffic`, `finding`, `db ls`, `db stats`, `db export`, `export`, `log`,
+  `traffic body/headers`) against an explicitly pinned `--db` or
+  `$VIGOLIUM_DB_PATH`, a path that is not there fails `source_missing` (exit 1)
+  and **creates nothing**, and another tool's SQLite file fails
+  `source_incompatible` (exit 1) **without vigolium's tables being written into
+  it**. The built-in default database is still created on first use. On older
+  builds both cases returned `{"total":0,"items":[]}` with exit 0 — if you must
+  support those, assert `db_path` and sanity-check `total` against a query you
+  know matches.
 - **Non-interactive by default.** TUI is opt-in (`--tui`). Destructive commands
   need `--force`. Use `--no-color` (or `NO_COLOR=1`) for clean text.
 - **Everything is project-scoped** — `--project-name`, `--project-uuid`,
@@ -157,6 +159,10 @@ Full event table and field-by-field notes:
 | List agent sessions | `vigolium agent session` |
 | Browse stored HTTP traffic | `vigolium traffic` or `vigolium traffic <search>` |
 | Count records by a field instead of listing them | `vigolium traffic --group-by status_code` (`--group-limit N`) |
+| Select one exact URL (not a substring) | `vigolium traffic --url 'https://t/api/v1/me'` |
+| Save one response body to a file | `vigolium traffic body --uuid <uuid> -o resp.json` |
+| Read one message's headers, no body | `vigolium traffic headers --uuid <uuid> -j` |
+| Save a `-j` result to disk instead of context | `vigolium finding -j -n 500 -o findings.json` |
 | Browse findings | `vigolium finding` or `vigolium db ls findings` |
 | Compact agent JSON + linked records | `vigolium finding -j --with-records --min-severity high` |
 | Re-send one request + baseline diff | `vigolium replay --record-uuid <uuid>` |
@@ -304,9 +310,16 @@ Three things worth knowing about that habit — details in
 - **A gzip body over 1 MiB comes back as a prefix**, flagged `decoder_capped:
   true` with `body_size`/`body_sha256` describing the *whole* body. When you see
   that flag, do not conclude a string is absent — pull the body whole with
-  `vigolium db export --format fs --uuid <uuid>`.
+  `vigolium traffic body --uuid <uuid> -o resp.body` (one call, exact bytes), or
+  `vigolium db export --format fs --uuid <uuid>` when you want the whole record.
 - **Read one record by identity with `traffic --uuid <uuid>`**, applied before
-  pagination. A UUID as the positional term searches text, not identity.
+  pagination. A UUID as the positional term searches text, not identity. To
+  select by URL use `--url` (exact equality, repeatable) rather than the
+  positional term, which is a substring search.
+- **`--header` and `--body` search only their own half of the message**, and
+  `--search` spans the whole exchange. Every search term is **literal**: `%` and
+  `_` are ordinary characters, so `--body 'api_key'` does not also match
+  `api-key`. `--host`/`--path` stay patterns where `*` is the wildcard.
 
 ## Global flags
 
@@ -320,7 +333,7 @@ The ones an agent reaches for, beyond `-j`, `--db`, `--project-*`, `--format`,
 | `--debug` | a scan behaves unexpectedly; adds debug-level logging **including outgoing request lines**. `-v/--verbose` is the milder step |
 | `--log-file <path>` | you want the run's logs as JSON on disk instead of scrolling past - the thing to attach to a bug report |
 | `--mem-limit` | a big crawl is being OOM-killed. A soft `GOMEMLIMIT` ceiling; default auto is ⅓ of RAM, scaled down by `-P` so the children together stay under ⅔. Takes `off`, `6GiB`, or `50%`. An existing `GOMEMLIMIT` env var overrides it |
-| `--read-only` | the database is evidence - no mkdir, no journal change, no checkpoint (see Invariants) |
+| `--read-only` | the database is evidence - no mkdir, no journal change, no checkpoint, no `-wal`/`-shm` left behind (see Invariants). Cannot migrate an old store |
 | `--skip-dependency-check` | a container/CI run must not stall on the first-run chromium + nuclei-template check |
 | `-M/--list-modules` | you want the module list without `module ls` |
 | `--list-input-mode` | you forget which `-I` values exist; prints each with an example |
@@ -390,11 +403,13 @@ Things `-h` won't tell you:
 - Server mode requires API-key auth unless `-A`/`--no-auth`.
 - `db clean` with no selector is rejected. `db clean --all` needs `--force`.
 - **Opening a database writes to it by default** — `mkdir -p`, journal PRAGMAs, a
-  WAL checkpoint — so a plain read changes the file's SHA-256. `-S`/`--stateless`
-  is a *scoping* mode, not a read-only one. Pass **`--read-only`** when the source
-  is evidence: no directory creation, no journal change, no checkpoint, reads a
-  `chmod 444` file, and errors on a missing path instead of creating one. Refused
-  (exit 2) on commands that write.
+  WAL checkpoint — so a plain read changes the file's SHA-256 even though it no
+  longer creates a store at a wrong path. `-S`/`--stateless` is a *scoping* mode,
+  not a read-only one. Pass **`--read-only`** when the source is evidence: no
+  directory creation, no journal change, no checkpoint, **no `-wal`/`-shm`
+  siblings left beside it**, and it reads a `chmod 444` file. Refused (exit 2) on
+  commands that write. It cannot migrate an old store — that fails with a schema
+  error rather than being upgraded in place.
 - **`traffic --uuid` / `db ls --uuid`** select exact records before pagination.
   `replay -u` and `fuzz -u` also take a record UUID but **send traffic** — they
   are never what a read suggests.
@@ -455,6 +470,11 @@ Things `-h` won't tell you:
   change the request (`-H`, `--auth-session`, `--target`, `--session-id`).
 - On `replay`, `-H/--header` **overrides** a header and `--header-search`
   **filters** records; on `traffic`, `--header` is the filter.
+- **`traffic body`/`traffic headers` are subcommands; `--body`/`--header` are
+  search flags.** `vigolium traffic headers --uuid X` prints one message's
+  headers; `vigolium traffic --header X` lists every record whose header block
+  contains X. The near-identical spellings do opposite things — one selects a
+  message, the other filters a corpus.
 - Agent commands need a configured provider (`agent.olium` in
   `vigolium-configs.yaml`); verify with `vigolium doctor --json`.
 - Whitebox scanning is an agent feature — `--source <path|git-url|archive|gs://>`

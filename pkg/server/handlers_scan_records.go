@@ -121,7 +121,7 @@ func (h *Handlers) HandleScanRecords(c fiber.Ctx) error {
 	opts.ProjectUUID = projectUUID
 	concurrency := h.config.Concurrency
 	if concurrency <= 0 {
-		concurrency = 50
+		concurrency = types.DefaultConcurrency
 	}
 	opts.Concurrency = concurrency
 	opts.Modules = modules
@@ -367,7 +367,7 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 
 	concurrency := h.config.Concurrency
 	if concurrency <= 0 {
-		concurrency = 50
+		concurrency = types.DefaultConcurrency
 	}
 	if req.Concurrency > 0 {
 		concurrency = req.Concurrency

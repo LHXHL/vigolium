@@ -5,6 +5,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/types"
 )
 
 // ScanningPaceConfig provides centralized speed control parameters.
@@ -70,7 +72,7 @@ type ResolvedPhasePace struct {
 // matching the values shown in the example YAML config.
 func DefaultScanningPaceConfig() *ScanningPaceConfig {
 	return &ScanningPaceConfig{
-		Concurrency: 40,
+		Concurrency: types.DefaultConcurrency,
 		RateLimit:   100,
 		MaxPerHost:  40,
 		MaxDuration: "45m",

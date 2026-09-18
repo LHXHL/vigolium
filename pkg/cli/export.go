@@ -786,8 +786,8 @@ func streamExportData(ctx context.Context, db *database.DB, scope exportScope, o
 		var scans []*database.Scan
 		q := scopeProjectBun(db.NewSelect().Model(&scans).OrderExpr("created_at DESC"), projectUUID)
 		if topExportSearch != "" {
-			p := "%" + topExportSearch + "%"
-			q = q.Where("(uuid LIKE ? OR status LIKE ? OR error_message LIKE ?)", p, p, p)
+			p := database.LikeContains(topExportSearch)
+			q = q.Where(database.WithLikeEscape("(uuid LIKE ? OR status LIKE ? OR error_message LIKE ?)"), p, p, p)
 		}
 		if topExportLimit > 0 {
 			q = q.Limit(topExportLimit)
@@ -862,8 +862,8 @@ func streamExportData(ctx context.Context, db *database.DB, scope exportScope, o
 		var interactions []*database.OASTInteraction
 		q := scopeProjectBun(db.NewSelect().Model(&interactions).OrderExpr("interacted_at DESC"), projectUUID)
 		if topExportSearch != "" {
-			p := "%" + topExportSearch + "%"
-			q = q.Where("(protocol LIKE ? OR module_id LIKE ? OR unique_id LIKE ? OR full_id LIKE ? OR target_url LIKE ?)", p, p, p, p, p)
+			p := database.LikeContains(topExportSearch)
+			q = q.Where(database.WithLikeEscape("(protocol LIKE ? OR module_id LIKE ? OR unique_id LIKE ? OR full_id LIKE ? OR target_url LIKE ?)"), p, p, p, p, p)
 		}
 		if topExportLimit > 0 {
 			q = q.Limit(topExportLimit)
@@ -884,8 +884,8 @@ func streamExportData(ctx context.Context, db *database.DB, scope exportScope, o
 		var scopes []*database.Scope
 		q := scopeProjectBun(db.NewSelect().Model(&scopes).Where("enabled = ?", true).OrderExpr("priority ASC"), projectUUID)
 		if topExportSearch != "" {
-			p := "%" + topExportSearch + "%"
-			q = q.Where("(name LIKE ? OR host_pattern LIKE ? OR path_pattern LIKE ?)", p, p, p)
+			p := database.LikeContains(topExportSearch)
+			q = q.Where(database.WithLikeEscape("(name LIKE ? OR host_pattern LIKE ? OR path_pattern LIKE ?)"), p, p, p)
 		}
 		if topExportLimit > 0 {
 			q = q.Limit(topExportLimit)
@@ -1027,8 +1027,8 @@ func streamFindings(ctx context.Context, db *database.DB, projectUUID, scanUUID 
 		q = q.Where("f.scan_uuid = ?", scanUUID)
 	}
 	if topExportSearch != "" {
-		p := "%" + topExportSearch + "%"
-		q = q.Where("(module_id LIKE ? OR module_name LIKE ? OR description LIKE ? OR matched_at LIKE ? OR severity LIKE ? OR url LIKE ? OR hostname LIKE ? OR extracted_results LIKE ?)", p, p, p, p, p, p, p, p)
+		p := database.LikeContains(topExportSearch)
+		q = q.Where(database.WithLikeEscape("(module_id LIKE ? OR module_name LIKE ? OR description LIKE ? OR matched_at LIKE ? OR severity LIKE ? OR url LIKE ? OR hostname LIKE ? OR extracted_results LIKE ?)"), p, p, p, p, p, p, p, p)
 	}
 	if topExportSeverity != "" {
 		sevs := strings.Split(strings.ToLower(topExportSeverity), ",")

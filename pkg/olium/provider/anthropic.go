@@ -85,17 +85,7 @@ func (a *Anthropic) Name() string { return a.name }
 // a bare host, resolving each to a complete messages endpoint. Trailing
 // slashes are trimmed so we never emit /v1//messages.
 func normalizeAnthropicBaseURL(raw string) string {
-	u := strings.TrimRight(strings.TrimSpace(raw), "/")
-	switch {
-	case u == "":
-		return ""
-	case strings.HasSuffix(u, "/messages"):
-		return u
-	case strings.HasSuffix(u, "/v1"):
-		return u + "/messages"
-	default:
-		return u + "/v1/messages"
-	}
+	return normalizeProviderBaseURL(raw, anthropicMessagesEndpoint)
 }
 
 // CloseIdleConnections drops idle HTTP/2 conns on this provider's transport

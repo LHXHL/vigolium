@@ -183,7 +183,7 @@ func (h *Handlers) buildRunScanOptions(req RunScanRequest, projectUUID string) (
 
 	concurrency := h.config.Concurrency
 	if concurrency <= 0 {
-		concurrency = 50
+		concurrency = types.DefaultConcurrency
 	}
 	if req.Concurrency > 0 {
 		concurrency = req.Concurrency

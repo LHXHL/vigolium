@@ -110,3 +110,79 @@ func TestLevenshtein(t *testing.T) {
 		}
 	}
 }
+
+// TestSuggestionBudgetRejectsUnrelatedShortFlags is the regression.
+//
+// `vigolium traffic --url https://…` was answered with "Did you mean --all?".
+// Three characters, edit distance two: under the old max(2, len/3) floor that
+// counted as a typo. It is not one — --all lifts the -n result cap, so a caller
+// who took the hint would get every stored record back and no indication that
+// they had asked a different question than they meant to.
+func TestSuggestionBudgetRejectsUnrelatedShortFlags(t *testing.T) {
+	cases := []struct {
+		typed string
+		want  int
+	}{
+		// Short names must match within one edit.
+		{"url", 1},
+		{"all", 1},
+		{"host", 1},
+		{"limit", 1},
+		// Longer ones can afford a third of their length.
+		{"modules", 2},
+		{"full-body", 3},
+	}
+	for _, tc := range cases {
+		if got := suggestionBudget(tc.typed); got != tc.want {
+			t.Errorf("suggestionBudget(%q) = %d, want %d", tc.typed, got, tc.want)
+		}
+	}
+
+	// levenshtein("url", "all") is 2, which must now exceed the budget.
+	if d := levenshtein("url", "all"); d <= suggestionBudget("url") {
+		t.Errorf("--url is still within suggestion range of --all (distance %d)", d)
+	}
+}
+
+func TestFlagErrorFuncDoesNotSuggestAllForURL(t *testing.T) {
+	c := &cobra.Command{Use: "traffic"}
+	c.SetFlagErrorFunc(flagErrorFunc)
+	c.Flags().Bool("all", false, "")
+	c.Flags().String("host", "", "")
+	c.Flags().Int("limit", 100, "")
+
+	err := parseErr(t, c, "--url", "https://example.invalid/")
+	if err == nil {
+		t.Fatal("expected an unknown-flag error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "Did you mean") {
+		t.Errorf("a flag with no near-miss must not be guessed at, got: %q", msg)
+	}
+	// A dead end is not an improvement either: say where the answer lives.
+	if !strings.Contains(msg, "--help") {
+		t.Errorf("expected a pointer to the command's help, got: %q", msg)
+	}
+}
+
+// Real typos must keep working; the tightened budget is not allowed to turn
+// every near-miss into a dead end.
+func TestFlagErrorFuncStillCatchesRealTypos(t *testing.T) {
+	c := &cobra.Command{Use: "traffic"}
+	c.SetFlagErrorFunc(flagErrorFunc)
+	c.Flags().String("host", "", "")
+	c.Flags().Bool("full-body", false, "")
+
+	for _, tc := range []struct{ typed, want string }{
+		{"--hosts", "Did you mean --host?"},
+		{"--full-bod", "Did you mean --full-body?"},
+	} {
+		err := parseErr(t, c, tc.typed, "x")
+		if err == nil {
+			t.Fatalf("expected an error for %s", tc.typed)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: expected %q, got %q", tc.typed, tc.want, err.Error())
+		}
+	}
+}

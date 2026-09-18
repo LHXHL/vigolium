@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+
+	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle/linkfinder"
 )
 
@@ -170,7 +172,7 @@ func (r *Repository) GetNodesPaginated(ctx context.Context, page, limit int, sor
 		q = q.Where("resp_status IS NOT NULL")
 
 		if v, ok := filters["url"]; ok && v != "" {
-			q = q.Where("url LIKE ?", "%"+v+"%")
+			q = q.Where(database.WithLikeEscape("url LIKE ?"), database.LikeContains(v))
 		}
 
 		if v, ok := filters["status"]; ok && v != "" {
@@ -204,7 +206,7 @@ func (r *Repository) GetNodesPaginated(ctx context.Context, page, limit int, sor
 		}
 
 		if v, ok := filters["tags"]; ok && v != "" {
-			q = q.Where("tags LIKE ?", "%"+v+"%")
+			q = q.Where(database.WithLikeEscape("tags LIKE ?"), database.LikeContains(v))
 		}
 
 		return q

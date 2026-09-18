@@ -221,6 +221,14 @@ func RunActiveTestCase(t *testing.T, tc TestCase, baseURL string, infra *TestInf
 	}
 	require.NoError(t, err, "Failed to create request from URL: %s", fullURL)
 
+	// Modules receive records that already carry a response in a real scan (ingested
+	// traffic, discovery hits). The synthetic record built above has none, so send it
+	// once and scan the answered record - modules that compare against a baseline
+	// response would otherwise see nothing to compare with.
+	if baseline := fetchBaseline(t, rr, infra); baseline != nil {
+		rr = baseline
+	}
+
 	activeMods, err := ResolveActiveModules(tc.Modules)
 	if err != nil {
 		t.Logf("Warning: %v", err)
@@ -274,6 +282,32 @@ func RunActiveTestCase(t *testing.T, tc TestCase, baseURL string, infra *TestInf
 	}
 
 	return results
+}
+
+// fetchBaseline sends rr once and returns rr paired with the response, or nil
+// when rr already has one or the send fails (the caller then scans the
+// response-less record, as before).
+func fetchBaseline(t *testing.T, rr *httpmsg.HttpRequestResponse, infra *TestInfra) *httpmsg.HttpRequestResponse {
+	t.Helper()
+
+	if rr == nil || rr.HasResponse() {
+		return nil
+	}
+
+	chain, _, err := infra.HTTPClient.Execute(rr, httpRequester.Options{NoRedirects: true, NoClustering: true})
+	if err != nil {
+		t.Logf("baseline request failed, scanning without a response: %v", err)
+		return nil
+	}
+	defer chain.Close()
+
+	// FullResponseString copies out of the chain's pooled buffer, which Close
+	// reclaims - so the copy has to happen before this function returns.
+	raw := chain.FullResponseString()
+	if raw == "" {
+		return nil
+	}
+	return rr.WithResponse(httpmsg.NewHttpResponse([]byte(raw)))
 }
 
 // runPerInsertionPoint creates insertion points from the request and calls
@@ -651,6 +685,46 @@ func buildRequestWithMethod(rawURL, method string, headers map[string]string) (*
 	}
 
 	return newRR.WithService(rr.Service()), nil
+}
+
+// RepoRoot returns the absolute path to the repository root, found by walking up
+// from the working directory until a go.mod is seen. Returns "" if none is found.
+//
+// Benchmark definitions spell paths (build_context and friends) relative to the
+// repo root, but `go test` runs each package with its own directory as the working
+// directory - so those paths have to be re-anchored before they hit the filesystem.
+func RepoRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// ResolveRepoPath re-anchors a repo-root-relative path against the repo root.
+// Absolute paths, and paths that already resolve from the working directory, are
+// returned unchanged.
+func ResolveRepoPath(path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	root := RepoRoot()
+	if root == "" {
+		return path
+	}
+	return filepath.Join(root, path)
 }
 
 // DefinitionsDir returns the absolute path to the definitions directory,

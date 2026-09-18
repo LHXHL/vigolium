@@ -83,7 +83,7 @@ func runStorageLs(cmd *cobra.Command, _ []string) error {
 		}
 		tbl.AddRow(
 			terminal.Cyan(obj.Key),
-			humanBytes(obj.Size),
+			terminal.HumanBytes(obj.Size),
 			obj.LastModified.Format("2006-01-02 15:04"),
 			terminal.Gray(ct),
 		)
@@ -157,7 +157,7 @@ func printStorageTree(n *storageTreeNode, prefix string) {
 		}
 		line := prefix + connector + label
 		if c.isLeaf {
-			line += "  " + terminal.Gray(humanBytes(c.size))
+			line += "  " + terminal.Gray(terminal.HumanBytes(c.size))
 		}
 		fmt.Println(line)
 		if len(c.children) > 0 {

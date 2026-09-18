@@ -149,6 +149,11 @@ func (m *Module) ScanPerRequest(
 
 	// Baseline body from the original, un-injected response. Used to attribute any
 	// reflected key to our injection rather than the endpoint's natural output.
+	// A record can arrive request-only (spec/curl imports, ingested requests), and
+	// without a baseline every echo would look like our injection - skip instead.
+	if !ctx.HasResponse() {
+		return nil, nil
+	}
 	baselineBody := ctx.Response().BodyToString()
 
 	// Control probe: inject a benign unknown key. If the endpoint reflects it back

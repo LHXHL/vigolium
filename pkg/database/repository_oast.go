@@ -66,8 +66,8 @@ func (r *Repository) ListOASTInteractions(ctx context.Context, projectUUID, scan
 		q = q.Where("module_id = ?", moduleID)
 	}
 	if search != "" {
-		like := "%" + search + "%"
-		q = q.Where("(target_url LIKE ? OR parameter_name LIKE ? OR unique_id LIKE ?)", like, like, like)
+		like := LikeContains(search)
+		q = q.Where(WithLikeEscape("(target_url LIKE ? OR parameter_name LIKE ? OR unique_id LIKE ?)"), like, like, like)
 	}
 
 	q = q.Limit(limit).Offset(offset)

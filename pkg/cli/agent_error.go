@@ -2,11 +2,13 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 )
 
@@ -64,7 +66,46 @@ const (
 	errCodeSourceIncompatible = "source_incompatible"
 	errCodeGateTripped        = "gate_tripped"
 	errCodeFailed             = "failed"
+
+	// Single-message extraction (traffic body / traffic headers). These name the
+	// states that `db export --format fs` used to collapse into an empty file or a
+	// generic failure — which is how a mistyped UUID, a request stored without a
+	// response, and a genuinely empty body all became the same answer.
+	//
+	// errCodeRecordNotFound: no record carries the given UUID.
+	errCodeRecordNotFound = "record_not_found"
+	// errCodeBodyUnavailable: the record exists, but the requested side was never
+	// captured. Distinct from a captured body of zero length, which SUCCEEDS and
+	// reports empty: true.
+	errCodeBodyUnavailable = "body_unavailable"
+	// errCodeBodyDecodeFailed: the body announces an encoding that could not be
+	// undone. Never silently downgraded to the stored bytes: a caller who asked
+	// for `decoded` and received compressed bytes writes a broken artifact.
+	errCodeBodyDecodeFailed = "body_decode_failed"
+	// errCodeBodyIncomplete: only a prefix of the body is available (the decoder
+	// hit its ceiling). Requires --allow-incomplete to extract anyway.
+	errCodeBodyIncomplete = "body_incomplete"
 )
+
+// codedError carries a stable error code alongside its message, for conditions
+// the classifier cannot infer from an exit code or a wrapped sentinel.
+//
+// The alternative was matching on message text, which this file already rejects
+// for OS and Postgres strings and should reject for its own: a code a consumer
+// branches on must not depend on how the sentence around it is worded.
+type codedError struct {
+	code string
+	err  error
+}
+
+func (c codedError) Error() string { return c.err.Error() }
+func (c codedError) Unwrap() error { return c.err }
+func (c codedError) Code() string  { return c.code }
+
+// codedErrorf builds an error that reports the given stable code.
+func codedErrorf(code, format string, args ...any) error {
+	return codedError{code: code, err: fmt.Errorf(format, args...)}
+}
 
 // classifyErrorCode maps an error to its stable code. The source cases are
 // matched on message content because the database layer wraps driver errors as
@@ -75,6 +116,19 @@ func classifyErrorCode(err error, exitCode int) string {
 		return errCodeUsage
 	case ExitFailOnGate:
 		return errCodeGateTripped
+	}
+	// An explicitly coded error outranks every inference below: the call site
+	// knew exactly which condition this was.
+	var coded codedError
+	if errors.As(err, &coded) {
+		return coded.Code()
+	}
+	// The shared opener's refusals are typed for the same reason, and are matched
+	// by identity rather than by the "no such table" text below — it never reaches
+	// the query layer, because the open is what was refused.
+	var incompatible *clicommon.SourceIncompatibleError
+	if errors.As(err, &incompatible) {
+		return errCodeSourceIncompatible
 	}
 	// exitCode already came from classifyExitCode, which owns the usageError
 	// classification — re-deriving it here would be a second copy of that rule.
@@ -144,7 +198,9 @@ func emitJSONError(err error, exitCode int, cmd *cobra.Command) {
 		GeneratedAt:   agentTimestamp(now),
 		GeneratedAtMS: scanevents.EpochMillis(now),
 	}
-	// writeAgentJSON is the shared stdout-JSON writer for every -j payload, so
-	// the error object is indented and HTML-unescaped like all the others.
-	_ = writeAgentJSON(env)
+	// Straight to stdout, deliberately NOT through writeAgentJSON: -o/--output
+	// redirects the RESULT document, and an error is not one. Routing it there
+	// would write the failure into the file the caller expected results in, and
+	// leave stdout carrying a receipt for it.
+	_ = writeAgentJSONToStdout(env)
 }

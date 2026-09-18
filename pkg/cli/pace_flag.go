@@ -10,6 +10,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/types"
 )
 
 // The three pace knobs (--rate-limit, --concurrency, --max-per-host) used to be
@@ -236,7 +237,7 @@ func registerPaceFlags(flags *pflag.FlagSet) {
 // Built-in defaults for the three dials, named so the help text, the applied
 // value and the scan.started event cannot drift apart.
 const (
-	defaultConcurrency = 50
+	defaultConcurrency = types.DefaultConcurrency
 	defaultRateLimit   = 100
 	defaultMaxPerHost  = 50
 )

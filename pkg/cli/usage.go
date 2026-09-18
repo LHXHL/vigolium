@@ -320,11 +320,11 @@ var agentSessionFlagGroups = []flagGroup{
 // all three (e.g. the Replay group only materializes for traffic, the schema
 // flags only for db ls).
 var listQueryFlagGroups = []flagGroup{
-	{"Filter", []string{"uuid", "host", "method", "status", "path", "source", "scan-uuid", "module-type", "finding-source", "record-kind", "severity", "min-severity", "confidence", "agentic-scan", "id", "min-risk", "min-surface", "remark"}},
+	{"Filter", []string{"uuid", "url", "host", "method", "status", "path", "source", "scan-uuid", "module-type", "finding-source", "record-kind", "severity", "min-severity", "confidence", "agentic-scan", "id", "min-risk", "min-surface", "remark"}},
 	{"Search", []string{"search", "header", "body", "exclude-search", "exclude-header", "exclude-body"}},
 	{"Date Range", []string{"from", "to"}},
 	{"Display", []string{"tree", "raw", "burp", "markdown", "group-by", "group-limit", "columns", "exclude-columns", "tui", "no-tui"}},
-	{"Output", []string{"fields", "compact", "full-body", "with-records", "record-fields", "record-limit"}},
+	{"Output", []string{"fields", "compact", "full-body", "output", "with-records", "record-fields", "record-limit"}},
 	{"Pagination & Sort", []string{"limit", "offset", "sort", "asc", "pick", "all"}},
 	{"Data Source", []string{"stateless", "glob-db", "table", "list-tables", "list-columns"}},
 	{"Replay", []string{"replay", "concurrency", "with-browser", "burp-bridge-url", "save-to-vigolium-db", "save-to-burp", "in-replace", "timeout"}},

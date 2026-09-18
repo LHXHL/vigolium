@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"io"
 	"net/http"
 	"time"
 
@@ -14,6 +15,15 @@ import (
 // escape. Providers without HTTP state can leave this unimplemented.
 type ConnectionResetter interface {
 	CloseIdleConnections()
+}
+
+// drainAndClose discards a response body we are not going to read and closes
+// it. Draining first is what lets the transport reuse the connection for the
+// retry that follows — closing an unread body abandons the TCP conn, so the
+// second request pays a fresh handshake.
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, body)
+	_ = body.Close()
 }
 
 // newHTTPClient returns an *http.Client whose HTTP/2 transport sends

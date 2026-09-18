@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -15,6 +16,26 @@ type ComposeApp struct {
 	ProjectName string
 	ProjectDir  string
 	BaseURL     string
+
+	// composeFile is the file StartComposeApp actually resolved. Stop() reuses it
+	// so teardown targets the same project file the stack was brought up with.
+	composeFile string
+}
+
+// composeFileNames are the file names docker compose itself accepts, in the order
+// it prefers them. In-repo fixtures use both spellings, so probe for both instead
+// of hard-coding one.
+var composeFileNames = []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}
+
+// findComposeFile returns the first compose file present in dir.
+func findComposeFile(dir string) (string, error) {
+	for _, name := range composeFileNames {
+		candidate := filepath.Join(dir, name)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no compose file (%s) in %s", strings.Join(composeFileNames, ", "), dir)
 }
 
 // StartComposeApp builds and starts a Docker Compose project, discovers the mapped port,
@@ -24,10 +45,11 @@ func StartComposeApp(ctx context.Context, app AppConfig) (*ComposeApp, error) {
 	if projectDir == "" {
 		return nil, fmt.Errorf("xbow app %s: build_context is empty (XBOW_SOURCE_DIR may not be set)", app.Name)
 	}
+	projectDir = ResolveRepoPath(projectDir)
 
-	composeFile := projectDir + "/docker-compose.yml"
-	if _, err := os.Stat(composeFile); err != nil {
-		return nil, fmt.Errorf("xbow app %s: docker-compose.yml not found at %s: %w", app.Name, composeFile, err)
+	composeFile, err := findComposeFile(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("xbow app %s: %w", app.Name, err)
 	}
 
 	projectName := "xbow-" + app.Name
@@ -89,12 +111,19 @@ func StartComposeApp(ctx context.Context, app AppConfig) (*ComposeApp, error) {
 		ProjectName: projectName,
 		ProjectDir:  projectDir,
 		BaseURL:     baseURL,
+		composeFile: composeFile,
 	}, nil
 }
 
 // Stop tears down the Docker Compose project, removing volumes and orphan containers.
 func (c *ComposeApp) Stop() error {
-	composeFile := c.ProjectDir + "/docker-compose.yml"
+	composeFile := c.composeFile
+	if composeFile == "" {
+		var err error
+		if composeFile, err = findComposeFile(c.ProjectDir); err != nil {
+			return err
+		}
+	}
 	return stopComposeProject(composeFile, c.ProjectName)
 }
 

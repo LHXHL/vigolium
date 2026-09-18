@@ -658,9 +658,16 @@ func buildWhereClause(driver string, allColumns []ColumnInfo, opts GenericQueryO
 			if strings.Contains(colType, "TEXT") || strings.Contains(colType, "VARCHAR") ||
 				strings.Contains(colType, "CHAR") || colType == "CHARACTER VARYING" ||
 				colType == "UUID" {
+				// Escaped and given an ESCAPE clause like every other LIKE in this
+				// package — a generic-table search is exactly where a term full of
+				// %s and _s (an encoded payload, a snake_case column value) arrives.
+				// The clause is appended literally rather than through
+				// WithLikeEscape, which rewrites `LIKE ?`: this builder's
+				// placeholder is $N on Postgres, so the rewrite would silently miss.
 				ph := makePlaceholder(driver, argIdx)
-				searchConds = append(searchConds, fmt.Sprintf("%s LIKE %s", quoteIdent(driver, c.Name), ph))
-				args = append(args, "%"+opts.SearchTerm+"%")
+				searchConds = append(searchConds, fmt.Sprintf(
+					"%s LIKE %s%s", quoteIdent(driver, c.Name), ph, likeEscapeClause))
+				args = append(args, LikeContains(opts.SearchTerm))
 				argIdx++
 			}
 		}

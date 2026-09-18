@@ -130,11 +130,11 @@ func init() {
 		"Show findings at or before this time — %s; %s (alias: --until)",
 		clicommon.TimeFilterSyntax, clicommon.TimeFilterUpperBoundNote))
 	pf.StringArrayVar(&findingSearch, "search", nil, "Search across the finding's module metadata, matched location, and the linked request/response (headers + body); repeatable, AND-combined (each term further narrows)")
-	pf.StringVar(&findingHeader, "header", "", "Search within HTTP header names and values")
-	pf.StringVar(&findingBody, "body", "", "Search within HTTP request/response body content")
+	pf.StringVar(&findingHeader, "header", "", "Search only the HTTP header block of the linked request/response (not bodies); use --search to span the whole exchange")
+	pf.StringVar(&findingBody, "body", "", "Search only the linked request/response body (not headers); use --search to span the whole exchange")
 	pf.StringArrayVar(&findingExcludeSearch, "exclude-search", nil, "Exclude findings where the term appears in the module metadata, matched location, or linked request/response (repeatable; dropped if ANY term matches — the inverse of --search)")
-	pf.StringVar(&findingExcludeHeader, "exclude-header", "", "Exclude findings whose linked request/response headers contain the term (inverse of --header)")
-	pf.StringVar(&findingExcludeBody, "exclude-body", "", "Exclude findings whose linked request/response body contains the term (inverse of --body)")
+	pf.StringVar(&findingExcludeHeader, "exclude-header", "", "Exclude findings whose linked request/response header block contains the term (inverse of --header; headers only)")
+	pf.StringVar(&findingExcludeBody, "exclude-body", "", "Exclude findings whose linked request/response body contains the term (inverse of --body; bodies only)")
 	pf.StringVar(&findingSource, "source", "", "Filter by record source (e.g. scanner, ingest-cli)")
 	pf.StringVar(&findingSort, "sort", "found_at", "Sort by: found_at, created_at, severity, module, confidence")
 	pf.BoolVar(&findingAsc, "asc", false, "Sort in ascending order (default: descending)")
@@ -182,6 +182,7 @@ func init() {
 		"With --send-via-burp: wire protocol — auto|http1|http2|http2_ignore_alpn (default auto)")
 
 	registerAgentJSONFlags(f)
+	registerJSONOutputFlag(findingCmd)
 	registerAgentRecordFlags(f)
 	tui.AddFlags(findingCmd, &findingTUIFlag, &findingNoTUIFlag)
 
@@ -233,6 +234,9 @@ func runFinding(cmd *cobra.Command, args []string) error {
 	// projection typo used to cost a full query and come back as a silently
 	// missing key.
 	if err := validateAgentViewFlags(agentViewOptionsFromFlags(), findingViewFields); err != nil {
+		return err
+	}
+	if err := validateJSONOutputFlag(cmd); err != nil {
 		return err
 	}
 	var fuzzyTerm string

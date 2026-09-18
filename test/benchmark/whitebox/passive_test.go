@@ -135,8 +135,7 @@ func runPassiveDefinition(t *testing.T, def *harness.BenchmarkDefinition) {
 	defer cancel()
 
 	// Start container
-	app, err := harness.StartAppFromDefinition(ctx, def.App)
-	require.NoError(t, err, "Failed to start %s", def.App.Name)
+	app := harness.StartAppOrSkip(ctx, t, def.App)
 	defer func() { _ = app.Stop() }()
 
 	t.Logf("%s running at %s", def.App.Name, app.BaseURL)

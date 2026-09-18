@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/vigolium/vigolium/pkg/olium/stream"
@@ -71,11 +72,7 @@ func TestOpenAICompatible_RoutingAndHeaders(t *testing.T) {
 				got.ctype = r.Header.Get("Content-Type")
 				got.accept = r.Header.Get("Accept")
 
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.WriteHeader(http.StatusOK)
-				// Minimal valid OpenAI SSE stream: one content delta then [DONE].
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"hi"}}]}`)
-				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+				writeOpenAISSEStub(w)
 			}))
 			defer srv.Close()
 
@@ -140,11 +137,162 @@ func TestNormalizeOpenAIBaseURL(t *testing.T) {
 		{"http://localhost:11434/v1/chat/completions", "http://localhost:11434/v1/chat/completions"},
 		{"http://localhost:11434/v1/chat/completions/", "http://localhost:11434/v1/chat/completions"},
 		{"  https://openrouter.ai/api/v1  ", "https://openrouter.ai/api/v1/chat/completions"},
+		// A bare host gets /v1 too. Written without it, the same local server
+		// that answers on /v1 used to get a POST to its root and 404.
+		{"http://127.0.0.1:8317", "http://127.0.0.1:8317/v1/chat/completions"},
+		{"http://127.0.0.1:8317/", "http://127.0.0.1:8317/v1/chat/completions"},
 		{"", ""},
 	}
 	for _, c := range cases {
 		if got := normalizeOpenAIBaseURL(c.in); got != c.want {
 			t.Errorf("normalizeOpenAIBaseURL(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestAltOpenAIBaseURL pins the toggle that makes the /v1 guess recoverable:
+// each spelling must produce the other, and a URL that isn't a
+// chat-completions endpoint has no alternate worth trying.
+func TestAltOpenAIBaseURL(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"http://h:1/v1/chat/completions", "http://h:1/chat/completions"},
+		{"http://h:1/chat/completions", "http://h:1/v1/chat/completions"},
+		{"https://openrouter.ai/api/v1/chat/completions", "https://openrouter.ai/api/chat/completions"},
+		{"http://h:1/v1", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := altOpenAIBaseURL(c.in); got != c.want {
+			t.Errorf("altOpenAIBaseURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestOpenAICompatible_V1Fallback covers the recovery path in both
+// directions: a server that mounts the API at its root (so the /v1 we added
+// 404s) and one that mounts it under /v1 when the operator's URL said
+// otherwise. Either way the turn succeeds, and the working spelling is
+// latched so the probe is not repeated every turn.
+func TestOpenAICompatible_V1Fallback(t *testing.T) {
+	cases := []struct {
+		name      string
+		servePath string // the only path the fake server answers
+		baseURL   string // path appended to the server URL, as configured
+	}{
+		{"server_at_root_config_bare_host", "/chat/completions", ""},
+		{"server_under_v1_config_omitted_it", "/v1/chat/completions", "/chat/completions"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen pathRecorder
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen.add(r.URL.Path)
+				if r.URL.Path != tc.servePath {
+					http.NotFound(w, r)
+					return
+				}
+				writeOpenAISSEStub(w)
+			}))
+			defer srv.Close()
+
+			p := NewOpenAICompatible(srv.URL+tc.baseURL, "", nil, nil)
+
+			drainStream(t, p)
+			paths := seen.snapshot()
+			if len(paths) != 2 {
+				t.Fatalf("first turn sent %d requests (%v), want 2 (the guess, then the fallback)", len(paths), paths)
+			}
+			if paths[1] != tc.servePath {
+				t.Errorf("fallback went to %q, want %q", paths[1], tc.servePath)
+			}
+
+			// The winner is remembered: a second turn costs one request.
+			drainStream(t, p)
+			if paths := seen.snapshot(); len(paths) != 3 {
+				t.Errorf("second turn sent %d requests total (%v), want 3 — the working URL was not latched", len(paths), paths)
+			}
+		})
+	}
+}
+
+// pathRecorder collects the paths a fake server was asked for. The handler
+// runs on the server's own goroutine, so the slice needs a lock to stay clean
+// under -race.
+type pathRecorder struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (p *pathRecorder) add(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.paths = append(p.paths, path)
+}
+
+func (p *pathRecorder) snapshot() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.paths...)
+}
+
+// writeOpenAISSEStub writes the minimal valid OpenAI SSE stream — one content
+// delta then [DONE] — which is all the reader needs to produce
+// text_start / text_delta / text_end / done.
+func writeOpenAISSEStub(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"hi"}}]}`)
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+// drainStream runs one turn and consumes it, failing the test on any error.
+func drainStream(t *testing.T, p *OpenAI) {
+	t.Helper()
+	events, err := p.Stream(context.Background(), Request{
+		Model:    "test-model",
+		Messages: []Message{{Role: RoleUser, Text: "ping"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for ev := range events {
+		if ev.Type == stream.EventError {
+			t.Fatalf("stream error: %s", ev.Err)
+		}
+	}
+}
+
+// A 404 from BOTH spellings is a real missing endpoint, not a /v1 mixup. The
+// error has to say so — and the second turn must not pay for the probe again.
+func TestOpenAICompatible_V1FallbackBothFail(t *testing.T) {
+	var seen pathRecorder
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.add(r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	p := NewOpenAICompatible(srv.URL, "", nil, nil)
+	req := Request{Model: "test-model", Messages: []Message{{Role: RoleUser, Text: "ping"}}}
+
+	_, err := p.Stream(context.Background(), req)
+	if err == nil {
+		t.Fatal("Stream succeeded against a server that 404s everything")
+	}
+	if !strings.Contains(err.Error(), "also tried") {
+		t.Errorf("error = %q, want it to name the alternate that was tried", err)
+	}
+	if hits := len(seen.snapshot()); hits != 2 {
+		t.Fatalf("first turn sent %d requests, want 2", hits)
+	}
+
+	if _, err := p.Stream(context.Background(), req); err == nil {
+		t.Fatal("second Stream succeeded unexpectedly")
+	}
+	if hits := len(seen.snapshot()); hits != 3 {
+		t.Errorf("total requests = %d, want 3 — the exhausted alternate was retried", hits)
 	}
 }

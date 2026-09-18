@@ -261,3 +261,29 @@ func TestScanPerRequest_NaturalKeyVariance(t *testing.T) {
 		t.Fatalf("a privilege word that appears in a fresh no-key control (natural page content, not our injection) must not be reported, got %d: %+v", len(res), res)
 	}
 }
+
+// TestScanPerRequest_RequestOnlyRecord covers records that arrive without a
+// response - spec imports, curl/raw request pastes, anything ingested
+// request-only. Detection is differential against the baseline response, so
+// there is nothing to compare against and the module must bow out rather than
+// dereference the missing response.
+func TestScanPerRequest_RequestOnlyRecord(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(decodeBody(r))
+	}))
+	defer srv.Close()
+
+	client := modtest.Requester(t)
+	rr := modtest.RequestJSON(t, srv.URL+"/api/auth/signup", `{"email":"a@b.test","name":"Test"}`)
+	if rr.HasResponse() {
+		t.Fatal("precondition: modtest.RequestJSON must build a request-only record")
+	}
+
+	res, err := New().ScanPerRequest(rr, client, &modkit.ScanContext{})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(res) != 0 {
+		t.Fatalf("a request-only record has no baseline to diff against, got %d findings: %+v", len(res), res)
+	}
+}

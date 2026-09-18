@@ -22,6 +22,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit/specutil"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"github.com/vigolium/vigolium/pkg/types"
 	"github.com/vigolium/vigolium/pkg/work"
 	"go.uber.org/zap"
 )
@@ -63,7 +64,7 @@ type spideredJSProvider interface {
 // DeparosDiscoveryConfig configures the deparos content discovery source.
 type DeparosDiscoveryConfig struct {
 	Targets       []string      // Target URLs
-	Concurrency   int           // Worker threads (from -t flag); default: 50
+	Concurrency   int           // Worker threads (from -t flag); default: 25
 	MaxDuration   time.Duration // default: 1h
 	EnableModules []string      // Module selection for WorkItems
 
@@ -438,7 +439,7 @@ func NewDeparosDiscoverySource(cfg DeparosDiscoveryConfig) (*DeparosDiscoverySou
 		return nil, fmt.Errorf("at least one target is required")
 	}
 	if cfg.Concurrency <= 0 {
-		cfg.Concurrency = 50
+		cfg.Concurrency = types.DefaultConcurrency
 	}
 	if cfg.MaxDuration <= 0 {
 		cfg.MaxDuration = 1 * time.Hour

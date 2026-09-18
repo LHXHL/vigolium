@@ -371,10 +371,23 @@ type Options struct {
 	NoTechFilter bool
 }
 
+// DefaultConcurrency is the built-in scan worker count, used wherever nobody
+// configured one: the -c flag's default, the scanning_pace common default, the
+// REST API's per-scan default, and DefaultOptions below.
+//
+// It lives here because pkg/types imports nothing else in this module, so
+// every layer that needs it can reach it. Four packages used to spell this
+// number themselves and had drifted to 50/40/50/50 — the CLI and the REST API
+// ran the same scan at different speeds, and `docs/getting-started.md` had to
+// document the discrepancy ("generated config default 40; raw CLI fallback
+// 50"). The shipped public/vigolium-configs.example.yaml carries a copy too,
+// since it is written verbatim as the user's config on first run.
+const DefaultConcurrency = 25
+
 // DefaultOptions returns default options for the scanner
 func DefaultOptions() *Options {
 	return &Options{
-		Concurrency:          50,
+		Concurrency:          DefaultConcurrency,
 		MaxPerHost:           50,
 		Timeout:              15 * time.Second,
 		Retries:              1,

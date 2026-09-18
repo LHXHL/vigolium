@@ -132,22 +132,59 @@ func normalizeFieldList(in []string) []string {
 	return out
 }
 
-// writeAgentJSON encodes v to stdout as indented JSON with HTML escaping off, so
-// body text containing <, >, & stays readable (and cheap in tokens) instead of
-// becoming < noise.
+// writeAgentJSON writes a command's RESULT document: to stdout, or to the file
+// -o/--output named, with a small receipt taking its place on stdout.
+//
+// Only result documents belong here. The error envelope (emitJSONError) and the
+// -o receipt itself call writeAgentJSONToStdout instead: filing an error object
+// under `"artifact": "json_result"` would be a lie, and a receipt that could
+// itself be redirected has nowhere left to report.
 func writeAgentJSON(v any) error {
-	enc := json.NewEncoder(os.Stdout)
-	// In stream mode each document must occupy exactly one line, which is what
-	// makes a repeated read readable with a line-oriented consumer. Indented
-	// output would emit a multi-line object per iteration and the "stream" would
-	// only be splittable by a full JSON parser.
+	dest := jsonOutputDestination()
+	if dest == "" {
+		return writeAgentJSONToStdout(v)
+	}
+	doc, err := encodeAgentJSON(v)
+	if err != nil {
+		return err
+	}
+	jsonResultEmitted = true
+	return writeJSONResultToFile(dest, doc, resultIsPaged(v))
+}
+
+// writeAgentJSONToStdout writes v to stdout. It is the only path that touches
+// stdout, so the encoder is configured in exactly one place.
+func writeAgentJSONToStdout(v any) error {
+	doc, err := encodeAgentJSON(v)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(doc)
+	jsonResultEmitted = true
+	return err
+}
+
+// encodeAgentJSON renders v for every -j destination, which is what makes a file
+// written with -o byte-identical to the document the same command prints without
+// it. A second copy of this configuration is a silent divergence waiting for the
+// next encoder option.
+//
+// In stream mode each document must occupy exactly one line, which is what makes
+// a repeated read (--watch) readable with a line-oriented consumer; indented
+// output would emit a multi-line object per tick and the "stream" would only be
+// splittable by a full JSON parser. HTML escaping stays off so body text
+// containing <, >, & stays readable — and cheap in tokens.
+func encodeAgentJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	if !jsonStreamMode {
 		enc.SetIndent("", "  ")
 	}
 	enc.SetEscapeHTML(false)
-	err := enc.Encode(v)
-	jsonResultEmitted = true
-	return err
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // jsonStreamMode switches -j output from one indented document to NDJSON: one
@@ -219,7 +256,7 @@ const agentMeasureCap = 64 << 20
 // nothing for fields they would discard.
 func gunzipBounded(body []byte, measure bool) decodeResult {
 	stored := decodeResult{Bytes: body, FullSize: len(body)}
-	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+	if !looksGzip(body) {
 		return stored
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(body))
@@ -305,7 +342,7 @@ func decodedResponseText(raw string) string {
 		return raw // no body
 	}
 	body := raw[i+sep:]
-	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+	if !looksGzip([]byte(body)) {
 		return raw // not gzip — search the stored bytes as-is
 	}
 	return raw[:i+sep] + string(maybeGunzip([]byte(body)))
@@ -380,7 +417,9 @@ func bodyView(raw []byte, contentType string, max int, opts agentViewOptions) ma
 	if dec.Capped {
 		v["decoder_capped"] = true
 		v["decoder_limit"] = agentGunzipCap
-		v["decoder_hint"] = "body exceeds the JSON decoder limit; export the whole body with: vigolium db export --format fs"
+		// Names the one-call escape hatch rather than the tree exporter: the
+		// caller wants these bytes, not this record's every part.
+		v["decoder_hint"] = "body exceeds the JSON decoder limit; get the whole body with: vigolium traffic body --uuid <uuid> -o <file>"
 	}
 
 	if !opts.fullBody && (modkit.IsStaticAssetContentType(contentType) || looksBinaryBytes(body)) {

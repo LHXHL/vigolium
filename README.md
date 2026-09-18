@@ -401,7 +401,7 @@ Authentication:
   -H, --header           Custom HTTP header (repeatable)
 
 Performance:
-  -c, --concurrency      Concurrent workers (default: 50)
+  -c, --concurrency      Concurrent workers (default: 25)
   -r, --rate-limit       Max requests/sec (default: 0 = unlimited)
       --max-per-host     Per-host concurrency cap (default: 2)
       --proxy            HTTP/SOCKS5 proxy URL

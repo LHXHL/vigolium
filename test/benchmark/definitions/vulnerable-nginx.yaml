@@ -1,10 +1,14 @@
+# The detectify/vulnerable-nginx image was withdrawn from Docker Hub, so the lab
+# is built from upstream source via the in-repo compose fixture instead.
 app:
   name: vulnerable-nginx
-  type: docker
-  image: "detectify/vulnerable-nginx:latest"
-  port: 80
+  type: xbow
+  build_context: test/testdata/vulnerable-apps/vulnerable-nginx
+  service_name: nginx
+  internal_port: 5000
+  port: 5000
   wait_endpoint: "/"
-  startup_timeout: 60s
+  startup_timeout: 180s
 
 test_cases:
   # === Active Module Tests ===

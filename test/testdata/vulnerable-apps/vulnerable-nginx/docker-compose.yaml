@@ -1,7 +1,26 @@
+# detectify's vulnerable-nginx lab (nginx alias traversal / off-by-slash / path
+# escape). The published detectify/vulnerable-nginx image was withdrawn from
+# Docker Hub, so both services are built from the upstream repository instead,
+# pinned to a commit so a rewritten upstream cannot silently change what the
+# benchmarks assert against.
+#
+# nginx.conf proxies /image to http://apache:80/, so the backend service must
+# keep the name "apache". nginx listens on 5000 inside the container.
 services:
-  vulnerable-nginx:
-    image: detectify/vulnerable-nginx:latest
-    container_name: vulnerable-nginx
+  apache:
+    build:
+      context: https://github.com/detectify/vulnerable-nginx.git#38fdea423550a930e5ae6822d26387d23c0f4601:apache
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: https://github.com/detectify/vulnerable-nginx.git#38fdea423550a930e5ae6822d26387d23c0f4601:nginx
+    command: nginx -g "daemon off;"
+    depends_on:
+      - apache
+    # Ephemeral host port on purpose: upstream pins 5000, which macOS already
+    # holds for AirPlay Receiver. The benchmark harness and `make
+    # vulnerable-nginx-up` both resolve the real port with `docker compose port`.
     ports:
-      - "5000:80"
+      - "5000"
     restart: unless-stopped

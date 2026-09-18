@@ -118,7 +118,10 @@ func runAgentOlium(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Fprint(os.Stderr, GetOliumBanner())
+	// Through emitBanner, so the once-guard covers this and the root hook
+	// together — this was the last raw Fprint, and it printed a second mascot
+	// under the root one on every `vigolium ol` run.
+	emitBanner(GetOliumBanner())
 
 	// -p / --prompt runs one prompt non-interactively and streams to stdout.
 	// Why: a single-shot prompt has no use for the TUI, so -p doubles as the

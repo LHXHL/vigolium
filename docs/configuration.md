@@ -163,7 +163,7 @@ Centralized speed control. Common values serve as baselines; per-phase subsectio
 
 ```yaml
 scanning_pace:
-  concurrency: 40          # global worker count
+  concurrency: 25          # global worker count
   rate_limit: 100          # max requests/sec across all hosts
   max_per_host: 40         # max concurrent requests per host
   max_duration: 45m        # per-phase base duration (each phase scales it by its duration_factor)

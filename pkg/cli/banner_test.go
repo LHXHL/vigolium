@@ -20,6 +20,12 @@ func TestCommandWantsBanner(t *testing.T) {
 	root.AddCommand(completion)
 
 	version := &cobra.Command{Use: "version"}
+	olium := &cobra.Command{Use: "olium", Aliases: []string{"ol"}}
+	root.AddCommand(olium)
+	configCmd := &cobra.Command{Use: "config"}
+	configSet := &cobra.Command{Use: "set"}
+	configCmd.AddCommand(configSet)
+	root.AddCommand(configCmd)
 	traffic := &cobra.Command{Use: "traffic", Aliases: []string{"tf", "traffics"}}
 	scan := &cobra.Command{Use: "scan"}
 	dbCmd := &cobra.Command{Use: "db"}
@@ -41,6 +47,13 @@ func TestCommandWantsBanner(t *testing.T) {
 		// scan renders its own banner as the first line of its config summary,
 		// and picks between two of them, so the root must not print one first.
 		{"scan owns its banner", scan, false},
+		// olium prints its own banner from RunE; the root hook printing first
+		// put two mascots on top of every `vigolium ol` run.
+		{"olium owns its banner", olium, false},
+		// Scripting `config set` one key at a time printed one mascot per key,
+		// ahead of each single-line confirmation.
+		{"config", configCmd, false},
+		{"config set inherits from its parent", configSet, false},
 		// Everything else gets one, on stderr, where being wrong is cosmetic.
 		{"traffic", traffic, true},
 		{"nested db export", dbExport, true},

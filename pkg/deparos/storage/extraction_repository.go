@@ -12,6 +12,8 @@ import (
 
 	"github.com/uptrace/bun"
 
+	"github.com/vigolium/vigolium/pkg/database"
+
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
 	"github.com/vigolium/vigolium/pkg/deparos/spider"
 )
@@ -608,7 +610,7 @@ func (r *ExtractionRepository) GetByURLPattern(
 	ctx := context.Background()
 	var extractions []ExtractionModel
 	err := r.db.NewSelect().Model(&extractions).
-		Where("session_id = ? AND url LIKE ?", sessionID, "%"+pattern+"%").
+		Where(database.WithLikeEscape("session_id = ? AND url LIKE ?"), sessionID, database.LikeContains(pattern)).
 		Order("created_at").
 		Scan(ctx)
 	return extractions, err

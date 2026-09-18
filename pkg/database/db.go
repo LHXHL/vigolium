@@ -54,6 +54,15 @@ type DB struct {
 	// read commands call CreateSchema unconditionally on open.
 	readOnly bool
 
+	// ownedSidecars names the database whose -wal/-shm files this read-only open
+	// brought into existence; Close removes them again. Empty when there is
+	// nothing to reclaim. See reclaimSidecars.
+	ownedSidecars string
+
+	// path is the resolved SQLite file this handle opened, empty for Postgres and
+	// ":memory:" for an in-memory store. Reported by Path().
+	path string
+
 	// deferRecordIndexes postpones the http_records read indexes past CreateSchema
 	// so a bulk load does not maintain them per row. See DeferRecordIndexes.
 	deferRecordIndexes bool
@@ -85,6 +94,16 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 	var bunDB *bun.DB
 	var driver string
 
+	// Sampled BEFORE the open, so "this open made them" is a fact rather than a
+	// guess. Only a read-only open can own sidecars: every other path checkpoints
+	// and removes them itself on close.
+	var ownedSidecarPath string
+	if cfg.Driver == "sqlite" && cfg.SQLite.ReadOnly {
+		if path := expandPath(cfg.SQLite.Path); !sidecarsPresent(path) {
+			ownedSidecarPath = path
+		}
+	}
+
 	switch cfg.Driver {
 	case "sqlite":
 		var err error
@@ -109,9 +128,13 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 	}
 
 	db := &DB{
-		DB:       bunDB,
-		driver:   driver,
-		readOnly: driver == "sqlite" && cfg.SQLite.ReadOnly,
+		DB:            bunDB,
+		driver:        driver,
+		readOnly:      driver == "sqlite" && cfg.SQLite.ReadOnly,
+		ownedSidecars: ownedSidecarPath,
+	}
+	if driver == "sqlite" {
+		db.path = expandPath(cfg.SQLite.Path)
 	}
 
 	// Per-statement SQL logging is opt-in on top of debug level, not implied by it.
@@ -185,6 +208,14 @@ func NewDBFromBun(bunDB *bun.DB, driver string) *DB {
 // rather than as a stale snapshot. `immutable=1` would be faster and is
 // deliberately NOT used: it tells SQLite to assume the file cannot change, which
 // silently returns wrong data if it does.
+//
+// What mode=ro does NOT avoid is the shared-memory index: reading a WAL-mode
+// database requires a -shm, and SQLite creates one (and an empty -wal) when it
+// is absent. So a --read-only pass over an evidence file left two new files
+// beside it while an ordinary read left none — the read-write path creates the
+// same sidecars but checkpoints and removes them on close. The returned
+// `created` list is what Close reclaims to make the two paths symmetric; the
+// main file was, and remains, byte-identical either way.
 func openSQLiteReadOnly(path string, cfg *config.SQLiteConfig) (*sql.DB, error) {
 	if path == ":memory:" {
 		return nil, errors.New("read-only mode requires a file-backed database, not :memory: storage")
@@ -212,6 +243,43 @@ func openSQLiteReadOnly(path string, cfg *config.SQLiteConfig) (*sql.DB, error) 
 	sqldb.SetMaxOpenConns(maxConns)
 	sqldb.SetMaxIdleConns(maxConns)
 	return sqldb, nil
+}
+
+// sidecarSuffixes are the files SQLite keeps beside a WAL-mode database.
+var sidecarSuffixes = []string{"-wal", "-shm"}
+
+// sidecarsPresent reports whether any sidecar already exists for path.
+func sidecarsPresent(path string) bool {
+	for _, suffix := range sidecarSuffixes {
+		if _, err := os.Stat(path + suffix); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// reclaimSidecars removes the -wal/-shm files this handle's open created,
+// leaving the directory as it was found. Called from Close, after the sql.DB is
+// closed so our own descriptors are gone.
+//
+// A non-empty -wal is left alone. This handle never wrote a frame — it was
+// opened query_only — so frames there came from another process writing
+// concurrently, and deleting that WAL would discard its committed transactions.
+// Refusing is the whole safety argument: the only file this removes is one that
+// is both ours and empty.
+//
+// Best-effort throughout. A removal that fails leaves a file that the next open
+// will simply reuse, which is the pre-existing behavior and harms nothing.
+func reclaimSidecars(path string) {
+	if path == "" {
+		return
+	}
+	if info, err := os.Stat(path + "-wal"); err == nil && info.Size() > 0 {
+		return
+	}
+	for _, suffix := range sidecarSuffixes {
+		_ = os.Remove(path + suffix)
+	}
 }
 
 // openSQLite creates SQLite connection with optimized settings
@@ -351,14 +419,25 @@ func (db *DB) Close() error {
 	if db.ckptStop != nil {
 		db.ckptStopOnce.Do(func() { close(db.ckptStop) })
 	}
+	// After the handle is closed, so our own descriptors are released first.
+	defer reclaimSidecars(db.ownedSidecars)
+
 	if db.DB != nil {
 		// Persist query-planner statistics before closing so the next process to
 		// reopen this database (e.g. `vigolium finding`/`traffic` read commands)
 		// plans dedup/finding queries against real row counts rather than the
 		// SQLite defaults.
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		db.Optimize(ctx)
-		cancel()
+		//
+		// Skipped on a read-only handle: `PRAGMA optimize` rewrites sqlite_stat1,
+		// which is a write to the very artifact --read-only promises not to touch.
+		// query_only(1) would refuse it anyway, so this only stops an attempt that
+		// was always going to fail — but attempting it at all is the wrong shape
+		// for a mode whose entire contract is "no writes".
+		if !db.readOnly {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			db.Optimize(ctx)
+			cancel()
+		}
 		return db.DB.Close()
 	}
 	return nil
@@ -491,6 +570,18 @@ func (db *DB) rebuildFTSIfPopulated(ctx context.Context) {
 // Driver returns the database driver name
 func (db *DB) Driver() string {
 	return db.driver
+}
+
+// Path returns the resolved SQLite file backing this handle, or "" for a driver
+// that is not a single file (Postgres).
+//
+// It exists because DatabaseStats.Database.Path and .Size were declared and
+// never filled: `db stats -j` reported `"path": "", "size": 0` for a store it
+// had open and had just counted 60 records in. A consumer reading that to
+// confirm WHICH database it was looking at — the whole reason the -j envelope
+// carries db_path — was told nothing, in a field that looked like an answer.
+func (db *DB) Path() string {
+	return db.path
 }
 
 // SQLDB returns the underlying *sql.DB. Used by callers that need a pinned
@@ -1548,6 +1639,17 @@ func (db *DB) EnsureSchemaCurrent(ctx context.Context) error {
 		return nil
 	}
 	return db.CreateSchema(ctx)
+}
+
+// HasVigoliumSchema reports whether this store has been initialized as a
+// vigolium database, by the presence of the core table every read touches.
+//
+// It is the question "is this the right file?", which is NOT the same as "does
+// it have rows": a foreign SQLite file and a scanned target both open cleanly,
+// and only this distinguishes them before vigolium's tables get created inside
+// the former.
+func (db *DB) HasVigoliumSchema(ctx context.Context) bool {
+	return db.tableExists(ctx, "http_records")
 }
 
 // checkSchemaCurrent reports a read-only handle's missing columns as an error

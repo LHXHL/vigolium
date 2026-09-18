@@ -10,8 +10,8 @@ func TestDefaultOptions(t *testing.T) {
 	if o == nil {
 		t.Fatal("DefaultOptions returned nil")
 	}
-	if o.Concurrency != 50 {
-		t.Errorf("Concurrency = %d, want 50", o.Concurrency)
+	if o.Concurrency != 25 {
+		t.Errorf("Concurrency = %d, want 25", o.Concurrency)
 	}
 	if o.MaxPerHost != 50 {
 		t.Errorf("MaxPerHost = %d, want 50", o.MaxPerHost)

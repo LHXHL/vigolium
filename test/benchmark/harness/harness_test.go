@@ -91,9 +91,37 @@ func TestLoadDefinition_VulnerableNginx(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "vulnerable-nginx", def.App.Name)
-	assert.Equal(t, "docker", def.App.Type)
-	assert.Equal(t, "detectify/vulnerable-nginx:latest", def.App.Image)
+	// Built from upstream source: the detectify/vulnerable-nginx image was
+	// withdrawn from Docker Hub, so pulling it fails for everyone.
+	assert.Equal(t, "xbow", def.App.Type)
+	assert.Empty(t, def.App.Image)
+	assert.Equal(t, "test/testdata/vulnerable-apps/vulnerable-nginx", def.App.BuildContext)
 	assert.NotEmpty(t, def.TestCases)
+}
+
+// TestComposeBuildContextsResolve guards the two ways a compose-backed definition
+// used to fail only at container-start time: build_context is written relative to
+// the repo root but `go test` runs from the package directory, and the fixtures
+// spell their compose file both .yml and .yaml.
+func TestComposeBuildContextsResolve(t *testing.T) {
+	defs, err := LoadDefinitionsFromDir(testDefinitionsDir())
+	require.NoError(t, err)
+
+	seen := 0
+	for _, def := range defs {
+		if def.App.Type != "xbow" || def.App.BuildContext == "" {
+			continue
+		}
+		seen++
+
+		dir := ResolveRepoPath(def.App.BuildContext)
+		assert.DirExists(t, dir, "%s: build_context does not resolve", def.App.Name)
+
+		composeFile, err := findComposeFile(dir)
+		assert.NoError(t, err, "%s: no compose file under build_context", def.App.Name)
+		assert.FileExists(t, composeFile, "%s", def.App.Name)
+	}
+	assert.Positive(t, seen, "expected at least one compose-backed definition")
 }
 
 func TestLoadDefinitionsFromDir(t *testing.T) {

@@ -218,6 +218,10 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 			return err
 		}
 
+		// After applyDBPathEnv, so a $VIGOLIUM_DB_PATH pin is already folded into
+		// globalDB and one check covers both ways of pinning a source.
+		applySourceMustExist(cmd)
+
 		// Initialize Vigolium on first run (skip when `init` is invoked explicitly)
 		if cmd.Name() != "init" {
 			if err := ensureInitialized(); err != nil {

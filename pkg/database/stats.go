@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -89,12 +90,31 @@ type HostStats struct {
 	FindingCount int64  `json:"finding_count"`
 }
 
+// databaseInfo fills the source-identity block of a stats report: which file
+// this is and how big it is.
+//
+// Both fields were declared and never assigned, so every `db stats -j` reported
+// `"path": "", "size": 0`. Size counts the -wal and -shm siblings along with the
+// main file: on a WAL database the main file alone can be a fraction of what the
+// store actually occupies, and a caller checking disk use against that number
+// would be told the wrong thing right when it matters.
+func databaseInfo(db *DB) DatabaseInfo {
+	info := DatabaseInfo{Driver: db.driver, Path: db.Path()}
+	if info.Path == "" || info.Path == ":memory:" {
+		return info
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if st, err := os.Stat(info.Path + suffix); err == nil {
+			info.Size += st.Size()
+		}
+	}
+	return info
+}
+
 // GetStats retrieves database statistics
 func (db *DB) GetStats(ctx context.Context, filters QueryFilters) (*DatabaseStats, error) {
 	stats := &DatabaseStats{
-		Database: DatabaseInfo{
-			Driver: db.driver,
-		},
+		Database:    databaseInfo(db),
 		HTTPMethods: make(map[string]int64),
 		Findings: FindingsStats{
 			BySeverity: make(map[string]int64),
@@ -489,7 +509,16 @@ func FormatStats(stats *DatabaseStats) string {
 	sb.WriteString(terminal.Gray("═══════════════════════════════════════════════════════════════"))
 	sb.WriteString("\n\n")
 
-	fmt.Fprintf(&sb, "Driver: %s\n\n", terminal.Cyan(stats.Database.Driver))
+	fmt.Fprintf(&sb, "Driver: %s\n", terminal.Cyan(stats.Database.Driver))
+	// Naming the file is the point of running this against a specific --db: the
+	// default store is one shared file, so "which database am I looking at" is
+	// the question the counts below are useless without.
+	if stats.Database.Path != "" {
+		fmt.Fprintf(&sb, "Source: %s %s\n",
+			terminal.Cyan(terminal.ShortenHome(stats.Database.Path)),
+			terminal.Gray(fmt.Sprintf("(%s)", terminal.HumanBytes(stats.Database.Size))))
+	}
+	sb.WriteString("\n")
 
 	// Record counts
 	fmt.Fprintf(&sb, "%s %s\n",

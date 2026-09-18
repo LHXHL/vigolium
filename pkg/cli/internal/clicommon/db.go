@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -28,9 +30,61 @@ var dbConn *database.DB
 // have to thread a value none of them decides.
 var ReadOnlyRequested bool
 
+// RequireExistingSource holds the expanded path of an explicitly pinned SQLite
+// source that a pure read command must NOT create. Empty means no such
+// requirement — the built-in default database is still made on first use.
+//
+// Set by the CLI (applySourceMustExist) for the same reason ReadOnlyRequested is
+// a package var: GetDB is reached from ~30 call sites, none of which decides
+// this. Enforced here rather than at those call sites so a read path added later
+// inherits the guarantee instead of having to remember it.
+var RequireExistingSource string
+
+// SourceMissingError reports a pinned database path that is not there.
+//
+// It is a type rather than a wrapped sentinel so the message can say the useful
+// thing once. Unwrapping to fs.ErrNotExist keeps the CLI's error classifier
+// mapping it to source_missing by identity rather than by message text, while
+// Error() stays free of the stdlib's "file does not exist" tail and of an OS
+// strerror string, which is neither locale- nor platform-stable.
+type SourceMissingError struct{ Path string }
+
+func (e *SourceMissingError) Error() string {
+	return fmt.Sprintf("database %q does not exist. This is a read command, so it will not "+
+		"create one — check the path, or run a scan/ingest against it first", e.Path)
+}
+
+func (e *SourceMissingError) Unwrap() error { return fs.ErrNotExist }
+
+// SourceIncompatibleError reports a file that opens as SQLite but is not a
+// vigolium store.
+//
+// Refusing it is the other half of the missing-path fix. A pinned path that
+// exists is not necessarily the right file, and opening one that is not brings
+// vigolium's ~17 tables into existence INSIDE another tool's database — then
+// reports `total: 0`, exit 0, which reads as "nothing has been scanned here".
+// Two opposite facts, one answer, and the wrong one silently modifies a file
+// that belonged to something else.
+//
+// The distinction is the presence of the core table, not the presence of rows:
+// a scanned target with no matching records and a foreign database both look
+// empty from the outside.
+type SourceIncompatibleError struct{ Path string }
+
+func (e *SourceIncompatibleError) Error() string {
+	return fmt.Sprintf("database %q is not a vigolium store: it opens as SQLite but has none of "+
+		"vigolium's tables. This is a read command, so it will not create them — check the path, "+
+		"or run a scan/ingest against it to initialize it", e.Path)
+}
+
 func GetDB(configPath, dbPath string) (*database.DB, error) {
 	if dbConn != nil {
 		return dbConn, nil
+	}
+
+	// Before any open, because opening is what creates the file.
+	if err := checkSourceExists(); err != nil {
+		return nil, err
 	}
 
 	settings, err := config.LoadSettings(configPath)
@@ -60,6 +114,14 @@ func GetDB(configPath, dbPath string) (*database.DB, error) {
 	db, err := database.NewDB(&settings.Database)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	// A pure read against a pinned source must not bring vigolium's tables into
+	// being inside a file that never had them. Checked before the migration
+	// below, which is exactly what would create them.
+	if RequireExistingSource != "" && !db.HasVigoliumSchema(context.Background()) {
+		_ = db.Close()
+		return nil, &SourceIncompatibleError{Path: RequireExistingSource}
 	}
 
 	// Bring the schema up to date on EVERY open, not only on the write commands
@@ -99,6 +161,27 @@ func GetDB(configPath, dbPath string) (*database.DB, error) {
 		openedDBPath = settings.Database.Driver
 	}
 	return db, nil
+}
+
+// checkSourceExists refuses to open a pinned source that is absent, or that is a
+// directory standing where a database file should be. A nil return means the
+// path is there — not that it is a vigolium store, which the schema check and
+// the source_incompatible code downstream still decide.
+func checkSourceExists() error {
+	if RequireExistingSource == "" {
+		return nil
+	}
+	info, err := os.Stat(RequireExistingSource)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &SourceMissingError{Path: RequireExistingSource}
+		}
+		return fmt.Errorf("cannot read database %q: %w", RequireExistingSource, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("database %q is a directory, not a file", RequireExistingSource)
+	}
+	return nil
 }
 
 // openedDBPath records which database the cached connection actually opened.

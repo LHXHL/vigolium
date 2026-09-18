@@ -137,7 +137,7 @@ echo 'curl -X POST https://api.example.com/login -d "user=admin&pass=test"' | vi
 | `-o, --output` | Output path (required for file-based report formats) |
 | `--scanning-profile` | Use a named profile or YAML profile path |
 | `--intensity` | Native scan preset: `quick`, `balanced`, or `deep` |
-| `-c, --concurrency` | Number of concurrent scan workers (generated config default 40; raw CLI fallback 50) |
+| `-c, --concurrency` | Number of concurrent scan workers (default 25) |
 | `-r, --rate-limit` | Maximum HTTP requests per second (default 100) |
 
 ## Configuration

@@ -159,7 +159,7 @@ func writeFSExport(ctx context.Context, db *database.DB, filters database.QueryF
 			bun.List(filters.RecordUUIDs))
 	}
 	if filters.HostPattern != "" {
-		fq = fq.Where("hostname LIKE ?", fsLikePattern(filters.HostPattern))
+		fq = fq.Where(database.WithLikeEscape("hostname LIKE ?"), fsLikePattern(filters.HostPattern))
 	}
 	if len(filters.Severity) > 0 {
 		sevs := make([]string, len(filters.Severity))
@@ -169,8 +169,9 @@ func writeFSExport(ctx context.Context, db *database.DB, filters database.QueryF
 		fq = fq.Where("LOWER(severity) IN (?)", bun.List(sevs))
 	}
 	if term := fsSearchTerm(filters); term != "" {
-		p := "%" + term + "%"
-		fq = fq.Where("(module_id LIKE ? OR module_name LIKE ? OR description LIKE ? OR url LIKE ? OR hostname LIKE ?)", p, p, p, p, p)
+		p := database.LikeContains(term)
+		fq = fq.Where(database.WithLikeEscape(
+			"(module_id LIKE ? OR module_name LIKE ? OR description LIKE ? OR url LIKE ? OR hostname LIKE ?)"), p, p, p, p, p)
 	}
 	if filters.Limit > 0 {
 		fq = fq.Limit(filters.Limit)
@@ -303,9 +304,9 @@ func fsSearchTerm(filters database.QueryFilters) string {
 // wildcards map to "%", an otherwise literal pattern is wrapped in "%…%".
 func fsLikePattern(p string) string {
 	if strings.Contains(p, "*") {
-		return strings.ReplaceAll(p, "*", "%")
+		return database.LikeGlob(p)
 	}
-	return "%" + p + "%"
+	return database.LikeContains(p)
 }
 
 // fsPrintSummary writes the operator-facing summary for an fs export.

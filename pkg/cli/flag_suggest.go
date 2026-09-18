@@ -28,9 +28,13 @@ func flagErrorFunc(cmd *cobra.Command, err error) error {
 	if notExist.GetSpecifiedShortnames() != "" || len(typed) < 2 {
 		return err
 	}
+	// With no confident near-miss, say where the answer is rather than nothing.
+	// A bare "unknown flag: --url" is a dead end; naming the command's own help
+	// costs one line and is never misleading, which a guessed flag can be.
 	best := closestFlagName(cmd, typed)
 	if best == "" {
-		return err
+		return fmt.Errorf("%w\n\n  %s Run '%s --help' for this command's flags",
+			err, terminal.InfoSymbol(), cmd.CommandPath())
 	}
 	return fmt.Errorf("%w\n\n  %s Did you mean %s? (run '%s --help' for all flags)",
 		err, terminal.InfoSymbol(), terminal.BoldCyan("--"+best), cmd.CommandPath())
@@ -38,9 +42,21 @@ func flagErrorFunc(cmd *cobra.Command, err error) error {
 
 // closestFlagName returns the registered long flag on cmd nearest to typed by
 // Levenshtein distance, or "" when nothing is close enough to be a confident
-// suggestion. The accept threshold scales with the typed length (min 2) so a
-// short flag doesn't over-suggest. cmd.Flags() is the fully-merged set
-// (local + inherited persistent) by the time flag parsing fails.
+// suggestion. cmd.Flags() is the fully-merged set (local + inherited persistent)
+// by the time flag parsing fails.
+//
+// The threshold used to be `max(2, len/3)`, which was too generous at the short
+// end and produced the worst class of wrong answer. `vigolium traffic --url ...`
+// was answered with "Did you mean --all?": three characters, edit distance two,
+// so it cleared a floor of two — and --all is not a near-miss of --url, it is an
+// unrelated flag that LIFTS the result cap. A suggestion that silently widens
+// the query is worse than no suggestion, because a caller who takes it gets a
+// plausible-looking answer to a question they did not ask.
+//
+// So the budget scales with the typed name throughout, and a distance that
+// rewrites most of a short name no longer qualifies. Anything of five characters
+// or fewer must match within one edit — a genuine typo (--modul for --module,
+// --hosts for --host) still lands, while --url→--all does not.
 func closestFlagName(cmd *cobra.Command, typed string) string {
 	bestName := ""
 	bestDist := -1
@@ -49,6 +65,9 @@ func closestFlagName(cmd *cobra.Command, typed string) string {
 			return
 		}
 		d := levenshtein(typed, f.Name)
+		// Ties go to the first name in pflag's (lexical) visit order rather than
+		// to whichever happened to be registered last, so the hint is stable
+		// across builds.
 		if bestDist == -1 || d < bestDist {
 			bestName, bestDist = f.Name, d
 		}
@@ -56,14 +75,20 @@ func closestFlagName(cmd *cobra.Command, typed string) string {
 	if bestDist == -1 {
 		return ""
 	}
-	limit := len(typed) / 3
-	if limit < 2 {
-		limit = 2
-	}
-	if bestDist <= limit {
+	if bestDist <= suggestionBudget(typed) {
 		return bestName
 	}
 	return ""
+}
+
+// suggestionBudget is the largest edit distance still considered a typo of
+// typed. One edit for a short name, widening to a third of the name's length for
+// longer ones, where the same distance leaves far more of the word intact.
+func suggestionBudget(typed string) int {
+	if len(typed) <= 5 {
+		return 1
+	}
+	return len(typed) / 3
 }
 
 // levenshtein is the classic edit distance between a and b, computed with a

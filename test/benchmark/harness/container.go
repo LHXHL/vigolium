@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"testing"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
@@ -119,6 +121,32 @@ func ContainerConfigFromApp(app AppConfig) ContainerConfig {
 		Env:           app.Env,
 		ReadyEndpoint: waitEndpoint,
 	}
+}
+
+// StrictProvisionEnv, when set to "1", turns a benchmark app that will not come
+// up into a test failure instead of a skip.
+const StrictProvisionEnv = "VIGOLIUM_BENCH_STRICT_PROVISION"
+
+// StartAppOrSkip starts a benchmark app, skipping the test when it cannot be
+// provisioned. These apps are third-party: images get withdrawn from registries
+// and upstream Dockerfiles break on their own schedule, and neither says anything
+// about vigolium's scanners - so a provisioning failure is not a scanner
+// regression and should not be reported as one. The skip names the app and quotes
+// the error so the lost coverage stays visible in the run summary rather than
+// vanishing. Set VIGOLIUM_BENCH_STRICT_PROVISION=1 to fail instead.
+func StartAppOrSkip(ctx context.Context, t *testing.T, app AppConfig) *VulnerableApp {
+	t.Helper()
+
+	started, err := StartAppFromDefinition(ctx, app)
+	if err == nil {
+		return started
+	}
+
+	if os.Getenv(StrictProvisionEnv) == "1" {
+		t.Fatalf("failed to start %s (%s=1): %v", app.Name, StrictProvisionEnv, err)
+	}
+	t.Skipf("benchmark app %q could not be provisioned, skipping its coverage: %v", app.Name, err)
+	return nil
 }
 
 // StartAppFromDefinition starts a Docker container based on an AppConfig.

@@ -26,6 +26,23 @@ type QueryFilters struct {
 	// searches URL/path/body, not identity.
 	RecordUUIDs []string
 
+	// URLsExact selects records whose stored url matches EXACTLY — an equality
+	// IN (), never a LIKE.
+	//
+	// It exists because `--url` was the name callers reached for and the one name
+	// the read surface did not have: --host takes a hostname, --path a fuzzy
+	// pattern, and a URL passed as the positional term is a substring search that
+	// also matches every URL containing it. So "show me this one endpoint" had no
+	// spelling, and the nearest miss was answered by the flag suggester with
+	// "did you mean --all?", which lifts the result cap.
+	//
+	// Repeated values are OR-ed within the field and AND-ed against every other
+	// filter, matching how --uuid and --method already behave. No normalization,
+	// no case folding, no trailing-slash equivalence: equality is against the
+	// bytes that were stored, because a comparison that quietly canonicalizes is
+	// one the caller cannot predict from the value they passed.
+	URLsExact []string
+
 	// Host filtering
 	HostPattern string // Hostname pattern (supports wildcards)
 
@@ -104,8 +121,8 @@ func (f QueryFilters) EffectiveExcludeTerms() []string {
 
 // UsesRawCorpus reports whether any active filter matches against the
 // raw_request/raw_response blob columns — the FuzzyTerm branches,
-// recordSearchPredicate (--search) and rawCorpusPredicate (--header/--body),
-// plus all three exclude forms.
+// recordSearchPredicate (--search) and the region predicates behind
+// --header/--body (see message_regions.go), plus all three exclude forms.
 //
 // A caller that would otherwise avoid materializing those blobs (a projected
 // SELECT, or a merge that omits the columns) MUST check this first and keep them
@@ -199,35 +216,74 @@ func ftsPrefixQuery(term string) string {
 // used throughout so the negated form is NULL-safe (a bare NOT (NULL LIKE ?)
 // evaluates to NULL and would wrongly drop the row); it is a no-op for the
 // positive form because search terms are always non-blank.
-const (
+//
+// Every one of them is wrapped in WithLikeEscape, which appends the ESCAPE
+// clause each placeholder needs for the term escaping in like.go to take effect.
+// They are vars rather than consts for that reason alone — the wrapping is a
+// one-time pass at package init, not per query.
+const severitySortRankExpr = "CASE f.severity" +
+	" WHEN 'critical' THEN 6 WHEN 'high' THEN 5 WHEN 'medium' THEN 4" +
+	" WHEN 'low' THEN 3 WHEN 'suspect' THEN 2 WHEN 'info' THEN 1 ELSE 0 END"
+
+var (
 	// recordSearchPredicate scans http_records: URL, path, and the raw
 	// request/response corpus (headers + body). Four ? placeholders.
-	recordSearchPredicate = "(COALESCE(r.url, '') LIKE ? OR COALESCE(r.path, '') LIKE ? OR " +
-		"COALESCE(CAST(r.raw_request AS TEXT), '') LIKE ? OR COALESCE(CAST(r.raw_response AS TEXT), '') LIKE ?)"
-
-	// rawCorpusPredicate scans just the raw request/response corpus, backing
-	// --header/--body and their inverses. Two ? placeholders.
-	rawCorpusPredicate = "(COALESCE(CAST(r.raw_request AS TEXT), '') LIKE ? OR COALESCE(CAST(r.raw_response AS TEXT), '') LIKE ?)"
-
-	// severitySortRankExpr maps f.severity to its numeric risk rank for ORDER BY,
-	// so a severity sort ranks by risk instead of alphabetically. Mirrors
-	// severity_gate's canonical order (info<suspect<low<medium<high<critical).
-	severitySortRankExpr = "CASE f.severity" +
-		" WHEN 'critical' THEN 6 WHEN 'high' THEN 5 WHEN 'medium' THEN 4" +
-		" WHEN 'low' THEN 3 WHEN 'suspect' THEN 2 WHEN 'info' THEN 1 ELSE 0 END"
+	recordSearchPredicate = WithLikeEscape(
+		"(COALESCE(r.url, '') LIKE ? OR COALESCE(r.path, '') LIKE ? OR " +
+			"COALESCE(CAST(r.raw_request AS TEXT), '') LIKE ? OR COALESCE(CAST(r.raw_response AS TEXT), '') LIKE ?)")
 
 	// findingSearchPredicate scans a finding's own fields plus its linked HTTP
 	// records (via the finding_records junction). The record columns sit inside
 	// EXISTS, which is boolean and never NULL, so they need no COALESCE. Twelve
 	// ? placeholders: 7 finding fields then 5 record fields.
-	findingSearchPredicate = "((COALESCE(f.module_name, '') LIKE ? OR COALESCE(f.module_short, '') LIKE ? OR COALESCE(f.description, '') LIKE ? OR " +
-		"COALESCE(f.module_id, '') LIKE ? OR COALESCE(f.matched_at, '') LIKE ? OR COALESCE(f.request, '') LIKE ? OR COALESCE(f.response, '') LIKE ?)" +
-		" OR EXISTS (SELECT 1 FROM finding_records fr2" +
-		" INNER JOIN http_records r ON r.uuid = fr2.record_uuid" +
-		" WHERE fr2.finding_id = f.id AND (" +
-		" r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ?" +
-		" OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?" +
-		")))"
+	findingSearchPredicate = WithLikeEscape(
+		"((COALESCE(f.module_name, '') LIKE ? OR COALESCE(f.module_short, '') LIKE ? OR COALESCE(f.description, '') LIKE ? OR " +
+			"COALESCE(f.module_id, '') LIKE ? OR COALESCE(f.matched_at, '') LIKE ? OR COALESCE(f.request, '') LIKE ? OR COALESCE(f.response, '') LIKE ?)" +
+			" OR EXISTS (SELECT 1 FROM finding_records fr2" +
+			" INNER JOIN http_records r ON r.uuid = fr2.record_uuid" +
+			" WHERE fr2.finding_id = f.id AND (" +
+			" r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ?" +
+			" OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?" +
+			")))")
+
+	// The three shapes the positional fuzzy term takes, one per index situation.
+	// Hoisted out of applyFilters so all three go through WithLikeEscape in one
+	// place — an escape clause missing from only the no-FTS fallback would make
+	// the same term behave differently depending on how the store was opened,
+	// which is the bug the FTS branch comment below already warns about.
+	fuzzyRecordFTSPredicate = WithLikeEscape(
+		`(r.rowid IN (SELECT rowid FROM http_records_fts WHERE http_records_fts MATCH ?)
+			OR r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ?
+			OR r.method LIKE ? OR r.request_content_type LIKE ? OR r.response_content_type LIKE ? OR r.source LIKE ?
+			OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?)`)
+
+	fuzzyRecordPostgresFTSPredicate = WithLikeEscape(
+		`(r.search_vector @@ plainto_tsquery('english', ?)
+			OR r.method LIKE ? OR r.request_content_type LIKE ? OR r.response_content_type LIKE ? OR r.source LIKE ?)`)
+
+	fuzzyRecordPredicate = WithLikeEscape(
+		`(r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ? OR r.method LIKE ?
+			OR r.request_content_type LIKE ? OR r.response_content_type LIKE ? OR r.source LIKE ?
+			OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?)`)
+
+	// fuzzyFindingPredicate backs the positional term on `finding`: the finding's
+	// own fields OR any linked record's url/path/host/raw corpus. Twelve ?
+	// placeholders, 7 finding then 5 record — same order as
+	// findingSearchPredicate.
+	fuzzyFindingPredicate = WithLikeEscape(
+		`((f.description LIKE ? OR f.module_id LIKE ? OR f.module_name LIKE ? OR f.module_short LIKE ? OR f.matched_at LIKE ? OR f.request LIKE ? OR f.response LIKE ?)
+		 OR EXISTS (SELECT 1 FROM finding_records fr2
+			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
+			WHERE fr2.finding_id = f.id AND (
+				r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ?
+				OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?
+			)))`)
+
+	// Remark membership, one form per driver's JSON array accessor.
+	remarkPredicatePostgres = WithLikeEscape(
+		"EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.remarks::jsonb) AS je WHERE je LIKE ?)")
+	remarkPredicateSQLite = WithLikeEscape(
+		"EXISTS (SELECT 1 FROM json_each(r.remarks) WHERE json_each.value LIKE ?)")
 )
 
 // QueryBuilder builds filtered database queries
@@ -339,11 +395,17 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 		query.Where("r.uuid IN (?)", bun.List(qb.filters.RecordUUIDs))
 	}
 
+	// Exact URL selection, for the same reason and in the same shape: equality,
+	// applied before pagination, so a match is never missed for falling outside
+	// the current page.
+	if urls := nonBlank(qb.filters.URLsExact); len(urls) > 0 {
+		query.Where("r.url IN (?)", bun.List(urls))
+	}
+
 	// Host filtering (direct column, no join)
 	if qb.filters.HostPattern != "" {
 		if strings.Contains(qb.filters.HostPattern, "*") {
-			pattern := strings.ReplaceAll(qb.filters.HostPattern, "*", "%")
-			query.Where("r.hostname LIKE ?", pattern)
+			query.Where(WithLikeEscape("r.hostname LIKE ?"), LikeGlob(qb.filters.HostPattern))
 		} else {
 			query.Where("r.hostname = ?", qb.filters.HostPattern)
 		}
@@ -357,10 +419,9 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 	// Path filtering (fuzzy by default, wildcards supported)
 	if qb.filters.PathPattern != "" {
 		if strings.Contains(qb.filters.PathPattern, "*") {
-			pattern := strings.ReplaceAll(qb.filters.PathPattern, "*", "%")
-			query.Where("r.path LIKE ?", pattern)
+			query.Where(WithLikeEscape("r.path LIKE ?"), LikeGlob(qb.filters.PathPattern))
 		} else {
-			query.Where("r.path LIKE ?", "%"+qb.filters.PathPattern+"%")
+			query.Where(WithLikeEscape("r.path LIKE ?"), LikeContains(qb.filters.PathPattern))
 		}
 	}
 
@@ -371,7 +432,7 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 
 	// Content type filtering
 	if qb.filters.ContentType != "" {
-		query.Where("r.response_content_type LIKE ?", "%"+qb.filters.ContentType+"%")
+		query.Where(WithLikeEscape("r.response_content_type LIKE ?"), LikeContains(qb.filters.ContentType))
 	}
 
 	// Source filtering
@@ -391,20 +452,12 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 
 	// Remark filtering (single)
 	if qb.filters.Remark != "" {
-		if qb.db.Driver() == "postgres" {
-			query.Where("EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.remarks::jsonb) AS je WHERE je LIKE ?)", "%"+qb.filters.Remark+"%")
-		} else {
-			query.Where("EXISTS (SELECT 1 FROM json_each(r.remarks) WHERE json_each.value LIKE ?)", "%"+qb.filters.Remark+"%")
-		}
+		qb.applyRemarkFilter(query, qb.filters.Remark)
 	}
 
 	// Remarks filtering (multiple, AND semantics)
 	for _, remark := range qb.filters.Remarks {
-		if qb.db.Driver() == "postgres" {
-			query.Where("EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.remarks::jsonb) AS je WHERE je LIKE ?)", "%"+remark+"%")
-		} else {
-			query.Where("EXISTS (SELECT 1 FROM json_each(r.remarks) WHERE json_each.value LIKE ?)", "%"+remark+"%")
-		}
+		qb.applyRemarkFilter(query, remark)
 	}
 
 	// Severity filtering (requires join with findings via junction table)
@@ -442,23 +495,16 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 			// dropped from the index to halve ingest write cost — see db.go), so
 			// the metadata LIKEs add comparisons to a scan that happens anyway,
 			// while MATCH still short-circuits the common metadata hit.
-			p := "%" + qb.filters.FuzzyTerm + "%"
-			query.Where(`(r.rowid IN (SELECT rowid FROM http_records_fts WHERE http_records_fts MATCH ?)
-				OR r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ?
-				OR r.method LIKE ? OR r.request_content_type LIKE ? OR r.response_content_type LIKE ? OR r.source LIKE ?
-				OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?)`,
+			p := LikeContains(qb.filters.FuzzyTerm)
+			query.Where(fuzzyRecordFTSPredicate,
 				ftsPrefixQuery(qb.filters.FuzzyTerm), p, p, p, p, p, p, p, p, p)
 		} else if qb.db.HasFTS() && qb.db.Driver() == "postgres" {
-			p := "%" + qb.filters.FuzzyTerm + "%"
-			query.Where(`(r.search_vector @@ plainto_tsquery('english', ?)
-				OR r.method LIKE ? OR r.request_content_type LIKE ? OR r.response_content_type LIKE ? OR r.source LIKE ?)`,
+			p := LikeContains(qb.filters.FuzzyTerm)
+			query.Where(fuzzyRecordPostgresFTSPredicate,
 				qb.filters.FuzzyTerm, p, p, p, p)
 		} else {
-			p := "%" + qb.filters.FuzzyTerm + "%"
-			query.Where(`(r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ? OR r.method LIKE ?
-				OR r.request_content_type LIKE ? OR r.response_content_type LIKE ? OR r.source LIKE ?
-				OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?)`,
-				p, p, p, p, p, p, p, p, p)
+			p := LikeContains(qb.filters.FuzzyTerm)
+			query.Where(fuzzyRecordPredicate, p, p, p, p, p, p, p, p, p)
 		}
 	}
 
@@ -466,50 +512,59 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 	// body live in raw_request/raw_response). Multiple terms are AND-combined:
 	// every term must match somewhere, so repeating --search narrows the results.
 	for _, term := range qb.filters.EffectiveSearchTerms() {
-		p := "%" + term + "%"
+		p := LikeContains(term)
 		query.Where(recordSearchPredicate, p, p, p, p)
 	}
 
 	// Exclusion search: drop records where ANY term appears anywhere --search
 	// scans (the inverse predicate). Each term is an independent NOT conjunct.
 	for _, term := range qb.filters.EffectiveExcludeTerms() {
-		p := "%" + term + "%"
+		p := LikeContains(term)
 		query.Where("NOT "+recordSearchPredicate, p, p, p, p)
 	}
 
-	// Header and body searches scan raw_request/raw_response — these contain
-	// both headers and body, so HeaderSearch and BodySearch hit the same corpus
-	// via the same strategy (FTS5 when available, CAST LIKE fallback).
-	qb.applyRawCorpusSearch(query, qb.filters.HeaderSearch)
-	qb.applyRawCorpusSearch(query, qb.filters.BodySearch)
-
-	// Exclusion counterparts: drop records whose raw corpus contains the term.
-	qb.applyRawCorpusExclude(query, qb.filters.ExcludeHeaderSearch)
-	qb.applyRawCorpusExclude(query, qb.filters.ExcludeBodySearch)
+	// Header and body searches are attributed: each scans only its own region of
+	// raw_request/raw_response. See message_regions.go for why the split is in
+	// SQL rather than applied to the fetched rows. The excludes are the same
+	// predicate negated, so the two can never disagree about what "in the
+	// headers" means.
+	driver := qb.db.Driver()
+	whereRegion(query, headerSearchPredicate, driver, qb.filters.HeaderSearch, false)
+	whereRegion(query, bodySearchPredicate, driver, qb.filters.BodySearch, false)
+	whereRegion(query, headerSearchPredicate, driver, qb.filters.ExcludeHeaderSearch, true)
+	whereRegion(query, bodySearchPredicate, driver, qb.filters.ExcludeBodySearch, true)
 }
 
-// applyRawCorpusSearch adds a substring filter over the raw_request/raw_response
-// corpus via a CAST(...) LIKE scan. The SQLite FTS index intentionally no longer
-// holds the raw blobs (they were dropped to halve ingest write cost, see db.go),
-// so body and header searches scan the bodies directly on both drivers. A blank
-// term is a no-op.
-func (qb *QueryBuilder) applyRawCorpusSearch(query *bun.SelectQuery, term string) {
+// whereRegion narrows to (or, when exclude is set, drops) rows whose named
+// message region contains term. A blank term is a no-op — and the predicate is
+// not even built for one, which matters because almost every query passes four
+// blank terms through here.
+//
+// `build` is taken as a function rather than a finished string for that reason:
+// each call assembles a ~600-character expression out of a dozen Sprintf'd
+// parts, and doing that eagerly charged every listing for four searches nobody
+// asked for.
+func whereRegion(query *bun.SelectQuery, build func(string) string, driver, term string, exclude bool) {
 	if term == "" {
 		return
 	}
-	p := "%" + term + "%"
-	query.Where(rawCorpusPredicate, p, p)
+	predicate := build(driver)
+	if exclude {
+		predicate = "NOT " + predicate
+	}
+	p := LikeContains(term)
+	query.Where(predicate, p, p)
 }
 
-// applyRawCorpusExclude drops rows whose raw_request/raw_response corpus contains
-// the term — the inverse of applyRawCorpusSearch (same predicate, negated). A
-// blank term is a no-op.
-func (qb *QueryBuilder) applyRawCorpusExclude(query *bun.SelectQuery, term string) {
-	if term == "" {
-		return
+// applyRemarkFilter narrows to records carrying a remark containing term. A
+// remark list is JSON in both stores, so the accessor differs per driver while
+// the match itself does not.
+func (qb *QueryBuilder) applyRemarkFilter(query *bun.SelectQuery, term string) {
+	pred := remarkPredicateSQLite
+	if qb.db.Driver() == "postgres" {
+		pred = remarkPredicatePostgres
 	}
-	p := "%" + term + "%"
-	query.Where("NOT "+rawCorpusPredicate, p, p)
+	query.Where(pred, LikeContains(term))
 }
 
 // applySorting applies sorting to the query
@@ -964,7 +1019,7 @@ func (fqb *FindingsQueryBuilder) applyFindingFilters(query *bun.SelectQuery) {
 
 	// Module name filtering
 	if fqb.filters.ModuleName != "" {
-		query.Where("f.module_name LIKE ?", "%"+fqb.filters.ModuleName+"%")
+		query.Where(WithLikeEscape("f.module_name LIKE ?"), LikeContains(fqb.filters.ModuleName))
 	}
 
 	// Module type filtering
@@ -993,14 +1048,9 @@ func (fqb *FindingsQueryBuilder) applyFindingFilters(query *bun.SelectQuery) {
 	// the non-duplicating pattern used by the path/method/status/source filters below.
 	if fqb.filters.HostPattern != "" {
 		if strings.Contains(fqb.filters.HostPattern, "*") {
-			pattern := strings.ReplaceAll(fqb.filters.HostPattern, "*", "%")
-			query.Where(`EXISTS (SELECT 1 FROM finding_records fr2
-				INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-				WHERE fr2.finding_id = f.id AND r.hostname LIKE ?)`, pattern)
+			query.Where(WithLikeEscape(findingRegionPredicate("r.hostname LIKE ?")), LikeGlob(fqb.filters.HostPattern))
 		} else {
-			query.Where(`EXISTS (SELECT 1 FROM finding_records fr2
-				INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-				WHERE fr2.finding_id = f.id AND r.hostname = ?)`, fqb.filters.HostPattern)
+			query.Where(findingRegionPredicate("r.hostname = ?"), fqb.filters.HostPattern)
 		}
 	}
 
@@ -1009,7 +1059,7 @@ func (fqb *FindingsQueryBuilder) applyFindingFilters(query *bun.SelectQuery) {
 	// raw request/response corpus. Multiple terms are AND-combined: every term
 	// must match somewhere, so repeating --search progressively narrows.
 	for _, term := range fqb.filters.EffectiveSearchTerms() {
-		p := "%" + term + "%"
+		p := LikeContains(term)
 		query.Where(findingSearchPredicate,
 			p, p, p, p, p, p, p, // finding fields
 			p, p, p, p, p) // record fields
@@ -1020,7 +1070,7 @@ func (fqb *FindingsQueryBuilder) applyFindingFilters(query *bun.SelectQuery) {
 	// conjunct; the record side uses EXISTS so a finding is dropped when a linked
 	// record matches.
 	for _, term := range fqb.filters.EffectiveExcludeTerms() {
-		p := "%" + term + "%"
+		p := LikeContains(term)
 		query.Where("NOT "+findingSearchPredicate,
 			p, p, p, p, p, p, p, // finding fields
 			p, p, p, p, p) // record fields
@@ -1028,95 +1078,52 @@ func (fqb *FindingsQueryBuilder) applyFindingFilters(query *bun.SelectQuery) {
 
 	// Fuzzy search across finding fields and associated HTTP records
 	if fqb.filters.FuzzyTerm != "" {
-		p := "%" + fqb.filters.FuzzyTerm + "%"
-		// Search finding's own fields first
-		findingMatch := "(f.description LIKE ? OR f.module_id LIKE ? OR f.module_name LIKE ? OR f.module_short LIKE ? OR f.matched_at LIKE ? OR f.request LIKE ? OR f.response LIKE ?)"
-		// Also search associated HTTP records via junction table
-		recordMatch := `EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND (
-				r.url LIKE ? OR r.path LIKE ? OR r.hostname LIKE ?
-				OR CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?
-			))`
-		query.Where("("+findingMatch+" OR "+recordMatch+")",
+		p := LikeContains(fqb.filters.FuzzyTerm)
+		query.Where(fuzzyFindingPredicate,
 			p, p, p, p, p, p, p, // finding fields
 			p, p, p, p, p) // record fields
 	}
 
-	// Path filtering via associated HTTP records
+	// Path filtering via associated HTTP records.
+	//
+	// Bound as a placeholder like every other filter. It used to be interpolated
+	// with fmt.Sprintf and hand-doubled quotes, which survived only because the
+	// doubling was correct; a bound parameter cannot be got wrong, and it is what
+	// lets the pattern carry escaped metacharacters at all.
 	if fqb.filters.PathPattern != "" {
-		var pathCond string
+		pattern := LikeContains(fqb.filters.PathPattern)
 		if strings.Contains(fqb.filters.PathPattern, "*") {
-			pattern := strings.ReplaceAll(fqb.filters.PathPattern, "*", "%")
-			pathCond = fmt.Sprintf("r.path LIKE '%s'", strings.ReplaceAll(pattern, "'", "''"))
-		} else {
-			escaped := strings.ReplaceAll(fqb.filters.PathPattern, "'", "''")
-			pathCond = fmt.Sprintf("r.path LIKE '%%%s%%'", escaped)
+			pattern = LikeGlob(fqb.filters.PathPattern)
 		}
-		query.Where(`EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND ` + pathCond + `)`)
+		query.Where(WithLikeEscape(findingRegionPredicate("r.path LIKE ?")), pattern)
 	}
 
 	// Method filtering via associated HTTP records
 	if len(fqb.filters.Methods) > 0 {
-		query.Where(`EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND r.method IN (?))`, bun.List(fqb.filters.Methods))
+		query.Where(findingRegionPredicate("r.method IN (?)"), bun.List(fqb.filters.Methods))
 	}
 
 	// Status code filtering via associated HTTP records
 	if len(fqb.filters.StatusCodes) > 0 {
-		query.Where(`EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND r.status_code IN (?))`, bun.List(fqb.filters.StatusCodes))
+		query.Where(findingRegionPredicate("r.status_code IN (?)"), bun.List(fqb.filters.StatusCodes))
 	}
 
 	// Source filtering via associated HTTP records
 	if fqb.filters.Source != "" {
-		query.Where(`EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND r.source = ?)`, fqb.filters.Source)
+		query.Where(findingRegionPredicate("r.source = ?"), fqb.filters.Source)
 	}
 
-	if fqb.filters.HeaderSearch != "" {
-		hp := "%" + fqb.filters.HeaderSearch + "%"
-		query.Where(`EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND (
-				CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?
-			))`, hp, hp)
+	// Header/body searches are attributed here too, via the same region
+	// predicates the record listing uses — reached through the junction, so a
+	// finding matches when one of its linked records does.
+	driver := fqb.db.Driver()
+	viaJunction := func(build func(string) string) func(string) string {
+		return func(d string) string { return findingRegionPredicate(build(d)) }
 	}
-
-	if fqb.filters.BodySearch != "" {
-		bp := "%" + fqb.filters.BodySearch + "%"
-		query.Where(`EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND (
-				CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?
-			))`, bp, bp)
-	}
-
-	// Exclusion counterparts: drop findings that have a linked record whose raw
-	// corpus contains the term (NOT EXISTS — a NULL corpus column simply doesn't
-	// match, so no COALESCE guard is needed here).
-	if fqb.filters.ExcludeHeaderSearch != "" {
-		hp := "%" + fqb.filters.ExcludeHeaderSearch + "%"
-		query.Where(`NOT EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND (
-				CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?
-			))`, hp, hp)
-	}
-
-	if fqb.filters.ExcludeBodySearch != "" {
-		bp := "%" + fqb.filters.ExcludeBodySearch + "%"
-		query.Where(`NOT EXISTS (SELECT 1 FROM finding_records fr2
-			INNER JOIN http_records r ON r.uuid = fr2.record_uuid
-			WHERE fr2.finding_id = f.id AND (
-				CAST(r.raw_request AS TEXT) LIKE ? OR CAST(r.raw_response AS TEXT) LIKE ?
-			))`, bp, bp)
-	}
+	whereRegion(query, viaJunction(headerSearchPredicate), driver, fqb.filters.HeaderSearch, false)
+	whereRegion(query, viaJunction(bodySearchPredicate), driver, fqb.filters.BodySearch, false)
+	whereRegion(query, viaJunction(headerSearchPredicate), driver, fqb.filters.ExcludeHeaderSearch, true)
+	whereRegion(query, viaJunction(bodySearchPredicate), driver, fqb.filters.ExcludeBodySearch, true)
 
 	// Date range filtering
 	if fqb.filters.DateFrom != nil {

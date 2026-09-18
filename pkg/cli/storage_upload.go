@@ -64,7 +64,7 @@ func runStorageUpload(cmd *cobra.Command, args []string) error {
 
 	url := storage.StorageURL(projectUUID, key)
 	fmt.Printf("%s Uploaded %s (%s)\n",
-		terminal.SuccessSymbol(), terminal.Cyan(filepath.Base(srcPath)), humanBytes(info.Size()))
+		terminal.SuccessSymbol(), terminal.Cyan(filepath.Base(srcPath)), terminal.HumanBytes(info.Size()))
 	fmt.Printf("  Key: %s\n", terminal.Gray(key))
 	fmt.Printf("  URL: %s\n", terminal.Gray(url))
 	return nil

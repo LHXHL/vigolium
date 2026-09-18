@@ -185,7 +185,7 @@ vigolium scan -t https://example.com --oast-url https://your-oast.example.com/ca
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-c` / `--concurrency` | 40 | Number of concurrent scan workers |
+| `-c` / `--concurrency` | 25 | Number of concurrent scan workers |
 | `--max-per-host` | 40 | Max concurrent requests per host |
 | `-r` / `--rate-limit` | 100 | Max request submissions per second |
 | `--max-host-error` | 30 | Skip host after N consecutive errors |
@@ -218,10 +218,9 @@ The `scanning_pace` section in `vigolium-configs.yaml` provides centralized spee
 ```yaml
 scanning_pace:
   # Common defaults (inherited by all phases)
-  concurrency: 40
+  concurrency: 25
   rate_limit: 100
   max_per_host: 40
-  max_per_host: 10
 
   # Per-phase overrides (0 = inherit from common)
   discovery:

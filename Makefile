@@ -636,8 +636,8 @@ vulnerable-java-status:
 
 vulnerable-nginx-up:
 	@echo "$(PREFIX) Starting detectify Vulnerable Nginx..."
-	docker compose -f $(VULN_NGINX_DIR)/docker-compose.yaml up -d
-	@echo "$(PREFIX) Vulnerable Nginx: http://127.0.0.1:5000"
+	docker compose -f $(VULN_NGINX_DIR)/docker-compose.yaml up -d --build
+	@echo "$(PREFIX) Vulnerable Nginx: http://$$(docker compose -f $(VULN_NGINX_DIR)/docker-compose.yaml port nginx 5000)"
 
 vulnerable-nginx-down:
 	@echo "$(PREFIX) Stopping detectify Vulnerable Nginx..."

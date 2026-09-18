@@ -55,6 +55,7 @@ var (
 
 	// Filter flags
 	listUUIDs    []string
+	listURLs     []string
 	listHost     string
 	listMethods  []string
 	listStatus   []int
@@ -108,10 +109,13 @@ func registerListFlags(cmd *cobra.Command) {
 	// Column selection flags
 	cmd.Flags().StringSliceVar(&listColumns, "columns", nil, "Columns to include in output, comma-separated")
 	registerAgentJSONFlags(cmd.Flags())
+	registerJSONOutputFlag(cmd)
 
 	// Filter flags
 	cmd.Flags().StringSliceVar(&listUUIDs, "uuid", nil,
 		"Select exact stored record(s) by UUID (repeatable/comma-separated). Applied before pagination")
+	cmd.Flags().StringArrayVar(&listURLs, "url", nil,
+		"Select records whose URL matches EXACTLY (repeatable; OR-ed). Compared against the stored URL with no normalization — use --path or --search for substring matching")
 	cmd.Flags().StringVar(&listHost, "host", "", "Filter records by hostname pattern (wildcard supported)")
 	cmd.Flags().StringSliceVar(&listMethods, "method", nil, "Filter records by HTTP method (can be specified multiple times)")
 	cmd.Flags().IntSliceVar(&listStatus, "status", nil, "Filter records by HTTP status code (can be specified multiple times)")
@@ -130,8 +134,8 @@ func registerListFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&listTo, "to", "", fmt.Sprintf("Show records at or before this time — %s; %s (alias: --until)", clicommon.TimeFilterSyntax, clicommon.TimeFilterUpperBoundNote))
 
 	// Search flags
-	cmd.Flags().StringVar(&listHeader, "header", "", "Search within HTTP header names and values")
-	cmd.Flags().StringVar(&listBody, "body", "", "Search within request or response body content")
+	cmd.Flags().StringVar(&listHeader, "header", "", "Search only the HTTP header block of the request/response (not bodies); use --search to span the whole exchange")
+	cmd.Flags().StringVar(&listBody, "body", "", "Search only the HTTP request/response body (not headers); use --search to span the whole exchange")
 
 	// Sorting flags
 	cmd.Flags().StringVar(&listSort, "sort", "created_at", "Sort results by field: uuid, created_at, sent_at, method, status_code, response_time, risk_score, surface_score")
@@ -178,6 +182,9 @@ func runDBList(cmd *cobra.Command, args []string) error {
 		if err := validateAgentViewFlags(agentViewOptionsFromFlags(), findingViewFields); err != nil {
 			return err
 		}
+	}
+	if err := validateJSONOutputFlag(cmd); err != nil {
+		return err
 	}
 
 	return runWithWatch(func() error {
@@ -274,6 +281,7 @@ func runListHTTPRecords(ctx context.Context, db *database.DB) error {
 	filters := database.QueryFilters{
 		ProjectUUID:     projectUUID,
 		RecordUUIDs:     listUUIDs,
+		URLsExact:       listURLs,
 		HostPattern:     listHost,
 		Methods:         listMethods,
 		StatusCodes:     listStatus,

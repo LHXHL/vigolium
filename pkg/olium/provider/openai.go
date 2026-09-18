@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/vigolium/vigolium/pkg/olium/stream"
 )
@@ -26,13 +27,24 @@ const openAIChatCompletionsURL = "https://api.openai.com/v1/chat/completions"
 // optional extra headers, and that an empty apiKey suppresses the
 // Authorization header so unauthenticated local servers work.
 type OpenAI struct {
-	apiKey       secret
-	baseURL      string // full chat-completions URL
+	apiKey  secret
+	baseURL string // full chat-completions URL
+	// altURL is baseURL with its /v1 segment toggled, tried once if baseURL
+	// 404s. Empty for the canonical OpenAI provider, whose URL is not a guess.
+	altURL       string
 	extraHeaders map[string]string
 	extraBody    map[string]any // merged into every request body; nil = no-op
 	name         string
 	client       *http.Client
 }
+
+// settledEndpoints remembers which spelling of a base URL actually answered,
+// keyed by the normalized URL. Process-wide rather than a field, because
+// providers are not long-lived: pkg/agent mints a fresh one per engine build
+// (per skill, per RunPrompt, per guardrail), so a per-instance latch would
+// re-probe every session. Keeping it here also leaves the provider immutable
+// after construction, like every other provider in this package.
+var settledEndpoints sync.Map // normalized base URL -> the URL that answered
 
 // NewOpenAI constructs the canonical OpenAI provider pointed at
 // api.openai.com. The key is wrapped in a formatter-safe secret so a stray
@@ -62,9 +74,11 @@ func NewOpenAI(apiKey string) *OpenAI {
 // (model, messages, tools, stream, stream_options) trigger a request-time
 // error. Pass nil to disable.
 func NewOpenAICompatible(baseURL, apiKey string, extraHeaders map[string]string, extraBody map[string]any) *OpenAI {
+	normalized := normalizeOpenAIBaseURL(baseURL)
 	return &OpenAI{
 		apiKey:       secret(apiKey),
-		baseURL:      normalizeOpenAIBaseURL(baseURL),
+		baseURL:      normalized,
+		altURL:       altOpenAIBaseURL(normalized),
 		extraHeaders: extraHeaders,
 		extraBody:    extraBody,
 		name:         "openai-compatible",
@@ -72,18 +86,26 @@ func NewOpenAICompatible(baseURL, apiKey string, extraHeaders map[string]string,
 	}
 }
 
-// normalizeOpenAIBaseURL tolerates either a full chat-completions URL or a
-// v1 root by appending /chat/completions when the path doesn't already end
-// in it. Trailing slashes are trimmed so we don't end up with `/v1//chat/...`.
+// normalizeOpenAIBaseURL tolerates a full chat-completions URL, a version
+// root, or a bare host, resolving each to a complete endpoint. Trailing
+// slashes are trimmed so we don't end up with `/v1//chat/...`.
+//
+// A bare host gets /v1 as well as /chat/completions. It used to get only
+// /chat/completions, so `config set ... base_url http://127.0.0.1:8317/`
+// (the same server that works when written `.../v1`) POSTed to the host root
+// and came back 404.
 func normalizeOpenAIBaseURL(raw string) string {
-	u := strings.TrimRight(strings.TrimSpace(raw), "/")
-	if u == "" {
-		return ""
-	}
-	if strings.HasSuffix(u, "/chat/completions") {
-		return u
-	}
-	return u + "/chat/completions"
+	return normalizeProviderBaseURL(raw, openAIChatEndpoint)
+}
+
+// altOpenAIBaseURL returns the same endpoint with its /v1 segment toggled, or
+// "" when the URL isn't shaped like a chat-completions endpoint. It is what
+// makes the /v1 in normalizeOpenAIBaseURL a guess rather than a verdict:
+// openai-compatible servers disagree about whether they mount the API at the
+// root or under /v1, the operator shouldn't have to know which, and the URL
+// text doesn't say — only a request finds out.
+func altOpenAIBaseURL(u string) string {
+	return toggleVersionSegment(u, openAIChatEndpoint)
 }
 
 // reservedOpenAIBodyKeys are top-level JSON body fields owned by the typed
@@ -209,18 +231,84 @@ func (a *OpenAI) Stream(ctx context.Context, req Request) (<-chan stream.Event, 
 		return nil, fmt.Errorf("%s: %w", a.Name(), err)
 	}
 
-	url := a.baseURL
-	if url == "" {
-		url = openAIChatCompletionsURL
+	endpoint, alt := a.endpoints()
+
+	resp, err := a.post(ctx, endpoint, payload)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", a.Name(), err)
 	}
+	// A 404 means the endpoint isn't where the base_url said, which for an
+	// openai-compatible server is nearly always the /v1 question altOpenAIBaseURL
+	// describes. Try the other spelling once and keep whichever answered.
+	var alsoTried string
+	if resp.StatusCode == http.StatusNotFound && alt != "" {
+		altResp, altErr := a.post(ctx, alt, payload)
+		switch {
+		case altErr != nil:
+			// The alternate is our guess, not the operator's URL; report the
+			// 404 they can act on rather than a connection error against a URL
+			// they never typed. resp still holds it.
+		case altResp.StatusCode == http.StatusOK:
+			drainAndClose(resp.Body)
+			a.settle(alt)
+			resp = altResp
+		default:
+			// Neither spelling is mounted: a genuinely missing endpoint. Report
+			// the alternate's status (same 404 either way in practice) and name
+			// what else was tried, so the message isn't a bare "404:".
+			drainAndClose(resp.Body)
+			a.settle(endpoint)
+			resp, alsoTried = altResp, alt
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		err := responsesErrorFrom(a.Name(), resp.StatusCode, raw)
+		if alsoTried != "" {
+			return nil, fmt.Errorf("%w (also tried %s)", err, alsoTried)
+		}
+		return nil, err
+	}
+
+	out := make(chan stream.Event, 32)
+	go a.consumeSSE(ctx, resp.Body, out)
+	return out, nil
+}
+
+// endpoints returns the URL to POST to and the one-shot alternate spelling to
+// try if it 404s ("" once the question is settled, or for canonical OpenAI).
+func (a *OpenAI) endpoints() (string, string) {
+	if a.baseURL == "" {
+		return openAIChatCompletionsURL, ""
+	}
+	if settled, ok := settledEndpoints.Load(a.baseURL); ok {
+		return settled.(string), ""
+	}
+	return a.baseURL, a.altURL
+}
+
+// settle records the URL that answered, so the /v1 probe is paid once per
+// process rather than once per provider. Recording the configured URL after a
+// failed probe matters as much as recording a winner: without it, a genuinely
+// missing endpoint costs two requests on every turn instead of one.
+func (a *OpenAI) settle(winner string) {
+	settledEndpoints.Store(a.baseURL, winner)
+}
+
+// post issues one chat-completions request. Split out of Stream so the /v1
+// fallback replays the exact same headers and body against the alternate URL
+// — a second hand-built request is a second place for the Authorization
+// conditional or the extra headers to drift.
+func (a *OpenAI) post(ctx context.Context, endpoint string, payload []byte) (*http.Response, error) {
 	// Provider tracing (--debug / VIGOLIUM_OLIUM_DEBUG): dump the outgoing
 	// request so operators can see the exact model + messages on the wire.
 	// The API key lives in the Authorization header (not the body), and
 	// debugFprintf scrubs any credential-shaped substrings regardless.
 	if DebugEnabled() {
-		debugFprintf(os.Stderr, "[%s-req] POST %s %s", a.Name(), url, string(payload))
+		debugFprintf(os.Stderr, "[%s-req] POST %s %s", a.Name(), endpoint, string(payload))
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -236,20 +324,7 @@ func (a *OpenAI) Stream(ctx context.Context, req Request) (<-chan stream.Event, 
 	for k, v := range a.extraHeaders {
 		httpReq.Header.Set(k, v)
 	}
-
-	resp, err := a.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", a.Name(), err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("%s %d: %s", a.Name(), resp.StatusCode, string(raw))
-	}
-
-	out := make(chan stream.Event, 32)
-	go a.consumeSSE(ctx, resp.Body, out)
-	return out, nil
+	return a.client.Do(httpReq)
 }
 
 func buildOpenAIRequest(req Request) oaiRequest {

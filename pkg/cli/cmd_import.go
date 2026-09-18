@@ -624,8 +624,8 @@ func emitImportReport(ctx context.Context, db *database.DB, scan *database.Agent
 	// Finding filters mirror `vigolium export`'s findings query so the report
 	// contents stay consistent between the two commands.
 	if opts.search != "" {
-		p := "%" + opts.search + "%"
-		q = q.Where("(module_id LIKE ? OR module_name LIKE ? OR description LIKE ? OR matched_at LIKE ? OR severity LIKE ? OR url LIKE ? OR hostname LIKE ? OR extracted_results LIKE ?)", p, p, p, p, p, p, p, p)
+		p := database.LikeContains(opts.search)
+		q = q.Where(database.WithLikeEscape("(module_id LIKE ? OR module_name LIKE ? OR description LIKE ? OR matched_at LIKE ? OR severity LIKE ? OR url LIKE ? OR hostname LIKE ? OR extracted_results LIKE ?)"), p, p, p, p, p, p, p, p)
 	}
 	if opts.severity != "" {
 		sevs := strings.Split(strings.ToLower(opts.severity), ",")

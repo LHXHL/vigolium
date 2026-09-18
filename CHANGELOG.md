@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.4.7] - 2026-09-18
+
+A **read-surface correctness** release: search filters that mean what they say, a source pin that refuses a typo, and single-message extraction.
+
+### Added
+
+- `vigolium traffic body` and `traffic headers` — extract one side of one stored exchange to stdout or a file, with no re-send.
+- `-o/--output` on `traffic -j`, `finding -j` and `db ls -j` — writes the result document to a file and prints a receipt instead.
+- `--url` on `traffic` and `db ls` — exact URL selection, repeatable and OR-ed, applied before pagination.
+- `db stats` now reports the source path and on-disk size (`path`/`size` were declared and never filled).
+
+### Fixed
+
+- **LIKE metacharacters in a search term were interpreted, not matched** — `--body '%'` returned every record and `api_key` also matched `api-key`; every substring filter now escapes the term and carries an `ESCAPE` clause.
+- **`--header` and `--body` searched the whole message**, so `--header password` matched response bodies; each now scans only its own region, in SQL, so `total` and pagination agree with the rows.
+- **A read command pointed at a missing `--db`/`$VIGOLIUM_DB_PATH` created the database** and reported `total: 0`, exit 0 — now `source_missing`, and a foreign SQLite file is `source_incompatible` instead of gaining vigolium's tables.
+- `--read-only` left `-wal`/`-shm` sidecars beside the file it promised not to touch, and still ran `PRAGMA optimize` on close.
+- The flag suggester answered `--url` with "did you mean `--all`?" — short names now need to be within one edit, and a name with no near-miss points at the command's help.
+- An openai-compatible `base_url` written as a bare host POSTed to the root and 404'd; `/v1` is now resolved, the other spelling is tried once, and the winner is latched per process.
+- `vigolium ol` printed two banners, and scripting `config set` printed one per key.
+- The `-j` error envelope was written into the `-o` file the caller expected results in.
+- `finding --path` was interpolated into SQL with hand-doubled quotes instead of bound as a parameter.
+- `atomicfile.Write` renamed without an `fsync`, so "atomic" covered the rename but not the bytes.
+
+### Changed
+
+- **Default concurrency is 25**, from one shared `types.DefaultConcurrency` — the CLI, pace config, REST API and discovery source had drifted to 50/40/50/50, so the same scan ran at different speeds depending on which one started it.
+- `--search` stays the whole-exchange search and is now documented as the flag to use when the location does not matter.
+- A capped body's `decoder_hint` names `traffic body -o <file>` instead of the whole-tree `db export --format fs`.
+- `humanBytes` moved to `terminal.HumanBytes`, shared by the storage listing and `db stats`.
+
 ## [v0.4.6] - 2026-09-13
 
 A **CLI ergonomics** release, built to be driven from another agent - best used in other coding agents. A new `vigolium run probe` host sweep, redirects that are actually followed, `-T/--target-file` seeding the scan at last, and a deterministic attack-surface score on every record. Registry moves to 207 active + 117 passive.

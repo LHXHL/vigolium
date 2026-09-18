@@ -125,6 +125,9 @@ var (
 	// trafficUUIDs selects exact stored records by UUID (--uuid).
 	trafficUUIDs []string
 
+	// trafficURLs selects exact stored records by URL (--url).
+	trafficURLs []string
+
 	// trafficBurpBridgeURL enables live Burp records as an additional source.
 	trafficBurpBridgeURL    string
 	trafficSaveToVigoliumDB bool
@@ -152,6 +155,8 @@ func init() {
 	pf := trafficCmd.PersistentFlags()
 	pf.StringSliceVar(&trafficUUIDs, "uuid", nil,
 		"Select exact stored record(s) by UUID (repeatable/comma-separated). Applied before pagination, so a match is never missed because it fell outside -n")
+	pf.StringArrayVar(&trafficURLs, "url", nil,
+		"Select records whose URL matches EXACTLY (repeatable; OR-ed). Compared against the stored URL with no normalization — use --path or --search for substring matching")
 	pf.StringVar(&trafficHost, "host", "", "Filter by hostname pattern (wildcard supported)")
 	pf.StringSliceVar(&trafficMethods, "method", nil, "Filter by HTTP method (repeatable, e.g. --method GET --method POST)")
 	pf.IntSliceVar(&trafficStatus, "status", nil, "Filter by HTTP status code (repeatable, e.g. --status 200 --status 404)")
@@ -162,11 +167,11 @@ func init() {
 		"Show records at or before this time — %s; %s (alias: --until)",
 		clicommon.TimeFilterSyntax, clicommon.TimeFilterUpperBoundNote))
 	pf.StringArrayVar(&trafficSearch, "search", nil, "Search across URL, path, and the raw request/response (headers + body); repeatable, AND-combined (each term further narrows)")
-	pf.StringVar(&trafficHeader, "header", "", "Search within HTTP header names and values")
-	pf.StringVar(&trafficBody, "body", "", "Search within HTTP request/response body content")
+	pf.StringVar(&trafficHeader, "header", "", "Search only the HTTP header block of the request/response (not bodies); use --search to span the whole exchange")
+	pf.StringVar(&trafficBody, "body", "", "Search only the HTTP request/response body (not headers); use --search to span the whole exchange")
 	pf.StringArrayVar(&trafficExcludeSearch, "exclude-search", nil, "Exclude records where the term appears in the URL, path, or raw request/response (repeatable; dropped if ANY term matches — the inverse of --search)")
-	pf.StringVar(&trafficExcludeHeader, "exclude-header", "", "Exclude records whose HTTP header names/values contain the term (inverse of --header)")
-	pf.StringVar(&trafficExcludeBody, "exclude-body", "", "Exclude records whose request/response body contains the term (inverse of --body)")
+	pf.StringVar(&trafficExcludeHeader, "exclude-header", "", "Exclude records whose HTTP header block contains the term (inverse of --header; headers only, not bodies)")
+	pf.StringVar(&trafficExcludeBody, "exclude-body", "", "Exclude records whose request/response body contains the term (inverse of --body; bodies only, not headers)")
 	pf.StringVar(&trafficSource, "source", "", "Filter by record source (e.g. burp, caido, scanner, probe, ingest-cli, ingest-server, ingest-proxy, seed)")
 	pf.StringVar(&trafficSort, "sort", "created_at", "Sort by: uuid, created_at, sent_at, method, status, time")
 	pf.BoolVar(&trafficAsc, "asc", false, "Sort in ascending order (default: descending)")
@@ -188,6 +193,7 @@ func init() {
 	f.StringSliceVar(&trafficColumns, "columns", nil, "Columns to show (comma-separated, e.g. HOST,METHOD,PATH,STATUS)")
 	f.StringSliceVar(&trafficExclude, "exclude-columns", nil, "Columns to hide (comma-separated)")
 	registerAgentJSONFlags(f)
+	registerJSONOutputFlag(trafficCmd)
 
 	// Replay flags
 	f.BoolVar(&trafficReplay, "replay", false, "Re-send the matched requests and compare original vs new response (instead of listing)")
@@ -218,6 +224,9 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 	// Reject an unknown --fields name before opening anything (see runFinding).
 	if err := validateAgentViewFlags(agentViewOptionsFromFlags(), trafficViewFields); err != nil {
+		return err
+	}
+	if err := validateJSONOutputFlag(cmd); err != nil {
 		return err
 	}
 	// Same reason, same place: an unknown --group-by name or a conflicting output
@@ -458,6 +467,7 @@ func buildTrafficFilters(fuzzyTerm string) (database.QueryFilters, error) {
 	return database.QueryFilters{
 		ProjectUUID:         projectUUID,
 		RecordUUIDs:         trafficUUIDs,
+		URLsExact:           trafficURLs,
 		HostPattern:         trafficHost,
 		Methods:             trafficMethods,
 		StatusCodes:         trafficStatus,

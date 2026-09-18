@@ -608,8 +608,9 @@ func (r *Repository) GetRelatedRecords(ctx context.Context, uuid string, limit i
 		limit = 10
 	}
 
-	template := PathToTemplate(source.Path)
-	likePattern := strings.ReplaceAll(template, "*", "%")
+	// The template's `*` segments are the wildcards; a `%` or `_` in the stored
+	// path itself is data and must not widen the match.
+	likePattern := LikeGlob(PathToTemplate(source.Path))
 
 	// Fetch more than the limit to allow post-filter by path depth
 	fetchLimit := limit * 3
@@ -621,7 +622,7 @@ func (r *Repository) GetRelatedRecords(ctx context.Context, uuid string, limit i
 	err = r.db.NewSelect().
 		Model(&candidates).
 		Where("hostname = ?", source.Hostname).
-		Where("path LIKE ?", likePattern).
+		Where(WithLikeEscape("path LIKE ?"), likePattern).
 		Where("uuid != ?", uuid).
 		Order("created_at DESC").
 		Limit(fetchLimit).

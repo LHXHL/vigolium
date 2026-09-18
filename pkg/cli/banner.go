@@ -64,8 +64,11 @@ func printRootBanner(cmd *cobra.Command) {
 // bannerFreeCommands are the commands the ROOT hook does not banner, for two
 // reasons that happen to want the same list:
 //
-//   - `help`, `completion`, and `version` answer one question and would be noise
-//     (version prints its own identity line and would otherwise say it twice).
+//   - `help`, `completion`, `version`, and `config` answer one question and would
+//     be noise (version prints its own identity line and would otherwise say it
+//     twice; a run of `config set` calls prints one mascot per key set, which is
+//     more banner than confirmation). Matching is by command name, so `project
+//     config` loses its banner too — same reason, same kind of output.
 //   - The scanning and import commands render a banner themselves, as the first
 //     line of their configuration summary, and scan PICKS BETWEEN TWO of them —
 //     it credits the discovery co-authors on a discovery-only run. Since the
@@ -87,12 +90,14 @@ var bannerFreeCommands = map[string]bool{
 	"fish":       true,
 	"powershell": true,
 	"version":    true,
+	"config":     true,
 
 	"scan":         true,
 	"scan-url":     true,
 	"scan-request": true,
 	"run":          true,
 	"import":       true,
+	"olium":        true,
 }
 
 // commandWantsBanner reports whether cmd should get the root banner. It walks up

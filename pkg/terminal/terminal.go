@@ -127,3 +127,22 @@ func Truncate(s string, maxWidth int) string {
 	}
 	return s[:maxWidth-1] + "…"
 }
+
+// HumanBytes formats a byte count for display, in binary units.
+//
+// It lives here because both the CLI's storage listing and the database stats
+// report need it, and they sit on opposite sides of an import boundary — pkg/cli
+// may import pkg/database but not the reverse, so a helper in either one is a
+// helper the other has to copy.
+func HumanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for n2 := n / unit; n2 >= unit; n2 /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
