@@ -306,6 +306,37 @@ function verifyEmbeddedAudit(buf, p) {
   );
 }
 
+// verifyEmbeddedJstangle fails the build if a packaged binary embeds a jstangle
+// blob built from a different TypeScript tree than the one checked out.
+//
+// NPM_NEEDS_BUILD only compares the goreleaser archive's VERSION against
+// pkg/cli/version.go, so build/dist survives a blob change at the same version:
+// rebuilding jstangle and re-running npm-build without `make snapshot` silently
+// repackages binaries with the previous blobs still embedded. Version equality
+// is not freshness. bun compiles the source fingerprint into the executable as
+// a literal string, so it survives into the Go binary that embeds the blob and
+// can be checked here.
+function verifyEmbeddedJstangle(buf, p) {
+  const sourceHash = process.env.VIGOLIUM_JSTANGLE_SOURCE_HASH;
+  if (!sourceHash) {
+    fail(
+      `VIGOLIUM_JSTANGLE_SOURCE_HASH is not set, so the embedded jstangle ` +
+        `blob cannot be checked for staleness. Run this via \`make npm-build\` ` +
+        `or \`make npm-pack\`, which compute the fingerprint and pass it in.`,
+    );
+  }
+  if (buf.indexOf(Buffer.from(sourceHash, "latin1")) === -1) {
+    fail(
+      `${p.tag}: STALE jstangle blob embedded — the binary does not carry the ` +
+        `current jstangle source fingerprint (${sourceHash}), so it was built ` +
+        `before the last jstangle change and would ship an out-of-date ` +
+        `analyzer. build/dist is stale even though its version matches: run ` +
+        `\`make snapshot\` to rebuild against the current blobs.`,
+    );
+  }
+  info(`verified ${p.tag} embeds the current jstangle build`);
+}
+
 // --- staging --------------------------------------------------------------
 
 function writeJson(file, obj) {
@@ -343,6 +374,7 @@ async function stagePlatformPackage(p) {
 
   const binBuf = readFileSync(src);
   verifyEmbeddedAudit(binBuf, p);
+  verifyEmbeddedJstangle(binBuf, p);
 
   const pkgDir = path.join(OUT_DIR, `vigolium-${p.tag}`);
   const gzPath = path.join(pkgDir, "vendor", p.tag, "vigolium.gz");

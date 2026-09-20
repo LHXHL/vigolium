@@ -1324,7 +1324,9 @@ npm-build:
 		$(MAKE) snapshot; \
 	fi
 	@echo "$(PREFIX) Staging npm packages (version $(GORELEASER_VERSION))..."
-	VIGOLIUM_VERSION=$(GORELEASER_VERSION) node build/npm/build.mjs
+	@VIGOLIUM_VERSION=$(GORELEASER_VERSION) \
+		VIGOLIUM_JSTANGLE_SOURCE_HASH=$$(cd platform/jstangle && bun scripts/source-fingerprint.ts) \
+		node build/npm/build.mjs
 
 # Stage + produce inspectable .tgz tarballs (npm pack) for each package.
 npm-pack:
@@ -1333,7 +1335,9 @@ npm-pack:
 		$(MAKE) snapshot; \
 	fi
 	@echo "$(PREFIX) Staging + packing npm tarballs (version $(GORELEASER_VERSION))..."
-	VIGOLIUM_VERSION=$(GORELEASER_VERSION) node build/npm/build.mjs --pack
+	@VIGOLIUM_VERSION=$(GORELEASER_VERSION) \
+		VIGOLIUM_JSTANGLE_SOURCE_HASH=$$(cd platform/jstangle && bun scripts/source-fingerprint.ts) \
+		node build/npm/build.mjs --pack
 	@echo "$(PREFIX) Tarballs written to $(NPM_OUT_DIR)/"
 
 # Publish to npm: platform packages FIRST (so the main package's
