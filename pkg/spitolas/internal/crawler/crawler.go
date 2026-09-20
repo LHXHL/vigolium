@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/action"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/browser"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/condition"
@@ -21,7 +25,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/metrics"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/network"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/state"
-	"github.com/vigolium/vigolium/pkg/spitolas/loginsig"
 )
 
 // Crawler is the main web crawler engine.
@@ -91,6 +94,47 @@ type Crawler struct {
 	// an app that simply relocated to another domain. Only ever set under the
 	// default host-scope rule — an explicit CrawlScope is never widened.
 	adoptedHost string
+
+	// wallHosts are hosts classified as a login/SSO wall. isInScope denies them
+	// ahead of the configured scope rule, so they are out of scope no matter what
+	// the operator's scope mode would otherwise say.
+	//
+	// The denial has to override the scope rule rather than defer to it, because
+	// the case that motivated it is one the scope rule gets wrong by design: an
+	// organization's IdP usually shares the target's registrable domain (or its
+	// brand keyword), so every mode short of "strict" admits it. Without this the
+	// wall classification was advisory only — the crawler would identify the wall,
+	// log "supply --auth", and then spend the whole crawl budget interacting with
+	// the identity provider's login page: seeding from its robots.txt, filling and
+	// submitting its form, and re-entering the OAuth flow each time the reset loop
+	// sent the browser back to the start URL.
+	//
+	// Guarded by wallHostsMu; read on the hot in-scope path from crawl goroutines.
+	// hasWallHosts mirrors "the map is non-empty" so that path can skip the lock
+	// entirely on the overwhelming majority of crawls, which never see a wall.
+	wallHostsMu  sync.RWMutex
+	wallHosts    map[string]bool
+	hasWallHosts atomic.Bool
+
+	// startWalled records that the START URL's landing was a wall, which ends the
+	// crawl — a different question from "is this host denied" (hasWallHosts), and
+	// asked at different call sites.
+	//
+	// Denying the host alone is not enough to stop the crawl: with the landing out
+	// of scope the main loop resets, navigates back to the start URL, is
+	// redirected to the same wall, and goes out of scope again — an oscillation
+	// that ran until the time budget expired, re-entering the OAuth flow (and
+	// re-arming the provider's CAPTCHA) on every lap. There is nothing reachable
+	// to crawl, so the honest move is to stop and hand the remaining budget back
+	// to the phases that can use it.
+	startWalled atomic.Bool
+
+	// observedLoginHosts reports the hosts seen serving an authentication endpoint
+	// so far. Set from the network capture in crawlWithBrowser, which is the only
+	// component that sees individual redirect hops — Chrome collapses server
+	// redirects into one history entry, so the crawler cannot name the chain from
+	// the landing page alone. nil until the capture is wired.
+	observedLoginHosts func() []string
 
 	// primedFrames dedups iframe-source priming across the whole crawl so a frame
 	// that recurs in many states (a persistent header/captcha iframe) is fetched
@@ -178,6 +222,15 @@ type Stats struct {
 	LandingIsLogin bool
 	HostAdopted    bool
 
+	// WallHosts are the hosts denied as login/SSO walls during the crawl — the
+	// landing host plus every redirect hop that looked like an authentication
+	// endpoint. The caller feeds these into the scan-wide fuzz exclusion, so a
+	// later phase never brute-forces the identity provider. Reporting the whole
+	// chain rather than just the landing matters: an OAuth bounce routinely
+	// crosses two hosts (an authorize endpoint on one, the login form on
+	// another), and excluding only the last one leaves the first a fuzz target.
+	WallHosts []string
+
 	// LoginCTADriven is true when the one-shot login-CTA priming found and clicked
 	// a login call-to-action on the landing, driving the OAuth/SAML/SSO flow.
 	// LoginCTAText is the CTA's visible label (for logging).
@@ -246,6 +299,7 @@ func New(cfg *config.Config) (*Crawler, error) {
 		stats:               Stats{},
 		loginCredHosts:      make(map[string]bool),
 		selfRegisterHosts:   make(map[string]bool),
+		wallHosts:           make(map[string]bool),
 		speculativeScript:   renderSpeculativeScript(cfg.SpeculativeMaxLinks),
 		// NOTE: stateMachine, crawlPath, session initialized in initializeIndexState()
 	}
@@ -393,6 +447,9 @@ func (c *Crawler) Run(ctx context.Context) (*Result, error) {
 	// Keep several distinct query-value variants per endpoint shape (category/
 	// filter/tab/search links) instead of collapsing them to one representative.
 	capture.SetMaxParamValueVariants(c.config.MaxParamValueVariants)
+	// Keep out-of-scope subresources (a login page's CAPTCHA widget, analytics
+	// beacons) out of the live log — they are dropped before storage anyway.
+	capture.ScopeFilter = c.config.ScopeFilter
 	defer func() { _ = capture.Close() }()
 
 	// Start capture at BROWSER level (captures ALL pages).
@@ -464,6 +521,13 @@ func (c *Crawler) crawlWithBrowser(ctx context.Context, br *browser.Browser, cap
 		return nil, fmt.Errorf("browser pool returned nil browser")
 	}
 	c.browser = br
+	// Both entry points funnel through here with the capture in hand, so this is
+	// the one place the wiring cannot be missed. Setting it on the Config instead
+	// silently failed on the multi-seed SpiderSession path, which rebuilds a fresh
+	// Config per seed and never carried the hook across.
+	if capture != nil {
+		c.observedLoginHosts = capture.LoginHostsSeen
+	}
 
 	if c.eventableConditions != nil && c.eventableConditions.Count() > 0 {
 		c.extractor.SetFormHandler(&formHandlerAdapter{checker: c.eventableConditions})
@@ -624,17 +688,34 @@ func (c *Crawler) initializeIndexState(ctx context.Context) error {
 	c.dismissConsentOverlays(ctx, page)
 	c.scrollToLoadContent(ctx, page)
 
-	// Prime service-worker assets: fetch the files a PWA service worker would
-	// pre-cache (e.g. Angular's lazy webpack chunks listed in ngsw.json) so the
-	// network capture records them. A short headless visit never runs the
-	// worker's precache, so these are otherwise missed.
-	c.primeServiceWorkerAssets(ctx, page)
+	// Decide what to do about an off-host start redirect (SSO wall vs. relocated
+	// app) BEFORE any priming or extraction, so an adopted host is in scope by the
+	// time the crawl loop follows links — and so a denied login wall is known
+	// before anything below touches the page.
+	//
+	// Position is load-bearing. The two priming steps that follow fetch up to
+	// several hundred URLs apiece from the page's OWN origin, which on a walled
+	// start is the identity provider's. Classifying after them left the single
+	// largest burst of IdP traffic in this function ungated, and made the guard
+	// positional: any helper added above the classification would be silently
+	// unguarded again.
+	landingURL, _ := page.URL()
+	c.evaluateStartRedirect(page, landingURL)
+	walled := c.startWalled.Load()
 
-	// Prime iframe sources: fetch the same-origin <iframe>/<frame> URLs present
-	// in the rendered DOM (including frames injected client-side after first
-	// paint) so the page they point at — and any reflected query parameters on
-	// it — is recorded and scanned even when the served HTML never linked it.
-	c.primeIframeAssets(ctx, page)
+	if !walled {
+		// Prime service-worker assets: fetch the files a PWA service worker would
+		// pre-cache (e.g. Angular's lazy webpack chunks listed in ngsw.json) so the
+		// network capture records them. A short headless visit never runs the
+		// worker's precache, so these are otherwise missed.
+		c.primeServiceWorkerAssets(ctx, page)
+
+		// Prime iframe sources: fetch the same-origin <iframe>/<frame> URLs present
+		// in the rendered DOM (including frames injected client-side after first
+		// paint) so the page they point at — and any reflected query parameters on
+		// it — is recorded and scanned even when the served HTML never linked it.
+		c.primeIframeAssets(ctx, page)
+	}
 
 	// Capture index state
 	zap.L().Debug("Capturing index state")
@@ -665,10 +746,17 @@ func (c *Crawler) initializeIndexState(ctx context.Context) error {
 
 	zap.L().Debug("Index state captured", zap.String("state", indexState.Name))
 
-	// Decide what to do about an off-host start redirect (SSO wall vs. relocated
-	// app) before extracting actions, so an adopted host is in scope by the time
-	// the crawl loop starts following links.
-	c.evaluateStartRedirect(page, indexState)
+	// The landing is a denied login wall. Stop here rather than running the rest
+	// of this function against it: everything below interacts with the page —
+	// extracting and firing actions, filling and submitting its forms, priming
+	// its anchors, harvesting its inline URLs — and the page belongs to somebody
+	// else's identity provider. The index state and the redirect chain that got us
+	// here are already recorded, which is the only part worth keeping.
+	if walled {
+		zap.L().Info("Spidering: landing is a login wall — skipping page interaction",
+			zap.String("landing", landingURL))
+		return nil
+	}
 
 	// Extract fragments
 	c.extractFragments(page, indexState)
@@ -2036,6 +2124,12 @@ func (c *Crawler) shouldTerminate(ctx context.Context) bool {
 	default:
 	}
 
+	// The start URL lands on a denied login wall: nothing in scope is reachable,
+	// so keep the remaining budget instead of oscillating against the provider.
+	if c.startWalled.Load() {
+		return true
+	}
+
 	// Check max duration. This is a backstop: the caller normally enforces the
 	// budget via a context deadline (which also propagates into browser ops via
 	// the bound page context), but checking elapsed time here makes MaxDuration
@@ -2102,32 +2196,118 @@ func (c *Crawler) isInScope(page *browser.Page) bool {
 	if err != nil {
 		return false // Can't determine, assume out of scope
 	}
+	return c.inScopeURL(currentURL)
+}
+
+// inScopeURL is the scope decision itself, separated from reading the URL out
+// of a live page so it can be exercised without a browser.
+func (c *Crawler) inScopeURL(currentURL string) bool {
+	// Parsed once and shared by both branches. The wall check used to add a parse
+	// of its own on top of the default branch's two (this URL, then a needless
+	// re-parse of c.config.URL, which is already a *url.URL).
+	u, err := url.Parse(currentURL)
+	if err != nil {
+		return false // Can't determine, assume out of scope
+	}
+
+	// A denied login/SSO wall is out of scope ahead of every other rule,
+	// including an explicit operator CrawlScope. See wallHosts.
+	if c.isWallHost(u.Hostname()) {
+		return false
+	}
 
 	if c.config.CrawlScope != nil {
 		return c.config.CrawlScope(currentURL)
 	}
 
-	// Default: same domain or subdomain check
-	parsedCurrent, err := url.Parse(currentURL)
-	if err != nil {
+	// Default: the target host, its subdomains, or an adopted relocation host.
+	return c.isTargetHost(u.Hostname())
+}
+
+// denyRedirectChainWalls denies every off-target host observed serving an
+// authentication endpoint, so an SSO bounce is excluded end to end rather than
+// only at the host the browser came to rest on.
+//
+// The target's own hosts are never denied: a login page on the application
+// under test is a legitimate crawl and scan surface. Only somebody else's
+// identity provider is excluded, and only once the landing has already been
+// classified as a wall — so an ordinary app that happens to serve /login on a
+// sibling host is untouched.
+func (c *Crawler) denyRedirectChainWalls() {
+	if c.observedLoginHosts == nil {
+		return
+	}
+	for _, host := range c.observedLoginHosts() {
+		if c.isTargetHost(host) {
+			continue
+		}
+		c.denyWallHost(host)
+	}
+}
+
+// isTargetHost reports whether host belongs to the target under test (the
+// configured target host, one of its subdomains, or an adopted relocation
+// host) — the hosts a wall denial must never remove from scope.
+func (c *Crawler) isTargetHost(host string) bool {
+	host = strings.ToLower(host)
+	if host == "" {
 		return false
 	}
-
-	parsedTarget, err := url.Parse(c.config.URL.String())
-	if err != nil {
-		return true // Can't parse config URL, allow
+	if c.config != nil && c.config.URL != nil {
+		if sameOrSubdomain(host, strings.ToLower(c.config.URL.Hostname())) {
+			return true
+		}
 	}
+	return c.adoptedHost != "" && sameOrSubdomain(host, c.adoptedHost)
+}
 
-	// Check same domain or subdomain (port-agnostic).
-	currentHost := strings.ToLower(parsedCurrent.Hostname())
-	targetHost := strings.ToLower(parsedTarget.Hostname())
-
-	if sameOrSubdomain(currentHost, targetHost) {
-		return true
+// denyWallHost marks host as a login/SSO wall, putting it out of scope for the
+// rest of the crawl. Idempotent and safe for concurrent use.
+func (c *Crawler) denyWallHost(host string) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return
 	}
+	c.wallHostsMu.Lock()
+	defer c.wallHostsMu.Unlock()
+	// Lazily allocated despite New initializing it: a Crawler is also built by
+	// struct literal in tests, and a nil-map write here would panic rather than
+	// fail.
+	if c.wallHosts == nil {
+		c.wallHosts = make(map[string]bool)
+	}
+	if c.wallHosts[host] {
+		return
+	}
+	c.wallHosts[host] = true
+	c.hasWallHosts.Store(true)
+	zap.L().Info("Spidering: login/SSO wall host denied for the rest of the crawl",
+		zap.String("host", host))
+}
 
-	// A non-login off-host redirect target adopted at start-up is in scope too.
-	return c.adoptedHost != "" && sameOrSubdomain(currentHost, c.adoptedHost)
+// isWallHost reports whether host has been denied as a login/SSO wall.
+//
+// The hasWallHosts gate keeps the common case free: a crawl that never hits a
+// wall — nearly all of them — answers with one atomic load and never takes the
+// lock, and this runs on the per-navigation scope path. Mirrors the hasDynamic
+// gate ScopeMatcher.hostInScope uses for the same reason.
+func (c *Crawler) isWallHost(host string) bool {
+	if !c.hasWallHosts.Load() || host == "" {
+		return false
+	}
+	c.wallHostsMu.RLock()
+	defer c.wallHostsMu.RUnlock()
+	return c.wallHosts[strings.ToLower(host)]
+}
+
+// wallHostList returns the denied wall hosts, sorted for stable reporting.
+func (c *Crawler) wallHostList() []string {
+	c.wallHostsMu.RLock()
+	defer c.wallHostsMu.RUnlock()
+	if len(c.wallHosts) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(c.wallHosts))
 }
 
 // sameOrSubdomain reports whether host equals base or is a subdomain of it.
@@ -2148,12 +2328,12 @@ func sameOrSubdomain(host, base string) bool {
 //
 // Only applies under the default host-scope rule — an explicit CrawlScope is
 // the operator's own boundary and is never widened here.
-func (c *Crawler) evaluateStartRedirect(page *browser.Page, indexState *state.State) {
-	if indexState == nil {
+func (c *Crawler) evaluateStartRedirect(page *browser.Page, landingURL string) {
+	if landingURL == "" {
 		return
 	}
 
-	landing, err := url.Parse(indexState.URL)
+	landing, err := url.Parse(landingURL)
 	if err != nil {
 		return
 	}
@@ -2164,16 +2344,25 @@ func (c *Crawler) evaluateStartRedirect(page *browser.Page, indexState *state.St
 	}
 
 	c.stats.OffHostLanding = true
-	c.stats.LandingURL = indexState.URL
+	c.stats.LandingURL = landingURL
 
 	// Login/SSO-wall detection runs regardless of scope mode so the caller still
 	// gets the "supply --auth" advice and the SSO host is excluded from fuzzing —
 	// even under an explicit operator scope.
 	if c.landingLooksLikeLogin(page, landing) {
 		c.stats.LandingIsLogin = true
-		zap.L().Warn("Spidering: start URL redirected to an off-host login wall",
+		// Deny the wall itself and every authentication hop the browser passed
+		// through on the way here. Denial (not just classification) is what stops
+		// the crawl: without it the configured scope rule usually still admits
+		// these hosts and the crawler spends its budget on the IdP.
+		c.denyWallHost(landHost)
+		c.denyRedirectChainWalls()
+		c.stats.WallHosts = c.wallHostList()
+		c.startWalled.Store(true)
+		zap.L().Warn("Spidering: start URL redirected to an off-host login wall — stopping the crawl",
 			zap.String("target", c.config.URL.String()),
-			zap.String("landing", indexState.URL))
+			zap.String("landing", landingURL),
+			zap.Strings("denied_hosts", c.stats.WallHosts))
 		return
 	}
 
@@ -2188,7 +2377,7 @@ func (c *Crawler) evaluateStartRedirect(page *browser.Page, indexState *state.St
 	c.stats.HostAdopted = true
 	zap.L().Info("Spidering: adopting off-host redirect target into scope",
 		zap.String("target", c.config.URL.String()),
-		zap.String("landing", indexState.URL),
+		zap.String("landing", landingURL),
 		zap.String("adopted_host", landHost))
 }
 
@@ -2217,10 +2406,10 @@ func (c *Crawler) landingLooksLikeLogin(page *browser.Page, landing *url.URL) bo
 
 // looksLikeLoginURL reports whether u points at an authentication endpoint,
 // based on its host and path/query alone (no page load required). The
-// signature tables live in pkg/spitolas/loginsig so other phases (e.g. the
+// signature tables live in pkg/authsig so other phases (e.g. the
 // targeted re-spider candidate screen) share one source of truth.
 func looksLikeLoginURL(u *url.URL) bool {
-	return loginsig.LooksLikeLoginURL(u)
+	return authsig.LooksLikeLoginURL(u)
 }
 
 // visitAnchorHref navigates directly to an anchor's href URL.

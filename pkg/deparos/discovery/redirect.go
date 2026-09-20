@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+
+	pkghttp "github.com/vigolium/vigolium/pkg/deparos/http"
 )
 
 // RedirectDetector handles redirect detection and analysis
@@ -47,8 +49,22 @@ func (rd *RedirectDetector) DetectRedirect(resp *http.Response, originalURL stri
 		StatusCode: resp.StatusCode,
 	}
 
-	// Only check 301 and 302 redirects
-	if resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusFound {
+	// Every redirect status that carries a Location, not just 301/302.
+	//
+	// The 301/302-only test this replaces predates 308 becoming the ordinary
+	// way a CDN or framework canonicalises a path: an origin that answers
+	// `/app` with `308 Location: /app/` was invisible here, so the directory
+	// was never marked, its target never queued, and none of the names in the
+	// redirect path were harvested. 303 and 307 are the same omission with
+	// different method semantics — which do not matter to a detector that only
+	// reads where the response points.
+	//
+	// Safe to widen precisely because this package's client never follows a
+	// redirect (ClientConfig.DisableAutoRedirect): every status-based guard
+	// downstream — statusConfirmsServedExtension, startURLIsGenuineLanding —
+	// still sees the raw 3xx it was written against. Widening the detector adds
+	// discoveries; it cannot turn a redirect into a served response.
+	if !pkghttp.IsRedirectStatus(resp.StatusCode) {
 		return info, nil
 	}
 

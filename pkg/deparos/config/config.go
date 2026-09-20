@@ -17,27 +17,31 @@ type Config struct {
 // JSTangleConfig exposes safe, high-level JavaScript intelligence controls.
 // Byte-heavy internals remain owned by the shared jstangle service.
 type JSTangleConfig struct {
-	Enabled            bool          `json:"enabled" yaml:"enabled"`
-	ReplayMode         string        `json:"replay_mode" yaml:"replay_mode"`
-	ReplaySafety       string        `json:"replay_safety" yaml:"replay_safety"`
-	SourceMaps         bool          `json:"source_maps" yaml:"source_maps"`
-	AssetGraph         bool          `json:"asset_graph" yaml:"asset_graph"`
-	ProtocolHandshake  bool          `json:"protocol_handshake" yaml:"protocol_handshake"`
-	WorkerCount        int           `json:"worker_count" yaml:"worker_count"`
-	MemoryBudgetMB     int           `json:"memory_budget_mb" yaml:"memory_budget_mb"`
-	CacheMB            int           `json:"cache_mb" yaml:"cache_mb"`
-	WorkerMaxJobs      int           `json:"worker_max_jobs" yaml:"worker_max_jobs"`
-	WorkerMaxRSSMB     int           `json:"worker_max_rss_mb" yaml:"worker_max_rss_mb"`
-	JobTimeout         time.Duration `json:"job_timeout" yaml:"job_timeout"`
-	NormalInputMB      int           `json:"normal_input_mb" yaml:"normal_input_mb"`
-	MaxASTInputMB      int           `json:"max_ast_input_mb" yaml:"max_ast_input_mb"`
-	HardInputMB        int           `json:"hard_input_mb" yaml:"hard_input_mb"`
-	MaxRequestsPerFile int           `json:"max_requests_per_file" yaml:"max_requests_per_file"`
-	MaxASTNodes        int           `json:"max_ast_nodes" yaml:"max_ast_nodes"`
-	MaxAssetDepth      int           `json:"max_asset_depth" yaml:"max_asset_depth"`
-	MaxAssetsPerParent int           `json:"max_assets_per_parent" yaml:"max_assets_per_parent"`
-	MaxAssetsPerHost   int           `json:"max_assets_per_host" yaml:"max_assets_per_host"`
-	MaxAssetsTotal     int           `json:"max_assets_total" yaml:"max_assets_total"`
+	Enabled           bool          `json:"enabled" yaml:"enabled"`
+	ReplayMode        string        `json:"replay_mode" yaml:"replay_mode"`
+	ReplaySafety      string        `json:"replay_safety" yaml:"replay_safety"`
+	SourceMaps        bool          `json:"source_maps" yaml:"source_maps"`
+	AssetGraph        bool          `json:"asset_graph" yaml:"asset_graph"`
+	ProtocolHandshake bool          `json:"protocol_handshake" yaml:"protocol_handshake"`
+	WorkerCount       int           `json:"worker_count" yaml:"worker_count"`
+	MemoryBudgetMB    int           `json:"memory_budget_mb" yaml:"memory_budget_mb"`
+	CacheMB           int           `json:"cache_mb" yaml:"cache_mb"`
+	WorkerMaxJobs     int           `json:"worker_max_jobs" yaml:"worker_max_jobs"`
+	WorkerMaxRSSMB    int           `json:"worker_max_rss_mb" yaml:"worker_max_rss_mb"`
+	JobTimeout        time.Duration `json:"job_timeout" yaml:"job_timeout"`
+	NormalInputMB     int           `json:"normal_input_mb" yaml:"normal_input_mb"`
+	MaxASTInputMB     int           `json:"max_ast_input_mb" yaml:"max_ast_input_mb"`
+	// MaxUnpackInputMB bounds the unminify/unpack pass, which reads source and
+	// never builds an AST. Above MaxASTInputMB, a beautify request is still
+	// dispatched up to this ceiling instead of falling back to regex alone.
+	MaxUnpackInputMB   int `json:"max_unpack_input_mb" yaml:"max_unpack_input_mb"`
+	HardInputMB        int `json:"hard_input_mb" yaml:"hard_input_mb"`
+	MaxRequestsPerFile int `json:"max_requests_per_file" yaml:"max_requests_per_file"`
+	MaxASTNodes        int `json:"max_ast_nodes" yaml:"max_ast_nodes"`
+	MaxAssetDepth      int `json:"max_asset_depth" yaml:"max_asset_depth"`
+	MaxAssetsPerParent int `json:"max_assets_per_parent" yaml:"max_assets_per_parent"`
+	MaxAssetsPerHost   int `json:"max_assets_per_host" yaml:"max_assets_per_host"`
+	MaxAssetsTotal     int `json:"max_assets_total" yaml:"max_assets_total"`
 }
 
 // TargetConfig defines where and what to discover.

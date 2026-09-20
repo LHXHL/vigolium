@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Observed when a likely account-password input lacks current-password or new-password; this does not establish a security vulnerability"
 	ModuleSeverity     = severity.Info
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"authentication", "misconfiguration", "light"}
+	ModuleTags         = []string{"authentication", "misconfiguration", "hygiene", "light"}
 )

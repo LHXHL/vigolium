@@ -49,7 +49,9 @@ func seedTargetsFromTargetFiles(opts *types.Options) error {
 	}
 
 	before := len(opts.Targets)
-	opts.Targets = mergePositionalTargets(opts.Targets, lines)
+	merged, schemeAssumed := mergePositionalTargets(opts.Targets, lines)
+	opts.Targets = merged
+	opts.MarkSchemeAssumed(schemeAssumed)
 	// Remembered so the fan-out hint can still tell whether this run was
 	// file-driven after the paths are cleared: -P only fans out a -T file, and
 	// suggesting it to a run that has none produces a command that degrades back
@@ -68,5 +70,7 @@ func seedTargetsFromTargetFiles(opts *types.Options) error {
 // the same trimming and `#` comment handling as a -T file so the two inputs
 // accept the same list verbatim.
 func seedTargetsFromStdinLines(opts *types.Options, content string) {
-	opts.Targets = mergePositionalTargets(opts.Targets, targetLinesFrom(content))
+	merged, schemeAssumed := mergePositionalTargets(opts.Targets, targetLinesFrom(content))
+	opts.Targets = merged
+	opts.MarkSchemeAssumed(schemeAssumed)
 }

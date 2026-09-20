@@ -44,6 +44,7 @@ type workerHelloRecord struct {
 type workerLimits struct {
 	MaxRequests      int   `json:"maxRequests"`
 	MaxASTNodes      int   `json:"maxAstNodes"`
+	MaxBundleModules int   `json:"maxBundleModules,omitempty"`
 	MaxOutputBytes   int64 `json:"maxOutputBytes"`
 	MaxArtifactBytes int64 `json:"maxArtifactBytes"`
 	DeadlineMS       int64 `json:"deadlineMs"`
@@ -58,6 +59,7 @@ type workerAnalyzeRequest struct {
 	MediaType     string          `json:"mediaType,omitempty"`
 	ArtifactDir   string          `json:"artifactDir"`
 	Beautify      bool            `json:"beautify,omitempty"`
+	UnpackModules bool            `json:"unpackModules,omitempty"`
 	ContentLength int             `json:"contentLength"`
 	Limits        workerLimits    `json:"limits"`
 }
@@ -402,9 +404,10 @@ func (p *WorkerPool) runJob(worker *framedWorker, content []byte, options ScanOp
 	request := workerAnalyzeRequest{
 		Type: "analyze", ID: id, Profile: options.Profile, SourceURL: options.SourceURL,
 		Filename: options.Filename, MediaType: options.MediaType, ArtifactDir: jobDir,
-		Beautify: options.Beautify, ContentLength: len(content),
+		Beautify: options.Beautify, UnpackModules: options.UnpackModules, ContentLength: len(content),
 		Limits: workerLimits{
-			MaxRequests: options.MaxRequests, MaxASTNodes: options.MaxASTNodes, MaxOutputBytes: options.MaxOutputBytes,
+			MaxRequests: options.MaxRequests, MaxASTNodes: options.MaxASTNodes, MaxBundleModules: options.MaxBundleModules,
+			MaxOutputBytes:   options.MaxOutputBytes,
 			MaxArtifactBytes: options.MaxArtifactBytes, DeadlineMS: options.Deadline.Milliseconds(),
 		},
 	}
@@ -437,7 +440,18 @@ func (p *WorkerPool) runJob(worker *framedWorker, content []byte, options ScanOp
 		return nil, false, fmt.Errorf("%w: inconsistent worker response", ErrIncompleteOutput)
 	}
 	worker.jobs.Add(1)
-	if response.Completion.Status == "failed" || response.Completion.Status == "cancelled" {
+	// A "failed" status does NOT mean the job produced nothing. The worker fails a
+	// run when a fatal stage (parse, and therefore the AST budget) fails, but the
+	// stages that do not need the AST still ran: an oversized bundle routinely
+	// comes back failed *and* carrying a complete beautified artifact plus stage
+	// metrics. Discarding that envelope here threw away the caller's primary
+	// output and forced a regex fallback that had strictly less information.
+	//
+	// Only a run that produced no envelope at all is an error - that is the worker
+	// having thrown (see failedJob in worker.ts, which omits `result`). Everything
+	// else is returned, and the status travels with it for the caller to judge.
+	if response.Completion.Status == "cancelled" ||
+		(response.Result == nil && response.Completion.Status == "failed") {
 		message := ""
 		if response.Error != nil {
 			message = response.Error.Message

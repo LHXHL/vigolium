@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
-	"github.com/vigolium/vigolium/pkg/spitolas/loginsig"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
 
@@ -159,7 +159,7 @@ func isSuccessfulAuthenticationTransition(ctx *httpmsg.HttpRequestResponse) bool
 		return false
 	}
 	urlx, err := ctx.URL()
-	if err != nil || !loginsig.LooksLikeLoginURL(urlx.URL) {
+	if err != nil || !authsig.LooksLikeLoginURL(urlx.URL) {
 		return false
 	}
 	rawLower := strings.ToLower(string(ctx.Request().Raw()))
@@ -167,7 +167,7 @@ func isSuccessfulAuthenticationTransition(ctx *httpmsg.HttpRequestResponse) bool
 		return false
 	}
 	resp := ctx.Response()
-	if resp.StatusCode() < 200 || resp.StatusCode() >= 400 || loginsig.BodyLooksLikeLogin(resp.Body()) {
+	if resp.StatusCode() < 200 || resp.StatusCode() >= 400 || authsig.BodyLooksLikeLogin(resp.Body()) {
 		return false
 	}
 	bodyLower := strings.ToLower(resp.BodyToString())

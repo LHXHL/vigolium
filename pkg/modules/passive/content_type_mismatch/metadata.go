@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when the Content-Type header does not match the actual content of the response body"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Firm
-	ModuleTags         = []string{"misconfiguration", "header-security", "light"}
+	ModuleTags         = []string{"misconfiguration", "header-security", "hygiene", "light"}
 )

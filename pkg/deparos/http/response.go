@@ -3,6 +3,8 @@ package http
 import (
 	nethttp "net/http"
 	"strings"
+
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
 
 // ContentTypeInfo represents parsed Content-Type information.
@@ -67,9 +69,11 @@ func IsSuccessStatus(statusCode int) bool {
 	return statusCode >= 200 && statusCode < 300
 }
 
-// IsRedirectStatus returns true for HTTP redirect status codes (3xx).
+// IsRedirectStatus reports whether a status code names a redirect destination.
+// Delegates so this package's status helpers and every other layer that asks
+// share one answer; see httpmsg.IsRedirectStatus for why 304 is excluded.
 func IsRedirectStatus(statusCode int) bool {
-	return statusCode >= 300 && statusCode < 400
+	return httpmsg.IsRedirectStatus(statusCode)
 }
 
 // IsClientErrorStatus returns true for HTTP client error status codes (4xx).

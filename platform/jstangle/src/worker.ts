@@ -50,6 +50,7 @@ function validateRequest(request: WorkerRequest): asserts request is WorkerAnaly
 async function analyzeJob(request: WorkerAnalyzeRequest, content: Buffer): Promise<WorkerResultRecord> {
   const maxRequests = boundedInteger(request.limits?.maxRequests, 1000, 1, 100_000);
   const maxAstNodes = boundedInteger(request.limits?.maxAstNodes, 500_000, 1_000, 5_000_000);
+  const maxBundleModules = boundedInteger(request.limits?.maxBundleModules, 512, 1, 8_192);
   const maxOutputBytes = boundedInteger(request.limits?.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, 1024, 128 * 1024 * 1024);
   const maxArtifactBytes = boundedInteger(request.limits?.maxArtifactBytes, DEFAULT_MAX_ARTIFACT_BYTES, 1024, 256 * 1024 * 1024);
   const deadlineMs = boundedInteger(request.limits?.deadlineMs, 60_000, 1, 5 * 60_000);
@@ -64,7 +65,7 @@ async function analyzeJob(request: WorkerAnalyzeRequest, content: Buffer): Promi
     sourceUrl: request.sourceUrl,
     filename,
     mediaType: request.mediaType,
-    limits: { maxRequests, maxAstNodes, maxOutputBytes, deadlineMs },
+    limits: { maxRequests, maxAstNodes, maxBundleModules, maxOutputBytes, deadlineMs },
   });
 
   const descriptors: ArtifactDescriptor[] = [];

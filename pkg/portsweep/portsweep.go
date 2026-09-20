@@ -156,7 +156,7 @@ func Sweep(ctx context.Context, host string, opts Options) Result {
 			// instead of waiting out the longer HTTP/TLS timeout, and the open
 			// count feeds the honeypot ratio. The follow-up HTTP confirm dials
 			// again — one extra handshake per open port, by design.
-			if !tcpReachable(ctx, dialer, host, port) {
+			if !TCPReachable(ctx, dialer, host, port) {
 				return
 			}
 			mu.Lock()
@@ -193,9 +193,11 @@ func finalize(res Result, open []PortResult, tcpOpen int, honeypotRatio float64)
 	return res
 }
 
-// tcpReachable reports whether a TCP connection to host:port succeeds within the
-// dialer's timeout.
-func tcpReachable(ctx context.Context, dialer *net.Dialer, host string, port int) bool {
+// TCPReachable reports whether a TCP connection to host:port succeeds within
+// the dialer's timeout. Exported because the probe phase asks the same question
+// to decide which scheme a schemeless target speaks, and two independently
+// tuned connect probes would be two answers to "is this port open".
+func TCPReachable(ctx context.Context, dialer *net.Dialer, host string, port int) bool {
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return false

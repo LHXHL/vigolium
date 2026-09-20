@@ -35,11 +35,10 @@
   "include": [
     "next-env.d.ts",
     "**/*.ts",
+    "**/*.mts",
     "**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-    ".next-workbench/types/**/*.ts",
-    ".next-workbench/dev/types/**/*.ts",
     "dist/types/**/*.ts",
     "dist/dev/types/**/*.ts"
   ],

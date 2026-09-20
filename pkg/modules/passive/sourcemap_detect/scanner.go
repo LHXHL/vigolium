@@ -1,14 +1,12 @@
 package sourcemap_detect
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/dedup"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
@@ -22,8 +20,7 @@ const maxSourcesOutput = 20
 // Module detects exposed JavaScript sourcemaps in production responses.
 type Module struct {
 	modkit.BasePassiveModule
-	ds              dedup.Lazy[dedup.DiskSet]
-	sourceMappingRe *regexp.Regexp
+	ds dedup.Lazy[dedup.DiskSet]
 }
 
 // New creates a new sourcemap exposure detection passive module.
@@ -40,8 +37,7 @@ func New() *Module {
 			modkit.ScanScopeRequest,
 			modkit.PassiveScanScopeResponse,
 		),
-		ds:              dedup.LazyDiskSet("passive_sourcemap_detect"),
-		sourceMappingRe: regexp.MustCompile(`(?m)(?://|/\*)#\s*sourceMappingURL=(\S+)`),
+		ds: dedup.LazyDiskSet("passive_sourcemap_detect"),
 	}
 	m.ModuleTags = ModuleTags
 	return m
@@ -57,7 +53,7 @@ func (m *Module) CanProcess(ctx *httpmsg.HttpRequestResponse) bool {
 		return false
 	}
 
-	if u, err := ctx.URL(); err == nil && isMapFileURL(u.Path) {
+	if u, err := ctx.URL(); err == nil && sourcemap.IsMapPath(u.Path) {
 		return true
 	}
 
@@ -85,7 +81,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 	}
 
 	// Detection 2: .map file response with valid sourcemap JSON
-	if isMapFileURL(urlx.Path) {
+	if sourcemap.IsMapPath(urlx.Path) {
 		return m.detectMapFile(ctx, urlx.String(), urlx.Host)
 	}
 
@@ -93,71 +89,83 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 	return m.detectSourceMappingURL(ctx, urlx.String(), urlx.Host)
 }
 
-// detectSourceMappingURL scans JS/CSS response bodies for sourceMappingURL comments.
+// detectSourceMappingURL reports the source-map references a JS/CSS body carries.
+//
+// Extraction is delegated to the shared sourcemap package so this module sees the
+// same reference forms the active ingest module and the discovery crawl do — the
+// CSS block comment and the escaped reference inside a webpack eval module
+// included, neither of which the module's own regex matched.
+//
+// It stays passive: an external map is never fetched here. The active
+// sourcemap-ingest module is what confirms the exposure and recovers the source,
+// so this finding deliberately remains an observation.
 func (m *Module) detectSourceMappingURL(ctx *httpmsg.HttpRequestResponse, urlStr, host string) ([]*output.ResultEvent, error) {
-	body := ctx.Response().BodyToString()
-	matches := m.sourceMappingRe.FindAllStringSubmatch(body, -1)
-	if len(matches) == 0 {
+	references := sourcemap.ExtractReferences(ctx.Response().Body())
+	if len(references) == 0 {
 		return nil, nil
 	}
 
 	var results []*output.ResultEvent
-	for _, match := range matches {
-		mapURL := match[1]
-		// Trim trailing */ from block comment style
-		mapURL = strings.TrimSuffix(mapURL, "*/")
-		mapURL = strings.TrimSpace(mapURL)
-
-		meta := map[string]any{
-			"map_url":                    safeMapReference(mapURL),
-			"map_retrieved":              false,
-			"unauthorized_access_tested": false,
-		}
-
-		inline := isInlineSourcemap(mapURL)
-		if inline {
-			meta["has_inline"] = true
-			if decoded, ok := decodeInlineSourcemap(mapURL); ok {
-				if sm, valid := parseSourcemap(decoded); valid {
-					return m.mapResult(ctx, urlStr, host, sm, true), nil
-				}
+	for _, reference := range references {
+		// An inline map needs nothing fetched: its content is already in the body,
+		// so the disclosure is complete and can be reported as such.
+		if len(reference.Inline) > 0 {
+			if document, err := sourcemap.Parse(reference.Inline, urlStr); err == nil && isSubstantiveMap(document) {
+				return m.mapResult(ctx, urlStr, host, document, true), nil
 			}
-		}
-		extracted := safeMapReference(mapURL)
-		if inline {
-			extracted = fmt.Sprintf("inline source map data URI (%d bytes; structure not validated)", len(mapURL))
+			results = append(results, m.referenceEvent(ctx, urlStr, host,
+				fmt.Sprintf("inline source map data URI (%d bytes; structure not validated)", len(reference.Inline)),
+				map[string]any{
+					"map_url":                    "<inline source map data URI>",
+					"map_retrieved":              false,
+					"unauthorized_access_tested": false,
+					"has_inline":                 true,
+					"reference_origin":           string(reference.Origin),
+				}))
+			continue
 		}
 
-		results = append(results, &output.ResultEvent{
-			ModuleID:      ModuleID,
-			RecordKind:    output.RecordKindObservation,
-			EvidenceGrade: output.EvidenceGradeObservation,
-			Info: output.Info{
-				Name:        "SourceMappingURL Reference",
-				Description: "JavaScript/CSS contains a sourceMappingURL reference. An external map was not fetched by this passive module, so source availability and sensitive content are unconfirmed.",
-				Severity:    severity.Low,
-				Confidence:  severity.Firm,
-				Tags:        []string{"sourcemap", "information-disclosure", "javascript"},
-			},
-			Host:             host,
-			URL:              urlStr,
-			Matched:          urlStr,
-			Request:          string(ctx.Request().Raw()),
-			Response:         string(ctx.Response().Raw()),
-			ExtractedResults: []string{extracted},
-			Metadata:         meta,
-		})
+		mapReference := safeMapReference(reference.URL)
+		results = append(results, m.referenceEvent(ctx, urlStr, host,
+			mapReference,
+			map[string]any{
+				"map_url":                    mapReference,
+				"map_retrieved":              false,
+				"unauthorized_access_tested": false,
+				"reference_origin":           string(reference.Origin),
+			}))
 	}
 
 	return results, nil
 }
 
-// sourcemapJSON is a minimal struct for validating sourcemap JSON.
-type sourcemapJSON struct {
-	Version        int      `json:"version"`
-	Sources        []string `json:"sources"`
-	Mappings       string   `json:"mappings"`
-	SourcesContent []string `json:"sourcesContent"`
+// referenceEvent renders the unconfirmed-reference observation.
+func (m *Module) referenceEvent(
+	ctx *httpmsg.HttpRequestResponse,
+	urlStr, host, extracted string,
+	meta map[string]any,
+) *output.ResultEvent {
+	return &output.ResultEvent{
+		ModuleID:      ModuleID,
+		RecordKind:    output.RecordKindObservation,
+		EvidenceGrade: output.EvidenceGradeObservation,
+		Info: output.Info{
+			Name: "SourceMappingURL Reference",
+			Description: "JavaScript/CSS contains a sourceMappingURL reference. An external map was not fetched by " +
+				"this passive module, so source availability and sensitive content are unconfirmed; the active " +
+				"sourcemap-ingest module fetches and parses the map when it runs.",
+			Severity:   severity.Low,
+			Confidence: severity.Firm,
+			Tags:       []string{"sourcemap", "information-disclosure", "javascript"},
+		},
+		Host:             host,
+		URL:              urlStr,
+		Matched:          urlStr,
+		Request:          string(ctx.Request().Raw()),
+		Response:         string(ctx.Response().Raw()),
+		ExtractedResults: []string{extracted},
+		Metadata:         meta,
+	}
 }
 
 // detectMapFile validates that a .map response contains valid sourcemap JSON.
@@ -165,49 +173,44 @@ func (m *Module) detectMapFile(ctx *httpmsg.HttpRequestResponse, urlStr, host st
 	if status := ctx.Response().StatusCode(); status < 200 || status >= 300 {
 		return nil, nil
 	}
-	sm, valid := parseSourcemap(ctx.Response().Body())
-	if !valid {
+	document, err := sourcemap.Parse(ctx.Response().Body(), urlStr)
+	if err != nil || !isSubstantiveMap(document) {
 		return nil, nil
 	}
-	return m.mapResult(ctx, urlStr, host, sm, false), nil
+	return m.mapResult(ctx, urlStr, host, document, false), nil
 }
 
-func parseSourcemap(body []byte) (sourcemapJSON, bool) {
-	var sm sourcemapJSON
-	if err := json.Unmarshal(body, &sm); err != nil {
-		return sourcemapJSON{}, false
-	}
-	if sm.Version <= 0 || len(sm.Sources) == 0 || sm.Mappings == "" {
-		return sourcemapJSON{}, false
-	}
-	return sm, true
+// isSubstantiveMap rejects a v3-shaped JSON blob that names nothing and maps
+// nothing. Reporting one as a source map would be a finding about a file that
+// discloses no source and no layout.
+func isSubstantiveMap(document *sourcemap.Document) bool {
+	return len(document.SourcePaths) > 0 && document.HasMappings
 }
 
-func (m *Module) mapResult(ctx *httpmsg.HttpRequestResponse, urlStr, host string, sm sourcemapJSON, inline bool) []*output.ResultEvent {
+// mapResult renders the finding for a map this module actually saw the body of.
+// Parsing goes through the shared bounded parser: this module's own decoder read
+// every embedded source into memory with none of the size budgets applied, and
+// accepted any positive version where the parser requires 3 — so the passive and
+// active modules could disagree about whether the same body was a map.
+func (m *Module) mapResult(ctx *httpmsg.HttpRequestResponse, urlStr, host string, document *sourcemap.Document, inline bool) []*output.ResultEvent {
 
 	sev := severity.Low
 	conf := severity.Certain
 	tags := []string{"sourcemap", "information-disclosure", "javascript"}
 
-	hasSourceContent := false
-	for _, sc := range sm.SourcesContent {
-		if sc != "" {
-			hasSourceContent = true
-			break
-		}
-	}
+	hasSourceContent := document.HasEmbeddedContent()
 	if hasSourceContent {
 		sev = severity.Medium
 		tags = append(tags, "source-code")
 	}
 
 	// Cap extracted sources
-	sources := sm.Sources
+	sources := document.SourcePaths
 	if len(sources) > maxSourcesOutput {
 		sources = sources[:maxSourcesOutput]
 	}
 
-	desc := fmt.Sprintf("A structurally valid source map with %d source entries was delivered to this client", len(sm.Sources))
+	desc := fmt.Sprintf("A structurally valid source map with %d source entries was delivered to this client", len(document.SourcePaths))
 	if hasSourceContent {
 		desc += " and includes embedded source text"
 	}
@@ -236,8 +239,8 @@ func (m *Module) mapResult(ctx *httpmsg.HttpRequestResponse, urlStr, host string
 			Response:         string(ctx.Response().Raw()),
 			ExtractedResults: sources,
 			Metadata: map[string]any{
-				"version":                    sm.Version,
-				"source_count":               len(sm.Sources),
+				"version":                    3,
+				"source_count":               len(document.SourcePaths),
 				"has_source_content":         hasSourceContent,
 				"inline":                     inline,
 				"anonymous_access_tested":    false,
@@ -247,33 +250,10 @@ func (m *Module) mapResult(ctx *httpmsg.HttpRequestResponse, urlStr, host string
 	}
 }
 
-func decodeInlineSourcemap(value string) ([]byte, bool) {
-	if len(value) > 3<<20 || !isInlineSourcemap(value) {
-		return nil, false
-	}
-	comma := strings.IndexByte(value, ',')
-	if comma < 0 {
-		return nil, false
-	}
-	metadata, payload := strings.ToLower(value[:comma]), value[comma+1:]
-	if strings.Contains(metadata, ";base64") {
-		decoded, err := base64.StdEncoding.DecodeString(payload)
-		if err != nil {
-			decoded, err = base64.RawStdEncoding.DecodeString(payload)
-		}
-		return decoded, err == nil && len(decoded) <= 2<<20
-	}
-	decoded, err := url.QueryUnescape(payload)
-	if err != nil || len(decoded) > 2<<20 {
-		return nil, false
-	}
-	return []byte(decoded), true
-}
-
+// safeMapReference renders a reference URL for output, query and fragment
+// stripped and length-bounded. Inline maps never reach it: ExtractReferences
+// returns those as decoded content with no URL.
 func safeMapReference(value string) string {
-	if isInlineSourcemap(value) {
-		return "<inline source map data URI>"
-	}
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return modkit.Truncate(value, 160)
@@ -281,11 +261,6 @@ func safeMapReference(value string) string {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return modkit.Truncate(parsed.String(), 160)
-}
-
-// isMapFileURL checks if the URL path ends with .map.
-func isMapFileURL(path string) bool {
-	return strings.HasSuffix(strings.ToLower(path), ".map")
 }
 
 // isJSOrCSSContentType checks if the content type indicates JavaScript or CSS.
@@ -297,9 +272,4 @@ func isJSOrCSSContentType(ct string) bool {
 	return strings.Contains(ct, "javascript") ||
 		strings.Contains(ct, "ecmascript") ||
 		strings.Contains(ct, "text/css")
-}
-
-// isInlineSourcemap checks if the sourcemap URL is a data: URI.
-func isInlineSourcemap(url string) bool {
-	return strings.HasPrefix(strings.ToLower(url), "data:")
 }

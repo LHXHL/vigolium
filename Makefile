@@ -969,14 +969,21 @@ update-secret-rules:
 		-examples-out pkg/secretscan/testdata/examples.json
 	@echo "$(PREFIX) Wrote pkg/secretscan/catalog.json + pkg/secretscan/testdata/examples.json"
 
-# Copy fresh UI builds into embedded public/ paths
+# Copy fresh UI builds into embedded public/ paths.
+# Only public/static-reports/template.html is generated here; its sibling
+# report-template.html is hand-maintained and read straight out of the embed
+# by pkg/output/format_report.go.
 update-ui:
-	@echo "$(PREFIX) Updating static report template..."
-	@rm -f public/static-reports/template.html
+	@echo "$(PREFIX) Building static report template..."
+	@cd platform/static-reports && bun install && bun run build
 	@cp platform/static-reports/dist/template.html public/static-reports/template.html
 	@echo "$(PREFIX) Building workbench UI..."
-	@cd platform/vigolium-workbench && bun run build
+	@cd platform/vigolium-workbench && bun install && bun run build
 	@echo "$(PREFIX) Updating dashboard UI..."
+	@if [ ! -f platform/vigolium-workbench/dist/index.html ]; then \
+		echo "\033[31m[!] workbench dist/ has no index.html - refusing to replace public/ui/\033[0m"; \
+		exit 1; \
+	fi
 	@rm -rf public/ui/
 	@mkdir -p public/ui/
 	@cp -r platform/vigolium-workbench/dist/* public/ui/

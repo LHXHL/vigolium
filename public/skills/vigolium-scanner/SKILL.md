@@ -173,6 +173,8 @@ Full event table and field-by-field notes:
 | Fuzz a wordlist at a `FUZZ` marker | `vigolium fuzz https://t/FUZZ -w file-long --match-status-code 200,301` |
 | Scan files/stdin for leaked secrets | `vigolium kit secret-scan <files\|dirs\|-> --fail-on-match` |
 | Unminify / unpack a JS bundle | `vigolium kit js-beautify <file\|url\|->` |
+| Split a bundle into per-module files | `vigolium kit js-beautify --modules ./out app.min.js` |
+| Pull endpoints out of a JS bundle | `vigolium kit js-beautify -j --extract app.min.js` (check `status`) |
 | OOB (OAST) callback URL + polling | `vigolium kit oast new` → `vigolium kit oast poll --session run.yaml` |
 | Harvest known URLs for a domain | `vigolium kit harvest target.example` |
 | Crack a JWT's HMAC secret | `vigolium kit jwt-crack <token>` |
@@ -493,6 +495,14 @@ Select with `--strategy`; print the matrix with `vigolium strategy`.
 **Intensity** is the one-flag shortcut on top: `--intensity quick|balanced|deep`
 maps to a scanning profile **and** strategy at once (also honored by `agent
 autopilot`/`swarm`). Explicit flags override it.
+
+Below `deep`, the 13 modules tagged `hygiene` do not run — missing security
+headers, weak TLS protocol/cipher policy, cookie attributes, CSP/HSTS/SRI
+audits. They report a missing best-practice control rather than an exploitable
+condition and fire on nearly every response. If a report needs them, use
+`--intensity deep`, `--module-tag hygiene`, or set
+`dynamic-assessment.hygiene_modules: true`. The scan banner says how many were
+suppressed.
 
 **Phases** (for `--only`/`--skip`, or `vigolium run <phase>`), canonical name +
 aliases: `ingestion` (`ingest`,`ingesting`) · `probe`

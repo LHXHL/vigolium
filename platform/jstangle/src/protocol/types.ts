@@ -347,6 +347,8 @@ export interface CapabilitiesRecord {
 export interface WorkerLimits {
   maxRequests?: number;
   maxAstNodes?: number;
+  /** Max unpacked bundle modules independently re-scanned for endpoints. */
+  maxBundleModules?: number;
   maxOutputBytes?: number;
   maxArtifactBytes?: number;
   deadlineMs?: number;

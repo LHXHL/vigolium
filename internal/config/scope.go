@@ -1,5 +1,12 @@
 package config
 
+// DefaultCLIOriginMode is the origin-scope mode a scan uses when nothing sets
+// one. Referenced by the config default, the matcher's empty-string fallback,
+// and the banner renderers so the value is spelled once — it used to be a
+// literal in five places, and a change that missed one printed a mode the scan
+// was not running in.
+const DefaultCLIOriginMode = "balanced"
+
 // ScopeConfig defines which HTTP records are in scope for scanning.
 // Each rule is evaluated independently; all must pass (AND logic).
 // Exclude takes priority over include.
@@ -12,11 +19,19 @@ type ScopeConfig struct {
 
 	// CLIOriginMode restricts which hosts are in scope based on CLI target origins.
 	// Modes:
-	//   "relaxed"  — host must contain the target's keyword (e.g. "example") (default)
+	//   "balanced" — host must share the target's eTLD+1 (e.g. *.example.com) (default)
 	//   "all"      — no origin restriction
-	//   "balanced" — host must share the target's eTLD+1 (e.g. *.example.com)
+	//   "relaxed"  — host must contain the target's keyword (e.g. "example")
 	//   "strict"   — host must exactly match the target host
 	// IP targets always use exact match regardless of mode.
+	//
+	// The default is "balanced" rather than "relaxed" because relaxed matches the
+	// keyword against the *candidate's* registrable label, which admits every
+	// brand domain on every TLD: a scan of app.example.net pulls in example.com,
+	// example.io and anything else whose registrable label contains "example".
+	// In practice the hosts that lands on are an organization's SSO/IdP and
+	// marketing estate — someone else's infrastructure, never the thing under
+	// test. Relaxed stays available for deliberate brand-wide recon.
 	CLIOriginMode       string    `yaml:"cli_origin_mode" json:"cli_origin_mode"`
 	Host                ScopeRule `yaml:"host" json:"host"`
 	Path                ScopeRule `yaml:"path" json:"path"`
@@ -66,7 +81,7 @@ type ScopeRule struct {
 func DefaultScopeConfig() *ScopeConfig {
 	return &ScopeConfig{
 		AppliedOnIngest:         false,
-		CLIOriginMode:           "relaxed",
+		CLIOriginMode:           DefaultCLIOriginMode,
 		Host:                    ScopeRule{Include: []string{"*"}, Exclude: []string{}},
 		Path:                    ScopeRule{Include: []string{"*"}, Exclude: []string{}},
 		StatusCode:              ScopeRule{Include: []string{"*"}, Exclude: []string{}},

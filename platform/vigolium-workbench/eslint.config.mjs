@@ -9,7 +9,8 @@
 //     calls context.getFilename(), removed in ESLint 10.
 //
 // Raising either one re-breaks `bun run lint` outright. Re-check both upstreams
-// before bumping.
+// before bumping. Last re-verified 2026-09-20 against typescript 7.0.2 and
+// eslint 10.11.0 (with typescript-eslint 8.70.0): both still fail as described.
 import { defineConfig, globalIgnores } from 'eslint/config';
 import nextVitals from 'eslint-config-next/core-web-vitals';
 import nextTs from 'eslint-config-next/typescript';

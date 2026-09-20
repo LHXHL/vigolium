@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Observed when a truly cross-origin executable script or stylesheet lacks a valid sha256/sha384/sha512 integrity digest"
 	ModuleSeverity     = severity.Info
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"header-security", "javascript", "light"}
+	ModuleTags         = []string{"header-security", "javascript", "hygiene", "light"}
 )

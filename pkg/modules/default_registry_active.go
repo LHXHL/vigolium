@@ -165,6 +165,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/session_fixation"
 	"github.com/vigolium/vigolium/pkg/modules/active/smart_behavior_detection"
 	"github.com/vigolium/vigolium/pkg/modules/active/smtp_header_injection"
+	"github.com/vigolium/vigolium/pkg/modules/active/sourcemap_ingest"
 	"github.com/vigolium/vigolium/pkg/modules/active/spring_actuator_misconfig"
 	"github.com/vigolium/vigolium/pkg/modules/active/spring_boot_admin_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/spring_cloud_config_exposure"
@@ -431,6 +432,7 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(rails_action_mailbox_probe.New())
 	// Active modules - API Spec Discovery & Ingestion
 	r.RegisterActive(api_spec_ingest.New())
+	r.RegisterActive(sourcemap_ingest.New())
 	r.RegisterActive(swagger_exposure.New())
 	// Active modules - Third-party dashboards / consoles / self-hosted apps
 	r.RegisterActive(dashboard_exposure.New())

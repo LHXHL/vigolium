@@ -1,12 +1,10 @@
 package discovery
 
 import (
-	"encoding/base64"
-	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
 )
 
 func TestJSAssetGraphResolvesAndTerminatesCycles(t *testing.T) {
@@ -43,50 +41,9 @@ func TestJSAssetGraphEnforcesParentAndDepthCaps(t *testing.T) {
 	}
 }
 
-func TestParseSourceMapSourcesContentAndSanitizesPaths(t *testing.T) {
-	content := []byte(`{
-      "version":3,"sourceRoot":"webpack:///../../",
-      "sources":["../src/api.ts","src/no-content.ts"],
-      "sourcesContent":["fetch('/api/from-source-map')",null],"mappings":""
-    }`)
-	sources, err := ParseSourceMap(content, "https://example.com/app.js")
-	if err != nil {
-		t.Fatalf("ParseSourceMap: %v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("sources = %+v", sources)
-	}
-	if strings.Contains(sources[0].Path, "..") || strings.HasPrefix(sources[0].Path, "/") {
-		t.Fatalf("unsafe recovered path: %q", sources[0].Path)
-	}
-	if sources[0].Language != "ts" || string(sources[0].Content) != "fetch('/api/from-source-map')" {
-		t.Fatalf("unexpected recovered source: %+v", sources[0])
-	}
-}
-
-func TestParseIndexedAndInlineSourceMaps(t *testing.T) {
-	child := `{"version":3,"sources":["src/a.js"],"sourcesContent":["fetch('/a')"],"mappings":""}`
-	indexed := []byte(fmt.Sprintf(`{"version":3,"sections":[{"offset":{"line":0,"column":0},"map":%s}]}`, child))
-	sources, err := ParseSourceMap(indexed, "https://example.com/app.js")
-	if err != nil || len(sources) != 1 {
-		t.Fatalf("indexed parse: sources=%+v err=%v", sources, err)
-	}
-
-	encoded := base64.StdEncoding.EncodeToString([]byte(child))
-	ref, inline, ok := ExtractSourceMapReference([]byte("const x=1;\n//# sourceMappingURL=data:application/json;base64," + encoded))
-	if !ok || ref != "inline:source-map" || string(inline) != child {
-		t.Fatalf("inline reference: ref=%q ok=%v content=%q", ref, ok, inline)
-	}
-}
-
-func TestParseSourceMapRejectsMalformedAndOversizedContent(t *testing.T) {
-	if _, err := ParseSourceMap([]byte(`{"version":2}`), "https://example.com/app.js"); err == nil {
-		t.Fatal("unsupported map version accepted")
-	}
-	if _, err := ParseSourceMap(make([]byte, maxSourceMapBytes+1), "https://example.com/app.js"); err == nil {
-		t.Fatal("oversized map accepted")
-	}
-}
+// Parsing, path sanitization, indexed maps and inline references are covered by
+// the parser's own tests in pkg/deparos/jstangle/sourcemap; this package
+// tests only how discovery wires that parser in.
 
 func TestAnnotateSourceMappedResultCoversEveryTypedFactFamily(t *testing.T) {
 	provenance := jstangle.Provenance{Extractor: "fixture", Confidence: "high"}
@@ -100,7 +57,7 @@ func TestAnnotateSourceMappedResultCoversEveryTypedFactFamily(t *testing.T) {
 		ClientRoutes:      []jstangle.ClientRouteFact{{Provenance: provenance}},
 		BrowserFlows:      []jstangle.BrowserSecurityFlowFact{{Provenance: provenance}},
 	}
-	source := OriginalSource{
+	source := sourcemap.OriginalSource{
 		Path: "src/api.ts", GeneratedSourceURL: "https://example.test/assets/app.js",
 	}
 

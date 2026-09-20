@@ -157,3 +157,52 @@ func TestIsMediaExtension(t *testing.T) {
 		})
 	}
 }
+
+// TestShouldScanBodyForSecrets_TextExtensionFallback covers the mislabeled-MIME
+// case that silently excluded source maps from every secret-scan caller: static
+// hosts serve .map as application/octet-stream, which is not a text MIME, so the
+// body was skipped despite being plain JSON full of original source.
+func TestShouldScanBodyForSecrets_TextExtensionFallback(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		urlPath     string
+		bodyLen     int
+		want        bool
+	}{
+		{"source map as octet-stream", "application/octet-stream", "/static/js/main.abc123.chunk.js.map", 2048, true},
+		{"source map as json", "application/json", "/static/js/main.abc123.chunk.js.map", 2048, true},
+		{"source map with no content-type", "", "/assets/bundle.js.map", 2048, true},
+		{"bundle as octet-stream", "application/octet-stream", "/assets/bundle.js", 2048, true},
+		{"typescript source as octet-stream", "application/octet-stream", "/src/App.tsx", 512, true},
+
+		// The fallback must not widen the policy beyond text-shaped paths.
+		{"binary blob as octet-stream", "application/octet-stream", "/download/payload.bin", 2048, false},
+		{"wasm as octet-stream", "application/octet-stream", "/app.wasm", 2048, false},
+		{"image keeps being media", "application/octet-stream", "/logo.png", 2048, false},
+		{"oversized map is still skipped", "application/json", "/app.js.map", MaxSecretScanBodySize + 1, false},
+		{"empty body is still skipped", "application/json", "/app.js.map", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ShouldScanBodyForSecrets(tt.contentType, tt.urlPath, tt.bodyLen); got != tt.want {
+				t.Errorf("ShouldScanBodyForSecrets(%q, %q, %d) = %v, want %v",
+					tt.contentType, tt.urlPath, tt.bodyLen, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTextAndExcludedExtensionsAreDisjoint pins the invariant the two tables
+// depend on: IsMediaContent consults excludedExtensions first, so any extension
+// in both lists would be silently unreachable through the text fallback and the
+// list would quietly lie about what it covers.
+func TestTextAndExcludedExtensionsAreDisjoint(t *testing.T) {
+	for ext := range textExtensions {
+		if excludedExtensions[ext] {
+			t.Errorf("%q is in both textExtensions and excludedExtensions; the media check "+
+				"runs first, so the text entry can never take effect", ext)
+		}
+	}
+}

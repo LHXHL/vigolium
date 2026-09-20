@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
 )
 
 func TestConfidenceRankFor(t *testing.T) {
@@ -195,6 +197,161 @@ func TestKitReadJWTStripsBearer(t *testing.T) {
 	}
 	if got, _ := kitReadJWT("  abc.def.ghi  "); got != "abc.def.ghi" {
 		t.Errorf("kitReadJWT did not trim: %q", got)
+	}
+}
+
+// Endpoints must carry the provenance that says whether a method was resolved
+// from the AST or guessed by a regex. ExtractedRequest alone cannot express it.
+func TestKitBeautifyEndpointsCarryProvenance(t *testing.T) {
+	res := &jstangle.ScanResult{
+		RequestFacts: []jstangle.HTTPRequestFact{{
+			Kind: "httpRequest",
+			URL:  jstangle.ValueTemplate{Rendered: "/api/v3/devices"},
+			// Empty method: unresolved, the fallback's honest output.
+			Method:     jstangle.ValueTemplate{Rendered: ""},
+			Provenance: jstangle.Provenance{Extractor: "large-input-string-fallback", Confidence: "low"},
+		}, {
+			Kind:       "httpRequest",
+			URL:        jstangle.ValueTemplate{Rendered: "/api/v3/tenants"},
+			Method:     jstangle.ValueTemplate{Rendered: "POST"},
+			Provenance: jstangle.Provenance{Extractor: "bundle-module", Confidence: "medium", ModulePath: "./src/api.js"},
+		}},
+	}
+	endpoints := kitBeautifyEndpoints(res)
+	if len(endpoints) != 2 {
+		t.Fatalf("expected two endpoints, got %d", len(endpoints))
+	}
+	if endpoints[0].Extractor != "large-input-string-fallback" || endpoints[0].Confidence != "low" {
+		t.Errorf("guessed endpoint lost its provenance: %+v", endpoints[0])
+	}
+	if endpoints[0].Method != "" {
+		t.Errorf("unresolved method should stay empty, got %q", endpoints[0].Method)
+	}
+	if endpoints[1].ModulePath != "./src/api.js" || endpoints[1].Method != "POST" {
+		t.Errorf("resolved endpoint lost provenance or method: %+v", endpoints[1])
+	}
+}
+
+// Three distinct outcomes used to collapse into "neither minified nor bundled".
+func TestKitBeautifyUnchangedReasonDistinguishesOutcomes(t *testing.T) {
+	notABundle := kitBeautifyUnchangedReason("a.js", &jstangle.ScanResult{
+		Completion: &jstangle.ScanCompletion{Status: "complete"},
+	})
+	if !strings.Contains(notABundle, "neither minified nor bundled") {
+		t.Errorf("a clean scan of a plain script should say so: %q", notABundle)
+	}
+
+	neverDispatched := kitBeautifyUnchangedReason("big.js", &jstangle.ScanResult{
+		Diagnostics: []jstangle.Diagnostic{{Stage: "admission", Code: "ast_analysis_skipped_very_large"}},
+	})
+	if !strings.Contains(neverDispatched, "was not analyzed") ||
+		!strings.Contains(neverDispatched, "ast_analysis_skipped_very_large") {
+		t.Errorf("an input the service refused must not look like a plain script: %q", neverDispatched)
+	}
+
+	analysisFailed := kitBeautifyUnchangedReason("bundle.js", &jstangle.ScanResult{
+		Completion: &jstangle.ScanCompletion{Status: "failed", ReasonCode: "ast_node_limit_reached"},
+	})
+	if !strings.Contains(analysisFailed, "did not complete") ||
+		!strings.Contains(analysisFailed, "ast_node_limit_reached") {
+		t.Errorf("a failed analysis must not look like a plain script: %q", analysisFailed)
+	}
+}
+
+// Recovered module paths come from bundle metadata, so they are
+// attacker-influenced and must never escape the target directory.
+func TestKitSafeModulePathConfinesToRoot(t *testing.T) {
+	root := "/tmp/out"
+	escapes := []string{
+		"../../../etc/passwd",
+		"./../../etc/passwd",
+		"/etc/passwd",
+		`C:\Windows\system32\drivers\etc\hosts`,
+		`\\server\share\evil.js`,
+		"",
+		// Both Join back to root itself; appending an extension would write
+		// /tmp/out.js, a sibling of the output directory rather than a file in it.
+		".",
+		"a/..",
+	}
+	for _, modulePath := range escapes {
+		if target, ok := kitSafeModulePath(root, modulePath); ok {
+			t.Errorf("path %q escaped the target directory as %q", modulePath, target)
+		}
+	}
+
+	safe := map[string]string{
+		"./src/api.js":     "/tmp/out/src/api.js",
+		"src/nested/a.js":  "/tmp/out/src/nested/a.js",
+		"./100":            "/tmp/out/100.js", // extensionless modules get one
+		"./pages/index.ts": "/tmp/out/pages/index.ts",
+	}
+	for modulePath, want := range safe {
+		target, ok := kitSafeModulePath(root, modulePath)
+		if !ok {
+			t.Errorf("path %q was rejected but is safe", modulePath)
+			continue
+		}
+		if target != want {
+			t.Errorf("path %q resolved to %q, want %q", modulePath, target, want)
+		}
+	}
+}
+
+// The engine ships one assembled document rather than per-module content, so
+// splitting it back apart is how --modules produces a directory.
+func TestBeautifiedCodeModulesSplitsAssembledDocument(t *testing.T) {
+	beautified := &jstangle.BeautifiedCode{
+		Format:      "webpack",
+		ModuleCount: 3,
+		ModulePaths: []string{"./entry.js", "./src/api.js", "./src/util.js"},
+		Changed:     true,
+		Content: "// ===== ./entry.js (entry) =====\nconst a = 1;\n\n" +
+			"// ===== ./src/api.js =====\nfetch(\"/api/v3\");\n\n" +
+			"// ===== ./src/util.js =====\nexport const noop = () => {};",
+	}
+	modules := beautified.Modules()
+	if len(modules) != 3 {
+		t.Fatalf("expected 3 modules, got %d: %#v", len(modules), modules)
+	}
+	if modules[0].Path != "./entry.js" || modules[0].Content != "const a = 1;" {
+		t.Errorf("entry module mis-split: %#v", modules[0])
+	}
+	if modules[1].Content != `fetch("/api/v3");` {
+		t.Errorf("middle module mis-split: %q", modules[1].Content)
+	}
+	if modules[2].Content != "export const noop = () => {};" {
+		t.Errorf("last module mis-split: %q", modules[2].Content)
+	}
+}
+
+// A banner-shaped string inside a module's own source must not be mistaken for
+// the next section: matching walks forward from the previous match, in path order.
+func TestBeautifiedCodeModulesIgnoresBannerLookalikesInSource(t *testing.T) {
+	beautified := &jstangle.BeautifiedCode{
+		ModulePaths: []string{"./a.js", "./b.js"},
+		Content: "// ===== ./a.js =====\nconst s = \"// ===== ./b.js =====\";\n\n" +
+			"// ===== ./b.js =====\nconst real = 2;",
+	}
+	modules := beautified.Modules()
+	if len(modules) != 2 {
+		t.Fatalf("expected 2 modules, got %d", len(modules))
+	}
+	if !strings.Contains(modules[0].Content, `const s =`) {
+		t.Errorf("first module lost its body: %q", modules[0].Content)
+	}
+	if modules[1].Content != "const real = 2;" {
+		t.Errorf("second module took the lookalike instead of the real banner: %q", modules[1].Content)
+	}
+}
+
+func TestBeautifiedCodeModulesReturnsNilForNonBundle(t *testing.T) {
+	if modules := (&jstangle.BeautifiedCode{Content: "const a = 1;"}).Modules(); modules != nil {
+		t.Errorf("a non-bundle document should not split: %#v", modules)
+	}
+	var nilCode *jstangle.BeautifiedCode
+	if modules := nilCode.Modules(); modules != nil {
+		t.Errorf("nil BeautifiedCode should not split: %#v", modules)
 	}
 }
 

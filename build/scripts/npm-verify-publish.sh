@@ -26,24 +26,28 @@ set -euo pipefail
 # regularly needs well over 5 minutes to finish processing one. The old 300s
 # budget (30 x 10s) timed out on packages that then landed fine a few minutes
 # later, so a release took several `make npm-publish` re-runs to walk through
-# five platforms one timeout at a time. `version` mode therefore polls for 15
+# five platforms one timeout at a time. `version` mode therefore polls for 30
 # minutes; a package that has not appeared by then really is dropped. dist-tag
-# propagation is fast, so that mode keeps the short budget.
+# propagation is fast, so that mode keeps the shorter budget.
+#
+# The poll interval is 30s: nothing ever lands within 10s of the 202, so the
+# tighter interval only produced noise. Budgets are version 60 x 30s = 30m and
+# dist-tag 20 x 30s = 10m.
 #
 # Env:
-#   NPM_VERIFY_TRIES = poll attempts (default 90 for version, 30 for dist-tag)
-#   NPM_VERIFY_SLEEP = seconds between attempts (default 10)
+#   NPM_VERIFY_TRIES = poll attempts (default 60 for version, 20 for dist-tag)
+#   NPM_VERIFY_SLEEP = seconds between attempts (default 30)
 
 MODE="${1:?usage: npm-verify-publish.sh version|dist-tag ...}"
 PKG="${2:?package name required}"
 
 case "$MODE" in
-version) DEFAULT_TRIES=90 ;;
-*) DEFAULT_TRIES=30 ;;
+version) DEFAULT_TRIES=60 ;;
+*) DEFAULT_TRIES=20 ;;
 esac
 
 TRIES="${NPM_VERIFY_TRIES:-$DEFAULT_TRIES}"
-SLEEP="${NPM_VERIFY_SLEEP:-10}"
+SLEEP="${NPM_VERIFY_SLEEP:-30}"
 
 # Registry paths take the scope separator escaped: @scope%2fname.
 PKG_PATH="${PKG/\//%2f}"

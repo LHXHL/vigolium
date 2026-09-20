@@ -11,7 +11,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle/linkfinder"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
-	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/modules/shared/jsframework"
 	"github.com/vigolium/vigolium/pkg/output"
@@ -189,54 +188,16 @@ func pickNewChunks(state *hostState, chunkPaths []string) []string {
 	return out
 }
 
+// fetchBytes retrieves one chunk or its map. The guards that keep a catch-all
+// host from forging a match live in modkit.FetchAssetBytes, shared with the other
+// modules that probe for static assets.
 func (m *Module) fetchBytes(
 	ctx *httpmsg.HttpRequestResponse,
 	httpClient *http.Requester,
 	path string,
 	maxBytes int64,
 ) ([]byte, bool) {
-	raw, err := httpmsg.SetPath(ctx.Request().Raw(), path)
-	if err != nil {
-		return nil, false
-	}
-	raw, _ = httpmsg.SetMethod(raw, "GET")
-
-	// raw is internally built (well-formed), so wrap directly instead of
-	// re-parsing on this hot path.
-	req := httpmsg.NewRequestResponseRaw(raw, ctx.Service())
-
-	resp, _, err := httpClient.Execute(req, http.Options{NoRedirects: true, NoClustering: true})
-	if err != nil {
-		return nil, false
-	}
-	defer resp.Close()
-
-	if resp.Response() == nil || resp.Response().StatusCode != 200 || infra.IsBlockedResponse(resp) {
-		return nil, false
-	}
-
-	// Catch-all / echo-server guard: a real Next.js chunk (.js) or its source map
-	// (.map) is served as application/javascript, text/javascript, or
-	// application/json — NEVER a full HTML document. A 200 text/html body for a
-	// chunk path is the host's catch-all / SPA shell served for literally any path
-	// (or, under a gzip + bogus `Content-Length: 0` transport quirk, a truncated
-	// TAIL fragment of it), whose reflected/echoed text can forge a bogus secret or
-	// route-intel match. The Content-Type header survives that truncation, so
-	// classify it and drop an HTML document here. A missing/unknown Content-Type
-	// fails open so a real bundle served without one is still analysed.
-	if modkit.ClassifyContentType(resp.Response().Header.Get("Content-Type")) == modkit.ContentClassHTML {
-		return nil, false
-	}
-
-	body := resp.Body().Bytes()
-	if int64(len(body)) > maxBytes {
-		body = body[:maxBytes]
-	}
-	// resp.Close() may release/pool the underlying buffer; copy so the
-	// returned slice is safe past the defer.
-	out := make([]byte, len(body))
-	copy(out, body)
-	return out, true
+	return modkit.FetchAssetBytes(ctx, httpClient, path, maxBytes)
 }
 
 func (m *Module) analyzeBody(body []byte, cc chunkCtx) []*output.ResultEvent {

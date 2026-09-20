@@ -47,7 +47,16 @@ func normalizeTargetSchemes(options *types.Options) {
 		return
 	}
 	for i, t := range options.Targets {
-		options.Targets[i] = httpmsg.EnsureURLScheme(t, httpmsg.DefaultTargetScheme)
+		normalized, assumed := httpmsg.EnsureURLSchemeTracked(t, httpmsg.DefaultTargetScheme)
+		options.Targets[i] = normalized
+		if !assumed {
+			continue
+		}
+		// Recorded, never cleared: the CLI has usually normalized already (it
+		// must, to dedup on the normalized spelling) and marked these itself,
+		// so this loop only adds the entries the direct-assignment entry points
+		// would otherwise lose. See Options.TargetsSchemeAssumed.
+		options.MarkSchemeAssumed(map[string]struct{}{normalized: {}})
 	}
 }
 
@@ -368,14 +377,55 @@ func filterOutHosts(targets, block []string) []string {
 	}
 	blocked := make(map[string]bool, len(block))
 	for _, h := range block {
-		blocked[strings.ToLower(h)] = true
+		blocked[normalizeSSOHost(h)] = true
 	}
 	out := make([]string, 0, len(targets))
 	for _, t := range targets {
 		u, err := neturl.Parse(t)
-		if err != nil || u.Host == "" || !blocked[strings.ToLower(u.Host)] {
+		if err != nil || u.Host == "" || !blocked[strings.ToLower(u.Hostname())] {
 			out = append(out, t)
 		}
+	}
+	return out
+}
+
+// normalizeSSOHost reduces a host to the one spelling the SSO block list uses:
+// a lowercase bare hostname, port stripped.
+//
+// Every producer of that list has to agree on a spelling or the list silently
+// stops matching. They did not: the landing-URL sites contributed host:port
+// while the crawler's wall-host set contributed bare hostnames, so the block
+// list held two spellings of the same host and lookups against it hit or missed
+// depending on which producer got there first.
+func normalizeSSOHost(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if i := strings.LastIndexByte(h, ':'); i >= 0 && !strings.Contains(h[i+1:], "]") {
+		h = h[:i]
+	}
+	return strings.Trim(h, "[]")
+}
+
+// ssoHostsFromSpider returns the login/SSO wall hosts a spider result implies:
+// every host the crawler denied, plus the landing host it came to rest on.
+//
+// Shared by all three phases that feed the block list so the "whole chain, not
+// just the landing" rule lands in one place. An OAuth bounce routinely crosses
+// an authorize endpoint on one host before reaching the login form on another,
+// and taking only the landing left the first host a fuzz target.
+func ssoHostsFromSpider(wallHosts []string, landingURL string) []string {
+	out := make([]string, 0, len(wallHosts)+1)
+	seen := make(map[string]bool, len(wallHosts)+1)
+	add := func(h string) {
+		if h = normalizeSSOHost(h); h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	for _, h := range wallHosts {
+		add(h)
+	}
+	if lu, err := neturl.Parse(landingURL); err == nil {
+		add(lu.Hostname())
 	}
 	return out
 }
@@ -501,7 +551,8 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 			ProtocolHandshake: dc.JSTangle.ProtocolHandshake,
 			WorkerCount:       dc.JSTangle.WorkerCount, MemoryBudgetMB: dc.JSTangle.MemoryBudgetMB, CacheMB: dc.JSTangle.CacheMB,
 			WorkerMaxJobs: dc.JSTangle.WorkerMaxJobs, WorkerMaxRSSMB: dc.JSTangle.WorkerMaxRSSMB, JobTimeout: jobTimeout,
-			NormalInputMB: dc.JSTangle.NormalInputMB, MaxASTInputMB: dc.JSTangle.MaxASTInputMB, HardInputMB: dc.JSTangle.HardInputMB,
+			NormalInputMB: dc.JSTangle.NormalInputMB, MaxASTInputMB: dc.JSTangle.MaxASTInputMB,
+			MaxUnpackInputMB: dc.JSTangle.MaxUnpackInputMB, HardInputMB: dc.JSTangle.HardInputMB,
 			MaxRequestsPerFile: dc.JSTangle.MaxRequestsPerFile,
 			MaxASTNodes:        dc.JSTangle.MaxASTNodes,
 			MaxAssetDepth:      dc.JSTangle.MaxAssetDepth, MaxAssetsPerParent: dc.JSTangle.MaxAssetsPerParent,

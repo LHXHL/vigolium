@@ -256,15 +256,6 @@ func TestScanPerRequest_Dedup(t *testing.T) {
 	require.Len(t, results2, 1)
 }
 
-func TestIsMapFileURL(t *testing.T) {
-	assert.True(t, isMapFileURL("/app.js.map"))
-	assert.True(t, isMapFileURL("/styles.css.MAP"))
-	assert.True(t, isMapFileURL("/bundle.min.js.map"))
-	assert.False(t, isMapFileURL("/app.js"))
-	assert.False(t, isMapFileURL("/sitemap.xml"))
-	assert.False(t, isMapFileURL("/map"))
-}
-
 func TestIsJSOrCSSContentType(t *testing.T) {
 	assert.True(t, isJSOrCSSContentType("application/javascript"))
 	assert.True(t, isJSOrCSSContentType("text/javascript"))
@@ -275,11 +266,4 @@ func TestIsJSOrCSSContentType(t *testing.T) {
 	assert.False(t, isJSOrCSSContentType("text/html"))
 	assert.False(t, isJSOrCSSContentType("application/json"))
 	assert.False(t, isJSOrCSSContentType(""))
-}
-
-func TestIsInlineSourcemap(t *testing.T) {
-	assert.True(t, isInlineSourcemap("data:application/json;base64,abc"))
-	assert.True(t, isInlineSourcemap("Data:application/json;base64,abc"))
-	assert.False(t, isInlineSourcemap("app.js.map"))
-	assert.False(t, isInlineSourcemap("https://example.com/app.js.map"))
 }

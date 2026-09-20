@@ -36,6 +36,7 @@ package jstangle
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -492,6 +493,14 @@ type ScanOptions struct {
 	MaxRequests int
 	// MaxASTNodes bounds the parsed tree before expensive analysis stages.
 	MaxASTNodes int
+	// UnpackModules unpacks a detected bundle and re-scans each recovered module
+	// independently, merging endpoints with module-path provenance. Off by
+	// default: it adds a webcrack pass. The engine turns it on by itself when the
+	// whole-file parse is rejected for exceeding MaxASTNodes, so this option is
+	// for asking deliberately rather than for enabling the recovery path.
+	UnpackModules bool
+	// MaxBundleModules bounds how many recovered modules are re-scanned.
+	MaxBundleModules int
 	// Deadline bounds cooperative TypeScript analysis within the process timeout.
 	Deadline time.Duration
 	// SourceURL anchors relative endpoints to the script that emitted them.
@@ -545,6 +554,110 @@ func (r *ScanResult) HasDomFlows() bool {
 // actually differs from the input (a no-op beautification is not reported).
 func (r *ScanResult) HasBeautified() bool {
 	return r.Beautified != nil && r.Beautified.Changed && r.Beautified.Content != ""
+}
+
+// BeautifiedModule is one recovered module carved back out of the assembled
+// document.
+type BeautifiedModule struct {
+	Path    string
+	Content string
+}
+
+// moduleBannerPrefix opens every section header the engine emits.
+const moduleBannerPrefix = "// ===== "
+
+// moduleBanner mirrors the engine's section header (see src/beautify/index.ts).
+func moduleBanner(path string, entry bool) string {
+	if entry {
+		return moduleBannerPrefix + path + " (entry) ====="
+	}
+	return moduleBannerPrefix + path + " ====="
+}
+
+// findModuleBanner scans forward from `from` for the next line that is a section
+// header naming `path`, returning its start and the offset just past it.
+//
+// The search is for the shared prefix, not for the full expected banner: a probe
+// for a specific path that is not the next one would scan to EOF every time,
+// which over N modules is a quadratic walk of the whole document. Scanning for
+// the prefix instead stops at the next header, so splitting a document costs one
+// pass in total. Returns -1 when no such header follows.
+func findModuleBanner(content, path string, from int) (start, bodyFrom int) {
+	for offset := from; offset <= len(content); {
+		at := strings.Index(content[offset:], moduleBannerPrefix)
+		if at < 0 {
+			return -1, 0
+		}
+		at += offset
+		// A header always begins a line, so a banner-shaped string inside a
+		// module's own source is skipped rather than taken for the next section.
+		if at != 0 && content[at-1] != '\n' {
+			offset = at + 1
+			continue
+		}
+		line := content[at:]
+		if end := strings.IndexByte(line, '\n'); end >= 0 {
+			line = line[:end]
+		}
+		// Either spelling: a single-module bundle is both first and the entry.
+		if line == moduleBanner(path, false) || line == moduleBanner(path, true) {
+			bodyFrom = at + len(line)
+			if bodyFrom < len(content) && content[bodyFrom] == '\n' {
+				bodyFrom++
+			}
+			return at, bodyFrom
+		}
+		offset = at + len(moduleBannerPrefix)
+	}
+	return -1, 0
+}
+
+// Modules splits the assembled document back into its recovered modules.
+//
+// The engine emits one readable document with a banner per section rather than
+// per-module content, which would double the payload of a multi-megabyte bundle.
+// ModulePaths is in document order, so each module's body runs from just past its
+// own header to the start of the next one.
+//
+// Returns nil when the document is not a bundle or does not match the expected
+// layout; callers fall back to the single document.
+func (b *BeautifiedCode) Modules() []BeautifiedModule {
+	if b == nil || len(b.ModulePaths) == 0 || b.Content == "" {
+		return nil
+	}
+	modules := make([]BeautifiedModule, 0, len(b.ModulePaths))
+	bodyFrom := 0
+	for _, path := range b.ModulePaths {
+		start, next := findModuleBanner(b.Content, path, bodyFrom)
+		if start < 0 {
+			return nil
+		}
+		// Each header closes the previous module's body.
+		if n := len(modules); n > 0 {
+			modules[n-1].Content = strings.TrimRight(b.Content[bodyFrom:start], "\n")
+		}
+		bodyFrom = next
+		modules = append(modules, BeautifiedModule{Path: path})
+	}
+	modules[len(modules)-1].Content = strings.TrimRight(b.Content[bodyFrom:], "\n")
+	return modules
+}
+
+// Status reports how much of the requested analysis actually ran:
+// "complete", "partial", "failed", or "" when the result carries no envelope.
+// A caller that only checks for a non-nil result cannot distinguish a clean AST
+// pass from a degraded string pass; this is the field that tells them apart.
+func (r *ScanResult) Status() string {
+	if r == nil {
+		return ""
+	}
+	if r.Completion != nil && r.Completion.Status != "" {
+		return r.Completion.Status
+	}
+	if r.Analysis != nil {
+		return r.Analysis.Stats.Status
+	}
+	return ""
 }
 
 // Config configures the jstangle scanner behavior.

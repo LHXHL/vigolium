@@ -21,6 +21,10 @@ const (
 	serviceWeightBytes         = int64(128 * 1024 * 1024)
 	defaultNormalInputBytes    = int64(1 * 1024 * 1024)
 	defaultMaxASTInputBytes    = int64(4 * 1024 * 1024)
+	// Unminifying and unpacking is a source-level pass, so it is bounded by the
+	// hard input limit rather than by the AST ceiling. Set above the current hard
+	// limit on purpose: raising HardInputMB should widen unpacking automatically.
+	defaultMaxUnpackInputBytes = int64(16 * 1024 * 1024)
 	defaultHardInputBytes      = int64(DefaultMaxInputBytes)
 )
 
@@ -37,18 +41,23 @@ type ServiceConfig struct {
 	WorkerMaxRSSBytes int64
 	NormalInputBytes  int64
 	MaxASTInputBytes  int64
-	HardInputBytes    int64
-	ScannerConfig     *Config
+	// MaxUnpackInputBytes bounds the unminify/unpack pass, which reads source and
+	// never builds an AST. Above MaxASTInputBytes and below this, a beautify-style
+	// request is still dispatched instead of being answered from regex alone.
+	MaxUnpackInputBytes int64
+	HardInputBytes      int64
+	ScannerConfig       *Config
 }
 
 func DefaultServiceConfig() *ServiceConfig {
 	return &ServiceConfig{
-		MemoryBudgetBytes: defaultServiceMemoryBudget,
-		CacheBytes:        defaultServiceCacheBytes,
-		NormalInputBytes:  defaultNormalInputBytes,
-		MaxASTInputBytes:  defaultMaxASTInputBytes,
-		HardInputBytes:    defaultHardInputBytes,
-		ScannerConfig:     DefaultConfig(),
+		MemoryBudgetBytes:   defaultServiceMemoryBudget,
+		CacheBytes:          defaultServiceCacheBytes,
+		NormalInputBytes:    defaultNormalInputBytes,
+		MaxASTInputBytes:    defaultMaxASTInputBytes,
+		MaxUnpackInputBytes: defaultMaxUnpackInputBytes,
+		HardInputBytes:      defaultHardInputBytes,
+		ScannerConfig:       DefaultConfig(),
 	}
 }
 
@@ -90,12 +99,13 @@ type analysisFlight struct {
 // Service owns weighted admission, byte-bounded caches, and cancellation-aware
 // in-flight coalescing for every JSTANGLE consumer in the process.
 type Service struct {
-	backend          serviceBackend
-	weight           *semaphore.Weighted
-	maxWeight        int64
-	normalInputBytes int64
-	maxASTInputBytes int64
-	hardInputBytes   int64
+	backend             serviceBackend
+	weight              *semaphore.Weighted
+	maxWeight           int64
+	normalInputBytes    int64
+	maxASTInputBytes    int64
+	maxUnpackInputBytes int64
+	hardInputBytes      int64
 
 	metadataCache *byteLRU[*cachedMetadata]
 	payloadCache  *byteLRU[*cachedPayload]
@@ -218,11 +228,18 @@ func newServiceWithBackend(config *ServiceConfig, backend serviceBackend) *Servi
 	if maxASTInputBytes <= 0 {
 		maxASTInputBytes = defaultMaxASTInputBytes
 	}
+	maxUnpackInputBytes := config.MaxUnpackInputBytes
+	if maxUnpackInputBytes <= 0 {
+		maxUnpackInputBytes = defaultMaxUnpackInputBytes
+	}
 	hardInputBytes := config.HardInputBytes
 	if hardInputBytes <= 0 {
 		hardInputBytes = defaultHardInputBytes
 	}
-	maxASTInputBytes = min(maxASTInputBytes, hardInputBytes)
+	// Ordering is load-bearing: unpacking can reach the hard limit, parsing stops
+	// below it, and the "large profile" band sits below that.
+	maxUnpackInputBytes = min(maxUnpackInputBytes, hardInputBytes)
+	maxASTInputBytes = min(maxASTInputBytes, maxUnpackInputBytes)
 	normalInputBytes = min(normalInputBytes, maxASTInputBytes)
 	// Endpoint/flow metadata is comparatively small and more reusable; large
 	// transformed/beautified documents live in an independently evictable cache.
@@ -230,22 +247,23 @@ func newServiceWithBackend(config *ServiceConfig, backend serviceBackend) *Servi
 	payloadBytes := cacheBytes - metadataBytes
 	rootCtx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		backend:          backend,
-		weight:           semaphore.NewWeighted(maxWeight),
-		maxWeight:        maxWeight,
-		normalInputBytes: normalInputBytes,
-		maxASTInputBytes: maxASTInputBytes,
-		hardInputBytes:   hardInputBytes,
-		metadataCache:    newByteLRU[*cachedMetadata](metadataBytes),
-		payloadCache:     newByteLRU[*cachedPayload](payloadBytes),
-		flights:          make(map[string]*analysisFlight),
-		profileStats:     make(map[string]ServiceProfileStats),
-		stageMS:          make(map[string]float64),
-		recordCounts:     make(map[string]int64),
-		limitHits:        make(map[string]int64),
-		confidenceCounts: make(map[string]int64),
-		rootCtx:          rootCtx,
-		cancel:           cancel,
+		backend:             backend,
+		weight:              semaphore.NewWeighted(maxWeight),
+		maxWeight:           maxWeight,
+		normalInputBytes:    normalInputBytes,
+		maxASTInputBytes:    maxASTInputBytes,
+		maxUnpackInputBytes: maxUnpackInputBytes,
+		hardInputBytes:      hardInputBytes,
+		metadataCache:       newByteLRU[*cachedMetadata](metadataBytes),
+		payloadCache:        newByteLRU[*cachedPayload](payloadBytes),
+		flights:             make(map[string]*analysisFlight),
+		profileStats:        make(map[string]ServiceProfileStats),
+		stageMS:             make(map[string]float64),
+		recordCounts:        make(map[string]int64),
+		limitHits:           make(map[string]int64),
+		confidenceCounts:    make(map[string]int64),
+		rootCtx:             rootCtx,
+		cancel:              cancel,
 	}
 }
 
@@ -316,15 +334,18 @@ func (s *Service) Analyze(ctx context.Context, request AnalysisRequest) (*ScanRe
 	}
 	originalProfile := options.Profile
 	policy := s.inputPolicy(options.Profile, len(request.Content))
-	if policy == inputPolicyLarge {
-		switch options.Profile {
-		case ProfileDiscovery:
+	switch policy {
+	case inputPolicyLarge:
+		// inputPolicy returns this band for these two profiles only.
+		if options.Profile == ProfileDiscovery {
 			options.Profile = ProfileDiscoveryLite
-		case ProfileLegacy:
+		} else {
 			options.Profile = ProfileEndpoints
-		default:
-			policy = inputPolicyNormal
 		}
+	case inputPolicyUnpackOnly:
+		// Run the one profile that needs no AST. The endpoint half of a full or
+		// inspect request is served by merging a bounded string pass below.
+		options.Profile = ProfileBeautify
 	}
 	caps, err := s.backend.Capabilities()
 	if err != nil {
@@ -397,20 +418,31 @@ func (s *Service) Analyze(ctx context.Context, request AnalysisRequest) (*ScanRe
 			if result.Completion != nil && result.Completion.ReasonCode != "" {
 				reason = result.Completion.ReasonCode + "_fallback"
 			}
-			originalDiagnostics := append([]Diagnostic(nil), result.Diagnostics...)
-			result = cheapFallbackAnalysisWithReason(
+			// Supplement, never replace: the non-AST stages (notably beautify) may
+			// have completed on this very input, and their output is the caller's
+			// primary product. See mergeFallbackInto.
+			mergeFallbackInto(result, cheapFallbackAnalysisWithReason(
 				request.Content, options, caps.SourceHash, reason,
 				"AST analysis did not complete; used bounded string and manifest extraction",
-			)
-			result.Diagnostics = append(originalDiagnostics, result.Diagnostics...)
-			if result.Analysis != nil {
-				result.Analysis.Diagnostics = append(originalDiagnostics, result.Analysis.Diagnostics...)
-			}
-			if result.Completion != nil {
-				result.Completion.Counts.Diagnostics = len(result.Diagnostics)
-			}
+			), reason)
 			s.fallbackJobs.Add(1)
 			s.degradedJobs.Add(1)
+		}
+		// An unpack-only dispatch produced the document but never parsed, so any
+		// endpoints the caller asked for have to come from the string pass. The
+		// fallback is asked under the profile the CALLER requested: options.Profile
+		// was forced to beautify to reach the worker, and beautify extracts no
+		// endpoints at all.
+		// The band already implies the profile wants beautified output, so this
+		// reduces to "not the beautify profile" - which asks for no endpoints.
+		if policy == inputPolicyUnpackOnly && supportsLexicalFallback(originalProfile) {
+			fallbackOptions := options
+			fallbackOptions.Profile = originalProfile
+			mergeFallbackInto(result, cheapFallbackAnalysisWithReason(
+				request.Content, fallbackOptions, caps.SourceHash, "ast_analysis_skipped_very_large",
+				fmt.Sprintf("input %d bytes exceeded the AST ceiling; unpacked without parsing and used bounded string extraction", len(request.Content)),
+			), "ast_analysis_skipped_very_large")
+			s.fallbackJobs.Add(1)
 		}
 		if originalProfile != options.Profile {
 			s.degradedJobs.Add(1)
@@ -437,15 +469,15 @@ func (s *Service) observeResult(profile AnalysisProfile, inputBytes int, result 
 	if result == nil {
 		return
 	}
-	status := "complete"
+	status := result.Status()
+	if status == "" {
+		status = "complete"
+	}
 	var durationMS float64
 	var outputBytes int64
 	var stages []StageMetric
 	records := map[string]int{}
 	if result.Analysis != nil {
-		if result.Analysis.Stats.Status != "" {
-			status = result.Analysis.Stats.Status
-		}
 		durationMS = result.Analysis.Stats.DurationMS
 		stages = result.Analysis.Stats.StageMetrics
 		for kind, count := range result.Analysis.Stats.RecordCounts {
@@ -453,9 +485,6 @@ func (s *Service) observeResult(profile AnalysisProfile, inputBytes int, result 
 		}
 	}
 	if result.Completion != nil {
-		if result.Completion.Status != "" {
-			status = result.Completion.Status
-		}
 		outputBytes = result.Completion.OutputBytes
 		if len(stages) == 0 {
 			stages = result.Completion.StageMetrics
@@ -526,8 +555,7 @@ func (s *Service) observeResult(profile AnalysisProfile, inputBytes int, result 
 }
 
 func analysisFailed(result *ScanResult) bool {
-	return result != nil && ((result.Completion != nil && result.Completion.Status == "failed") ||
-		(result.Analysis != nil && result.Analysis.Stats.Status == "failed"))
+	return result.Status() == "failed"
 }
 
 func supportsLexicalFallback(profile AnalysisProfile) bool {
@@ -539,12 +567,34 @@ type serviceInputPolicy uint8
 const (
 	inputPolicyNormal serviceInputPolicy = iota
 	inputPolicyLarge
+	// inputPolicyUnpackOnly dispatches a script that is too big to parse but
+	// still worth unpacking. webcrack reads source, not an AST, so the beautify
+	// path costs none of the memory the AST ceiling exists to bound.
+	inputPolicyUnpackOnly
 	inputPolicyFallback
 )
 
+// wantsBeautifiedOutput reports whether the profile's primary product is the
+// unminified/unpacked document rather than the AST-derived facts. Only these
+// profiles have anything to gain from a dispatch that cannot parse.
+func wantsBeautifiedOutput(profile AnalysisProfile) bool {
+	return profile == ProfileBeautify || profile == ProfileFull || profile == ProfileInspect
+}
+
+// inputPolicy routes by what each ceiling actually bounds. maxASTInputBytes
+// bounds Babel: above it we must not build a tree. It historically also skipped
+// the engine altogether, which silently disabled unminification for exactly the
+// large bundles that most need it - the caller got its input back, unchanged and
+// unexplained. maxUnpackInputBytes is the real engine ceiling.
 func (s *Service) inputPolicy(profile AnalysisProfile, contentBytes int) serviceInputPolicy {
 	bytes := int64(contentBytes)
+	if bytes > s.maxUnpackInputBytes {
+		return inputPolicyFallback
+	}
 	if bytes > s.maxASTInputBytes {
+		if wantsBeautifiedOutput(profile) {
+			return inputPolicyUnpackOnly
+		}
 		return inputPolicyFallback
 	}
 	if bytes > s.normalInputBytes && (profile == ProfileDiscovery || profile == ProfileLegacy) {
@@ -672,6 +722,8 @@ func serviceCacheKey(content []byte, options ScanOptions, sourceHash string) str
 		ToolSourceHash   string
 		Profile          AnalysisProfile
 		Beautify         bool
+		UnpackModules    bool
+		MaxBundleModules int
 		MaxOutputBytes   int64
 		MaxArtifactBytes int64
 		MaxRequests      int
@@ -682,6 +734,7 @@ func serviceCacheKey(content []byte, options ScanOptions, sourceHash string) str
 	}{
 		ContentSHA: hex.EncodeToString(digest[:]), ToolSourceHash: sourceHash,
 		Profile: options.Profile, Beautify: options.Beautify,
+		UnpackModules: options.UnpackModules, MaxBundleModules: options.MaxBundleModules,
 		MaxOutputBytes: options.MaxOutputBytes, MaxArtifactBytes: options.MaxArtifactBytes,
 		MaxRequests: options.MaxRequests, MaxASTNodes: options.MaxASTNodes, DeadlineMS: options.Deadline.Milliseconds(),
 		Filename: options.Filename, MediaType: options.MediaType,

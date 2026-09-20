@@ -346,6 +346,17 @@ type Config struct {
 
 	CrawlScope CrawlScope // Custom URL scope filter (nil = default same-domain check)
 
+	// ScopeFilter is the operator's scope boundary in its native (host, path)
+	// form. CrawlScope above is the same boundary shaped for a whole URL; callers
+	// that have both should set both. Kept alongside rather than derived because
+	// the derivation only runs one way: rebuilding a URL from host and path has to
+	// invent a scheme and drops the query, so asking the URL-shaped filter a
+	// host/path question gives a different answer than asking this one.
+	//
+	// Used for the traffic capture's log filter, which already has host and path
+	// split out and would otherwise pay two URL parses to get back what it had.
+	ScopeFilter func(host, path string) bool
+
 	// Crawl strategy - determines both state selection and action selection
 	CrawlStrategy CrawlStrategy // Crawl strategy (default: normal)
 

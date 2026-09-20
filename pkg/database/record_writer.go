@@ -244,7 +244,7 @@ type pendingWrite struct {
 // to its shard through the admission gate WITHOUT waiting. Shared by Write (one
 // record) and SaveRecordBatch (admit all, then await all), so a lone bulk caller
 // fills real writer batches instead of paying one flush interval per record.
-func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestResponse, source, projectUUID, parentUUID string) pendingWrite {
+func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestResponse, source, projectUUID string, lineage RecordLineage) pendingWrite {
 	if rr == nil || rr.Request() == nil {
 		return pendingWrite{err: fmt.Errorf("invalid HttpRequestResponse"), resolved: true}
 	}
@@ -261,7 +261,7 @@ func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestRespons
 	// existing row untouched. Deliberate: a shared redirect target already has
 	// whatever chain it was first written under, and re-parenting it to the most
 	// recent traversal would rewrite history for every earlier chain.
-	record.ParentUUID = parentUUID
+	lineage.applyTo(record)
 	// Default the project UUID before the dedup lookup so it matches what
 	// SaveRecordsBatch persists. Otherwise an empty projectUUID makes the lookup
 	// filter on project_uuid="" while inserts land under DefaultProjectUUID, and
@@ -275,11 +275,12 @@ func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestRespons
 	if w.dedupCache != nil {
 		if existingUUID, ok := w.dedupCache.Get(dedupKey); ok {
 			// The in-memory fast path skips the SELECT and the insert, so it must
-			// also carry the lineage the flush path would have applied — otherwise
-			// whether a redirect chain links up depends on cache residency.
-			if record.ParentUUID != "" {
-				w.repo.AdoptRecordParent(ctx, existingUUID, record.ParentUUID)
-			}
+			// also carry the lineage the flush path would have applied —
+			// otherwise whether a redirect chain links up, and whether the row
+			// is labelled with the phase that fetched it, would depend on cache
+			// residency. One statement, and a no-op costs nothing (AdoptRecord
+			// returns before issuing anything when there is nothing to set).
+			w.repo.AdoptRecord(ctx, existingUUID, lineage, record.Source)
 			return pendingWrite{uuid: existingUUID, resolved: true}
 		}
 	}
@@ -346,17 +347,16 @@ func (w *RecordWriter) await(ctx context.Context, p pendingWrite) (string, error
 // It blocks until the record is persisted (or the context is cancelled).
 // This is safe to call from multiple goroutines concurrently.
 func (w *RecordWriter) Write(ctx context.Context, rr *httpmsg.HttpRequestResponse, source string, projectUUID string) (string, error) {
-	return w.WriteWithParent(ctx, rr, source, projectUUID, "")
+	return w.WriteWithLineage(ctx, rr, source, projectUUID, RecordLineage{})
 }
 
-// WriteWithParent is Write with an explicit parent_uuid link, used to chain the
-// hops of a followed redirect into one walkable sequence. See admit for why the
-// link is applied to new rows only.
-func (w *RecordWriter) WriteWithParent(ctx context.Context, rr *httpmsg.HttpRequestResponse, source string, projectUUID string, parentUUID string) (string, error) {
+// WriteWithLineage is Write carrying the record's full chain metadata. See
+// RecordLineage, and admit for why it is applied to new rows only.
+func (w *RecordWriter) WriteWithLineage(ctx context.Context, rr *httpmsg.HttpRequestResponse, source string, projectUUID string, lineage RecordLineage) (string, error) {
 	if w.closed.Load() {
 		return "", ErrRecordWriterClosed
 	}
-	return w.await(ctx, w.admit(ctx, rr, source, projectUUID, parentUUID))
+	return w.await(ctx, w.admit(ctx, rr, source, projectUUID, lineage))
 }
 
 // cacheDedup records a dedup key → UUID mapping so a later Write of the same key
@@ -460,7 +460,7 @@ func (w *RecordWriter) SaveRecordBatch(ctx context.Context, records []*httpmsg.H
 		// shard channels together and the flush loop coalesces them.
 		pend := make([]pendingWrite, 0, end-start)
 		for _, rr := range records[start:end] {
-			pend = append(pend, w.admit(ctx, rr, source, projectUUID, ""))
+			pend = append(pend, w.admit(ctx, rr, source, projectUUID, RecordLineage{}))
 		}
 
 		// Phase 2: collect this slice's results in input order.
@@ -713,27 +713,28 @@ func (w *RecordWriter) flush(ctx context.Context, batch []writeRequest) {
 	// enqueued == flushed — the one number an operator would check.
 	var okCount, failCount int64
 
-	// Lineage backfills for records that deduped onto an existing row, collected
-	// here and applied AFTER every caller has its result. Each one is its own
-	// UPDATE round trip, and running them inline made a duplicate-heavy batch
-	// deliver results at the pace of up to BatchSize serial statements — with
-	// every other caller in the batch blocked behind them. Deferring is safe
-	// because adoption is a backfill that only ever fills an empty parent (see
-	// Repository.AdoptRecordParent): it adds information the caller does not read
-	// back, and it can never contradict what is already stored.
-	// Batch indices only: existing[i] and records[i].ParentUUID are both still
-	// live and unmutated below, so there is nothing to copy out.
+	// Lineage and source backfills for records that deduped onto an existing row,
+	// collected here and applied AFTER every caller has its result. Each one is
+	// its own UPDATE round trip, and running them inline made a duplicate-heavy
+	// batch deliver results at the pace of up to BatchSize serial statements —
+	// with every other caller in the batch blocked behind them. Deferring is safe
+	// because both adoptions are promote-only (see Repository.AdoptRecordParent
+	// and AdoptRecordSource): they add information the caller does not read back,
+	// and neither can contradict what is already stored.
+	// Batch indices only: existing[i] and records[i] are both still live and
+	// unmutated below, so there is nothing to copy out.
 	var adoptions []int
 
 	for i, req := range batch {
 		switch {
 		case existing[i] != "":
 			// A record that deduped onto an earlier row can still contribute its
-			// lineage: the earlier row may have been written as finding evidence,
-			// before the chain that contains it existed.
-			if records[i].ParentUUID != "" {
-				adoptions = append(adoptions, i)
-			}
+			// lineage AND its source: the earlier row may have been written as
+			// finding evidence, before the chain that contains it existed and
+			// before anything knew which phase's traffic it was. AdoptRecord
+			// decides whether there is anything to apply, so the gate here is
+			// just "it deduped".
+			adoptions = append(adoptions, i)
 			okCount++
 			req.result <- WriteResult{UUID: existing[i]}
 		case insErr != nil:
@@ -747,7 +748,20 @@ func (w *RecordWriter) flush(ctx context.Context, batch []writeRequest) {
 	}
 
 	for _, i := range adoptions {
-		w.repo.AdoptRecordParent(ctx, existing[i], records[i].ParentUUID)
+		// RootUUID is only real lineage when it names a DIFFERENT row. A
+		// standalone record self-roots during enrichment, and that uuid belongs
+		// to a row this batch discarded — adopting it would point the surviving
+		// row at a chain root that was never inserted.
+		root := records[i].RootUUID
+		if root == records[i].UUID {
+			root = ""
+		}
+		w.repo.AdoptRecord(ctx, existing[i], RecordLineage{
+			ParentUUID:     records[i].ParentUUID,
+			RootUUID:       root,
+			Target:         records[i].Target,
+			ChainTruncated: records[i].ChainTruncated,
+		}, records[i].Source)
 	}
 
 	w.flushed.Add(okCount)

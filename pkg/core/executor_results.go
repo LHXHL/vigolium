@@ -296,12 +296,13 @@ func (e *Executor) emitResult(ctx context.Context, result *output.ResultEvent, b
 					findingRR = findingRR.WithResponse(findingResponse(result.Response, baselineResp))
 					// RecordKind, not the executor's own source: this row is the
 					// finding's evidence. Normalized by EffectiveRecordKind above,
-					// so never empty. No parent — evidence is not part of a chain.
+					// so never empty. Zero lineage — evidence is not part of a
+					// chain and names no submitted target of its own.
 					//
 					// Assigned, not redeclared: recordUUID is the outer variable
 					// the finding links through below.
 					var err error
-					recordUUID, err = e.writeRecord(ctx, findingRR, string(result.RecordKind), "")
+					recordUUID, err = e.writeRecord(ctx, findingRR, string(result.RecordKind), database.RecordLineage{})
 					if err != nil {
 						zap.L().Warn("Failed to save finding http_record", zap.Error(err))
 					} else {

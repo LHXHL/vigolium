@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when HSTS header is missing, incomplete, or not preload-ready"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"header-security", "cryptography", "light"}
+	ModuleTags         = []string{"header-security", "cryptography", "hygiene", "light"}
 )

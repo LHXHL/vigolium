@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when CSP header contains directives that significantly weaken its protection"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Firm
-	ModuleTags         = []string{"header-security", "misconfiguration", "xss", "light"}
+	ModuleTags         = []string{"header-security", "misconfiguration", "xss", "hygiene", "light"}
 )

@@ -18,6 +18,22 @@ type DynamicAssessmentConfig struct {
 	// default" (database.DefaultMaxParamShapeSamples); a negative value disables
 	// coalescing entirely.
 	MaxParamShapeSamples int `yaml:"max_param_shape_samples"`
+
+	// HygieneModules overrides whether the hardening-advisory module family runs
+	// (the modules tagged "hygiene": missing security headers, weak TLS
+	// protocol/cipher policy, cookie attributes, CSP/HSTS/SRI/permissions-policy
+	// audits). They report a missing best-practice control rather than an
+	// exploitable condition and fire on nearly every response, so they are gated
+	// off below --intensity deep.
+	//
+	//	nil (unset) - follow the intensity: off at quick/balanced, on at deep
+	//	true        - always run them, at every intensity
+	//	false       - never run them as part of a broad sweep, not even at deep
+	//
+	// This sets the default for a broad ("all") selection only. Naming them
+	// explicitly (--module-tag hygiene, --module-id <id>) always wins, the same
+	// way an explicit selection already bypasses the intensity tier ceiling.
+	HygieneModules *bool `yaml:"hygiene_modules,omitempty"`
 }
 
 func DefaultDynamicAssessmentConfig() *DynamicAssessmentConfig {

@@ -2,6 +2,58 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **The hardening-advisory modules no longer run at the default intensity.** Thirteen modules tagged `hygiene` report a missing best-practice control rather than an exploitable condition - `security-headers-missing`, `tls-protocol-cipher-audit`, `csp-weakness-audit`, `hsts-preload-audit`, `cors-vary-origin-missing`, `cookie-security-detect`, `mixed-content-detect`, `reverse-tabnabbing-detect`, `content-type-mismatch`, `permissions-policy-detect`, `cross-origin-isolation-audit`, `subresource-integrity-detect`, `password-autocomplete-detect`. Each fires on nearly every response, so a crawl of any size buried the exploitable findings under one near-identical Info/Low row per URL. They now run only at `--intensity deep`, via `--module-tag hygiene` / `--module-id <id>`, or with `dynamic-assessment.hygiene_modules: true`. The Info-tier fingerprints, endpoint/param observers and `surface-scoring` are unaffected - their output feeds tech tags, scoring and active-module targeting - and `clickjacking-detect` stays on at Medium.
+
+### Added
+
+- `dynamic-assessment.hygiene_modules` - `true` runs the hardening advisories at every intensity, `false` suppresses them even at deep; unset follows the intensity.
+- `hygiene` module tag, selectable with `--module-tag hygiene`.
+
+## [v0.4.9] - 2026-09-20
+
+A **source-map recovery and redirect-lineage** release: exposed `.map` files are parsed, secret-scanned and fed back into the scan, redirected records finally name the server the bytes came from, and every phase stops at a login/SSO wall. Registry moves to 208 active + 117 passive.
+
+### Added
+
+- `sourcemap-ingest` active module - fetches an exposed source map, secret-scans the recovered originals and ingests their routes.
+- Shared `jstangle/sourcemap` package: one definition of a map reference, a sibling candidate and a parsed map.
+- Source-map detection now covers CSS, `eval` strings, `SourceMap`/`X-SourceMap` headers and unreferenced `<bundle>.map` siblings.
+- `http_records.target`, `root_uuid` and `chain_truncated` - the submitted target, the chain root in O(1), and whether the chain stopped short.
+- Redirects stop at a login/SSO wall under every `--redirect-mode`; each phase reports the walls it hit with an example target.
+- A schemeless probe target resolves its scheme by TCP connect (plus a TLS handshake on a non-standard port) before the sweep requests it.
+- `kit js-beautify` gains `-o`, `--modules`, `--profile`, `--unpack-modules`, `--max-ast-nodes`, `--max-input-mb`, `--deadline`; `-j` adds status, diagnostics and per-endpoint provenance.
+
+### Fixed
+
+- **The source-map pipeline was dead code** - the prefix breaker dropped referenced `.map` URLs and link extraction won the request cache, so the only parsing branch was always deduped away.
+- **Nothing called `discovery.SetLogger`**, so every discovery, jstangle, asset-graph and source-map log line went to a no-op logger.
+- **A redirected record paired the original request with the final response** - the destination's body, technology and findings were filed under the target's own URL, and out-of-scope destinations were scanned under an in-scope name.
+- A source map served as `application/octet-stream` (the static-host default for `.map`) failed the text-MIME test and was skipped by every secret-scan caller.
+- **A large bundle returned zero endpoints**: the AST node budget ended the run before `bundleModuleScan`, the stage written for that case, could run (jstangle 0.2.0).
+- The regex fallback replaced the whole engine result instead of merging into it, discarding a beautified document and artifacts that were real.
+- `make update-ui` deleted the report template before a build that could not produce it, and the workbench build's `rm -rf dist/__next.*` killed the home page's segment-cache prefetch (root `/__next._tree.txt` 404).
+- Recovered `.scss`/`.less` sources had no record to anchor to and were dropped; they now anchor to their origin's record.
+- The fallback extractor stamped `GET` on every unresolved request, making a guess indistinguishable from a resolved verb to the replay gate.
+- `response_time_ms` reported `0` for rows that were never timed (redirect hops, records rebuilt from stored bytes) instead of omitting the field.
+- The probe summary's "attempted" count omitted targets the prefetch stage found closed on every port.
+
+### Changed
+
+- `pkg/spitolas/loginsig` moved to `pkg/authsig` - the transport, runner phases and three modules now share the crawler's login signatures.
+- `IsRedirectStatus` has one definition in `pkg/httpmsg`; four packages carried four spellings of it.
+- Recorded chains collapse canonical hops (scheme upgrade, trailing slash, `www.`, default port) into their destination row and cap at 4 rows, ends kept.
+- `--record-redirect-chain` no longer gates the request/response re-pairing, only the hop rows.
+- jstangle `maxBundleModules` default is 512 (was 64), modules are ordered by endpoint likelihood before the cap, and each sub-scan gets its own node budget.
+- New `max_unpack_input_mb` (16 MiB) bounds the source-level unpack pass independently of the AST ceiling.
+- `nextjs_chunk_audit` fetches through the shared `modkit.FetchAssetBytes`, so the catch-all/echo-server guards live in one place.
+- npm publish verification polls every 30s: 30m for `version`, 10m for `dist-tag`.
+- `make update-ui` runs `bun install` and refuses to replace `public/ui/` when the workbench build produced no `index.html`.
+- Workbench deps bumped (next 16.3.5, react 19.3, vitest 5, ag-grid 36.2); `jsdom` and `@vitest/ui` dropped.
+
 ## [v0.4.8] - 2026-09-18
 
 A **target-and-banner correctness** release: schemeless targets reach every phase, the banner prints the budget the phase will actually use, and composed flags stop failing a run over nothing.

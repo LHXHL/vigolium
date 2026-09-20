@@ -177,6 +177,16 @@ type ExecutorConfig struct {
 	OnCandidate   func(*output.ResultEvent)
 	OnObservation func(*output.ResultEvent)
 	OnTraffic     func(method, url string, statusCode int, contentType string) // Optional: called for each processed item
+	// OnAuthWall is called once per item whose redirect chain the transport
+	// refused to follow into a login / SSO wall (http.StoppedAtAuthWall). It
+	// carries the target that bounced and the wall it bounced to.
+	//
+	// The executor only reports; the phase decides what to do. That split is
+	// deliberate: the wall host is a scan-wide fact (it feeds the fuzz-target
+	// exclusion the spidering phase already maintains) and the executor has no
+	// business owning scan-wide state, while re-deriving it later from stored
+	// records would mean re-parsing every 3xx in the corpus.
+	OnAuthWall    func(target, wall string)
 	Services      *services.Services
 	HTTPRequester *http.Requester
 	Repository    *database.Repository    // Optional: database storage
@@ -1293,6 +1303,22 @@ func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) {
 		e.cfg.OnTraffic(req.Request().Method(), req.Target(), httpResp.StatusCode(), ct)
 	}
 
+	// Report a chain the transport stopped at an authentication wall. Read off
+	// the stored 3xx rather than signalled out of CheckRedirect: the policy can
+	// only answer with ErrUseLastResponse, and — decisively — the request
+	// clusterer replays cached responses WITHOUT running CheckRedirect at all,
+	// so anything recorded inside the policy would be missing on every cache
+	// hit. Re-deriving is uniform across live and replayed responses.
+	//
+	// Status first: everything after it allocates (a header scan and a URL
+	// rebuild), and the overwhelming majority of items are not redirects.
+	if e.cfg.OnAuthWall != nil && httpmsg.IsRedirectStatus(httpResp.StatusCode()) {
+		if wall, ok := http.StoppedAtAuthWall(req.Target(), httpResp.StatusCode(),
+			getHeaderValue(httpResp.Headers(), "Location")); ok {
+			e.cfg.OnAuthWall(req.Target(), wall)
+		}
+	}
+
 	req, ok = e.applyPreHooks(req)
 	if !ok {
 		return
@@ -1507,20 +1533,44 @@ func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestRe
 	// over: FinalRequestOf must run before RedirectChainHops (which rewinds the
 	// chain), and both must run before Close (which reclaims the buffers).
 	//
-	// Without RecordRedirectChain the record keeps the ORIGINAL request paired
-	// with the final response. That is a deliberate hold, not an oversight: the
-	// request URL is part of the record's dedup identity and of scope matching,
-	// so rewriting it for every redirected record in every scan would silently
-	// re-identify existing corpora. Hop recording is the opt-in that makes the
-	// whole chain explicit instead.
-	if e.cfg.RecordRedirectChain && http.WasRedirected(respChain) {
-		// Re-pair the final response with the request that actually produced it.
-		// Without this the record says the ORIGINAL URL while carrying the FINAL
-		// hop's body — one row describing two different servers. The intermediate
-		// URLs are not lost by the swap; they become their own records below.
+	// The re-pairing is UNCONDITIONAL. It used to be gated on
+	// RecordRedirectChain — off for every phase but the probe — which left the
+	// default path pairing the ORIGINAL request with the FINAL response: one
+	// row whose URL named the target and whose body came from wherever the
+	// chain ended. A scan of a host that 302s elsewhere filed the destination's
+	// page, its technology and every passive finding under the target's own
+	// URL, and the target's owner could not reproduce a line of it.
+	//
+	// Two things made that defensible before and no longer do. The record's
+	// identity does change for a redirected target — but a row that misnames
+	// its own origin has no identity worth preserving, and Target now carries
+	// the submitted line, so nothing is lost by moving the URL to where the
+	// bytes came from. And scope is matched on this request: leaving it at the
+	// original host meant an out-of-scope destination was ingested and scanned
+	// under an in-scope name.
+	// ChainRelocated, not WasRedirected: the clusterer's reconstructed chain has
+	// no resp.Request.Response, so the linkage test reports "not redirected" for
+	// every cache hit — and clustering is ON for every phase that does not
+	// record hops, which is all of them but the probe. It keeps the final hop's
+	// request, so the destination URL survives; comparing it is what makes the
+	// re-pairing work on the default path rather than only under --record-
+	// redirect-chain.
+	// URL() is memoized on the request, so this costs a map/pointer read rather
+	// than a parse. An error here means the request URL never parsed, in which
+	// case there is nothing to compare against and the linkage test decides.
+	requestedURL, _ := req.Request().URL()
+	relocated, linked := http.ChainRelocated(respChain, requestedURL.URL)
+	if relocated {
 		if finalReq := http.FinalRequestOf(respChain, httpResp); finalReq != nil {
 			out.req = finalReq
 		}
+	}
+	// The intermediate URLs are not lost by the swap: with hop recording on they
+	// become their own records, and with it off they are dropped, which is the
+	// setting's whole purpose — the terminal row still names its submitted
+	// Target. Hop recording needs the real linkage rather than just a changed
+	// URL, which is the second value ChainRelocated returns.
+	if e.cfg.RecordRedirectChain && linked {
 		out.hops = http.RedirectChainHops(respChain)
 	}
 	respChain.Close()
@@ -1629,9 +1679,29 @@ func (e *Executor) saveToDatabase(ctx context.Context, item *work.WorkItem, req 
 	// Redirect hops first, oldest to newest, so each one's parent already exists
 	// by the time its child is written. The last hop's UUID becomes the final
 	// record's parent, giving the whole chain one walkable parent_uuid spine.
-	parentUUID := e.saveRedirectHops(ctx, redirectHops)
+	//
+	// Guarded on len: only a chain-recording phase has hops, and req.Target()
+	// rebuilds the URL string, so the unguarded call cost one allocation per
+	// saved record across every phase to shape a nil slice.
+	target := item.Target
+	var parentUUID, rootUUID string
+	if len(redirectHops) > 0 {
+		parentUUID, rootUUID = e.saveRedirectHops(ctx,
+			http.ShapeRedirectChain(redirectHops, req.Target()), target)
+	}
 
-	recordUUID, err := e.writeRecord(ctx, req, e.recordSource(), parentUUID)
+	recordUUID, err := e.writeRecord(ctx, req, e.recordSource(), database.RecordLineage{
+		ParentUUID: parentUUID,
+		RootUUID:   rootUUID,
+		Target:     target,
+		// The terminal row is truncated when it is itself a 3xx: the transport
+		// handed back a redirect as the final response, which means it stopped
+		// rather than arrived — the follow cap, the mode's host rule, or the
+		// authentication gate. Without the flag that row is indistinguishable
+		// from a chain that legitimately ended at a redirect whose destination
+		// never answered.
+		ChainTruncated: req.Response() != nil && httpmsg.IsRedirectStatus(req.Response().StatusCode()),
+	})
 	if err != nil {
 		zap.L().Debug("Failed to save record to database", zap.Error(err))
 		return
@@ -1649,35 +1719,46 @@ func (e *Executor) saveToDatabase(ctx context.Context, item *work.WorkItem, req 
 // intermediate 301 must not cost the 200 behind it. The chain simply stops at
 // the last hop that did persist, which reads correctly as a shorter chain
 // rather than as a wrong one.
-func (e *Executor) saveRedirectHops(ctx context.Context, hops []*httpmsg.HttpRequestResponse) string {
-	parentUUID := ""
-	for _, hop := range hops {
-		if hop == nil || hop.Request() == nil {
+// It also returns the chain's ROOT uuid — the first hop's — which every row
+// carries so "which chain is this" is answerable from a single record instead
+// of by walking parent_uuid back to a row the storage cap may have dropped.
+func (e *Executor) saveRedirectHops(ctx context.Context, rows []http.ChainRow, target string) (parentUUID, rootUUID string) {
+	for _, row := range rows {
+		if row.RR == nil || row.RR.Request() == nil {
 			continue
 		}
-		hopUUID, err := e.writeRecord(ctx, hop, e.recordSource(), parentUUID)
+		hopUUID, err := e.writeRecord(ctx, row.RR, e.recordSource(), database.RecordLineage{
+			ParentUUID:     parentUUID,
+			RootUUID:       rootUUID,
+			Target:         target,
+			ChainTruncated: row.Truncated,
+		})
 		if err != nil {
 			zap.L().Debug("Failed to save redirect hop record",
-				zap.String("url", hop.Target()), zap.Error(err))
+				zap.String("url", row.RR.Target()), zap.Error(err))
 			break
+		}
+		if rootUUID == "" {
+			rootUUID = hopUUID
 		}
 		parentUUID = hopUUID
 	}
-	return parentUUID
+	return parentUUID, rootUUID
 }
 
 // writeRecord persists one request/response pair, preferring the batched writer
-// for throughput and falling back to an individual insert. parentUUID links the
-// row to its predecessor in a redirect chain; empty means the row is a root.
+// for throughput and falling back to an individual insert. lineage places the
+// row in its redirect chain and names the target it came from; a zero value
+// means a standalone record.
 //
 // The single owner of "which persistence path does this executor use" — finding
 // evidence (emitResult) goes through it too, so a change to that choice has one
 // place to land.
-func (e *Executor) writeRecord(ctx context.Context, req *httpmsg.HttpRequestResponse, source, parentUUID string) (string, error) {
+func (e *Executor) writeRecord(ctx context.Context, req *httpmsg.HttpRequestResponse, source string, lineage database.RecordLineage) (string, error) {
 	if e.recordWriter != nil {
-		return e.recordWriter.WriteWithParent(ctx, req, source, e.projectUUID, parentUUID)
+		return e.recordWriter.WriteWithLineage(ctx, req, source, e.projectUUID, lineage)
 	}
-	return e.repo.SaveRecordWithParent(ctx, req, source, e.projectUUID, parentUUID)
+	return e.repo.SaveRecordWithLineage(ctx, req, source, e.projectUUID, lineage)
 }
 
 // recordSource is the http_records.source label this executor stamps on the

@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Candidate when a cross-origin target=_blank anchor explicitly contains rel=opener without noopener or noreferrer"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Firm
-	ModuleTags         = []string{"client-side", "tabnabbing", "html", "light"}
+	ModuleTags         = []string{"client-side", "tabnabbing", "html", "hygiene", "light"}
 )

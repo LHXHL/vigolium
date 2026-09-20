@@ -3,16 +3,14 @@ package nextjs_chunk_audit
 import (
 	"regexp"
 	"sort"
-	"strings"
+
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
 )
 
 var (
 	chunkRefRe = regexp.MustCompile(`/_next/static/chunks/[A-Za-z0-9._/\-]+\.js`)
 
 	absoluteURLRe = regexp.MustCompile(`https?://[A-Za-z0-9._\-]+(?:\:[0-9]+)?(?:/[^\s"'<>` + "`" + `\\)]*)?`)
-
-	// SYNC WITH pkg/modules/passive/sourcemap_detect/scanner.go (sourceMappingRe).
-	sourceMapRefRe = regexp.MustCompile(`(?m)^[ \t/*]*[#@]\s*sourceMappingURL=\s*([^\s*]+)`)
 )
 
 func ExtractChunkPaths(body []byte) []string {
@@ -23,28 +21,24 @@ func ExtractAbsoluteURLs(body []byte) []string {
 	return uniqueSortedMatches(body, absoluteURLRe, trimURLTail)
 }
 
+// ExtractSourceMapRefs returns the external source-map references in a chunk.
+//
+// It delegates to the shared extractor so this module, the discovery crawl and
+// sourcemap_ingest cannot disagree about what a reference looks like — three
+// near-identical regexes previously described the same syntax, and only one of
+// them handled the CSS and eval-string forms. Inline data: maps are omitted:
+// callers here fetch by URL.
 func ExtractSourceMapRefs(body []byte) []string {
-	if len(body) == 0 {
+	references := sourcemap.ExtractReferences(body)
+	if len(references) == 0 {
 		return nil
 	}
-	matches := sourceMapRefRe.FindAllSubmatch(body, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(matches))
-	for _, m := range matches {
-		if len(m) < 2 {
+	out := make([]string, 0, len(references))
+	for _, reference := range references {
+		if reference.URL == "" {
 			continue
 		}
-		ref := strings.TrimSpace(string(m[1]))
-		if ref == "" {
-			continue
-		}
-		seen[ref] = struct{}{}
-	}
-	out := make([]string, 0, len(seen))
-	for r := range seen {
-		out = append(out, r)
+		out = append(out, reference.URL)
 	}
 	sort.Strings(out)
 	return out

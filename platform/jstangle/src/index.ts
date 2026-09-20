@@ -10,7 +10,7 @@ import {
   type RewriteLevel,
   type Transform,
 } from './ast-utils';
-import { beautifyBundle, looksWorthBeautifying, unpackBundle, type BeautifyResult, type UnpackedBundle } from './beautify';
+import { beautifyBundle, looksWorthBeautifying, unpackBundle, type BeautifyModule, type BeautifyResult, type UnpackedBundle } from './beautify';
 import concatToPlus from './deobfuscate/concat-to-plus';
 import controlFlowObject from './deobfuscate/control-flow-object';
 import mergeStrings from './deobfuscate/merge-strings';
@@ -97,6 +97,13 @@ export interface Options {
    * endpoints path, so callers opt in. See the `bundleModuleScan` stage.
    */
   unpackModules?: boolean;
+  /**
+   * Internal. False inside a per-module re-scan: a recovered module that blows
+   * its own (much smaller) node budget must not unpack itself, or webcrack runs
+   * again on source webcrack just produced. `unpackModules: false` alone does
+   * not prevent that, because the budget rescue bypasses it.
+   */
+  allowBundleRescue?: boolean;
   /** Named preset. The legacy profile preserves the historical API behavior. */
   profile?: AnalysisProfile;
   /**
@@ -122,6 +129,7 @@ interface NormalizedOptions {
   onStageComplete: (stage: string) => void | Promise<void>;
   beautify: boolean;
   unpackModules: boolean;
+  allowBundleRescue: boolean;
   profile: AnalysisProfile;
   rewriteLevel: RewriteLevel;
   capabilities?: Iterable<AnalysisCapability>;
@@ -138,6 +146,7 @@ function normalizeOptions(options: Options): NormalizedOptions {
     onStageComplete: () => { },
     beautify: false,
     unpackModules: false,
+    allowBundleRescue: true,
     profile: 'legacy',
     rewriteLevel: 'standard',
     scanId: crypto.randomUUID(),
@@ -206,6 +215,35 @@ function runLeveledFixpoint(
   });
 }
 
+// Markers for a module that actually issues requests. A substring test over a
+// few hundred module strings costs microseconds, and it is a far better use of
+// the module budget than source order: a bundler emits application code before
+// vendor code, but neither ordering says which modules name routes.
+const ENDPOINT_MARKERS = [
+  'fetch(', 'axios', 'XMLHttpRequest', '.ajax', 'http.request', 'got(',
+  '/api', '/graphql', 'superagent', 'ky.', '$.get', '$.post',
+];
+
+const VENDOR_PATH = /(^|\/)(node_modules|vendor|\.pnpm)\//;
+
+/**
+ * Rank modules so a truncated scan truncates the least valuable tail. Modules
+ * that look like they issue requests come first, then first-party code, then
+ * everything else. Ordering is stable within each tier.
+ */
+function orderModulesByEndpointLikelihood(modules: BeautifyModule[]): BeautifyModule[] {
+  const rank = (mod: BeautifyModule): number =>
+    (ENDPOINT_MARKERS.some((marker) => mod.content.includes(marker)) ? 0 : 2) +
+    (VENDOR_PATH.test(mod.path) ? 1 : 0);
+  // Decorate/sort/undecorate so rank - which substring-scans a whole module - is
+  // paid once per module rather than once per comparison. Array#sort is stable,
+  // so source order survives within a tier without an index tiebreak.
+  return modules
+    .map((mod) => ({ mod, rank: rank(mod) }))
+    .sort((a, b) => a.rank - b.rank)
+    .map((entry) => entry.mod);
+}
+
 /**
  * Unpack a detected bundle and re-scan each recovered module independently. Each
  * module is analyzed by a fresh nested jstangle run (its own isolated engine
@@ -219,16 +257,25 @@ async function scanBundleModules(
   if (unpacked.format === 'none' || unpacked.modules.length === 0) return;
 
   const cap = context.limits.maxBundleModules;
-  const scanned = unpacked.modules.slice(0, cap);
+  const ordered = orderModulesByEndpointLikelihood(unpacked.modules);
+  const scanned = ordered.slice(0, cap);
   if (unpacked.modules.length > cap) {
     context.partial = true;
     context.addDiagnostic({
       type: 'diagnostic', severity: 'warning', stage: 'bundleModuleScan',
       code: 'bundle_module_limit_reached',
-      message: `Bundle had ${unpacked.modules.length} modules; re-scanned the first ${cap}`,
+      message: `Bundle had ${unpacked.modules.length} modules; re-scanned ${cap} (endpoint-bearing modules first)`,
       recoverable: true,
     });
   }
+
+  // One module must not be able to spend the whole budget. Without its own node
+  // ceiling a single pathological module inherits the full maxAstNodes and can
+  // exhaust the deadline before the rest of the bundle is looked at.
+  const perModuleAstNodes = Math.max(
+    10_000,
+    Math.floor(context.limits.maxAstNodes / Math.min(scanned.length, 16)),
+  );
 
   for (const mod of scanned) {
     const remainingMs = context.deadline - performance.now();
@@ -242,9 +289,14 @@ async function scanBundleModules(
         profile: 'endpoints',
         rewriteLevel: normalized.rewriteLevel,
         unpackModules: false, // never recurse
+        allowBundleRescue: false, // nor via the budget rescue
         sourceUrl: normalized.sourceUrl,
         filename: mod.path,
-        limits: { ...normalized.limits, deadlineMs: remainingMs },
+        limits: {
+          ...normalized.limits,
+          maxAstNodes: perModuleAstNodes,
+          deadlineMs: remainingMs,
+        },
       });
     } catch (err) {
       debug('jstangle:bundle-module')('module scan failed: %s', mod.path, err);
@@ -313,10 +365,16 @@ export async function jstangle(
   let unpackedBundle: Promise<UnpackedBundle> | undefined;
   const unpackShared = () => (unpackedBundle ??= unpackBundle(code));
 
+  // The budget rescue applies to a whole-file parse only. A per-module re-scan
+  // opts out, so one dense module cannot pay for a second webcrack pass over
+  // source the first pass just produced.
+  const rescuingBudget = () => context.astBudgetRejected && normalized.allowBundleRescue;
+
   interface Stage {
     name: StageName;
     enabled: boolean;
     fatal: boolean;
+    requires: string[];
     mutatesAst: boolean;
     costClass: 'light' | 'medium' | 'heavy';
     run: () => void | Promise<void>;
@@ -453,8 +511,13 @@ export async function jstangle(
       ] as Transform<unknown>[]);
     },
     // Unpack the bundle and re-scan each recovered module independently, merging
-    // endpoints with module-path provenance. Non-fatal and opt-in (unpackModules).
+    // endpoints with module-path provenance. Non-fatal. Runs when the caller asked
+    // for it, or as the recovery path for a whole-file parse the AST budget
+    // rejected. The decision lives here rather than in stageGates because gates
+    // are evaluated when the plan is built, before any stage has run, and so
+    // cannot observe a parse failure that happens later.
     bundleModuleScan: async () => {
+      if (!normalized.unpackModules && !rescuingBudget()) return;
       await scanBundleModules(context, normalized, await unpackShared());
     },
     // Generate code
@@ -468,9 +531,14 @@ export async function jstangle(
 
   // Extra runtime gates for stages whose enablement depends on the source or
   // options (which the capability-only planner cannot see).
+  const worthBeautifying = looksWorthBeautifying(code);
   const stageGates: Partial<Record<StageName, () => boolean>> = {
-    beautify: () => looksWorthBeautifying(code),
-    bundleModuleScan: () => normalized.unpackModules && looksWorthBeautifying(code),
+    beautify: () => worthBeautifying,
+    // Source-only, because gates are evaluated before the loop runs. Whether the
+    // scan is actually wanted is decided inside the stage body, which can see
+    // whether the parse was rejected. scanBundleModules no-ops on a non-bundle,
+    // so a false positive here costs one shared webcrack pass and nothing more.
+    bundleModuleScan: () => worthBeautifying,
   };
 
   const stages: Stage[] = buildStagePlan(context.capabilities).map((planned) => ({
@@ -479,9 +547,16 @@ export async function jstangle(
     run: stageRuns[planned.name],
   }));
 
+  // A stage that consumes only `source` needs no AST, so a fatal parse failure
+  // does not stop it - that is exactly beautify and bundleModuleScan, and the
+  // plan already says so via `requires`. Deriving it here keeps the knowledge
+  // next to `fatal`/`produces` in planner.ts instead of in a chain of name
+  // comparisons that the next source-only stage would have to be added to.
+  const sourceOnly = (stage: Stage) => stage.requires.every((input) => input === 'source');
+
   for (let i = 0; i < stages.length; i++) {
     const stage = stages[i];
-    if (!stage.enabled || (context.failed && stage.name !== 'beautify')) {
+    if (!stage.enabled || (context.failed && !sourceOnly(stage))) {
       context.stageMetrics.push({
         stage: stage.name, durationMs: 0, status: 'skipped',
         costClass: stage.costClass, mutatesAst: stage.mutatesAst,
@@ -517,6 +592,10 @@ export async function jstangle(
         stage: stage.name, durationMs: performance.now() - started, status: 'failed',
         costClass: stage.costClass, mutatesAst: stage.mutatesAst,
       });
+      if (limitError && err.code === 'ast_node_limit_reached' && stage.name === 'parse') {
+        // Route rather than reject: hand the input to the module scanner.
+        context.astBudgetRejected = true;
+      }
       if (stage.fatal) context.failed = true;
       else context.partial = true;
     }
@@ -524,6 +603,24 @@ export async function jstangle(
     normalized.onProgress((100 / stages.length) * (i + 1));
   }
 
+  // A rescue that found something turns a dead run into a real, if incomplete,
+  // one. `partial` is the honest status: the per-module view is real, the
+  // whole-file view (cross-module base-URL resolution, DOM flows) never ran.
+  const rescued = context.astBudgetRejected && context.requests.length > 0;
+  if (rescued) {
+    const modulePaths = new Set(
+      context.requestOrigins.flatMap((origin) => origin.provenance.modulePath ?? []),
+    );
+    context.addDiagnostic({
+      type: 'diagnostic', severity: 'warning', stage: 'bundleModuleScan',
+      code: 'ast_budget_recovered_by_module_scan',
+      message: `Whole-file AST exceeded the node budget; recovered ${context.requests.length} endpoint(s) from ${modulePaths.size} unpacked module(s)`,
+      recoverable: true,
+    });
+  }
+
+  // getWebpackExtractedRequests reads tracked-variable state produced by the
+  // whole-file traversal, which never runs when the parse failed.
   if (context.has('endpoints') && !context.failed) {
     // Merge bundle-derived facts through the same canonical candidate store.
     // Pass the *full* multi-value tracked-variable map so branch alternatives
@@ -543,9 +640,11 @@ export async function jstangle(
 
   if (context.has('requestEvidence') && !context.failed) flushPendingPatterns(context);
 
-  const status: ScanStatus = context.failed
+  // A rescue turns a dead run into a real but incomplete one: the per-module
+  // view is real, the whole-file view (cross-module base URLs, DOM flows) is not.
+  const status: ScanStatus = context.failed && !rescued
     ? 'failed'
-    : context.partial
+    : context.partial || rescued
       ? 'partial'
       : 'complete';
 

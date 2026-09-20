@@ -1,7 +1,6 @@
 package database
 
 import (
-	"net/http"
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -15,7 +14,7 @@ import (
 // disagree about what counts as a redirect — a disagreement whose symptom is a
 // blank destination rather than an error.
 func IsRedirectStatus(code int) bool {
-	return code >= 300 && code < 400 && code != http.StatusNotModified
+	return httpmsg.IsRedirectStatus(code)
 }
 
 // RedirectLocation returns where this record's response points, or "" when it is

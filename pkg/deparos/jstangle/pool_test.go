@@ -67,6 +67,118 @@ func TestWorkerPoolRecyclesAtJobLimit(t *testing.T) {
 	}
 }
 
+// An over-budget bundle fails at parse but still beautifies: webcrack works on
+// source, not on the AST. The pool used to turn that "failed" completion into a
+// transport error and drop the envelope, so the beautified document - the whole
+// point of the call - never reached the caller.
+func TestWorkerPoolReturnsEnvelopeWhenASTBudgetFails(t *testing.T) {
+	service, _ := newRealWorkerService(t, 100)
+
+	// A webpack-5 bundle padded past the node budget set below.
+	var modules strings.Builder
+	modules.WriteString(`100:(e,t,r)=>{t.list=function(){return fetch("/api/v3/users",{method:"POST"})}}`)
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&modules, `,%d:(e,t,r)=>{function f%d(a,b){var c=a|0,d=b>>>2;for(var h=0;h<d;h++){c=(c<<5)-c+d|0}return c}t.g=f%d}`, 200+i, i, i)
+	}
+	bundle := `(()=>{"use strict";var e={` + modules.String() + `},t={};` +
+		`function r(n){var a=t[n];if(void 0!==a)return a.exports;var o=t[n]={exports:{}};` +
+		`return e[n](o,o.exports,r),o.exports}var n=r(100);console.log(n)})();`
+
+	result, err := service.ScanWithOptions(context.Background(), []byte(bundle), ScanOptions{
+		Profile: ProfileFull, Beautify: true, MaxASTNodes: 1000,
+	})
+	if err != nil {
+		t.Fatalf("an over-budget bundle must return a degraded result, not an error: %v", err)
+	}
+	if !result.HasBeautified() {
+		t.Fatal("the beautified document was discarded by the failed-status path")
+	}
+	if result.Beautified.Format != "webpack" || result.Beautified.ModuleCount == 0 {
+		t.Fatalf("beautified document is not the unpacked bundle: %#v", result.Beautified)
+	}
+	if status := result.Status(); status != "partial" {
+		t.Fatalf("status = %q, want partial after the fallback merge", status)
+	}
+	var sawBudget bool
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == "ast_node_limit_reached" {
+			sawBudget = true
+		}
+	}
+	if !sawBudget {
+		t.Fatalf("the engine's own diagnostics were lost: %#v", result.Diagnostics)
+	}
+}
+
+// The module scan was opt-in behind a flag no Go caller could send: the option
+// existed on the engine and the worker read it, but the request struct had no
+// field for it. Reaching it deliberately - rather than only as budget recovery -
+// requires the option to survive the whole transport.
+func TestWorkerPoolPassesUnpackModulesThrough(t *testing.T) {
+	service, _ := newRealWorkerService(t, 100)
+
+	// Padded past looksWorthBeautifying's 500-byte floor, which gates the stage
+	// before any option is consulted.
+	var filler strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&filler, `,%d:(e,t)=>{t.p%d=function(a,b){var c=a|0,d=b>>>2;for(var h=0;h<d;h++){c=(c<<5)-c+d|0}return c}}`, 300+i, i)
+	}
+	bundle := `(()=>{"use strict";var e={` +
+		`100:(e,t,r)=>{const n=r(200);t.listUsers=function(){return fetch(n.base+"/users",{method:"GET"})}},` +
+		`200:(e,t)=>{t.base="/api/v3"}` + filler.String() + `},t={};` +
+		`function r(n){var a=t[n];if(void 0!==a)return a.exports;var o=t[n]={exports:{}};` +
+		`return e[n](o,o.exports,r),o.exports}var n=r(100);console.log(n)})();`
+
+	withFlag, err := service.ScanWithOptions(context.Background(), []byte(bundle), ScanOptions{
+		Profile: ProfileEndpoints, UnpackModules: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawModuleProvenance bool
+	for i := range withFlag.RequestFacts {
+		if withFlag.RequestFacts[i].Provenance.ModulePath != "" {
+			sawModuleProvenance = true
+		}
+	}
+	if !sawModuleProvenance {
+		t.Fatalf("unpackModules did not reach the engine; no module-path provenance: %#v", withFlag.RequestFacts)
+	}
+
+	// And the option must still be an option: an in-budget bundle without it
+	// pays for no webcrack pass.
+	without, err := service.ScanWithOptions(context.Background(), []byte(bundle), ScanOptions{
+		Profile: ProfileEndpoints,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range without.RequestFacts {
+		if without.RequestFacts[i].Provenance.ModulePath != "" {
+			t.Fatalf("module scan ran without being asked: %#v", without.RequestFacts[i].Provenance)
+		}
+	}
+}
+
+// UnpackModules and MaxBundleModules change what the engine produces, so a run
+// under one setting must not be served from a run under another.
+func TestServiceCacheKeyIncludesBundleOptions(t *testing.T) {
+	content := []byte(`fetch("/api/v3/cached")`)
+	base := normalizeScanOptions(ScanOptions{Profile: ProfileEndpoints})
+	unpacked := base
+	unpacked.UnpackModules = true
+	capped := base
+	capped.MaxBundleModules = 32
+
+	plainKey := serviceCacheKey(content, base, "hash")
+	if unpackedKey := serviceCacheKey(content, unpacked, "hash"); unpackedKey == plainKey {
+		t.Fatal("UnpackModules is absent from the cache key; results would collide across settings")
+	}
+	if cappedKey := serviceCacheKey(content, capped, "hash"); cappedKey == plainKey {
+		t.Fatal("MaxBundleModules is absent from the cache key; results would collide across settings")
+	}
+}
+
 func TestWorkerPoolRetriesOnceAfterCrash(t *testing.T) {
 	service, pool := newRealWorkerService(t, 10)
 	if err := pool.ensureStarted(); err != nil {

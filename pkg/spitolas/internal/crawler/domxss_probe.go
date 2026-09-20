@@ -80,6 +80,16 @@ func (c *Crawler) probeDOMXSS(parent context.Context) []DOMXssFinding {
 	if c.browser == nil || c.graph == nil {
 		return nil
 	}
+	// A walled start means the only state in the graph is the login wall itself,
+	// whose URL carries an OAuth `state` parameter that the prefilter below reads
+	// as a perfectly good reflected-parameter candidate. Without this the probe
+	// fires marker-bearing requests at the identity provider — plus an origin
+	// navigation that re-enters the OAuth bounce — which is exactly the traffic
+	// the wall denial exists to stop.
+	if c.startWalled.Load() {
+		zap.L().Debug("DOM-XSS probe: skipped, start URL is behind a denied login wall")
+		return nil
+	}
 	// Honor cancellation and budget from the remaining parent deadline. If the
 	// crawl/phase/operator context is already done (Ctrl-C, the per-target
 	// max-duration, or the enclosing phase deadline), don't spin up a fresh

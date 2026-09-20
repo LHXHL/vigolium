@@ -42,13 +42,32 @@ import (
 
 var logger *zap.Logger
 
-// SetLogger configures the global logger for the discovery package
+// loggerOnce guards the one-time adoption of the process-wide zap logger. The
+// write it serializes happens during engine construction, so every goroutine
+// that later reads `logger` is started after its own engine called
+// adoptGlobalLogger — the Once gives that read the required happens-before.
+var loggerOnce sync.Once
+
+// SetLogger configures the global logger for the discovery package. Call it
+// before constructing an Engine; afterwards adoptGlobalLogger is a no-op.
 func SetLogger(l *zap.Logger) {
+	loggerOnce.Do(func() {})
 	if l == nil {
 		logger = zap.NewNop()
 	} else {
 		logger = l
 	}
+}
+
+// adoptGlobalLogger points the package logger at the process-wide zap logger
+// unless a caller installed its own first. Without it the package keeps the
+// zap.NewNop() installed by init(): nothing in the binary calls SetLogger, so
+// every discovery, jstangle, asset-graph and source-map log line was dropped and
+// --debug/-v showed nothing from this package.
+func adoptGlobalLogger() {
+	loggerOnce.Do(func() {
+		logger = zap.L()
+	})
 }
 
 func init() {
@@ -271,6 +290,8 @@ func NewEngine(cfg *config.Config, st storage.Storage) (*Engine, error) {
 
 // NewEngineWithContext creates discovery engine with external context for cancellation.
 func NewEngineWithContext(parentCtx context.Context, cfg *config.Config, st storage.Storage) (*Engine, error) {
+	adoptGlobalLogger()
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -532,6 +553,9 @@ func NewEngineWithContext(parentCtx context.Context, cfg *config.Config, st stor
 		}
 		if cfg.JSTangle.MaxASTInputMB > 0 {
 			serviceConfig.MaxASTInputBytes = int64(cfg.JSTangle.MaxASTInputMB) * 1024 * 1024
+		}
+		if cfg.JSTangle.MaxUnpackInputMB > 0 {
+			serviceConfig.MaxUnpackInputBytes = int64(cfg.JSTangle.MaxUnpackInputMB) * 1024 * 1024
 		}
 		if cfg.JSTangle.HardInputMB > 0 {
 			serviceConfig.HardInputBytes = int64(cfg.JSTangle.HardInputMB) * 1024 * 1024
@@ -814,7 +838,7 @@ func (e *Engine) newCallbacks() *Callbacks {
 		OnResult:                    e.onResult,
 		AddObservedName:             e.AddObservedNameTrusted,
 		AddObservedPath:             e.AddObservedPathTrusted,
-		QueueJSFetch:                func(urls []*url.URL) { e.queueJSFetch(urls, 0) },
+		QueueJSFetch:                func(urls []*url.URL) { e.queueJSFetch(urls, ProvenanceReferenced) },
 		HTTPClient:                  e.httpClient,
 		Analyzer:                    e.analyzer,
 		RedirectDetector:            NewRedirectDetector(),
@@ -833,6 +857,7 @@ func (e *Engine) newCallbacks() *Callbacks {
 		StoreJSTangleFacts:          e.storeJSTangleFacts,
 		ProcessJSTangleCapabilities: e.processJSTangleCapabilityFacts,
 		ProcessAssetFacts:           e.processAssetFacts,
+		ProcessSourceMapCandidates:  e.processSourceMapCandidates,
 		ProcessSourceMap:            e.processSourceMapResponse,
 		ScopeChecker:                e.spiderScope,
 		PrefixBreaker:               e.prefixBreaker,

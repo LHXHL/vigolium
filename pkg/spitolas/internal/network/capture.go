@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"go.uber.org/zap"
 )
@@ -53,6 +56,15 @@ type Capture struct {
 	pending    map[proto.NetworkRequestID]*pendingEntry
 	logged     map[string]struct{} // Track logged entries by hash to prevent stderr duplicates
 	seenHashes map[string]bool     // Track written hashes to prevent file duplicates
+	// loginHosts records the hosts observed serving an authentication endpoint
+	// during document navigation and redirects. The crawler reads it to deny a
+	// whole SSO redirect chain, not just the host the browser finished on.
+	// Guarded by mu.
+	loginHosts map[string]struct{}
+
+	// ScopeFilter, when set, suppresses out-of-scope entries from the stderr log
+	// (records are filtered separately by the writer). Set once before Start.
+	ScopeFilter func(host, path string) bool
 	// workerSessions holds the CDP sessionIDs of attached service-worker targets.
 	// Worker sessions are not page targets, so they never appear in Browser.Pages();
 	// tracking them lets isSessionValid accept them and fetchResponseBody pull their
@@ -100,6 +112,7 @@ func New(writer Writer, noColor, silent, verbose, includeResponseBody, includeRe
 		pending:                make(map[proto.NetworkRequestID]*pendingEntry),
 		logged:                 make(map[string]struct{}),
 		seenHashes:             make(map[string]bool),
+		loginHosts:             make(map[string]struct{}),
 		shapeVariants:          make(map[string]int),
 		workerSessions:         make(map[proto.TargetSessionID]struct{}),
 		noColor:                noColor,
@@ -130,6 +143,37 @@ func (c *Capture) SetMaxParamValueVariants(n int) {
 // with the capture goroutines.
 func (c *Capture) SetTargetHost(host string) {
 	c.targetHost.Store(&host)
+}
+
+// noteLoginHost records host when rawURL points at an authentication endpoint,
+// so the crawler can deny an SSO redirect chain end to end. Called on the hot
+// capture path, so the cheap URL test runs before the lock is taken.
+func (c *Capture) noteLoginHost(rawURL string) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" || !authsig.LooksLikeLoginURL(u) {
+		return
+	}
+	host := strings.ToLower(u.Hostname())
+	c.mu.Lock()
+	// Lazily allocated despite New initializing it: a Capture is also built by
+	// struct literal (the event-handler guard tests do), and a nil-map write here
+	// would panic the capture's event loop rather than fail a test.
+	if c.loginHosts == nil {
+		c.loginHosts = make(map[string]struct{})
+	}
+	c.loginHosts[host] = struct{}{}
+	c.mu.Unlock()
+}
+
+// LoginHostsSeen returns the hosts observed serving an authentication endpoint,
+// sorted for stable reporting. Safe for concurrent use.
+func (c *Capture) LoginHostsSeen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.loginHosts) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(c.loginHosts))
 }
 
 // targetHostValue returns the current cross-origin filter host (empty if unset).
@@ -338,6 +382,16 @@ func (c *Capture) onRequestWillBeSent(e *proto.NetworkRequestWillBeSent, session
 	// Skip internal browser URLs early (except whitelisted ones)
 	if shouldSkipURL(e.Request.URL) {
 		return
+	}
+
+	// Note authentication endpoints before taking the lock (noteLoginHost takes it
+	// itself). Restricted to document navigations and redirect hops — what an SSO
+	// chain is actually made of. Running it on every request meant a URL parse
+	// plus the full authsig signature scan for every image, font and bundle chunk
+	// the browser fetched, four or five orders of magnitude more calls than the
+	// one consumer needs, to answer a question only navigations can answer.
+	if e.RedirectResponse != nil || e.Type == proto.NetworkResourceTypeDocument {
+		c.noteLoginHost(e.Request.URL)
 	}
 
 	c.mu.Lock()
@@ -758,6 +812,21 @@ func (c *Capture) shouldLogEntry(entry *TrafficEntry) bool {
 		}
 		if ext != "" && staticExtensions[ext] {
 			return false
+		}
+	}
+
+	// An out-of-scope host is never printed, verbose or not. These entries are
+	// already dropped before storage, so printing them showed the operator
+	// traffic no phase would ever scan — a login page's third-party CAPTCHA
+	// widget and analytics beacons, which read as if the scanner were hammering
+	// somebody else's CDN. Verbose means "more detail about the scan", not
+	// "every subresource the browser happened to load", so this precedes the
+	// verbose short-circuit rather than following it.
+	if c.ScopeFilter != nil {
+		if u, err := url.Parse(entry.Request.URL); err == nil && u.Hostname() != "" {
+			if !c.ScopeFilter(u.Hostname(), u.Path) {
+				return false
+			}
 		}
 	}
 

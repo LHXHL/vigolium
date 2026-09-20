@@ -78,7 +78,8 @@ func (e *Engine) extractLinks(baseURL *url.URL, rc *responsechain.ResponseChain,
 	// Queue JS files for path extraction
 	// These are processed by spider workers and populate observed collections
 	if len(result.JSURLs) > 0 {
-		e.queueJSFetch(result.JSURLs, parentDepth)
+		// Links the page itself carries.
+		e.queueJSFetch(result.JSURLs, ProvenanceReferenced)
 	}
 
 	// Queue form requests for testing
@@ -302,7 +303,7 @@ func (e *Engine) admitVendorJSFetch() bool {
 //
 // URLs are deduplicated by normalized form (scheme://host/path, query params stripped)
 // before batching to avoid fetching the same file multiple times.
-func (e *Engine) queueJSFetch(jsURLs []*url.URL, _ uint16) {
+func (e *Engine) queueJSFetch(jsURLs []*url.URL, provenance TaskProvenance) {
 	if len(jsURLs) == 0 {
 		return
 	}
@@ -353,7 +354,8 @@ func (e *Engine) queueJSFetch(jsURLs []*url.URL, _ uint16) {
 
 	// Create single batched task
 	task := NewJSFetchTask(&JSFetchTaskConfig{
-		JSURLs: validURLs,
+		JSURLs:     validURLs,
+		Provenance: provenance,
 	})
 
 	if task != nil && e.AddTask(task) {

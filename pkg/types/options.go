@@ -1,6 +1,7 @@
 package types
 
 import (
+	"maps"
 	"path/filepath"
 	"strings"
 	"time"
@@ -126,6 +127,17 @@ type Options struct {
 	SystemResolvers bool
 	// MaxRedirects is the maximum numbers of redirects to be followed.
 	MaxRedirects int
+	// TargetsSchemeAssumed holds the entries of Targets whose scheme this
+	// process supplied because the line carried none, keyed by the NORMALIZED
+	// target (the spelling that ends up in Targets).
+	//
+	// Only the probe sweep reads it, and only to decide whether it may test the
+	// guess: a schemeless line means "whatever this host speaks", so the sweep
+	// connects before it requests and probes https when the plaintext port is
+	// closed. An explicitly-schemed target is never second-guessed. Populated
+	// at both normalization seams (the CLI merge and normalizeTargetSchemes),
+	// since the information is destroyed by normalization itself.
+	TargetsSchemeAssumed map[string]struct{}
 	// FollowRedirects enables following redirects for http request module
 	FollowRedirects bool
 	// FollowRedirects enables following redirects for http request module only on the same host
@@ -492,4 +504,20 @@ func FormatOutputPath(basePath, format string) string {
 	default:
 		return basePath
 	}
+}
+
+// MarkSchemeAssumed merges assumed into TargetsSchemeAssumed, creating the map
+// on first use.
+//
+// A method on Options because the two places that normalize a target list live
+// in different packages — the CLI merge and the runner's normalizeTargetSchemes
+// — and each otherwise carries its own copy of the same lazy-init.
+func (o *Options) MarkSchemeAssumed(assumed map[string]struct{}) {
+	if o == nil || len(assumed) == 0 {
+		return
+	}
+	if o.TargetsSchemeAssumed == nil {
+		o.TargetsSchemeAssumed = make(map[string]struct{}, len(assumed))
+	}
+	maps.Copy(o.TargetsSchemeAssumed, assumed)
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
 )
 
 const maxAnalysisArtifactBytes = 32 * 1024 * 1024
@@ -41,6 +43,58 @@ func (r *Repository) SaveAnalysisArtifactForRecord(ctx context.Context, artifact
 	}
 	_, err := r.db.NewInsert().Model(artifact).On("CONFLICT DO NOTHING").Exec(ctx)
 	return err
+}
+
+// AnalysisArtifactKindSourceMapOriginal labels an original source file recovered
+// from a source map's sourcesContent. Aliased from the sourcemap package, which
+// owns the name for the writers on the other side of this package boundary.
+const AnalysisArtifactKindSourceMapOriginal = sourcemap.ArtifactKindOriginal
+
+// StreamAnalysisArtifactsByKind walks stored artifacts of one kind in id order,
+// handing each to fn. It streams rather than returning a slice because recovered
+// source content is unbounded in aggregate — one SPA source map can carry
+// hundreds of files — and the callers scan each body once and discard it.
+//
+// A zero-length page ends the walk; fn returning an error aborts it.
+func (r *Repository) StreamAnalysisArtifactsByKind(
+	ctx context.Context,
+	projectUUID, kind string,
+	batchSize int,
+	fn func(artifact *AnalysisArtifact) error,
+) error {
+	if kind == "" {
+		return fmt.Errorf("artifact kind is required")
+	}
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	cursor := int64(0)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var page []AnalysisArtifact
+		query := r.db.NewSelect().Model(&page).
+			Where("kind = ?", kind).
+			Where("id > ?", cursor).
+			Order("id ASC").
+			Limit(batchSize)
+		if projectUUID != "" {
+			query = query.Where("project_uuid = ?", projectUUID)
+		}
+		if err := query.Scan(ctx); err != nil {
+			return fmt.Errorf("stream analysis artifacts: %w", err)
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		for i := range page {
+			cursor = page[i].ID
+			if err := fn(&page[i]); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // SaveAnalysisArtifact is the primitive-argument adapter used by input sources

@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Candidate or observation when an HTTPS document contains a real HTTP subresource load or HTTP form action; ordinary hyperlinks are excluded"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"misconfiguration", "cryptography", "light"}
+	ModuleTags         = []string{"misconfiguration", "cryptography", "hygiene", "light"}
 )

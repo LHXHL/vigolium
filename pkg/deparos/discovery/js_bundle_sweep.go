@@ -150,7 +150,7 @@ func (e *Engine) sweepJSBundles() int {
 	}
 	logger.Info("JS-bundle sweep found candidate bundles — queuing for jstangle",
 		zap.Int("count", len(hits)))
-	e.queueJSFetch(hits, 0)
+	e.queueJSFetch(hits, ProvenanceGuessed)
 	return len(hits)
 }
 

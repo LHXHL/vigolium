@@ -248,3 +248,63 @@ func TestFindDuplicateRecordUUIDs_ExactIdentityForFindingSource(t *testing.T) {
 		t.Errorf("finding-source probe with identical bytes should link to the same exchange, got %q want %q", got[2], baselineUUID)
 	}
 }
+
+// TestAdoptRecordSourcePromotesFindingEvidence is the regression for the label
+// that made `vigolium traffic --source probe` hide the sweep's own pages.
+//
+// A passive module persists the response it reports on BEFORE the item's own
+// save runs, so the finding-evidence row wins the dedup and the phase's row —
+// and its source — is discarded. Every terminal response a passive module
+// touched then reads as "finding", which on a host sweep is every page fetched.
+func TestAdoptRecordSourcePromotesFindingEvidence(t *testing.T) {
+	db := newTestDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	sourceOf := func(uuid string) string {
+		var got string
+		if err := db.NewSelect().Model((*HTTPRecord)(nil)).
+			Column("source").Where("uuid = ?", uuid).Scan(ctx, &got); err != nil {
+			t.Fatalf("read source: %v", err)
+		}
+		return got
+	}
+
+	// A module got there first: the row exists as finding evidence.
+	uuid, err := repo.SaveRecord(ctx, makeTestGet(t, "/page", ""), RecordKindFinding, "")
+	if err != nil {
+		t.Fatalf("seed finding-evidence record: %v", err)
+	}
+	if got := sourceOf(uuid); got != RecordKindFinding {
+		t.Fatalf("seed source = %q, want %q", got, RecordKindFinding)
+	}
+
+	// The probe phase's own save deduplicates onto it and must promote it.
+	same, err := repo.SaveRecord(ctx, makeTestGet(t, "/page", ""), RecordSourceProbe, "")
+	if err != nil {
+		t.Fatalf("probe save: %v", err)
+	}
+	if same != uuid {
+		t.Fatalf("expected dedup onto %s, got %s", uuid, same)
+	}
+	if got := sourceOf(uuid); got != RecordSourceProbe {
+		t.Errorf("source = %q, want %q — the sweep's own page is still hidden from --source probe", got, RecordSourceProbe)
+	}
+
+	// Promote-only: a later crawl source must NOT relabel it, or "which phase
+	// found this" degrades into "which phase saw it last".
+	if _, err := repo.SaveRecord(ctx, makeTestGet(t, "/page", ""), "scanner", ""); err != nil {
+		t.Fatalf("second crawl save: %v", err)
+	}
+	if got := sourceOf(uuid); got != RecordSourceProbe {
+		t.Errorf("source = %q after a second crawl source, want it pinned at %q", got, RecordSourceProbe)
+	}
+
+	// Nor does finding evidence displace a crawl source in the other direction.
+	if _, err := repo.SaveRecord(ctx, makeTestGet(t, "/page", ""), RecordKindFinding, ""); err != nil {
+		t.Fatalf("late finding-evidence save: %v", err)
+	}
+	if got := sourceOf(uuid); got != RecordSourceProbe {
+		t.Errorf("source = %q after late finding evidence, want %q", got, RecordSourceProbe)
+	}
+}

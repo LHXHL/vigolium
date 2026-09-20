@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when a response reflects the request Origin into ACAO but omits the Vary: Origin header required for correct shared-cache behavior"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Firm
-	ModuleTags         = []string{"misconfiguration", "header-security", "cache-poisoning", "light"}
+	ModuleTags         = []string{"misconfiguration", "header-security", "cache-poisoning", "hygiene", "light"}
 )

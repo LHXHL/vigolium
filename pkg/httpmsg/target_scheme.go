@@ -30,14 +30,29 @@ const DefaultTargetScheme = "http"
 // that only answers on 443 redirects there on the first hop), while a shim
 // translating a tool that documents bare domains takes https.
 func EnsureURLScheme(target, defaultScheme string) string {
+	out, _ := EnsureURLSchemeTracked(target, defaultScheme)
+	return out
+}
+
+// EnsureURLSchemeTracked is EnsureURLScheme plus whether the scheme was
+// SUPPLIED by this call rather than typed by the operator.
+//
+// The distinction is not cosmetic. "http" is a guess for a schemeless target,
+// and a phase that can test the guess (the probe sweep, which connects before
+// it requests) must be able to tell a guess from an instruction: an operator
+// who typed `http://host` means http even if only 443 answers, while one who
+// typed `host` meant "whatever this host speaks". Normalization happens early
+// and in more than one place, so without recording the answer here the
+// information is gone by the time any phase could act on it.
+func EnsureURLSchemeTracked(target, defaultScheme string) (string, bool) {
 	if target == "" {
-		return target
+		return target, false
 	}
 	// A scheme only counts when "://" comes before any path, query or fragment;
 	// otherwise a schemeless "host/r?u=http://x" would look like it had one.
 	if i := strings.Index(target, "://"); i > 0 && !strings.ContainsAny(target[:i], "/?#") {
-		return target
+		return target, false
 	}
 	// TrimPrefix keeps a protocol-relative "//example.com" to one separator.
-	return defaultScheme + "://" + strings.TrimPrefix(target, "//")
+	return defaultScheme + "://" + strings.TrimPrefix(target, "//"), true
 }

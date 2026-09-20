@@ -6,12 +6,12 @@ import (
 	"math"
 	"strings"
 
+	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
-	"github.com/vigolium/vigolium/pkg/spitolas/loginsig"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -413,7 +413,7 @@ func (m *Module) probeEndpoint(
 	// page rendering a password field is gated — reaching the login form is not
 	// reaching the panel. The "*/login" probes intentionally match these at low
 	// severity, so only drop for the unauthenticated-access probes.
-	if p.requireUnauth && loginsig.BodyLooksLikeLogin([]byte(body)) {
+	if p.requireUnauth && authsig.BodyLooksLikeLogin([]byte(body)) {
 		return nil
 	}
 

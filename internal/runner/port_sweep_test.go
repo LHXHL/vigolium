@@ -130,7 +130,7 @@ func TestDistinctSweepEndpointsSharesHostAndPort(t *testing.T) {
 		"https://e.example:8080", // same host:port, other scheme - a separate endpoint
 	}}}
 
-	got := r.distinctSweepEndpoints()
+	got := distinctSweepEndpoints(r.options.Targets)
 	want := []sweepEndpoint{
 		{host: "a.example", port: 443, https: true},
 		{host: "b.example", port: 80, https: false},

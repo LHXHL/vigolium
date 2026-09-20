@@ -68,7 +68,11 @@ export const DEFAULT_LIMITS: AnalysisLimits = {
   maxTaintFunctionDepth: 8,
   maxTaintResolutionDepth: 80,
   maxDeobfuscatePasses: 5,
-  maxBundleModules: 64,
+  // A CRA/Next build routinely emits several hundred to a few thousand modules,
+  // so the old cap of 64 truncated the scan long before the deadline did. Work
+  // stays bounded by remainingMs per module, and scanBundleModules orders
+  // endpoint-bearing modules first so a truncated scan loses the least.
+  maxBundleModules: 512,
   deadlineMs: 60_000,
 };
 
@@ -187,6 +191,15 @@ export class AnalysisContext {
   private cachedSourceLines?: string[];
   partial = false;
   failed = false;
+  /**
+   * Set when the whole-file parse was rejected for exceeding maxAstNodes -
+   * and only for that. A tree too dense to traverse whole is the strongest
+   * available signal that the input is a bundle and should be analyzed per
+   * module, so this routes to bundleModuleScan instead of ending the run.
+   * A syntactically broken input (`parse_unrecoverable`) or an exhausted
+   * deadline still fails hard: neither has a per-module answer to fall back to.
+   */
+  astBudgetRejected = false;
 
   constructor(options: AnalysisContextOptions) {
     this.scanId = options.scanId;

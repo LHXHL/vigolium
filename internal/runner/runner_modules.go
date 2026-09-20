@@ -185,6 +185,20 @@ func (r *Runner) getModulesToExecute() ([]modules.ActiveModule, []modules.Passiv
 		passiveModules = r.filterPassiveModulesByTier(passiveModules, ceiling)
 	}
 
+	// Apply the hardening-advisory gate. Same "only narrows a broad selection"
+	// rule as the tier ceiling, plus one extra escape hatch: `--module-tag hygiene`
+	// resolves to exact IDs for the active category but leaves passive on the
+	// "all" sentinel, so an explicit selection that names any hygiene module keeps
+	// the whole family on both sides (see hygieneGateActive).
+	if r.hygieneGateActive() {
+		if activeUsingAll && !activeNarrowedByConfig {
+			activeModules = r.filterActiveHygieneModules(activeModules)
+		}
+		if passiveUsingAll && !passiveNarrowedByConfig {
+			passiveModules = r.filterPassiveHygieneModules(passiveModules)
+		}
+	}
+
 	// Sort by execution priority to keep scheduling policy aligned with the executor.
 	if len(activeModules) > 0 {
 		sortActiveModulesByPriority(activeModules)

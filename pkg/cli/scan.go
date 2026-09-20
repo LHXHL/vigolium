@@ -110,19 +110,31 @@ func shouldWidenKnownIssueScanSeverities(onlyPhase string, severitiesExplicit bo
 // every entry point is caught: doing it before the dedup is what collapses
 // `example.com` and `http://example.com` into one target rather than two, and it
 // is the spelling the banner goes on to print.
-func mergePositionalTargets(positional, flagged []string) []string {
+// The second return names the targets whose scheme this merge SUPPLIED, for
+// Options.TargetsSchemeAssumed. Normalization is what destroys the distinction
+// between "the operator typed http" and "we guessed http", and the probe sweep
+// needs it to know which guesses it may test — so the merge that destroys it
+// is the only place that can report it.
+func mergePositionalTargets(positional, flagged []string) (targets []string, assumed map[string]struct{}) {
 	seen := make(map[string]bool, len(positional)+len(flagged))
 	out := make([]string, 0, len(positional)+len(flagged))
 	for _, src := range [][]string{positional, flagged} {
 		for _, t := range src {
-			t = httpmsg.EnsureURLScheme(strings.TrimSpace(t), httpmsg.DefaultTargetScheme)
-			if t != "" && !seen[t] {
-				seen[t] = true
-				out = append(out, t)
+			t, guessed := httpmsg.EnsureURLSchemeTracked(strings.TrimSpace(t), httpmsg.DefaultTargetScheme)
+			if t == "" || seen[t] {
+				continue
+			}
+			seen[t] = true
+			out = append(out, t)
+			if guessed {
+				if assumed == nil {
+					assumed = make(map[string]struct{})
+				}
+				assumed[t] = struct{}{}
 			}
 		}
 	}
-	return out
+	return out, assumed
 }
 
 func runScanCmd(cmd *cobra.Command, args []string) (err error) {
@@ -146,7 +158,9 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.Modules, scanOpts.PassiveModules = resolveModuleSelection(false)
 	// Positional URLs combine with repeated -t/--target (positional first),
 	// de-duplicated. `run` passes nil here since its positional arg is a phase.
-	scanOpts.Targets = mergePositionalTargets(args, globalTargets)
+	var schemeAssumed map[string]struct{}
+	scanOpts.Targets, schemeAssumed = mergePositionalTargets(args, globalTargets)
+	scanOpts.MarkSchemeAssumed(schemeAssumed)
 	scanOpts.TargetsFilePaths = globalTargetFiles
 	scanOpts.InputFileMode = globalInputMode
 	scanOpts.Timeout = globalTimeout
@@ -2150,19 +2164,21 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 		strategy = "default"
 	}
 
-	// Module counts
-	var activeCount, passiveCount int
+	// Module counts, less the hardening advisories the intensity suppresses —
+	// counting modules the scan will not run makes the gate look like a lost
+	// finding when their rows are absent from the report.
+	var activeMods []modules.ActiveModule
 	if len(opts.Modules) > 0 && opts.Modules[0] == "all" {
-		activeCount = len(modules.GetActiveModules())
+		activeMods = modules.GetActiveModules()
 	} else {
-		activeCount = len(modules.GetActiveModulesByIDs(opts.Modules))
+		activeMods = modules.GetActiveModulesByIDs(opts.Modules)
 	}
-	passiveCount = len(modules.GetPassiveModules())
+	activeCount, passiveCount, hygieneNote := runner.HygieneBannerCounts(opts, settings, activeMods, modules.GetPassiveModules())
 
 	// Scope origin mode
 	scopeOrigin := settings.Scope.CLIOriginMode
 	if scopeOrigin == "" {
-		scopeOrigin = "relaxed"
+		scopeOrigin = config.DefaultCLIOriginMode
 	}
 
 	fmt.Fprintf(os.Stderr, "\n  %s %s %s %s %s %s\n",
@@ -2300,6 +2316,9 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 	if settings != nil && settings.DynamicAssessment.Extensions.Enabled {
 		extCount := countExtensionFiles(&settings.DynamicAssessment.Extensions)
 		modulesLine += fmt.Sprintf(" + %s extensions", terminal.HiTeal(fmt.Sprintf("%d", extCount)))
+	}
+	if hygieneNote != "" {
+		modulesLine += " " + hygieneNote
 	}
 	fmt.Fprintf(os.Stderr, "  %s %s\n", terminal.Purple(terminal.SymbolInfo), modulesLine)
 	// Output destination & format(s) — shown when -o or a non-default --format

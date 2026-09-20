@@ -69,9 +69,13 @@ func cheapFallbackAnalysisWithReason(content []byte, options ScanOptions, toolSo
 			}
 			seen[rawURL] = struct{}{}
 			id := fallbackID("http-fallback", rawURL)
+			// The method is deliberately empty: a string match over minified source
+			// cannot resolve one, and the fact schema already means "unresolved" by
+			// an empty method. Emitting "GET" made a guess indistinguishable from a
+			// resolved verb, and the replay gate reads this field directly.
 			fact := HTTPRequestFact{
 				Kind: "httpRequest", ID: id, URL: fallbackValueTemplate(rawURL),
-				Method: ValueTemplate{Rendered: "GET", Static: true}, Client: "generic",
+				Method: ValueTemplate{Rendered: "", Static: false}, Client: "generic",
 				Provenance: Provenance{Extractor: "large-input-string-fallback", Confidence: "low", Evidence: truncateFallbackEvidence(rawURL)},
 			}
 			result.RequestFacts = append(result.RequestFacts, fact)
@@ -172,6 +176,103 @@ func cheapFallbackAnalysisWithReason(content []byte, options ScanOptions, toolSo
 	result.Completion = completion
 	result.ScanDuration = time.Since(started)
 	return result
+}
+
+// mergeFallbackInto folds a regex fallback pass into an engine result instead of
+// replacing it.
+//
+// The AST budget rejects an input at the parse stage, but the stages that do not
+// need the AST still run and still succeed: a bundle whose parse was rejected is
+// routinely beautified in full (webcrack works on source, not on the tree). The
+// engine's own output - the beautified document, transformed code, artifacts and
+// stage metrics - is therefore real even when the status says "failed", and
+// replacing the whole result with a string pass threw it away.
+//
+// Fallback facts are appended only for URLs the engine did not already report,
+// so a partial engine result is supplemented rather than duplicated.
+func mergeFallbackInto(engine, fallback *ScanResult, reasonCode string) {
+	if engine == nil || fallback == nil {
+		return
+	}
+
+	// Identity is the rendered URL alone: the fallback cannot resolve a method,
+	// so a method-qualified key would never match an engine fact for the same URL.
+	seen := make(map[string]struct{}, len(engine.RequestFacts))
+	for i := range engine.RequestFacts {
+		seen[engine.RequestFacts[i].URL.Rendered] = struct{}{}
+	}
+	assetSeen := make(map[string]struct{}, len(engine.AssetFacts))
+	for i := range engine.AssetFacts {
+		assetSeen[assetFactKey(engine.AssetFacts[i])] = struct{}{}
+	}
+
+	// cheapFallbackAnalysisWithReason already marshalled every fact into its own
+	// envelope, requests first then assets, so reuse those bytes rather than
+	// re-encoding the surviving subset. Records are also only worth keeping when
+	// there is an envelope here to append them to.
+	var added []json.RawMessage
+	reusable := fallback.Analysis != nil &&
+		len(fallback.Analysis.Records) == len(fallback.RequestFacts)+len(fallback.AssetFacts)
+	keepRecord := func(index int, fact any) {
+		if engine.Analysis == nil {
+			return
+		}
+		if reusable {
+			added = append(added, fallback.Analysis.Records[index])
+			return
+		}
+		if encoded, err := json.Marshal(fact); err == nil {
+			added = append(added, encoded)
+		}
+	}
+
+	for i := range fallback.RequestFacts {
+		fact := fallback.RequestFacts[i]
+		if _, exists := seen[fact.URL.Rendered]; exists {
+			continue
+		}
+		seen[fact.URL.Rendered] = struct{}{}
+		engine.RequestFacts = append(engine.RequestFacts, fact)
+		engine.Requests = append(engine.Requests, legacyRequestFromFact(fact))
+		keepRecord(i, &fact)
+	}
+	for i := range fallback.AssetFacts {
+		fact := fallback.AssetFacts[i]
+		key := assetFactKey(fact)
+		if _, exists := assetSeen[key]; exists {
+			continue
+		}
+		assetSeen[key] = struct{}{}
+		engine.AssetFacts = append(engine.AssetFacts, fact)
+		keepRecord(len(fallback.RequestFacts)+i, &fact)
+	}
+
+	engine.Diagnostics = append(engine.Diagnostics, fallback.Diagnostics...)
+
+	// "partial" is the honest status after a merge: some stages produced real
+	// output, the AST-dependent ones did not.
+	if engine.Analysis != nil {
+		engine.Analysis.Diagnostics = append(engine.Analysis.Diagnostics, fallback.Diagnostics...)
+		engine.Analysis.Records = append(engine.Analysis.Records, added...)
+		engine.Analysis.Stats.Status = "partial"
+		if engine.Analysis.Stats.RecordCounts == nil {
+			engine.Analysis.Stats.RecordCounts = map[string]int{}
+		}
+		engine.Analysis.Stats.RecordCounts["httpRequest"] = len(engine.RequestFacts)
+		engine.Analysis.Stats.RecordCounts["assetReference"] = len(engine.AssetFacts)
+	}
+	if engine.Completion != nil {
+		engine.Completion.Status = "partial"
+		engine.Completion.ReasonCode = reasonCode
+		engine.Completion.Counts.Requests = len(engine.RequestFacts)
+		engine.Completion.Counts.Diagnostics = len(engine.Diagnostics)
+	}
+}
+
+// assetFactKey is the dedup identity for an asset reference. One definition, so
+// the separator cannot drift between the two sides of a comparison.
+func assetFactKey(fact AssetReferenceFact) string {
+	return fact.AssetType + "\x00" + fact.URL.Rendered
 }
 
 func fallbackID(prefix, value string) string {

@@ -2,201 +2,16 @@ package discovery
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"net/url"
-	"path"
-	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
 	"github.com/vigolium/vigolium/pkg/deparos/storage"
 	"go.uber.org/zap"
 )
 
-const (
-	maxSourceMapBytes        = 8 * 1024 * 1024
-	maxSourceMapSources      = 512
-	maxSourceContentBytes    = 2 * 1024 * 1024
-	maxAggregateSourceBytes  = 8 * 1024 * 1024
-	maxIndexedSourceMapDepth = 4
-)
-
-var sourceMapCommentPattern = regexp.MustCompile(`(?m)//[#@]\s*sourceMappingURL\s*=\s*([^\s*]+)`)
-
-type OriginalSource struct {
-	Path               string
-	Content            []byte
-	ContentSHA256      string
-	Language           string
-	GeneratedSourceURL string
-}
-
-type sourceMapDocument struct {
-	Version        int                `json:"version"`
-	SourceRoot     string             `json:"sourceRoot"`
-	Sources        []string           `json:"sources"`
-	SourcesContent []*string          `json:"sourcesContent"`
-	Mappings       string             `json:"mappings"`
-	Sections       []sourceMapSection `json:"sections"`
-}
-
-type sourceMapSection struct {
-	Map json.RawMessage `json:"map"`
-}
-
-type sourceMapBudget struct {
-	sources int
-	bytes   int
-}
-
-func ExtractSourceMapReference(source []byte) (reference string, inline []byte, ok bool) {
-	matches := sourceMapCommentPattern.FindAllSubmatch(source, -1)
-	if len(matches) == 0 {
-		return "", nil, false
-	}
-	reference = strings.Trim(string(matches[len(matches)-1][1]), `"'`)
-	if !strings.HasPrefix(reference, "data:") {
-		return reference, nil, true
-	}
-	decoded, err := decodeSourceMapDataURL(reference)
-	if err != nil {
-		return "", nil, false
-	}
-	return "inline:source-map", decoded, true
-}
-
-func decodeSourceMapDataURL(value string) ([]byte, error) {
-	comma := strings.IndexByte(value, ',')
-	if comma < 0 {
-		return nil, fmt.Errorf("malformed source-map data URL")
-	}
-	metadata, payload := value[:comma], value[comma+1:]
-	var decoded []byte
-	var err error
-	if strings.Contains(strings.ToLower(metadata), ";base64") {
-		decoded, err = base64.StdEncoding.DecodeString(payload)
-	} else {
-		var unescaped string
-		unescaped, err = url.PathUnescape(payload)
-		decoded = []byte(unescaped)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(decoded) > maxSourceMapBytes {
-		return nil, fmt.Errorf("inline source map exceeds %d bytes", maxSourceMapBytes)
-	}
-	return decoded, nil
-}
-
-func ParseSourceMap(content []byte, generatedSourceURL string) ([]OriginalSource, error) {
-	if len(content) == 0 || len(content) > maxSourceMapBytes {
-		return nil, fmt.Errorf("source map size %d outside allowed range", len(content))
-	}
-	budget := &sourceMapBudget{}
-	seen := make(map[string]struct{})
-	sources, err := parseSourceMapDocument(content, generatedSourceURL, 0, budget, seen)
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(sources, func(i, j int) bool { return sources[i].Path < sources[j].Path })
-	return sources, nil
-}
-
-func parseSourceMapDocument(content []byte, generatedURL string, depth int, budget *sourceMapBudget, seen map[string]struct{}) ([]OriginalSource, error) {
-	if depth > maxIndexedSourceMapDepth {
-		return nil, fmt.Errorf("indexed source map nesting exceeds %d", maxIndexedSourceMapDepth)
-	}
-	var document sourceMapDocument
-	if err := json.Unmarshal(content, &document); err != nil {
-		return nil, fmt.Errorf("decode source map: %w", err)
-	}
-	if document.Version != 3 {
-		return nil, fmt.Errorf("unsupported source map version %d", document.Version)
-	}
-	if len(document.Mappings) > maxSourceMapBytes {
-		return nil, fmt.Errorf("source map mappings exceed limit")
-	}
-	var result []OriginalSource
-	for _, section := range document.Sections {
-		if len(section.Map) == 0 {
-			continue
-		}
-		sectionSources, err := parseSourceMapDocument(section.Map, generatedURL, depth+1, budget, seen)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, sectionSources...)
-	}
-	for index, rawPath := range document.Sources {
-		budget.sources++
-		if budget.sources > maxSourceMapSources {
-			return nil, fmt.Errorf("source map source count exceeds %d", maxSourceMapSources)
-		}
-		if index >= len(document.SourcesContent) || document.SourcesContent[index] == nil {
-			continue
-		}
-		content := []byte(*document.SourcesContent[index])
-		if len(content) > maxSourceContentBytes {
-			continue
-		}
-		budget.bytes += len(content)
-		if budget.bytes > maxAggregateSourceBytes {
-			return nil, fmt.Errorf("source map aggregate sourcesContent exceeds %d", maxAggregateSourceBytes)
-		}
-		safePath := normalizeSourcePath(document.SourceRoot, rawPath)
-		digest := fmt.Sprintf("%x", sha256.Sum256(content))
-		key := safePath + "\x00" + digest
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, OriginalSource{
-			Path: safePath, Content: content, ContentSHA256: digest,
-			Language: sourceLanguage(safePath), GeneratedSourceURL: generatedURL,
-		})
-	}
-	return result, nil
-}
-
-func normalizeSourcePath(sourceRoot, source string) string {
-	value := strings.ReplaceAll(strings.TrimSpace(source), "\\", "/")
-	for _, prefix := range []string{"webpack://", "vite://", "file://"} {
-		value = strings.TrimPrefix(value, prefix)
-	}
-	if decoded, err := url.PathUnescape(value); err == nil {
-		value = decoded
-	}
-	root := strings.ReplaceAll(strings.TrimSpace(sourceRoot), "\\", "/")
-	value = path.Clean("/" + path.Join(root, value))
-	value = strings.TrimLeft(value, "/")
-	if value == "" || value == "." {
-		value = "source.js"
-	}
-	if len(value) > 512 {
-		value = value[len(value)-512:]
-	}
-	return value
-}
-
-func sourceLanguage(name string) string {
-	switch strings.ToLower(path.Ext(name)) {
-	case ".ts":
-		return "ts"
-	case ".tsx":
-		return "tsx"
-	case ".jsx":
-		return "jsx"
-	default:
-		return "js"
-	}
-}
-
-func annotateSourceMapProvenance(provenance *jstangle.Provenance, source OriginalSource) {
+func annotateSourceMapProvenance(provenance *jstangle.Provenance, source sourcemap.OriginalSource) {
 	if provenance == nil {
 		return
 	}
@@ -215,7 +30,7 @@ func annotateSourceMapProvenance(provenance *jstangle.Provenance, source Origina
 // uniformly to every typed record family before any fact is queued or persisted.
 // Source locations already refer to the recovered original source; the bounded
 // resolution step links those locations back to the generated bundle.
-func annotateSourceMappedResult(result *jstangle.ScanResult, source OriginalSource) {
+func annotateSourceMappedResult(result *jstangle.ScanResult, source sourcemap.OriginalSource) {
 	if result == nil {
 		return
 	}
@@ -260,9 +75,10 @@ func (e *Engine) processAssetFacts(ctx context.Context, parentURL string, source
 			continue
 		}
 		if fact.AssetType == string(AssetSourceMap) && fact.Inline {
-			_, inline, ok := ExtractSourceMapReference(source)
-			if ok && len(inline) > 0 {
-				e.processSourceMapContent(ctx, parentURL, inline)
+			for _, reference := range sourcemap.ExtractReferences(source) {
+				if len(reference.Inline) > 0 {
+					e.processSourceMapContent(ctx, parentURL, reference.Inline)
+				}
 			}
 			continue
 		}
@@ -281,12 +97,59 @@ func (e *Engine) processAssetFacts(ctx context.Context, parentURL string, source
 		}
 	}
 	if len(queued) > 0 {
-		e.queueJSFetch(queued, 0)
+		e.queueJSFetch(queued, ProvenanceReferenced)
 	}
+}
+
+// processSourceMapCandidates queues the maps an asset points at: inline ones are
+// parsed on the spot, external ones go through the asset graph so its per-parent,
+// per-host and total budgets bound the fan-out.
+//
+// A guessed sibling is queued as a guess, not as a reference — it is discovery
+// asking "is a map deployed here?", and the prefix breaker must still be able to
+// shut that down under a trap directory.
+func (e *Engine) processSourceMapCandidates(ctx context.Context, parentURL string, candidates []sourcemap.Candidate) {
+	if !e.config.JSTangle.SourceMaps || len(candidates) == 0 {
+		return
+	}
+	graph := e.assetGraph()
+	graph.AddRoot(parentURL, AssetScript)
+
+	var referenced, guessed []*url.URL
+	for _, candidate := range candidates {
+		if len(candidate.Inline) > 0 {
+			e.processSourceMapContent(ctx, parentURL, candidate.Inline)
+			continue
+		}
+		resolved, added, reason := graph.Add(parentURL, candidate.URL, AssetSourceMap)
+		if !added {
+			if reason != "duplicate-url" && reason != "" {
+				logger.Debug("Source-map candidate rejected", zap.String("parent", parentURL),
+					zap.String("candidate", candidate.URL), zap.String("reason", reason))
+			}
+			continue
+		}
+		if resolved == nil || e.spiderScope == nil || !e.spiderScope.IsInScope(resolved) {
+			continue
+		}
+		if candidate.Origin == sourcemap.OriginGuessed {
+			guessed = append(guessed, resolved)
+			continue
+		}
+		referenced = append(referenced, resolved)
+	}
+	e.queueJSFetch(referenced, ProvenanceReferenced)
+	e.queueJSFetch(guessed, ProvenanceGuessed)
 }
 
 func (e *Engine) processSourceMapResponse(ctx context.Context, mapURL *url.URL, content []byte) {
 	if !e.config.JSTangle.SourceMaps || mapURL == nil || len(content) == 0 {
+		return
+	}
+	// A guessed sibling path on a catch-all host answers 200 with the SPA shell.
+	// Reject that before parsing so a soft-404 cannot be mistaken for a map.
+	if !sourcemap.LooksLikeMap(content) {
+		logger.Debug("Source-map response is not a map document", zap.String("url", mapURL.String()))
 		return
 	}
 	parents := e.assetGraph().Parents(mapURL.String())
@@ -302,12 +165,18 @@ func (e *Engine) processSourceMapContent(ctx context.Context, generatedURL strin
 	if !e.config.JSTangle.SourceMaps {
 		return
 	}
-	sources, err := ParseSourceMap(content, generatedURL)
+	document, err := sourcemap.Parse(content, generatedURL)
 	if err != nil {
 		logger.Debug("Rejected source map", zap.String("generated_url", generatedURL), zap.Error(err))
 		return
 	}
-	for _, source := range sources {
+
+	// Follow what the map itself points at before mining its content: an indexed
+	// map's external sections, and — when sourcesContent was stripped — the source
+	// files themselves, which a deployment that ships the map usually still serves.
+	e.queueSourceMapFollowUps(generatedURL, document)
+
+	for _, source := range document.Sources {
 		if ctx.Err() != nil {
 			return
 		}
@@ -346,5 +215,35 @@ func (e *Engine) processSourceMapContent(ctx context.Context, generatedURL strin
 		if generated, parseErr := url.Parse(generatedURL); parseErr == nil {
 			e.storeJSTangleFactsAtSource(generated, virtualURL, result.RequestFacts)
 		}
+	}
+}
+
+// queueSourceMapFollowUps fetches the further disclosures one map points at: the
+// external section maps of an indexed map, and the original source files of a map
+// whose sourcesContent was stripped. Both go through the asset graph, so the
+// per-parent, per-host and total asset budgets bound the fan-out.
+func (e *Engine) queueSourceMapFollowUps(generatedURL string, document *sourcemap.Document) {
+	candidates := make([]string, 0, len(document.ExternalSections)+len(document.FetchableSources))
+	candidates = append(candidates, document.ExternalSections...)
+	candidates = append(candidates, document.FetchableSources...)
+	if len(candidates) == 0 {
+		return
+	}
+	graph := e.assetGraph()
+	queued := make([]*url.URL, 0, len(candidates))
+	for _, candidate := range candidates {
+		resolved, added, _ := graph.Add(generatedURL, candidate, AssetSourceMap)
+		if !added || resolved == nil {
+			continue
+		}
+		if e.spiderScope == nil || !e.spiderScope.IsInScope(resolved) {
+			continue
+		}
+		queued = append(queued, resolved)
+	}
+	if len(queued) > 0 {
+		logger.Debug("Queued source-map follow-ups",
+			zap.String("generated_url", generatedURL), zap.Int("count", len(queued)))
+		e.queueJSFetch(queued, ProvenanceReferenced)
 	}
 }

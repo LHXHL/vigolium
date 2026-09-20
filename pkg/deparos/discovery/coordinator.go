@@ -13,6 +13,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/deparos/discovery/queue"
 	pkghttp "github.com/vigolium/vigolium/pkg/deparos/http"
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
 	"github.com/vigolium/vigolium/pkg/deparos/responsechain"
 	"github.com/vigolium/vigolium/pkg/deparos/spider"
 	"github.com/vigolium/vigolium/pkg/deparos/storage"
@@ -192,13 +193,14 @@ func (c *PayloadCoordinator) expandTask(ctx context.Context, task Task) {
 // sendWorkItem sends a URL to workChan.
 // Skips queueing if the URL's prefix has been tripped by the breaker — saves
 // an HTTP request and a downstream worker slot for known-dead prefixes.
+// Application-referenced URLs are exempt; see isReferencedProvenance.
 func (c *PayloadCoordinator) sendWorkItem(
 	ctx context.Context,
 	task Task,
 	urlStr string,
 	depth uint16,
 ) {
-	if c.callbacks.PrefixBreaker != nil {
+	if c.callbacks.PrefixBreaker != nil && !TaskIsReferenced(task) {
 		if u, err := url.Parse(urlStr); err == nil && c.callbacks.PrefixBreaker.IsDead(u) {
 			return
 		}
@@ -276,6 +278,18 @@ func (c *PayloadCoordinator) executeWorkItem(ctx context.Context, item *WorkItem
 		}
 	}
 
+	// Source maps are handled here, above the task-type dispatch, because which
+	// fetch path sees a given asset is incidental: the asset graph queues a
+	// JSFetchTask for a bundle's .js.map, but link extraction also finds the
+	// literal "<bundle>.js.map" string in the body and fetches it first as an
+	// ordinary record — whereupon the shared RequestCache drops the JSFetchTask.
+	// Handling this on one branch is what made the whole pipeline dead code; one
+	// choke point above the split makes that impossible to reintroduce. It also
+	// runs before the Analyzer gate, so a catch-all host's soft-404 verdict cannot
+	// discard a map that parsed cleanly, and it covers stylesheets, which never
+	// reach the JS-fetch path at all.
+	c.processSourceMapLeads(ctx, req.URL, rc, cb)
+
 	// JSFetchTask: custom validation (status 200 + JS content-type)
 	// Skip Analyzer + verification - just validate and process
 	if jsTask, ok := item.Task.(*JSFetchTask); ok {
@@ -335,6 +349,51 @@ func hasJavaScriptExtension(u *url.URL) bool {
 		strings.HasSuffix(p, ".cjs")
 }
 
+// processSourceMapLeads handles everything source-map about one fetched asset.
+//
+// Two cases, one entry point: the asset either IS a map, in which case it is
+// parsed, or it may POINT AT one, in which case the candidates it names (and,
+// failing that, its conventional sibling) are queued. Both were previously
+// written twice — once per fetch path — which is how the pipeline came to be
+// reachable on only one of them.
+//
+// Candidate selection itself lives in the sourcemap package so the crawl and the
+// scanning-phase module cannot disagree about which maps an asset is worth
+// asking for.
+func (c *PayloadCoordinator) processSourceMapLeads(
+	ctx context.Context,
+	assetURL *url.URL,
+	rc *responsechain.ResponseChain,
+	cb *Callbacks,
+) {
+	resp := rc.Response()
+	if assetURL == nil || resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+
+	if sourcemap.IsMapPath(assetURL.Path) {
+		body := rc.BodyBytes()
+		if cb.ProcessSourceMap != nil && len(body) > 0 && len(body) <= sourcemap.MaxMapBytes {
+			cb.ProcessSourceMap(ctx, assetURL, body)
+		}
+		return
+	}
+
+	// Path check before the body is touched: the generic path runs this for every
+	// wordlist and fuzz probe, and only .js/.mjs/.cjs/.css can carry a map.
+	if cb.ProcessSourceMapCandidates == nil || !sourcemap.IsMappableAssetPath(assetURL.Path) {
+		return
+	}
+	body := rc.BodyBytes()
+	if len(body) > maxJSSize {
+		return
+	}
+	candidates := sourcemap.CandidatesFor(assetURL.String(), resp.Header.Get, body)
+	if len(candidates) > 0 {
+		cb.ProcessSourceMapCandidates(ctx, assetURL.String(), candidates)
+	}
+}
+
 // executeJSFetchItem handles JSFetchTask responses with custom validation.
 // Validates status 200 + JS content-type, extracts paths, and calls OnResult.
 func (c *PayloadCoordinator) executeJSFetchItem(
@@ -376,7 +435,7 @@ func (c *PayloadCoordinator) executeJSFetchItem(
 	// linkfinder still extracts embedded paths and the file is recorded as an
 	// http_record (so secret-scanning and later phases see its body).
 	ct := resp.Header.Get("Content-Type")
-	isSourceMap := strings.HasSuffix(strings.ToLower(jsURL.Path), ".map")
+	isSourceMap := sourcemap.IsMapPath(jsURL.Path)
 	if !isJavaScriptContentType(ct) && !isJSONContentType(ct) &&
 		!hasJavaScriptExtension(jsURL) && !hasJSONExtension(jsURL) && !isSourceMap {
 		logger.Debug("JS-fetch target is neither JavaScript nor JSON",
@@ -401,9 +460,7 @@ func (c *PayloadCoordinator) executeJSFetchItem(
 			zap.String("url", item.URL),
 			zap.Int("size", len(body)))
 	case isSourceMap:
-		if cb.ProcessSourceMap != nil && len(body) <= maxSourceMapBytes {
-			cb.ProcessSourceMap(ctx, jsURL, body)
-		}
+		// Already parsed by processSourceMapLeads, above the task dispatch.
 	default:
 		// Content to pass to linkfinder (default: raw body, may be replaced by CodeRecord)
 		contentForLinkfinder := body
@@ -411,16 +468,6 @@ func (c *PayloadCoordinator) executeJSFetchItem(
 		// Run jstangle to extract HTTP requests and transformed code (always,
 		// even for CDN-hosted bundles).
 		if cb.JSTangleService != nil {
-			// SourceMap/X-SourceMap headers have the same policy as comment facts.
-			for _, headerName := range []string{"SourceMap", "X-SourceMap"} {
-				if reference := strings.TrimSpace(resp.Header.Get(headerName)); reference != "" && cb.ProcessAssetFacts != nil {
-					cb.ProcessAssetFacts(ctx, item.URL, body, []jstangle.AssetReferenceFact{{
-						Kind: "assetReference", AssetType: string(AssetSourceMap),
-						URL:             jstangle.ValueTemplate{Rendered: reference, Static: true},
-						ParentSourceURL: item.URL, Provenance: jstangle.Provenance{Extractor: "source-map-header", Confidence: "high"},
-					}})
-				}
-			}
 			// Run through the shared broker; it owns weighted admission and cache.
 			options := jstangle.ScanOptions{Profile: jstangle.ProfileDiscovery, SourceURL: item.URL}
 			if cb.JSTangleOptions != nil {
@@ -588,6 +635,32 @@ func (c *PayloadCoordinator) triggerDiscoveryCallbacks(urlStr string, depth uint
 func foundByConfirmsExtension(foundBy string) bool {
 	switch foundBy {
 	case "spider", "js-extracted", "jsfetch", "form", "redirect":
+		return true
+	default:
+		return false
+	}
+}
+
+// isReferencedProvenance is the prefix breaker's fallback for task types that do
+// not track their own provenance (see TaskIsReferenced).
+//
+// The breaker exists to stop discovery recursing into a trap directory that
+// answers uniformly for every guess. A referenced asset — a source map, a lazy
+// chunk, a worker — is exempt: the application published that exact URL, so a
+// dead prefix says nothing about it. Without the exemption, a bundle under a
+// hashed-asset dir like /static/js/ (where a handful of 404 guesses trip the
+// breaker within seconds) silently lost its .js.map, and with it every endpoint
+// the recovered sources would have named.
+//
+// This list deliberately excludes "jsfetch", which foundByConfirmsExtension
+// includes: that queue carries both referenced assets and the bundle sweep's
+// guesses, so JSFetchTask answers for itself via IsReferenced. The two
+// predicates are near-identical today and must stay separate — they answer
+// different questions ("may this extension be trusted as proof of a stack?" vs
+// "did the app publish this URL?") and are free to diverge.
+func isReferencedProvenance(foundBy string) bool {
+	switch foundBy {
+	case "spider", "js-extracted", "form", "redirect":
 		return true
 	default:
 		return false

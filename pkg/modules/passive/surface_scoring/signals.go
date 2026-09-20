@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/infra/dashboardsig"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
-	"github.com/vigolium/vigolium/pkg/spitolas/loginsig"
 )
 
 // Signal is one bit of attack-surface evidence. The score is the popcount of the
@@ -525,7 +525,7 @@ func hasSessionCookieHeader(header string) bool {
 // headersAdvertiseAuth reports whether the response head announces an
 // authentication boundary: a challenge, or a redirect into a login / SSO flow.
 //
-// The redirect test goes through loginsig, which owns the repo's login/IdP URL
+// The redirect test goes through authsig, which owns the repo's login/IdP URL
 // vocabulary and matches an identity provider on the parsed hostname with a
 // suffix anchor. A local substring table would have matched the whole Location
 // string, so `https://evil.example/?next=https://okta.com` would have counted as
@@ -539,7 +539,7 @@ func headersAdvertiseAuth(resp *httpmsg.HttpResponse) bool {
 		return false
 	}
 	u, err := url.Parse(loc)
-	return err == nil && loginsig.LooksLikeLoginURL(u)
+	return err == nil && authsig.LooksLikeLoginURL(u)
 }
 
 // hasPasswordInput reports whether the body renders a password field.

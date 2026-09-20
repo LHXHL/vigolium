@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/deparos/tag"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
-	"github.com/vigolium/vigolium/pkg/spitolas/loginsig"
 )
 
 // respiderInput is the decoded view of a discovered record the evaluator needs.
@@ -81,12 +81,12 @@ func evaluateReSpiderCandidate(in respiderInput) respiderVerdict {
 
 	// SSO / login screen — cheap, no browser. The URL itself, a redirect to an
 	// IdP, or a password field in the body all disqualify.
-	if loginsig.LooksLikeLoginURL(u) {
+	if authsig.LooksLikeLoginURL(u) {
 		return respiderVerdict{Reason: "login"}
 	}
 	if in.StatusCode >= 300 && in.StatusCode < 400 {
 		if loc := strings.TrimSpace(in.Location); loc != "" {
-			if lu, lerr := u.Parse(loc); lerr == nil && loginsig.LooksLikeLoginURL(lu) {
+			if lu, lerr := u.Parse(loc); lerr == nil && authsig.LooksLikeLoginURL(lu) {
 				return respiderVerdict{Reason: "login"}
 			}
 		}
@@ -97,7 +97,7 @@ func evaluateReSpiderCandidate(in respiderInput) respiderVerdict {
 	if in.StatusCode != 200 {
 		return respiderVerdict{Reason: "non-200"}
 	}
-	if loginsig.BodyLooksLikeLogin(in.Body) {
+	if authsig.BodyLooksLikeLogin(in.Body) {
 		return respiderVerdict{Reason: "login"}
 	}
 

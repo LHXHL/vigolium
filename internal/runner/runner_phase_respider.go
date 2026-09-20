@@ -185,8 +185,8 @@ func (r *Runner) applyReSpiderSSO(result *spitolas.SpiderResult, hostKey string,
 		return false
 	}
 	ssoSkip[hostKey] = struct{}{}
-	if lu, perr := neturl.Parse(result.LandingURL); perr == nil && lu.Host != "" {
-		r.spidering.ssoHosts = append(r.spidering.ssoHosts, lu.Host)
+	if hosts := ssoHostsFromSpider(result.WallHosts, result.LandingURL); len(hosts) > 0 {
+		r.spidering.ssoHosts = append(r.spidering.ssoHosts, hosts...)
 		r.spidering.sawSSO = true
 	}
 	zap.L().Info("Re-spider: seed redirected to a login wall; skipping remaining seeds on host",
@@ -284,9 +284,7 @@ func (r *Runner) crawlReSpiderHostGroup(ctx context.Context, group []respiderSee
 		res.records += result.RecordsSaved
 		if result.OffHostRedirect && result.LandingIsLogin {
 			res.ssoHit++
-			if lu, perr := neturl.Parse(result.LandingURL); perr == nil && lu.Host != "" {
-				res.ssoHosts = append(res.ssoHosts, lu.Host)
-			}
+			res.ssoHosts = append(res.ssoHosts, ssoHostsFromSpider(result.WallHosts, result.LandingURL)...)
 			zap.L().Info("Re-spider: seed redirected to a login wall; skipping remaining seeds on host",
 				zap.String("host", hostKey), zap.String("landing", result.LandingURL))
 			break // remaining seeds on this host sit behind the same wall

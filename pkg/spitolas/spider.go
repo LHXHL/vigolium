@@ -115,6 +115,14 @@ type SpiderResult struct {
 	// against the relocated app.
 	HostAdopted bool
 
+	// WallHosts are the hosts denied as login/SSO walls: the landing host plus
+	// every redirect hop that served an authentication endpoint. Callers feed
+	// these into the scan-wide fuzz exclusion so a later phase never brute-forces
+	// the identity provider. Includes hops LandingURL alone would miss — an OAuth
+	// bounce commonly crosses an authorize endpoint on one host before reaching
+	// the login form on another.
+	WallHosts []string
+
 	// LoginCTADriven is true when the crawler found and clicked a login
 	// call-to-action on the landing to enter an OAuth/SAML/SSO flow. LoginCTAText
 	// is the CTA's visible label.
@@ -242,6 +250,10 @@ func buildCrawlerConfig(cfg SpiderConfig) (*config.Config, error) {
 	// boundary, so it stops wandering off-scope in the first place.
 	if cfg.ScopeFilter != nil {
 		scope := cfg.ScopeFilter
+		// Carried in both shapes: the URL form for the crawler's scope checks, the
+		// native (host, path) form for the capture's log filter. See
+		// config.Config.ScopeFilter for why the capture does not reuse the wrapper.
+		crawlerCfg.ScopeFilter = scope
 		crawlerCfg.CrawlScope = func(rawURL string) bool {
 			u, perr := url.Parse(rawURL)
 			if perr != nil || u.Hostname() == "" {
@@ -286,6 +298,7 @@ func spiderResultFromCrawl(result *crawler.Result, recordsSaved int) *SpiderResu
 		OffHostRedirect:  result.Stats.OffHostLanding,
 		LandingIsLogin:   result.Stats.LandingIsLogin,
 		HostAdopted:      result.Stats.HostAdopted,
+		WallHosts:        result.Stats.WallHosts,
 		LoginCTADriven:   result.Stats.LoginCTADriven,
 		LoginCTAText:     result.Stats.LoginCTAText,
 

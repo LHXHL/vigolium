@@ -220,10 +220,18 @@ type HTTPRecord struct {
 	RawResponse           []byte `bun:"raw_response,type:bytea,nullzero" json:"raw_response,omitempty"`
 	ResponseHash          string `bun:"response_hash,nullzero" json:"response_hash,omitempty"`
 	ResponseNormHash      string `bun:"response_norm_hash,nullzero" json:"response_norm_hash,omitempty"` // hash of the body with reflected URL/path + dynamic runs stripped, for reflected-URL-robust dedup
-	ResponseTimeMs        int64  `bun:"response_time_ms,default:0" json:"response_time_ms"`
-	ResponseWords         int64  `bun:"response_words,default:0" json:"response_words"`
-	HasResponse           bool   `bun:"has_response,notnull,default:false" json:"has_response"`
-	ResponseTitle         string `bun:"response_title,nullzero" json:"response_title,omitempty"`
+	// ResponseTimeMs is 0 when the exchange was never timed, which is not the
+	// same as "it took no time". Only the requester measures, so every record
+	// rebuilt from stored bytes — and every intermediate redirect hop, which
+	// the transport followed inside one measurement — has nothing to report.
+	//
+	// omitempty so an unmeasured row omits the field entirely. A silent zero is
+	// worse than an absent one: a consumer averaging over a chain gets a number
+	// that is wrong rather than one it knows it cannot compute.
+	ResponseTimeMs int64  `bun:"response_time_ms,default:0" json:"response_time_ms,omitempty"`
+	ResponseWords  int64  `bun:"response_words,default:0" json:"response_words"`
+	HasResponse    bool   `bun:"has_response,notnull,default:false" json:"has_response"`
+	ResponseTitle  string `bun:"response_title,nullzero" json:"response_title,omitempty"`
 
 	// ResponseLocation is the Location header of a 3xx response, stored verbatim
 	// — relative values included, because rewriting them to absolute would be
@@ -257,6 +265,34 @@ type HTTPRecord struct {
 	ContentHash     string   `bun:"content_hash,nullzero" json:"content_hash,omitempty"`            // hash of meaningful response content for change detection
 	IsAuthenticated bool     `bun:"is_authenticated,notnull,default:false" json:"is_authenticated"` // whether request was sent with valid auth
 	ParentUUID      string   `bun:"parent_uuid,nullzero" json:"parent_uuid,omitempty"`              // parent record UUID (crawl/spider parent)
+
+	// Target is the input line this record's chain started from, as it appears
+	// in the run's target list (normalized to an absolute URL). Empty for
+	// records that did not come from a submitted target — crawl discoveries,
+	// ingest.
+	//
+	// It exists because hostname is THIS HOP's hostname, not the one that was
+	// asked about. A followed redirect that leaves the host produces records
+	// under names nobody submitted, and a consumer keying on hostname then
+	// reports a host it invented. Recovering the input otherwise means walking
+	// parent_uuid to the root, which no single record can answer and which a
+	// truncated chain can break outright.
+	Target string `bun:"target,nullzero" json:"target,omitempty"`
+	// RootUUID is the first record of this record's redirect chain — itself for
+	// a root. Redundant with walking ParentUUID, and deliberately so: the walk
+	// is O(chain) and needs the whole stream, this is O(1) on one record and
+	// survives the middle of a chain being dropped by the storage cap.
+	RootUUID string `bun:"root_uuid,nullzero" json:"root_uuid,omitempty"`
+	// ChainTruncated marks the last stored row of a redirect chain that did not
+	// reach its destination — the follow cap was hit, or the storage cap
+	// dropped hops after this one.
+	//
+	// Without it a 3xx at the end of a chain is ambiguous in a way that reads
+	// as an answer: "this redirect pointed somewhere that never replied" and
+	// "we stopped walking" produce an identical row, and the obvious consumer
+	// reading ("the terminal hop is the row nothing claims as a parent") takes
+	// the 3xx as final in both cases.
+	ChainTruncated bool `bun:"chain_truncated,notnull,default:false" json:"chain_truncated,omitempty"`
 
 	// Risk labeling (populated by background analysis)
 	Remarks   []string `bun:"remarks,type:jsonb,nullzero" json:"remarks,omitempty"`

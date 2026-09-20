@@ -11,7 +11,7 @@ curl -s http://localhost:9002/api/scope | jq .
 ```json
 {
   "applied_on_ingest": false,
-  "cli_origin_mode": "relaxed",
+  "cli_origin_mode": "balanced",
   "host": { "include": ["*"], "exclude": [] },
   "path": { "include": ["*"], "exclude": [] },
   "status_code": { "include": ["*"], "exclude": [] },
@@ -97,7 +97,7 @@ curl -s -X POST http://localhost:9002/api/scope \
   "message": "Scope updated successfully",
   "scope": {
     "applied_on_ingest": false,
-    "cli_origin_mode": "relaxed",
+    "cli_origin_mode": "balanced",
     "host": { "include": ["*"], "exclude": ["*.internal.com", "localhost"] },
     "path": { "include": ["*"], "exclude": [] },
     "status_code": { "include": ["*"], "exclude": [] },

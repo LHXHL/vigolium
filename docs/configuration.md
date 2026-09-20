@@ -343,6 +343,8 @@ dynamic-assessment:
     active_modules: ["all"]    # ["all"] or list of module IDs
     passive_modules: ["all"]
 
+  # hygiene_modules: true     # unset = follow intensity (see below)
+
   extensions:
     enabled: false
     extension_dir: ~/.vigolium/extensions/
@@ -355,6 +357,40 @@ dynamic-assessment:
       max_memory_mb: 128
 ```
 
+**Hardening advisories (`hygiene_modules`).** Thirteen modules report a *missing
+best-practice control* rather than an exploitable condition — absent security
+headers, weak TLS protocol/cipher policy, cookie attributes, and the
+CSP/HSTS/SRI/Permissions-Policy/COOP audits. They are cheap to run and fire on
+nearly every response, so on a crawl of any size they contribute one
+near-identical Info/Low row per URL and bury the findings worth triaging.
+
+Below `--intensity deep` they do not run. The gated set is every module tagged
+`hygiene`:
+
+| | |
+|---|---|
+| Info | `security-headers-missing`, `permissions-policy-detect`, `cross-origin-isolation-audit`, `subresource-integrity-detect`, `password-autocomplete-detect` |
+| Low | `tls-protocol-cipher-audit`, `hsts-preload-audit`, `csp-weakness-audit`, `cors-vary-origin-missing`, `cookie-security-detect`, `mixed-content-detect`, `reverse-tabnabbing-detect`, `content-type-mismatch` |
+
+The Info-tier fingerprints, endpoint/param observers, and `surface-scoring` are
+*not* in this set — their output feeds tech tags, scoring, and active-module
+targeting, so they still run at every intensity. Neither is
+`clickjacking-detect`, which stays on at Medium.
+
+To get the advisories back:
+
+```bash
+vigolium scan -t https://example.com --intensity deep          # per scan
+vigolium scan -t https://example.com --module-tag hygiene      # just this family
+vigolium scan -t https://example.com --module-id security-headers-missing
+vigolium config set dynamic-assessment.hygiene_modules true    # every scan
+```
+
+`hygiene_modules` sets the default for a broad (`["all"]`) selection: `true`
+runs them at every intensity, `false` suppresses them even at deep. Naming them
+explicitly with `--module-tag` or `--module-id` always wins, the same way an
+explicit selection already bypasses the intensity tier ceiling.
+
 ### `scope`
 
 Defines what is in scope for scanning. Exclude rules take priority over include rules.
@@ -362,7 +398,7 @@ Defines what is in scope for scanning. Exclude rules take priority over include 
 ```yaml
 scope:
   applied_on_ingest: false       # enforce scope during ingestion (not just scanning)
-  cli_origin_mode: relaxed       # relaxed | all | balanced | strict
+  cli_origin_mode: balanced      # balanced (default) | all | relaxed | strict
   ignore_static_file: true       # skip images, fonts, video, audio, etc.
   max_request_body_size: 1048576     # 1 MB
   max_response_body_size: 524288000  # 500 MB

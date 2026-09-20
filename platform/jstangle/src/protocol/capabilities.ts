@@ -50,7 +50,7 @@ export function getCapabilities(): CapabilitiesRecord {
   return {
     type: 'capabilities',
     protocolVersion: PROTOCOL_VERSION,
-    toolVersion: compiledString('toolVersion', '0.1.1-dev'),
+    toolVersion: compiledString('toolVersion', '0.2.0-dev'),
     sourceHash: compiledString('sourceHash', 'development'),
     schemaVersions: {
       analysisResult: RESULT_SCHEMA_VERSION,

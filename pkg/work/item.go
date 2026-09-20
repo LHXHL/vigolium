@@ -15,6 +15,25 @@ type WorkItem struct {
 	// probe storage-fronted static assets without storing their (binary) bodies.
 	StaticMeta bool
 
+	// Target is the input line this item came from, as it appears in
+	// Options.Targets: normalized to an absolute URL, so a submitted
+	// "dns.google" reads as "http://dns.google" (and, on the probe path, as
+	// whatever scheme resolution settled on). Empty for items a source
+	// synthesized rather than received — a crawl discovery, an ingested
+	// record — which have no submitted line to name.
+	//
+	// Normalized rather than verbatim because normalization happens in the CLI
+	// before any source sees the list. Recovering the operator's exact
+	// keystrokes would mean deduping on a normalized key while storing the raw
+	// line, which is a change to the target pipeline rather than to this field.
+	//
+	// It is carried on the item rather than re-derived from the request
+	// because normalization has already happened by then, and because a
+	// followed redirect moves the request off the submitted URL entirely: the
+	// stored record's hostname is the LAST hop's, so without this a consumer
+	// cannot tell which of its 5,000 lines produced the row.
+	Target string
+
 	onComplete func()
 }
 

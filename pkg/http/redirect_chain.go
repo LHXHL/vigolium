@@ -1,6 +1,7 @@
 package http
 
 import (
+	"net/url"
 	"slices"
 
 	httpUtils "github.com/projectdiscovery/utils/http"
@@ -130,4 +131,148 @@ func WasRedirected(chain *httpUtils.ResponseChain) bool {
 	}
 	resp := chain.Response()
 	return resp != nil && resp.Request != nil && resp.Request.Response != nil
+}
+
+// maxStoredChainRows bounds how many rows ONE chain contributes, counting the
+// terminal response.
+//
+// Four covers every real chain measured: google.com settles in three
+// (301 -> 302 -> 200), github.com in two. What it bounds is the pathological
+// case — a chain that walks the full follow cap wrote ten rows, nine of them
+// contentless, for one work item.
+//
+// This is a STORAGE cap, deliberately separate from the follow cap. Cutting the
+// follow depth instead would lose the terminal response on a legitimate
+// five-hop chain, which is the same data loss moved somewhere less visible.
+const maxStoredChainRows = 4
+
+// ChainRow is one redirect hop selected for storage.
+type ChainRow struct {
+	RR *httpmsg.HttpRequestResponse
+	// Truncated marks a row whose destination is NOT the row after it: either
+	// hops between them were dropped, or the chain stopped here. It is the one
+	// bit that distinguishes "this 3xx pointed somewhere that never answered"
+	// from "we stopped walking", which otherwise produce an identical row.
+	Truncated bool
+}
+
+// ShapeRedirectChain selects which of a chain's intermediate hops to store.
+//
+// Two reductions, in this order, and the order matters: collapsing first means
+// the cap spends its budget on hops that say something.
+//
+// # Canonical hops are dropped
+//
+// A hop whose destination is the same resource under its canonical spelling —
+// a scheme upgrade, a trailing slash, www. gained or dropped — carries no
+// information the destination row does not already carry. `curl -L
+// ctdtoolkit.netflix.net` is the everyday shape: one 301 whose only content is
+// "say it with https". Storing it produced a contentless row with no title, no
+// technology and surface_score 0, sitting in the output next to rows that mean
+// something, and it is why the row for a submitted target so often looked dead.
+//
+// Including the first hop. Keeping it was the obvious hedge — it is the only
+// row carrying the submitted target's own status — but it is the wrong trade
+// now that every row names its Target: the destination row already says which
+// line produced it, so the 301 adds a contentless row and nothing else. A
+// target whose only redirect is canonical therefore yields exactly one record,
+// at the canonical URL, which is what an operator running `curl -L` sees.
+//
+// # Then the cap keeps the ends
+//
+// If more rows remain than the budget allows, the FIRST and the LAST survive
+// and the middle goes: the first is the fact the caller asked for, the last is
+// the fact they wanted. A cap that kept the first four and discarded the
+// terminal response would be strictly worse than no cap at all.
+//
+// finalTarget is the URL of the response the caller pairs with these hops; it
+// is what the last intermediate is classified against.
+func ShapeRedirectChain(hops []*httpmsg.HttpRequestResponse, finalTarget string) []ChainRow {
+	if len(hops) == 0 {
+		return nil
+	}
+
+	// Target() is url.URL.String(), not a field read, and each hop is compared
+	// as both "to" and "from". Resolve and parse once.
+	targets := make([]string, len(hops))
+	parsed := make([]*url.URL, len(hops))
+	for i, hop := range hops {
+		if hop == nil {
+			continue
+		}
+		targets[i] = hop.Target()
+		parsed[i], _ = url.Parse(targets[i])
+	}
+	finalURL, _ := url.Parse(finalTarget)
+
+	kept := make([]*httpmsg.HttpRequestResponse, 0, len(hops))
+	for i, hop := range hops {
+		if hop == nil {
+			continue
+		}
+		next := finalURL
+		if i+1 < len(hops) {
+			next = parsed[i+1]
+		}
+		if canonicalHop(parsed[i], next) {
+			continue
+		}
+		kept = append(kept, hop)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+
+	// The terminal response takes one of the rows, so the intermediates get the
+	// rest. Keeping the head and the tail leaves exactly ONE discontinuity, and
+	// it is always after the first row — which is why the flag below needs no
+	// per-row bookkeeping to find it.
+	budget := maxStoredChainRows - 1
+	dropped := false
+	if len(kept) > budget {
+		kept = append(kept[:1], kept[len(kept)-(budget-1):]...)
+		dropped = true
+	}
+
+	rows := make([]ChainRow, len(kept))
+	for i, hop := range kept {
+		rows[i] = ChainRow{RR: hop, Truncated: dropped && i == 0}
+	}
+	return rows
+}
+
+// ChainRelocated reports whether the exchange ended somewhere other than
+// requested, and whether the chain still carries its redirect linkage.
+//
+// Two answers because the callers need different ones. Re-pairing the response
+// with the request that produced it only needs "did we end up elsewhere";
+// materializing the intermediate hops needs the linked responses themselves.
+//
+// The two can disagree, which is the whole reason this exists. The request
+// clusterer caches a flattened snapshot and reconstructs a chain with no
+// resp.Request.Response — deliberately, since retaining that pointer would pin
+// every prior response and body for the cache entry's lifetime. The snapshot
+// does keep the FINAL hop's request, so the destination URL survives even
+// though the linkage does not.
+//
+// Compares URL fields rather than strings: this runs on every baseline fetch,
+// and url.URL.String() allocates on both sides for an answer that is almost
+// always "no".
+func ChainRelocated(chain *httpUtils.ResponseChain, requested *url.URL) (relocated, linked bool) {
+	if chain == nil {
+		return false, false
+	}
+	linked = WasRedirected(chain)
+	if linked {
+		return true, true
+	}
+	stdReq := chain.Request()
+	if stdReq == nil || stdReq.URL == nil || requested == nil {
+		return false, false
+	}
+	got := stdReq.URL
+	return got.Scheme != requested.Scheme ||
+		got.Host != requested.Host ||
+		got.Path != requested.Path ||
+		got.RawQuery != requested.RawQuery, false
 }

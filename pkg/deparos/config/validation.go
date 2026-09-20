@@ -75,8 +75,11 @@ func (c *JSTangleConfig) Validate() error {
 	if c.JobTimeout < time.Second || c.JobTimeout > 5*time.Minute {
 		return fmt.Errorf("job_timeout must be 1s-5m")
 	}
-	if c.NormalInputMB < 1 || c.MaxASTInputMB < c.NormalInputMB || c.HardInputMB < c.MaxASTInputMB {
-		return fmt.Errorf("input limits must satisfy 1 <= normal_input_mb <= max_ast_input_mb <= hard_input_mb")
+	// Unpacking reads source and can run above the AST ceiling, so it sits
+	// between max_ast_input_mb and the hard limit.
+	if c.NormalInputMB < 1 || c.MaxASTInputMB < c.NormalInputMB ||
+		c.MaxUnpackInputMB < c.MaxASTInputMB || c.HardInputMB < c.MaxASTInputMB {
+		return fmt.Errorf("input limits must satisfy 1 <= normal_input_mb <= max_ast_input_mb <= max_unpack_input_mb and max_ast_input_mb <= hard_input_mb")
 	}
 	if c.MaxRequestsPerFile < 1 || c.MaxASTNodes < 1_000 || c.MaxASTNodes > 5_000_000 ||
 		c.MaxAssetDepth < 1 || c.MaxAssetsPerParent < 1 || c.MaxAssetsPerHost < 1 || c.MaxAssetsTotal < 1 {

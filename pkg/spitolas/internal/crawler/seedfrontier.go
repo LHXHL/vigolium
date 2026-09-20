@@ -132,7 +132,13 @@ const seedDiscoverScript = `(async () => {
 // enough to pull in link neighbourhoods the seed page never exposed, without
 // letting a 50,000-entry sitemap redefine the crawl.
 func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
-	if page == nil || c.config == nil || ctx.Err() != nil {
+	// shouldTerminate rather than a bare ctx check: seeding reads robots.txt and
+	// the sitemap from the page's OWN origin — which on a walled start is the
+	// identity provider's — and its in-scope filter only screens the RESULTS, by
+	// which point both fetches have been sent. Asking the crawler's single
+	// "are we done" predicate also covers budget exhaustion, the state cap and a
+	// failure streak, none of which wanted another two requests either.
+	if page == nil || c.config == nil || c.shouldTerminate(ctx) {
 		return
 	}
 	if !c.config.SeedFromRobots && !c.config.SeedFromSitemap {

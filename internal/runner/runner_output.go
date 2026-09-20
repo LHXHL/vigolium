@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/config"
 	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	corestats "github.com/vigolium/vigolium/pkg/core/stats"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -520,7 +521,7 @@ func (r *Runner) printScanConfig() {
 		terminal.HiBlue(fmt.Sprintf("%d", opts.MaxPerHost)))
 
 	// Scope
-	scopeOrigin := "relaxed"
+	scopeOrigin := config.DefaultCLIOriginMode
 	if settings.Scope.CLIOriginMode != "" {
 		scopeOrigin = settings.Scope.CLIOriginMode
 	}
@@ -544,17 +545,22 @@ func (r *Runner) printScanConfig() {
 		originDescStr)
 
 	// Modules
-	var activeCount int
+	var activeMods []modules.ActiveModule
 	if len(opts.Modules) > 0 && opts.Modules[0] == "all" {
-		activeCount = len(modules.GetActiveModules())
+		activeMods = modules.GetActiveModules()
 	} else {
-		activeCount = len(modules.GetActiveModulesByIDs(opts.Modules))
+		activeMods = modules.GetActiveModulesByIDs(opts.Modules)
 	}
-	passiveCount := len(modules.GetPassiveModules())
-	fmt.Fprintf(os.Stderr, "  %s Modules: %s active, %s passive\n",
+	passiveMods := modules.GetPassiveModules()
+	activeCount, passiveCount, hygieneNote := HygieneBannerCounts(opts, settings, activeMods, passiveMods)
+	if hygieneNote != "" {
+		hygieneNote = " " + hygieneNote
+	}
+	fmt.Fprintf(os.Stderr, "  %s Modules: %s active, %s passive%s\n",
 		terminal.Purple(terminal.SymbolInfo),
 		terminal.Orange(fmt.Sprintf("%d", activeCount)),
-		terminal.Orange(fmt.Sprintf("%d", passiveCount)))
+		terminal.Orange(fmt.Sprintf("%d", passiveCount)),
+		hygieneNote)
 
 	// Extensions
 	extEnabled := settings != nil && settings.DynamicAssessment.Extensions.Enabled
@@ -609,13 +615,18 @@ func (r *Runner) logConfigSnapshot() {
 		rateLimit = settings.ScanningPace.RateLimit
 	}
 
-	var activeCount int
+	var activeMods []modules.ActiveModule
 	if len(opts.Modules) > 0 && opts.Modules[0] == "all" {
-		activeCount = len(modules.GetActiveModules())
+		activeMods = modules.GetActiveModules()
 	} else {
-		activeCount = len(modules.GetActiveModulesByIDs(opts.Modules))
+		activeMods = modules.GetActiveModulesByIDs(opts.Modules)
 	}
-	passiveCount := len(modules.GetPassiveModules())
+	passiveMods := modules.GetPassiveModules()
+
+	// The snapshot records what actually ran, so the suppressed hardening
+	// advisories come out of the counts the same way the banner subtracts them.
+	activeCount, passiveCount, _ := HygieneBannerCounts(opts, settings, activeMods, passiveMods)
+	hygieneSuppressed := (len(activeMods) - activeCount) + (len(passiveMods) - passiveCount)
 
 	meta := map[string]interface{}{
 		"project_uuid":             opts.ProjectUUID,
@@ -629,6 +640,7 @@ func (r *Runner) logConfigSnapshot() {
 		"scope_origin_mode":        opts.ScopeOriginMode,
 		"active_modules":           activeCount,
 		"passive_modules":          passiveCount,
+		"hygiene_modules_off":      hygieneSuppressed,
 		"spidering_enabled":        opts.SpideringEnabled,
 		"discovery_enabled":        opts.DiscoverEnabled,
 		"known_issue_scan_enabled": opts.KnownIssueScanEnabled,

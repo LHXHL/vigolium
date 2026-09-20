@@ -273,7 +273,7 @@ func (e *Engine) queueSPAAssetManifests(baseURL *url.URL, rc *responsechain.Resp
 		zap.String("url", baseURL.String()),
 		zap.Int("count", len(urls)))
 
-	e.queueJSFetch(urls, parentDepth)
+	e.queueJSFetch(urls, ProvenanceReferenced)
 }
 
 // harvestSPAManifest inspects a fetched manifest / service-worker body and fans

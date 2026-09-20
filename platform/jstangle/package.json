@@ -1,6 +1,6 @@
 {
   "name": "@vigolium/jstangle",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Deobfuscate, beautify, and AST-parse JavaScript bundles to extract hidden endpoints, API request shapes, and useful information — the JavaScript intelligence engine inside Vigolium",
   "keywords": [
     "vigolium",

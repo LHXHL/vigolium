@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Reported when a response that sets a session cookie or answers an authorized request lacks COOP and/or CORP headers"
 	ModuleSeverity     = severity.Info
 	ModuleConfidence   = severity.Firm
-	ModuleTags         = []string{"client-side", "xs-leaks", "headers", "light"}
+	ModuleTags         = []string{"client-side", "xs-leaks", "headers", "hygiene", "light"}
 )

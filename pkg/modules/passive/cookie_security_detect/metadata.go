@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when Set-Cookie headers lack Secure, HttpOnly, or SameSite attributes"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"session", "misconfiguration", "header-security", "light"}
+	ModuleTags         = []string{"session", "misconfiguration", "header-security", "hygiene", "light"}
 )

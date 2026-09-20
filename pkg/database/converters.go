@@ -461,6 +461,15 @@ func (r *HTTPRecord) EnrichFromHttpRequestResponse(ctx *httpmsg.HttpRequestRespo
 	// 36-byte string per duplicate.
 	r.UUID = uuid.New().String()
 
+	// A row with no chain above it is its own chain root, so root_uuid is never
+	// empty on a stored record and "every row of this chain" is one equality
+	// test. Resolved HERE rather than in RecordLineage.applyTo because the
+	// batched writer applies lineage during PrepareIdentity, before the UUID
+	// this falls back to exists.
+	if r.RootUUID == "" {
+		r.RootUUID = r.UUID
+	}
+
 	// Resolve hostname to IP (cached per hostname). Only the single address is
 	// persisted; the full A/AAAA/CNAME sets stay in the process-local cache and
 	// are attached at serialization time (see CachedDNS) so a corpus of many

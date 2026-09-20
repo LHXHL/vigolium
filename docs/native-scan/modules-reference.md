@@ -1,6 +1,6 @@
 # Scanner Modules Reference
 
-Vigolium ships with **324 scanner modules** — 207 active and 117 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
+Vigolium ships with **324 scanner modules** — 208 active and 117 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
 
 ## Severity Scale
 
@@ -23,6 +23,22 @@ Security-relevant patterns are retained even when they do not yet prove a vulner
 | `finding` | usually `E4` | Unauthorized access, execution, durable state change, cross-user replay, or equivalent impact is demonstrated. |
 
 Legacy modules that do not set a kind remain findings for compatibility. Candidate and observation records are stored and queryable with `vigolium finding --record-kind candidate,observation`, but they do not increase confirmed-finding totals or suppress another module from performing confirmation.
+
+## Hardening Advisories (`hygiene`)
+
+Thirteen modules tagged `hygiene` report a *missing best-practice control* rather than an exploitable condition — absent security headers, weak TLS protocol/cipher policy, cookie attributes, and the CSP/HSTS/SRI/Permissions-Policy/COOP audits. They fire on nearly every response, so a crawl of any size produces one near-identical Info/Low row per URL.
+
+**They do not run below `--intensity deep`.** To include them:
+
+```bash
+vigolium scan -t https://example.com --intensity deep
+vigolium scan -t https://example.com --module-tag hygiene      # just this family
+vigolium config set dynamic-assessment.hygiene_modules true    # every scan
+```
+
+Full list: `security-headers-missing`, `permissions-policy-detect`, `cross-origin-isolation-audit`, `subresource-integrity-detect`, `password-autocomplete-detect`, `tls-protocol-cipher-audit`, `hsts-preload-audit`, `csp-weakness-audit`, `cors-vary-origin-missing`, `cookie-security-detect`, `mixed-content-detect`, `reverse-tabnabbing-detect`, `content-type-mismatch`.
+
+The Info-tier fingerprints, endpoint/param observers, and `surface-scoring` are not in this set — their output feeds tech tags, scoring, and active-module targeting, so they run at every intensity.
 
 ---
 
@@ -319,8 +335,8 @@ Passive modules analyze existing request/response pairs without sending new traf
 |---|---|---|---|---|---|
 | `auth-headers-detect` | Auth Headers Detect | Detects authorization headers in requests | Info | Tentative | `authentication`, `info-disclosure`, `light` |
 | `jwt-weak-secret` | JWT Weak Secret Detection | Detects JWTs with weak HMAC secrets, non-cryptographic signatures, and algorithm confusion | High | Firm | `authentication`, `cryptography`, `session`, `moderate` |
-| `cookie-security-detect` | Cookie Security Detect | Detects insecure cookie attributes in HTTP responses | Low | Certain | `session`, `misconfiguration`, `header-security`, `light` |
-| `password-autocomplete-detect` | Password Autocomplete Detect | Observes likely password fields without current-password or new-password semantics | Info | Certain | `authentication`, `misconfiguration`, `light` |
+| `cookie-security-detect` | Cookie Security Detect | Detects insecure cookie attributes in HTTP responses | Low | Certain | `session`, `misconfiguration`, `header-security`, `hygiene`, `light` |
+| `password-autocomplete-detect` | Password Autocomplete Detect | Observes likely password fields without current-password or new-password semantics | Info | Certain | `authentication`, `misconfiguration`, `hygiene`, `light` |
 
 ### Injection Signals
 
@@ -340,14 +356,14 @@ Passive modules analyze existing request/response pairs without sending new traf
 | `error-message-detect` | Error Message Detect | Observes corroborated framework or database errors in error responses | Info | Firm | `info-disclosure`, `light` |
 | `sourcemap-detect` | Sourcemap Exposure Detect | Detects exposed JavaScript sourcemaps in production responses | Low | Firm | `javascript`, `info-disclosure`, `light` |
 | `sensitive-url-params` | Sensitive URL Params | Detects sensitive data in URL query parameters | Medium | Firm | `info-disclosure`, `light` |
-| `content-type-mismatch` | Content Type Mismatch | Detects mismatches between Content-Type header and response body | Low | Firm | `misconfiguration`, `header-security`, `light` |
+| `content-type-mismatch` | Content Type Mismatch | Detects mismatches between Content-Type header and response body | Low | Firm | `misconfiguration`, `header-security`, `hygiene`, `light` |
 
 ### Security Headers & Configuration
 
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
-| `security-headers-missing` | Security Headers Missing | Detects missing/weak HTTP security headers and cacheable sensitive responses | Info | Certain | `header-security`, `misconfiguration`, `light` |
-| `mixed-content-detect` | Mixed Content Detect | Classifies insecure subresources and HTTP form submissions on HTTPS pages | Low | Certain | `misconfiguration`, `cryptography`, `light` |
+| `security-headers-missing` | Security Headers Missing | Detects missing/weak HTTP security headers and cacheable sensitive responses | Info | Certain | `header-security`, `misconfiguration`, `hygiene`, `light` |
+| `mixed-content-detect` | Mixed Content Detect | Classifies insecure subresources and HTTP form submissions on HTTPS pages | Low | Certain | `misconfiguration`, `cryptography`, `hygiene`, `light` |
 
 ### CORS & Redirect
 
@@ -428,11 +444,11 @@ Passive modules analyze existing request/response pairs without sending new traf
 
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
-| `csp-weakness-audit` | CSP Weakness Audit | Detects weak or unsafe Content-Security-Policy directives | Low | Firm | `header-security`, `misconfiguration`, `xss`, `light` |
-| `permissions-policy-detect` | Permissions Policy Detect | Detects missing or overly permissive Permissions-Policy headers | Info | Certain | `header-security`, `misconfiguration`, `light` |
-| `hsts-preload-audit` | HSTS Preload Audit | Audits Strict-Transport-Security header for preload readiness | Low | Certain | `header-security`, `cryptography`, `light` |
-| `subresource-integrity-detect` | Subresource Integrity Detect | Observes truly cross-origin scripts and stylesheets without valid SRI | Info | Certain | `header-security`, `javascript`, `light` |
-| `cors-vary-origin-missing` | CORS Vary Origin Missing | Detects dynamic CORS responses missing Vary: Origin header enabling cache poisoning | Low | Firm | `misconfiguration`, `header-security`, `cache-poisoning`, `light` |
+| `csp-weakness-audit` | CSP Weakness Audit | Detects weak or unsafe Content-Security-Policy directives | Low | Firm | `header-security`, `misconfiguration`, `xss`, `hygiene`, `light` |
+| `permissions-policy-detect` | Permissions Policy Detect | Detects missing or overly permissive Permissions-Policy headers | Info | Certain | `header-security`, `misconfiguration`, `hygiene`, `light` |
+| `hsts-preload-audit` | HSTS Preload Audit | Audits Strict-Transport-Security header for preload readiness | Low | Certain | `header-security`, `cryptography`, `hygiene`, `light` |
+| `subresource-integrity-detect` | Subresource Integrity Detect | Observes truly cross-origin scripts and stylesheets without valid SRI | Info | Certain | `header-security`, `javascript`, `hygiene`, `light` |
+| `cors-vary-origin-missing` | CORS Vary Origin Missing | Detects dynamic CORS responses missing Vary: Origin header enabling cache poisoning | Low | Firm | `misconfiguration`, `header-security`, `cache-poisoning`, `hygiene`, `light` |
 
 ### Cloud & Firebase
 

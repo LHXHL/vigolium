@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	neturl "net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -250,6 +249,8 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 		discoveryRecordWriter = database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
 	}
 
+	authWalls := newAuthWallCollector()
+
 	executorCfg := core.ExecutorConfig{
 		Workers:       r.options.Concurrency,
 		Services:      infra.svc,
@@ -261,6 +262,11 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 		ScopeMatcher:  infra.scopeMatcher,
 		PauseCtrl:     r.pauseCtrl,
 		OnTraffic:     r.makeOnTraffic("discovery"),
+		// Deparos' own client never follows a redirect, so this fires only for
+		// the items that reach fetchBaseline: CLI targets and request-only
+		// spec-endpoint stubs. Those are precisely the entry points most likely
+		// to be gated.
+		OnAuthWall: authWalls.Observe,
 		// Deparos already captured a response for each crawled URL and emits it on
 		// the work item (deparos_discovery.go saveAndEmit); reuse it instead of
 		// issuing a second identical request per URL. Request-only items (spec-
@@ -307,6 +313,7 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 		terminal.Orange(fmt.Sprintf("%d", executor.Processed())),
 		terminal.HiTeal(fmt.Sprintf("%v", r.options.DiscoverEnabled)),
 		terminal.HiPurple(fmtDuration(elapsed))))
+	r.reportAuthWalls("Discovery", authWalls)
 	zap.L().Info("Discovery: completed", zap.Int64("processed", executor.Processed()))
 
 	if discoverSrc != nil {
@@ -483,6 +490,8 @@ func (r *Runner) discoveryFuzzingSummary() string {
 func (r *Runner) seedCLITargets(ctx context.Context, infra *phaseInfra) error {
 	r.printPhaseStart("Seed", "ingest CLI targets into database (discovery skipped)")
 
+	authWalls := newAuthWallCollector()
+
 	executorCfg := core.ExecutorConfig{
 		Workers:       r.options.Concurrency,
 		Services:      infra.svc,
@@ -493,6 +502,7 @@ func (r *Runner) seedCLITargets(ctx context.Context, infra *phaseInfra) error {
 		ScopeMatcher:  infra.scopeMatcher,
 		PauseCtrl:     r.pauseCtrl,
 		OnTraffic:     r.makeOnTraffic("seed"),
+		OnAuthWall:    authWalls.Observe,
 		OnResult: func(result *output.ResultEvent) {
 			if err := r.output.Write(result); err != nil {
 				zap.L().Error("Failed to write result", zap.Error(err))
@@ -515,6 +525,7 @@ func (r *Runner) seedCLITargets(ctx context.Context, infra *phaseInfra) error {
 	zap.L().Info("Seed: CLI targets ingested", zap.Int64("processed", executor.Processed()))
 	r.printPhaseComplete("Seed", fmt.Sprintf("completed — %s items ingested",
 		terminal.Orange(fmt.Sprintf("%d", executor.Processed()))))
+	r.reportAuthWalls("Seed", authWalls)
 	return nil
 }
 
@@ -1069,13 +1080,12 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 			// near-empty result otherwise reads like the site has no content.
 			switch {
 			case result.OffHostRedirect && result.LandingIsLogin:
-				if lu, perr := neturl.Parse(result.LandingURL); perr == nil && lu.Host != "" {
-					ssoHosts = append(ssoHosts, lu.Host)
-				}
+				ssoHosts = append(ssoHosts, ssoHostsFromSpider(result.WallHosts, result.LandingURL)...)
 				zap.L().Warn("Spidering: start URL redirected off-host to a login wall",
 					zap.String("target", target),
-					zap.String("landing", result.LandingURL))
-				r.printPhaseDetail(fmt.Sprintf("%s %s redirected off-host to %s — likely an SSO/login wall. The crawler stays in scope, so little was discovered. Supply authentication (--auth) or add the redirect host to scope to crawl behind the login.",
+					zap.String("landing", result.LandingURL),
+					zap.Strings("wall_hosts", result.WallHosts))
+				r.printPhaseDetail(fmt.Sprintf("%s %s redirected off-host to %s — likely an SSO/login wall. The wall's host(s) are now out of scope, so little was discovered. Supply authentication (--auth) or add the redirect host to scope to crawl behind the login.",
 					terminal.Yellow(terminal.SymbolArrow),
 					terminal.Gray(target),
 					terminal.Yellow(result.LandingURL)))

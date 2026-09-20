@@ -42,6 +42,7 @@ type DiscoveryJSTangleConfig struct {
 	JobTimeout         string `yaml:"job_timeout"`
 	NormalInputMB      int    `yaml:"normal_input_mb"`
 	MaxASTInputMB      int    `yaml:"max_ast_input_mb"`
+	MaxUnpackInputMB   int    `yaml:"max_unpack_input_mb"`
 	HardInputMB        int    `yaml:"hard_input_mb"`
 	MaxRequestsPerFile int    `yaml:"max_requests_per_file"`
 	MaxASTNodes        int    `yaml:"max_ast_nodes"`
@@ -311,7 +312,7 @@ func DefaultDiscoveryConfig() *DiscoveryConfig {
 		JSTangle: DiscoveryJSTangleConfig{
 			ReplayMode: "exact", ReplaySafety: "read-only", WorkerCount: 0, MemoryBudgetMB: 768, CacheMB: 128,
 			WorkerMaxJobs: 100, WorkerMaxRSSMB: 1024, JobTimeout: "60s",
-			NormalInputMB: 1, MaxASTInputMB: 4, HardInputMB: 10, MaxRequestsPerFile: 500,
+			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 16, HardInputMB: 10, MaxRequestsPerFile: 500,
 			MaxASTNodes:   500_000,
 			MaxAssetDepth: 4, MaxAssetsPerParent: 64, MaxAssetsPerHost: 512, MaxAssetsTotal: 2048,
 		},

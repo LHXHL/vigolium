@@ -8,10 +8,45 @@ import (
 	"github.com/vigolium/vigolium/pkg/deparos/discovery/tracker"
 	"github.com/vigolium/vigolium/pkg/deparos/http"
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
 	"github.com/vigolium/vigolium/pkg/deparos/reqcache"
 	"github.com/vigolium/vigolium/pkg/deparos/scope"
 	"github.com/vigolium/vigolium/pkg/deparos/waf"
 )
+
+// TaskProvenance distinguishes a URL the application itself published from one
+// discovery guessed. It is the input to every gate whose job is to rein in
+// guessing without suppressing real assets.
+//
+// It is typed state rather than a string label because the two cannot be derived
+// from the task type: JSFetchTask carries both a bundle's referenced .js.map and
+// the JS-bundle sweep's name guesses, so keying the distinction on FoundByName()
+// exempts the guesses too.
+type TaskProvenance uint8
+
+const (
+	// ProvenanceGuessed is the safe default: a task that does not say otherwise is
+	// treated as guessing, so a new task type fails closed (gated) rather than
+	// silently bypassing the breaker.
+	ProvenanceGuessed TaskProvenance = iota
+	// ProvenanceReferenced means the application named this exact URL.
+	ProvenanceReferenced
+)
+
+// referencedTask is implemented by task types that know their own provenance.
+type referencedTask interface {
+	IsReferenced() bool
+}
+
+// TaskIsReferenced reports whether a task's URLs were published by the
+// application. Task types that track it answer directly; the rest fall back to
+// their provenance label.
+func TaskIsReferenced(task Task) bool {
+	if t, ok := task.(referencedTask); ok {
+		return t.IsReferenced()
+	}
+	return isReferencedProvenance(task.FoundByName())
+}
 
 // Task provides configuration and payloads for content discovery.
 // Tasks are immutable configuration objects - execution is handled by PayloadCoordinator.
@@ -143,6 +178,12 @@ type Callbacks struct {
 
 	ProcessAssetFacts func(ctx context.Context, parentURL string, source []byte, facts []jstangle.AssetReferenceFact)
 	ProcessSourceMap  func(ctx context.Context, mapURL *url.URL, content []byte)
+
+	// ProcessSourceMapCandidates queues the source maps an asset points at, or its
+	// conventional sibling when it points at none. The candidates arrive already
+	// selected and resolved (see sourcemap.CandidatesFor) rather than as raw bytes,
+	// so the body is scanned once per asset instead of once per consumer.
+	ProcessSourceMapCandidates func(ctx context.Context, parentURL string, candidates []sourcemap.Candidate)
 
 	// ScopeChecker validates if URLs are within scan scope.
 	// Used by redirect handler to filter out-of-scope redirect targets.

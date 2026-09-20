@@ -71,6 +71,9 @@ func NewSpiderSession(ctx context.Context, base SpiderConfig, repo RecordSaver) 
 	}
 	capture := network.New(writer, crawlerCfg.NoColor, base.Silent, base.Verbose,
 		base.IncludeResponseBody, base.IncludeHeaders, targetHost, "spider")
+	// Keep out-of-scope subresources out of the live log. The crawler wires its
+	// own view of this capture in crawlWithBrowser, which every seed goes through.
+	capture.ScopeFilter = base.ScopeFilter
 	// Keep several distinct query-value variants per endpoint shape (category/
 	// filter/tab/search links) rather than collapsing them to one representative.
 	capture.SetMaxParamValueVariants(crawlerCfg.MaxParamValueVariants)

@@ -81,9 +81,9 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 
 	// Host-sweep (probe) flags
 	flags.BoolVar(&scanOpts.ProbeEnabled, "probe", false, "Enable the host-sweep phase: one request per target, passive tech fingerprinting + surface scoring, no content discovery or fuzzing (same as 'vigolium run probe')")
-	flags.StringVar(&scanOpts.RedirectMode, "redirect-mode", "", "Which redirects to follow: off | same-host | same-apex | any (default any). 'same-apex' follows within the registrable domain, so www.example.com -> example.com follows but example.com -> tracker.example.net does not.")
+	flags.StringVar(&scanOpts.RedirectMode, "redirect-mode", "", "Which redirects to follow: off | same-host | same-apex | any (default any; 'run probe' defaults to same-apex). 'same-apex' follows within the registrable domain, so www.example.com -> example.com follows but example.com -> tracker.example.net does not. Every mode also stops at a login/SSO wall, whatever its host, and records the 3xx instead.")
 	flags.BoolVar(&scanOpts.TLSProbe, "tls-probe", false, "Probe each HTTPS target's TLS: negotiated version/cipher plus the leaf certificate (subject, SANs, issuer, validity, fingerprints), reported inline in --json output and not stored. Read by the probe phase.")
-	flags.BoolVar(&scanOpts.RecordRedirectChain, "record-redirect-chain", false, "Store every followed redirect hop as its own http_records row, chained by parent_uuid, instead of keeping only the final response. Read by the probe phase; on by default under 'run probe'.")
+	flags.BoolVar(&scanOpts.RecordRedirectChain, "record-redirect-chain", false, "Store a followed redirect's hops as their own http_records rows, chained by parent_uuid, instead of keeping only the final response. Canonical hops (scheme upgrade, trailing slash, www.) collapse into their destination row, and a chain stores at most 4 rows, keeping the first and the last. Read by the probe phase; on by default under 'run probe'.")
 
 	// Browser-based spidering flags
 	flags.BoolVar(&scanOpts.SpideringEnabled, "spider", false, "Enable browser-based spidering phase before scanning")

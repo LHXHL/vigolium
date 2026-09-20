@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when Permissions-Policy header is missing or contains overly permissive directives"
 	ModuleSeverity     = severity.Info
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"header-security", "misconfiguration", "light"}
+	ModuleTags         = []string{"header-security", "misconfiguration", "hygiene", "light"}
 )

@@ -63,43 +63,52 @@ func TestRedirectDetector_DetectRedirect(t *testing.T) {
 			expectedResolvedPath: "/new",
 		},
 		{
-			name:                 "303 redirect (not detected - only 301/302 handled)",
+			// 308 in particular is how CDNs and modern frameworks canonicalise
+			// a directory path; treating it as "not a redirect" lost the
+			// directory, its target and every name on the redirect path.
+			name:                 "303 trailing slash redirect",
 			originalURL:          "http://example.com/admin",
 			statusCode:           303,
 			locationHeader:       "/admin/",
 			depth:                0,
 			maxDepth:             16,
-			expectedIsRedirect:   false,
-			expectedIsTrailing:   false,
-			expectedShouldQueue:  false,
-			expectedShouldMark:   false,
-			expectedResolvedPath: "",
+			expectedIsRedirect:   true,
+			expectedIsTrailing:   true,
+			expectedShouldQueue:  true,
+			expectedShouldMark:   true,
+			expectedResolvedPath: "/admin/",
 		},
 		{
-			name:                 "307 redirect (not detected - only 301/302 handled)",
+			// 308 in particular is how CDNs and modern frameworks canonicalise
+			// a directory path; treating it as "not a redirect" lost the
+			// directory, its target and every name on the redirect path.
+			name:                 "307 trailing slash redirect",
 			originalURL:          "http://example.com/admin",
 			statusCode:           307,
 			locationHeader:       "/admin/",
 			depth:                0,
 			maxDepth:             16,
-			expectedIsRedirect:   false,
-			expectedIsTrailing:   false,
-			expectedShouldQueue:  false,
-			expectedShouldMark:   false,
-			expectedResolvedPath: "",
+			expectedIsRedirect:   true,
+			expectedIsTrailing:   true,
+			expectedShouldQueue:  true,
+			expectedShouldMark:   true,
+			expectedResolvedPath: "/admin/",
 		},
 		{
-			name:                 "308 redirect (not detected - only 301/302 handled)",
+			// 308 in particular is how CDNs and modern frameworks canonicalise
+			// a directory path; treating it as "not a redirect" lost the
+			// directory, its target and every name on the redirect path.
+			name:                 "308 trailing slash redirect",
 			originalURL:          "http://example.com/admin",
 			statusCode:           308,
 			locationHeader:       "/admin/",
 			depth:                0,
 			maxDepth:             16,
-			expectedIsRedirect:   false,
-			expectedIsTrailing:   false,
-			expectedShouldQueue:  false,
-			expectedShouldMark:   false,
-			expectedResolvedPath: "",
+			expectedIsRedirect:   true,
+			expectedIsTrailing:   true,
+			expectedShouldQueue:  true,
+			expectedShouldMark:   true,
+			expectedResolvedPath: "/admin/",
 		},
 		{
 			name:                 "301 with max depth reached",

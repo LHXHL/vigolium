@@ -18,6 +18,7 @@ import (
 	"github.com/vigolium/vigolium/internal/resources/wordlists"
 	deparosconfig "github.com/vigolium/vigolium/pkg/deparos/config"
 	"github.com/vigolium/vigolium/pkg/deparos/discovery"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
 	deparosstorage "github.com/vigolium/vigolium/pkg/deparos/storage"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit/specutil"
@@ -1147,10 +1148,27 @@ func (d *DeparosDiscoverySource) persistJSTangleSourceArtifacts(
 		zap.L().Debug("Failed to load recovered source-map artifacts", zap.Error(err))
 		return
 	}
-	stored := 0
+	var originAnchors map[string]string
+	stored, orphaned := 0, 0
 	for _, artifact := range artifacts {
+		if artifact.Content == "" {
+			continue
+		}
 		recordUUID := recordUUIDByURL[artifact.GeneratedURL]
-		if recordUUID == "" || artifact.Content == "" {
+		if recordUUID == "" {
+			// The generated asset has no record of its own. Stylesheets are the
+			// standing case: .css is excluded from body storage, so a recovered
+			// .scss/.less source had nowhere to attach and was silently dropped even
+			// though the crawl had already parsed it. Anchor it to the origin's own
+			// record instead — the artifact metadata still names the exact generated
+			// URL, so provenance is unchanged; only the storage anchor is coarser.
+			if originAnchors == nil {
+				originAnchors = originAnchorRecords(recordUUIDByURL)
+			}
+			recordUUID = originAnchors[originOf(artifact.GeneratedURL)]
+		}
+		if recordUUID == "" {
+			orphaned++
 			continue
 		}
 		metadata, marshalErr := json.Marshal(map[string]string{
@@ -1163,7 +1181,7 @@ func (d *DeparosDiscoverySource) persistJSTangleSourceArtifacts(
 			continue
 		}
 		if saveErr := saver.SaveAnalysisArtifact(
-			ctx, recordUUID, "source-map-original", artifact.SourcePath,
+			ctx, recordUUID, sourcemap.ArtifactKindOriginal, artifact.SourcePath,
 			"application/javascript", artifact.ContentSHA256, []byte(artifact.Content), string(metadata),
 		); saveErr != nil {
 			zap.L().Debug("Failed to promote source-map artifact", zap.String("source", artifact.SourcePath), zap.Error(saveErr))
@@ -1174,6 +1192,45 @@ func (d *DeparosDiscoverySource) persistJSTangleSourceArtifacts(
 	if stored > 0 {
 		zap.L().Info("Stored recovered source-map artifacts", zap.Int("count", stored))
 	}
+	if orphaned > 0 {
+		zap.L().Debug("Recovered source-map artifacts had no record to anchor to",
+			zap.Int("count", orphaned))
+	}
+}
+
+// originOf returns scheme://host for a URL, or "" when it has neither.
+func originOf(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+// originAnchorRecords picks one record per origin to anchor artifacts whose own
+// asset was not recorded. The shortest URL wins, which is the origin's root or
+// closest thing to it — stable regardless of crawl order.
+func originAnchorRecords(recordUUIDByURL map[string]string) map[string]string {
+	type anchor struct {
+		uuid   string
+		urlLen int
+	}
+	best := make(map[string]anchor, 4)
+	for recordURL, uuid := range recordUUIDByURL {
+		origin := originOf(recordURL)
+		if origin == "" || uuid == "" {
+			continue
+		}
+		if current, seen := best[origin]; seen && current.urlLen <= len(recordURL) {
+			continue
+		}
+		best[origin] = anchor{uuid: uuid, urlLen: len(recordURL)}
+	}
+	anchors := make(map[string]string, len(best))
+	for origin, a := range best {
+		anchors[origin] = a.uuid
+	}
+	return anchors
 }
 
 // extractSpecEndpoints scans discovered records for API specs (OpenAPI/Swagger/Postman/WSDL)

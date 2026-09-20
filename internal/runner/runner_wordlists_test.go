@@ -252,6 +252,64 @@ func TestFilterOutHosts(t *testing.T) {
 	}
 }
 
+// TestFilterOutHostsNormalizesBlockShapes pins that the block list works
+// whichever spelling a producer contributed — bare hostname or host:port — and
+// blocks the target host regardless of the port on the target URL.
+func TestFilterOutHostsNormalizesBlockShapes(t *testing.T) {
+	targets := []string{
+		"https://app.example.com/",
+		"https://idp.example.com/login",
+		"https://sso.example.net:8443/auth",
+	}
+	got := filterOutHosts(targets, []string{"idp.example.com", "sso.example.net:8443"})
+	if len(got) != 1 || got[0] != "https://app.example.com/" {
+		t.Errorf("filterOutHosts = %v, want only the app target", got)
+	}
+}
+
+func TestNormalizeSSOHost(t *testing.T) {
+	tests := map[string]string{
+		"SSO.Example.com":      "sso.example.com",
+		"sso.example.net:8443": "sso.example.net",
+		"  idp.example.org  ":  "idp.example.org",
+		"[2001:db8::1]:8443":   "2001:db8::1",
+		"":                     "",
+	}
+	for in, want := range tests {
+		if got := normalizeSSOHost(in); got != want {
+			t.Errorf("normalizeSSOHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestSSOHostsFromSpider pins the "whole chain, not just the landing" rule that
+// all three phases feeding the block list now share. An OAuth bounce crosses an
+// authorize endpoint on one host before reaching the login form on another, and
+// taking only the landing left the first host a fuzz target.
+func TestSSOHostsFromSpider(t *testing.T) {
+	got := ssoHostsFromSpider(
+		[]string{"idp.example.net", "SSO.example.com", "", "sso.example.com"},
+		"https://sso.example.com:8443/u/login/identifier?state=abc",
+	)
+	want := []string{"idp.example.net", "sso.example.com"}
+	if len(got) != len(want) {
+		t.Fatalf("ssoHostsFromSpider = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ssoHostsFromSpider[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// Landing alone, with no crawler-denied hosts, still yields the wall.
+	if got := ssoHostsFromSpider(nil, "https://idp.example.org/login"); len(got) != 1 || got[0] != "idp.example.org" {
+		t.Errorf("ssoHostsFromSpider(nil, landing) = %v, want [idp.example.org]", got)
+	}
+	if got := ssoHostsFromSpider(nil, ""); len(got) != 0 {
+		t.Errorf("ssoHostsFromSpider(nil, \"\") = %v, want empty", got)
+	}
+}
+
 func TestResolveDiscoveryWordlists_OperatorConfigWins(t *testing.T) {
 	t.Setenv(wordlistDirEnv, t.TempDir())
 

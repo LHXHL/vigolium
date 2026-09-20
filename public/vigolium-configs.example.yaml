@@ -685,18 +685,22 @@ scope:
   # This provides automatic host restriction from the -t target URL(s).
   #
   # Modes (example target: http://www.example.com):
-  #   "relaxed"  — host must contain the target's keyword (e.g. "example") (default);
-  #                matches examplesite.com, test-example.net, etc.
-  #   "all"      — no origin restriction
-  #   "balanced" — host must share the target's eTLD+1 (e.g. example.com);
+  #   "balanced" — host must share the target's eTLD+1 (e.g. example.com) (default);
   #                matches *.example.com but not examplesite.com
+  #   "all"      — no origin restriction
+  #   "relaxed"  — host must contain the target's keyword (e.g. "example");
+  #                matches examplesite.com, test-example.net, etc. Note this
+  #                admits every brand domain on every TLD, which in practice
+  #                means an organization's SSO/IdP and marketing estate — use it
+  #                for deliberate brand-wide recon, not for scanning one app.
   #   "strict"   — host must exactly match the target host;
   #                only www.example.com passes
   #
   # IP targets always use exact match regardless of mode.
   # Override with CLI flag: --scope-origin <mode>
-  # Default: relaxed
-  cli_origin_mode: relaxed
+  # Left commented out so the built-in default governs; uncomment to pin a mode.
+  # Default: balanced
+  # cli_origin_mode: balanced
 
   # Maximum request body size in bytes. Bodies exceeding this limit are
   # handled according to body_size_exceeded_action.

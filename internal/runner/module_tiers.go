@@ -1,9 +1,13 @@
 package runner
 
 import (
+	"fmt"
 	"strings"
 
+	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/modules"
+	"github.com/vigolium/vigolium/pkg/terminal"
+	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -46,6 +50,155 @@ func loginCredsPolicy(intensity string) (enabled, fullList bool) {
 	default: // "", "balanced", "standard"
 		return true, false
 	}
+}
+
+// hygieneModulesEnabled reports whether the hardening-advisory family (modules
+// tagged modules.TagHygiene — missing security headers, weak TLS protocol/cipher
+// policy, cookie attributes, CSP/HSTS/SRI audits) runs at this intensity.
+//
+// They are off below deep. Each fires on nearly every response of nearly every
+// host, so at the default intensity they produce one near-identical Info/Low row
+// per crawled URL and bury the exploitable findings — the same reasoning that
+// keeps the known-issue scan at critical+high by default (see
+// config.DefaultKnownIssueScanConfig). Nothing downstream consumes them: unlike
+// the Info-tier fingerprints and endpoint/param observers, no tech tag, surface
+// score, or active module reads a hygiene finding.
+//
+// The alias split mirrors intensityTierCeiling/loginCredsPolicy. Operators get
+// them back per-scan with --intensity deep, --module-tag hygiene, or
+// --module-id <id>, and globally with dynamic-assessment.hygiene_modules.
+func hygieneModulesEnabled(intensity string) bool {
+	switch strings.ToLower(strings.TrimSpace(intensity)) {
+	case "deep", "full":
+		return true
+	default: // "", "balanced", "standard", "quick", "lite"
+		return false
+	}
+}
+
+// resolveHygieneModules resolves whether hygiene modules run for this scan.
+// Precedence: an explicit config value (dynamic-assessment.hygiene_modules) wins
+// over the intensity default, so an operator who wants the hardening advisories
+// in every report — or who wants them suppressed even at deep — says so once.
+// Unset (nil) falls through to hygieneModulesEnabled.
+func resolveHygieneModules(opts *types.Options, settings *config.Settings) bool {
+	if settings != nil && settings.DynamicAssessment.HygieneModules != nil {
+		return *settings.DynamicAssessment.HygieneModules
+	}
+	intensity := ""
+	if opts != nil {
+		intensity = opts.Intensity
+	}
+	return hygieneModulesEnabled(intensity)
+}
+
+func (r *Runner) resolveHygieneModules() bool {
+	if r == nil {
+		return hygieneModulesEnabled("")
+	}
+	return resolveHygieneModules(r.options, r.settings)
+}
+
+// selectsHygieneModule reports whether an explicit module ID selection names at
+// least one hygiene module. `--module-tag hygiene` resolves to exact IDs for the
+// active category but leaves the passive category on the "all" sentinel, so
+// without this check the passive two-thirds of the family would be gated away by
+// the very selection that asked for it.
+func selectsHygieneModule(ids []string) bool {
+	if len(ids) == 0 || ids[0] == "all" {
+		return false
+	}
+	for _, m := range modules.GetActiveModulesByIDs(ids) {
+		if modules.IsHygieneModule(m.Tags()) {
+			return true
+		}
+	}
+	for _, m := range modules.GetPassiveModulesByIDs(ids) {
+		if modules.IsHygieneModule(m.Tags()) {
+			return true
+		}
+	}
+	return false
+}
+
+// HygieneGateActive reports whether a scan with these options and settings
+// suppresses the hardening-advisory family: the resolved policy says no AND the
+// operator has not named one of them explicitly.
+//
+// Exported because the CLI prints its own pre-scan banner before a Runner
+// exists, and a banner that counts modules the scan will not run makes the gate
+// look like a lost finding. Both banners and the module filter read this.
+func HygieneGateActive(opts *types.Options, settings *config.Settings) bool {
+	if opts == nil {
+		return false
+	}
+	return !resolveHygieneModules(opts, settings) &&
+		!selectsHygieneModule(opts.Modules) &&
+		!selectsHygieneModule(opts.PassiveModules)
+}
+
+func (r *Runner) hygieneGateActive() bool {
+	if r == nil {
+		return false
+	}
+	return HygieneGateActive(r.options, r.settings)
+}
+
+// countHygieneModules returns how many of the given modules carry TagHygiene.
+func countHygieneModules[T modules.Module](mods []T) int {
+	n := 0
+	for _, m := range mods {
+		if modules.IsHygieneModule(m.Tags()) {
+			n++
+		}
+	}
+	return n
+}
+
+// HygieneBannerCounts adjusts a scan banner's module counts for the
+// hardening-advisory gate and returns the note to append, empty when the family
+// runs. One implementation for the two pre-scan banners (CLI and runner).
+func HygieneBannerCounts(opts *types.Options, settings *config.Settings, active []modules.ActiveModule, passive []modules.PassiveModule) (activeCount, passiveCount int, note string) {
+	activeCount, passiveCount = len(active), len(passive)
+	if !HygieneGateActive(opts, settings) {
+		return activeCount, passiveCount, ""
+	}
+	activeHygiene, passiveHygiene := countHygieneModules(active), countHygieneModules(passive)
+	if activeHygiene+passiveHygiene == 0 {
+		return activeCount, passiveCount, ""
+	}
+	// Point at the knob that is actually holding them back: --intensity deep does
+	// nothing when the config already forced them off.
+	hint := "--intensity deep or --module-tag hygiene to include"
+	if settings != nil && settings.DynamicAssessment.HygieneModules != nil {
+		hint = "off via dynamic-assessment.hygiene_modules"
+	}
+	return activeCount - activeHygiene, passiveCount - passiveHygiene,
+		terminal.Gray(fmt.Sprintf("(%d hardening advisories off; %s)", activeHygiene+passiveHygiene, hint))
+}
+
+// filterHygieneModules drops modules tagged modules.TagHygiene and logs what was
+// suppressed. Shared by the active and passive filters; kind labels the log line.
+func filterHygieneModules[T modules.Module](r *Runner, mods []T, kind string) []T {
+	if len(mods) == 0 {
+		return mods
+	}
+	kept := make([]T, 0, len(mods))
+	dropped := make([]string, 0)
+	for _, m := range mods {
+		if modules.IsHygieneModule(m.Tags()) {
+			dropped = append(dropped, m.ID())
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if len(dropped) > 0 {
+		zap.L().Info(kind+" hardening-advisory modules suppressed (use --intensity deep, --module-tag hygiene, or dynamic-assessment.hygiene_modules)",
+			zap.String("intensity", r.intensityLabel()),
+			zap.Int("suppressed", len(dropped)),
+			zap.Strings("ids", dropped))
+	}
+	return kept
 }
 
 // intensityLabel returns the resolved intensity for logging, tolerating a nil
@@ -93,4 +246,15 @@ func (r *Runner) filterActiveModulesByTier(mods []modules.ActiveModule, ceiling 
 // but the gate is applied symmetrically for consistency.
 func (r *Runner) filterPassiveModulesByTier(mods []modules.PassiveModule, ceiling int) []modules.PassiveModule {
 	return filterModulesByTier(r, mods, ceiling, "Passive")
+}
+
+// filterActiveHygieneModules drops active hardening-advisory modules.
+func (r *Runner) filterActiveHygieneModules(mods []modules.ActiveModule) []modules.ActiveModule {
+	return filterHygieneModules(r, mods, "Active")
+}
+
+// filterPassiveHygieneModules drops passive hardening-advisory modules. Most of
+// the family is passive, so unlike the tier gate this one does real work.
+func (r *Runner) filterPassiveHygieneModules(mods []modules.PassiveModule) []modules.PassiveModule {
+	return filterHygieneModules(r, mods, "Passive")
 }

@@ -3,7 +3,9 @@ package runner
 import (
 	"testing"
 
+	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/modules"
+	"github.com/vigolium/vigolium/pkg/types"
 )
 
 func TestIntensityTierCeiling(t *testing.T) {
@@ -98,6 +100,270 @@ func TestFilterActiveModulesByTier(t *testing.T) {
 	got = ids(r.filterActiveModulesByTier(mods, modules.TierRankIntrusive))
 	if len(got) != len(mods) {
 		t.Errorf("intrusive ceiling dropped modules: %v", got)
+	}
+}
+
+func TestHygieneModulesEnabled(t *testing.T) {
+	cases := map[string]bool{
+		"":         false, // default (balanced)
+		"balanced": false,
+		"standard": false,
+		"quick":    false,
+		"lite":     false,
+		"deep":     true,
+		"full":     true,
+		"DEEP":     true,  // case-insensitive
+		" deep ":   true,  // whitespace-tolerant
+		"unknown":  false, // unknown falls back to balanced
+	}
+	for in, want := range cases {
+		if got := hygieneModulesEnabled(in); got != want {
+			t.Errorf("hygieneModulesEnabled(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// The config knob overrides the intensity default in both directions; unset
+// falls through to the intensity.
+func TestResolveHygieneModules(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name      string
+		intensity string
+		cfg       *bool
+		want      bool
+	}{
+		{"balanced, unset", "balanced", nil, false},
+		{"deep, unset", "deep", nil, true},
+		{"balanced, forced on", "balanced", &yes, true},
+		{"deep, forced off", "deep", &no, false},
+		{"quick, forced on", "quick", &yes, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			settings := config.DefaultSettings()
+			settings.DynamicAssessment.HygieneModules = c.cfg
+			r := &Runner{options: &types.Options{Intensity: c.intensity}, settings: settings}
+			if got := r.resolveHygieneModules(); got != c.want {
+				t.Errorf("resolveHygieneModules() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+type hygieneStubPassive struct {
+	modules.PassiveModule
+	id   string
+	tags []string
+}
+
+func (s hygieneStubPassive) ID() string     { return s.id }
+func (s hygieneStubPassive) Tags() []string { return s.tags }
+
+func TestFilterHygieneModules(t *testing.T) {
+	r := &Runner{}
+
+	active := []modules.ActiveModule{
+		tierStubActive{id: "sqli", tags: []string{"injection", "moderate"}},
+		tierStubActive{id: "tls-protocol-cipher-audit", tags: []string{"tls", "hygiene", "moderate"}},
+	}
+	got := make([]string, 0)
+	for _, m := range r.filterActiveHygieneModules(active) {
+		got = append(got, m.ID())
+	}
+	if !equalStrings(got, []string{"sqli"}) {
+		t.Errorf("active filter = %v, want [sqli]", got)
+	}
+
+	passive := []modules.PassiveModule{
+		hygieneStubPassive{id: "secret-detect", tags: []string{"secrets", "light"}},
+		hygieneStubPassive{id: "security-headers-missing", tags: []string{"header-security", "HYGIENE", "light"}},
+	}
+	got = got[:0]
+	for _, m := range r.filterPassiveHygieneModules(passive) {
+		got = append(got, m.ID())
+	}
+	if !equalStrings(got, []string{"secret-detect"}) {
+		t.Errorf("passive filter = %v, want [secret-detect]", got)
+	}
+}
+
+// `--module-tag hygiene` resolves to exact IDs for the active category but
+// leaves passive on the "all" sentinel, so the gate must recognize an explicit
+// selection that names a hygiene module — otherwise the twelve passive members
+// of the family are dropped by the very flag that asked for them.
+func TestSelectsHygieneModule(t *testing.T) {
+	cases := []struct {
+		name string
+		ids  []string
+		want bool
+	}{
+		{"nil", nil, false},
+		{"all sentinel", []string{"all"}, false},
+		{"unrelated ids", []string{"sqli-error-based", "xss-stored"}, false},
+		{"active hygiene id", []string{"tls-protocol-cipher-audit"}, true},
+		{"passive hygiene id", []string{"security-headers-missing"}, true},
+		{"mixed", []string{"sqli-error-based", "csp-weakness-audit"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := selectsHygieneModule(c.ids); got != c.want {
+				t.Errorf("selectsHygieneModule(%v) = %v, want %v", c.ids, got, c.want)
+			}
+		})
+	}
+}
+
+// The shipped hardening-advisory family. Pinned here because the gate is a
+// behavior change an operator sees in their report: adding a module to this list
+// silently removes its findings from every default-intensity scan, so the set
+// must be a deliberate edit rather than a stray tag. Each member reports a
+// missing best-practice control, and nothing downstream reads its output.
+func TestHygieneFamilyMembership(t *testing.T) {
+	want := map[string]bool{
+		"security-headers-missing":     true,
+		"permissions-policy-detect":    true,
+		"cross-origin-isolation-audit": true,
+		"subresource-integrity-detect": true,
+		"password-autocomplete-detect": true,
+		"tls-protocol-cipher-audit":    true,
+		"hsts-preload-audit":           true,
+		"csp-weakness-audit":           true,
+		"cors-vary-origin-missing":     true,
+		"cookie-security-detect":       true,
+		"mixed-content-detect":         true,
+		"reverse-tabnabbing-detect":    true,
+		"content-type-mismatch":        true,
+	}
+
+	tagged := make(map[string]bool)
+	for _, m := range modules.GetActiveModules() {
+		if modules.IsHygieneModule(m.Tags()) {
+			tagged[m.ID()] = true
+		}
+	}
+	for _, m := range modules.GetPassiveModules() {
+		if modules.IsHygieneModule(m.Tags()) {
+			tagged[m.ID()] = true
+		}
+	}
+
+	for id := range want {
+		if !tagged[id] {
+			t.Errorf("module %q is missing the %q tag — it will keep firing at the default intensity", id, modules.TagHygiene)
+		}
+	}
+	for id := range tagged {
+		if !want[id] {
+			t.Errorf("module %q is newly tagged %q — its findings now disappear below --intensity deep; add it to this list if that is intended",
+				id, modules.TagHygiene)
+		}
+	}
+}
+
+// The hygiene family must not swallow modules whose Info/Low output feeds the
+// rest of the pipeline (tech tags, surface scoring, active-module targeting), nor
+// clickjacking-detect, which stays on at Medium.
+func TestHygieneFamilyExcludesPipelineInputs(t *testing.T) {
+	mustRun := []string{
+		"surface-scoring",
+		"endpoint-classifier",
+		"input-reflection-detect",
+		"software-version-header",
+		"clickjacking-detect",
+		"secret-detect",
+		"sourcemap-detect",
+	}
+
+	byID := make(map[string]modules.Module)
+	for _, m := range modules.GetActiveModules() {
+		byID[m.ID()] = m
+	}
+	for _, m := range modules.GetPassiveModules() {
+		byID[m.ID()] = m
+	}
+
+	for _, id := range mustRun {
+		m, ok := byID[id]
+		if !ok {
+			t.Errorf("module %q not found in the registry", id)
+			continue
+		}
+		if modules.IsHygieneModule(m.Tags()) {
+			t.Errorf("module %q must not be tagged %q — it runs at every intensity; tags=%v",
+				id, modules.TagHygiene, m.Tags())
+		}
+	}
+}
+
+// End-to-end over the real registry: the selection path must drop the family at
+// the default intensity, keep it at deep, and honor every documented escape
+// hatch. The unit tests above pin each decision; this pins that they are wired
+// into getModulesToExecute (both categories, in the right order relative to the
+// "all"-only rule).
+func TestGetModulesToExecute_HygieneGate(t *testing.T) {
+	forceOn := true
+
+	countHygiene := func(active []modules.ActiveModule, passive []modules.PassiveModule) int {
+		n := 0
+		for _, m := range active {
+			if modules.IsHygieneModule(m.Tags()) {
+				n++
+			}
+		}
+		for _, m := range passive {
+			if modules.IsHygieneModule(m.Tags()) {
+				n++
+			}
+		}
+		return n
+	}
+
+	all := []string{"all"}
+	tagResolved := modules.ResolveModuleTags([]string{modules.TagHygiene})
+	if len(tagResolved) == 0 {
+		t.Fatal("no modules carry the hygiene tag")
+	}
+
+	cases := []struct {
+		name           string
+		intensity      string
+		activeIDs      []string
+		passiveIDs     []string
+		cfg            *bool
+		wantSuppressed bool
+	}{
+		{"balanced suppresses", "balanced", all, all, nil, true},
+		{"quick suppresses", "quick", all, all, nil, true},
+		{"deep keeps", "deep", all, all, nil, false},
+		{"config forces on at balanced", "balanced", all, all, &forceOn, false},
+		// --module-tag hygiene: active narrows to exact IDs, passive stays "all".
+		{"module-tag hygiene keeps both sides", "balanced", tagResolved, all, nil, false},
+		// --module-id <hygiene id>: both categories narrow to exact IDs.
+		{"module-id keeps", "balanced", []string{"security-headers-missing"}, []string{"security-headers-missing"}, nil, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			settings := config.DefaultSettings()
+			settings.DynamicAssessment.HygieneModules = c.cfg
+			r := &Runner{
+				options: &types.Options{
+					Intensity:      c.intensity,
+					Modules:        c.activeIDs,
+					PassiveModules: c.passiveIDs,
+				},
+				settings: settings,
+			}
+			active, passive := r.getModulesToExecute()
+			got := countHygiene(active, passive)
+			if c.wantSuppressed && got != 0 {
+				t.Errorf("expected the hygiene family suppressed, still got %d module(s)", got)
+			}
+			if !c.wantSuppressed && got == 0 {
+				t.Error("expected the hygiene family to run, got none")
+			}
+		})
 	}
 }
 

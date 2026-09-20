@@ -103,7 +103,7 @@ func NewScopeMatcher(cfg ScopeConfig, targetHosts ...string) *ScopeMatcher {
 	// Set up origin mode filtering
 	mode := strings.ToLower(strings.TrimSpace(cfg.CLIOriginMode))
 	if mode == "" {
-		mode = "relaxed"
+		mode = DefaultCLIOriginMode
 	}
 	m.originMode = mode
 	if mode != "all" && len(targetHosts) > 0 {
@@ -122,26 +122,34 @@ func NewScopeMatcher(cfg ScopeConfig, targetHosts ...string) *ScopeMatcher {
 // large maps that nothing would ever read.
 func buildOriginIndex(targets []originTarget, mode string) originIndex {
 	idx := originIndex{exactHosts: make(map[string]struct{}, len(targets))}
-	softened := mode == "balanced" || mode == "relaxed"
-	if softened {
+	// hostMatchesOrigin reads etldPlus1 only in the balanced arm and keywords only
+	// in the relaxed arm — never both — so build strictly the one that mode asks
+	// for. Building both would retain a large map nothing reads, which is the very
+	// thing this index exists to avoid.
+	wantETLD := mode == "balanced"
+	wantKeywords := mode == "relaxed"
+	if wantETLD {
 		idx.etldPlus1 = make(map[string]struct{}, len(targets))
 	}
-	seenKeyword := make(map[string]struct{}, len(targets))
+	var seenKeyword map[string]struct{}
+	if wantKeywords {
+		seenKeyword = make(map[string]struct{}, len(targets))
+	}
 	for i := range targets {
 		ot := &targets[i]
 		idx.exactHosts[ot.exactHost] = struct{}{}
 		// IPs never soften into a domain: they match exactly in every mode, and
 		// parseOriginTargets leaves both derived fields empty for them.
-		if ot.isIP || !softened {
+		if ot.isIP {
 			continue
 		}
-		if ot.etldPlus1 != "" {
+		if wantETLD && ot.etldPlus1 != "" {
 			idx.etldPlus1[ot.etldPlus1] = struct{}{}
 		}
 		// Checked separately from etldPlus1 rather than folded into it: a
 		// registrable domain can exist while its leading label is empty, and
 		// relaxed mode falls back to the exact host in exactly that case.
-		if ot.keyword == "" {
+		if !wantKeywords || ot.keyword == "" {
 			continue
 		}
 		if _, dup := seenKeyword[ot.keyword]; !dup {

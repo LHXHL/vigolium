@@ -10,9 +10,9 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/browser"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/form"
-	"github.com/vigolium/vigolium/pkg/spitolas/loginsig"
 )
 
 // maxLoginCredAttempts bounds how many credential pairs are submitted against a
@@ -177,6 +177,19 @@ func (c *Crawler) attemptLoginCredentials(ctx context.Context, page *browser.Pag
 	host := hostOf(loginURL)
 	if host == "" {
 		host = c.config.URL.Hostname()
+	}
+
+	// Never spray a form on a host that is not the target itself. The
+	// loginActionInScope check below cannot catch this case: it compares the
+	// form's action against the *page's* host, so when the page IS a third-party
+	// identity provider the action is same-host and passes. That gap turned an
+	// SSO bounce into repeated credential POSTs against someone else's IdP —
+	// traffic indistinguishable from credential stuffing, aimed at a host that
+	// was never in the engagement.
+	if !c.isTargetHost(host) {
+		zap.L().Debug("Login-cred: page host is not the target, not spraying",
+			zap.String("host", host), zap.String("login_url", loginURL))
+		return
 	}
 
 	// Cheap short-circuit: a host already sprayed this crawl needs no re-probe.
@@ -351,7 +364,7 @@ func (c *Crawler) submitLoginAttempt(ctx context.Context, page *browser.Page, us
 
 // loginLooksSucceeded judges whether the page transitioned out of the login
 // state after a submission: the top-level URL moved to a non-login page, or the
-// password field disappeared and a logout affordance appeared. The loginsig body
+// password field disappeared and a logout affordance appeared. The authsig body
 // check cross-guards against a page that merely re-rendered the login form.
 func (c *Crawler) loginLooksSucceeded(page *browser.Page, urlBefore string) bool {
 	raw, err := page.Eval(loginStateProbeScript)
@@ -368,11 +381,11 @@ func (c *Crawler) loginLooksSucceeded(page *browser.Page, urlBefore string) bool
 	}
 
 	// Left the login state entirely: navigated to a new URL that no longer holds
-	// a password field. Only here is the (heavier) full-body loginsig check worth
+	// a password field. Only here is the (heavier) full-body authsig check worth
 	// fetching, to rule out a re-rendered login form under a changed URL.
 	if urlChanged := st.URL != "" && st.URL != urlBefore; urlChanged && !st.HasPassword {
 		html, _ := page.HTML()
-		if !loginsig.BodyLooksLikeLogin([]byte(html)) {
+		if !authsig.BodyLooksLikeLogin([]byte(html)) {
 			return true
 		}
 	}

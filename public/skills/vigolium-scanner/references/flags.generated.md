@@ -1068,8 +1068,15 @@ Unminify and unpack a JavaScript bundle into readable source
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--deadline` | - | duration | `0s` | Analysis deadline (0 = engine default) |
 | `--extract` | - | bool | `false` | Also extract endpoints/requests (a full analysis pass); included in -j output |
+| `--max-ast-nodes` | - | int | `0` | Maximum parsed AST nodes before the analysis degrades to a per-module scan (0 = engine default) |
+| `--max-input-mb` | - | int | `0` | Lower the input size limit, in MiB; cannot raise it above the service ceiling (0 = engine default) |
+| `--modules` | - | string | - | Write each recovered bundle module to its own file under this directory |
+| `--output` | `-o` | string | - | Write the beautified source to this file instead of stdout |
+| `--profile` | - | string | - | Analysis profile (beautify, endpoints, discovery, discovery-lite, full, inspect, dom-security, legacy); default depends on --extract |
 | `--timeout` | - | duration | `30s` | Timeout for fetching a URL argument |
+| `--unpack-modules` | - | bool | `false` | Unpack a detected bundle and re-scan each module for endpoints (implies --extract) |
 
 ## vigolium kit jwt-crack
 
@@ -1431,8 +1438,8 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
 | `--probe` | - | bool | `false` | Enable the host-sweep phase: one request per target, passive tech fingerprinting + surface scoring, no content discovery or fuzzing (same as 'vigolium run probe') |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
-| `--record-redirect-chain` | - | bool | `false` | Store every followed redirect hop as its own http_records row, chained by parent_uuid, instead of keeping only the final response. Read by the probe phase; on by default under 'run probe'. |
-| `--redirect-mode` | - | string | - | Which redirects to follow: off \| same-host \| same-apex \| any (default any). 'same-apex' follows within the registrable domain, so www.example.com -> example.com follows but example.com -> tracker.example.net does not. |
+| `--record-redirect-chain` | - | bool | `false` | Store a followed redirect's hops as their own http_records rows, chained by parent_uuid, instead of keeping only the final response. Canonical hops (scheme upgrade, trailing slash, www.) collapse into their destination row, and a chain stores at most 4 rows, keeping the first and the last. Read by the probe phase; on by default under 'run probe'. |
+| `--redirect-mode` | - | string | - | Which redirects to follow: off \| same-host \| same-apex \| any (default any; 'run probe' defaults to same-apex). 'same-apex' follows within the registrable domain, so www.example.com -> example.com follows but example.com -> tracker.example.net does not. Every mode also stops at a login/SSO wall, whatever its host, and records the 3xx instead. |
 | `--report-url` | - | string | - | URL for the "Raw Report URL" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL) |
 | `--required-only` | - | bool | `false` | Parse only required fields from input format (ignore optional) |
 | `--resume` | - | bool | `false` | Resume a prior -S -T --split-by-host -P run from its progress manifest (<output>.progress.json): skip targets that already completed cleanly and scan only the remainder. Run bare ('vigolium scan --resume', no other flags) to auto-discover the *.progress.json in the current directory and relaunch the saved run from it (pass -o <prefix> to disambiguate when several exist) |
@@ -1520,8 +1527,8 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
 | `--probe` | - | bool | `false` | Enable the host-sweep phase: one request per target, passive tech fingerprinting + surface scoring, no content discovery or fuzzing (same as 'vigolium run probe') |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
-| `--record-redirect-chain` | - | bool | `false` | Store every followed redirect hop as its own http_records row, chained by parent_uuid, instead of keeping only the final response. Read by the probe phase; on by default under 'run probe'. |
-| `--redirect-mode` | - | string | - | Which redirects to follow: off \| same-host \| same-apex \| any (default any). 'same-apex' follows within the registrable domain, so www.example.com -> example.com follows but example.com -> tracker.example.net does not. |
+| `--record-redirect-chain` | - | bool | `false` | Store a followed redirect's hops as their own http_records rows, chained by parent_uuid, instead of keeping only the final response. Canonical hops (scheme upgrade, trailing slash, www.) collapse into their destination row, and a chain stores at most 4 rows, keeping the first and the last. Read by the probe phase; on by default under 'run probe'. |
+| `--redirect-mode` | - | string | - | Which redirects to follow: off \| same-host \| same-apex \| any (default any; 'run probe' defaults to same-apex). 'same-apex' follows within the registrable domain, so www.example.com -> example.com follows but example.com -> tracker.example.net does not. Every mode also stops at a login/SSO wall, whatever its host, and records the 3xx instead. |
 | `--report-url` | - | string | - | URL for the "Raw Report URL" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL) |
 | `--required-only` | - | bool | `false` | Parse only required fields from input format (ignore optional) |
 | `--resume` | - | bool | `false` | Resume a prior -S -T --split-by-host -P run from its progress manifest (<output>.progress.json): skip targets that already completed cleanly and scan only the remainder. Run bare ('vigolium scan --resume', no other flags) to auto-discover the *.progress.json in the current directory and relaunch the saved run from it (pass -o <prefix> to disambiguate when several exist) |

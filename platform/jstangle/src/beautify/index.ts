@@ -44,6 +44,16 @@ export function looksWorthBeautifying(code: string): boolean {
   return avgLineLen >= MINIFIED_AVG_LINE_LEN;
 }
 
+/**
+ * The section header that separates recovered modules in the assembled
+ * document. Consumers split the document back into per-module files by walking
+ * modulePaths and matching each banner in order, so the format is part of the
+ * contract rather than cosmetic.
+ */
+export function moduleBanner(path: string, isEntry: boolean): string {
+  return `// ===== ${path}${isEntry ? ' (entry)' : ''} =====`;
+}
+
 export interface UnpackedBundle {
   /** Detected bundle format: 'webpack', 'browserify', ... or 'none'. */
   format: string;
@@ -94,15 +104,18 @@ export async function beautifyBundle(
   const { format, modules, code: unminified } = pre ?? await unpackBundle(code);
 
   let content: string;
+  // Entry module first. `sorted` is also what modulePaths reports, so a consumer
+  // can walk the paths and the document's sections in lockstep - splitting the
+  // assembled document back into files needs that correspondence to hold.
+  const sorted = [...modules].sort((a, b) =>
+    a.isEntry === b.isEntry ? 0 : a.isEntry ? -1 : 1,
+  );
   if (modules.length > 0) {
-    // Assemble a single readable document, entry module first, each section
-    // headed by its recovered path so the reader (and linkfinder) sees real
-    // ./src/... / ./pages/... route hints.
-    const sorted = [...modules].sort((a, b) =>
-      a.isEntry === b.isEntry ? 0 : a.isEntry ? -1 : 1,
-    );
+    // Assemble a single readable document, each section headed by its recovered
+    // path so the reader (and linkfinder) sees real ./src/... / ./pages/...
+    // route hints.
     content = sorted
-      .map((m) => `// ===== ${m.path}${m.isEntry ? ' (entry)' : ''} =====\n${m.content}`)
+      .map((m) => `${moduleBanner(m.path, m.isEntry)}\n${m.content}`)
       .join('\n\n');
   } else {
     content = unminified;
@@ -112,7 +125,7 @@ export async function beautifyBundle(
     changed: content.trim() !== code.trim(),
     format,
     moduleCount: modules.length,
-    modulePaths: modules.map((m) => m.path),
+    modulePaths: sorted.map((m) => m.path),
     content,
   };
   log('format=%s modules=%d changed=%s', result.format, result.moduleCount, result.changed);

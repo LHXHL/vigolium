@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when an HTTP response lacks recommended security headers, uses a weak Referrer-Policy, or serves cacheable sensitive content"
 	ModuleSeverity     = severity.Info
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"header-security", "misconfiguration", "light"}
+	ModuleTags         = []string{"header-security", "misconfiguration", "hygiene", "light"}
 )

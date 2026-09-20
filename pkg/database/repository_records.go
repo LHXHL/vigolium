@@ -26,19 +26,56 @@ import (
 // Returns the UUID of the saved record. If a matching record already exists (same method,
 // hostname, path, URL, and request body), the existing UUID is returned without inserting.
 func (r *Repository) SaveRecord(ctx context.Context, httpRR *httpmsg.HttpRequestResponse, source string, projectUUID string) (string, error) {
-	return r.SaveRecordWithParent(ctx, httpRR, source, projectUUID, "")
+	return r.SaveRecordWithLineage(ctx, httpRR, source, projectUUID, RecordLineage{})
 }
 
-// SaveRecordWithParent is SaveRecord with an explicit parent_uuid link, used to
-// chain the hops of a followed redirect into one walkable sequence.
+// RecordLineage is the chain metadata one record carries: where it sits in a
+// redirect chain, and which submitted target the chain started from.
 //
-// On a duplicate hit the existing row's parent is BACKFILLED but never
-// overwritten (see AdoptRecordParent). A row can lose the race to its own
-// chain: a passive module reporting on the final response persists it as
-// finding evidence before the item's own save runs, and that earlier row then
-// wins the dedup — leaving the last link of the chain dangling unless the
-// parent is applied after the fact.
-func (r *Repository) SaveRecordWithParent(ctx context.Context, httpRR *httpmsg.HttpRequestResponse, source string, projectUUID string, parentUUID string) (string, error) {
+// Grouped into a struct rather than added to the parameter lists because the
+// four fields are one fact about one row and are always decided together — a
+// hop's parent, root and target all come from the same walk, and splitting them
+// across positional arguments is how a caller ends up passing a root from one
+// chain with a parent from another.
+type RecordLineage struct {
+	// ParentUUID is the record this one redirected from. Empty for a root.
+	ParentUUID string
+	// RootUUID is the first record of the chain. Empty means "this row is the
+	// root", which applyTo resolves to the row's own UUID.
+	RootUUID string
+	// Target is the submitted input line the chain started from, verbatim.
+	Target string
+	// ChainTruncated marks a row whose destination is not the row after it.
+	ChainTruncated bool
+}
+
+// applyTo stamps the lineage onto a record.
+//
+// An empty RootUUID is left ALONE rather than written, because the two callers
+// run it at opposite ends of conversion: the batched writer applies lineage
+// during PrepareIdentity, before the UUID exists, while the repository applies
+// it after a full conversion that has already self-rooted the row. Writing the
+// empty value would undo that second one, leaving a root row with no root.
+// EnrichFromHttpRequestResponse fills whichever is still empty.
+func (l RecordLineage) applyTo(rec *HTTPRecord) {
+	if rec == nil {
+		return
+	}
+	rec.ParentUUID = l.ParentUUID
+	rec.Target = l.Target
+	rec.ChainTruncated = l.ChainTruncated
+	if l.RootUUID != "" {
+		rec.RootUUID = l.RootUUID
+	}
+}
+
+// SaveRecordWithLineage is SaveRecord carrying the record's full chain
+// metadata.
+//
+// On a duplicate hit the existing row is ADOPTED rather than replaced: see
+// AdoptRecord for which columns that repairs and why the row it repairs is so
+// often the one that matters.
+func (r *Repository) SaveRecordWithLineage(ctx context.Context, httpRR *httpmsg.HttpRequestResponse, source string, projectUUID string, lineage RecordLineage) (string, error) {
 	if httpRR == nil || httpRR.Request() == nil {
 		return "", fmt.Errorf("invalid HttpRequestResponse")
 	}
@@ -49,10 +86,10 @@ func (r *Repository) SaveRecordWithParent(ctx context.Context, httpRR *httpmsg.H
 	}
 	record.Source = source
 	record.ProjectUUID = defaultProjectUUID(projectUUID)
-	record.ParentUUID = parentUUID
+	lineage.applyTo(record)
 
 	if existingUUID, err := r.findDuplicateRecord(ctx, record); err == nil && existingUUID != "" {
-		r.AdoptRecordParent(ctx, existingUUID, parentUUID)
+		r.AdoptRecord(ctx, existingUUID, lineage, source)
 		return existingUUID, nil
 	}
 
@@ -76,19 +113,90 @@ func (r *Repository) SaveRecordWithParent(ctx context.Context, httpRR *httpmsg.H
 // Best-effort: a failure to link leaves a shorter chain, which reads correctly
 // as less lineage rather than as wrong lineage, and must not fail the save that
 // prompted it.
+//
+// A thin wrapper on AdoptRecord, which applies every column in one statement;
+// kept because "link this orphan to its parent" is a question callers ask on
+// its own.
 func (r *Repository) AdoptRecordParent(ctx context.Context, uuid, parentUUID string) {
-	if uuid == "" || parentUUID == "" || uuid == parentUUID {
+	r.AdoptRecord(ctx, uuid, RecordLineage{ParentUUID: parentUUID}, "")
+}
+
+// evidenceRecordKinds are the sources that mean "this row reached the database
+// as a finding's evidence" rather than "a phase fetched it". One list, read by
+// recordSourceRequiresExactIdentity on the way in and by AdoptRecord's promote
+// clause on the way out — spelled twice, a fourth kind would be treated as
+// non-promotable in one direction and non-displaceable in the other, leaving
+// rows that can never be relabelled.
+var evidenceRecordKinds = []string{RecordKindFinding, RecordKindCandidate, RecordKindObservation}
+
+// AdoptRecord repairs a row that lost a dedup race, in ONE statement: it
+// backfills the chain metadata the winning row never had, and promotes a
+// finding-evidence source to the crawl source of the phase that just fetched it.
+//
+// Why any of this is needed. A passive module persists the response it reports
+// on BEFORE the item's own save runs (processItem runs the passive stage
+// first), so on a passive-heavy phase the evidence row routinely wins the
+// dedup and the phase's own row — its lineage and its source label — is
+// discarded. The visible symptom was that `vigolium traffic --source probe`
+// returned a sweep's redirect hops and hid every page it actually fetched.
+//
+// The deeper fix is to save before the passive stage rather than repair
+// afterwards; that is a behavioural change to processItem and belongs in its
+// own commit. Until then this is the repair, and it must stay cheap: it runs
+// once per deduped record, which on a sweep is most of them.
+//
+// One statement, not five. Every column here is conditional in SQL rather than
+// in Go, so a no-op costs nothing beyond the row lock and the caller pays one
+// round trip instead of one per column. Each condition encodes the same
+// promote-only contract:
+//
+//   - parent_uuid, root_uuid, target: backfilled when empty, NEVER overwritten.
+//     A shared redirect destination already belongs to the chain it was first
+//     recorded in; re-rooting it to the most recent traversal would rewrite
+//     history for every earlier chain through the same URL. A root_uuid equal
+//     to the row's own uuid counts as empty — that is the "no chain" default.
+//   - chain_truncated: only ever raised. A row once known to be cut short does
+//     not become whole because a later, shorter walk reached it.
+//   - source: a finding-evidence source is displaced because it describes HOW
+//     the row first reached the database, not what the row IS. A crawl source
+//     is never displaced by another crawl source, or "which phase found this"
+//     would degrade into "which phase saw it last".
+//
+// Best-effort: a failure leaves the row readable under its old lineage, which
+// reads as less information rather than wrong information, and must not fail
+// the save that prompted it.
+func (r *Repository) AdoptRecord(ctx context.Context, uuid string, lineage RecordLineage, source string) {
+	if uuid == "" {
 		return
 	}
-	_, err := r.db.NewUpdate().
-		Model((*HTTPRecord)(nil)).
-		Set("parent_uuid = ?", parentUUID).
-		Where("uuid = ?", uuid).
-		Where("parent_uuid IS NULL OR parent_uuid = ''").
-		Exec(ctx)
-	if err != nil {
-		zap.L().Debug("failed to backfill record parent",
-			zap.String("uuid", uuid), zap.String("parent", parentUUID), zap.Error(err))
+	q := r.db.NewUpdate().Model((*HTTPRecord)(nil)).Where("uuid = ?", uuid)
+	set := false
+	if lineage.ParentUUID != "" && lineage.ParentUUID != uuid {
+		q = q.Set("parent_uuid = CASE WHEN parent_uuid IS NULL OR parent_uuid = '' THEN ? ELSE parent_uuid END", lineage.ParentUUID)
+		set = true
+	}
+	if lineage.RootUUID != "" && lineage.RootUUID != uuid {
+		q = q.Set("root_uuid = CASE WHEN root_uuid IS NULL OR root_uuid IN ('', uuid) THEN ? ELSE root_uuid END", lineage.RootUUID)
+		set = true
+	}
+	if lineage.Target != "" {
+		q = q.Set("target = CASE WHEN target IS NULL OR target = '' THEN ? ELSE target END", lineage.Target)
+		set = true
+	}
+	if lineage.ChainTruncated {
+		q = q.Set("chain_truncated = ?", true)
+		set = true
+	}
+	if source != "" && !recordSourceRequiresExactIdentity(source) {
+		q = q.Set("source = CASE WHEN source IN (?) THEN ? ELSE source END", bun.List(evidenceRecordKinds), source)
+		set = true
+	}
+	if !set {
+		return
+	}
+	if _, err := q.Exec(ctx); err != nil {
+		zap.L().Debug("failed to adopt record lineage",
+			zap.String("uuid", uuid), zap.String("source", source), zap.Error(err))
 	}
 }
 
@@ -188,12 +296,7 @@ func recordDedupTuple(method, host, path, url string) string {
 // keep the coarse no-body key so repeated identical fetches still collapse and the
 // record store isn't inflated by every header-varied crawl request.
 func recordSourceRequiresExactIdentity(source string) bool {
-	switch source {
-	case RecordKindFinding, RecordKindCandidate, RecordKindObservation:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(evidenceRecordKinds, source)
 }
 
 // dedupCandidate is the narrow projection findDuplicateRecordUUIDs scans — only

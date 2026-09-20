@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when the module completes a TLS handshake with the host at a deprecated protocol version or weak cipher suite — re-verified with a second independent handshake before reporting"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"tls", "crypto", "transport", "misconfiguration", "moderate"}
+	ModuleTags         = []string{"tls", "crypto", "transport", "misconfiguration", "hygiene", "moderate"}
 )

@@ -209,7 +209,12 @@ func (t *TargetSource) Next(ctx context.Context) (*work.WorkItem, error) {
 				zap.String("target", target), zap.Error(err))
 			continue
 		}
-		return work.NewWithModules(rr, t.enableModules), nil
+		item := work.NewWithModules(rr, t.enableModules)
+		// The submitted line, so every record the item produces — including
+		// the hops of a chain that walks off this host — can name where it
+		// came from. See WorkItem.Target.
+		item.Target = target
+		return item, nil
 	}
 	return nil, io.EOF
 }

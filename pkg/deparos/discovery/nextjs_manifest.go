@@ -90,7 +90,7 @@ func (e *Engine) queueNextJSManifests(baseURL *url.URL, rc *responsechain.Respon
 		zap.String("url", baseURL.String()),
 		zap.Int("count", len(urls)))
 
-	e.queueJSFetch(urls, parentDepth)
+	e.queueJSFetch(urls, ProvenanceReferenced)
 }
 
 // appRouteChunkRe matches a Next.js App Router page or route-handler chunk path

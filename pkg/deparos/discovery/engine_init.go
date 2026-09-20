@@ -8,10 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/deparos/fingerprint"
 	pkghttp "github.com/vigolium/vigolium/pkg/deparos/http"
 	"github.com/vigolium/vigolium/pkg/deparos/storage"
-	"github.com/vigolium/vigolium/pkg/spitolas/loginsig"
 	"go.uber.org/zap"
 )
 
@@ -282,10 +282,10 @@ func (e *Engine) probeStartURL(targetURL *url.URL) error {
 		e.startURLStatus = resp.StatusCode
 		// A 3xx redirect target (Location) or a 200-served login form both mean the
 		// root is an auth gate, not the app — used to gate fingerprint confirmation.
-		e.startURLIsLogin = loginsig.LooksLikeLoginURL(targetURL) ||
-			loginsig.BodyLooksLikeLogin(body)
+		e.startURLIsLogin = authsig.LooksLikeLoginURL(targetURL) ||
+			authsig.BodyLooksLikeLogin(body)
 		if loc := resp.Header.Get("Location"); loc != "" {
-			if locURL, err := targetURL.Parse(loc); err == nil && loginsig.LooksLikeLoginURL(locURL) {
+			if locURL, err := targetURL.Parse(loc); err == nil && authsig.LooksLikeLoginURL(locURL) {
 				e.startURLIsLogin = true
 			}
 		}
