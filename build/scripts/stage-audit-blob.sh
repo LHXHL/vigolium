@@ -8,8 +8,9 @@
 # The embed path pkg/audit/bin/_bin/vigolium-audit is a SINGLE file consumed by
 # go:embed, so cross builds MUST run sequentially (goreleaser -p 1) — parallel
 # builds would race on this shared path and bake the wrong-arch blob into a
-# binary. The loader-marker check in build/npm/build.mjs is the backstop that
-# fails the release if a wrong-OS blob still ends up embedded.
+# binary. The embedded-executable header scan in build/npm/build.mjs is the
+# backstop that fails the release if a wrong-platform blob still ends up
+# embedded.
 set -euo pipefail
 
 goos="${1:?usage: stage-audit-blob.sh <goos> <goarch>}"
@@ -59,6 +60,19 @@ case "$goos" in
     echo "$desc" | grep -q "PE32" || {
       echo "[stage-audit-blob] $src is not a PE binary (got: $desc)" >&2; exit 1; } ;;
 esac
+
+# The container check above passes a same-OS, wrong-ARCH blob (linux x64 and
+# linux arm64 are both "ELF"; darwin x64 and arm64 are both "Mach-O"), which
+# would embed silently. Assert the machine type too, so a mislabeled dist
+# artifact is caught here at the point of the mistake rather than downstream.
+case "$goarch" in
+  amd64) arch_re="x86[-_]64" ;;
+  arm64) arch_re="aarch64|arm64" ;;
+esac
+echo "$desc" | grep -qE "$arch_re" || {
+  echo "[stage-audit-blob] $src is not a $goarch binary (got: $desc)" >&2
+  echo "  the dist artifact is mislabeled -- rebuild with 'make update-audit'." >&2
+  exit 1; }
 
 mkdir -p "$(dirname "$dst")"
 cp "$src" "$dst"

@@ -735,7 +735,7 @@ test-smoke-autopilot-juiceshop: build juiceshop-up
 
 # jstangle binary management
 # update-jstangle and ensure-jstangle are already declared .PHONY at the top.
-.PHONY: verify-jstangle-fresh build-jstangle-current build-jstangle-target
+.PHONY: verify-jstangle-fresh build-jstangle-current build-jstangle-target ensure-jstangle-dist
 JSTANGLE_SRC_DIR=platform/jstangle/bin
 JSTANGLE_DST_DIR=internal/resources/deparos/jstangle
 
@@ -819,6 +819,47 @@ ensure-jstangle:
 
 verify-jstangle-fresh:
 	@$(MAKE) --no-print-directory ensure-jstangle
+
+# Release gate: every embedded jstangle blob must be built from the CURRENT
+# TypeScript tree, not just the host's.
+#
+# `ensure-jstangle` only checks and rebuilds the HOST blob, because that is all
+# tests and local development can run. Nothing else verified the other four, and
+# no release target depended on jstangle at all — so a change under
+# platform/jstangle/ that ran through `make test` would rebuild only the host
+# blob, and the release would ship four stale blobs alongside one fresh one.
+# That shipped in 0.4.9: jstangle-darwin-arm64 carried the new source while
+# linux-amd64, linux-arm64, darwin-amd64 and windows-amd64 were months behind,
+# so the release's jstangle work reached macOS arm64 users only.
+#
+# The blobs for other platforms cannot be executed here, so freshness is read
+# the one way that works cross-platform: bun compiles the source fingerprint
+# into the executable as a literal string (the same value `--capabilities`
+# reports), so a plain byte search for the current fingerprint confirms which
+# tree a blob was built from without running it.
+ensure-jstangle-dist:
+	@set -e; \
+	source_hash=$$(cd platform/jstangle && bun scripts/source-fingerprint.ts); \
+	stale=""; \
+	for name in $(JSTANGLE_RES_BINS); do \
+		bin="$(JSTANGLE_RES_DST_DIR)/$$name"; \
+		if [ ! -f "$$bin" ] || ! LC_ALL=C grep -q -a -F "$$source_hash" "$$bin"; then \
+			stale="$$stale $$name"; \
+		fi; \
+	done; \
+	if [ -n "$$stale" ]; then \
+		echo "$(PREFIX) jstangle blobs missing or stale for$$stale — rebuilding all targets..."; \
+		$(MAKE) --no-print-directory update-jstangle; \
+		for name in $(JSTANGLE_RES_BINS); do \
+			bin="$(JSTANGLE_RES_DST_DIR)/$$name"; \
+			if [ ! -f "$$bin" ] || ! LC_ALL=C grep -q -a -F "$$source_hash" "$$bin"; then \
+				echo "\033[31m[!] $$name still does not carry the current source fingerprint ($$source_hash) after a rebuild.\033[0m"; \
+				echo "\033[31m    Refusing to release a binary with a stale embedded jstangle.\033[0m"; \
+				exit 1; \
+			fi; \
+		done; \
+	fi; \
+	echo "$(PREFIX) jstangle blobs for all targets built from current source ($$source_hash)"
 
 # vigolium-audit security audit binary management.
 # Source lives under platform/vigolium-audit/. `bun run build` produces a host
@@ -1096,7 +1137,7 @@ docker-buildx-setup:
 # Requires `docker login` beforehand, and QEMU/binfmt for emulating the
 # non-host architecture (bundled with Docker Desktop; on plain Linux run
 # `docker run --privileged --rm tonistiigi/binfmt --install all` once).
-docker-publish: ensure-audit-dist docker-buildx-setup
+docker-publish: ensure-audit-dist ensure-jstangle-dist docker-buildx-setup
 	@echo "$(PREFIX) Building and publishing multi-arch image to Docker Hub: $(DOCKER_HUB_IMAGE) ($(DOCKER_PLATFORMS))..."
 	docker buildx build \
 		--platform $(DOCKER_PLATFORMS) \
@@ -1115,7 +1156,7 @@ GORELEASER_VERSION=$(patsubst v%,%,$(VERSION))
 # --parallelism 1 is REQUIRED: the per-target pre-hook stages the matching
 # vigolium-audit blob into a single shared go:embed path, so cross builds must
 # run sequentially or they race and embed the wrong-arch blob.
-snapshot: ensure-audit-dist
+snapshot: ensure-audit-dist ensure-jstangle-dist
 	@echo "$(PREFIX) Building snapshot release..."
 	VIGOLIUM_VERSION=$(GORELEASER_VERSION) goreleaser --verbose release --snapshot --clean --parallelism 1
 	@$(MAKE) restage-host-audit
@@ -1152,7 +1193,7 @@ generate-metadata:
 		"$(VERSION)" "$(COMMIT_HASH)" "$(BUILD_TIME)" > build/dist/metadata.json
 
 # GoReleaser release and upload to R2
-release: prepare-release-scripts ensure-audit-dist
+release: prepare-release-scripts ensure-audit-dist ensure-jstangle-dist
 	@echo "$(PREFIX) Building release..."
 	VIGOLIUM_VERSION=$(GORELEASER_VERSION) goreleaser --verbose release --snapshot --clean --parallelism 1
 	@$(MAKE) restage-host-audit
@@ -1188,7 +1229,7 @@ public:
 	@echo "\033[31m[!] Use 'make public-release' for public release uploads.\033[0m"
 	@exit 1
 
-public-release: prepare-public-scripts ensure-audit-dist
+public-release: prepare-public-scripts ensure-audit-dist ensure-jstangle-dist
 	@echo "$(PREFIX) Building public artifacts for: $(PUBLIC_TARGETS)"
 	@rm -rf $(PUBLIC_DIST_DIR)
 	@mkdir -p $(PUBLIC_DIST_DIR)
