@@ -199,50 +199,111 @@ function findSourceBinary(goos, goarch) {
 
 // --- embedded audit blob verification -------------------------------------
 
-// Loader strings that uniquely fingerprint an embedded executable's OS. The
-// vigolium-audit blob and the jstangle blob are dynamically-linked native
-// binaries that carry their platform's loader path. jstangle is embedded with
-// per-platform go:build tags (internal/resources/deparos/embed_jstangle_*.go),
-// so for any cross-compile only the matching-OS jstangle is present — the audit
-// blob is the only other native binary. Verified empirically: a correct-OS
-// vigolium build carries ZERO foreign-OS loader markers, so a foreign marker
-// can only come from a mis-staged audit blob.
+// A packaged vigolium binary carries exactly three native executables: itself,
+// the per-platform jstangle blob (build-tagged embeds in
+// internal/resources/deparos/embed_jstangle_*.go), and the vigolium-audit blob
+// staged per target by build/scripts/stage-audit-blob.sh. All three must be
+// built for the target platform; a mismatch is the v0.1.15-beta bug, where a
+// macOS arm64 audit binary was baked into the linux-x64 package.
 //
-// Note: Linux ELF interpreter strings are NOT used as arch discriminators —
-// the Go runtime itself bakes in "/lib64/ld-linux-x86-64.so.2" on every Linux
-// build regardless of GOARCH, so it is not a reliable signal. Same-OS arch
-// swaps (linux x64<->arm64, darwin x64<->arm64) are left to the runtime guard
-// in pkg/audit/bin and the staging script's own format assertion.
-const MACHO_MARKERS = ["/usr/lib/libSystem.B.dylib", "/usr/lib/dyld"];
-const ELF_INTERP_MARKERS = [
-  "/lib64/ld-linux-x86-64.so.2",
-  "/lib/ld-linux-aarch64.so.1",
-];
+// This check finds those executables structurally, by locating and validating
+// their ELF/Mach-O/PE headers. It deliberately does NOT grep for loader-path
+// strings like "/lib64/ld-linux-x86-64.so.2": bun bakes a cross-compile table
+// naming every platform's loader into the blobs it builds, so a correct-OS
+// blob can and does carry foreign loader strings. That false positive broke
+// the 0.4.9 release once bun was new enough to embed the table.
+//
+// Reading the header fields also makes this an ARCH discriminator, which the
+// old string check could not be — a same-OS arch swap is caught here rather
+// than being left to the runtime guard in pkg/audit/bin.
+const ELF_MACHINE = { 0x3e: "amd64", 0xb7: "arm64" };
+const MACHO_CPU = { 0x01000007: "amd64", 0x0100000c: "arm64" };
+const PE_MACHINE = { 0x8664: "amd64", 0xaa64: "arm64" };
+
+// findEmbeddedExecutables returns every well-formed native executable header in
+// buf, as {os, arch, off}. Each candidate magic is confirmed against further
+// header fields so that arbitrary payload bytes matching a 4-byte magic by
+// chance are rejected.
+function findEmbeddedExecutables(buf) {
+  const found = [];
+
+  // ELF64, little-endian, ET_EXEC or ET_DYN.
+  const elfMagic = Buffer.from([0x7f, 0x45, 0x4c, 0x46]);
+  for (let o = buf.indexOf(elfMagic); o !== -1; o = buf.indexOf(elfMagic, o + 1)) {
+    if (o + 24 > buf.length) break;
+    if (buf[o + 4] !== 2 || buf[o + 5] !== 1 || buf[o + 6] !== 1) continue;
+    const eType = buf.readUInt16LE(o + 16);
+    if (eType !== 2 && eType !== 3) continue;
+    const arch = ELF_MACHINE[buf.readUInt16LE(o + 18)];
+    if (!arch) continue;
+    if (buf.readUInt32LE(o + 20) !== 1) continue; // EV_CURRENT
+    found.push({ os: "linux", arch, off: o });
+  }
+
+  // Mach-O 64-bit, little-endian, MH_EXECUTE.
+  const machoMagic = Buffer.from([0xcf, 0xfa, 0xed, 0xfe]);
+  for (let o = buf.indexOf(machoMagic); o !== -1; o = buf.indexOf(machoMagic, o + 1)) {
+    if (o + 32 > buf.length) break;
+    const arch = MACHO_CPU[buf.readUInt32LE(o + 4)];
+    if (!arch) continue;
+    if (buf.readUInt32LE(o + 12) !== 2) continue; // MH_EXECUTE
+    const ncmds = buf.readUInt32LE(o + 16);
+    if (ncmds === 0 || ncmds > 1024) continue;
+    found.push({ os: "darwin", arch, off: o });
+  }
+
+  // PE32+ — the COFF header follows the "PE\0\0" signature.
+  const peMagic = Buffer.from("PE\0\0", "latin1");
+  for (let o = buf.indexOf(peMagic); o !== -1; o = buf.indexOf(peMagic, o + 1)) {
+    if (o + 24 > buf.length) break;
+    const arch = PE_MACHINE[buf.readUInt16LE(o + 4)];
+    if (!arch) continue;
+    const sections = buf.readUInt16LE(o + 6);
+    if (sections === 0 || sections > 96) continue;
+    const optionalHeaderSize = buf.readUInt16LE(o + 20);
+    if (optionalHeaderSize !== 240 && optionalHeaderSize !== 224) continue;
+    found.push({ os: "win32", arch, off: o });
+  }
+
+  return found.sort((a, b) => a.off - b.off);
+}
 
 // verifyEmbeddedAudit is the release backstop for the per-target go:embed
-// staging. It fails the npm build if a packaged binary embeds an audit blob
-// for the wrong OS — the v0.1.15-beta bug, where a macOS arm64 audit binary
-// was baked into the linux-x64 package.
+// staging: it fails the npm build if a packaged binary embeds a native blob
+// built for anything but its own target platform.
 function verifyEmbeddedAudit(buf, p) {
-  const has = (s) => buf.indexOf(Buffer.from(s, "latin1")) !== -1;
-
-  let foreign = [];
-  if (p.os === "linux") foreign = MACHO_MARKERS.filter(has);
-  else if (p.os === "darwin") foreign = ELF_INTERP_MARKERS.filter(has);
-  // A Windows build links neither loader, so BOTH families are foreign there.
-  // Verified empirically against a windows/amd64 build carrying the windows
-  // audit blob: zero markers from either list.
-  else if (p.os === "win32") foreign = [...MACHO_MARKERS, ...ELF_INTERP_MARKERS].filter(has);
+  const embedded = findEmbeddedExecutables(buf);
+  const foreign = embedded.filter((e) => e.os !== p.os || e.arch !== p.goarch);
 
   if (foreign.length) {
+    const detail = foreign
+      .map((e) => `${e.os}/${e.arch} at offset ${e.off}`)
+      .join(", ");
     fail(
-      `${p.tag}: WRONG-OS vigolium-audit blob embedded — found foreign loader ` +
-        `marker(s) [${foreign.join(", ")}] in the ${p.tag} binary. A non-${p.os} ` +
-        `audit blob was baked in at build time (cross-compile packaging bug — ` +
-        `check the goreleaser audit staging hook in .goreleaser.yaml).`,
+      `${p.tag}: WRONG-PLATFORM native blob embedded — the ${p.tag} binary ` +
+        `carries ${foreign.length} executable(s) built for another platform ` +
+        `[${detail}], but every embedded blob must be ${p.os}/${p.goarch}. A ` +
+        `foreign vigolium-audit or jstangle blob was baked in at build time ` +
+        `(cross-compile packaging bug — check the goreleaser audit staging ` +
+        `hook in .goreleaser.yaml and the jstangle embeds in ` +
+        `internal/resources/deparos/).`,
     );
   }
-  info(`verified ${p.tag} embeds no foreign-OS vigolium-audit blob`);
+
+  // Zero hits would mean the scan silently stopped matching (a format change),
+  // turning this guard into a no-op. The binary itself is always one hit.
+  if (embedded.length === 0) {
+    fail(
+      `${p.tag}: found no native executable headers at all, not even the ` +
+        `vigolium binary's own — the embedded-blob scan is not working and ` +
+        `cannot be trusted to catch a cross-compile packaging bug.`,
+    );
+  }
+
+  info(
+    `verified ${p.tag} embeds only ${p.os}/${p.goarch} native blobs ` +
+      `(${embedded.length} executable headers)`,
+  );
 }
 
 // --- staging --------------------------------------------------------------
