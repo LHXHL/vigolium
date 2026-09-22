@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/agent"
@@ -238,7 +240,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 		if auditInteractive {
 			return fmt.Errorf("--stateless/-S cannot be combined with --interactive (interactive bypasses the database and report import)")
 		}
-		tmpFile, tmpErr := os.CreateTemp("", "vigolium-audit-stateless-*.sqlite")
+		tmpFile, tmpErr := scratch.CreateTemp("audit-stateless-*.sqlite")
 		if tmpErr != nil {
 			return fmt.Errorf("create temporary database: %w", tmpErr)
 		}

@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/types"
 )
@@ -372,5 +374,67 @@ func TestProbeOnlyDefaults(t *testing.T) {
 		if opts.NoWafPacing || opts.TransportProfile != "" {
 			t.Error("probe defaults applied to a non-probe run")
 		}
+	})
+}
+
+// Infrastructure that only shapes target traffic must not be built for a plan
+// that never contacts the target; see SendsTargetTraffic for what that cost.
+func TestNativeScanPlanSendsTargetTraffic(t *testing.T) {
+	// Derived from a real plan rather than hand-built steps, so the SkipsTarget
+	// attribute comes from the phase table itself. A literal here would pass
+	// while the table said something else, which is the drift this attribute was
+	// moved onto the table to prevent.
+	enabledOnly := func(phases ...NativePhase) NativeScanPlan {
+		reference := BuildNativeScanPlan(&types.Options{})
+		steps := make([]NativePhaseStep, 0, len(reference.Steps))
+		for _, step := range reference.Steps {
+			step.Enabled = slices.Contains(phases, step.Phase)
+			steps = append(steps, step)
+		}
+		return NativeScanPlan{Steps: steps}
+	}
+
+	t.Run("external-harvest alone never contacts the target", func(t *testing.T) {
+		assert.False(t, enabledOnly(PhaseExternalHarvest).SendsTargetTraffic())
+	})
+
+	t.Run("nothing enabled", func(t *testing.T) {
+		assert.False(t, enabledOnly().SendsTargetTraffic())
+	})
+
+	// Every other phase reaches the target directly or through the shared
+	// requester, so each one on its own has to keep sessions and hooks.
+	for _, phase := range []NativePhase{
+		PhaseHeuristicsCheck, PhasePortSweep, PhaseSpidering, PhaseProbe,
+		PhaseDiscovery, PhaseTargetedReSpider, PhaseSeed,
+		PhaseDynamicAssessment, PhaseKnownIssueScan,
+	} {
+		t.Run(string(phase)+" reaches the target", func(t *testing.T) {
+			assert.True(t, enabledOnly(phase).SendsTargetTraffic())
+		})
+	}
+
+	t.Run("external-harvest alongside a scanning phase still counts", func(t *testing.T) {
+		assert.True(t, enabledOnly(PhaseExternalHarvest, PhaseProbe).SendsTargetTraffic())
+	})
+
+	// A disabled step must not count, or --only external-harvest would be
+	// indistinguishable from a full plan.
+	t.Run("disabled steps are ignored", func(t *testing.T) {
+		plan := NativeScanPlan{Steps: []NativePhaseStep{
+			{Phase: PhaseProbe, Enabled: false},
+			{Phase: PhaseExternalHarvest, Enabled: true, SkipsTarget: true},
+		}}
+		assert.False(t, plan.SendsTargetTraffic())
+	})
+
+	// The attribute has to be declared on the step, not inferred: a plan that
+	// forgets it must fail closed (build the infrastructure) rather than skip
+	// session hydration for a phase that does reach the target.
+	t.Run("an unmarked phase counts as reaching the target", func(t *testing.T) {
+		plan := NativeScanPlan{Steps: []NativePhaseStep{
+			{Phase: PhaseExternalHarvest, Enabled: true},
+		}}
+		assert.True(t, plan.SendsTargetTraffic())
 	})
 }

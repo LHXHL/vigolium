@@ -6,7 +6,15 @@ Vigolium offers several ways to scan a target and get results in a single comman
 
 ## Quick Scan with `scan-url`
 
-The fastest way to scan a single URL. No database, no phases -- just direct module execution:
+The fastest way to scan a single URL: no phases, just direct module execution.
+
+It still opens a database -- every result vigolium produces is written through
+one -- so "stateless" is a statement about the database's lifetime, not about
+its absence. Without `-S` the run persists into the project database like any
+other; with `-S` it runs into a throwaway file that is exported and then
+deleted. Dropping `-S` is therefore not a way to make a run cheaper, and a
+failed export is a failed run (exit `1`, `error.code: export_failed`) because
+under `-S` the artifact is the only copy that survives.
 
 ```bash
 vigolium scan-url https://example.com/api/users?id=1

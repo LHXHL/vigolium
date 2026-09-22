@@ -2,7 +2,7 @@
 package reqcache
 
 import (
-	"os"
+	"github.com/vigolium/vigolium/internal/scratch"
 
 	"github.com/vigolium/vigolium/pkg/deparos/internal/dedup"
 )
@@ -32,7 +32,9 @@ func NewHMapCache(cfg *Config) (*HMapCache, error) {
 	basePath := cfg.Path
 	if basePath == "" {
 		var err error
-		basePath, err = os.MkdirTemp("", "reqcache-*")
+		// Under this process's scratch directory so a killed crawl cannot
+		// strand it; see internal/scratch.
+		basePath, err = scratch.MkdirTemp("reqcache-*")
 		if err != nil {
 			return nil, err
 		}

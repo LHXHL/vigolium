@@ -42,6 +42,16 @@ const (
 	poolTierLarge  = 16 << 20 // 16 MiB
 )
 
+// Bounds on the post-EOF drain's poll interval. The drain starts at
+// drainPollMin and doubles up to drainPollMax, so a phase whose workers have
+// already finished notices immediately instead of waiting out a fixed tick,
+// while a long drain settles onto a cheap interval. See the drain loop in
+// Execute.
+const (
+	drainPollMin = time.Millisecond
+	drainPollMax = 50 * time.Millisecond
+)
+
 var (
 	smallResponsePool = sync.Pool{
 		New: func() interface{} {
@@ -853,8 +863,10 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 	// Wait until all workers finish (inFlight == 0) and the feedback channel is empty.
 	// When FeedbackDrainTimeout is configured, require the executor to remain idle
 	// for that duration before completing the drain.
-	drainTick := time.NewTicker(50 * time.Millisecond)
-	defer drainTick.Stop()
+	// Backing-off poll rather than a fixed tick; see drainPollMin/drainPollMax.
+	drainDelay := drainPollMin
+	drainTimer := time.NewTimer(drainDelay)
+	defer drainTimer.Stop()
 	idleTimeout := e.cfg.FeedbackDrainTimeout
 	// stallTimeout bounds the drain when workers stay in-flight but make no
 	// forward progress. The idle branch below only fires once inFlight hits 0, so
@@ -877,7 +889,16 @@ drainLoop:
 			if !e.sendItem(ctx, fb, itemCh) {
 				break drainLoop
 			}
-		case <-drainTick.C:
+		case <-drainTimer.C:
+			// Monotonic backoff. Resetting the delay whenever feedback arrives
+			// looks like "poll tightly again while there is work", but it is the
+			// opposite of what the drain wants: a busy drain would knock the
+			// interval back to 1ms on every item and settle near 500 wakeups a
+			// second, where the fixed tick it replaced did 20. The fast-finish
+			// win is entirely in the first few ticks, which monotonic backoff
+			// already gives.
+			drainDelay = min(drainDelay*2, drainPollMax)
+			drainTimer.Reset(drainDelay)
 			cur := e.pool.inFlight.Load()
 			if cur < prevInFlight {
 				lastProgress = time.Now() // a worker completed an item

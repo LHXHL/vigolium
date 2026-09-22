@@ -367,23 +367,34 @@ func (r *Repository) ResetScanCursor(ctx context.Context, scanUUID string) error
 	return err
 }
 
-// CountRecordsAfterCursor counts records after the given cursor position.
-// A zero cursorAt means count all records. When hosts is non-empty, only records
-// matching those in-scope origins (scheme+hostname+port) are counted.
-func (r *Repository) CountRecordsAfterCursor(ctx context.Context, cursorAt time.Time, cursorUUID string, hosts ...HostTarget) (int64, error) {
-	return r.countRecordsAfterCursor(ctx, cursorAt, cursorUUID, nil, hosts)
+// CountRecordsAfterCursor counts a project's records after the given cursor
+// position. A zero cursorAt means count all of them. When hosts is non-empty,
+// only records matching those in-scope origins (scheme+hostname+port) are
+// counted.
+//
+// projectUUID is required rather than optional so that spanning projects has to
+// be asked for: passing "" still counts every project, for a merge or an export
+// that deliberately does. (This query had no project predicate at all, and
+// returned the whole table on any multi-project store — see
+// TestCountRecords_IsProjectScoped for what that broke.)
+func (r *Repository) CountRecordsAfterCursor(ctx context.Context, projectUUID string, cursorAt time.Time, cursorUUID string, hosts ...HostTarget) (int64, error) {
+	return r.countRecordsAfterCursor(ctx, projectUUID, cursorAt, cursorUUID, nil, hosts)
 }
 
 // CountRecordsAfterCursorBySource is like CountRecordsAfterCursor but also
 // filters on http_records.source. Used by scan-on-receive shallow mode to
 // report only user-ingested traffic in the "new ingested records" status,
 // excluding finding/scanner artefacts produced by the scan itself.
-func (r *Repository) CountRecordsAfterCursorBySource(ctx context.Context, cursorAt time.Time, cursorUUID string, sources []string, hosts []HostTarget) (int64, error) {
-	return r.countRecordsAfterCursor(ctx, cursorAt, cursorUUID, sources, hosts)
+func (r *Repository) CountRecordsAfterCursorBySource(ctx context.Context, projectUUID string, cursorAt time.Time, cursorUUID string, sources []string, hosts []HostTarget) (int64, error) {
+	return r.countRecordsAfterCursor(ctx, projectUUID, cursorAt, cursorUUID, sources, hosts)
 }
 
-func (r *Repository) countRecordsAfterCursor(ctx context.Context, cursorAt time.Time, cursorUUID string, sources []string, hosts []HostTarget) (int64, error) {
+func (r *Repository) countRecordsAfterCursor(ctx context.Context, projectUUID string, cursorAt time.Time, cursorUUID string, sources []string, hosts []HostTarget) (int64, error) {
 	q := r.db.NewSelect().Model((*HTTPRecord)(nil))
+
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
 
 	if !cursorAt.IsZero() {
 		q = q.Where("(created_at > ? OR (created_at = ? AND uuid > ?))", cursorAt, cursorAt, cursorUUID)
@@ -403,12 +414,15 @@ func (r *Repository) countRecordsAfterCursor(ctx context.Context, cursorAt time.
 }
 
 // CountRecordsByStatusCode returns http_record counts grouped by HTTP status
-// code, restricted to the same in-scope origins as CountRecordsAfterCursor
-// (empty hosts = every record). Keys are the raw numeric status codes (0 for a
-// missing/unset status); callers bucket them into 2xx/3xx/… classes. Powers the
-// scan-completion summary's status-class line, so its host scope matches the
-// record count printed alongside it.
-func (r *Repository) CountRecordsByStatusCode(ctx context.Context, hosts ...HostTarget) (map[int]int64, error) {
+// code, restricted to the same project and in-scope origins as
+// CountRecordsAfterCursor (empty hosts = every origin, empty projectUUID =
+// every project). Keys are the raw numeric status codes (0 for a missing/unset
+// status); callers bucket them into 2xx/3xx/… classes.
+//
+// It powers the scan-completion summary's status-class line, printed as a
+// breakdown OF the record count beside it, so its project and host scope has to
+// match that count's exactly or the classes do not sum to the total.
+func (r *Repository) CountRecordsByStatusCode(ctx context.Context, projectUUID string, hosts ...HostTarget) (map[int]int64, error) {
 	var rows []struct {
 		StatusCode int   `bun:"status_code"`
 		Count      int64 `bun:"count"`
@@ -416,6 +430,9 @@ func (r *Repository) CountRecordsByStatusCode(ctx context.Context, hosts ...Host
 	q := r.db.NewSelect().
 		Model((*HTTPRecord)(nil)).
 		ColumnExpr("status_code, COUNT(*) AS count")
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
 	q = applyHostScopeFilter(q, hosts)
 	if err := q.GroupExpr("status_code").Scan(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("failed to count records by status code: %w", err)

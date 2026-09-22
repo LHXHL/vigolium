@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	"github.com/uptrace/bun"
 
 	"github.com/vigolium/vigolium/pkg/deparos/internal/dedup"
@@ -111,7 +113,9 @@ func NewSiteMap(cfg *StorageConfig) (*SiteMap, error) {
 	// Asked BEFORE FilePath is rewritten below, which would make it answer false
 	// for the database we are about to create.
 	if cfg.IsEphemeral() {
-		f, err := os.CreateTemp("", "sitemap-*.db")
+		// Under this process's scratch directory: an ephemeral sitemap that
+		// outlives its run is pure litter. See internal/scratch.
+		f, err := scratch.CreateTemp("sitemap-*.db")
 		if err != nil {
 			return nil, fmt.Errorf("failed to create temp file: %w", err)
 		}

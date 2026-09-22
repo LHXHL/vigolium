@@ -1,11 +1,37 @@
 package config
 
+import "strings"
+
 // DefaultCLIOriginMode is the origin-scope mode a scan uses when nothing sets
 // one. Referenced by the config default, the matcher's empty-string fallback,
 // and the banner renderers so the value is spelled once — it used to be a
 // literal in five places, and a change that missed one printed a mode the scan
 // was not running in.
 const DefaultCLIOriginMode = "balanced"
+
+// ResolveCLIOriginMode normalizes a configured scope.cli_origin_mode into the
+// mode a scan actually runs in, falling back to DefaultCLIOriginMode. Never
+// returns "".
+//
+// It takes the MERGED ScopeConfig value, not the raw --scope-origin flag, because
+// settings.Scope is the only thing that applies: NewScopeMatcher and
+// InScopeHosts read it and nothing else. The CLI entry points merge the flag into
+// it first (pkg/cli/scan.go, scan_url.go, ingest.go), so by the time anything
+// reports the mode there is one value to report. Resolving from the raw override
+// instead would let a reporter claim a mode the matcher never used — a confident
+// lie about which hosts a scan was allowed to touch, which is worse than the
+// blank it replaced.
+//
+// Every caller that renders or persists the mode routes through here: the scan
+// banner, the run summary, the scan-config snapshot, and the scans row. The
+// snapshot used to write the raw override, which is "" on any run that took the
+// default, so a scan that ran in "balanced" was recorded as having run in "".
+func ResolveCLIOriginMode(configured string) string {
+	if m := strings.ToLower(strings.TrimSpace(configured)); m != "" {
+		return m
+	}
+	return DefaultCLIOriginMode
+}
 
 // ScopeConfig defines which HTTP records are in scope for scanning.
 // Each rule is evaluated independently; all must pass (AND logic).

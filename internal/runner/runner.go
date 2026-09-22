@@ -351,6 +351,10 @@ func NewWithInputSource(options *types.Options, inputSource source.InputSource) 
 
 	outputWriter, err := output.NewStandardWriter(options)
 	if err != nil {
+		// No Runner is returned, so nothing will ever call releaseResources for
+		// this attempt: hand back both references here or a bad -o path leaks
+		// the shared dialer and strands this run's scratch until it ages out.
+		network.Close()
 		return nil, errors.Wrap(err, "could not create output file")
 	}
 
@@ -453,6 +457,10 @@ func (r *Runner) releaseResources() {
 	}
 
 	network.Close()
+
+	// Scratch is NOT released here. It is held for the life of the process by
+	// pkg/cli.Execute, so commands that never build a runner get the same
+	// cleanup and a server does not tear the directory down between scans.
 }
 
 // SetRepository sets the database repository for storing scan results

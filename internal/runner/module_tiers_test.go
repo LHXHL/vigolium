@@ -234,6 +234,7 @@ func TestHygieneFamilyMembership(t *testing.T) {
 		"mixed-content-detect":         true,
 		"reverse-tabnabbing-detect":    true,
 		"content-type-mismatch":        true,
+		"express-session-audit":        true,
 	}
 
 	tagged := make(map[string]bool)

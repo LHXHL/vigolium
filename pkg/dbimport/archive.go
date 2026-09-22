@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/vigolium/vigolium/internal/scratch"
 )
 
 // ArchiveExt inspects a path and returns one of: ".tar.gz", ".tgz", ".zip",
@@ -40,7 +42,7 @@ func ArchiveExt(path string) string {
 // and returns its path. The caller must defer cleanup().
 func ExtractArchiveToDir(archivePath string) (dir string, cleanup func(), err error) {
 	cleanup = func() {}
-	tmpDir, err := os.MkdirTemp("", "vigolium-extract-*")
+	tmpDir, err := scratch.MkdirTemp("extract-*")
 	if err != nil {
 		return "", cleanup, fmt.Errorf("failed to create extract dir: %w", err)
 	}

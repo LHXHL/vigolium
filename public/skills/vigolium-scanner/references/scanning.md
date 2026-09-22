@@ -59,7 +59,26 @@ Run a full vulnerability scan pipeline. Supports multiple targets, input formats
 | `--stateless` | — | bool | `false` | Use a temporary database, export results to `--output`, then discard |
 | `--upload-results` | — | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
 
-Stateless mode is great for ephemeral CI/CD runs — it creates a temp SQLite file, runs the full scan against it, writes the export/report to `--output`, then deletes the DB (including WAL/SHM sidecars). Requires `--output`; mutually exclusive with `--db`. Combine with `--format jsonl`, `--format html`, `--format fs`, or `--format sqlite` for shareable artifacts (`sqlite` requires `-S`).
+Stateless mode creates a temp SQLite file, runs the full scan against it, writes
+the export/report to `--output`, then deletes the DB (including WAL/SHM
+sidecars). Mutually exclusive with `--db`. Combine with `--format jsonl`,
+`--format html`, `--format fs`, or `--format sqlite` for shareable artifacts
+(`sqlite` requires `-S`).
+
+`-o` is **optional, not required**: without it the run warns that results will be
+discarded with the temp DB and continues. The warning is suppressed under
+`--silent`, `--split-by-host`, `-j`, and `--ci-output` — the last two stream
+every record to stdout as it is written, so nothing is actually lost.
+
+**Reach for `-S` for isolation, not just for CI.** The other half of what it buys
+you is an empty database. A scan against the persisted DB resolves its work set
+from every origin already in the project that passes the scope matcher (see the
+**Host scope** section below), so repeated scans into the default store silently
+grow what each run touches, and records from earlier scans sort *ahead* of the
+target you just named. `-S`
+removes that variable entirely, which is what makes it the right default for a
+measurement run, a coverage comparison, or any scan whose result set you intend
+to read as "what this target looks like".
 
 `--format` accepts `console` (default), `jsonl`, `html`, `sqlite`, and `fs` (comma-separated for multiple):
 - **`fs`** — a flat, browsable tree (`<base>-traffic/` + `<base>-findings/`) with per-host `.req` / `.resp.headers` / `.resp.body` / `.md` files and a jq-friendly `index.json`. No `-o` → `vigolium-traffic/` + `vigolium-findings/`. Works with or without `-S`. `--omit-response` drops the `.resp.*` files.
@@ -108,6 +127,49 @@ rest of the budget. Lower it for a wide `-T` sweep where a dead host should be
 abandoned fast; raise it for a flaky target you still want scanned.
 `--no-clustering` costs real requests - reach for it only when the dedup is
 collapsing requests that the app actually treats as distinct.
+
+### Host scope: `--scope-origin` (and what a non-empty database does)
+
+| Mode | A host is in scope when… | `-t https://app.example.com` also admits |
+|------|--------------------------|------------------------------------------|
+| `strict` | hostname matches the target exactly | nothing else |
+| `balanced` **(default)** | hostname shares the target's eTLD+1 | `sub.example.com`, `www.example.com`, … |
+| `relaxed` | the candidate's registrable *label* contains the target's | `example.io`, `examplegroup.com`, … |
+| `all` | always | every host in the project |
+
+Resolution is `--scope-origin` → `scope.cli_origin_mode` in config → `balanced`.
+IP targets always match exactly, whatever the mode.
+
+**This is not only a filter on new traffic - it decides which *stored* records a
+scan picks up.** Every assessment phase resolves its work set from the database:
+distinct origins in the project, minus those the scope matcher rejects, minus
+those whose (scheme, port) does not match a target's. There is no "this scan
+only" filter, because `http_records` carries no scan id. So on a database that
+already holds traffic from earlier scans:
+
+```bash
+# Target is ONE host, but at the default balanced mode this also (re)scans every
+# https:443 *.example.com host already in the project - live requests, not replay.
+vigolium scan -t https://app.example.com --only dynamic-assessment
+```
+
+Worse, it scans them *first*: the work set is ordered `risk_score DESC,
+created_at ASC`, so older records outrank the one the seed phase just wrote for
+your actual target. Under a tight `--scanning-max-duration` the named host can
+go untouched.
+
+Pick deliberately:
+
+| Want | Use |
+|------|-----|
+| Exactly the host named, but keep its stored history | `--scope-origin strict` |
+| Nothing pre-existing at all | `-S/--stateless` (throwaway DB) |
+| Keep state, but separate from other work | `--db <file>` or a distinct `--project` |
+| Deliberate brand-wide recon | `--scope-origin relaxed` |
+
+The resolved mode is echoed in the `Scope:` line of the scan banner (stderr) and
+recorded as `scope_origin_mode` on the `scan` object - visible in `--format
+jsonl`, `vigolium export`, and the REST scan endpoints.
 
 ### Parallel, DB & module flags (scan & run)
 

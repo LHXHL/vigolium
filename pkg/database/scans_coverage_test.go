@@ -217,7 +217,7 @@ func TestScanCursorAndCounting(t *testing.T) {
 	}
 
 	// Counting after a zero cursor counts all records.
-	count, err := repo.CountRecordsAfterCursor(ctx, time.Time{}, "")
+	count, err := repo.CountRecordsAfterCursor(ctx, DefaultProjectUUID, time.Time{}, "")
 	if err != nil {
 		t.Fatalf("CountRecordsAfterCursor: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestScanCursorAndCounting(t *testing.T) {
 	}
 
 	// By source.
-	bySource, err := repo.CountRecordsAfterCursorBySource(ctx, time.Time{}, "", []string{"test"}, nil)
+	bySource, err := repo.CountRecordsAfterCursorBySource(ctx, DefaultProjectUUID, time.Time{}, "", []string{"test"}, nil)
 	if err != nil {
 		t.Fatalf("CountRecordsAfterCursorBySource: %v", err)
 	}

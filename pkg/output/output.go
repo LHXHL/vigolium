@@ -342,7 +342,13 @@ func (w *StandardWriter) Write(event *ResultEvent) error {
 	// output file. Console-only runs — the common CLI path — render via
 	// formatScreen, and would otherwise pay per-event JSON marshaling cost for
 	// bytes that are immediately discarded.
-	needsJSON := w.JSONOutput || w.outputFile != nil
+	//
+	// JSONOutput alone is not a consumer: the deferred formats (jsonl, html) set
+	// it while suppressing live stdout and writing the real artifact at the end
+	// from stored findings. Such a run has no live sink at all, so without the
+	// DisableStdout term every finding was marshaled — request, response and all
+	// the evidence — straight into the discard below.
+	needsJSON := (w.JSONOutput && !w.DisableStdout) || w.outputFile != nil
 
 	var data []byte
 	if needsJSON {
@@ -398,6 +404,15 @@ func (w *StandardWriter) WriteFileOnly(event *ResultEvent) error {
 	}
 	event.MatcherStatus = true
 
+	// The file is the only sink here, so no file means nothing to serialize.
+	// Checked before marshaling rather than after: the encode is the expensive
+	// half, and on a run configured without a live output file every finding was
+	// paying it for bytes that were never written anywhere. outputFile is set at
+	// construction and never cleared, so one check is enough.
+	if w.outputFile == nil {
+		return nil
+	}
+
 	data, err := w.formatJSON(event)
 	if err != nil {
 		return errors.Wrap(err, "could not format output")
@@ -408,10 +423,8 @@ func (w *StandardWriter) WriteFileOnly(event *ResultEvent) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	if w.outputFile != nil {
-		if _, writeErr := w.outputFile.Write(data); writeErr != nil {
-			return errors.Wrap(writeErr, "could not write to output")
-		}
+	if _, writeErr := w.outputFile.Write(data); writeErr != nil {
+		return errors.Wrap(writeErr, "could not write to output")
 	}
 	return nil
 }

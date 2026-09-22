@@ -20,7 +20,9 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/vigolium/vigolium/internal/scratch"
 	"go.uber.org/zap"
 )
 
@@ -29,7 +31,8 @@ type Browser struct {
 	rodBrowser  *rod.Browser
 	config      *config.Config
 	launcher    *launcher.Launcher
-	currentPage *Page // Persistent page for session state preservation
+	profileDir  string // Chromium user-data directory owned by this browser; removed by Close
+	currentPage *Page  // Persistent page for session state preservation
 
 	// uaOverride is the realistic User-Agent applied to every page (the real
 	// browser UA with "HeadlessChrome" stripped). Computed once per browser
@@ -115,6 +118,7 @@ func (b *Browser) launch() error {
 		}
 
 		b.launcher = l
+		b.profileDir = l.Get(flags.UserDataDir)
 		b.rodBrowser = browser
 		zap.L().Debug("browser launched",
 			zap.String("candidate", c.label), zap.String("bin", binPathOrAuto(binPath)))
@@ -229,6 +233,22 @@ func (b *Browser) newLauncher(binPath string) *launcher.Launcher {
 	l := launcher.New()
 	if binPath != "" {
 		l = l.Bin(binPath)
+	}
+
+	// Pin the Chromium profile under this run's scratch instead of letting rod
+	// pick $TMPDIR/rod/user-data/<random>, which it only ever removes through
+	// launcher.Cleanup() - a call Close never made, so every launch stranded a
+	// profile permanently (see the internal/scratch package doc for the scale).
+	//
+	// Cleanup() is not the fix: it blocks until the browser process exits, so a
+	// wedged browser - exactly the case that leaks - would hang teardown. Owning
+	// the path lets Close remove it directly, with scratch.Release as the
+	// backstop for a run that never reaches Close at all.
+	if dir, err := scratch.MkdirTemp("rod-profile-*"); err == nil {
+		l = l.UserDataDir(dir)
+	} else {
+		zap.L().Debug("could not allocate a scratch browser profile; rod will use its own temp directory",
+			zap.Error(err))
 	}
 
 	l.NoSandbox(true)
@@ -605,13 +625,24 @@ func (b *Browser) Close() error {
 
 	// Close browser. Cap it so a wedged browser can't hang teardown forever
 	// (the deferred pool.Close at the end of a crawl runs through here).
+	var closeErr error
 	if b.rodBrowser != nil {
-		if err := b.boundedBrowser().Close(); err != nil {
-			return err
-		}
+		closeErr = b.boundedBrowser().Close()
 	}
 
-	return nil
+	// Remove the Chromium profile whether or not the browser closed cleanly: a
+	// browser that failed to shut down is exactly the case that used to strand
+	// its profile. Done after the close above so the process is no longer
+	// writing into it.
+	if b.profileDir != "" {
+		if err := os.RemoveAll(b.profileDir); err != nil {
+			zap.L().Debug("could not remove the browser profile directory",
+				zap.String("dir", b.profileDir), zap.Error(err))
+		}
+		b.profileDir = ""
+	}
+
+	return closeErr
 }
 
 // IsConnected returns true if browser is connected.

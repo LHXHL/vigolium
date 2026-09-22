@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vigolium/vigolium/internal/config"
 	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	corestats "github.com/vigolium/vigolium/pkg/core/stats"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -196,7 +195,7 @@ func (r *Runner) formatTargetCounts(ctx context.Context, cliCount int) string {
 	var dbCount int64
 	if r.repository != nil {
 		hosts := r.getInScopeDBHosts(ctx)
-		dbCount, _ = r.repository.CountRecordsAfterCursor(ctx, time.Time{}, "", hosts...)
+		dbCount, _ = r.repository.CountRecordsAfterCursor(ctx, r.options.ProjectUUID, time.Time{}, "", hosts...)
 	}
 	// A -T/--target-file (or -i) run carries its targets in the input source, not
 	// in options.Targets, so counting the CLI slice alone printed "0 input" for a
@@ -478,7 +477,7 @@ func (r *Runner) printScanConfig() {
 	if r.repository != nil {
 		ctx := context.Background()
 		hosts := r.getInScopeDBHosts(ctx)
-		if dbCount, err := r.repository.CountRecordsAfterCursor(ctx, time.Time{}, "", hosts...); err == nil && dbCount > 0 {
+		if dbCount, err := r.repository.CountRecordsAfterCursor(ctx, r.options.ProjectUUID, time.Time{}, "", hosts...); err == nil && dbCount > 0 {
 			targetsLine += fmt.Sprintf(" (CLI: %s | HTTP Records: %s)",
 				terminal.Orange(fmt.Sprintf("%d", len(opts.Targets))),
 				terminal.Orange(fmt.Sprintf("%d", dbCount)))
@@ -521,13 +520,7 @@ func (r *Runner) printScanConfig() {
 		terminal.HiBlue(fmt.Sprintf("%d", opts.MaxPerHost)))
 
 	// Scope
-	scopeOrigin := config.DefaultCLIOriginMode
-	if settings.Scope.CLIOriginMode != "" {
-		scopeOrigin = settings.Scope.CLIOriginMode
-	}
-	if opts.ScopeOriginMode != "" {
-		scopeOrigin = opts.ScopeOriginMode
-	}
+	scopeOrigin := r.resolvedScopeOriginMode()
 	originDesc := map[string]string{
 		"relaxed":  "host must contain the target's keyword",
 		"all":      "no origin restriction, all hosts are in scope",
@@ -637,7 +630,7 @@ func (r *Runner) logConfigSnapshot() {
 		"rate_limit":               rateLimit,
 		"max_per_host":             opts.MaxPerHost,
 		"heuristics_check":         opts.HeuristicsCheck,
-		"scope_origin_mode":        opts.ScopeOriginMode,
+		"scope_origin_mode":        r.resolvedScopeOriginMode(),
 		"active_modules":           activeCount,
 		"passive_modules":          passiveCount,
 		"hygiene_modules_off":      hygieneSuppressed,

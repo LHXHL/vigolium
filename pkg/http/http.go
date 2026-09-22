@@ -57,9 +57,33 @@ type Options struct {
 	// to the request's real host. It enables routing-based SSRF / "Cracking the
 	// lens" request-line attacks — e.g. connecting to a victim proxy but writing
 	// an absolute-form target "http://127.0.0.1:8080/", a userinfo trick
-	// "@collab.net/", or a protocol-relative "//collab.net/". Requires
-	// RawRequest=true (it is routed through the rawhttp client); ignored otherwise.
+	// "@collab.net/", or a protocol-relative "//collab.net/". Implies
+	// RawRequest: it is routed through the rawhttp client. RawBytes, which
+	// carries its own request line, takes precedence if both are set.
 	RawRequestTarget string
+	// RawBytes, when non-empty, is written to the connection verbatim as the
+	// ENTIRE request — request line, headers and body — with no framing
+	// normalization whatsoever. It exists for attacks whose payload IS the
+	// framing, where any rewrite destroys the test: request smuggling (CL.TE /
+	// TE.CL / TE.TE) needs Content-Length and Transfer-Encoding to DISAGREE, and
+	// needs duplicate or oddly-cased Transfer-Encoding headers to reach the wire.
+	//
+	// Neither of those can travel any other path. net/http computes framing from
+	// req.ContentLength and req.TransferEncoding and ignores the corresponding
+	// headers: a manually set "Transfer-Encoding: chunked" is dropped outright and
+	// "Content-Length: 4" is overwritten with the real body length. Even rawhttp's
+	// normal path re-derives Content-Length (AutomaticContentLength) and carries
+	// headers in an http.Header map, which canonicalizes key case and so cannot
+	// express "Transfer-Encoding" and "Transfer-encoding" as two distinct headers.
+	// Only these verbatim bytes preserve all of it.
+	//
+	// Implies RawRequest (rawhttp is the only client that can send them) and
+	// disables clustering: the cache keys on the parsed request, which by
+	// construction no longer describes what goes out.
+	//
+	// The caller owns correctness — nothing validates or repairs these bytes.
+	// They must be a complete HTTP/1.1 message with CRLF line endings.
+	RawBytes []byte
 	// clusterScope partitions the response cache by the sending requester's
 	// credential identity.
 	//
@@ -920,6 +944,22 @@ func (r *Requester) ExecuteContext(ctx context.Context, input *httpmsg.HttpReque
 	if r.abandoned() {
 		return nil, 0, ErrRequestAbandoned
 	}
+	// Verbatim bytes bypass the parsed request entirely, so the cluster key --
+	// computed from that request -- no longer describes what goes on the wire.
+	// Two probes that differ only in framing would collide and be served each
+	// other's cached response, which for a framing attack IS the measurement.
+	if len(opts.RawBytes) > 0 {
+		opts.RawRequest = true
+		opts.NoClustering = true
+	}
+	// RawRequestTarget is likewise meaningless off the rawhttp path. It used to
+	// be documented as "ignored otherwise", which is the same silent-no-op trap
+	// that let smuggling probes be re-framed for so long; both existing callers
+	// already pass RawRequest, so implying it changes nothing and removes the
+	// footgun.
+	if opts.RawRequestTarget != "" {
+		opts.RawRequest = true
+	}
 	if r.clusterer != nil && !opts.NoClustering {
 		// Stamp this requester's cache partition onto the options copy the
 		// clusterer keys on. Callers never set this field.
@@ -1226,7 +1266,24 @@ func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestRes
 		if opts.NoRedirects {
 			rawClient = r.rawClientNoRedir
 		}
-		if opts.RawRequestTarget != "" {
+		if len(opts.RawBytes) > 0 {
+			// Framing-attack path: hand rawhttp the exact bytes and switch off
+			// every automatic header it would otherwise synthesize. With
+			// CustomRawBytes set rawhttp writes the buffer to the connection and
+			// derives nothing, so a deliberately wrong Content-Length and a
+			// duplicate/odd-cased Transfer-Encoding both reach the server intact.
+			rawOpts := *rawClient.Options
+			rawOpts.CustomRawBytes = opts.RawBytes
+			rawOpts.AutomaticHostHeader = false
+			rawOpts.AutomaticContentLength = false
+			// Redirect following would re-issue the request through the normal
+			// builder and silently re-frame it; the probe must be exactly one
+			// round trip so the response belongs to the bytes we sent.
+			rawOpts.FollowRedirects = false
+			resp, err = rawClient.DoRawWithOptions(
+				req.Method, req.String(), "", req.Header, nil, &rawOpts,
+			)
+		} else if opts.RawRequestTarget != "" {
 			// Routing-based SSRF / request-line attacks ("Cracking the lens"):
 			// connect to the real host (req.URL) but emit an attacker-chosen,
 			// literal request target on the wire — rawhttp sends the uripath arg

@@ -45,10 +45,27 @@ func NewClient(opts ...Option) (*Client, error) {
 		return nil, errors.Wrap(err, "invalid configuration")
 	}
 
-	// Create telebot instance
+	// Create telebot instance.
+	//
+	// Offline: true suppresses the getMe call telebot otherwise makes from
+	// NewBot. That call is a network round trip to api.telegram.org performed
+	// during CONSTRUCTION, and this constructor runs from the runner's
+	// infrastructure setup — before the first phase, and before any notification
+	// exists to send. On a host that cannot reach Telegram (a blackholed egress
+	// rule rather than a refused connection) it stalls for the full client
+	// timeout, which defaults to five minutes, delaying a scan for a channel it
+	// has not yet had anything to say on.
+	//
+	// Nothing here needs what getMe returns. Offline leaves bot.Me an empty
+	// User rather than the bot's real identity, and no caller reads it — this
+	// client only ever calls bot.Send, which does not consult it. Credentials
+	// are still verified, by the first Send, which is where a bad token becomes
+	// a real error with something at stake rather than a startup cost paid on
+	// every scan whether or not a notification follows.
 	botSettings := tele.Settings{
 		Token:     config.BotToken,
 		ParseMode: tele.ModeMarkdownV2,
+		Offline:   true,
 		Client: &http.Client{
 			Timeout: config.HTTPTimeout,
 		},

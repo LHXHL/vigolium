@@ -41,6 +41,12 @@ func registerHTTPClientFlags(flags *pflag.FlagSet) {
 	flags.BoolVar(&globalNoClustering, "no-clustering", false, "Disable deduplication of identical concurrent HTTP requests")
 }
 
+// scopeOriginFlagUsage is shared by every command registering --scope-origin
+// (scan/run here, ingest in ingest.go). The default is spelled in the text
+// because the flag's zero value has to stay "" to distinguish "not passed" from
+// an explicit choice, so pflag cannot print it.
+const scopeOriginFlagUsage = "Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans)"
+
 // registerScanPipelineFlags registers the phase/strategy/profile knobs that
 // only make sense for the full native scan pipeline (scan + run).
 func registerScanPipelineFlags(flags *pflag.FlagSet) {
@@ -49,7 +55,7 @@ func registerScanPipelineFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&globalStrategy, "strategy", "", "Scanning strategy preset (lite, balanced, deep)")
 	flags.StringVar(&globalScanningProfile, "scanning-profile", "", "Scanning profile name or YAML file path")
 	flags.StringVar(&globalIntensity, "intensity", "", "Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy)")
-	flags.StringVar(&globalScopeOrigin, "scope-origin", "", "Host scope strictness: all, relaxed, balanced, strict")
+	flags.StringVar(&globalScopeOrigin, "scope-origin", "", scopeOriginFlagUsage)
 	flags.DurationVar(&globalScanningMaxDuration, "scanning-max-duration", 0, "Maximum total scan duration (overrides config, e.g. 1h, 30m)")
 	flags.StringVar(&globalHeuristicsCheck, "heuristics-check", "", `Pre-scan heuristics level: none, basic, advanced (default: basic)`)
 	flags.BoolVar(&globalSkipHeuristics, "skip-heuristics", false, "Disable pre-scan heuristics (equivalent to --heuristics-check=none)")

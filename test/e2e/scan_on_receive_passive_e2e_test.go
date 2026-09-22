@@ -21,13 +21,27 @@ import (
 	"github.com/vigolium/vigolium/pkg/types"
 )
 
+// passiveCanaryModuleID is the passive module these scan-on-receive tests use
+// to prove the passive pipeline ran. It must stay a module that fires at the
+// DEFAULT intensity, because that is what server mode runs at: the obvious
+// canary (security-headers-missing) is tagged modules.TagHygiene and so is
+// suppressed below --intensity deep by the hardening-advisory gate (see
+// internal/runner/module_tiers.go). software-version-header is untagged by that
+// gate, tier "light", and fires deterministically on the Server header the
+// fixtures below set.
+const passiveCanaryModuleID = "software-version-header"
+
+// passiveCanaryServerHeader is a version-disclosing Server value, the input
+// software-version-header keys on.
+const passiveCanaryServerHeader = "Apache/2.4.41 (Ubuntu)"
+
 // TestScanOnReceive_RunsPassiveModules is a regression guard for the bug
 // where `vigolium server -A --scan-on-receive` silently dropped all 91
 // passive modules because pkg/cli/server.go built runnerOpts without
 // setting PassiveModules. The fix wires PassiveModules: "all" via the
 // newServerRunnerOptions helper; this test proves the end-to-end effect —
-// that a passive-only finding (security-headers-missing) actually appears
-// on an ingested record scanned via the scan-on-receive runner.
+// that a passive-only finding actually appears on an ingested record scanned
+// via the scan-on-receive runner.
 //
 // If someone re-introduces the regression (drops PassiveModules from the
 // server-mode Options), the runner will load zero passive modules and the
@@ -37,15 +51,16 @@ func TestScanOnReceive_RunsPassiveModules(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	// Target server returns HTML without security headers and 404 everywhere
-	// else so active-module probing completes quickly and the scan focuses
-	// on the ingested record.
+	// Target server returns HTML with a version-disclosing Server header (the
+	// passive canary's trigger) and 404 everywhere else so active-module
+	// probing completes quickly and the scan focuses on the ingested record.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Server", passiveCanaryServerHeader)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<!doctype html><html><body>hi</body></html>`))
@@ -108,7 +123,7 @@ func TestScanOnReceive_RunsPassiveModules(t *testing.T) {
 	// baseline fetch on the first record, so the passive finding is the
 	// earliest signal we can check for.
 	deadline := time.Now().Add(60 * time.Second)
-	var sawSecurityHeadersMissing bool
+	var sawCanary bool
 	var lastPassiveIDs []string
 	for time.Now().Before(deadline) {
 		var findings []*database.Finding
@@ -118,11 +133,11 @@ func TestScanOnReceive_RunsPassiveModules(t *testing.T) {
 				if f.ModuleType == "passive" {
 					lastPassiveIDs = append(lastPassiveIDs, f.ModuleID)
 				}
-				if f.ModuleID == "security-headers-missing" {
-					sawSecurityHeadersMissing = true
+				if f.ModuleID == passiveCanaryModuleID {
+					sawCanary = true
 				}
 			}
-			if sawSecurityHeadersMissing {
+			if sawCanary {
 				break
 			}
 		}
@@ -133,11 +148,12 @@ func TestScanOnReceive_RunsPassiveModules(t *testing.T) {
 		}
 	}
 
-	assert.True(t, sawSecurityHeadersMissing,
-		"scan-on-receive must produce the security-headers-missing finding — "+
+	assert.True(t, sawCanary,
+		"scan-on-receive must produce the %s finding — "+
 			"its absence means passive modules are NOT loaded in server mode "+
 			"(regression: pkg/cli/server.go must set PassiveModules: \"all\" "+
-			"via newServerRunnerOptions). passive findings seen: %v", lastPassiveIDs)
+			"via newServerRunnerOptions). passive findings seen: %v",
+		passiveCanaryModuleID, lastPassiveIDs)
 	assert.NotEmpty(t, lastPassiveIDs,
 		"scan-on-receive must run passive modules")
 }

@@ -65,7 +65,7 @@ func init() {
 	registerScanOnReceiveFlags(flags, "Continuously scan new HTTP records as they arrive in the database")
 	flags.BoolVar(&globalFullNativeScanOnReceive, "full-native-scan-on-receive", false, "Run the full native scan pipeline (discovery + spidering + dynamic-assessment) continuously on received records, instead of dynamic-assessment only")
 	flags.BoolVar(&globalDisableFetchResponse, "disable-fetch-response", false, "Store requests without fetching responses during ingestion")
-	flags.StringVar(&globalScopeOrigin, "scope-origin", "", "Host scope strictness: all, relaxed, balanced, strict")
+	flags.StringVar(&globalScopeOrigin, "scope-origin", "", scopeOriginFlagUsage)
 
 	registerInputSourceFlags(flags)
 	registerIngestBatchFlags(flags)
@@ -130,10 +130,20 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no input provided")
 	}
 
-	// "-" means read stdin; when nothing is actually piped, drop it so a -T/-t-only
-	// run does not block waiting on a TTY (an explicit -i <file> keeps its path).
-	if ingestOpts.Input == "-" && !hasStdin {
-		ingestOpts.Input = ""
+	// Decide whether stdin is really this command's input, by the same rule the
+	// scanning commands use.
+	//
+	// The old test was `Input == "-" && !hasStdin`, which only dropped stdin for
+	// a TTY. But -i defaults to "-" (see flag_helpers.go) and HasStdin() is true
+	// for ANY stdin that is not a character device, so `vigolium ingest -t URL`
+	// under an inherited pipe - a CI runner, an agent harness - kept Input at "-"
+	// and handed os.Stdin to the parser. That read has no --input-read-timeout
+	// behind it, so unlike the scan path it hung forever rather than for three
+	// minutes. A typed `-i -` still asks for stdin explicitly.
+	if !resolveStdinInput(hasStdin, cmd.Flags().Changed("input"), globalInput, len(globalTargets), len(globalTargetFiles)) {
+		if ingestOpts.Input == "-" {
+			ingestOpts.Input = ""
+		}
 	}
 
 	// Validate mutual exclusivity: -t/--target and --spec-url cannot both be set

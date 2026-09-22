@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/output"
@@ -234,4 +235,71 @@ func keysOf[V any](m map[string]V) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestCountRecords_IsProjectScoped covers the record counts the scan banner and
+// completion summary are built from. Unscoped, they returned the whole
+// http_records table: the startup banner printed another project's record count
+// on the Targets line as though those records were this run's input, and
+// dynamic-assessment counted them as work it still had to process.
+func TestCountRecords_IsProjectScoped(t *testing.T) {
+	db := newTestDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	const other = "11111111-2222-3333-4444-555555555555"
+	if err := repo.CreateProject(ctx, &Project{UUID: other, Name: "other"}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		insertRecordP(t, repo, DefaultProjectUUID, "GET", "mine.example.com", "/m"+string(rune('a'+i)), 200)
+	}
+	for i := 0; i < 5; i++ {
+		insertRecordP(t, repo, other, "GET", "theirs.example.com", "/t"+string(rune('a'+i)), 404)
+	}
+
+	mine, err := repo.CountRecordsAfterCursor(ctx, DefaultProjectUUID, time.Time{}, "")
+	if err != nil {
+		t.Fatalf("CountRecordsAfterCursor: %v", err)
+	}
+	if mine != 2 {
+		t.Errorf("default project count = %d, want 2 (the other project's 5 records leaked in)", mine)
+	}
+
+	theirs, err := repo.CountRecordsAfterCursor(ctx, other, time.Time{}, "")
+	if err != nil {
+		t.Fatalf("CountRecordsAfterCursor(other): %v", err)
+	}
+	if theirs != 5 {
+		t.Errorf("other project count = %d, want 5", theirs)
+	}
+
+	// An empty project UUID still spans every project — the merge/export case —
+	// so that escape hatch stays available and has to be asked for.
+	all, err := repo.CountRecordsAfterCursor(ctx, "", time.Time{}, "")
+	if err != nil {
+		t.Fatalf("CountRecordsAfterCursor(all): %v", err)
+	}
+	if all != 7 {
+		t.Errorf("unscoped count = %d, want 7", all)
+	}
+
+	// The status-class breakdown is printed as a breakdown OF the record count,
+	// so it must agree with it. The other project's records are all 404s, which
+	// is what makes a leak visible here.
+	byCode, err := repo.CountRecordsByStatusCode(ctx, DefaultProjectUUID)
+	if err != nil {
+		t.Fatalf("CountRecordsByStatusCode: %v", err)
+	}
+	var total int64
+	for _, n := range byCode {
+		total += n
+	}
+	if total != mine {
+		t.Errorf("status classes sum to %d but the record count is %d", total, mine)
+	}
+	if byCode[404] != 0 {
+		t.Errorf("the other project's 404s appear in this project's breakdown: %v", byCode)
+	}
 }

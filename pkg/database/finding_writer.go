@@ -201,14 +201,14 @@ func (w *FindingWriter) flushLoop() {
 			batch = append(batch, fw)
 			if len(batch) >= w.cfg.BatchSize {
 				w.flush(context.Background(), batch)
-				batch = batch[:0]
+				batch = resetFindingBatch(batch)
 				ticker.Reset(w.cfg.FlushInterval)
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
 				w.flush(context.Background(), batch)
-				batch = batch[:0]
+				batch = resetFindingBatch(batch)
 			}
 
 		case <-w.ctx.Done():
@@ -219,7 +219,7 @@ func (w *FindingWriter) flushLoop() {
 					batch = append(batch, fw)
 					if len(batch) >= w.cfg.BatchSize {
 						w.flush(drainCtx, batch)
-						batch = batch[:0]
+						batch = resetFindingBatch(batch)
 					}
 				default:
 					if len(batch) > 0 {
@@ -231,6 +231,18 @@ func (w *FindingWriter) flushLoop() {
 			}
 		}
 	}
+}
+
+// resetFindingBatch empties a flushed batch for reuse, clearing the entries
+// first. This mirrors resetBatch in record_writer.go, for the same reason: a
+// plain batch[:0] leaves the backing array's pointers live, so after a flush the
+// loop still pins up to BatchSize findings — each one a *output.ResultEvent
+// holding the full request, response and additional evidence that produced it.
+// Findings are low-volume, so the writer is idle most of the time, and that is
+// exactly when the stale retention lasts longest.
+func resetFindingBatch(batch []findingWrite) []findingWrite {
+	clear(batch)
+	return batch[:0]
 }
 
 // flush persists a batch of findings in a single transaction.

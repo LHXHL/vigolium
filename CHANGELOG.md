@@ -4,14 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
+## [v0.5.0] - 2026-09-22
 
-- **The hardening-advisory modules no longer run at the default intensity.** Thirteen modules tagged `hygiene` report a missing best-practice control rather than an exploitable condition - `security-headers-missing`, `tls-protocol-cipher-audit`, `csp-weakness-audit`, `hsts-preload-audit`, `cors-vary-origin-missing`, `cookie-security-detect`, `mixed-content-detect`, `reverse-tabnabbing-detect`, `content-type-mismatch`, `permissions-policy-detect`, `cross-origin-isolation-audit`, `subresource-integrity-detect`, `password-autocomplete-detect`. Each fires on nearly every response, so a crawl of any size buried the exploitable findings under one near-identical Info/Low row per URL. They now run only at `--intensity deep`, via `--module-tag hygiene` / `--module-id <id>`, or with `dynamic-assessment.hygiene_modules: true`. The Info-tier fingerprints, endpoint/param observers and `surface-scoring` are unaffected - their output feeds tech tags, scoring and active-module targeting - and `clickjacking-detect` stays on at Medium.
+A **trustworthy-output** release: two finding families that were entirely false positives now need evidence the transport can actually produce, the hardening advisories move off the default intensity, a run that fails to write a requested artifact exits non-zero, and scans stop leaking temp scratch.
 
 ### Added
 
-- `dynamic-assessment.hygiene_modules` - `true` runs the hardening advisories at every intensity, `false` suppresses them even at deep; unset follows the intensity.
-- `hygiene` module tag, selectable with `--module-tag hygiene`.
+- `vigolium kit tmp-clean` - collect vigolium scratch left in the system temp directory by interrupted runs. `--max-age` (default 6h) governs what counts as abandoned.
+- `hygiene` module tag, selectable with `--module-tag hygiene` / `--module-id <id>`.
+- `dynamic-assessment.hygiene_modules` - force the hardening advisories on at any intensity, or off even at deep.
+- `scans.scope_origin_mode` - the resolved host-scope mode, carried through `--format jsonl`, `vigolium export` and the REST scan object.
+- `config.ResolveCLIOriginMode`, the one fallback chain the matcher, banner, summary, snapshot and scan row all read.
+- A `Host scope` reference section documenting how `--scope-origin` also selects *stored* records.
+
+### Fixed
+
+- **All 12 request-smuggling findings in an engagement were false positives.** `net/http` dropped `Transfer-Encoding` and rewrote `Content-Length`, so every probe reached the wire as a well-formed POST identical to its control. Probes now go out as verbatim bytes (`http.Options.RawBytes`), the gate is probe-vs-control (3x **and** a 2s margin **and** a 5s floor) against the median of three controls re-measured after each probe, and hosts are skipped when an edge/auth gate answers, traffic is not HTTP/1.1, or the server sends `Connection: close`.
+- **`ssi-injection` filed ~113 high-severity false positives.** The oracle proved evaluation by the *absence* of directive markup, so a WAF, an SSO gate or a denial page read as a hit. It now brackets `<!--#echo var="DATE_GMT"-->` between two fresh tags and requires a server-owned value, rules out a comment-stripping sanitizer with a control round, and skips blocked/redirect/404 responses. A quadratic needle scan (8.5s on a 900 KB page) is bounded to 64 bytes.
+- **`-t`/`-T` no longer wait on stdin.** An inherited pipe (CI runner, agent harness, `| tee`) makes `HasStdin()` true, so scans blocked for the full `--input-read-timeout` - and `ingest -t` hung indefinitely - before using targets already on the command line. A typed `-i -` still wins.
+- **A requested artifact that was never written now fails the run.** An export failure exited `0`, reported `scan.finished status=completed` and left no file. `scan`/`run`/`scan-url`/`scan-request` and an agentic `-S` run now exit `1` with `error.code: "export_failed"`; formats are still attempted independently.
+- **A failed SQLite export no longer destroys the previous one.** `VACUUM INTO` refuses to overwrite, so the destination was deleted first; the copy is now staged beside it and renamed into place.
+- **Scans clean up after themselves.** Every temporary store - dedup LevelDBs, deparos' caches, ephemeral sitemaps, jstangle jobs, stateless SQLite, the spidering Chromium profile - lives under one per-process directory teardown removes whole, and scratch abandoned by a killed run is collected on a later scan.
+- **The spidering browser stranded its Chromium profile on every launch**: `Browser.Close` never called go-rod's `launcher.Cleanup()`. One workstation held 3,384 profiles totalling 104 GB.
+- Reading a `.jsonl` artifact re-read all of `os.TempDir()` (55-170 ms on every `traffic`/`finding`/`export` and every `--glob-db` merge), and fastdialer's write-only dial history swept the whole temp directory at startup (~180 ms per invocation); both are gone.
+- The config snapshot logged `scope_origin_mode: ""` for any run that took the default.
+
+### Changed
+
+- **The 14 `hygiene`-tagged hardening advisories no longer run at the default intensity** - each fires on nearly every response and buried exploitable findings under one near-identical row per URL. They now need `--intensity deep`, the tag, or the config key. `express-session-audit` joins them; Info-tier fingerprints, endpoint/param observers, `surface-scoring` and `clickjacking-detect` are unaffected.
+- `ssi-injection` in-band findings are Medium, not High - the echo oracle proves directive evaluation, not the file read or RCE.
+- **Startup is about 20 ms faster** (`go-runewidth` v0.0.27 -> v0.0.30, whose `init` no longer builds a 2.2 MB width table rune by rune).
+- **A single-phase stateless scan is several times faster** (`run probe -t <host> -S`: ~0.78 s -> ~0.12 s). Dedup sets keep a bounded in-memory tier and allocate a LevelDB only past it, so a one-host probe opens none where it opened seventeen; the executor's post-EOF drain backs off instead of ticking; stderr-capture teardown waits for its reader rather than sleeping 50 ms.
+- **Phases that never contact the target no longer build infrastructure for traffic they will not send** - `run external-harvest --auth-file` used to authenticate against a host it was only going to query archives about.
+- `--scope-origin` help text states the default and what `balanced` admits, on `scan`, `run` and `ingest`; `-S/--stateless` is documented as the isolation lever, not just a CI one.
 
 ## [v0.4.9] - 2026-09-20
 

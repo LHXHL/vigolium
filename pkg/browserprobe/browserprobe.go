@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	"github.com/go-rod/rod/lib/launcher"
 )
 
@@ -58,7 +60,7 @@ func Launchable(binPath string) error {
 	// the launch ends. go-rod's Cleanup() blocks on the process-exit channel,
 	// which never closes if the binary fails to even start — so we do not rely
 	// on it here.
-	if dir, err := os.MkdirTemp("", "vigolium-browserprobe-*"); err == nil {
+	if dir, err := scratch.MkdirTemp("browserprobe-*"); err == nil {
 		defer func() { _ = os.RemoveAll(dir) }()
 		l.Set("user-data-dir", dir)
 	}

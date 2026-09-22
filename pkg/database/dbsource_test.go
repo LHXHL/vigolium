@@ -330,7 +330,7 @@ func TestRiskPrioritizedDBInputSource_DoesNotSkipNonRiskRecords(t *testing.T) {
 	if scan.ProcessedCount != int64(len(inserted)) {
 		t.Fatalf("processed_count=%d, want %d", scan.ProcessedCount, len(inserted))
 	}
-	remaining, err := repo.CountRecordsAfterCursor(ctx, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
+	remaining, err := repo.CountRecordsAfterCursor(ctx, DefaultProjectUUID, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
 	if err != nil {
 		t.Fatalf("CountRecordsAfterCursor: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestRiskPrioritizedDBInputSource_BatchedFetchAcrossChunks(t *testing.T) {
 	if scan.ProcessedCount != int64(n) {
 		t.Fatalf("processed_count=%d, want %d", scan.ProcessedCount, n)
 	}
-	remaining, err := repo.CountRecordsAfterCursor(ctx, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
+	remaining, err := repo.CountRecordsAfterCursor(ctx, DefaultProjectUUID, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
 	if err != nil {
 		t.Fatalf("CountRecordsAfterCursor: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestRiskPrioritizedDBInputSource_RiskLaneSpansPages(t *testing.T) {
 
 	// Cursor advanced past the whole snapshot.
 	scan, _ := repo.GetScanByUUID(ctx, scanUUID)
-	remaining, err := repo.CountRecordsAfterCursor(ctx, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
+	remaining, err := repo.CountRecordsAfterCursor(ctx, DefaultProjectUUID, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
 	if err != nil {
 		t.Fatalf("CountRecordsAfterCursor: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestRiskPrioritizedDBInputSource_CursorAdvancesDespiteMissingRecords(t *tes
 
 	// The cursor must advance past the whole snapshot despite the two skips.
 	scan, _ := repo.GetScanByUUID(ctx, scanUUID)
-	remaining, err := repo.CountRecordsAfterCursor(ctx, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
+	remaining, err := repo.CountRecordsAfterCursor(ctx, DefaultProjectUUID, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
 	if err != nil {
 		t.Fatalf("CountRecordsAfterCursor: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestRiskPrioritizedDBInputSource_ParamShapeCoalescing(t *testing.T) {
 
 	// The cursor must advance past ALL 7 inserted records, not just the 4 scanned.
 	scan, _ := repo.GetScanByUUID(ctx, scanUUID)
-	remaining, err := repo.CountRecordsAfterCursor(ctx, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
+	remaining, err := repo.CountRecordsAfterCursor(ctx, DefaultProjectUUID, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
 	if err != nil {
 		t.Fatalf("CountRecordsAfterCursor: %v", err)
 	}

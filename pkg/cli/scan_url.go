@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -504,8 +506,17 @@ func runScanWithRR(rr *httpmsg.HttpRequestResponse, target, method string) error
 	var scanProjectUUID string
 	db, dbErr := getDB()
 	if dbErr == nil {
-		ctx := context.Background()
-		if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
+		// getDB already ran EnsureSchemaCurrent on this handle, but that check
+		// covers migrated columns only — a table or index added without a column
+		// migration passes it. Bounded like the other two setup sites; a failure
+		// only warns here because this path can still do useful work against a
+		// store it could not migrate. nil settings because this function never
+		// loads them (the handle came from getDB, which did) — that takes the
+		// minSetupTimeout floor, the right order of magnitude for a check
+		// measured in microseconds.
+		ctx, cancelSetup := setupContext(nil)
+		defer cancelSetup()
+		if schemaErr := db.EnsureSchemaReady(ctx); schemaErr != nil {
 			zap.L().Warn("Failed to create schema", zap.Error(schemaErr))
 		}
 		repo = database.NewRepository(db)
@@ -803,7 +814,7 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 	// the run, so the main DB stays untouched (mirrors `vigolium scan -S`).
 	var statelessDBPath string
 	if opts.Stateless {
-		tmpFile, tmpErr := os.CreateTemp("", "vigolium-stateless-*.sqlite")
+		tmpFile, tmpErr := scratch.CreateTemp("stateless-*.sqlite")
 		if tmpErr != nil {
 			return fmt.Errorf("failed to create temporary database: %w", tmpErr)
 		}
@@ -858,9 +869,10 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 	}
 	defer func() { _ = db.Close() }()
 
-	ctx := context.Background()
-	if err := db.CreateSchema(ctx); err != nil {
-		return fmt.Errorf("failed to create database schema: %w", err)
+	ctx, cancelSetup := setupContext(settings)
+	defer cancelSetup()
+	if err := db.EnsureSchemaReady(ctx); err != nil {
+		return wrapSetupError(ctx, db.Driver(), "database schema setup", err)
 	}
 	repo := database.NewRepository(db)
 
@@ -883,7 +895,7 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 	}
 	// Export tail. Registered before the runner is closed; both read the DB after
 	// the explicit scanRunner.Close() below flushes records, but before db.Close().
-	defer func() { finishStatelessExport(db, opts, statelessOutputPath, false) }()
+	defer func() { recordExportFailure(&err, finishStatelessExport(db, opts, statelessOutputPath, false)) }()
 	defer func() {
 		// Skip the deferred jsonl envelope when stateless already materialized
 		// every format to the file, or when a persisted scan hard-failed (don't
@@ -894,7 +906,7 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 		if err != nil && !opts.Stateless {
 			return
 		}
-		finishScanJSONLExport(db, opts)
+		recordExportFailure(&err, finishScanJSONLExport(db, opts))
 	}()
 
 	// Build the Runner. No phase flags → scan the exact request via SingleSource;

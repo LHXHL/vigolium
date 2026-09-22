@@ -175,9 +175,11 @@ func (db *DB) startWALCheckpointer() {
 				return
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if _, err := db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-					zap.L().Debug("WAL checkpoint failed", zap.Error(err))
-				}
+				// TRUNCATE is right HERE and wrong on the open path: this
+				// goroutine only exists in a long-running process, where
+				// reclaiming the file length is the whole point and waiting for a
+				// reader delays nothing a user is watching.
+				_, _ = checkpointWAL(ctx, db, "TRUNCATE")
 				// Refresh planner stats on the same cadence so a long-running
 				// server keeps good plans as the tables grow.
 				db.Optimize(ctx)
@@ -185,6 +187,50 @@ func (db *DB) startWALCheckpointer() {
 			}
 		}
 	}()
+}
+
+// rowQuerier is the one method both *sql.DB — the raw handle openSQLite holds
+// before bun wraps it — and *DB provide.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// checkpointWAL runs a checkpoint, READS ITS RESULT ROW, and logs the outcome.
+// It reports whether the checkpoint gave up waiting for readers.
+//
+// Reading the row is the whole reason it exists. `PRAGMA wal_checkpoint` reports
+// a checkpoint it could not complete as busy=1 in its result row and returns no
+// error, so the conventional `if _, err := Exec(...); err != nil` form is blind
+// to it: a TRUNCATE that blocked for the full busy_timeout and then gave up
+// logged absolutely nothing. Measured against one pinned WAL reader: 15.147s,
+// busy=1, err=nil. A busy result is therefore logged as loudly as a failure —
+// it means WAL space was not reclaimed and the call sat on the busy_timeout to
+// find that out.
+func checkpointWAL(ctx context.Context, q rowQuerier, mode string) (busy bool, err error) {
+	start := time.Now()
+	// Scanned into NullInt64 because a driver that returns no row rather than
+	// the documented 3-column result must degrade to "unknown", not to an error
+	// on a checkpoint that may well have succeeded.
+	var busyCol, walPages, checkpointed sql.NullInt64
+	err = q.QueryRowContext(ctx, "PRAGMA wal_checkpoint("+mode+")").Scan(&busyCol, &walPages, &checkpointed)
+	busy = busyCol.Int64 != 0
+
+	fields := []zap.Field{
+		zap.String("mode", mode),
+		zap.Duration("elapsed", time.Since(start)),
+		zap.Int64("wal_pages", walPages.Int64),
+		zap.Int64("checkpointed", checkpointed.Int64),
+		zap.Bool("busy", busy),
+	}
+	switch {
+	case err != nil:
+		zap.L().Debug("WAL checkpoint failed", append(fields, zap.Error(err))...)
+	case busy:
+		zap.L().Debug("WAL checkpoint blocked by a reader; WAL not reclaimed", fields...)
+	default:
+		zap.L().Debug("WAL checkpoint complete", fields...)
+	}
+	return busy, err
 }
 
 // NewDBFromBun wraps an existing bun.DB for use in tests or external tooling.
@@ -200,8 +246,8 @@ func NewDBFromBun(bunDB *bun.DB, driver string) *DB {
 //   - no os.MkdirAll — a missing file is an error, not a new database;
 //   - no journal_mode PRAGMA — setting it rewrites the header, which is what
 //     flipped evidence files from `delete` to `wal` and changed their hash;
-//   - no startup wal_checkpoint(TRUNCATE) — that rewrites both the main file and
-//     the -wal sidecar.
+//   - no startup wal_checkpoint of any mode — even PASSIVE, which the read-write
+//     path does run, rewrites both the main file and the -wal sidecar.
 //
 // `mode=ro` is the driver's own read-only mode; it still reads a pre-existing
 // -wal sidecar, so a database another process left mid-WAL is read correctly
@@ -295,11 +341,20 @@ func openSQLite(cfg *config.SQLiteConfig) (*sql.DB, error) {
 	}
 
 	// Ensure parent directory exists (skip for in-memory databases)
+	//
+	// leftoverWAL is sampled BEFORE sql.Open, which creates the sidecars itself:
+	// it is the precondition for the checkpoint below, which has nothing to fold
+	// in when no -wal survives. SQLite deletes the -wal on a clean last close, so
+	// this is false for a fresh file (every stateless run) and for a store the
+	// previous process shut down properly — and true after a crash, which is the
+	// case the checkpoint is for.
+	leftoverWAL := false
 	if path != ":memory:" {
 		dir := filepath.Dir(path)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create database directory: %w", err)
 		}
+		leftoverWAL = sidecarsPresent(path)
 	}
 
 	// Build DSN with PRAGMA settings.
@@ -347,12 +402,18 @@ func openSQLite(cfg *config.SQLiteConfig) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to ping SQLite: %w", err)
 	}
 
-	// Checkpoint + truncate any WAL left over from a previous run so the file
-	// starts compact (no-op outside WAL mode; just-opened DB has no readers yet).
-	if strings.EqualFold(cfg.JournalMode, "WAL") && path != ":memory:" {
-		if _, err := sqldb.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-			zap.L().Debug("initial WAL checkpoint failed", zap.Error(err))
-		}
+	// Fold a WAL left over from an unclean exit back into the main database, so
+	// this open starts from a compact file.
+	//
+	// PASSIVE, not TRUNCATE. A new CONNECTION is not a new DATABASE: `serve`'s
+	// scan-on-receive poller, a `traffic` listing, or a concurrent scan can hold
+	// a read lock on this file from another process, and TRUNCATE waits for every
+	// one of them to let go. The only thing that wait buys is zeroing the -wal
+	// file's length, which nothing on the open path needs, and which the
+	// long-running process's own checkpointer still does on its timer (see
+	// startWALCheckpointer). PASSIVE never waits at all.
+	if strings.EqualFold(cfg.JournalMode, "WAL") && path != ":memory:" && leftoverWAL {
+		_, _ = checkpointWAL(context.Background(), sqldb, "PASSIVE")
 	}
 
 	// In WAL mode, SQLite supports concurrent readers alongside a single writer.
@@ -484,48 +545,6 @@ func (db *DB) ftsIndexesBody(ctx context.Context) bool {
 		return false
 	}
 	return strings.Contains(ddl, "raw_request") || strings.Contains(ddl, "raw_response")
-}
-
-// recordSecondaryIndexes are the non-unique read indexes on http_records.
-//
-// They are kept apart from the rest of CreateSchema's index list because they
-// are the only ones a BULK LOAD can safely postpone: nothing depends on them for
-// correctness (uuid is the PRIMARY KEY, and that is what the merge's
-// INSERT OR IGNORE dedups on), and they are the most expensive to maintain
-// incrementally — thirteen b-tree insertions per row, most of them keyed on a
-// random uuid, so every insert dirties thirteen pages in thirteen different
-// places. Building them once after the rows are in lets SQLite sort instead.
-//
-// See DeferRecordIndexes for who postpones them, and CreateRecordIndexes for
-// when they are built.
-var recordSecondaryIndexes = []string{
-	// -- http_records: project-aware composite indexes --
-	"CREATE INDEX IF NOT EXISTS idx_records_project_hostname ON http_records(project_uuid, hostname)",
-	"CREATE INDEX IF NOT EXISTS idx_records_project_created_uuid ON http_records(project_uuid, created_at, uuid)",
-	"CREATE INDEX IF NOT EXISTS idx_records_project_sent_at ON http_records(project_uuid, sent_at)",
-	"CREATE INDEX IF NOT EXISTS idx_records_project_host_method_status ON http_records(project_uuid, hostname, method, status_code)",
-	"CREATE INDEX IF NOT EXISTS idx_records_project_scheme_host_port ON http_records(project_uuid, scheme, hostname, port)",
-	"CREATE INDEX IF NOT EXISTS idx_records_project_risk_score ON http_records(project_uuid, risk_score)",
-	"CREATE INDEX IF NOT EXISTS idx_records_project_surface_score ON http_records(project_uuid, surface_score)",
-	// Covering index for findDuplicateRecord: the duplicate probe filters on
-	// (project_uuid, method, hostname, path, url[, request_hash]) and selects
-	// only uuid. Indexing all of those plus uuid lets the lookup resolve
-	// entirely from the index (no per-candidate table row fetch). The old
-	// 4-column version (…, path) is dropped in CreateSchema so this definition
-	// takes effect on existing databases.
-	"CREATE INDEX IF NOT EXISTS idx_records_dedup ON http_records(project_uuid, method, hostname, path, url, request_hash, uuid)",
-	"CREATE INDEX IF NOT EXISTS idx_records_request_hash ON http_records(request_hash)",
-	"CREATE INDEX IF NOT EXISTS idx_records_response_hash ON http_records(response_hash)",
-	// Supports DeduplicateDeparosByNormHash: narrows the full http_records scan to
-	// the (project, deparos) subset and surfaces response_norm_hash for the
-	// reflected-URL-robust dedup pass run after discovery.
-	"CREATE INDEX IF NOT EXISTS idx_records_norm_hash ON http_records(project_uuid, source, response_norm_hash)",
-	// -- http_records: scan_uuid index --
-	"CREATE INDEX IF NOT EXISTS idx_records_project_scan ON http_records(project_uuid, scan_uuid)",
-	// -- http_records: source-filtered cursor scan (scan-on-receive) --
-	// Supports WHERE source IN (...) AND created_at > cursor filters in
-	// DBInputSource.fetchNextBatch and Repository.CountRecordsAfterCursorBySource.
-	"CREATE INDEX IF NOT EXISTS idx_records_project_source_created ON http_records(project_uuid, source, created_at, uuid)",
 }
 
 // DeferRecordIndexes tells CreateSchema to leave the http_records read indexes
@@ -745,378 +764,8 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 		// "no such column: r.surface_score", which names a symptom and no remedy.
 		return db.checkSchemaCurrent(ctx)
 	}
-	tables := []string{
-		// Schema versioning: lets CreateSchema skip one-time O(rows) backfills once
-		// a database is current (see currentSchemaVersion). Single row, id always 1.
-		`CREATE TABLE IF NOT EXISTS schema_meta (
-			id INTEGER PRIMARY KEY,
-			version INTEGER NOT NULL DEFAULT 0
-		)`,
-		// Multi-tenancy: users and projects
-		`CREATE TABLE IF NOT EXISTS users (
-			uuid TEXT PRIMARY KEY NOT NULL,
-			email TEXT,
-			name TEXT,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS projects (
-			uuid TEXT PRIMARY KEY NOT NULL,
-			name TEXT NOT NULL,
-			description TEXT,
-			owner_uuid TEXT,
-			config_path TEXT,
-			tags TEXT,
-			default_target TEXT,
-			last_scan_at TIMESTAMP,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS scans (
-			uuid TEXT PRIMARY KEY NOT NULL,
-			project_uuid TEXT NOT NULL,
-			name TEXT,
-			description TEXT,
-			status TEXT NOT NULL DEFAULT 'running',
-			target TEXT,
-			modules TEXT,
-			threads INTEGER DEFAULT 0,
-			profile TEXT,
-			source_path TEXT,
-			source_type TEXT,
-			tags TEXT,
-			triggered_by TEXT,
-			agentic_scan_uuid TEXT,
-			http_record_uuid TEXT,
-			scan_source TEXT,
-			scan_mode TEXT,
-			start_cursor_at TIMESTAMP,
-			start_cursor_uuid TEXT,
-			cursor_at TIMESTAMP,
-			cursor_uuid TEXT,
-			processed_count INTEGER DEFAULT 0,
-			started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			finished_at TIMESTAMP,
-			duration_ms INTEGER DEFAULT 0,
-			total_requests INTEGER DEFAULT 0,
-			total_findings INTEGER DEFAULT 0,
-			critical_count INTEGER DEFAULT 0,
-			high_count INTEGER DEFAULT 0,
-			medium_count INTEGER DEFAULT 0,
-			low_count INTEGER DEFAULT 0,
-			info_count INTEGER DEFAULT 0,
-			suspect_count INTEGER DEFAULT 0,
-			error_message TEXT,
-			storage_url TEXT,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS http_records (
-			uuid TEXT PRIMARY KEY NOT NULL,
-			project_uuid TEXT NOT NULL,
-			scan_uuid TEXT,
-			scheme TEXT NOT NULL,
-			hostname TEXT NOT NULL,
-			port INTEGER NOT NULL,
-			ip TEXT,
-			method TEXT NOT NULL,
-			path TEXT NOT NULL,
-			url TEXT NOT NULL,
-			http_version TEXT NOT NULL,
-			request_content_type TEXT,
-			request_content_length INTEGER DEFAULT 0,
-			raw_request BLOB,
-			request_hash TEXT NOT NULL,
-			request_authorization TEXT,
-			status_code INTEGER DEFAULT 0,
-			status_phrase TEXT,
-			response_http_version TEXT,
-			response_content_type TEXT,
-			response_content_length INTEGER DEFAULT 0,
-			raw_response BLOB,
-			response_hash TEXT,
-			response_norm_hash TEXT,
-			response_time_ms INTEGER DEFAULT 0,
-			response_words INTEGER DEFAULT 0,
-			has_response INTEGER NOT NULL DEFAULT 0,
-			response_title TEXT,
-			response_location TEXT,
-			parameters TEXT,
-			sent_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			received_at TIMESTAMP,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			source TEXT DEFAULT '',
-			technology TEXT,
-			content_hash TEXT,
-			is_authenticated INTEGER NOT NULL DEFAULT 0,
-			parent_uuid TEXT,
-			target TEXT,
-			root_uuid TEXT,
-			chain_truncated INTEGER NOT NULL DEFAULT 0,
-			remarks TEXT,
-			risk_score INTEGER DEFAULT 0,
-			surface_score INTEGER DEFAULT 0
-		)`,
-		`CREATE TABLE IF NOT EXISTS analysis_artifacts (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_uuid TEXT NOT NULL,
-			scan_uuid TEXT,
-			http_record_uuid TEXT NOT NULL,
-			kind TEXT NOT NULL,
-			filename TEXT,
-			media_type TEXT,
-			sha256 TEXT NOT NULL,
-			byte_length INTEGER NOT NULL,
-			content BLOB NOT NULL,
-			metadata TEXT,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS findings (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_uuid TEXT NOT NULL,
-			http_record_uuids TEXT NOT NULL,
-			scan_uuid TEXT,
-			agentic_scan_uuid TEXT,
-			url TEXT,
-			hostname TEXT,
-			module_id TEXT NOT NULL,
-			module_name TEXT NOT NULL,
-			module_type TEXT DEFAULT '',
-			finding_source TEXT DEFAULT '',
-			record_kind TEXT NOT NULL DEFAULT 'finding',
-			evidence_grade TEXT DEFAULT '',
-			module_short TEXT DEFAULT '',
-			description TEXT,
-			severity TEXT NOT NULL,
-			confidence TEXT NOT NULL DEFAULT 'firm',
-			tags TEXT,
-			status TEXT DEFAULT 'triaged',
-			remediation TEXT,
-			cwe_id TEXT,
-			cvss_score REAL DEFAULT 0,
-			source_file TEXT,
-			repo_name TEXT,
-			matched_at TEXT,
-			extracted_results TEXT,
-			additional_evidence TEXT,
-			request TEXT,
-			response TEXT,
-			finding_hash TEXT NOT NULL,
-			found_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS finding_records (
-			finding_id INTEGER NOT NULL,
-			record_uuid TEXT NOT NULL,
-			PRIMARY KEY (finding_id, record_uuid)
-		)`,
-		`CREATE TABLE IF NOT EXISTS scopes (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_uuid TEXT NOT NULL,
-			name TEXT NOT NULL,
-			description TEXT,
-			rule_type TEXT NOT NULL,
-			host_pattern TEXT,
-			path_pattern TEXT,
-			content_type_pattern TEXT,
-			methods TEXT,
-			ports TEXT,
-			schemes TEXT,
-			priority INTEGER NOT NULL DEFAULT 100,
-			enabled INTEGER NOT NULL DEFAULT 1,
-			hit_count INTEGER DEFAULT 0,
-			last_matched_at TIMESTAMP,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS oast_interactions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_uuid TEXT NOT NULL,
-			scan_uuid TEXT,
-			unique_id TEXT NOT NULL,
-			full_id TEXT NOT NULL,
-			protocol TEXT NOT NULL,
-			q_type TEXT,
-			raw_request TEXT,
-			raw_response TEXT,
-			remote_address TEXT,
-			interacted_at TIMESTAMP NOT NULL,
-			target_url TEXT,
-			parameter_name TEXT,
-			injection_type TEXT,
-			module_id TEXT,
-			finding_id INTEGER,
-			payload TEXT,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS agentic_scans (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			uuid TEXT NOT NULL UNIQUE,
-			project_uuid TEXT NOT NULL,
-			scan_uuid TEXT,
-			mode TEXT NOT NULL,
-			agent_name TEXT NOT NULL,
-			input_raw TEXT,
-			input_type TEXT,
-			target_url TEXT,
-			vuln_type TEXT,
-			module_names TEXT,
-			template_id TEXT,
-			status TEXT NOT NULL DEFAULT 'pending',
-			current_phase TEXT,
-			phases_run TEXT,
-			finding_count INTEGER DEFAULT 0,
-			record_count INTEGER DEFAULT 0,
-			saved_count INTEGER DEFAULT 0,
-			source_path TEXT,
-			source_type TEXT,
-			token_usage TEXT,
-			retry_count INTEGER DEFAULT 0,
-			parent_run_uuid TEXT,
-			input_record_count INTEGER DEFAULT 0,
-			attack_plan TEXT,
-			triage_result TEXT,
-			prompt_sent TEXT,
-			agent_raw_output TEXT,
-			error_message TEXT,
-			result_json TEXT,
-			storage_url TEXT,
-			session_id TEXT,
-			session_dir TEXT,
-			started_at TIMESTAMP,
-			completed_at TIMESTAMP,
-			duration_ms INTEGER DEFAULT 0,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS authentication_hostnames (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_uuid TEXT NOT NULL,
-			scan_uuid TEXT,
-			hostname TEXT NOT NULL,
-			session_name TEXT NOT NULL,
-			session_role TEXT DEFAULT '',
-			position INTEGER DEFAULT 0,
-			session_token TEXT,
-			headers TEXT,
-			login_url TEXT,
-			login_method TEXT,
-			login_content_type TEXT,
-			login_body TEXT,
-			login_request TEXT,
-			login_response TEXT,
-			extract_rules TEXT,
-			source TEXT DEFAULT '',
-			hydrated_at TIMESTAMP,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		// One row per (run, endpoint): what this scan observed about a HOST, as
-		// opposed to about one exchange with it.
-		//
-		// Normalized rather than stored on http_records. The per-row objection
-		// that keeps the full DNS answer off the record still stands — a sweep
-		// writes several rows per host and a redirect chain alone is three, so
-		// columns would hold many identical copies of one answer — but it is an
-		// argument against DUPLICATING the answer, not against keeping it. Here
-		// it is written once per endpoint per run and referenced by hostname and
-		// port.
-		//
-		// Keyed by scan_uuid so a re-probe RECORDS a new observation instead of
-		// overwriting the old one: "what did the host resolve to when we scanned
-		// it in March" is a question a report has to be able to answer, and an
-		// upsert keyed on hostname alone would destroy the answer every time the
-		// host was scanned again. UNIQUE(scan_uuid, hostname, port) makes a
-		// repeat within ONE run idempotent, which is the only case where
-		// overwriting is correct.
-		//
-		// complete distinguishes a lookup that ran and found nothing from one
-		// that was cut short (a cancelled or budget-limited prefetch). Without
-		// it an empty answer is unreadable: "this host has no AAAA record" and
-		// "we never got to this host" are different facts about the scan.
-		`CREATE TABLE IF NOT EXISTS host_observations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_uuid TEXT NOT NULL,
-			scan_uuid TEXT,
-			hostname TEXT NOT NULL,
-			port INTEGER NOT NULL DEFAULT 0,
-			observed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			dns_a TEXT,
-			dns_aaaa TEXT,
-			dns_cname TEXT,
-			tls TEXT,
-			complete INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(scan_uuid, hostname, port)
-		)`,
-		`CREATE TABLE IF NOT EXISTS scan_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_uuid TEXT NOT NULL,
-			scan_uuid TEXT NOT NULL,
-			level TEXT NOT NULL,
-			phase TEXT,
-			message TEXT NOT NULL,
-			metadata TEXT,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		// Durable autopilot: one row per bounded operator section (a Reset() +
-		// reconstructed-brief cycle). Only written when autopilot_mode != legacy.
-		`CREATE TABLE IF NOT EXISTS agent_sections (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			uuid TEXT NOT NULL UNIQUE,
-			agentic_scan_uuid TEXT,
-			project_uuid TEXT,
-			seq INTEGER NOT NULL DEFAULT 0,
-			kind TEXT,
-			status TEXT NOT NULL DEFAULT 'running',
-			task TEXT,
-			closing_summary TEXT,
-			rotation_reason TEXT,
-			turn_count INTEGER NOT NULL DEFAULT 0,
-			input_tokens INTEGER NOT NULL DEFAULT 0,
-			output_tokens INTEGER NOT NULL DEFAULT 0,
-			error_message TEXT,
-			started_at TIMESTAMP,
-			ended_at TIMESTAMP,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		// Durable autopilot: verify-before-promote candidates. Each proposed
-		// finding lands here first (status=proposed), a fresh-context verifier
-		// grades it, and confirmed ones are promoted into findings. Only
-		// written when autopilot_mode != legacy. UNIQUE(agentic_scan_uuid,
-		// dedup_hash) backs the ON CONFLICT dedup on SaveCandidate.
-		`CREATE TABLE IF NOT EXISTS agent_finding_candidates (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			uuid TEXT NOT NULL UNIQUE,
-			agentic_scan_uuid TEXT,
-			project_uuid TEXT,
-			section_uuid TEXT,
-			title TEXT,
-			severity TEXT,
-			description TEXT,
-			remediation TEXT,
-			cwe_id TEXT,
-			source_file TEXT,
-			url TEXT,
-			hostname TEXT,
-			confidence TEXT,
-			class TEXT,
-			status TEXT NOT NULL DEFAULT 'proposed',
-			verdict_reason TEXT,
-			evidence_grade TEXT,
-			record_uuids TEXT,
-			oast_ids TEXT,
-			request TEXT,
-			response TEXT,
-			dedup_hash TEXT NOT NULL DEFAULT '',
-			promoted_finding_id INTEGER NOT NULL DEFAULT 0,
-			tags TEXT,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			verified_at TIMESTAMP
-		)`,
-	}
-
 	zap.L().Debug("Initializing database tables")
-	for _, ddl := range tables {
+	for _, ddl := range schemaTables {
 		if _, err := db.ExecContext(ctx, db.adaptDDL(ddl)); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
@@ -1128,102 +777,6 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 	// TABLE/INDEX IF NOT EXISTS, ADD COLUMN) still runs unconditionally so the
 	// schema stays self-healing.
 	schemaCurrent := db.schemaVersion(ctx) >= currentSchemaVersion
-
-	indexes := []string{
-		"CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_project_record ON analysis_artifacts(project_uuid, http_record_uuid)",
-		"CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_scan ON analysis_artifacts(scan_uuid)",
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_artifacts_record_kind_hash ON analysis_artifacts(http_record_uuid, kind, sha256)",
-
-		// -- host_observations --
-		// The read is "what did this run see for this endpoint", issued once per
-		// emitted record, so (project, scan, hostname, port) is the exact lookup.
-		// The scan-less variant backs the fallback read for a caller that knows
-		// the project but not which run to trust, which takes the most recent.
-		// The only index this table needs beyond its UNIQUE(scan_uuid, hostname,
-		// port) constraint. It covers the project-wide read - newest observation
-		// for an endpoint, ORDER BY id DESC LIMIT 1 - with id in the index so the
-		// lookup never fetches a table row per observation. The scan-scoped read
-		// is served by the unique constraint's own index, so a third
-		// (project_uuid, scan_uuid, hostname, port) index bought nothing and cost
-		// a b-tree insertion on every observation written.
-		"CREATE INDEX IF NOT EXISTS idx_host_obs_project_host_id ON host_observations(project_uuid, hostname, port, id)",
-
-		// -- findings: project-aware composite indexes --
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_severity ON findings(project_uuid, severity)",
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_module ON findings(project_uuid, module_id)",
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_found_at ON findings(project_uuid, found_at)",
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_module_type ON findings(project_uuid, module_type)",
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_finding_source ON findings(project_uuid, finding_source)",
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_record_kind ON findings(project_uuid, record_kind)",
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_scan ON findings(project_uuid, scan_uuid)",
-		// Covers aggregateScanFindings (SELECT severity, COUNT(*) WHERE scan_uuid = ?
-		// GROUP BY severity), which runs on every scan-status tick. scan_uuid is not
-		// the leading column of idx_findings_project_scan, so without this the count
-		// fell back to a full findings scan each tick; (scan_uuid, severity) makes it
-		// index-only.
-		"CREATE INDEX IF NOT EXISTS idx_findings_scan_severity ON findings(scan_uuid, severity)",
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_status ON findings(project_uuid, status)",
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_hostname ON findings(project_uuid, hostname)",
-		// Backs the per-round dynamic-assessment dedup grouping
-		// (DeduplicateFindings / GroupFindingsByValue): the WHERE narrows on
-		// (project_uuid, hostname) and the window function partitions by
-		// (module_id, severity, …) ordered by created_at. Indexing all five lets
-		// the host-scoped scan resolve from the index and arrive partially
-		// pre-ordered for the PARTITION BY, instead of a full findings scan + sort
-		// every feedback round. (matched_url is a json_extract expression and
-		// stays per-row, but the module_id/severity prefix is satisfied here.)
-		"CREATE INDEX IF NOT EXISTS idx_findings_project_host_module_sev ON findings(project_uuid, hostname, module_id, severity, created_at)",
-		// Sparse (nullzero column) — used by agent end-of-run summaries and
-		// webhook notifications to count findings per agentic-scan run.
-		"CREATE INDEX IF NOT EXISTS idx_findings_agentic_scan ON findings(agentic_scan_uuid)",
-		// Dedup is scoped per project: the same finding_hash may legitimately
-		// recur across projects without one project's finding suppressing
-		// another's. Backs ON CONFLICT (project_uuid, finding_hash).
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_project_hash_unique ON findings(project_uuid, finding_hash)",
-
-		// -- finding_records --
-		"CREATE INDEX IF NOT EXISTS idx_finding_records_record_uuid ON finding_records(record_uuid)",
-		"CREATE INDEX IF NOT EXISTS idx_finding_records_finding_id ON finding_records(finding_id)",
-
-		// -- scans --
-		"CREATE INDEX IF NOT EXISTS idx_scans_project_status ON scans(project_uuid, status)",
-		"CREATE INDEX IF NOT EXISTS idx_scans_project_created ON scans(project_uuid, created_at)",
-
-		// -- scopes --
-		"CREATE INDEX IF NOT EXISTS idx_scopes_project_enabled_priority ON scopes(project_uuid, enabled, priority)",
-
-		// -- oast_interactions --
-		"CREATE INDEX IF NOT EXISTS idx_oast_project_scan ON oast_interactions(project_uuid, scan_uuid)",
-		"CREATE INDEX IF NOT EXISTS idx_oast_interactions_unique_id ON oast_interactions(unique_id)",
-
-		// -- agentic_scans --
-		"CREATE INDEX IF NOT EXISTS idx_agentic_scans_uuid ON agentic_scans(uuid)",
-		"CREATE INDEX IF NOT EXISTS idx_agentic_scans_project_status ON agentic_scans(project_uuid, status)",
-		"CREATE INDEX IF NOT EXISTS idx_agentic_scans_project_created ON agentic_scans(project_uuid, created_at)",
-		"CREATE INDEX IF NOT EXISTS idx_agentic_scans_scan ON agentic_scans(scan_uuid)",
-
-		// -- authentication_hostnames --
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_authentication_hostnames_unique ON authentication_hostnames(project_uuid, hostname, session_name)",
-		"CREATE INDEX IF NOT EXISTS idx_authentication_hostnames_project_hostname ON authentication_hostnames(project_uuid, hostname)",
-		"CREATE INDEX IF NOT EXISTS idx_authentication_hostnames_project_scan ON authentication_hostnames(project_uuid, scan_uuid)",
-
-		// -- scan_logs --
-		"CREATE INDEX IF NOT EXISTS idx_scan_logs_project_scan ON scan_logs(project_uuid, scan_uuid)",
-		"CREATE INDEX IF NOT EXISTS idx_scan_logs_created_at ON scan_logs(created_at)",
-
-		// -- projects --
-		"CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_uuid)",
-
-		// -- agent_sections (durable autopilot) --
-		"CREATE INDEX IF NOT EXISTS idx_agent_sections_agentic_scan ON agent_sections(agentic_scan_uuid, seq)",
-		"CREATE INDEX IF NOT EXISTS idx_agent_sections_project ON agent_sections(project_uuid)",
-
-		// -- agent_finding_candidates (durable autopilot) --
-		"CREATE INDEX IF NOT EXISTS idx_agent_candidates_agentic_scan ON agent_finding_candidates(agentic_scan_uuid, status)",
-		"CREATE INDEX IF NOT EXISTS idx_agent_candidates_project ON agent_finding_candidates(project_uuid)",
-		// Backs ON CONFLICT (agentic_scan_uuid, dedup_hash) DO NOTHING in SaveCandidate.
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_candidates_dedup ON agent_finding_candidates(agentic_scan_uuid, dedup_hash)",
-	}
 
 	// Drop old indexes before creating the correct ones (migration for existing
 	// databases). Gated on schema version: once applied, the indexes already have
@@ -1269,7 +822,7 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 
 	// Create indexes now that all column migrations above have run — some indexes
 	// reference newly added columns (e.g. idx_records_norm_hash → response_norm_hash).
-	for _, ddl := range indexes {
+	for _, ddl := range schemaIndexes {
 		if _, err := db.ExecContext(ctx, ddl); err != nil {
 			return fmt.Errorf("failed to create index: %w", err)
 		}
@@ -1589,6 +1142,7 @@ var columnMigrations = []columnMigration{
 	{"agentic_scans", "total_output_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	{"agentic_scans", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0"},
 	{"scans", "storage_url", "TEXT"},
+	{"scans", "scope_origin_mode", "TEXT"},
 	{"agentic_scans", "storage_url", "TEXT"},
 	{"oast_interactions", "finding_id", "INTEGER"},
 	{"oast_interactions", "payload", "TEXT"},
@@ -1636,9 +1190,15 @@ var ErrSchemaOutdated = errors.New("database schema is older than this vigolium 
 // columns, so it is reached through the same call rather than special-cased
 // here.
 //
-// Indexes are deliberately not part of the check: they are a performance
-// concern, not a correctness one, and the write commands still call CreateSchema
-// directly. Only a missing TABLE or COLUMN can make a query fail outright.
+// Indexes and tables are deliberately not part of the check: only a missing
+// COLUMN makes the read commands this serves fail outright, and a read command
+// meeting an old file wants the cheapest question that unblocks it.
+//
+// That makes this the WEAKER of the package's two readiness checks, and it is
+// not the one to reach for when the answer gates a write workload — a missing
+// table or a missing UNIQUE index passes it. See EnsureSchemaReady, which checks
+// every object CreateSchema creates and is what the scan entry points use now
+// that they no longer run CreateSchema unconditionally.
 func (db *DB) EnsureSchemaCurrent(ctx context.Context) error {
 	missing, err := db.missingColumns(ctx)
 	if err == nil && len(missing) == 0 {
@@ -1655,7 +1215,7 @@ func (db *DB) EnsureSchemaCurrent(ctx context.Context) error {
 // and only this distinguishes them before vigolium's tables get created inside
 // the former.
 func (db *DB) HasVigoliumSchema(ctx context.Context) bool {
-	return db.tableExists(ctx, "http_records")
+	return db.tableExists(ctx, coreTableName)
 }
 
 // checkSchemaCurrent reports a read-only handle's missing columns as an error
@@ -1678,42 +1238,46 @@ func (db *DB) checkSchemaCurrent(ctx context.Context) error {
 // missingColumns reports which entries of columnMigrations this database lacks,
 // as "table.column". Read-only: it never takes a write lock.
 //
-// One catalog query PER TABLE, not one existence probe per column. There are ~75
-// migrated columns across 8 tables, so probing each individually cost ~75 round
-// trips on every process start — negligible on SQLite, but ~75 network RTTs on a
-// Postgres deployment, paid by every CLI invocation.
-//
 // A returned error means the catalog could not be read at all (an empty or
 // unopenable file); callers treat that as "cannot tell" rather than as "stale",
 // since a fresh database legitimately has no tables yet.
 func (db *DB) missingColumns(ctx context.Context) ([]string, error) {
 	// An absent core table means a fresh (or empty) file: it needs the full
 	// CreateSchema, and being new it has no concurrent writer to contend with.
-	if !db.tableExists(ctx, "http_records") {
+	if !db.tableExists(ctx, coreTableName) {
+		return nil, errSchemaNotInitialized
+	}
+	return db.missingColumnsFrom(ctx, nil)
+}
+
+// missingColumnsFrom is missingColumns for a caller that has already
+// established the core table exists — it skips that probe rather than repeating
+// it. `present` is only consulted to skip the probe; pass nil when unknown.
+func (db *DB) missingColumnsFrom(ctx context.Context, present map[string]bool) ([]string, error) {
+	if present != nil && !present[coreTableName] {
 		return nil, errSchemaNotInitialized
 	}
 
-	existing := make(map[string]map[string]bool)
+	existing, err := listAllColumns(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
 	var missing []string
 	for _, m := range columnMigrations {
-		cols, ok := existing[m.Table]
-		if !ok {
-			cols = make(map[string]bool)
-			// A table that does not exist yet reports no columns, so every one of
-			// its migrations lands in `missing` and CreateSchema creates it.
-			if infos, err := ListColumns(ctx, db, m.Table); err == nil {
-				for _, info := range infos {
-					cols[info.Name] = true
-				}
-			}
-			existing[m.Table] = cols
-		}
-		if !cols[m.Column] {
+		// A table that does not exist yet reports no columns, so every one of
+		// its migrations lands in `missing` and CreateSchema creates it.
+		if !existing[m.Table][m.Column] {
 			missing = append(missing, m.Table+"."+m.Column)
 		}
 	}
 	return missing, nil
 }
+
+// coreTableName is the table whose presence distinguishes an initialized
+// vigolium store from a fresh file or a foreign SQLite database. Named once
+// because three separate checks key off it.
+const coreTableName = "http_records"
 
 // errSchemaNotInitialized marks a database with no core table — a fresh file,
 // not a stale one.

@@ -301,7 +301,7 @@ require (
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
-	github.com/mattn/go-runewidth v0.0.27 // indirect
+	github.com/mattn/go-runewidth v0.0.30 // indirect
 	github.com/mattn/go-sqlite3 v1.14.34 // indirect
 	github.com/maypok86/otter/v2 v2.2.1 // indirect
 	github.com/mholt/acmez/v3 v3.1.3 // indirect

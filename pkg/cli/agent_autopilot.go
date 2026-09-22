@@ -539,14 +539,16 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	if cmd != nil {
 		ctx = cmd.Context()
 	}
-	runErr := runAutopilotOlium(ctx, settings, repo, instruction)
+	err = runAutopilotOlium(ctx, settings, repo, instruction)
 	// Materialize the -S export here rather than in a defer: the DB handle must
 	// still be open, and this is the invocation that actually ran the operator
 	// (on the natural-language path the outer call returns long before this).
 	// Runs even when the operator errored — a partial run's findings are still
-	// worth keeping, and the throwaway DB is about to be deleted.
-	emitAutopilotStatelessExport()
-	return runErr
+	// worth keeping, and the throwaway DB is about to be deleted. The operator's
+	// own error wins over a failed export; recordExportFailure owns that rule so
+	// this path and runMultiAppAutopilot's defer cannot decide it differently.
+	recordExportFailure(&err, emitAutopilotStatelessExport())
+	return err
 }
 
 // emitAutopilotStatelessExport writes the --stateless outputs and then disarms
@@ -554,9 +556,10 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 // runMultiAppAutopilot's defer (a natural-language prompt naming several apps
 // runs them sequentially into one throwaway DB, then exports the combined result
 // once) — and disarming keeps that exclusivity from being load-bearing.
-func emitAutopilotStatelessExport() {
-	emitAgentStatelessExport(autopilotStatelessPlan)
+func emitAutopilotStatelessExport() error {
+	err := emitAgentStatelessExport(autopilotStatelessPlan)
 	autopilotStatelessPlan.output = ""
+	return err
 }
 
 // runAutopilotFromPrompt parses a natural language prompt and runs autopilot for each extracted app.
@@ -688,7 +691,7 @@ func applyIntentToAutopilotFlags(app agent.AppIntent) {
 // Runs are strictly SEQUENTIAL (not the parallel fan-out swarm uses): the
 // per-app flag override/restore mutates shared package globals, so concurrent
 // runs would race and cross-contaminate targets/sources.
-func runMultiAppAutopilot(ctx context.Context, _ *agent.Engine, settings *config.Settings, repo *database.Repository, intent *agent.ScanIntent) error {
+func runMultiAppAutopilot(ctx context.Context, _ *agent.Engine, settings *config.Settings, repo *database.Repository, intent *agent.ScanIntent) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if autopilotMaxDuration > 0 {
@@ -705,7 +708,9 @@ func runMultiAppAutopilot(ctx context.Context, _ *agent.Engine, settings *config
 
 	// Every app runs into the same throwaway DB under -S, so the export is one
 	// combined pass after the last app rather than one per app fighting over -o.
-	defer emitAutopilotStatelessExport()
+	// A failed export outranks a clean run: the combined artifact is the only
+	// thing this path produces, and the throwaway DB is deleted right after.
+	defer func() { recordExportFailure(&err, emitAutopilotStatelessExport()) }()
 
 	return runMultiAppSequential(ctx, intent, func(ctx context.Context, idx int, app agent.AppIntent) error {
 		fmt.Fprintf(os.Stderr, "%s [%d/%d] Starting autopilot: target=%s source=%s\n",

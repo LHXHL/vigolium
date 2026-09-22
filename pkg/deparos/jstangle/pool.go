@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	"go.uber.org/zap"
 )
 
@@ -394,7 +396,7 @@ func (p *WorkerPool) runCancelable(ctx context.Context, worker *framedWorker, co
 
 func (p *WorkerPool) runJob(worker *framedWorker, content []byte, options ScanOptions) (*ScanResult, bool, error) {
 	started := time.Now()
-	jobDir, err := os.MkdirTemp("", "jstangle-job-*")
+	jobDir, err := scratch.MkdirTemp("jstangle-job-*")
 	if err != nil {
 		return nil, false, fmt.Errorf("create jstangle job directory: %w", err)
 	}

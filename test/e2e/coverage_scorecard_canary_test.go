@@ -175,6 +175,27 @@ func dynamicAssessmentOpts(targets, modules []string) *types.Options {
 	return opts
 }
 
+// scorecardSettings builds the settings shared by every scorecard scan: the
+// defaults with the hardening-advisory gate forced OFF.
+//
+// The gate (internal/runner/module_tiers.go) suppresses the modules tagged
+// "hygiene" — missing security headers, CSP/HSTS/SRI audits, cookie attributes,
+// TLS policy — below --intensity deep, because on a real crawl they file one
+// near-identical Info/Low row per URL and bury the exploitable findings. That is
+// the right default for an operator's report and the wrong one here: a scorecard
+// measures what Vigolium *can* detect against a fixed ground truth, so a
+// capability the default run merely declines to print must still be measured.
+// Same reasoning as dynamicAssessmentOpts's NoTechFilter.
+//
+// Safe to apply to every scorecard: it only ever adds findings, so it can turn a
+// ground-truth MISS into a CATCH but never the reverse.
+func scorecardSettings() *config.Settings {
+	settings := config.DefaultSettings()
+	hygiene := true
+	settings.DynamicAssessment.HygieneModules = &hygiene
+	return settings
+}
+
 // scorecardFindings reads back every finding from a scorecard scan's DB —
 // including candidate/observation record-kinds, not just confirmed findings: a
 // module that downgrades a detection to a candidate under FP-hardening still
@@ -215,7 +236,7 @@ func runScorecardScan(t *testing.T, targets []string, headers []string) []*datab
 
 	r, err := runner.New(opts)
 	require.NoError(t, err, "create scorecard scan runner")
-	r.SetSettings(config.DefaultSettings())
+	r.SetSettings(scorecardSettings())
 	r.SetRepository(repo)
 	t.Cleanup(func() { r.Close() })
 
@@ -241,7 +262,7 @@ func runSeededScorecardScan(t *testing.T, baseURL string, items []*httpmsg.HttpR
 	src := source.NewSliceSource(items, opts.Modules)
 	r, err := runner.NewWithInputSource(opts, src)
 	require.NoError(t, err, "create seeded scan runner")
-	r.SetSettings(config.DefaultSettings())
+	r.SetSettings(scorecardSettings())
 	r.SetRepository(repo)
 	t.Cleanup(func() { r.Close() })
 
@@ -813,7 +834,7 @@ func runAuthFileScan(t *testing.T, targets []string, authFile string, modules []
 
 	r, err := runner.New(opts)
 	require.NoError(t, err, "create auth-file scan runner")
-	r.SetSettings(config.DefaultSettings())
+	r.SetSettings(scorecardSettings())
 	r.SetRepository(repo)
 	t.Cleanup(func() { r.Close() })
 
@@ -1076,7 +1097,7 @@ func runAuthScanRecords(t *testing.T, targets []string, headers []string) ([]*da
 
 	r, err := runner.New(opts)
 	require.NoError(t, err, "create auth scan runner")
-	r.SetSettings(config.DefaultSettings())
+	r.SetSettings(scorecardSettings())
 	r.SetRepository(repo)
 	t.Cleanup(func() { r.Close() })
 

@@ -306,7 +306,12 @@ Exit codes:
 | `4` | the `--fail-on <severity>` gate tripped |
 
 `3` and `4` are *completed results*, not failures: the output was written before
-the code was chosen. `--soft-fail` forces the process status to `0` for all of
+the code was chosen. When it was NOT written — an unwritable `-o`, a query that
+failed mid-stream — the run exits `1` with `error.code: "export_failed"`, and
+that outranks the gate: a `4` whose artifact is missing would send a CI job to
+read a file that is not there. Each `--format` is attempted independently, so
+some of them may still have landed; the "Exports" summary on stderr lists the
+ones that did. `--soft-fail` forces the process status to `0` for all of
 them while leaving the output intact — under `--json` the error object still
 reports the code that would have been used, plus `"soft_fail": true`.
 

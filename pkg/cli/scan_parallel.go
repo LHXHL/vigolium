@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/uptrace/bun/driver/sqliteshim"
@@ -675,7 +677,7 @@ func runIsolatedTargetsParallel(cmd *cobra.Command, settings *config.Settings, s
 
 	// Per-child stats land in a private staging directory, never the operator's
 	// --output prefix, and are discarded with the directory when the batch ends.
-	stagingDir, err := os.MkdirTemp("", "vigolium-parallel-*")
+	stagingDir, err := scratch.MkdirTemp("parallel-*")
 	if err != nil {
 		return fmt.Errorf("create parallel staging directory: %w", err)
 	}
@@ -729,14 +731,15 @@ func runIsolatedTargetsParallel(cmd *cobra.Command, settings *config.Settings, s
 	// Export the unified output only when at least one child merged something —
 	// if every child failed or was interrupted there is nothing new in the
 	// destination to export.
+	batchErr := parallelBatchError(failed, interrupted, len(targets))
 	if failed+interrupted < len(targets) {
-		if err := exportUnifiedFromDB(destCfg, scanOpts); err != nil {
-			fmt.Fprintf(os.Stderr, "%s unified export from %s failed: %v\n",
-				terminal.ErrorPrefix(), terminal.Cyan(destCfg.SQLite.Path), err)
-		}
+		// The batch itself can be a success here — children scanned and merged
+		// fine — so without this a run whose only artifact is missing exits 0.
+		// recordExportFailure renders it (or lets the root handler do so).
+		recordExportFailure(&batchErr, exportUnifiedFromDB(destCfg, scanOpts))
 	}
 
-	return parallelBatchError(failed, interrupted, len(targets))
+	return batchErr
 }
 
 // exportUnifiedFromDB opens the merge-destination database and writes the
@@ -755,8 +758,11 @@ func exportUnifiedFromDB(destCfg config.DatabaseConfig, opts *types.Options) err
 	}
 	maybeGenerateReports(db, opts)
 	finishFSExport(db, opts)
-	finishScanJSONLExport(db, opts)
-	return nil
+	// This is the ONLY place the fan-out's unified output is written — every
+	// child scanned into its own scratch and merged, and none of them wrote the
+	// operator's -o. Losing it silently would leave a batch that reports every
+	// target as scanned and hands back no results at all.
+	return finishScanJSONLExport(db, opts)
 }
 
 // parallelBatchError decides the batch's exit status. A partial success is

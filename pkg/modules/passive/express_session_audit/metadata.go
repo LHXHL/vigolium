@@ -18,5 +18,5 @@ var (
 	ModuleConfirmation = "Confirmed when Express.js session cookies exhibit default naming, excessive expiry, or unnecessary proliferation"
 	ModuleSeverity     = severity.Low
 	ModuleConfidence   = severity.Firm
-	ModuleTags         = []string{"express", "nodejs", "session", "misconfiguration", "light"}
+	ModuleTags         = []string{"express", "nodejs", "session", "misconfiguration", "hygiene", "light"}
 )

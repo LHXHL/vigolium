@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/internal/scratch"
 	"github.com/vigolium/vigolium/pkg/database"
 )
 
@@ -50,7 +49,12 @@ var scratchDBDir string
 //     against. `export` streams rows while issuing further queries and deadlocks
 //     outright against a single connection.
 func newTempDB(label string) (*database.DB, string, error) {
-	dir, err := os.MkdirTemp("", scratchDBPrefix+label+"-")
+	// Under this process's scratch directory, never bare os.TempDir(): Release
+	// takes it even when closeDatabaseOnExit never runs, and a merge allocated
+	// flat would be a candidate for `kit tmp-clean` to RemoveAll out from under
+	// itself. Collecting what an abandoned run stranded is internal/scratch's job
+	// now, not this file's — see its package doc.
+	dir, err := scratch.MkdirTemp(label + "-")
 	if err != nil {
 		return nil, "", fmt.Errorf("create scratch directory: %w", err)
 	}
@@ -76,8 +80,6 @@ func newTempDB(label string) (*database.DB, string, error) {
 // that disposes of its own database (openGlobSourceFile, which opens one per
 // source file) uses newTempDB directly.
 func newScratchDB(label string) (*database.DB, error) {
-	reapStaleScratchDBs()
-
 	db, dir, err := newTempDB(label)
 	if err != nil {
 		return nil, err
@@ -88,49 +90,6 @@ func newScratchDB(label string) (*database.DB, error) {
 	removeScratchDB()
 	scratchDBDir = dir
 	return db, nil
-}
-
-// scratchDBPrefix names every temp directory newTempDB creates, so the reaper
-// can recognise its own leftovers and nothing else.
-const scratchDBPrefix = "vigolium-scratch-"
-
-// scratchDBMaxAge is how long a scratch directory may sit before the reaper
-// treats it as abandoned. It only has to exceed the runtime of a real merge —
-// an 854-file, 16 GB glob takes minutes — while staying far below the point at
-// which a stranded copy of a whole engagement's traffic becomes a problem.
-const scratchDBMaxAge = 6 * time.Hour
-
-// reapStaleScratchDBs removes scratch directories left behind by runs that never
-// got to close theirs.
-//
-// This is not housekeeping: closeDatabaseOnExit only runs on a normal return, so
-// a Ctrl-C, an OOM kill, or a SIGKILL during a large merge strands the whole
-// scratch database — on this workload 15 GB apiece, and they accumulate silently
-// because nothing else ever looks in that directory. Reaping on creation means
-// the next run pays the cleanup, which is the only moment we know one is safe to
-// take: a directory older than scratchDBMaxAge cannot belong to a live merge.
-//
-// Age, rather than liveness of an owning pid, because a pid check that is wrong
-// on some platform deletes a running merge's database out from under it — the
-// failure is silent corruption, where the failure of an over-long age window is
-// only a delayed cleanup.
-func reapStaleScratchDBs() {
-	root := os.TempDir()
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().Add(-scratchDBMaxAge)
-	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), scratchDBPrefix) {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || info.ModTime().After(cutoff) {
-			continue
-		}
-		_ = os.RemoveAll(filepath.Join(root, entry.Name()))
-	}
 }
 
 // removeScratchDB deletes the scratch database directory, if one was created.

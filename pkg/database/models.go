@@ -144,6 +144,16 @@ type Scan struct {
 	Threads int    `bun:"threads,default:0" json:"threads"`
 
 	// Scan context
+	// ScopeOriginMode is the RESOLVED origin-scope mode the scan ran under (all,
+	// relaxed, balanced, strict) — never the raw --scope-origin value, which is
+	// empty on the common run that takes the default. Persisted because it is the
+	// setting that decides which HOSTS the scan was allowed to touch: on a
+	// database carrying traffic from earlier scans, "balanced" admits every
+	// sibling subdomain of the target's eTLD+1, so a result set cannot be read
+	// correctly without it. Written by the runner (the single owner of the
+	// fallback chain) for CLI, server and scan-on-receive runs alike, and carried
+	// out through the `scan` envelope of --format jsonl and the REST scan object.
+	ScopeOriginMode string   `bun:"scope_origin_mode,nullzero" json:"scope_origin_mode"`
 	Profile         string   `bun:"profile,nullzero" json:"profile"`                     // scanning profile used (light, full, api, etc.)
 	SourcePath      string   `bun:"source_path,nullzero" json:"source_path"`             // source code path for audit/agent scans
 	SourceType      string   `bun:"source_type,nullzero" json:"source_type"`             // local, git-url, gcs

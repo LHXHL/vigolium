@@ -1,17 +1,33 @@
 package storage
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// tempDBFiles lists sitemap-*.db* entries in dir.
+// tempDBFiles lists sitemap-* entries anywhere under dir.
+//
+// The walk is not incidental: ephemeral sitemaps are allocated through
+// internal/scratch, which nests them under a per-process directory rather than
+// dropping them straight in the temp directory. What this guards is that Close
+// removes them, not where they happen to sit.
 func tempDBFiles(t *testing.T, dir string) []string {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, "sitemap-*"))
+	var matches []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // a directory racing cleanup is not this test's concern
+		}
+		if !d.IsDir() && strings.HasPrefix(d.Name(), "sitemap-") {
+			matches = append(matches, path)
+		}
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("glob: %v", err)
+		t.Fatalf("walk: %v", err)
 	}
 	return matches
 }

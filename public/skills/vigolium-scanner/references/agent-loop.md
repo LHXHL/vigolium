@@ -807,6 +807,15 @@ something at or above the threshold — the opposite outcome from `1`, where it
 never got that far. Branch on them separately; treating every non-zero as
 breakage either ignores real outages or reports every finding as one.
 
+**A requested artifact that was not written is exit `1`, code `export_failed`** —
+even when the scan itself ran clean, and even when it would otherwise have
+tripped the `--fail-on` gate. The gate's whole premise is that the output was
+written before the code was chosen; when it wasn't, exit `4` would send you to
+read a file that does not exist. Retry the export, not the scan: the findings
+reached the database, they just did not reach your `-o`. Formats are attempted
+independently, so with `--format jsonl,sqlite` one of them may well be on disk —
+the "Exports" summary on stderr lists what actually landed.
+
 On the read commands:
 
 | Read | Exit | `error.code` |
@@ -819,6 +828,7 @@ On the read commands:
 | `traffic --group-by <unknown field>` | `2` | `usage_error` (lists the groupable fields) |
 | `traffic body --uuid <no such record>` | `1` | `record_not_found` |
 | `traffic body --uuid <request with no response>` | `1` | `body_unavailable` |
+| `scan -S -o <unwritable path>` | `1` | `export_failed` — the scan ran; the artifact did not land |
 | `--id 999999` (no such finding) | `0` | —, `{"total":0,"items":[]}` |
 | `--search zzzznomatch` (genuine zero hits) | `0` | —, `{"total":0,"items":[]}` |
 

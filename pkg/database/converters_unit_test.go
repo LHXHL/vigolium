@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/anomaly/htmlutils"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
@@ -120,6 +122,20 @@ func TestExtractHTMLTitle(t *testing.T) {
 		{"simple title", "<html><head><title>Hello World</title></head></html>", "Hello World"},
 		{"title trimmed", "<title>   spaced   </title>", "spaced"},
 		{"plain text not html", "just some text", ""},
+		{"empty element", "<html><head><title></title></head></html>", ""},
+		{"uppercase tag", "<HTML><HEAD><TITLE>Shouty</TITLE></HEAD></HTML>", "Shouty"},
+		{"unicode", "<head><title>Ünïcödé — ✓</title></head>", "Ünïcödé — ✓"},
+		// The cases that separate a tokenizer from a DOM walk. <title> is
+		// RCDATA, so inner markup stays literal text and a <title> written
+		// inside a comment or a script is never a start tag at all — the same
+		// answers the parser gave.
+		{"markup inside stays literal", "<head><title>a<b>bold</b>c</title></head>", "a<b>bold</b>c"},
+		{"commented title ignored", "<!-- <title>commented</title> --><head><title>real</title>", "real"},
+		{"title inside script ignored", `<head><script>var x = "<title>fake</title>";</script><title>after</title></head>`, "after"},
+		{"svg title", "<body><svg><title>svg title</title></svg></body>", "svg title"},
+		{"unclosed element", "<html><head><title>Unclosed", "Unclosed"},
+		{"first title wins", "<head><title>first</title><title>second</title></head>", "first"},
+		{"title in body", "<html><body><p>x</p><title>late</title></body></html>", "late"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,6 +157,57 @@ func TestExtractHTMLTitle_CapsAt512(t *testing.T) {
 	got := extractHTMLTitle(long)
 	if len(got) != 512 {
 		t.Errorf("expected title capped at 512 chars, got %d", len(got))
+	}
+}
+
+// TestExtractHTMLTitle_MatchesDOMParse holds the tokenizer to the full DOM walk
+// it replaced. The parser stays here, in the test, as the specification: the
+// tokenizer is only worth its speed if it reads the same title out of real
+// markup, including the malformed markup a scanner actually meets.
+func TestExtractHTMLTitle_MatchesDOMParse(t *testing.T) {
+	domExtractHTMLTitle := func(body []byte) string {
+		if len(body) == 0 {
+			return ""
+		}
+		doc, err := htmlutils.FastParse(bytes.NewReader(body))
+		if err != nil {
+			return ""
+		}
+		tags := htmlutils.GetElementsByTagName(doc, "title")
+		if len(tags) == 0 {
+			return ""
+		}
+		title := strings.TrimSpace(htmlutils.TextContent(tags[0]))
+		if len(title) > 512 {
+			title = title[:512]
+		}
+		return title
+	}
+
+	bodies := []string{
+		"",
+		"just some text",
+		"<html><head><title>Hello World</title></head><body>x</body></html>",
+		"<title>   spaced   </title>",
+		"<HTML><HEAD><TITLE>Shouty</TITLE></HEAD></HTML>",
+		"<head><meta charset=utf-8><title>Ünïcödé — ✓</title></head>",
+		"<head><title>a<b>bold</b>c</title></head>",
+		"<!-- <title>commented</title> --><head><title>real</title>",
+		`<head><script>var x = "<title>fake</title>";</script><title>after</title></head>`,
+		"<body><svg><title>svg title</title></svg><p>hi</p></body>",
+		"<html><head><title>Unclosed",
+		"<head><title>first</title><title>second</title></head>",
+		"<html><body><p>x</p><title>late</title></body></html>",
+		"<html><head></head><body>no title here</body></html>",
+		"<html><head><title></title></head></html>",
+		"<div><p>unclosed tags<span>everywhere<title>still found</title>",
+		"<html><head><title>entity &amp; ref</title></head>",
+		"\x00\xff\xfe<head><title>after binary</title></head>",
+	}
+	for _, body := range bodies {
+		if got, want := extractHTMLTitle([]byte(body)), domExtractHTMLTitle([]byte(body)); got != want {
+			t.Errorf("extractHTMLTitle(%q) = %q, DOM parse = %q", body, got, want)
+		}
 	}
 }
 

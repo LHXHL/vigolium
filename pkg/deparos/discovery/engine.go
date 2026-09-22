@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	"github.com/sourcegraph/conc"
 	"github.com/vigolium/vigolium/pkg/deparos/casesense"
 	"github.com/vigolium/vigolium/pkg/deparos/config"
@@ -358,7 +360,9 @@ func NewEngineWithContext(parentCtx context.Context, cfg *config.Config, st stor
 
 	// Create unique temp directory for all engine's disk-backed stores
 	// All caches consolidated under one directory for simpler cleanup
-	dedupBasePath, err := os.MkdirTemp("", "deparos-dedup-*")
+	// Under the scratch root so a killed crawl does not leak it forever;
+	// see internal/scratch.
+	dedupBasePath, err := scratch.MkdirTemp("deparos-dedup-*")
 	if err != nil {
 		return nil, fmt.Errorf("create dedup temp dir: %w", err)
 	}

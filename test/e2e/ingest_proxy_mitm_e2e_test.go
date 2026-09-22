@@ -58,14 +58,16 @@ func startMITMProxyEnv(t *testing.T) *mitmProxyEnv {
 		UUID: database.DefaultProjectUUID, Name: "default", CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}))
 
-	// Upstream HTTPS target: serves a known marker in an HTML body and omits
-	// security headers (so the scan-on-receive pipeline test has something to
-	// flag), 404 elsewhere so active probing finishes quickly.
+	// Upstream HTTPS target: serves a known marker in an HTML body plus a
+	// version-disclosing Server header (so the scan-on-receive pipeline test has
+	// something for the passive canary to flag), 404 elsewhere so active probing
+	// finishes quickly.
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Server", passiveCanaryServerHeader)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `<!doctype html><html><body>`+mitmE2EMarker+`</body></html>`)
@@ -221,7 +223,7 @@ func TestIngestProxyMITM_ScanOnReceivePipeline_E2E(t *testing.T) {
 				if f.ModuleType == "passive" {
 					passiveIDs = append(passiveIDs, f.ModuleID)
 				}
-				if f.ModuleID == "security-headers-missing" {
+				if f.ModuleID == passiveCanaryModuleID {
 					sawFinding = true
 				}
 			}
@@ -238,9 +240,9 @@ func TestIngestProxyMITM_ScanOnReceivePipeline_E2E(t *testing.T) {
 
 	assert.True(t, sawFinding,
 		"scan-on-receive must produce a finding from the MITM-decrypted HTTPS "+
-			"response (security-headers-missing). If absent, the HTTPS capture or "+
+			"response (%s). If absent, the HTTPS capture or "+
 			"the scan-on-receive pipeline over ingest-proxy records regressed. "+
-			"passive findings seen: %v", passiveIDs)
+			"passive findings seen: %v", passiveCanaryModuleID, passiveIDs)
 }
 
 // waitForProxyRecord polls for an ingest-proxy http_record captured for the

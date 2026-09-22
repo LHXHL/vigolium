@@ -19,10 +19,15 @@ package modtest
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	httputil "github.com/projectdiscovery/utils/http"
 
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/core/network"
@@ -242,4 +247,32 @@ func portForURL(u *url.URL) (int, error) {
 		return 443, nil
 	}
 	return 80, nil
+}
+
+// ResponseChain builds a filled *httputil.ResponseChain from a status, header
+// set and body, mirroring what the requester hands a module.
+//
+// It exists for tests of the response-classification helpers modules layer on
+// top of a response — block/edge detection, keep-alive gates, content checks —
+// which need a chain but no server. The returned chain is closed on cleanup.
+func ResponseChain(t testing.TB, status int, header http.Header, body string) *httputil.ResponseChain {
+	t.Helper()
+	if header == nil {
+		header = http.Header{}
+	}
+	resp := &http.Response{
+		StatusCode: status,
+		Status:     http.StatusText(status),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	rc := httputil.NewResponseChain(resp, 0)
+	if err := rc.Fill(); err != nil {
+		t.Fatalf("fill response chain: %v", err)
+	}
+	t.Cleanup(rc.Close)
+	return rc
 }

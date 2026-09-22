@@ -63,7 +63,8 @@ section.
   stdout, human text on stderr — so branch on `error.code` instead of scraping
   prose: `usage_error` · `source_missing` · `source_unreadable` (not a database,
   or corrupt) · `source_incompatible` (valid SQLite that is not a vigolium store)
-  · `gate_tripped` · `failed`.
+  · `export_failed` (the run finished but a requested artifact was not written —
+  retry the export, not the scan) · `gate_tripped` · `failed`.
 - **A wrong `--db` path errors; it no longer reads as empty.** On a pure read
   (`traffic`, `finding`, `db ls`, `db stats`, `db export`, `export`, `log`,
   `traffic body/headers`) against an explicitly pinned `--db` or
@@ -496,10 +497,10 @@ Select with `--strategy`; print the matrix with `vigolium strategy`.
 maps to a scanning profile **and** strategy at once (also honored by `agent
 autopilot`/`swarm`). Explicit flags override it.
 
-Below `deep`, the 13 modules tagged `hygiene` do not run — missing security
-headers, weak TLS protocol/cipher policy, cookie attributes, CSP/HSTS/SRI
-audits. They report a missing best-practice control rather than an exploitable
-condition and fire on nearly every response. If a report needs them, use
+Below `deep`, the 14 modules tagged `hygiene` do not run — missing security
+headers, weak TLS protocol/cipher policy, cookie and session-cookie attributes,
+CSP/HSTS/SRI audits. They report a missing best-practice control rather than an
+exploitable condition and fire on nearly every response. If a report needs them, use
 `--intensity deep`, `--module-tag hygiene`, or set
 `dynamic-assessment.hygiene_modules: true`. The scan banner says how many were
 suppressed.

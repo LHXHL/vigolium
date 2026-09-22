@@ -8,12 +8,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/scratch"
 	"github.com/vigolium/vigolium/pkg/database"
 )
 
-// The whole point of the scratch database: it is a file, so a merge larger than
-// RAM is paged by the OS instead of collapsing the process into swap.
-func TestNewScratchDBIsFileBacked(t *testing.T) {
+// Two properties of where and how the scratch database is allocated.
+//
+// It is a FILE, so a merge larger than RAM is paged by the OS instead of
+// collapsing the process into swap. And it lands under this process's scratch
+// directory, which is what lets scratch.Release collect it when a run is killed
+// before closeDatabaseOnExit — allocated flat in os.TempDir() it would be
+// invisible to Release, and this file would be back to reading the whole temp
+// directory on every scratch database it builds.
+func TestNewScratchDBIsFileBackedUnderTheScratchRoot(t *testing.T) {
 	db, err := newScratchDB("test")
 	if err != nil {
 		t.Fatalf("newScratchDB: %v", err)
@@ -24,6 +31,20 @@ func TestNewScratchDBIsFileBacked(t *testing.T) {
 	if dir == "" {
 		t.Fatal("scratch directory was not recorded, so nothing would clean it up")
 	}
+
+	root := scratch.Root()
+	rel, relErr := filepath.Rel(root, dir)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Errorf("scratch database landed at %q, outside the scratch root %q — "+
+			"scratch.Release cannot collect it there", dir, root)
+	}
+	// One level deeper than the root: the per-process directory sits between them,
+	// so a concurrent run's sweep cannot take this one.
+	if filepath.Dir(dir) == root {
+		t.Errorf("scratch database landed directly in the root (%q), not in a "+
+			"per-process directory", dir)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read scratch dir: %v", err)
@@ -147,51 +168,6 @@ func TestRemoveScratchDBDeletesTheDirectory(t *testing.T) {
 		t.Fatalf("scratch directory %s survived removeScratchDB (err=%v)", dir, err)
 	}
 	removeScratchDB() // must be safe twice
-}
-
-// A run killed mid-merge never reaches closeDatabaseOnExit, stranding a scratch
-// database that on a real workload is tens of GB. The next run has to collect it.
-func TestReapStaleScratchDBsRemovesAbandonedDirsOnly(t *testing.T) {
-	root := os.TempDir()
-
-	stale, err := os.MkdirTemp(root, scratchDBPrefix+"stale-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fresh, err := os.MkdirTemp(root, scratchDBPrefix+"fresh-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unrelated, err := os.MkdirTemp(root, "not-vigolium-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(stale)
-		_ = os.RemoveAll(fresh)
-		_ = os.RemoveAll(unrelated)
-	})
-
-	// Back-date the stale one past the window, and the unrelated one too — a
-	// directory that isn't ours must survive regardless of age.
-	old := time.Now().Add(-scratchDBMaxAge - time.Hour)
-	for _, dir := range []string{stale, unrelated} {
-		if err := os.Chtimes(dir, old, old); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	reapStaleScratchDBs()
-
-	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Errorf("an abandoned scratch dir survived the reaper (err=%v)", err)
-	}
-	if _, err := os.Stat(fresh); err != nil {
-		t.Errorf("a live scratch dir was reaped: %v", err)
-	}
-	if _, err := os.Stat(unrelated); err != nil {
-		t.Errorf("the reaper deleted a directory that is not ours: %v", err)
-	}
 }
 
 // Creating a second scratch database must not orphan the first one's path, or it

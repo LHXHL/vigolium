@@ -2,6 +2,7 @@ package http_request_smuggling
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,18 +16,32 @@ import (
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
 
-// Timing-anomaly thresholds. A probe must be both relatively (vs the host
-// baseline) and absolutely slow before it is even considered — and then it
-// still has to clear the confirmation gates in confirmTimingDesync.
-const (
-	timingMultiplier = 5
-	timingFloor      = 5 * time.Second
+// Timing thresholds, in the units their names imply. See desyncSlower for what
+// each one rules out.
+//
+// These are vars rather than consts only so the module's own tests can shrink
+// them and exercise the real ScanPerHost path without multi-second sleeps.
+// Nothing outside this package's tests may write to them, and the package must
+// stay non-parallel (no t.Parallel) while that is true.
+var (
+	probeControlMultiplier = 3
+	probeControlMargin     = 2 * time.Second
+	timingFloor            = 5 * time.Second
+	// controlSamples: how many control requests to take. The median discards a
+	// single unlucky sample; one measurement is not a baseline.
+	controlSamples = 3
 )
 
 // smugglingProbe defines a request smuggling test case.
+//
+// headers is written to the wire verbatim, in order, including duplicates and
+// unusual casing - the TE.TE probe's two Transfer-Encoding headers differ only
+// in case, which a map cannot express at all. body is written verbatim too, and
+// in particular is NOT required to agree with the Content-Length the probe
+// declares: the disagreement between the two is the entire attack primitive.
 type smugglingProbe struct {
 	name    string
-	headers map[string]string
+	headers []httpmsg.HttpHeader
 	body    string
 	desc    string
 }
@@ -36,50 +51,60 @@ type smugglingProbe struct {
 var probes = []smugglingProbe{
 	{
 		name: "CL.TE Basic",
-		headers: map[string]string{
-			"Content-Length":    "4",
-			"Transfer-Encoding": "chunked",
+		headers: []httpmsg.HttpHeader{
+			{Name: "Content-Length", Value: "4"},
+			{Name: "Transfer-Encoding", Value: "chunked"},
 		},
 		body: "1\r\nZ\r\nQ\r\n\r\n",
 		desc: "CL.TE desync: frontend uses Content-Length, backend uses Transfer-Encoding. The extra data after the chunked body may be treated as a separate request.",
 	},
 	{
 		name: "TE.CL Basic",
-		headers: map[string]string{
-			"Content-Length":    "6",
-			"Transfer-Encoding": "chunked",
+		headers: []httpmsg.HttpHeader{
+			{Name: "Content-Length", Value: "6"},
+			{Name: "Transfer-Encoding", Value: "chunked"},
 		},
 		body: "0\r\n\r\nX",
 		desc: "TE.CL desync: frontend uses Transfer-Encoding, backend uses Content-Length. Content after the terminating chunk may be treated as a separate request.",
 	},
 	{
 		name: "TE.TE Obfuscation",
-		headers: map[string]string{
-			"Content-Length":    "4",
-			"Transfer-Encoding": "chunked",
-			"Transfer-encoding": "x",
+		headers: []httpmsg.HttpHeader{
+			{Name: "Content-Length", Value: "4"},
+			{Name: "Transfer-Encoding", Value: "chunked"},
+			{Name: "Transfer-encoding", Value: "x"},
 		},
 		body: "1\r\nZ\r\nQ\r\n\r\n",
 		desc: "TE.TE desync via header obfuscation: uses duplicate Transfer-Encoding headers with different casing to confuse parsers.",
 	},
 	{
 		name: "Chunked Extension",
-		headers: map[string]string{
-			"Content-Length":    "4",
-			"Transfer-Encoding": "chunked",
+		headers: []httpmsg.HttpHeader{
+			{Name: "Content-Length", Value: "4"},
+			{Name: "Transfer-Encoding", Value: "chunked"},
 		},
 		body: "1;ext=val\r\nZ\r\n0\r\n\r\n",
 		desc: "Chunked extension confusion: uses chunk extension syntax that may be parsed differently.",
 	},
 	{
 		name: "TE Tab Obfuscation",
-		headers: map[string]string{
-			"Content-Length":    "4",
-			"Transfer-Encoding": "\tchunked",
+		headers: []httpmsg.HttpHeader{
+			{Name: "Content-Length", Value: "4"},
+			{Name: "Transfer-Encoding", Value: "\tchunked"},
 		},
 		body: "1\r\nZ\r\nQ\r\n\r\n",
 		desc: "Transfer-Encoding with leading tab may bypass header parsing.",
 	},
+}
+
+// controlProbe is the reference reading: a well-formed POST of the same shape as
+// every probe, whose Content-Length matches its body exactly and which carries
+// no Transfer-Encoding. It cannot trigger a CL/TE desync by construction, which
+// is what makes it the only comparison that isolates framing.
+var controlProbe = smugglingProbe{
+	name:    "well-formed control",
+	headers: []httpmsg.HttpHeader{{Name: "Content-Length", Value: "1"}},
+	body:    "1",
 }
 
 // Module implements the HTTP Request Smuggling active scanner.
@@ -141,83 +166,192 @@ func (m *Module) ScanPerHost(
 		return nil, nil
 	}
 
-	// First, measure baseline response time.
-	baselineStart := time.Now()
-	baseResp, _, err := httpClient.Execute(ctx, http.Options{})
-	if err != nil {
+	// Preconditions. Each of these makes a timing reading unattributable to
+	// framing, so the honest answer is to not test the host rather than to emit
+	// a finding the evidence cannot support.
+	if !hostIsTestable(ctx, httpClient) {
 		return nil, nil
 	}
-	baselineBlocked := isBlockedResponse(baseResp)
-	baseResp.Close()
-	baselineDuration := time.Since(baselineStart)
 
-	// If the host's normal response is already an edge/CDN/WAF rejection
-	// (e.g. a Cloudflare 403 "Edge IP Restricted" page), requests never reach
-	// an origin frontend/backend parser chain. Every probe will be blocked the
-	// same way and the timing reading just measures edge processing, not a
-	// desync — so timing-based detection cannot produce a trustworthy result
-	// here. Skip the host rather than emit a guaranteed false positive.
-	if baselineBlocked {
+	control, ok := measureControl(ctx, httpClient)
+	if !ok {
 		return nil, nil
 	}
 
 	var results []*output.ResultEvent
 
 	for _, probe := range probes {
-		modifiedRaw, ok := buildProbeRequest(ctx, probe)
+		probeRaw, ok := buildRequest(ctx, probe)
 		if !ok {
 			continue
 		}
 
-		// modifiedRaw is well-formed raw, so wrap directly instead of re-parsing on this hot path.
-		fuzzedReq := httpmsg.NewRequestResponseRaw(modifiedRaw, ctx.Service())
-
-		start := time.Now()
-		// NoClustering: desync detection times the probe with wall-clock. A clustered
-		// send would read a cached response in ~0ms and mask a genuine delay; more
-		// importantly the reconfirm below re-sends the same probe bytes, which must be a
-		// real round-trip (see confirmTimingDesync).
-		resp, _, err := httpClient.Execute(fuzzedReq, http.Options{NoClustering: true})
-		elapsed := time.Since(start)
-		if err != nil {
-			// A timeout itself can be an indicator of a backend hanging on the
-			// smuggled bytes — but only after it survives confirmation (the
-			// re-probe and a fast well-formed control), otherwise it is just a
-			// slow/erroring host.
-			if isTimingAnomaly(elapsed, baselineDuration) {
-				if ev, ok := m.confirmTimingDesync(ctx, modifiedRaw, httpClient, baselineDuration); ok {
-					results = append(results, buildResult(ctx, modifiedRaw, probe, baselineDuration, elapsed, true, ev))
-				}
-			}
+		// A transport error is usually a timeout, which is the signature the
+		// class predicts: a parser left waiting for bytes the other end never
+		// framed. It still has to out-run the control and survive confirmation.
+		sent := sendOnce(ctx, httpClient, probeRaw)
+		if sent.err == nil && sent.blocked {
+			// The edge answered, not the origin's parser chain. Timing here
+			// measures the edge rejecting us.
 			continue
 		}
-
-		anomaly := isTimingAnomaly(elapsed, baselineDuration)
-		blocked := isBlockedResponse(resp)
-		resp.Close()
-
-		if !anomaly {
+		if !desyncSlower(sent.elapsed, control.median) {
 			continue
 		}
-		// Edge/CDN/WAF block: the slow response is the edge rejecting the probe,
-		// not a frontend/backend desync. This is the direct fix for the
-		// Cloudflare 403 "Edge IP Restricted" false positive.
-		if blocked {
-			continue
-		}
-
-		if ev, ok := m.confirmTimingDesync(ctx, modifiedRaw, httpClient, baselineDuration); ok {
-			results = append(results, buildResult(ctx, modifiedRaw, probe, baselineDuration, elapsed, false, ev))
+		if ev, ok := confirmTimingDesync(ctx, probeRaw, httpClient, control); ok {
+			results = append(results, buildResult(
+				ctx, probeRaw, probe, control, sent.elapsed, sent.err != nil, ev))
 		}
 	}
 
 	return results, nil
 }
 
-// isTimingAnomaly reports whether elapsed is slow enough — both relative to the
-// host baseline and in absolute terms — to be worth confirming as a desync.
-func isTimingAnomaly(elapsed, baseline time.Duration) bool {
-	return elapsed > baseline*timingMultiplier && elapsed > timingFloor
+// desyncSlower reports whether a probe is slow in a way a well-formed control of
+// the same shape is not.
+//
+// All three conditions are required. The ratio alone fires on a fast host where
+// a 40ms control and a 150ms probe differ only by scheduling noise; the absolute
+// margin alone fires on any slow host; the floor keeps the claim consistent with
+// a parser blocking rather than with ordinary latency.
+//
+// The comparison is deliberately NOT against the host's original (usually GET)
+// response time. Against a CDN a cached GET returns in tens of milliseconds
+// while any POST is forwarded to origin and takes seconds, so a GET baseline
+// makes every POST look anomalous - on every host, for every probe.
+func desyncSlower(probe, control time.Duration) bool {
+	return probe > timingFloor &&
+		probe > control*time.Duration(probeControlMultiplier) &&
+		probe-control >= probeControlMargin
+}
+
+// controlReading is the well-formed-POST reference a probe is judged against.
+type controlReading struct {
+	median time.Duration
+	raw    []byte
+}
+
+// sent is one completed send: how long it took, whether something in front of
+// the application answered, and the response for evidence.
+type sent struct {
+	elapsed time.Duration
+	blocked bool
+	body    string
+	err     error
+}
+
+// sendOnce writes raw to the wire verbatim and times the round trip.
+//
+// Options.RawBytes is mandatory here, not an optimization: see its documentation
+// in pkg/http. A probe sent any other way is re-framed into an ordinary
+// well-formed POST, which is byte-identical in framing to the control - so the
+// module would be comparing a POST against the same POST and attributing the
+// difference to a desync.
+func sendOnce(
+	ctx *httpmsg.HttpRequestResponse,
+	httpClient *http.Requester,
+	raw []byte,
+) sent {
+	req := httpmsg.NewRequestResponseRaw(raw, ctx.Service())
+	start := time.Now()
+	resp, measured, err := httpClient.Execute(req, http.Options{
+		RawBytes:    raw,
+		NoRedirects: true,
+	})
+
+	// Execute starts its clock after the rate token and the per-host permit, so
+	// vigolium's own queueing stays out of a reading that is compared against a
+	// 5s floor. It reports 0 on error, where wall-clock is all there is.
+	out := sent{elapsed: measured, err: err}
+	if out.elapsed == 0 {
+		out.elapsed = time.Since(start)
+	}
+	if resp != nil {
+		out.blocked = isEdgeOrGateResponse(resp)
+		out.body = resp.FullResponseString()
+		resp.Close()
+	}
+	return out
+}
+
+// hostIsTestable checks the preconditions under which a timing differential
+// could mean anything at all. It sends the host's own captured request once and
+// reads the answer.
+func hostIsTestable(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester) bool {
+	// NoClustering: a cache hit is served from a reconstructed response, and
+	// rebuilding one is lossy in ways the checks below depend on. The
+	// preconditions have to look at a real response.
+	resp, _, err := httpClient.Execute(ctx, http.Options{NoClustering: true})
+	if err != nil || resp == nil || resp.Response() == nil {
+		return false
+	}
+	defer resp.Close()
+
+	// The host's normal answer is already an edge/CDN/WAF rejection or an auth
+	// gate: requests never reach an origin frontend/backend parser chain, so
+	// every probe measures the same edge processing and no reading can be
+	// attributed to a desync.
+	if isEdgeOrGateResponse(resp) {
+		return false
+	}
+
+	// CL/TE desync is an HTTP/1.1 framing attack. Over HTTP/2 the framing is
+	// carried in frames rather than headers, Transfer-Encoding is a connection
+	// header the protocol forbids, and these probes are not expressible. (The
+	// probes themselves always go out over HTTP/1.1 via rawhttp; what this reads
+	// is whether the host's normal traffic is HTTP/1.1 at all.)
+	if resp.Response().ProtoMajor != 1 {
+		return false
+	}
+
+	// Smuggling is an attack on a SHARED connection: the smuggled prefix has to
+	// sit in a buffer waiting for the next request to arrive on the same socket.
+	// A front-end that closes the connection after every response leaves no
+	// socket to poison, so there is nothing here to find regardless of what the
+	// timing says.
+	return !connectionWillClose(resp)
+}
+
+// measureControl sends the well-formed control several times and returns the
+// median. A single sample is a coin flip on a shared host; the median of three
+// discards one unlucky scheduling artifact without pretending to be statistics.
+func measureControl(
+	ctx *httpmsg.HttpRequestResponse,
+	httpClient *http.Requester,
+) (controlReading, bool) {
+	controlRaw, ok := buildRequest(ctx, controlProbe)
+	if !ok {
+		return controlReading{}, false
+	}
+
+	samples := make([]time.Duration, 0, controlSamples)
+	for range controlSamples {
+		out := sendOnce(ctx, httpClient, controlRaw)
+		// A host that cannot answer a plain, unambiguous POST cannot be called
+		// desynced on the strength of a slow malformed one. A control that never
+		// reached the origin is not a reference for anything either - that gap is
+		// what let a fast edge 403 read as "the probe's slowness is
+		// desync-specific".
+		if out.err != nil || out.blocked {
+			return controlReading{}, false
+		}
+		samples = append(samples, out.elapsed)
+	}
+
+	return controlReading{median: medianDuration(samples), raw: controlRaw}, true
+}
+
+// desyncEvidence carries the confirmation-round measurements confirmTimingDesync
+// takes while validating a timing anomaly: the reconfirmed probe (which must
+// still out-run the control) and the freshly re-measured control (which must
+// still be fast). Preserving these lets the finding show the differential that
+// distinguishes a real desync from a host that is simply slow for POST traffic,
+// instead of asserting it in prose.
+type desyncEvidence struct {
+	reElapsed   time.Duration
+	probeResp   string
+	ctrlElapsed time.Duration
+	ctrlResp    string
 }
 
 // confirmTimingDesync re-validates a probe that produced an initial timing
@@ -227,226 +361,225 @@ func isTimingAnomaly(elapsed, baseline time.Duration) bool {
 //
 //  1. the slowness reproduces on a second send of the same probe (rules out
 //     one-off jitter), and the re-send is not an edge/CDN/WAF block, and
-//  2. a well-formed control POST of similar shape (no conflicting CL/TE, valid
-//     body) returns quickly — if the control is ALSO slow the host/path is
-//     simply slow for POST traffic and the anomaly is not a desync.
-//
-// desyncEvidence carries the confirmation-round measurements confirmTimingDesync
-// takes while validating a timing anomaly: the reconfirmed probe (which must
-// still be slow) and, when one could be sent, the well-formed control (which
-// must be fast). Preserving these lets the finding show the differential that
-// distinguishes a real desync from a host that is simply slow for POST traffic,
-// instead of asserting it in prose.
-type desyncEvidence struct {
-	reElapsed   time.Duration
-	probeReq    string
-	probeResp   string
-	hasControl  bool
-	ctrlElapsed time.Duration
-	ctrlReq     string
-	ctrlResp    string
-}
-
-func (m *Module) confirmTimingDesync(
+//  2. a well-formed control POST re-measured NOW is still fast relative to the
+//     probe - re-measured rather than reused, so that a host which simply got
+//     slower between the control round and the probe cannot be reported as a
+//     desync.
+func confirmTimingDesync(
 	ctx *httpmsg.HttpRequestResponse,
-	modifiedRaw []byte,
+	probeRaw []byte,
 	httpClient *http.Requester,
-	baseline time.Duration,
+	control controlReading,
 ) (desyncEvidence, bool) {
-	ev := desyncEvidence{probeReq: string(modifiedRaw)}
-
-	// 1. Reconfirm the anomaly with a fresh send of the same probe.
-	// modifiedRaw is well-formed raw, so wrap directly instead of re-parsing on this hot path.
-	probeReq := httpmsg.NewRequestResponseRaw(modifiedRaw, ctx.Service())
-
-	reStart := time.Now()
-	// NoClustering: this reconfirm fires immediately after the first (slow) probe
-	// completed, so it is within the 500ms cluster-cache TTL for the identical probe
-	// bytes. A clustered re-send returns the cached response in ~0ms → reElapsed is not
-	// a timing anomaly → the finding is dropped every time (a false negative). The
-	// reconfirm must be a genuine round-trip to actually reproduce the delay.
-	reResp, _, reErr := httpClient.Execute(probeReq, http.Options{NoClustering: true})
-	reElapsed := time.Since(reStart)
-	ev.reElapsed = reElapsed
-	if reErr == nil {
-		// A reproduced block means the edge is rejecting us, not a desync.
-		blocked := isBlockedResponse(reResp)
-		ev.probeResp = reResp.FullResponseString()
-		reResp.Close()
-		if blocked {
-			return ev, false
-		}
+	// 1. Reconfirm the anomaly with a fresh send of the same probe. A reproduced
+	// block means the edge is rejecting us, not a desync.
+	reprobe := sendOnce(ctx, httpClient, probeRaw)
+	ev := desyncEvidence{reElapsed: reprobe.elapsed, probeResp: reprobe.body}
+	if reprobe.err == nil && reprobe.blocked {
+		return ev, false
 	}
-	if !isTimingAnomaly(reElapsed, baseline) {
+	if !desyncSlower(reprobe.elapsed, control.median) {
 		return ev, false
 	}
 
-	// 2. A well-formed control POST must be fast. If we cannot build one, fall
-	// back to the (already reconfirmed) anomaly rather than dropping it.
-	controlRaw, ok := buildControlRequest(ctx)
-	if !ok {
-		return ev, true
-	}
-	// controlRaw is well-formed raw, so wrap directly instead of re-parsing on this hot path.
-	controlReq := httpmsg.NewRequestResponseRaw(controlRaw, ctx.Service())
-
-	ctrlStart := time.Now()
-	ctrlResp, _, ctrlErr := httpClient.Execute(controlReq, http.Options{})
-	ctrlElapsed := time.Since(ctrlStart)
-	if ctrlErr != nil {
-		// The control errored where the probe returned: inconclusive, and a
-		// host that errors on a plain POST is not safe to call desynced.
+	// 2. Re-measure the control right after the probe. If the host has simply
+	// become slow, this catches it; the earlier median cannot.
+	ctrl := sendOnce(ctx, httpClient, control.raw)
+	if ctrl.err != nil || ctrl.blocked {
 		return ev, false
 	}
-	ev.hasControl = true
-	ev.ctrlElapsed = ctrlElapsed
-	ev.ctrlReq = string(controlRaw)
-	ev.ctrlResp = ctrlResp.FullResponseString()
-	ctrlResp.Close()
+	ev.ctrlElapsed = ctrl.elapsed
+	ev.ctrlResp = ctrl.body
 
-	// If a plain, unambiguous POST is just as slow, the latency is general and
-	// not attributable to CL/TE desync.
-	return ev, !isTimingAnomaly(ctrlElapsed, baseline)
+	// The probe must out-run the control the confirmation round just measured,
+	// not only the one measured before the probes began.
+	return ev, desyncSlower(reprobe.elapsed, ctrl.elapsed)
 }
 
-// buildProbeRequest turns the host's request into a smuggling probe: forced to
-// POST, with the probe's conflicting CL/TE headers and crafted body.
-func buildProbeRequest(ctx *httpmsg.HttpRequestResponse, probe smugglingProbe) ([]byte, bool) {
-	raw := ctx.Request().Raw()
+func medianDuration(ds []time.Duration) time.Duration {
+	if len(ds) == 0 {
+		return 0
+	}
+	sorted := slices.Clone(ds)
+	slices.Sort(sorted)
+	return sorted[len(sorted)/2]
+}
 
-	var err error
-	raw, err = httpmsg.SetMethod(raw, "POST")
+// buildRequest renders a probe against the host's captured request: forced to
+// POST, stripped of any captured framing headers, then carrying the probe's own
+// header lines verbatim and in order, with its body attached as-is.
+//
+// It builds the message directly rather than going through SetBody, because
+// SetBody recomputes Content-Length to match the body it is given. That silently
+// repaired the CL/TE disagreement the probes exist to create: "Content-Length: 4"
+// went out as 11 or 19, matching the body exactly, leaving a request with
+// correct framing and nothing to desync.
+func buildRequest(ctx *httpmsg.HttpRequestResponse, probe smugglingProbe) ([]byte, bool) {
+	if ctx == nil || ctx.Request() == nil {
+		return nil, false
+	}
+	raw, err := httpmsg.SetMethod(ctx.Request().Raw(), "POST")
 	if err != nil {
 		return nil, false
 	}
-	for k, v := range probe.headers {
-		raw, err = httpmsg.AddOrReplaceHeader(raw, k, v)
-		if err != nil {
-			return nil, false
+	headers, _, _, err := httpmsg.ExtractAllHeaders(raw)
+	if err != nil || len(headers) == 0 {
+		return nil, false
+	}
+
+	lines := make([]string, 0, len(headers)+len(probe.headers))
+	lines = append(lines, headers[0]) // request line
+	for _, header := range headers[1:] {
+		// The probe owns framing outright: a Content-Length or Transfer-Encoding
+		// carried by the capture must not survive alongside the crafted one.
+		name, _, found := strings.Cut(header, ":")
+		if !found {
+			continue
 		}
+		name = strings.TrimSpace(name)
+		if strings.EqualFold(name, "Content-Length") || strings.EqualFold(name, "Transfer-Encoding") {
+			continue
+		}
+		lines = append(lines, header)
 	}
-	raw, err = httpmsg.SetBody(raw, []byte(probe.body))
-	if err != nil {
-		return nil, false
+	for _, h := range probe.headers {
+		lines = append(lines, h.String())
 	}
-	return raw, true
-}
-
-// buildControlRequest produces a well-formed POST of similar shape to the
-// probes but with no conflicting framing: Transfer-Encoding removed and a small
-// valid body whose Content-Length SetBody recomputes correctly. Such a request
-// can never trigger a CL/TE desync, so it serves as the "should always be fast"
-// baseline for the timing differential.
-func buildControlRequest(ctx *httpmsg.HttpRequestResponse) ([]byte, bool) {
-	raw := ctx.Request().Raw()
-
-	var err error
-	raw, err = httpmsg.SetMethod(raw, "POST")
-	if err != nil {
-		return nil, false
-	}
-	raw, err = httpmsg.RemoveHeader(raw, "Transfer-Encoding")
-	if err != nil {
-		return nil, false
-	}
-	raw, err = httpmsg.SetBody(raw, []byte("1"))
-	if err != nil {
-		return nil, false
-	}
-	return raw, true
+	return httpmsg.BuildHttpMessage(lines, []byte(probe.body)), true
 }
 
 // buildResult constructs the finding for a confirmed timing anomaly. It carries
-// the confirmation differential captured by confirmTimingDesync — the
-// reconfirmed slow probe and the fast well-formed control — as AdditionalEvidence
-// and Metadata, so the proof of "desync, not a generally slow host" travels with
-// the finding instead of being collapsed to a one-line claim.
+// the confirmation differential captured by confirmTimingDesync - the
+// reconfirmed slow probe and the re-measured fast control - as
+// AdditionalEvidence and Metadata, so the proof of "desync, not a generally slow
+// host" travels with the finding instead of being collapsed to a one-line claim.
 func buildResult(
 	ctx *httpmsg.HttpRequestResponse,
-	modifiedRaw []byte,
+	probeRaw []byte,
 	probe smugglingProbe,
-	baseline, elapsed time.Duration,
+	control controlReading,
+	elapsed time.Duration,
 	timeout bool,
 	ev desyncEvidence,
 ) *output.ResultEvent {
-	name := fmt.Sprintf("HTTP Request Smuggling: %s", probe.name)
-	timing := fmt.Sprintf("Baseline: %s, Probe: %s", baseline, elapsed)
+	nameSuffix, timingNote := "", ""
 	if timeout {
-		name = fmt.Sprintf("HTTP Request Smuggling: %s (Timeout)", probe.name)
-		timing = fmt.Sprintf("Baseline: %s, Probe: %s (timeout)", baseline, elapsed)
-	}
-
-	extracted := []string{
-		fmt.Sprintf("Probe: %s", probe.name),
-		timing,
-		fmt.Sprintf("Reconfirm probe: %s (anomaly reproduced)", ev.reElapsed),
+		nameSuffix, timingNote = " (Timeout)", " (timeout)"
 	}
 
 	collector := modkit.NewEvidenceCollector()
-	collector.Add("reconfirm probe (anomaly reproduced)", ev.probeReq, ev.probeResp)
-
-	meta := map[string]any{
-		"baseline_ms":  baseline.Milliseconds(),
-		"probe_ms":     elapsed.Milliseconds(),
-		"reconfirm_ms": ev.reElapsed.Milliseconds(),
-		"timeout":      timeout,
-	}
-
-	if ev.hasControl {
-		extracted = append(extracted, fmt.Sprintf(
-			"Well-formed control: %s (fast → latency is desync-specific, not general)", ev.ctrlElapsed))
-		collector.Add("well-formed control (returned fast)", ev.ctrlReq, ev.ctrlResp)
-		meta["control_ms"] = ev.ctrlElapsed.Milliseconds()
-	}
-	extracted = append(extracted,
-		"Confirmation: anomaly reproduced and well-formed control returned fast (not an edge/CDN block)")
+	collector.Add("reconfirm probe (anomaly reproduced)", string(probeRaw), ev.probeResp)
+	collector.Add("well-formed control (re-measured after the probe)", string(control.raw), ev.ctrlResp)
 
 	return &output.ResultEvent{
 		URL:                ctx.Target(),
 		Matched:            ctx.Target(),
-		Request:            string(modifiedRaw),
+		Request:            string(probeRaw),
 		Response:           ev.probeResp,
 		AdditionalEvidence: collector.Entries(),
-		ExtractedResults:   extracted,
-		Metadata:           meta,
+		ExtractedResults: []string{
+			fmt.Sprintf("Probe: %s", probe.name),
+			fmt.Sprintf("Probe: %s%s vs well-formed control: %s (median of %d)",
+				elapsed, timingNote, control.median, controlSamples),
+			fmt.Sprintf("Reconfirm probe: %s (anomaly reproduced)", ev.reElapsed),
+			fmt.Sprintf("Control re-measured after the probe: %s", ev.ctrlElapsed),
+			fmt.Sprintf("Differential: probe is %.1fx the control and %s slower",
+				ratio(ev.reElapsed, ev.ctrlElapsed), ev.reElapsed-ev.ctrlElapsed),
+			"Confirmation: anomaly reproduced, a well-formed control of the same shape " +
+				"over the same transport stayed fast, and neither response was an edge/CDN block",
+		},
+		Metadata: map[string]any{
+			"probe_ms":            elapsed.Milliseconds(),
+			"reconfirm_ms":        ev.reElapsed.Milliseconds(),
+			"control_ms":          ev.ctrlElapsed.Milliseconds(),
+			"control_median_ms":   control.median.Milliseconds(),
+			"control_samples":     controlSamples,
+			"timeout":             timeout,
+			"framing_sent_raw":    true,
+			"probe_control_ratio": ratio(ev.reElapsed, ev.ctrlElapsed),
+		},
 		Info: output.Info{
-			Name:        name,
+			Name:        fmt.Sprintf("HTTP Request Smuggling: %s%s", probe.name, nameSuffix),
 			Description: probe.desc,
-			// Timing inference is prone to backend-delay false positives, so
-			// even a confirmed anomaly is reported as suspect/tentative.
+			// Timing inference cannot by itself distinguish a desync from any
+			// other cause of a stalled read, so even a confirmed differential is
+			// reported as suspect/tentative. Proof requires showing the smuggled
+			// prefix affecting a subsequent request on the same connection.
 			Severity:   severity.Suspect,
 			Confidence: severity.Tentative,
 		},
 	}
 }
 
-// isBlockedResponse reports whether the response is an edge/CDN/WAF rejection
-// rather than an origin backend response. A timing anomaly on a blocked request
-// is the edge processing (or rate-limiting) the request, not a frontend/backend
-// desync, so such responses must never back a smuggling finding. It combines
-// the vendor-aware block detector (Cloudflare, Akamai, Incapsula, …) with a
-// body-marker check that also catches generic edge error pages the
-// header-based detector does not recognize.
-func isBlockedResponse(resp *httputil.ResponseChain) bool {
+func ratio(a, b time.Duration) float64 {
+	if b <= 0 {
+		return 0
+	}
+	return float64(a) / float64(b)
+}
+
+// connectionWillClose reports whether the server signalled that it is closing
+// the connection rather than keeping it alive for a subsequent request.
+func connectionWillClose(resp *httputil.ResponseChain) bool {
 	if resp == nil || resp.Response() == nil {
 		return false
 	}
+	r := resp.Response()
+	if r.Close {
+		return true
+	}
+	// Substring, not equality: Connection is a comma-separated list, so a
+	// "keep-alive, close" still closes. This matches infra.RQPAmplification,
+	// which gates the same keep-alive precondition for cache-poisoning probes.
+	return strings.Contains(strings.ToLower(r.Header.Get("Connection")), "close")
+}
+
+// isEdgeOrGateResponse reports whether the response came from something in FRONT
+// of the application - a CDN/WAF rejection, or an authentication gate - rather
+// than from the origin whose parser chain is under test. A timing reading taken
+// against such a response measures the edge, not a desync, so it must never back
+// a smuggling finding.
+func isEdgeOrGateResponse(resp *httputil.ResponseChain) bool {
+	if resp == nil || resp.Response() == nil {
+		return false
+	}
+	// The shared detector first: it recognizes the vendor fingerprints and the
+	// challenge-interstitial markers (Cloudflare, Incapsula, Netlify, ...) that
+	// looksLikeEdgeBlockPage therefore does not repeat.
 	if infra.GetBlockDetectionValidator().Validate(resp) != nil {
 		return true
 	}
-	switch resp.Response().StatusCode {
-	case 401, 403, 429, 503:
-		if looksLikeEdgeBlockPage(resp.BodyString()) {
-			return true
-		}
+
+	r := resp.Response()
+
+	// An authentication gate answered. The request was rejected on credentials
+	// before the application ever processed it, so whatever the origin's parser
+	// chain does with our framing was never exercised.
+	if r.StatusCode == 401 && r.Header.Get("WWW-Authenticate") != "" {
+		return true
+	}
+
+	// Body-marker check for edge error pages the shared detector does not
+	// recognize. The status list is broad because CDNs serve their interstitials
+	// under whatever status fits - a CloudFront "AdmitOne" 404 and an Akamai 403
+	// are both the edge talking - but a marker match is still required, so an
+	// ordinary application 404 is unaffected.
+	switch r.StatusCode {
+	case 400, 401, 403, 404, 405, 429, 500, 502, 503:
+		return looksLikeEdgeBlockPage(resp.BodyString())
 	}
 	return false
 }
 
-// looksLikeEdgeBlockPage detects common CDN/WAF interstitial block pages (e.g.
-// Cloudflare edge errors such as "Edge IP Restricted" / error 1034) by body
-// markers. These pages are served by the edge before the origin chain is ever
+// looksLikeEdgeBlockPage detects CDN/WAF interstitial block pages by body
+// marker. These pages are served by the edge before the origin chain is ever
 // reached, so any timing measured against them is meaningless for desync.
+//
+// This list is deliberately local rather than shared with infra/modkit: those
+// sets must be conservative, because a false "blocked" there silently deletes a
+// real finding in the ~100 modules that consume them. Here the preference is the
+// opposite - a reading this module cannot attribute is worthless, so it skips on
+// ambiguity. Markers the shared detector already covers are not repeated.
 func looksLikeEdgeBlockPage(body string) bool {
 	if body == "" {
 		return false
@@ -461,9 +594,10 @@ func looksLikeEdgeBlockPage(body string) bool {
 		"error 1020",                         // Cloudflare access denied
 		"access denied",                      // Akamai / generic WAF
 		"akamaighost",                        // Akamai
-		"request unsuccessful. incapsula",    // Imperva Incapsula
-		"_incapsula_resource",                // Imperva Incapsula
 		"the request could not be satisfied", // CloudFront
+		"generated by cloudfront",            // CloudFront error footer
+		"admitone",                           // CloudFront/S3 edge rejection cookie page
+		"requested url was rejected",         // F5 BIG-IP ASM
 	}
 	for _, mk := range markers {
 		if strings.Contains(lower, mk) {

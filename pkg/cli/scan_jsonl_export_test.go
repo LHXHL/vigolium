@@ -318,7 +318,7 @@ func TestFinishScanJSONLExport(t *testing.T) {
 			OutputFormats:       []string{"jsonl"},
 			ProjectUUID:         projA,
 		}
-		finishScanJSONLExport(db, opts)
+		require.NoError(t, finishScanJSONLExport(db, opts))
 
 		data, err := os.ReadFile(outPath) // literal path, no .jsonl appended
 		require.NoError(t, err, "single-format export must honor the exact -o path")
@@ -338,7 +338,7 @@ func TestFinishScanJSONLExport(t *testing.T) {
 			OutputFormats:       []string{"jsonl", "console"},
 			ProjectUUID:         projA,
 		}
-		finishScanJSONLExport(db, opts)
+		require.NoError(t, finishScanJSONLExport(db, opts))
 
 		// Multi-format must use the .jsonl-suffixed path so it never clobbers the
 		// console live file (which uses the bare base path).
@@ -360,7 +360,7 @@ func TestFinishScanJSONLExport(t *testing.T) {
 			OutputFormats:       []string{"jsonl"},
 			ProjectUUID:         projA,
 		}
-		finishScanJSONLExport(db, opts)
+		require.NoError(t, finishScanJSONLExport(db, opts))
 		_, err := os.Stat(outPath)
 		assert.True(t, os.IsNotExist(err), "stateless+output is handled by finishStatelessExport, not here")
 	})
@@ -375,7 +375,7 @@ func TestFinishScanJSONLExport(t *testing.T) {
 			OutputFormats:       []string{"jsonl"},
 			ProjectUUID:         projA,
 		}
-		out := captureStdout(t, func() { finishScanJSONLExport(db, opts) })
+		out := captureStdout(t, func() { require.NoError(t, finishScanJSONLExport(db, opts)) })
 		counts := countEnvelopeTypes(t, []byte(out))
 		assert.Equal(t, 1, counts["finding"], "stateless no-o must stream to stdout, not silently drop")
 		assert.Equal(t, 1, counts["http_record"])
@@ -392,7 +392,7 @@ func TestFinishScanJSONLExport(t *testing.T) {
 			OutputFormats:       []string{"jsonl"},
 			ProjectUUID:         "", // → DefaultProjectUUID
 		}
-		finishScanJSONLExport(db, opts)
+		require.NoError(t, finishScanJSONLExport(db, opts))
 
 		data, err := os.ReadFile(outPath)
 		require.NoError(t, err)
@@ -410,7 +410,7 @@ func TestFinishScanJSONLExport(t *testing.T) {
 			OutputFormats:       []string{"jsonl"},
 			ProjectUUID:         projA,
 		}
-		finishScanJSONLExport(db, opts)
+		require.NoError(t, finishScanJSONLExport(db, opts))
 		_, err := os.Stat(outPath)
 		assert.True(t, os.IsNotExist(err))
 	})

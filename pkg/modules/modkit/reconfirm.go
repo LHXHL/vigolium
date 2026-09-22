@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	mrand "math/rand/v2"
 	"regexp"
 	"strconv"
@@ -59,12 +60,139 @@ func capForRatio(s string) string {
 	return s
 }
 
-var (
-	// reHexLong collapses long hex runs (session ids, hashes, ETags).
-	reHexLong = regexp.MustCompile(`[0-9a-fA-F]{12,}`)
-	// reDigits collapses long digit runs (timestamps, counters, epoch ms).
-	reDigits = regexp.MustCompile(`[0-9]{4,}`)
+// Dynamic-run collapsing: the shared normalization step behind both
+// NormalizeForRatio and NormalizedBodyHash.
+//
+// It used to be two regexp passes over the body — `[0-9a-fA-F]{12,}` then
+// `[0-9]{4,}`, each ReplaceAllString allocating and returning a whole new copy.
+// On a 64 KiB HTML body that pair cost 3.5ms and 652 KB per call, which on the
+// record-write path is paid once per stored response. collapseDynamicRuns does
+// the same work in one byte scan that emits straight into the caller's sink, so
+// nothing intermediate is materialized: 336us and 74 KB for the same body, the
+// remaining allocation being the one ToLower copy the caller still owns.
+//
+// The output is byte-identical to the regexp pair, not merely equivalent — see
+// FuzzCollapseDynamicRunsMatchesRegexp, which asserts it against the original
+// expressions. The equivalence rests on three facts:
+//
+//   - Callers lowercase before collapsing, so no ASCII uppercase survives and
+//     `[0-9a-fA-F]` reduces to `[0-9a-f]`.
+//   - `{12,}` is greedy, so a match is always a MAXIMAL hex run; a run of 12 or
+//     more collapses whole, and a shorter one is left entirely alone.
+//   - Every digit is also a hex digit, so each maximal digit run lies inside
+//     some maximal hex run and is bounded by non-digits on both sides. Scanning
+//     digit runs within a surviving hex run therefore finds exactly the runs the
+//     second regexp would have. The first pass can't create new ones either,
+//     since it substitutes a space, which separates rather than joins.
+const (
+	// minHexRun is the `{12,}` of reHexLong: long hex runs are session ids,
+	// hashes and ETags.
+	minHexRun = 12
+	// minDigitRun is the `{4,}` of reDigits: long digit runs are timestamps,
+	// counters and epoch milliseconds.
+	minDigitRun = 4
 )
+
+// collapseDynamicRuns walks s and hands emit the same bytes the reHexLong and
+// reDigits pair would produce, with each collapsed run emitted as a single
+// space. emit may be called any number of times per input region; the
+// concatenation of its arguments is the result.
+func collapseDynamicRuns(s string, emit func(string)) {
+	for i := 0; i < len(s); {
+		if !isHexDigit(s[i]) {
+			// A span with no hex digit at all can hold neither pattern, so it
+			// passes through untouched in one emit rather than byte by byte.
+			j := i
+			for j < len(s) && !isHexDigit(s[j]) {
+				j++
+			}
+			emit(s[i:j])
+			i = j
+			continue
+		}
+		j := i
+		for j < len(s) && isHexDigit(s[j]) {
+			j++
+		}
+		emitHexRun(s[i:j], emit)
+		i = j
+	}
+}
+
+// emitHexRun handles one maximal hex run: collapsed whole when long enough,
+// otherwise scanned for the digit runs the second regexp would have collapsed.
+func emitHexRun(run string, emit func(string)) {
+	if len(run) >= minHexRun {
+		emit(" ")
+		return
+	}
+	for i := 0; i < len(run); {
+		if !isASCIIDigit(run[i]) {
+			j := i
+			for j < len(run) && !isASCIIDigit(run[j]) {
+				j++
+			}
+			emit(run[i:j])
+			i = j
+			continue
+		}
+		j := i
+		for j < len(run) && isASCIIDigit(run[j]) {
+			j++
+		}
+		if j-i >= minDigitRun {
+			emit(" ")
+		} else {
+			emit(run[i:j])
+		}
+		i = j
+	}
+}
+
+// isHexDigit reports whether c is `[0-9a-f]`. Uppercase is deliberately absent:
+// every caller lowercases first, and admitting A-F here would make the scan
+// disagree with the regexps it replaces on any input that skipped that step.
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// hashSink feeds collapseDynamicRuns' emitted chunks into a hash without
+// allocating per chunk: h.Write takes []byte, and converting each chunk string
+// would heap-allocate it, which on a body full of short spans is thousands of
+// allocations. Chunks accumulate in a fixed staging buffer instead, flushed
+// whenever it fills.
+type hashSink struct {
+	h     hash.Hash
+	stage []byte
+}
+
+func (s *hashSink) emit(chunk string) {
+	for len(chunk) > 0 {
+		n := cap(s.stage) - len(s.stage)
+		if n > len(chunk) {
+			n = len(chunk)
+		}
+		s.stage = append(s.stage, chunk[:n]...)
+		chunk = chunk[n:]
+		if len(s.stage) == cap(s.stage) {
+			_, _ = s.h.Write(s.stage)
+			s.stage = s.stage[:0]
+		}
+	}
+}
+
+func (s *hashSink) flush() {
+	if len(s.stage) > 0 {
+		_, _ = s.h.Write(s.stage)
+		s.stage = s.stage[:0]
+	}
+}
+
+// hashSinkStageSize is the staging buffer's capacity: large enough that a body
+// of short spans flushes rarely, small enough to stay off the heap's radar.
+const hashSinkStageSize = 4096
 
 // ResponseSignature captures key response attributes for comparison.
 //
@@ -133,9 +261,12 @@ func NormalizeForRatio(body, reflect string) string {
 	if len(reflect) >= 3 {
 		s = strings.ReplaceAll(s, strings.ToLower(reflect), " ")
 	}
-	s = reHexLong.ReplaceAllString(s, " ")
-	s = reDigits.ReplaceAllString(s, " ")
-	return s
+	// Pre-sized to the pre-collapse length: collapsing only ever shortens, so
+	// this is an upper bound and the builder never regrows.
+	var b strings.Builder
+	b.Grow(len(s))
+	collapseDynamicRuns(s, func(chunk string) { b.WriteString(chunk) })
+	return b.String()
 }
 
 // NormalizedBodyHash returns a stable hex SHA-256 over a response body that has
@@ -155,15 +286,23 @@ func NormalizedBodyHash(body string, reflects ...string) string {
 		return ""
 	}
 	s := strings.ToLower(body)
+	// Applied in order, one full pass each. This stays a sequential ReplaceAll
+	// chain rather than folding into the scan below because the order is
+	// load-bearing: an earlier reflect can consume text a later one would have
+	// matched (stripping "/path" first leaves the full URL unmatchable), and a
+	// single scan choosing per position would hash those bodies differently.
 	for _, ref := range reflects {
 		if len(ref) >= 3 {
 			s = strings.ReplaceAll(s, strings.ToLower(ref), " ")
 		}
 	}
-	s = reHexLong.ReplaceAllString(s, " ")
-	s = reDigits.ReplaceAllString(s, " ")
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
+	// Collapsed straight into the hash: the normalized body is never needed as a
+	// value, only as hash input, so materializing it would be two more full-body
+	// copies for bytes nothing reads.
+	sink := &hashSink{h: sha256.New(), stage: make([]byte, 0, hashSinkStageSize)}
+	collapseDynamicRuns(s, sink.emit)
+	sink.flush()
+	return hex.EncodeToString(sink.h.Sum(nil))
 }
 
 // tokenizeInto walks the maximal [a-z0-9] runs of normalized (the inverse of the

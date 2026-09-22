@@ -43,6 +43,12 @@ import (
 // other's descriptors.
 var stderrCaptureActive atomic.Bool
 
+// teeDrainTimeout bounds the wait for the stderr-capture reader to finish after
+// the write end is closed. The healthy path takes microseconds and never
+// reaches it; the timeout exists only so a wedged reader cannot hang a scan's
+// teardown, at the cost of a few trailing log lines.
+const teeDrainTimeout = 2 * time.Second
+
 // RunNativeScan orchestrates the native scan plan:
 //
 //	HeuristicsCheck   — optional root-page probe to optimize downstream phase selection
@@ -70,7 +76,9 @@ func (r *Runner) RunNativeScan() (err error) {
 		defer totalCancel()
 	}
 
-	infra, err := r.buildInfrastructure()
+	plan := BuildNativeScanPlan(r.options)
+
+	infra, err := r.buildInfrastructure(plan)
 	if err != nil {
 		return err
 	}
@@ -100,20 +108,25 @@ func (r *Runner) RunNativeScan() (err error) {
 	if r.repository != nil && !r.options.ScanOnReceive && !r.options.ManagedScanRecord {
 		target := strings.Join(r.options.Targets, ", ")
 		scan := &database.Scan{
-			UUID:        infra.scanUUID,
-			ProjectUUID: r.options.ProjectUUID,
-			Name:        "cli-scan",
-			Status:      "running",
-			Target:      target,
-			Threads:     r.options.Concurrency,
-			ScanSource:  "cli",
-			ScanMode:    "full",
-			StartedAt:   time.Now(),
+			UUID:            infra.scanUUID,
+			ProjectUUID:     r.options.ProjectUUID,
+			Name:            "cli-scan",
+			Status:          "running",
+			Target:          target,
+			Threads:         r.options.Concurrency,
+			ScopeOriginMode: r.resolvedScopeOriginMode(),
+			ScanSource:      "cli",
+			ScanMode:        "full",
+			StartedAt:       time.Now(),
 		}
 		if err := r.repository.CreateScan(ctx, scan); err != nil {
 			zap.L().Warn("Failed to create scan record", zap.Error(err))
 		}
 	}
+	// Stamp the resolved scope mode on the row, whoever created it — there are ten
+	// scan-creation sites and only the runner knows the settings the matcher will
+	// actually be built from.
+	r.persistScopeOriginMode(ctx, infra.scanUUID)
 	if r.repository != nil {
 		defer func() {
 			// Terminal status, most-truthful first: a returned error (including a
@@ -174,8 +187,11 @@ func (r *Runner) RunNativeScan() (err error) {
 		pr, pw, err := os.Pipe()
 		if err == nil {
 			os.Stderr = pw
-			// Goroutine reads from the pipe and writes through the tee.
+			// Goroutine reads from the pipe and writes through the tee, and
+			// closes drained when the pipe reports EOF.
+			drained := make(chan struct{})
 			go func() {
+				defer close(drained)
 				buf := make([]byte, 4096)
 				for {
 					n, readErr := pr.Read(buf)
@@ -188,9 +204,20 @@ func (r *Runner) RunNativeScan() (err error) {
 				}
 			}()
 			defer func() {
+				// Closing the write end is what ends the reader's loop, so wait
+				// for the goroutine to say it is done rather than guessing how
+				// long that takes. The old blind 50ms sleep was both a floor on
+				// every scan's teardown - visible on a probe that finishes in
+				// under a fifth of a second - and no guarantee at all on a busy
+				// machine, where the drain could still be unfinished when the
+				// descriptor was yanked. The timeout only bounds a reader that
+				// is stuck, which costs at most a few trailing log lines.
 				_ = pw.Close()
-				// Allow goroutine to drain.
-				time.Sleep(50 * time.Millisecond)
+				select {
+				case <-drained:
+				case <-time.After(teeDrainTimeout):
+					zap.L().Warn("stderr capture did not drain within the timeout; some trace logs may be missing")
+				}
 				_ = pr.Close()
 				os.Stderr = origStderr
 				r.teeWriter.Flush()
@@ -271,8 +298,6 @@ func (r *Runner) RunNativeScan() (err error) {
 	// the finished-banner reads the finding count. Idempotent when prior passes already
 	// covered everything; see finalizeFindingGrouping.
 	defer r.finalizeFindingGrouping()
-
-	plan := BuildNativeScanPlan(r.options)
 
 	// Full-scan-on-receive: loop waiting for new records, then run all phases
 	// on just the new batch. Each iteration swaps r.inputSource to a one-shot
@@ -532,7 +557,7 @@ func (r *Runner) cleanupDeparosRecords(ctx context.Context) {
 }
 
 // buildInfrastructure extracts common setup from the old RunNativeScan into a reusable struct.
-func (r *Runner) buildInfrastructure() (*phaseInfra, error) {
+func (r *Runner) buildInfrastructure(plan NativeScanPlan) (*phaseInfra, error) {
 	// Auto-generate scan UUID when not provided via --scan-uuid
 	scanUUID := r.options.ScanUUID
 	if scanUUID == "" {
@@ -571,12 +596,19 @@ func (r *Runner) buildInfrastructure() (*phaseInfra, error) {
 		var backends []notify.Backend
 		notifyCfg := &r.settings.Notify
 
-		// Telegram backend (from settings or env)
+		// Telegram backend (from settings or env). Construction no longer
+		// contacts Telegram (see telegram.NewClient), so this cannot delay the
+		// first phase; what it can still report is a malformed token or chat id,
+		// which used to be dropped on the floor — an operator who enabled
+		// notifications and mistyped the config got no notifications and no
+		// explanation, matching the Discord branch below.
 		if notifyCfg.IsProviderActive(config.NotifyProviderTelegram) {
 			tgOpts := r.buildTelegramOptions()
 			if tg, err := telegram.NewBackend(tgOpts...); err == nil {
 				backends = append(backends, tg)
 				zap.L().Info("[Notify] Telegram backend enabled")
+			} else {
+				zap.L().Warn("[Notify] Failed to create Telegram backend", zap.Error(err))
 			}
 		}
 
@@ -646,8 +678,13 @@ func (r *Runner) buildInfrastructure() (*phaseInfra, error) {
 		infra.scopeMatcher = config.NewScopeMatcher(r.settings.Scope, r.options.Targets...)
 	}
 
+	// Phases that never contact the target are unaffected by session headers and
+	// request hooks, so neither is built for them. See SendsTargetTraffic for why
+	// this is not merely about setup cost.
+	reachesTarget := plan.SendsTargetTraffic()
+
 	// Initialize JS extension engine
-	if r.settings != nil && r.settings.DynamicAssessment.Extensions.Enabled {
+	if reachesTarget && r.settings != nil && r.settings.DynamicAssessment.Extensions.Enabled {
 		jsEngineOpts := &jsext.EngineOptions{
 			ScanUUID:   r.options.ScanUUID,
 			Repository: r.repository,
@@ -656,7 +693,9 @@ func (r *Runner) buildInfrastructure() (*phaseInfra, error) {
 		if r.settings != nil {
 			scopeCfg := r.settings.Scope
 			jsEngineOpts.ScopeConfig = &scopeCfg
-			jsEngineOpts.ScopeMatcher = config.NewScopeMatcher(r.settings.Scope, r.options.Targets...)
+			// The same matcher, from the same settings and the same targets, as
+			// the one built above - so share it rather than paying for a second.
+			jsEngineOpts.ScopeMatcher = infra.scopeMatcher
 		}
 		jsEngine, err := jsext.NewEngine(&r.settings.DynamicAssessment.Extensions, httpRequester, jsEngineOpts)
 		if err != nil {
@@ -676,14 +715,17 @@ func (r *Runner) buildInfrastructure() (*phaseInfra, error) {
 		}
 	}
 
-	// Initialize multi-session support for IDOR/BOLA testing
-	if err := r.initSessions(infra); err != nil {
-		// If the user explicitly configured sessions, surface the error clearly
-		hasCLIAuth := len(r.options.AuthFiles) > 0 || len(r.options.AuthInline) > 0
-		if hasCLIAuth && !r.options.AuthBestEffort {
-			return nil, fmt.Errorf("session initialization failed: %w", err)
+	// Initialize multi-session support for IDOR/BOLA testing. Skipped when no
+	// enabled phase will reach the target: see reachesTarget above.
+	if reachesTarget {
+		if err := r.initSessions(infra); err != nil {
+			// If the user explicitly configured sessions, surface the error clearly
+			hasCLIAuth := len(r.options.AuthFiles) > 0 || len(r.options.AuthInline) > 0
+			if hasCLIAuth && !r.options.AuthBestEffort {
+				return nil, fmt.Errorf("session initialization failed: %w", err)
+			}
+			zap.L().Warn("Failed to initialize sessions, continuing without session support", zap.Error(err))
 		}
-		zap.L().Warn("Failed to initialize sessions, continuing without session support", zap.Error(err))
 	}
 
 	return infra, nil
@@ -1636,7 +1678,7 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 					// Count only user-ingested records so the "new ingested
 					// records" counter matches what the DB poller will
 					// actually scan (see sorSourceFilter above).
-					if cnt, cErr := r.repository.CountRecordsAfterCursorBySource(ctx, s.StartedAt, "", sorSourceFilter, inScopeHosts); cErr == nil {
+					if cnt, cErr := r.repository.CountRecordsAfterCursorBySource(ctx, r.options.ProjectUUID, s.StartedAt, "", sorSourceFilter, inScopeHosts); cErr == nil {
 						ingestedCount = cnt
 					}
 				}
@@ -1861,7 +1903,7 @@ func (r *Runner) countRemainingDynamicAssessmentRecords(ctx context.Context, sca
 	if err != nil {
 		return 0, err
 	}
-	return r.repository.CountRecordsAfterCursor(ctx, currentScan.CursorAt, currentScan.CursorUUID, hosts...)
+	return r.repository.CountRecordsAfterCursor(ctx, r.options.ProjectUUID, currentScan.CursorAt, currentScan.CursorUUID, hosts...)
 }
 
 // waitForNewRecords polls until at least one record exists after the scan cursor,

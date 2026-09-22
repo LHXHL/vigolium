@@ -26,7 +26,7 @@ Legacy modules that do not set a kind remain findings for compatibility. Candida
 
 ## Hardening Advisories (`hygiene`)
 
-Thirteen modules tagged `hygiene` report a *missing best-practice control* rather than an exploitable condition — absent security headers, weak TLS protocol/cipher policy, cookie attributes, and the CSP/HSTS/SRI/Permissions-Policy/COOP audits. They fire on nearly every response, so a crawl of any size produces one near-identical Info/Low row per URL.
+Fourteen modules tagged `hygiene` report a *missing best-practice control* rather than an exploitable condition — absent security headers, weak TLS protocol/cipher policy, cookie and session-cookie attributes, and the CSP/HSTS/SRI/Permissions-Policy/COOP audits. They fire on nearly every response, so a crawl of any size produces one near-identical Info/Low row per URL.
 
 **They do not run below `--intensity deep`.** To include them:
 
@@ -485,7 +485,7 @@ Passive modules analyze existing request/response pairs without sending new traf
 
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
-| `express-session-audit` | Express Session Audit | Audits Express.js session cookies for default naming, excessive expiry, and session proliferation | Low | Firm | `express`, `nodejs`, `session`, `misconfiguration`, `light` |
+| `express-session-audit` | Express Session Audit | Audits Express.js session cookies for default naming, excessive expiry, and session proliferation | Low | Firm | `express`, `nodejs`, `session`, `misconfiguration`, `hygiene`, `light` |
 | `jwt-claims-detect` | JWT Claim Analyzer | Analyzes JWT claims for security misconfigurations | Medium | Firm | `authentication`, `session`, `cryptography`, `light` |
 | `jackson-deserialize-detect` | Jackson Deserialization Detect | Detects Jackson polymorphic typing indicators and Java deserialization error patterns in responses | Low | Tentative | `java`, `deserialization`, `light` |
 | `python-debug-detect` | Python Debug Detect | Detects Python tracebacks, debug pages, and path disclosure in responses | High | Firm | `python`, `info-disclosure`, `misconfiguration`, `light` |

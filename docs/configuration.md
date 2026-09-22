@@ -357,11 +357,11 @@ dynamic-assessment:
       max_memory_mb: 128
 ```
 
-**Hardening advisories (`hygiene_modules`).** Thirteen modules report a *missing
+**Hardening advisories (`hygiene_modules`).** Fourteen modules report a *missing
 best-practice control* rather than an exploitable condition — absent security
-headers, weak TLS protocol/cipher policy, cookie attributes, and the
-CSP/HSTS/SRI/Permissions-Policy/COOP audits. They are cheap to run and fire on
-nearly every response, so on a crawl of any size they contribute one
+headers, weak TLS protocol/cipher policy, cookie and session-cookie attributes,
+and the CSP/HSTS/SRI/Permissions-Policy/COOP audits. They are cheap to run and
+fire on nearly every response, so on a crawl of any size they contribute one
 near-identical Info/Low row per URL and bury the findings worth triaging.
 
 Below `--intensity deep` they do not run. The gated set is every module tagged
@@ -370,7 +370,7 @@ Below `--intensity deep` they do not run. The gated set is every module tagged
 | | |
 |---|---|
 | Info | `security-headers-missing`, `permissions-policy-detect`, `cross-origin-isolation-audit`, `subresource-integrity-detect`, `password-autocomplete-detect` |
-| Low | `tls-protocol-cipher-audit`, `hsts-preload-audit`, `csp-weakness-audit`, `cors-vary-origin-missing`, `cookie-security-detect`, `mixed-content-detect`, `reverse-tabnabbing-detect`, `content-type-mismatch` |
+| Low | `tls-protocol-cipher-audit`, `hsts-preload-audit`, `csp-weakness-audit`, `cors-vary-origin-missing`, `cookie-security-detect`, `mixed-content-detect`, `reverse-tabnabbing-detect`, `content-type-mismatch`, `express-session-audit` |
 
 The Info-tier fingerprints, endpoint/param observers, and `surface-scoring` are
 *not* in this set — their output feeds tech tags, scoring, and active-module

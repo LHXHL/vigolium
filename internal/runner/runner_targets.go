@@ -33,6 +33,39 @@ func (r *Runner) getInScopeDBHosts(ctx context.Context) []database.HostTarget {
 	return r.repository.InScopeHosts(ctx, r.settings.Scope, r.options.Targets, r.options.ProjectUUID, r.options.ScanUUID)
 }
 
+// resolvedScopeOriginMode is the origin-scope mode this run actually applies —
+// the value getInScopeDBHosts above is filtering by. The single accessor every
+// reporter uses, so the banner, the run summary, the config snapshot and the
+// scans row cannot disagree with the matcher or with each other.
+func (r *Runner) resolvedScopeOriginMode() string {
+	if r.settings == nil {
+		return config.DefaultCLIOriginMode
+	}
+	return config.ResolveCLIOriginMode(r.settings.Scope.CLIOriginMode)
+}
+
+// persistScopeOriginMode stamps the resolved mode on the scan row. Run
+// unconditionally rather than only for rows this runner did not create: the
+// alternative is a guard that encodes WHO created the row, and the flags
+// available to ask that (ScanOnReceive, ManagedScanRecord) do not cover every
+// externally-created row — `POST /api/scan-records`, `POST /api/scan-all-records`
+// and `vigolium ingest`'s scan row set neither, so a guarded stamp silently
+// skipped them. The write is idempotent and once per scan, which is cheaper than
+// keeping that list correct.
+//
+// Best-effort: failing to annotate a scan must not abort it.
+func (r *Runner) persistScopeOriginMode(ctx context.Context, scanUUID string) {
+	if r.repository == nil {
+		return
+	}
+	if err := r.repository.UpdateScanPartial(ctx, &database.Scan{
+		UUID:            scanUUID,
+		ScopeOriginMode: r.resolvedScopeOriginMode(),
+	}); err != nil {
+		zap.L().Warn("Failed to record scope origin mode on scan", zap.Error(err))
+	}
+}
+
 // normalizeTargetSchemes gives every target in options an explicit scheme.
 //
 // Both constructors call it because this is the one seam every entry point

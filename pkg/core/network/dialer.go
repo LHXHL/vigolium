@@ -86,7 +86,21 @@ func NewDialer(options *types.Options) (*fastdialer.Dialer, error) {
 	}
 
 	opts.Deny = append(opts.Deny, expandedDenyList...)
-	opts.WithDialerHistory = true
+
+	// WithDialerHistory stays OFF. It is a write-only cache here: fastdialer
+	// records every dialed IP into it, and the only reader is its GetDialedIP,
+	// which nothing in vigolium calls - the resolved addresses the scan actually
+	// reports come from the DNS prefetch stage and land in host_observations.
+	//
+	// Turning it on is not free. It makes fastdialer open a LevelDB under
+	// os.TempDir() (hybrid.DefaultDiskOptions), and that constructor first sweeps
+	// the WHOLE temp directory, lstat'ing every entry whose name contains the
+	// executable name to expire hmap dirs older than two days. On a workstation
+	// with a large /tmp that sweep alone cost ~180ms of every single vigolium
+	// invocation, plus a LevelDB open, a disk write per dial, and one more temp
+	// directory left behind. If a reader for the history ever appears, re-enable
+	// it with an explicit hybrid Path so the sweep stays off.
+	opts.WithDialerHistory = false
 
 	dialer, err := fastdialer.NewDialer(opts)
 	if err != nil {

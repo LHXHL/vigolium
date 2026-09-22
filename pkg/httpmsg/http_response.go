@@ -178,6 +178,17 @@ func (r *HttpResponse) Head() []byte {
 // BodyToString returns the body as a string. The conversion is memoized: every
 // caller for this response shares one allocation, so a wide passive-module
 // fan-out over the same record doesn't re-copy the body per module.
+//
+// The miss is resolved under the write lock, not outside it. Computing outside
+// and publishing after is the cheaper shape for an uncontended cache, but this
+// cache is contended by construction: the dynamic-assessment phase defaults to
+// ParallelPassive, which fans every eligible per-request module out over ONE
+// shared response, and 93 of them call this method. Per-host modules are claimed
+// once per origin, so from the second record of a host onward nothing warms the
+// cache first and the whole fan-out arrives cold together — each goroutine
+// copying the same body, for one winner's worth of result. Serializing the miss
+// makes the herd pay for a single copy; the hit path below is unchanged and
+// still takes only the read lock.
 func (r *HttpResponse) BodyToString() string {
 	r.ensureParsed()
 	r.mu.RLock()
@@ -188,11 +199,28 @@ func (r *HttpResponse) BodyToString() string {
 	}
 	r.mu.RUnlock()
 
-	s := string(r.Body())
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.bodyStringLocked()
+}
+
+// bodyStringLocked returns the memoized body string, computing it if this is the
+// first ask. The caller must hold r.mu for writing.
+//
+// It reads r.raw directly instead of calling Body(): Body() calls ensureParsed,
+// which takes r.mu, and a sync.RWMutex is not reentrant — so calling it here
+// would deadlock. Every caller has already run ensureParsed, so bodyOffset is
+// settled.
+func (r *HttpResponse) bodyStringLocked() string {
+	if r.bodyStringOK {
+		return r.bodyString
+	}
+	var s string
+	if r.bodyOffset < len(r.raw) {
+		s = string(r.raw[r.bodyOffset:])
+	}
 	r.bodyString = s
 	r.bodyStringOK = true
-	r.mu.Unlock()
 	return s
 }
 
@@ -210,11 +238,18 @@ func (r *HttpResponse) BodyLowerString() string {
 	}
 	r.mu.RUnlock()
 
-	s := strings.ToLower(r.BodyToString())
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.bodyLowerStrOK {
+		return r.bodyLowerString
+	}
+	// bodyStringLocked, not BodyToString: taking r.mu again from under it would
+	// deadlock. Going through it still shares the body copy with BodyToString's
+	// callers, so a cold lowercased read costs one body copy plus one lowering,
+	// not two copies.
+	s := strings.ToLower(r.bodyStringLocked())
 	r.bodyLowerString = s
 	r.bodyLowerStrOK = true
-	r.mu.Unlock()
 	return s
 }
 
@@ -223,6 +258,15 @@ func (r *HttpResponse) BodyLowerString() string {
 // compute receives the memoized body string. The signature type lives in the
 // modkit package (which imports httpmsg), so httpmsg keeps it opaque to avoid an
 // import cycle. Invalidated by TruncateBody.
+//
+// Unlike BodyToString this deliberately keeps the compute-outside-the-lock
+// shape, so concurrent cold callers can each run compute and all but one throw
+// the result away. Two reasons it stays that way: compute is caller-supplied, so
+// holding r.mu across it would let a callback that touches this response
+// deadlock the whole record; and the herd BodyToString guards against is a
+// passive-fan-out effect, while this cache exists for an active module reusing
+// one baseline across its own sequential probe loop, where there is no herd to
+// collapse.
 func (r *HttpResponse) RatioSignature(compute func(body string) any) any {
 	r.mu.RLock()
 	if r.ratioSigOK {

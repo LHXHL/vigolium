@@ -15,7 +15,7 @@ var (
 
 **Fix:** Make the front-end and back-end agree on framing: reject requests carrying both Content-Length and Transfer-Encoding, strip Transfer-Encoding at the edge, prefer HTTP/2.`
 
-	ModuleConfirmation = "Confirmed when conflicting CL/TE headers cause a reproducible response timing anomaly that a well-formed control request does not, and the response is not an edge/CDN/WAF block"
+	ModuleConfirmation = "Confirmed when conflicting CL/TE headers, sent verbatim over HTTP/1.1 to a keep-alive host, cause a reproducible timing anomaly that a well-formed control POST of the same shape to the same path does not - and neither response came from an edge/CDN/WAF block or an auth gate. Timing alone cannot separate a desync from any other stalled read, so the result is a lead: proof requires showing the smuggled prefix affect a later request on the same connection"
 	ModuleSeverity     = severity.Suspect
 	ModuleConfidence   = severity.Tentative
 	ModuleTags         = []string{"request-smuggling", "heavy"}

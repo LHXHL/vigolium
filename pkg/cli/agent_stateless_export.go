@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/storage"
@@ -135,7 +137,7 @@ func planAgentStateless(cmd *cobra.Command, cmdLabel string, stateless bool, out
 // connection is closed. Settings-based consumers still need
 // applyAgentStatelessSettings once settings are loaded.
 func beginAgentStateless(prefix string) (string, error) {
-	tmpFile, err := os.CreateTemp("", prefix+"*.sqlite")
+	tmpFile, err := scratch.CreateTemp(prefix + "*.sqlite")
 	if err != nil {
 		return "", fmt.Errorf("create temporary database: %w", err)
 	}
@@ -190,18 +192,19 @@ func removeAgentStatelessDB(dbPath string) {
 // -S output is identical in shape (and in its unified "Exports" summary) to
 // `vigolium scan -S`. Must be called while the DB handle is still open.
 //
-// Best-effort by construction: finishStatelessExport reports per-format failures
-// to stderr and writes what it can. The run's own exit status is unaffected —
-// the findings were already produced.
-func emitAgentStatelessExport(plan agentStatelessPlan) {
+// Returns the export's outcome so the agent command can fold it into its own
+// result: per-format failures are printed to stderr and every other format is
+// still written, but a caller that asked for a file and got none must not be
+// told the run succeeded.
+func emitAgentStatelessExport(plan agentStatelessPlan) error {
 	if !plan.active || plan.output == "" {
-		return
+		return nil
 	}
 	db, err := getDB()
 	if err != nil || db == nil {
 		fmt.Fprintf(os.Stderr, "%s --stateless: skipping export — database unavailable: %v\n",
 			terminal.WarningSymbol(), err)
-		return
+		return fmt.Errorf("stateless export: database unavailable: %w", err)
 	}
 	// Create the base's parent directory (the default base nests under
 	// vigolium-result/). finishStatelessExport's writers open files directly and
@@ -218,5 +221,5 @@ func emitAgentStatelessExport(plan agentStatelessPlan) {
 		OutputFormats: plan.formats,
 		Output:        plan.output,
 	}
-	finishStatelessExport(db, opts, plan.output, false)
+	return finishStatelessExport(db, opts, plan.output, false)
 }

@@ -36,3 +36,29 @@ func stdinReadTimeout() time.Duration {
 // defaultInputReadTimeout matches the --input-read-timeout default registered in
 // flag_helpers.go. Both sides read this constant so they cannot drift.
 const defaultInputReadTimeout = 3 * time.Minute
+
+// resolveStdinInput decides whether a scan should drain stdin at all.
+//
+// stdinPiped comes from fileutil.HasStdin(), which reports true for ANY stdin
+// that is not a character device. A pipe a parent process opened and never
+// writes to counts: a CI runner, an agent harness, a supervisor, the read end
+// left open by `vigolium ... | tee`. The scan's stdin peek then sat in
+// readStdin() until that pipe closed or --input-read-timeout expired, so a run
+// that already had every target it needed from -t/-T stalled for the full
+// three-minute default before scanning anything.
+//
+// An explicit target source therefore wins over an inherited stdin. A TYPED
+// `-i -` is a deliberate request for stdin and still wins over -t, so the
+// documented "combine a pasted request with a target" invocation keeps working.
+// inputTyped is load-bearing: -i defaults to "-", so testing inputValue alone
+// would call every run an explicit stdin request and restore the stall.
+// A typed `-i <file>` names the input source outright, so stdin is not it.
+func resolveStdinInput(stdinPiped, inputTyped bool, inputValue string, targets, targetFiles int) bool {
+	if !stdinPiped {
+		return false
+	}
+	if inputTyped {
+		return inputValue == "-"
+	}
+	return targets == 0 && targetFiles == 0
+}

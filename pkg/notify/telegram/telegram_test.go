@@ -149,6 +149,37 @@ func TestNewBackend_ConfigError(t *testing.T) {
 	}
 }
 
+// TestNewClient_DoesNotProbeTelegram is the regression guard for construction
+// cost. NewClient runs during the runner's infrastructure setup, before the
+// first phase; telebot's NewBot calls getMe unless Offline is set, which made
+// that a blocking round trip to api.telegram.org on a client with a five-minute
+// default timeout.
+//
+// An impossibly small HTTPTimeout is what makes this assertion hermetic: any
+// HTTP call at all would fail under it, so a construction that succeeds is a
+// construction that made none. No test server is needed, and none is reachable.
+func TestNewClient_DoesNotProbeTelegram(t *testing.T) {
+	t.Setenv(EnvBotToken, "")
+	t.Setenv(EnvChatID, "")
+
+	c, err := NewClient(
+		WithBotToken("123456:fake-token-for-construction-only"),
+		WithChatID(999),
+		WithHTTPTimeout(time.Nanosecond),
+	)
+	if err != nil {
+		t.Fatalf("NewClient contacted Telegram during construction: %v", err)
+	}
+	t.Cleanup(c.Close)
+
+	// telebot leaves Me nil unless it either probed or was told to run offline,
+	// so a non-nil Me confirms the offline branch was taken rather than a lucky
+	// network. It is an empty User there, which is fine — nothing reads it.
+	if c.bot.Me == nil {
+		t.Fatal("bot.Me is nil; a Send would dereference it")
+	}
+}
+
 func TestNewClient_InvalidChatIDEnv(t *testing.T) {
 	t.Setenv(EnvBotToken, "tok")
 	t.Setenv(EnvChatID, "not-a-number")

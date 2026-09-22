@@ -85,6 +85,12 @@ const (
 	// errCodeBodyIncomplete: only a prefix of the body is available (the decoder
 	// hit its ceiling). Requires --allow-incomplete to extract anyway.
 	errCodeBodyIncomplete = "body_incomplete"
+	// errCodeExportFailed: the work ran, but a requested artifact was not written
+	// — an unwritable destination, a failed query mid-stream, a VACUUM that could
+	// not complete. Distinct from a failure of the scan itself: the findings may
+	// well exist, they just did not reach the file the caller asked for, and a
+	// driver's correct response is to retry the export rather than the scan.
+	errCodeExportFailed = "export_failed"
 )
 
 // codedError carries a stable error code alongside its message, for conditions

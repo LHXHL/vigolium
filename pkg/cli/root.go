@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/memlimit"
+	"github.com/vigolium/vigolium/internal/scratch"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/olium"
@@ -368,6 +369,20 @@ func Execute() {
 	// registered for the walk to reach it.
 	addStatelessShorthand(rootCmd)
 
+	// Claim the scratch directory for the whole process, not per scan runner.
+	//
+	// Plenty of commands that never build a runner still allocate scratch —
+	// `export --format pdf`, `db import`, `agent audit -S`, the parallel scan
+	// fan-out. Acquiring in the runner left those provisioning a process
+	// directory nobody held, so a clean run leaked an empty one every time; and
+	// in server mode the count legitimately reached zero between scans, which
+	// made Release remove a directory the next request was about to use. One
+	// base reference for the process fixes both, and every command gets the
+	// cleanup rather than only scans.
+	if err := scratch.Acquire(); err != nil {
+		zap.L().Warn("Failed to create scratch directory; temporary files will fall back to the system temp dir", zap.Error(err))
+	}
+
 	// ExecuteC (not Execute) so we get the command that actually ran back —
 	// the agent-family setup hint below needs to know which one failed.
 	cmd, err := rootCmd.ExecuteC()
@@ -383,6 +398,10 @@ func Execute() {
 	// bottom of the output instead of scrolling away. Runs on both the success
 	// and error paths (but before the os.Exit calls below).
 	flushUpdateNotice()
+
+	// Every exit from here on is an os.Exit, which does not run defers, so the
+	// scratch teardown is called explicitly on each path instead.
+	releaseScratch()
 
 	if err != nil {
 		// When the failure IS the flag parse, cobra never bound the presentation
@@ -422,6 +441,16 @@ func Execute() {
 		}
 		os.Exit(code)
 	}
+}
+
+// releaseScratch removes this process's temporary storage and collects what
+// earlier runs were killed before releasing. Called on every exit path from
+// Execute, which uses os.Exit and therefore runs no defers.
+func releaseScratch() {
+	scratch.Release()
+	// After the release, so the sweep sees this process's directory already
+	// gone rather than skipping it as live.
+	scratch.SweepOnce(scratch.DefaultMaxAge)
 }
 
 // isFlagParseError recognises the errors cobra/pflag raise for a malformed

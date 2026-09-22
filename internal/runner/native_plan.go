@@ -149,6 +149,14 @@ var (
 type NativePhaseStep struct {
 	Phase   NativePhase
 	Enabled bool
+
+	// SkipsTarget marks a phase that never sends a request to the scan target.
+	// Declared here, in the same literal as the phase's own gate, rather than in
+	// a side table keyed by phase: this file is the single owner of the phase
+	// vocabulary, and a second per-phase map is exactly how the vocabulary and
+	// the plan drifted apart before. A new phase has to answer the question
+	// where it is declared.
+	SkipsTarget bool
 }
 
 type NativeScanPlan struct {
@@ -163,7 +171,9 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 		// confirmed extra web services are appended to the target set before the
 		// ingestion/scan phases consume it.
 		{Phase: PhasePortSweep, Enabled: opts.FollowSubdomains || strings.EqualFold(opts.Intensity, "deep")},
-		{Phase: PhaseExternalHarvest, Enabled: opts.ExternalHarvestEnabled},
+		// ExternalHarvest only queries third-party archives and OSINT sources
+		// ABOUT the target; it never contacts it. See SendsTargetTraffic.
+		{Phase: PhaseExternalHarvest, Enabled: opts.ExternalHarvestEnabled, SkipsTarget: true},
 		{Phase: PhaseSpidering, Enabled: opts.SpideringEnabled},
 		// Host sweep: one request per target, passive-only, no content discovery.
 		// Placed before discovery so a full scan's later phases see the probe's
@@ -181,6 +191,24 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 		{Phase: PhaseKnownIssueScan, Enabled: opts.KnownIssueScanEnabled},
 	}
 	return NativeScanPlan{Steps: steps}
+}
+
+// SendsTargetTraffic reports whether any enabled step in the plan will send a
+// request to the scan target. Everything but ExternalHarvest reaches it,
+// directly or through the shared requester, and so is affected by session
+// headers and request hooks.
+//
+// Infrastructure whose only purpose is to shape target traffic is built on the
+// strength of this. Session hydration in particular EXECUTES LOGIN FLOWS, so
+// `vigolium run external-harvest --auth-file admin.yaml` used to authenticate
+// against a host it was never going to touch.
+func (p NativeScanPlan) SendsTargetTraffic() bool {
+	for _, step := range p.Steps {
+		if step.Enabled && !step.SkipsTarget {
+			return true
+		}
+	}
+	return false
 }
 
 // parseOnlyPhases parses a comma-separated --only value into a normalized

@@ -10,24 +10,16 @@ import (
 
 // readOnlyConfig points a DatabaseConfig at path in read-only mode.
 func readOnlyConfig(path string) *config.DatabaseConfig {
-	cfg := config.DefaultSettings().Database
-	cfg.Enabled = true
-	cfg.Driver = "sqlite"
-	cfg.SQLite.Path = path
+	cfg := writableConfig(path)
 	cfg.SQLite.ReadOnly = true
-	return &cfg
+	return cfg
 }
 
 // writeTestStore creates a real vigolium SQLite file at path and closes it, so
 // the follow-up read-only open sees a normal on-disk store with no sidecars.
 func writeTestStore(t *testing.T, path string) {
 	t.Helper()
-	cfg := config.DefaultSettings().Database
-	cfg.Enabled = true
-	cfg.Driver = "sqlite"
-	cfg.SQLite.Path = path
-
-	db, err := NewDB(&cfg)
+	db, err := NewDB(writableConfig(path))
 	if err != nil {
 		t.Fatalf("NewDB: %v", err)
 	}

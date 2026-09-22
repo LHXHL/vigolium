@@ -3,6 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
+
+	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
 // Process exit codes.
@@ -78,6 +81,44 @@ func (m matchError) Unwrap() error { return m.err }
 // asMatchError builds the typed outcome for a --fail-on-match hit.
 func asMatchErrorf(format string, args ...any) error {
 	return matchError{err: fmt.Errorf(format, args...)}
+}
+
+// recordExportFailure folds a failed export into a command's named return, so a
+// requested artifact that was never written cannot be reported as success.
+//
+// It used to be invisible. Every per-format failure printed to stderr and
+// stopped there, so a scan whose -o directory was unwritable exited 0, emitted
+// `scan.finished status=completed` on the --events stream, and left zero bytes
+// behind — three independent success signals for a run that produced no output.
+// A driver reading the machine interface could not tell that apart from a clean
+// scan with no findings.
+//
+// A failure already in flight wins, because the export most likely failed
+// BECAUSE the scan did and the cause is the more useful thing to report. That
+// deliberately includes the --fail-on gate and --fail-on-match, which are
+// completed results whose premise is that the output was written first: both are
+// layered on by the CALLER (withFailOnGate in runScanCmd, outside the defers
+// that run this), so an export failure recorded here is already the `prior` that
+// withFailOnGate yields to. The precedence lives there, in one place; do not
+// re-derive it here.
+//
+// Exit code and machine code come from the coded error, which classifyExitCode
+// maps to ExitError and classifyErrorCode reports as errCodeExportFailed.
+//
+// The exporters print nothing themselves — the root handler renders whatever
+// error a command returns, so printing there too said the same thing twice. That
+// leaves exactly one case where a failure would otherwise vanish: when an
+// earlier error wins and this one is dropped. It is printed here, and only here.
+func recordExportFailure(err *error, exportErr error) {
+	if exportErr == nil {
+		return
+	}
+	if *err != nil {
+		fmt.Fprintf(os.Stderr, "%s the run also failed to write its output: %v\n",
+			terminal.ErrorPrefix(), exportErr)
+		return
+	}
+	*err = codedErrorf(errCodeExportFailed, "%w", exportErr)
 }
 
 // classifyExitCode maps a command's error to its exit code.

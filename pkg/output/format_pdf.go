@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/vigolium/vigolium/internal/scratch"
+
 	"github.com/go-rod/rod/lib/launcher"
 )
 
@@ -15,7 +17,7 @@ func GeneratePDFReport(items []any, outputPath string, meta HTMLReportMeta) erro
 		return fmt.Errorf("Chrome/Chromium not found; install Google Chrome or Chromium to export PDF")
 	}
 
-	tmpDir, err := os.MkdirTemp("", "vigolium-pdf-*")
+	tmpDir, err := scratch.MkdirTemp("pdf-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}

@@ -100,11 +100,9 @@ func NewScopeMatcher(cfg ScopeConfig, targetHosts ...string) *ScopeMatcher {
 		}
 	}
 
-	// Set up origin mode filtering
-	mode := strings.ToLower(strings.TrimSpace(cfg.CLIOriginMode))
-	if mode == "" {
-		mode = DefaultCLIOriginMode
-	}
+	// Set up origin mode filtering. Same resolution the banner and the scans row
+	// report, so what is applied and what is recorded cannot drift.
+	mode := ResolveCLIOriginMode(cfg.CLIOriginMode)
 	m.originMode = mode
 	if mode != "all" && len(targetHosts) > 0 {
 		m.originIndex = buildOriginIndex(parseOriginTargets(targetHosts), mode)

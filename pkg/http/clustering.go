@@ -68,10 +68,17 @@ type CachedResponse struct {
 	StatusCode int
 	Proto      string
 	Header     http.Header
-	body       []byte
-	Request    *http.Request
-	Duration   time.Duration
-	CachedAt   time.Time
+	// Close mirrors http.Response.Close: the server signalled it is closing the
+	// connection rather than keeping it alive. Go strips the hop-by-hop
+	// Connection header from Header before a module ever sees it, so this flag is
+	// the only surviving record of keep-alive state - without it every cache hit
+	// reports a reusable connection, which silently defeats any module gating on
+	// connection reuse (request smuggling, RQP cache poisoning).
+	Close    bool
+	body     []byte
+	Request  *http.Request
+	Duration time.Duration
+	CachedAt time.Time
 }
 
 // Body returns the cached response body bytes (shared, do not modify).
@@ -93,6 +100,7 @@ func snapshotResponse(resp *httpUtils.ResponseChain, duration time.Duration) *Ca
 	if r := resp.Response(); r != nil {
 		cr.StatusCode = r.StatusCode
 		cr.Proto = r.Proto
+		cr.Close = r.Close
 		cr.Header = r.Header.Clone()
 		// resp.BodyBytes() above was already decoded by responsechain.Fill (per the
 		// response's Content-Encoding), so the captured body no longer matches these
@@ -148,6 +156,7 @@ func (c *CachedResponse) ToResponseChain() *httpUtils.ResponseChain {
 		ProtoMajor:    major,
 		ProtoMinor:    minor,
 		Header:        header,
+		Close:         c.Close,
 		Body:          io.NopCloser(bytes.NewReader(bodyBytes)),
 		ContentLength: int64(len(bodyBytes)),
 		Request:       c.Request,
