@@ -25,6 +25,9 @@ type ToolCall struct {
 	ID   string         `json:"id"`
 	Name string         `json:"name"`
 	Args map[string]any `json:"args"`
+	// ArgsError carries stream.ToolCall.ArgsError: the arguments did not
+	// parse, so the tool must not run. Never sent back to a provider.
+	ArgsError string `json:"args_error,omitempty"`
 }
 
 // Message is a single entry in a conversation.
@@ -56,6 +59,13 @@ type Request struct {
 	Tools        []ToolDef
 	SessionID    string
 	ReasoningEff string
+	// MaxTokens caps the model's output for one response. Zero means the
+	// provider's own default. Reasoning tokens count against it on
+	// adaptive-thinking models, so size it for the whole turn, not just the
+	// visible text. Honored by the Anthropic transports (anthropic,
+	// anthropic-compatible, anthropic-vertex); the OpenAI, Codex, Gemini and
+	// claude-cli builders ignore it and use their own ceilings.
+	MaxTokens int
 	// CacheControl, when true, asks the provider to emit cache-hint
 	// markers (Anthropic: cache_control:{type:"ephemeral"}) on the
 	// stable prefix of the request so repeat turns can reuse the

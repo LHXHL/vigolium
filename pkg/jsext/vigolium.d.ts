@@ -228,7 +228,7 @@ declare namespace vigolium {
   }
 
   namespace agent {
-    /** Low-level: full control over model, messages, schema, and temperature. */
+    /** Low-level: full control over model, messages, and schema. */
     function complete(opts: AgentCompleteOpts): AgentCompleteResult;
     /** Mid-level: send a single user prompt, receive a text response. */
     function ask(prompt: string, opts?: AgentAskOpts): string;
@@ -524,6 +524,11 @@ interface AgentCompleteOpts {
   messages: AgentMessage[];
   model?: string;
   max_tokens?: number;
+  /**
+   * Accepted for backward compatibility and IGNORED: current Claude models
+   * reject sampling parameters, and vigolium exposes no per-provider
+   * sampling knob. Use `max_tokens` to bound a response instead.
+   */
   temperature?: number;
   /** JSON Schema string for structured output. When set, content is raw JSON. */
   json_schema?: string;

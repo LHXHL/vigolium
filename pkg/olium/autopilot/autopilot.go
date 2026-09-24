@@ -17,6 +17,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/olium/provider"
 	"github.com/vigolium/vigolium/pkg/olium/sessionlog"
 	"github.com/vigolium/vigolium/pkg/olium/skill"
+	"github.com/vigolium/vigolium/pkg/olium/stream"
 	"github.com/vigolium/vigolium/pkg/olium/tool"
 	"github.com/vigolium/vigolium/pkg/olium/toollog"
 	"github.com/vigolium/vigolium/pkg/olium/vigtool"
@@ -104,11 +105,33 @@ func autopilotEmptyTurnNudge(mode string) string {
 		"re-inspect what's already there, " + findingStep + ") and invoke it now. Do not respond with prose alone."
 }
 
+// cacheKey picks the provider-side prompt-cache key for a run. The run UUID
+// is the right identity: --session-dir can point several runs at one
+// directory (see the flag's own docs), and keying on the directory name
+// would then hand them all the same cache namespace. The directory name is
+// only the fallback for callers that have no UUID.
+func cacheKey(opts Options) string {
+	if id := strings.TrimSpace(opts.AgenticScanUUID); id != "" {
+		return id
+	}
+	return engine.SessionCacheKey(opts.SessionDir)
+}
+
 // Options configures an autopilot run.
 type Options struct {
 	// Provider and model for the underlying olium engine.
 	Provider provider.Provider
 	Model    string
+
+	// MaxTokens caps each response's output tokens (0 = provider default).
+	// Mirrors agent.olium.max_tokens.
+	MaxTokens int
+
+	// ReasoningEffort is the thinking/effort level forwarded on every
+	// request (low|medium|high|xhigh|max; "" = provider default). Autopilot
+	// builds its own engine.Config, so without this the configured
+	// reasoning_effort never reaches the API on an autopilot run.
+	ReasoningEffort string
 
 	// What to audit. Target is the primary URL/hostname. SourcePath (if
 	// non-empty) enables whitebox mode — the agent knows it has
@@ -142,13 +165,13 @@ type Options struct {
 	AgenticScanUUID string
 
 	// Repo is the database handle used for finding persistence and the
-	// run_scan / list_sessions / list_findings tools. *database.Repository
+	// run_native_scan / list_sessions / list_findings tools. *database.Repository
 	// satisfies the FindingSink interface report_finding wants, plus
 	// exposes the wider query surface vigtool needs.
 	Repo *database.Repository
 
 	// ConfigPath, when non-empty, is forwarded to runner.LaunchScan so
-	// run_scan / run_extension load the same vigolium-configs.yaml the
+	// run_native_scan / run_extension load the same vigolium-configs.yaml the
 	// outer CLI / server resolved. Empty falls back to default search.
 	ConfigPath string
 
@@ -166,6 +189,15 @@ type Options struct {
 	// analysis). Autopilot's ceiling is deliberately higher because a real
 	// audit needs many more tool turns than a single phase call.
 	MaxTurns int
+
+	// MaxToolCalls caps how many tool calls the run may dispatch, across
+	// every section. 0 = unlimited.
+	//
+	// This is what --max-commands means to an operator. MaxTurns bounds the
+	// model's turns, and one turn can carry any number of parallel calls, so
+	// the turn ceiling alone bounds neither the work done nor the spend: an
+	// observed run did 54 tool calls in 22 turns.
+	MaxToolCalls int
 
 	// MaxWallTime is the hard ceiling on total run duration. When > 0,
 	// the loop trips a halt with reason "wall-time budget exhausted" once
@@ -280,6 +312,15 @@ type Result struct {
 	CacheReadTokens   int64
 	CacheCreateTokens int64
 
+	// ToolCalls counts every tool the engine dispatched across the run.
+	// Zero on a finished run means the model never used a tool at all -
+	// usually an endpoint that drops `tools` or a model without tool-calling
+	// support, not a target with nothing to test.
+	ToolCalls int
+	// Stalled reports that the run ended because the model kept replying
+	// with text-only turns after the empty-turn nudges were spent.
+	Stalled bool
+
 	// Reentries counts how many times the post-halt coverage verification
 	// loop re-prompted the agent. 0 = no verification re-entry fired (most
 	// runs); ≥1 = the coverage probe surfaced enough new endpoints that
@@ -299,6 +340,15 @@ func skillTag() string { return terminal.PhasePrefix("autopilot") }
 // loaded for the target instead of a wall of names up front. A source missing
 // from the breakdown (count 0) makes a mis-placed or empty skill folder
 // obvious at a glance.
+// logSkillWarnings prints skill-load / skill-validation warnings to the tool
+// log. Warnings never abort a run, so every producer routes through here
+// rather than repeating the prefix-and-format loop.
+func logSkillWarnings(w io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		_, _ = fmt.Fprintf(w, "%s %s\n", skillTag(), warning)
+	}
+}
+
 func logSkillsLoaded(w io.Writer, skills *skill.Registry) {
 	if skills == nil || skills.Len() == 0 {
 		_, _ = fmt.Fprintf(w, "%s loaded %s skills\n", skillTag(), terminal.BoldYellow("0"))
@@ -394,12 +444,6 @@ func selectAutopilotSkills(ctx context.Context, opts Options, all *skill.Registr
 		alwaysOn = config.DefaultAlwaysOnSkills
 	}
 
-	logWarn := func(warnings []string) {
-		for _, w := range warnings {
-			_, _ = fmt.Fprintf(opts.ToolLog, "%s %s\n", skillTag(), w)
-		}
-	}
-
 	// Operator hard override bypasses the LLM pre-flight entirely.
 	if len(opts.SkillNames) > 0 || len(opts.SkillTags) > 0 {
 		sel, warnings := all.Select(skill.SelectOptions{
@@ -407,7 +451,7 @@ func selectAutopilotSkills(ctx context.Context, opts Options, all *skill.Registr
 			ForcedTags: opts.SkillTags,
 			AlwaysOn:   alwaysOn,
 		})
-		logWarn(warnings)
+		logSkillWarnings(opts.ToolLog, warnings)
 		if sel == nil || sel.Len() == 0 {
 			return all
 		}
@@ -419,7 +463,7 @@ func selectAutopilotSkills(ctx context.Context, opts Options, all *skill.Registr
 		return all // pre-flight unavailable/empty — keep everything
 	}
 	sel, warnings := all.Select(skill.SelectOptions{Picks: picks, AlwaysOn: alwaysOn})
-	logWarn(warnings)
+	logSkillWarnings(opts.ToolLog, warnings)
 	if sel == nil || sel.Len() == 0 {
 		return all
 	}
@@ -519,9 +563,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// security workflows belong here). Warnings are surfaced to the
 	// tool log but don't abort the run.
 	allSkills, warnings := olium.LoadSkillsFor(true)
-	for _, w := range warnings {
-		_, _ = fmt.Fprintf(opts.ToolLog, "%s %s\n", skillTag(), w)
-	}
+	logSkillWarnings(opts.ToolLog, warnings)
 	logSkillsLoaded(opts.ToolLog, allSkills)
 
 	// Planner-driven filtering: pick the subset relevant to this target (or
@@ -638,7 +680,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// insertion points, fetch starter payloads, replay mutated requests,
 		// and poll for OAST callbacks. Together these let the agent run a
 		// targeted explore → inspect → craft → send → confirm loop without
-		// having to fire a full run_scan every time.
+		// having to fire a full run_native_scan every time.
 		tools.Register(vigtool.NewQueryRecordsTool(sessCtx))
 		tools.Register(vigtool.NewInspectRecordTool(sessCtx))
 		tools.Register(vigtool.NewSearchBurpItemsTool(sessCtx))
@@ -667,16 +709,25 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		tools.Register(vigtool.NewListModulesTool())
 	}
 	if skills != nil && skills.Len() > 0 {
-		tools.Register(skill.NewLoadTool(skills))
+		tools.Register(skill.NewLoadTool(skills, tools))
+		// load_skill now hands each skill's allowed-tools list to the model,
+		// so a name that no longer resolves points it at a tool that cannot
+		// be called. Warn rather than fail — a stale list is an authoring
+		// slip, not a reason to abandon the run.
+		logSkillWarnings(opts.ToolLog, skill.UnknownAllowedTools(skills, tools))
 	}
 
 	ecfg := engine.Config{
-		Provider: opts.Provider,
-		Tools:    tools,
-		Skills:   skills,
-		Model:    opts.Model,
-		System:   buildSystemPrompt(opts),
-		MaxTurns: opts.MaxTurns,
+		Provider:        opts.Provider,
+		Tools:           tools,
+		Skills:          skills,
+		Model:           opts.Model,
+		System:          buildSystemPrompt(opts),
+		MaxTurns:        opts.MaxTurns,
+		MaxToolCalls:    opts.MaxToolCalls,
+		ReasoningEffort: opts.ReasoningEffort,
+		MaxTokens:       opts.MaxTokens,
+		SessionID:       cacheKey(opts),
 		// Autopilot runs many turns against a stable system prompt and
 		// tool list; prompt caching cuts the repeated prefix tokens by
 		// roughly 90% on Anthropic. No-op on providers that don't
@@ -702,7 +753,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// produce a text-only turn after the first empty query response and
 		// the engine would otherwise exit on the spot ("natural stop"). Two
 		// consecutive nudges give the model a chance to either kick off
-		// run_scan/browser_probe to populate records or admit it's done by
+		// run_native_scan/browser_probe to populate records or admit it's done by
 		// calling halt_scan. Capable models that genuinely have nothing left
 		// to do almost always halt on the first nudge — one round of waste.
 		NudgeOnEmptyToolCalls: 2,
@@ -820,6 +871,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// "why we initially stopped" rather than the re-entry's halt reason.
 	firstHaltReason := ""
 	reentries := 0
+	stalled := false
 	nextPrompt := initial
 
 	// --- Durable-autopilot section-rotation state (non-legacy modes only) ---
@@ -982,10 +1034,22 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				// halt/budget already cancelled this turn.
 				if rotationEnabled && controller != nil && !pendingRotation && iterCtx.Err() == nil {
 					if rotate, reason := controller.ShouldRotate(sectionTurns, sectionIn+sectionOut, progressedThisWindow); rotate {
-						pendingRotation = true
-						rotationReason = reason
-						_, _ = fmt.Fprintf(opts.ToolLog, "[autopilot] section %d rotating (%s, turns=%d) — rebuilding context\n",
-							controller.CurrentSeq(), reason, sectionTurns)
+						// A stall that survives repeated fresh starts is
+						// terminal. Rotation resets the stall counter and
+						// re-enters, so without this a model stuck on a
+						// broken tool contract rotates until the wall clock
+						// ends the run - with nothing to show for the hours.
+						if controller.StalledOut() {
+							haltReason := fmt.Sprintf("no productive tool call across %d consecutive sections (%s) - halting rather than rotating again",
+								controller.MaxStallRotations, reason)
+							halt.SetByBudget(haltReason)
+							_, _ = fmt.Fprintf(opts.ToolLog, "[autopilot] %s\n", haltReason)
+						} else {
+							pendingRotation = true
+							rotationReason = reason
+							_, _ = fmt.Fprintf(opts.ToolLog, "[autopilot] section %d rotating (%s, turns=%d) — rebuilding context\n",
+								controller.CurrentSeq(), reason, sectionTurns)
+						}
 						iterCancel()
 					}
 					progressedThisWindow = false
@@ -1000,7 +1064,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				}
 
 			case engine.EventRunDone:
-				// natural completion — handled by loop exit
+				// The run ended on its own - finished, or stalled on
+				// text-only turns. Last run wins, so a stall followed by a
+				// productive re-entry is not reported.
+				stalled = ev.Stalled
 
 			case engine.EventError:
 				// Drain any pending sentinel tail to stdout so the operator
@@ -1012,6 +1079,31 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 						_, _ = io.WriteString(opts.Out, tail)
 					}
 				}
+				// The turn ceiling (--max-commands) is a budget stop, not a
+				// failure. Treating it as fatal returned early from the whole
+				// run, skipping the section close, the summary, triage and the
+				// transcript copy — so the one terminal state a runaway loop
+				// actually reaches was also the state that produced no report.
+				if ev.BudgetExhausted {
+					reason := fmt.Sprintf("budget exhausted (%s)", ev.Err)
+					halt.SetByBudget(reason)
+					_, _ = fmt.Fprintf(opts.ToolLog, "[%s]\n", reason)
+					iterCancel()
+				}
+
+				// The conversation outgrew the model's context window.
+				// Until history compaction lands this is terminal - history
+				// only grows during a run, so every later turn would fail
+				// the same way - so stop cleanly with a reason the operator
+				// can act on instead of dying with a raw provider 400.
+				if stream.IsContextOverflow(ev.Err) {
+					reason := fmt.Sprintf("context window exhausted after %d turns - the conversation no longer fits the model (%s)",
+						sectionTurns, ev.Err)
+					halt.SetByBudget(reason)
+					_, _ = fmt.Fprintf(opts.ToolLog, "[%s]\n", reason)
+					iterCancel()
+				}
+
 				// If we already tripped the halt signal (budget enforcement,
 				// halt_scan tool, caller cancellation observed earlier) OR a
 				// section rotation is pending, the resulting "context canceled"
@@ -1036,10 +1128,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		return fatalResult, runLoopErr
 	}
 
+	// fatalErr defers a run-ending error until after the finalization tail
+	// below. Returning straight from the loop skipped the section close, the
+	// thinking flush and the populated Result - so the states that end a run
+	// badly (a provider 400, an auth failure) were also the states that
+	// produced no report at all.
+	var fatalErr error
 	for {
-		fatalResult, runLoopErr := runIteration(nextPrompt)
+		_, runLoopErr := runIteration(nextPrompt)
 		if runLoopErr != nil {
-			return fatalResult, runLoopErr
+			fatalErr = runLoopErr
+			break
 		}
 
 		// Durable-autopilot section handoff. When the rotation flag tripped
@@ -1166,7 +1265,27 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		CacheReadTokens:   usage.cacheRead,
 		CacheCreateTokens: usage.cacheCreate,
 		Reentries:         reentries,
-	}, nil
+		ToolCalls:         eng.ToolCallCount(),
+		Stalled:           stalled,
+	}, fatalErr
+}
+
+// Diagnosis explains a run that ended without the model finishing its job,
+// or "" for a run that halted or kept working to the end. A run that never
+// dispatched a tool tested nothing, so its zero findings say nothing about
+// the target; the cause is nearly always the model or the endpoint.
+func (r *Result) Diagnosis() string {
+	if r == nil || r.Halted {
+		return ""
+	}
+	if r.ToolCalls == 0 {
+		return "the model never called a tool, so nothing was tested - check that the model supports tool calling " +
+			"and that the endpoint forwards `tools` (Open WebUI: set Function Calling to \"Native\"; Ollama: use a tool-capable model)"
+	}
+	if r.Stalled {
+		return "the model stopped calling tools and ignored every nudge to continue or halt, so coverage is likely incomplete"
+	}
+	return ""
 }
 
 // formatCoverageGapPrompt builds the user-role message the engine sees on a

@@ -56,6 +56,19 @@ type Event struct {
 	// Live UI / tool-log consumers ignore this field.
 	ToolCalls []stream.ToolCall `json:"tool_calls,omitempty"`
 
+	// Stalled is set on EventRunDone when the run ended because the model
+	// kept answering with text-only turns after every empty-turn nudge was
+	// spent, as opposed to finishing on its own. Consumers use it to report
+	// the stop honestly instead of as a natural completion.
+	Stalled bool `json:"stalled,omitempty"`
+
+	// BudgetExhausted marks an EventError that is a budget ceiling rather
+	// than a failure - the turn or tool-call cap. The caller should finalize
+	// the run (summary, triage, bookkeeping) as it would for any other
+	// budget stop. Carried as a field so consumers don't classify a terminal
+	// reason by string-matching an error this package formatted itself.
+	BudgetExhausted bool `json:"budget_exhausted,omitempty"`
+
 	// Error payload.
 	Err string `json:"error,omitempty"`
 }

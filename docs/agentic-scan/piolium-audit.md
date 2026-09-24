@@ -222,7 +222,7 @@ vigolium agent audit --driver=piolium \
 | `--no-stream` | Don't echo to console. Stream is still persisted to `runtime.log` so `vigolium log <uuid>` works. |
 | `--upload-results` | Upload session bundle to cloud storage after completion (requires storage config). |
 | `--pi-provider` | Override pi's `defaultProvider` for this run (e.g. `vertex-anthropic`, `google-vertex`). Threaded through as `pi --provider <name>`. |
-| `--pi-model` | Override pi's `defaultModel` for this run (e.g. `claude-opus-4-6`, `gemini-3.1-pro`). Threaded through as `pi --model <id>`. |
+| `--pi-model` | Override pi's `defaultModel` for this run (e.g. `claude-opus-5`, `gemini-3.1-pro`). Threaded through as `pi --model <id>`. |
 | `--no-preflight` | Skip the pre-audit pi roundtrip (auth + model availability check). |
 | `--preflight-timeout` | Cap on the preflight call (default 30s). |
 | `--api-key` / `--oauth-token` / `--oauth-cred-file` | Per-run BYOK auth override. See [Audit BYOK](audit-byok.md). For piolium these become env vars on the `pi` subprocess (or, for codex cred files, a temporarily-staged `<pi-agent-dir>/auth.json`). |
@@ -269,7 +269,7 @@ vigolium --scan-uuid 019aa... agent audit --source ./backend
 # Override pi's provider/model for this single run
 vigolium agent audit --driver=piolium --source ./backend \
   --pi-provider vertex-anthropic \
-  --pi-model claude-opus-4-6
+  --pi-model claude-opus-5
 
 vigolium agent audit --driver=piolium --source ./backend \
   --pi-provider google-vertex \
@@ -376,7 +376,7 @@ curl -s -X POST http://localhost:9002/api/agent/run/audit \
     "intensity": "deep",
     "driver": "piolium",
     "pi_provider": "vertex-anthropic",
-    "pi_model": "claude-opus-4-6"
+    "pi_model": "claude-opus-5"
   }' | jq .
 
 # Source from Google Cloud Storage — server downloads + extracts the
@@ -836,7 +836,7 @@ make test-e2e-piolium
 
 # Override the provider/model for the run
 VIGOLIUM_E2E_PI_PROVIDER=vertex-anthropic \
-VIGOLIUM_E2E_PI_MODEL=claude-opus-4-6 \
+VIGOLIUM_E2E_PI_MODEL=claude-opus-5 \
   make test-e2e-piolium
 
 VIGOLIUM_E2E_PI_PROVIDER=google-vertex \

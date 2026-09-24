@@ -83,10 +83,15 @@ func (c *oliumClient) Complete(ctx context.Context, req CompletionRequest) (*Com
 		system = appendJSONInstruction(system, req.JSONSchema)
 	}
 
+	model := firstNonEmpty(strings.TrimSpace(req.Model), c.model)
 	eng := oengine.New(oengine.Config{
 		Provider: c.prov,
-		Model:    c.model,
+		Model:    model,
 		System:   system,
+		// req.MaxTokens reaches the wire via engine.Config; req.Temperature
+		// does not — current Claude models reject sampling parameters, and
+		// olium exposes no per-provider sampling knob. See CompletionRequest.
+		MaxTokens: req.MaxTokens,
 		// No tools registered → the model answers in a single assistant turn;
 		// MaxTurns is left at the engine default since the loop terminates as
 		// soon as there are no pending tool calls.
@@ -109,8 +114,9 @@ func (c *oliumClient) Complete(ctx context.Context, req CompletionRequest) (*Com
 	}
 
 	return &CompletionResponse{
-		Content:   out.String(),
-		Model:     c.model,
+		Content: out.String(),
+		// The model actually used, which a per-request override changes.
+		Model:     model,
 		TokensIn:  tokensIn,
 		TokensOut: tokensOut,
 	}, nil

@@ -27,13 +27,13 @@ The supported providers:
 |---|---|---|---|
 | `openai-compatible` *(shipped default)* | Optional API key | `gemma4:latest` | Defaults to local Ollama at `http://localhost:11434/v1`. |
 | `openai-codex-oauth` | `~/.codex/auth.json` (from `codex login`) | `gpt-5.5` | Reuses a Codex/ChatGPT subscription. |
-| `anthropic-api-key` | `$ANTHROPIC_API_KEY` | `claude-opus-4-7` | Direct Anthropic API billing. |
-| `anthropic-oauth` | `claude setup-token` bearer | `claude-opus-4-7` | Uses your Claude Pro/Max plan. |
+| `anthropic-api-key` | `$ANTHROPIC_API_KEY` | `claude-opus-5` | Direct Anthropic API billing. |
+| `anthropic-oauth` | `claude setup-token` bearer | `claude-opus-5` | Uses your Claude Pro/Max plan. |
 | `openai-api-key` | `$OPENAI_API_KEY` | `gpt-5.5` | Direct OpenAI API billing. |
 | `openai-responses` | `$OPENAI_API_KEY` | provider default | Public OpenAI Responses API. |
-| `anthropic-cli` | `claude` binary on `$PATH` | `claude-opus-4-7` | Shells out to Claude Code (alias: `anthropic-claude-cli`). |
+| `anthropic-cli` | `claude` binary on `$PATH` | `claude-opus-5` | Shells out to Claude Code (alias: `anthropic-claude-cli`). |
 | `anthropic-claude-sdk-bridge` | Claude Code subscription (no key) | bridge default | Claude Code via the Agent SDK (`vigolium-audit bridge` sidecar). |
-| `anthropic-vertex` | GCP service-account JSON | `claude-opus-4-6` | Claude on Vertex AI. |
+| `anthropic-vertex` | GCP service-account JSON | `claude-opus-5` | Claude on Vertex AI. |
 | `google-vertex` | GCP service-account JSON | `gemini-2.5-pro` | Gemini on Vertex AI. |
 | `anthropic-compatible` | optional API key | configured model | Anthropic Messages-compatible custom endpoint. |
 
@@ -210,7 +210,7 @@ export ANTHROPIC_API_KEY=sk-ant-oat01-<your-token> # shell rc; survives reboots
 
 # 2. Point vigolium at the OAuth provider.
 vigolium config set agent.olium.provider anthropic-oauth
-vigolium config set agent.olium.model claude-opus-4-7
+vigolium config set agent.olium.model claude-opus-5
 
 # 3. Verify.
 vigolium ol -p 'what model are you running'
@@ -228,7 +228,7 @@ For users billing through the standard Anthropic API.
 export ANTHROPIC_API_KEY=sk-ant-api03-<your-key>
 
 vigolium config set agent.olium.provider anthropic-api-key
-vigolium config set agent.olium.model claude-opus-4-7
+vigolium config set agent.olium.model claude-opus-5
 
 vigolium ol -p 'what model are you running'
 ```
@@ -241,7 +241,7 @@ If you'd rather have vigolium delegate to the `claude` binary on `$PATH` (so it 
 which claude   # must resolve
 
 vigolium config set agent.olium.provider anthropic-cli
-vigolium config set agent.olium.model claude-opus-4-7
+vigolium config set agent.olium.model claude-opus-5
 ```
 
 This mode is slower than the API-key/OAuth paths (subprocess overhead) but useful when you want a single source of auth across `claude` and `vigolium`.
@@ -315,7 +315,7 @@ vigolium agent audit --driver=piolium --source ~/src/your-app --intensity deep  
 
 # 5. Override pi's provider/model just for this run if you want.
 vigolium agent audit --driver=piolium --source ~/src/your-app \
-  --pi-provider vertex-anthropic --pi-model claude-opus-4-6
+  --pi-provider vertex-anthropic --pi-model claude-opus-5
 ```
 
 Vigolium runs a one-turn preflight against pi before the audit to catch auth/quota errors early. If preflight fails you'll see the upstream error (e.g. `No API key found for google-vertex. Use /login to log into a provider`) and the audit won't start.

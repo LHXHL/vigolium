@@ -7,11 +7,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/vigolium/vigolium/pkg/database"
 )
 
 func TestIsTerminalAgentStatus(t *testing.T) {
@@ -124,10 +129,67 @@ func TestTailSessionLog_SafetyTimeout(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("safety timeout did not fire, elapsed=%v", elapsed)
 	}
-	if !strings.Contains(buf.String(), `"type":"done"`) {
-		t.Errorf("expected done event after safety timeout, got: %q", buf.String())
+	// The run is still going: "done" here froze the Workbench log for the
+	// rest of a 6-12h run. The follower must ask the client to reconnect.
+	if strings.Contains(buf.String(), `"type":"done"`) || !strings.Contains(buf.String(), `"type":"reconnect"`) {
+		t.Errorf("expected reconnect (and no done) after safety timeout, got: %q", buf.String())
 	}
 }
+
+// A drainAgentPipeToSSE stream (autopilot/swarm/query stream:true) must not
+// split a rune across chunk events either.
+func TestDrainAgentPipeToSSE_KeepsRunesWhole(t *testing.T) {
+	pr, pw := io.Pipe()
+	var out bytes.Buffer
+	sink := &sseSink{w: bufio.NewWriter(&out)}
+	go func() {
+		// Write in odd-sized pieces so "│" (3 bytes) straddles writes.
+		payload := []byte(strings.Repeat("│ ok\n", 5000))
+		for i := 0; i < len(payload); i += 4093 {
+			_, _ = pw.Write(payload[i:min(i+4093, len(payload))])
+		}
+		_ = pw.Close()
+	}()
+	drainAgentPipeToSSE(sink, pr, nil)
+	_ = sink.w.Flush()
+	got := sseChunkText(t, out.String())
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Fatal("a rune was split across chunk events")
+	}
+	if got != strings.Repeat("│ ok\n", 5000) {
+		t.Fatalf("payload changed in transit (len %d)", len(got))
+	}
+}
+
+// An idle follower writes heartbeats so a vanished client is noticed.
+func TestTailSessionLog_IdleHeartbeatStopsOnDeadClient(t *testing.T) {
+	// Empty log: nothing to send, so only the heartbeat can find the dead
+	// client.
+	logPath := filepath.Join(t.TempDir(), "runtime.log")
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := heartbeatInterval
+	heartbeatInterval = 50 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = orig })
+	var polls atomic.Int32
+	w := bufio.NewWriterSize(failAfterWriter{}, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tailSessionLog(w, logPath, func() bool { polls.Add(1); return false }, time.Millisecond, time.Hour, false)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("follower kept polling a dead client (%d polls)", polls.Load())
+	}
+}
+
+// failAfterWriter fails every write, like a client that hung up.
+type failAfterWriter struct{}
+
+func (failAfterWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func TestTailSessionLog_StripANSI(t *testing.T) {
 	dir := t.TempDir()
@@ -374,6 +436,132 @@ func TestParseBoolParam(t *testing.T) {
 	for _, v := range falsy {
 		if parseBoolParam(v) {
 			t.Errorf("parseBoolParam(%q) = true, want false", v)
+		}
+	}
+}
+
+// sseChunkText joins the text of every chunk event in an SSE body.
+func sseChunkText(t *testing.T, body string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		var ev sseEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			t.Fatalf("bad SSE frame %q: %v", data, err)
+		}
+		if ev.Type == "chunk" {
+			b.WriteString(ev.Text)
+		}
+	}
+	return b.String()
+}
+
+// A long log must not be replayed from byte 0 on every connect, and runes or
+// escapes cut by the 4 KB read boundary must arrive intact.
+func TestTailSessionLog_StartsNearEndAndKeepsRunesWhole(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "runtime.log")
+	old := strings.Repeat("old line\n", (liveLogBacklogBytes/9)+1000)
+	// "│ " is 3+1 bytes and the color codes are escapes: both straddle 4 KB
+	// boundaries somewhere across this many lines.
+	recent := strings.Repeat("\x1b[2m│ \x1b[0mWait, I'll call them.\n", 20000)
+	if err := os.WriteFile(logPath, []byte(old+recent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+	tailSessionLog(w, logPath, func() bool { return true }, 10*time.Millisecond, time.Second, true)
+	_ = w.Flush()
+
+	got := sseChunkText(t, buf.String())
+	if !strings.HasPrefix(got, "...[earlier output omitted]...") {
+		t.Fatalf("expected omitted marker, got prefix %q", got[:min(60, len(got))])
+	}
+	if len(got) > liveLogBacklogBytes+1024 {
+		t.Fatalf("replayed %d bytes, want about %d", len(got), liveLogBacklogBytes)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) || strings.Contains(got, "\x1b") || strings.Contains(got, "[0m") {
+		t.Fatal("a rune or escape was split across chunks")
+	}
+	if !strings.HasSuffix(got, "│ Wait, I'll call them.\n") {
+		t.Fatalf("tail lost: %q", got[max(0, len(got)-60):])
+	}
+}
+
+func TestIncompleteTailStart(t *testing.T) {
+	cases := map[string]int{
+		"plain":         5,
+		"ab\x1b[2":      2,
+		"ab\x1b[2m":     6,
+		"ab\x1b":        2,
+		"a\xe2\x94":     1, // first two bytes of "│"
+		"a\xe2\x94\x82": 4,
+		"x\x1b[0m\xe2":  5,
+	}
+	for in, want := range cases {
+		if got := incompleteTailStart([]byte(in)); got != want {
+			t.Errorf("incompleteTailStart(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// The Workbench keeps its own copy of the terminal statuses; one missing there
+// (completed_with_errors was) keeps the session detail, run status and log
+// follower polling a finished run forever. Fail the build when they drift.
+func TestWorkbenchTerminalStatusesMatchServer(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "platform", "vigolium-workbench", "src", "api", "types.ts"))
+	if err != nil {
+		t.Skipf("workbench source not present: %v", err)
+	}
+	m := regexp.MustCompile(`(?s)TERMINAL_AGENT_STATUSES[^=]*=\s*new Set\(\[(.*?)\]\)`).FindSubmatch(src)
+	if m == nil {
+		t.Fatal("TERMINAL_AGENT_STATUSES not found in types.ts")
+	}
+	var ui []string
+	for _, q := range regexp.MustCompile(`'([^']+)'`).FindAllSubmatch(m[1], -1) {
+		ui = append(ui, string(q[1]))
+	}
+	server := slices.Clone(database.TerminalAgenticScanStatuses)
+	slices.Sort(ui)
+	slices.Sort(server)
+	if !slices.Equal(ui, server) {
+		t.Fatalf("workbench TERMINAL_AGENT_STATUSES %v != database.TerminalAgenticScanStatuses %v", ui, server)
+	}
+}
+
+// Every status a run can finish with must be terminal, or the log follower
+// spins until its safety cap and retention never deletes the row; and every
+// successful one must be in the completed family.
+func TestCompletedStatusesAreTerminal(t *testing.T) {
+	for _, degraded := range []bool{false, true} {
+		s := database.CompletedAgenticScanStatus(degraded)
+		if !isTerminalAgentStatus(s) || !slices.Contains(database.CompletedAgenticScanStatuses, s) {
+			t.Errorf("CompletedAgenticScanStatus(%v) = %q is not terminal+completed", degraded, s)
+		}
+	}
+	for _, s := range database.CompletedAgenticScanStatuses {
+		if !isTerminalAgentStatus(s) {
+			t.Errorf("%q is completed but not terminal", s)
+		}
+	}
+}
+
+func TestCombinedAuditStatus(t *testing.T) {
+	ok, bad := driverResult{name: "a"}, driverResult{name: "b", runErr: io.EOF}
+	for want, rs := range map[string][]driverResult{
+		"completed":             {ok, ok},
+		"completed_with_errors": {ok, bad},
+		"failed":                {bad, bad},
+	} {
+		if got := combinedAuditStatus(rs); got != want {
+			t.Errorf("combinedAuditStatus = %q, want %q", got, want)
+		}
+		if !isTerminalAgentStatus(want) {
+			t.Errorf("%q is not terminal", want)
 		}
 	}
 }

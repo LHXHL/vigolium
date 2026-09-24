@@ -11,10 +11,11 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Tool categories. Used by the renderer (toollog) to distinguish vigolium-
-// specific tools (run_scan, report_finding, etc.) from generic agent tools
+// specific tools (run_native_scan, report_finding, etc.) from generic agent tools
 // (bash, web_fetch, etc.). New tools default to CategoryBuiltin; only
 // vigolium-domain tools should declare CategoryVigolium.
 const (
@@ -54,7 +55,7 @@ type Tool interface {
 	Schema() map[string]any
 	// Category groups tools for renderer purposes — CategoryBuiltin for
 	// generic agent tools (bash, web_fetch) and CategoryVigolium for
-	// scanner-domain tools (run_scan, report_finding). The toollog uses
+	// scanner-domain tools (run_native_scan, report_finding). The toollog uses
 	// it to color the output arrow.
 	Category() string
 	// IsReadOnly reports whether this tool has no observable side effects
@@ -67,6 +68,41 @@ type Tool interface {
 	IsReadOnly() bool
 	// Execute runs the tool. ctx carries cancellation. onUpdate may be nil.
 	Execute(ctx context.Context, args map[string]any, onUpdate UpdateFn) (Result, error)
+}
+
+// LongRunning is an optional interface a tool implements when the engine's
+// default per-tool deadline is too short for it. A full native scan with
+// discovery and spidering routinely runs past the default 5 minutes; without
+// an override the engine cancels it mid-phase and the model gets a truncated
+// result it can't act on. Returning 0 keeps the engine default.
+//
+// The engine still clamps to the parent context, so this can extend a tool's
+// budget but never outlive the run.
+type LongRunning interface {
+	MaxDuration() time.Duration
+}
+
+// BudgetFrom resolves how long a tool may spend on its work: `want`, or
+// whatever the caller's deadline actually leaves, minus `reserve` for the
+// tool to wrap up and report. Callers that need no wrap-up pass reserve 0.
+//
+// One helper rather than per-tool arithmetic: a tool that ignores the
+// caller's deadline gets cut off mid-work with nothing to show (an
+// unbounded scan), and one that ignores its own budget reports a limit it
+// never had (bash printing the timeout it asked for, not the one it got).
+// Never returns <= 0 while any time remains.
+func BudgetFrom(ctx context.Context, want, reserve time.Duration) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return want
+	}
+	if available := time.Until(deadline) - reserve; available < want {
+		want = available
+	}
+	if want < time.Second {
+		want = time.Second
+	}
+	return want
 }
 
 // Registry holds the set of tools available to an Engine.

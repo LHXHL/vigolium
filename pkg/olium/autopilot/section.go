@@ -23,6 +23,13 @@ import (
 const (
 	DefaultMaxTurnsPerSection = 40
 	DefaultStallTurns         = 12
+	// DefaultMaxStallRotations bounds how many times a run may rotate on a
+	// stall without a single productive turn in between. Rotation alone is
+	// not a stop: it resets the counter and re-enters with a fresh brief, so
+	// a model stuck on a broken tool contract rotates forever, held back
+	// only by the wall clock. Three fresh starts is a fair chance to
+	// recover; past that the run is not going to.
+	DefaultMaxStallRotations = 3
 )
 
 // Rotation-reason strings surfaced on section rows and section_end events.
@@ -66,11 +73,15 @@ type SectionController struct {
 	// Knobs (constructor fills defaults for the zero value).
 	MaxTurnsPerSection  int
 	StallTurns          int
+	MaxStallRotations   int   // 0 = disabled; consecutive stall rotations before halting
 	ContextTokenSoftCap int64 // 0 = disabled; caller passes a fraction of the model ceiling
 
 	seq          int
 	current      *sectionState
 	stallCounter int
+	// stallRotations counts consecutive rotations caused by a stall, with
+	// no productive turn in between. See StalledOut.
+	stallRotations int
 }
 
 // NewSectionController builds a controller with defaults applied for any
@@ -95,6 +106,7 @@ func NewSectionController(sessionDir string, repo *database.Repository, projectU
 		Recorder:            rec,
 		MaxTurnsPerSection:  maxTurns,
 		StallTurns:          stallTurns,
+		MaxStallRotations:   DefaultMaxStallRotations,
 		ContextTokenSoftCap: softCap,
 	}
 }
@@ -178,6 +190,7 @@ func (c *SectionController) BeginSection(ctx context.Context, task, kind string)
 func (c *SectionController) ShouldRotate(turnsThisSection int, tokensThisSection int64, progressed bool) (bool, string) {
 	if progressed {
 		c.stallCounter = 0
+		c.stallRotations = 0
 	} else {
 		c.stallCounter++
 	}
@@ -188,9 +201,17 @@ func (c *SectionController) ShouldRotate(turnsThisSection int, tokensThisSection
 		return true, rotationReasonTokenCap
 	}
 	if c.StallTurns > 0 && c.stallCounter >= c.StallTurns {
+		c.stallRotations++
 		return true, rotationReasonStall
 	}
 	return false, ""
+}
+
+// StalledOut reports whether the run has rotated on a stall
+// MaxStallRotations times with no productive turn in between, meaning a
+// fresh section is not going to help and the run should halt.
+func (c *SectionController) StalledOut() bool {
+	return c.MaxStallRotations > 0 && c.stallRotations >= c.MaxStallRotations
 }
 
 // EndSection closes the current section: updates the row (status, rotation

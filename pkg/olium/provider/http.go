@@ -1,11 +1,15 @@
 package provider
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/net/http2"
+
+	"github.com/vigolium/vigolium/pkg/olium/stream"
 )
 
 // ConnectionResetter is the optional interface providers implement so the
@@ -38,4 +42,62 @@ func newHTTPClient() *http.Client {
 		h2.PingTimeout = 15 * time.Second
 	}
 	return &http.Client{Transport: t}
+}
+
+// maxErrorBodyBytes bounds how much of a non-200 response body is read. The
+// body is diagnostic text destined for an error message; a proxy that
+// answers an error with megabytes of HTML should not be buffered whole.
+const maxErrorBodyBytes = 64 << 10
+
+// readErrorBody reads at most maxErrorBodyBytes from an error response, then
+// drains and closes it so the transport can reuse the connection for the
+// retry that usually follows (see drainAndClose).
+func readErrorBody(body io.ReadCloser) []byte {
+	raw, _ := io.ReadAll(io.LimitReader(body, maxErrorBodyBytes))
+	drainAndClose(body)
+	return raw
+}
+
+// statusErrorFrom builds the typed error for a non-200 response: bounded
+// read, drain, close, and the vendor's own message where it has one. One
+// helper so no driver can get half of that right.
+func statusErrorFrom(label string, resp *http.Response) *stream.StatusError {
+	return stream.NewStatusError(label, resp.StatusCode, []byte(providerErrorMessage(readErrorBody(resp.Body))))
+}
+
+// providerErrorMessage digs the human-readable message out of an error body.
+// OpenAI-compatible servers disagree on the shape: OpenAI nests it under
+// "error", vLLM returns {"object":"error","message":...}, FastAPI gateways
+// return {"detail":...}, and Ollama returns {"error":"..."} as a bare
+// string. Falling back to the raw body keeps anything unrecognized visible.
+func providerErrorMessage(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var shaped struct {
+		Error struct {
+			Code     string  `json:"code"`
+			Type     string  `json:"type"`
+			Message  string  `json:"message"`
+			PlanType string  `json:"plan_type"`
+			ResetsAt float64 `json:"resets_at"`
+		} `json:"error"`
+		Message string `json:"message"` // vLLM
+		Detail  string `json:"detail"`  // FastAPI
+	}
+	if err := json.Unmarshal(raw, &shaped); err == nil {
+		for _, candidate := range []string{shaped.Error.Message, shaped.Message, shaped.Detail} {
+			if candidate != "" {
+				return candidate
+			}
+		}
+	}
+	// Ollama: {"error": "some text"} - error is a string, not an object.
+	var bare struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &bare); err == nil && bare.Error != "" {
+		return bare.Error
+	}
+	return strings.TrimSpace(string(raw))
 }

@@ -534,7 +534,7 @@ func computeReportMeta(ctx context.Context, db *database.DB) (target, duration s
 	var agenticScans []database.AgenticScan
 	err := db.NewSelect().Model(&agenticScans).
 		Column("target_url", "duration_ms", "started_at", "completed_at").
-		Where("status = ?", "completed").
+		Where("status IN (?)", bun.List(database.CompletedAgenticScanStatuses)).
 		OrderExpr("created_at DESC").
 		Limit(2).
 		Scan(ctx)

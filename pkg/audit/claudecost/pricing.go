@@ -19,8 +19,9 @@ type Pricing struct {
 }
 
 // defaultPricing is the fallback when no model-specific entry matches.
-// Picked to mirror Opus 4.x so the estimate degrades gracefully rather
-// than silently reporting $0 for unknown model IDs.
+// Deliberately the most expensive tier we know of (Opus 4.x) so an
+// unrecognised model id over-reports rather than silently reporting $0 or
+// under-billing a run the operator is about to pay for.
 var defaultPricing = Pricing{
 	Model:                   "default",
 	InputUSDPerMTok:         15.00,
@@ -30,37 +31,34 @@ var defaultPricing = Pricing{
 	CacheCreate1hUSDPerMTok: 30.00,
 }
 
+// tier builds a pricing row from the three numbers the price list actually
+// quotes. Cache writes are fixed multiples of the input rate (1.25x for the
+// 5m TTL, 2x for 1h), so deriving them keeps the rule enforced rather than
+// re-typed nine times.
+func tier(model string, in, out, cacheRead float64) Pricing {
+	return Pricing{
+		Model:                   model,
+		InputUSDPerMTok:         in,
+		OutputUSDPerMTok:        out,
+		CacheReadUSDPerMTok:     cacheRead,
+		CacheCreate5mUSDPerMTok: in * 1.25,
+		CacheCreate1hUSDPerMTok: in * 2,
+	}
+}
+
 // pricingTable is a small, prefix-matched list. The first entry whose Model
 // field is a prefix of the actual model string wins. Ordering matters —
-// place more specific prefixes before less specific ones.
+// place more specific prefixes before less specific ones (claude-opus-5-5
+// before claude-opus-5, claude-fable-5-1 before claude-fable-5).
 var pricingTable = []Pricing{
-	{
-		// Claude Opus 4.x family (claude-opus-4-7, claude-opus-4-7[1m], etc.)
-		Model:                   "claude-opus-4",
-		InputUSDPerMTok:         15.00,
-		OutputUSDPerMTok:        75.00,
-		CacheReadUSDPerMTok:     1.50,
-		CacheCreate5mUSDPerMTok: 18.75,
-		CacheCreate1hUSDPerMTok: 30.00,
-	},
-	{
-		// Claude Sonnet 4.x family
-		Model:                   "claude-sonnet-4",
-		InputUSDPerMTok:         3.00,
-		OutputUSDPerMTok:        15.00,
-		CacheReadUSDPerMTok:     0.30,
-		CacheCreate5mUSDPerMTok: 3.75,
-		CacheCreate1hUSDPerMTok: 6.00,
-	},
-	{
-		// Claude Haiku 4.x family
-		Model:                   "claude-haiku-4",
-		InputUSDPerMTok:         1.00,
-		OutputUSDPerMTok:        5.00,
-		CacheReadUSDPerMTok:     0.10,
-		CacheCreate5mUSDPerMTok: 1.25,
-		CacheCreate1hUSDPerMTok: 2.00,
-	},
+	tier("claude-fable-5-1", 10, 50, 0.25), // cheaper cache read than Fable 5
+	tier("claude-fable-5", 10, 50, 1.00),   // also Mythos 5.x, same tier
+	tier("claude-opus-5-5", 4, 20, 0.20),
+	tier("claude-opus-5", 5, 25, 0.50),
+	tier("claude-sonnet-5", 2, 10, 0.20),
+	tier("claude-opus-4", 15, 75, 1.50),  // claude-opus-4-7, -4-7[1m], ...
+	tier("claude-sonnet-4", 3, 15, 0.30), // claude-sonnet-4-6, ...
+	tier("claude-haiku-4", 1, 5, 0.10),   // claude-haiku-4-5, ...
 }
 
 // PricingFor returns the pricing row that best matches the given model

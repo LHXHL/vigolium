@@ -1084,12 +1084,15 @@ curl -N -H 'Accept: text/event-stream' \
 
 On a read error the stream emits `{"type":"error","error":"..."}` and closes.
 
+A new connection starts with the last 512 KB of the log (prefixed by `...[earlier output omitted]...`), not byte 0, so reconnecting is cheap. While the log is idle the server writes an SSE comment (`: ping`) every 15 s to detect clients that went away. If the follower hits its 2 h safety cap while the run is still going, it ends with `{"type":"reconnect"}` instead of `done`: reconnect, and treat the replayed backlog as a replacement for what you have.
+
 **Notes:**
 
 - The endpoint reads `runtime.log` from the session directory recorded on the DB row (`session_dir`). For rows created before that field was persisted, it falls back to `<sessions_dir>/<agentic_scan_uuid>/runtime.log`.
 - All three agent modes (query, autopilot, swarm) write `runtime.log` when started via the REST API, so the endpoint works uniformly across modes.
 - Structured data (findings, attack plan, triage result, final raw output blob) still lives on `GET /api/agent/sessions/:id` — this endpoint is the *unstructured* console stream only.
-- When ANSI stripping is enabled on the SSE path, an escape sequence that happens to span a read boundary may leak through as a cosmetic artifact. The plain-text path is not affected.
+- Chunks never split a UTF-8 character or an ANSI escape across events, so ANSI stripping on the SSE path is exact.
+- Terminal statuses: `completed`, `completed_with_warnings` (the run finished but was degraded - e.g. the audit failed to start, or the model never called a tool; the reason is in `error_message`), `completed_with_errors` (a multi-driver audit where some drivers failed), `failed`, `cancelled`, `timeout`, `error`.
 
 **Error responses:**
 

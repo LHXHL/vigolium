@@ -709,7 +709,7 @@ vigolium agent autopilot -t https://example.com --provider anthropic-api-key --l
 
 **Autopilot tool surface:**
 - `bash` (catastrophic patterns hard-rejected: `rm -rf /`, fork bombs, `dd` to block devices, `mkfs` against real devices), `read_file`, `write_file`, `edit_file`, `ls`, `grep`, `glob`, `web_fetch`
-- Plus autopilot-only tools: `halt_scan`, `report_finding`, `load_skill` (when skills are loaded), and vigtool (`run_scan`, `list_findings`, etc.) when a DB repository is attached
+- Plus autopilot-only tools: `halt_scan`, `report_finding`, `load_skill` (when skills are loaded), and vigtool (`run_native_scan`, `list_findings`, etc.) when a DB repository is attached
 - Per-tool timeout: 5 minutes (configurable via `agent.olium.call_timeout_sec`)
 - Hard cap: 200 findings (soft warning at 50); turn cap from `--intensity`: quick 150, balanced 500 (default), deep 1500
 

@@ -141,3 +141,32 @@ describe('ApiError', () => {
     }
   });
 });
+
+describe('apiGetJSONOrText', () => {
+  it('returns a text/plain body as a string (scan runtime.log tail)', async () => {
+    const { apiGetJSONOrText } = await loadClient();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('line one\nline two\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })));
+    await expect(apiGetJSONOrText('/api/scans/abc/logs')).resolves.toBe('line one\nline two\n');
+  });
+
+  it('still parses JSON bodies', async () => {
+    const { apiGetJSONOrText } = await loadClient();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"logs":[],"total":0}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+    await expect(apiGetJSONOrText('/api/scans/abc/logs')).resolves.toEqual({ logs: [], total: 0 });
+  });
+
+  it('leaves plain apiGet JSON-only', async () => {
+    const { apiGet } = await loadClient();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not json', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    })));
+    await expect(apiGet('/api/x')).rejects.toThrow();
+  });
+});

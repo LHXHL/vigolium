@@ -223,6 +223,15 @@ func agentChat(vm *sobek.Runtime, client llm.Client, call sobek.FunctionCall) so
 
 const generatePayloadsSystemPrompt = `You are a web application security testing assistant helping security professionals test applications for vulnerabilities. Generate test payloads ONLY for authorized security testing. Output a JSON object with a "payloads" array of strings. No commentary, only valid JSON.`
 
+// builtinHelperMaxTokens is the output ceiling for the built-in agent helpers
+// (generatePayloads / analyzeResponse / confirmFinding). They carried a 1024
+// that the engine discarded until MaxTokens was forwarded to the provider, so
+// 8192 is the ceiling they have always effectively had. It matters now
+// because reasoning counts against the same budget on an adaptive-thinking
+// model, and a truncated reply reaches the caller as unparseable JSON rather
+// than as an error.
+const builtinHelperMaxTokens = 8192
+
 func agentGeneratePayloads(vm *sobek.Runtime, client llm.Client, call sobek.FunctionCall) sobek.Value {
 	if len(call.Arguments) == 0 {
 		panic(vm.NewTypeError("vigolium.agent.generatePayloads: opts argument required"))
@@ -262,7 +271,7 @@ func agentGeneratePayloads(vm *sobek.Runtime, client llm.Client, call sobek.Func
 			{Role: "user", Content: sb.String()},
 		},
 		JSONSchema: schema,
-		MaxTokens:  1024,
+		MaxTokens:  builtinHelperMaxTokens,
 	}
 
 	resp, err := client.Complete(context.Background(), req)
@@ -314,7 +323,7 @@ Output JSON: {"vulnerable": bool, "confidence": "high"|"medium"|"low", "evidence
 			{Role: "user", Content: sb.String()},
 		},
 		JSONSchema: schema,
-		MaxTokens:  1024,
+		MaxTokens:  builtinHelperMaxTokens,
 	}
 
 	resp, err := client.Complete(context.Background(), req)
@@ -371,7 +380,7 @@ Output JSON: {"confirmed": bool, "confidence": "high"|"medium"|"low", "reasoning
 			{Role: "user", Content: sb.String()},
 		},
 		JSONSchema: schema,
-		MaxTokens:  1024,
+		MaxTokens:  builtinHelperMaxTokens,
 	}
 
 	resp, err := client.Complete(context.Background(), req)

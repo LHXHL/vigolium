@@ -260,7 +260,15 @@ func (c *ProposeCandidateContext) PersistCandidateFromArgs(ctx context.Context, 
 	}
 	class, _ := args["class"].(string)
 	class = strings.ToLower(strings.TrimSpace(class))
+	// An unrecognized class degrades to "other" rather than losing the
+	// proposal - but say so in the result. The class selects the evidence
+	// gate the verifier applies, so a silent downgrade left the model
+	// believing it had asked for a specific gate while the generic one ran.
+	coercedClass := ""
 	if !validCandidateClass(class) {
+		if class != "" {
+			coercedClass = class
+		}
 		class = "other"
 	}
 	cwe, _ := args["cwe_id"].(string)
@@ -361,6 +369,10 @@ func (c *ProposeCandidateContext) PersistCandidateFromArgs(ctx context.Context, 
 	n := c.Count.Add(1)
 	msg := fmt.Sprintf("Proposed candidate #%d: [%s/%s] %s (hash=%s) — awaiting verification",
 		n, severity, class, title, dedupHash[:12])
+	if coercedClass != "" {
+		msg += fmt.Sprintf("\n\n[note] class %q is not a recognized class, so this was filed as \"other\" and will be graded by the generic evidence gate. Recognized: %s.",
+			coercedClass, strings.Join(candidateClasses, ", "))
+	}
 	if n >= reportFindingSoftWarn {
 		msg += fmt.Sprintf(
 			"\n\n[warning] %d candidates proposed. Past ~%d is unusual — consider whether you're re-proposing the same bug.",

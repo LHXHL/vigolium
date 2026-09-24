@@ -88,7 +88,7 @@ func (*replayRequestTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"record_uuid": map[string]any{
 				"type":        "string",
-				"description": "UUID of the record to base the replay on (from query_records / inspect_record).",
+				"description": "UUID of the record to base the replay on (from query_records / inspect_record). A unique prefix works too - the first 8 characters are enough.",
 			},
 			"mutations": map[string]any{
 				"type": "array",
@@ -153,7 +153,11 @@ func (r *replayRequestTool) Execute(ctx context.Context, args map[string]any, _ 
 		return tool.Result{Content: "replay_request: 'record_uuid' is required", IsError: true}, nil
 	}
 
-	rec, err := r.ctx.Repo.GetRecordByUUID(ctx, uuid)
+	rec, err := r.ctx.Repo.GetRecordByUUIDOrPrefix(ctx, uuid)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// An ambiguous prefix names its candidates; surface that verbatim.
+		return tool.Result{Content: "replay_request: " + err.Error(), IsError: true}, nil
+	}
 	if errors.Is(err, sql.ErrNoRows) || rec == nil {
 		return tool.Result{
 			Content: fmt.Sprintf("replay_request: no record with uuid %q. Use query_records to discover valid UUIDs first — don't guess.", uuid),

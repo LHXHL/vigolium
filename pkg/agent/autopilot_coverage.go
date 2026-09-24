@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -127,6 +128,12 @@ type CoverageProbeResult struct {
 // Blocking. Errors from one phase don't abort the other — coverage is
 // best-effort and a partial result is more useful than aborting the entire
 // pass on a transient HTTP failure.
+// coverageProbePhaseBudget caps each of the probe's two scans. The probe runs
+// after the agent loop has already spent the run's budget, so an unbounded
+// scan here (LaunchParams.ScanMaxDuration's documented foot-gun) would keep
+// working long after the operator expected the run to be over.
+const coverageProbePhaseBudget = 10 * time.Minute
+
 func (p *CoverageProbe) Run(ctx context.Context) (*CoverageProbeResult, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
@@ -139,9 +146,16 @@ func (p *CoverageProbe) Run(ctx context.Context) (*CoverageProbeResult, error) {
 
 	result := &CoverageProbeResult{}
 
+	// A snapshot failure is fatal to the probe, not best-effort like the
+	// scans below. Without `before` the diff reports the entire surface as
+	// new (a spurious gap); without `after` it reports none (a spurious
+	// clean bill of health, which reads exactly like "the model covered
+	// everything" and silently turns --post-halt-verify into a no-op).
+	// Both snapshots run against the DB the scans just wrote, so this also
+	// catches a probe running on an already-cancelled context.
 	before, err := p.snapshotSignatures(ctx, hostname)
 	if err != nil {
-		zap.L().Warn("coverage probe: snapshot-before failed", zap.Error(err))
+		return nil, fmt.Errorf("coverage probe: snapshot before: %w", err)
 	}
 	result.SignaturesBefore = before
 
@@ -156,6 +170,7 @@ func (p *CoverageProbe) Run(ctx context.Context) (*CoverageProbeResult, error) {
 		Repository:      p.Repo,
 		Concurrency:     p.Concurrency,
 		OnlyPhase:       "discovery",
+		ScanMaxDuration: coverageProbePhaseBudget,
 	}
 	if discRes, derr := runner.LaunchScan(ctx, discoveryParams); derr != nil {
 		zap.L().Warn("coverage probe: discovery scan failed",
@@ -170,14 +185,15 @@ func (p *CoverageProbe) Run(ctx context.Context) (*CoverageProbeResult, error) {
 	// prevents the runner from crawling again — we want it to operate on the
 	// surface discovery just turned up.
 	specParams := runner.LaunchParams{
-		Targets:       []string{p.Target},
-		ProjectUUID:   p.ProjectUUID,
-		ConfigPath:    p.ConfigPath,
-		Modules:       []string{"api-spec-ingest"},
-		Repository:    p.Repo,
-		Concurrency:   p.Concurrency,
-		OnlyPhase:     "dynamic-assessment",
-		SkipIngestion: true,
+		Targets:         []string{p.Target},
+		ProjectUUID:     p.ProjectUUID,
+		ConfigPath:      p.ConfigPath,
+		Modules:         []string{"api-spec-ingest"},
+		Repository:      p.Repo,
+		Concurrency:     p.Concurrency,
+		OnlyPhase:       "dynamic-assessment",
+		SkipIngestion:   true,
+		ScanMaxDuration: coverageProbePhaseBudget,
 	}
 	if specRes, serr := runner.LaunchScan(ctx, specParams); serr != nil {
 		zap.L().Warn("coverage probe: spec ingest scan failed",
@@ -189,7 +205,7 @@ func (p *CoverageProbe) Run(ctx context.Context) (*CoverageProbeResult, error) {
 
 	after, err := p.snapshotSignatures(ctx, hostname)
 	if err != nil {
-		zap.L().Warn("coverage probe: snapshot-after failed", zap.Error(err))
+		return nil, fmt.Errorf("coverage probe: snapshot after: %w", err)
 	}
 	result.SignaturesAfter = after
 

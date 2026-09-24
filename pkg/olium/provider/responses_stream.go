@@ -164,25 +164,26 @@ func consumeResponsesSSE(ctx context.Context, body io.ReadCloser, out chan<- str
 			out <- stream.Event{Type: stream.EventError, Err: err.Error()}
 			return
 		}
-		if evt.Data == "" || evt.Data == "[DONE]" {
-			continue
-		}
-
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(evt.Data), &parsed); err != nil {
-			continue
-		}
-		t, _ := parsed["type"].(string)
-		if DebugEnabled() {
-			extra := ""
-			if item, ok := parsed["item"].(map[string]any); ok {
-				if itype, _ := item["type"].(string); itype != "" {
-					extra = " item.type=" + itype
-				}
+		for _, piece := range evt.JSONPayloads() {
+			if piece == "[DONE]" {
+				continue
 			}
-			debugFprintf(os.Stderr, "[%s-sse] %s%s", label, t, extra)
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(piece), &parsed); err != nil {
+				continue
+			}
+			t, _ := parsed["type"].(string)
+			if DebugEnabled() {
+				extra := ""
+				if item, ok := parsed["item"].(map[string]any); ok {
+					if itype, _ := item["type"].(string); itype != "" {
+						extra = " item.type=" + itype
+					}
+				}
+				debugFprintf(os.Stderr, "[%s-sse] %s%s", label, t, extra)
+			}
+			state.handle(t, parsed, out)
 		}
-		state.handle(t, parsed, out)
 	}
 }
 
@@ -212,6 +213,9 @@ func (s *responsesStreamState) handle(t string, ev map[string]any, out chan<- st
 			out <- stream.Event{Type: stream.EventThinkingStart}
 		case "function_call":
 			s.toolID, _ = item["call_id"].(string)
+			if s.toolID == "" {
+				s.toolID = fallbackCallID()
+			}
 			s.toolName, _ = item["name"].(string)
 			s.toolJSON, _ = item["arguments"].(string)
 			out <- stream.Event{Type: stream.EventToolCallStart, ToolCall: &stream.ToolCall{ID: s.toolID, Name: s.toolName}}
@@ -256,14 +260,12 @@ func (s *responsesStreamState) handle(t string, ev map[string]any, out chan<- st
 		case "reasoning":
 			out <- stream.Event{Type: stream.EventThinkingEnd}
 		case "function_call":
-			args := map[string]any{}
-			if s.toolJSON != "" {
-				debugToolArgErr(s.label, json.Unmarshal([]byte(s.toolJSON), &args))
-			}
+			args, argsErr := toolArgs(s.label, s.toolJSON)
 			out <- stream.Event{Type: stream.EventToolCallEnd, ToolCall: &stream.ToolCall{
 				ID:        s.toolID,
 				Name:      s.toolName,
 				Arguments: args,
+				ArgsError: argsErr,
 			}}
 			s.toolID, s.toolName, s.toolJSON = "", "", ""
 		}
@@ -339,21 +341,5 @@ func intField(m map[string]any, key string) int {
 // from a Responses-API endpoint. label prefixes the message with the owning
 // provider's name.
 func responsesErrorFrom(label string, status int, raw []byte) error {
-	var parsed struct {
-		Error struct {
-			Code     string  `json:"code"`
-			Type     string  `json:"type"`
-			Message  string  `json:"message"`
-			PlanType string  `json:"plan_type"`
-			ResetsAt float64 `json:"resets_at"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(raw, &parsed)
-	if parsed.Error.Message != "" {
-		return fmt.Errorf("%s %d: %s", label, status, parsed.Error.Message)
-	}
-	if len(raw) > 0 {
-		return fmt.Errorf("%s %d: %s", label, status, string(raw))
-	}
-	return fmt.Errorf("%s %d", label, status)
+	return stream.NewStatusError(label, status, []byte(providerErrorMessage(raw)))
 }

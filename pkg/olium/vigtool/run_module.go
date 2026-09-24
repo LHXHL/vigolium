@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/olium/tool"
 )
 
-// runModuleCallCap bounds invocations per run. Higher than run_scan because
+// runModuleCallCap bounds invocations per run. Higher than run_native_scan because
 // run_module is the intended primitive for iterative module-focused validation,
 // but still bounded so a misbehaving agent can't fire dozens of full scans.
 const runModuleCallCap = 10
@@ -20,12 +21,13 @@ const runModuleCallCap = 10
 // NewRunModuleTool returns the run_module tool — runs a focused
 // dynamic-assessment scan using a specific module set (by id, tag, or both)
 // against one or more targets. Skips discovery/spidering so the run is
-// narrow and fast compared to run_scan.
+// narrow and fast compared to run_native_scan.
 func NewRunModuleTool(ctx *ScanContext) tool.Tool {
-	return &runModuleTool{ctx: ctx}
+	return &runModuleTool{ctx: ctx, scanTool: scanTool{max: 15 * time.Minute}}
 }
 
 type runModuleTool struct {
+	scanTool
 	ctx   *ScanContext
 	count atomic.Int64
 }
@@ -40,7 +42,7 @@ func (*runModuleTool) Description() string {
 		"-m flag) or 'tags' (e.g. 'xss', 'spring') or both; the union is scanned. By default " +
 		"runs just the dynamic-assessment phase (no discovery, no spidering) — for fresh targets " +
 		"where the project has no records yet, set scope='fresh' to also enable discovery. Use " +
-		"list_modules to find valid ids/tags first. Cheaper than run_scan when you already know " +
+		"list_modules to find valid ids/tags first. Cheaper than run_native_scan when you already know " +
 		"what you want to confirm."
 }
 
@@ -118,12 +120,13 @@ func (r *runModuleTool) Execute(ctx context.Context, args map[string]any, onUpda
 	}
 
 	params := runner.LaunchParams{
-		Targets:     targets,
-		ProjectUUID: r.ctx.ProjectUUID,
-		ConfigPath:  r.ctx.ConfigPath,
-		Modules:     resolved,
-		Repository:  r.ctx.Repo,
-		OnlyPhase:   onlyPhase,
+		Targets:         targets,
+		ProjectUUID:     r.ctx.ProjectUUID,
+		ConfigPath:      r.ctx.ConfigPath,
+		Modules:         resolved,
+		Repository:      r.ctx.Repo,
+		OnlyPhase:       onlyPhase,
+		ScanMaxDuration: r.budget(ctx),
 	}
 
 	if onUpdate != nil {

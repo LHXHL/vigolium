@@ -315,15 +315,15 @@ func printAgentList(settings *config.Settings) error {
 	// provider always appears — a provider added to the runtime without metadata
 	// here still shows up with a generic row rather than silently disappearing.
 	meta := map[string]providerEntry{
-		"openai-codex-oauth":          {Model: "gpt-5.5", Auth: "~/.codex/auth.json", Description: "OpenAI Codex via ChatGPT OAuth (default)"},
-		"openai-api-key":              {Model: "gpt-5.5", Auth: "$OPENAI_API_KEY", Description: "OpenAI chat API via API key"},
-		"openai-responses":            {Model: "gpt-5.5", Auth: "$OPENAI_API_KEY", Description: "OpenAI Responses API (/v1/responses) via API key"},
-		"anthropic-api-key":           {Model: "claude-opus-4-7", Auth: "$ANTHROPIC_API_KEY", Description: "Anthropic Claude via API key"},
-		"anthropic-oauth":             {Model: "claude-opus-4-7", Auth: "$ANTHROPIC_API_KEY", Description: "Anthropic Claude via OAuth bearer token (claude setup-token)"},
-		"anthropic-cli":               {Model: "claude-opus-4-7", Auth: "claude binary in PATH", Description: "Anthropic Claude via local claude CLI (alias: anthropic-claude-cli)"},
+		"openai-codex-oauth":          {Model: olium.DefaultOpenAIModel, Auth: "~/.codex/auth.json", Description: "OpenAI Codex via ChatGPT OAuth (default)"},
+		"openai-api-key":              {Model: olium.DefaultOpenAIModel, Auth: "$OPENAI_API_KEY", Description: "OpenAI chat API via API key"},
+		"openai-responses":            {Model: olium.DefaultOpenAIModel, Auth: "$OPENAI_API_KEY", Description: "OpenAI Responses API (/v1/responses) via API key"},
+		"anthropic-api-key":           {Model: olium.DefaultAnthropicModel, Auth: "$ANTHROPIC_API_KEY", Description: "Anthropic Claude via API key"},
+		"anthropic-oauth":             {Model: olium.DefaultAnthropicModel, Auth: "$ANTHROPIC_API_KEY", Description: "Anthropic Claude via OAuth bearer token (claude setup-token)"},
+		"anthropic-cli":               {Model: olium.DefaultAnthropicModel, Auth: "claude binary in PATH", Description: "Anthropic Claude via local claude CLI (alias: anthropic-claude-cli)"},
 		"anthropic-claude-sdk-bridge": {Model: "(claude default)", Auth: "Claude Code subscription", Description: "Claude Code via Agent SDK (vigolium-audit bridge)"},
-		"anthropic-vertex":            {Model: "claude-opus-4-6", Auth: "GCP service-account JSON", Description: "Anthropic Claude on Google Vertex AI"},
-		"google-vertex":               {Model: "gemini-2.5-pro", Auth: "GCP service-account JSON", Description: "Google Gemini on Vertex AI"},
+		"anthropic-vertex":            {Model: olium.DefaultAnthropicModel, Auth: "GCP service-account JSON", Description: "Anthropic Claude on Google Vertex AI"},
+		"google-vertex":               {Model: olium.DefaultGoogleModel, Auth: "GCP service-account JSON", Description: "Google Gemini on Vertex AI"},
 		"openai-compatible":           {Model: "custom_provider.model_id", Auth: "custom_provider.base_url", Description: "OpenAI-compatible endpoint (local Ollama/vLLM/gateway)"},
 		"anthropic-compatible":        {Model: "custom_provider.model_id", Auth: "custom_provider.base_url", Description: "Anthropic Messages-compatible gateway"},
 	}

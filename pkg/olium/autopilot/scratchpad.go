@@ -385,8 +385,8 @@ func (*updatePlanTool) Schema() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"id":     map[string]any{"type": "string", "description": "Stable short id (e.g. 'auth', 'idor'). Auto-assigned if omitted."},
-						"task":   map[string]any{"type": "string", "description": "What this step accomplishes. Required."},
+						"id":     map[string]any{"type": "string", "description": "Stable short id (e.g. 'auth', 'idor'). Auto-assigned if omitted; reuse an existing id to update that item."},
+						"task":   map[string]any{"type": "string", "description": "What this step accomplishes. Required, except when 'id' names an item already in the plan (its text carries over)."},
 						"status": map[string]any{"type": "string", "enum": []string{planPending, planInProgress, planDone, planDropped}, "description": "Default 'pending'."},
 						"note":   map[string]any{"type": "string", "description": "Optional short progress note (e.g. 'verifier in api/auth.go:88')."},
 					},
@@ -412,6 +412,15 @@ func (t *updatePlanTool) Execute(_ context.Context, args map[string]any, _ tool.
 		return tool.Result{Content: "update_plan: 'plan' must be an array of {task, status?, id?, note?} objects", IsError: true}, nil
 	}
 
+	// Existing task text, by id. The list has replace-semantics, but a model
+	// re-sending a known item to flip its status naturally sends {id, status,
+	// note} and drops the task text it already wrote — rejecting that costs a
+	// whole turn to re-send text we already have. Carry it forward instead.
+	prior := make(map[string]string, len(t.sp.plan))
+	for _, p := range t.sp.plan {
+		prior[p.ID] = p.Task
+	}
+
 	next := make([]PlanItem, 0, len(arr))
 	for i, item := range arr {
 		obj, ok := item.(map[string]any)
@@ -421,7 +430,16 @@ func (t *updatePlanTool) Execute(_ context.Context, args map[string]any, _ tool.
 		task, _ := obj["task"].(string)
 		task = strings.TrimSpace(task)
 		if task == "" {
-			return tool.Result{Content: fmt.Sprintf("update_plan: plan[%d].task is required", i), IsError: true}, nil
+			if id, _ := obj["id"].(string); id != "" {
+				task = prior[strings.TrimSpace(id)]
+			}
+		}
+		if task == "" {
+			return tool.Result{
+				Content: fmt.Sprintf("update_plan: plan[%d].task is required (a one-line description of the step; "+
+					"it may be omitted only when 'id' matches an item already in the plan)", i),
+				IsError: true,
+			}, nil
 		}
 		status, _ := obj["status"].(string)
 		status = strings.TrimSpace(status)

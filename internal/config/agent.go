@@ -63,11 +63,11 @@ type OliumConfig struct {
 	LLMAPIKey           string               `yaml:"llm_api_key"`           // API-key providers (anthropic-api-key, openai-api-key, openai-responses); supports ${ENV_VAR} expansion at load time, falls back to provider-specific env (ANTHROPIC_API_KEY / OPENAI_API_KEY)
 	GoogleCloudProject  string               `yaml:"google_cloud_project"`  // GCP project for Vertex providers; $GOOGLE_CLOUD_PROJECT wins, then YAML, then SA file's project_id
 	GoogleCloudLocation string               `yaml:"google_cloud_location"` // GCP region for Vertex providers; $GOOGLE_CLOUD_LOCATION wins, then YAML, default us-central1
-	ReasoningEffort     string               `yaml:"reasoning_effort"`      // minimal|low|medium|high|xhigh (codex today); default medium
+	ReasoningEffort     string               `yaml:"reasoning_effort"`      // minimal|low|medium|high|xhigh|max; default medium. Forwarded to every provider that has an effort dial (minimal is OpenAI-only, max is Anthropic-only; each provider drops the level it cannot express)
 	SystemPrompt        string               `yaml:"system_prompt"`         // empty = built-in olium prompt
 	CustomProvider      CustomProviderConfig `yaml:"custom_provider"`       // openai-compatible / anthropic-compatible knobs: base_url / model_id / api_key / extra_headers
-	MaxTokens           int                  `yaml:"max_tokens"`            // default 1000000
-	Temperature         float64              `yaml:"temperature"`           // default 0.0
+	MaxTokens           int                  `yaml:"max_tokens"`            // per-response output cap; 0 = provider default (64000 on Anthropic). Honored by the Anthropic transports only; a value above the model's cap is ignored rather than sent
+	Temperature         float64              `yaml:"temperature"`           // accepted but ignored: current Claude models reject sampling params
 	MaxTurns            int                  `yaml:"max_turns"`             // default 32. Applies to short non-autopilot engine uses (swarm phases, source analysis, query). Autopilot ignores this and uses its own pkg/olium/autopilot.DefaultAutopilotMaxTurns (200); override autopilot via --max-commands or the API MaxCommands field.
 	CacheSize           int                  `yaml:"cache_size"`            // LRU entries; default 1024, 0 disables
 	MaxConcurrent       int                  `yaml:"max_concurrent"`        // global cap on simultaneous in-flight provider calls; default 4 (0/unset), negative disables the cap (unbounded)
@@ -537,12 +537,12 @@ func (c *AuditAgentConfig) EffectiveSyncInterval() int {
 // Deprecated: configure agent.olium; this block is ignored.
 type LLMConfig struct {
 	Provider    string  `yaml:"provider"`    // "anthropic" (default) or "openai"
-	Model       string  `yaml:"model"`       // e.g. "claude-sonnet-4-6", "gpt-4o"
+	Model       string  `yaml:"model"`       // e.g. "claude-sonnet-5", "gpt-5.5"
 	APIKey      string  `yaml:"api_key"`     // inline key (prefer api_key_env)
 	APIKeyEnv   string  `yaml:"api_key_env"` // env var name; defaults to ANTHROPIC_API_KEY / OPENAI_API_KEY
 	BaseURL     string  `yaml:"base_url"`    // custom endpoint for OpenAI-compatible providers
 	MaxTokens   int     `yaml:"max_tokens"`  // default: 4096
-	Temperature float64 `yaml:"temperature"` // default: 0.0
+	Temperature float64 `yaml:"temperature"` // accepted but ignored (see llm.CompletionRequest)
 	CacheSize   int     `yaml:"cache_size"`  // LRU entries; default: 256, 0 = disabled
 	CacheTTL    int     `yaml:"cache_ttl"`   // seconds; default: 300
 }
@@ -590,7 +590,7 @@ func (c *AgentConfig) Validate() error {
 func DefaultLLMConfig() LLMConfig {
 	return LLMConfig{
 		Provider:  "anthropic",
-		Model:     "claude-sonnet-4-6",
+		Model:     "claude-sonnet-5",
 		CacheSize: 256,
 		CacheTTL:  300,
 		MaxTokens: 4096,
@@ -625,7 +625,7 @@ func DefaultOliumConfig() OliumConfig {
 		Model:           "",
 		OAuthCredPath:   "~/.codex/auth.json",
 		ReasoningEffort: "medium",
-		MaxTokens:       1000000,
+		MaxTokens:       0, // 0 = the provider's own ceiling; see OliumConfig.MaxTokens
 		Temperature:     0.0,
 		MaxTurns:        32,
 		CacheSize:       1024,

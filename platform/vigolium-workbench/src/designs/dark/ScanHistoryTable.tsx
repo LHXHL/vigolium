@@ -5,6 +5,7 @@ import { RefreshCw, Terminal, Filter, Layers } from 'lucide-react';
 import { useScans, useDeleteScan, useStopScan, usePauseScan, useResumeScan, useScanLogs, useAgentSessions } from '@/api/hooks';
 import { useToast } from '@/contexts/ToastContext';
 import type { ScansQueryParams, Scan, ScanLog, ScanLogsQueryParams, AgentSession, AgentSessionsQueryParams } from '@/api/types';
+import { agentStatusTone, type AgentStatusTone } from '@/api/types';
 import { formatDuration, truncate } from '@/lib/formatters';
 import { formatDate } from '@/lib/formatters';
 
@@ -95,8 +96,12 @@ function ScanActions({ scan, onStop, onDelete, onPause, onResume }: { scan: Scan
   );
 }
 
+const STATUS_TONE_COLOR: Record<AgentStatusTone, string> = {
+  ok: '#7fd962', warn: '#f2c55c', fail: '#ef2f27', running: '#98bc37', idle: '#918175',
+};
+
 function SessionStatusBadge({ status }: { status: string }) {
-  const color = status === 'completed' ? '#7fd962' : status === 'error' ? '#ef2f27' : status === 'running' ? '#98bc37' : '#918175';
+  const color = STATUS_TONE_COLOR[agentStatusTone(status)];
   return <span className="text-xs font-bold" style={{ color }}>{status}</span>;
 }
 

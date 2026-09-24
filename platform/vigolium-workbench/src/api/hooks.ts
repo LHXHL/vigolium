@@ -1,8 +1,7 @@
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import {
-  apiGet, apiPost, apiPut, apiPatch, apiDelete, apiUpload, getProjectUUID, setDemoMode, assertNotDemo, withDemoKey,
-} from './client';
+  apiGet, apiPost, apiPut, apiPatch, apiDelete, apiUpload, getProjectUUID, setDemoMode, assertNotDemo, withDemoKey, apiGetJSONOrText } from './client';
 import { isStaticBuild } from '@/lib/buildMode';
 import { isTerminalAgentStatus } from './types';
 import type {
@@ -475,11 +474,22 @@ export function useResumeScan() {
   });
 }
 
+const SCAN_LOG_TAIL_BYTES = 256 * 1024;
+
 export function useScanLogs(uuid: string | null, params?: ScanLogsQueryParams, isRunning?: boolean) {
   return useQuery({
     queryKey: projectKey('scan-logs', uuid, params),
-    queryFn: () =>
-      apiGet<ScanLogsResponse>(`/api/scans/${uuid}/logs`, params as Record<string, string | number | undefined>),
+    queryFn: async (): Promise<ScanLogsResponse> => {
+      // Scans with a runtime.log get its text tail, not the JSON rows; cap it
+      // at what the panel can usefully show (the server default is 2 MiB,
+      // re-downloaded on every poll).
+      const res = await apiGetJSONOrText<ScanLogsResponse>(`/api/scans/${uuid}/logs`, {
+        ...(params as Record<string, string | number | undefined>),
+        strip: 1,
+        max_bytes: SCAN_LOG_TAIL_BYTES,
+      });
+      return typeof res === 'string' ? { logs: [], total: 0, text: res } : res;
+    },
     enabled: uuid !== null,
     refetchInterval: isRunning ? 5_000 : false,
   });

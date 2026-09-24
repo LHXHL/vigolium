@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -13,19 +14,20 @@ import (
 	"github.com/vigolium/vigolium/pkg/olium/tool"
 )
 
-// runScanCallCap is the per-run hard cap on run_scan invocations. A
+// runScanCallCap is the per-run hard cap on run_native_scan invocations. A
 // well-behaved agent issues 1–3 scans per session; past this the loop is
 // almost always thrashing and burning project budget.
 const runScanCallCap = 5
 
-// NewRunScanTool returns the run_scan tool that launches a vigolium native
+// NewRunScanTool returns the run_native_scan tool that launches a vigolium native
 // scan and blocks until completion. The returned tool shares a counter
 // across calls so the cap is per-run.
 func NewRunScanTool(ctx *ScanContext) tool.Tool {
-	return &runScanTool{ctx: ctx}
+	return &runScanTool{ctx: ctx, scanTool: scanTool{max: 30 * time.Minute}}
 }
 
 type runScanTool struct {
+	scanTool
 	ctx   *ScanContext
 	count atomic.Int64
 }
@@ -170,6 +172,7 @@ func (r *runScanTool) Execute(ctx context.Context, args map[string]any, onUpdate
 		Concurrency:      argsInt(args, "concurrency"),
 		OnlyPhase:        onlyPhase,
 		SkipPhases:       skipPhases,
+		ScanMaxDuration:  r.budget(ctx),
 	}
 
 	if onUpdate != nil {

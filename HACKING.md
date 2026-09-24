@@ -114,7 +114,7 @@ pkg/
     tool/               Tool registry + builtins (bash, read_file, write_file, edit_file, ls, grep, glob, web_fetch)
     skill/              SKILL.md parsing and registry, system-prompt injection
     autopilot/          Autonomous agentic loop entry point
-    vigtool/            Vigolium-integration tools (run_scan, run_extension, sessions, auth_session)
+    vigtool/            Vigolium-integration tools (run_native_scan, run_extension, sessions, auth_session)
     tui/                Bubble Tea interactive TUI
     stream/             SSE / event streaming
     headless.go         Headless one-shot helper
@@ -302,7 +302,7 @@ The agent system has two cooperating layers, plus three foreground source-audit 
   - `provider/` — provider drivers (`anthropic.go`, `codex.go`, `openai.go`, `claudecode.go`, `vertex.go` for `google-vertex` with Anthropic-on-Vertex + Gemini-native routing)
   - `engine/` — turn-based loop (`Engine.Run`, `Engine.Fork` for prompt-cache reuse)
   - `tool/` — tool registry and built-ins (`bash`, `read_file`, `write_file`, `edit_file`, `ls`, `grep`, `glob`, `web_fetch`)
-  - `vigtool/` — vigolium-specific tools (`run_scan`, `run_extension`, session management, auth sessions)
+  - `vigtool/` — vigolium-specific tools (`run_native_scan`, `run_extension`, session management, auth sessions)
   - `skill/` — SKILL.md parsing, registry, system-prompt injection (project-agent / project-claude / user-vigolium / embedded scopes)
   - `autopilot/` — autonomous agentic loop (`Run`, halt conditions, `report_finding` tool, system prompt builder)
   - `tui/` — Bubble Tea interactive TUI; `headless.go` for one-shot non-TUI execution

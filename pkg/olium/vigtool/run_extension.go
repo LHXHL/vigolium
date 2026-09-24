@@ -8,23 +8,25 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/olium/tool"
 )
 
 // runExtensionCallCap is the per-run hard cap on run_extension invocations.
-// Higher than run_scan because iterating on a custom script is the whole
+// Higher than run_native_scan because iterating on a custom script is the whole
 // point of the tool — but still a ceiling so the loop can't run forever.
 const runExtensionCallCap = 20
 
 // NewRunExtensionTool returns the run_extension tool that loads a single
 // JS extension and runs it against one or more targets in isolation.
 func NewRunExtensionTool(ctx *ScanContext) tool.Tool {
-	return &runExtensionTool{ctx: ctx}
+	return &runExtensionTool{ctx: ctx, scanTool: scanTool{max: 15 * time.Minute}}
 }
 
 type runExtensionTool struct {
+	scanTool
 	ctx   *ScanContext
 	count atomic.Int64
 }
@@ -37,7 +39,7 @@ func (*runExtensionTool) Description() string {
 	return "Run a single vigolium JavaScript extension against one or more targets and return its findings. " +
 		"Provide either 'script_path' (path to an existing .js file) or 'script_source' (inline JS code). " +
 		"By default the supplied script runs in isolation — built-in modules are skipped. " +
-		"Use this for ad-hoc custom logic; for full scanner coverage, use run_scan. " +
+		"Use this for ad-hoc custom logic; for full scanner coverage, use run_native_scan. " +
 		"See the 'write-jsext' skill for the vigolium.* JS API surface."
 }
 
@@ -125,13 +127,14 @@ func (r *runExtensionTool) Execute(ctx context.Context, args map[string]any, onU
 
 	includeBuiltins := argsBool(args, "include_builtins")
 	params := runner.LaunchParams{
-		Targets:        targets,
-		ProjectUUID:    r.ctx.ProjectUUID,
-		ConfigPath:     r.ctx.ConfigPath,
-		ExtensionPaths: []string{resolved},
-		ExtensionsOnly: !includeBuiltins,
-		Repository:     r.ctx.Repo,
-		Concurrency:    argsInt(args, "concurrency"),
+		Targets:         targets,
+		ProjectUUID:     r.ctx.ProjectUUID,
+		ConfigPath:      r.ctx.ConfigPath,
+		ExtensionPaths:  []string{resolved},
+		ExtensionsOnly:  !includeBuiltins,
+		Repository:      r.ctx.Repo,
+		Concurrency:     argsInt(args, "concurrency"),
+		ScanMaxDuration: r.budget(ctx),
 	}
 
 	if onUpdate != nil {

@@ -16,6 +16,14 @@ func TestPricingForKnownPrefix(t *testing.T) {
 		{"claude-opus-4-5", "claude-opus-4"},
 		{"claude-sonnet-4-6", "claude-sonnet-4"},
 		{"claude-haiku-4-5-20251001", "claude-haiku-4"},
+		// 5-series rows: ordering matters, since claude-opus-5 is a prefix of
+		// claude-opus-5-5 and the two are priced differently.
+		{"claude-opus-5", "claude-opus-5"},
+		{"claude-opus-5[1m]", "claude-opus-5"},
+		{"claude-opus-5-5", "claude-opus-5-5"},
+		{"claude-sonnet-5", "claude-sonnet-5"},
+		{"claude-fable-5", "claude-fable-5"},
+		{"claude-fable-5-1", "claude-fable-5-1"},
 		{"some-unknown-model", "default"},
 		{"", "default"},
 	}

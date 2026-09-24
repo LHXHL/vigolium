@@ -10,6 +10,7 @@ package vigtool
 
 import (
 	"context"
+	"time"
 
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/olium/tool"
@@ -17,7 +18,7 @@ import (
 )
 
 // ScanContext pins the project/repo/config under which scan-launch tools
-// (run_scan, run_extension) operate. One instance per olium run.
+// (run_native_scan, run_extension) operate. One instance per olium run.
 type ScanContext struct {
 	// Repo is required. Without it, scans run but findings aren't
 	// persisted and the result struct comes back near-empty.
@@ -60,6 +61,13 @@ func (c *ScanContext) attributeChildScan(ctx context.Context, scanUUID string) {
 	if c == nil || c.Repo == nil || c.AgenticScanUUID == "" || scanUUID == "" {
 		return
 	}
+	// Detach from ctx. This runs immediately after a blocking scan, so the
+	// tool's deadline may have just fired — which is exactly when the scan
+	// was longest and the attribution matters most. On the caller's ctx the
+	// write would fail and the findings would exist in the DB but never
+	// appear under `finding --agentic-scan <parent>`.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	if err := c.Repo.AttributeScanToAgenticScan(ctx, scanUUID, c.AgenticScanUUID); err != nil {
 		zap.L().Warn("agentic-scan attribution failed",
 			zap.String("scan_uuid", scanUUID),

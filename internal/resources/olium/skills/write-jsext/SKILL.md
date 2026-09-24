@@ -7,7 +7,7 @@ allowed-tools:
   - write_file
   - edit_file
   - run_extension
-  - run_scan
+  - run_native_scan
 ---
 
 # Writing a Custom Vigolium JS Extension
@@ -265,7 +265,7 @@ Once you have a draft:
 ## When NOT to Write an Extension
 
 If the bug class already has a built-in module (xss, sqli, ssrf, idor,
-etc.), prefer `run_scan` with `modules: ["<id>"]` over a hand-written
+etc.), prefer `run_native_scan` with `modules: ["<id>"]` over a hand-written
 extension. Extensions are for novel logic that doesn't fit the
 generic scanner shape — protocol quirks, app-specific invariants,
 correlation across records, custom OAST flows.

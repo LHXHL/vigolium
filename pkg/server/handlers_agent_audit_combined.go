@@ -454,22 +454,9 @@ func runDriverSSEPump(sseWriter *bufio.Writer, pipeReader *io.PipeReader, driver
 	}
 	go func() {
 		defer close(done)
-		buf := make([]byte, auditMuxBufferSize)
-		clientGone := false
-		for {
-			n, readErr := pipeReader.Read(buf)
-			if n > 0 && !clientGone {
-				if err := writeSSE(sseWriter, sseEvent{Type: "chunk", Driver: driver, Text: string(buf[:n])}); err != nil {
-					clientGone = true
-					if onDisconnect != nil {
-						onDisconnect()
-					}
-				}
-			}
-			if readErr != nil {
-				return
-			}
-		}
+		pumpChunks(pipeReader, auditMuxBufferSize, func(text string) error {
+			return writeSSE(sseWriter, sseEvent{Type: "chunk", Driver: driver, Text: text})
+		}, onDisconnect)
 	}()
 	return done
 }
@@ -561,6 +548,18 @@ func (h *Handlers) buildCombinedDriverCfg(name string, plan combinedAuditPlan, s
 	return agent.AuditAgentConfig{}, fmt.Errorf("unknown driver %q", name)
 }
 
+// combinedAuditStatus is the parent row's status; see
+// database.MultiDriverAgenticScanStatus.
+func combinedAuditStatus(results []driverResult) string {
+	failed := 0
+	for _, r := range results {
+		if r.runErr != nil {
+			failed++
+		}
+	}
+	return database.MultiDriverAgenticScanStatus(failed, len(results))
+}
+
 func (h *Handlers) finalizeCombinedAuditRun(plan combinedAuditPlan, setup combinedAuditSetup, results []driverResult, startedAt time.Time) {
 	if !plan.req.NoDedup && h.repo != nil && plan.projectUUID != "" {
 		dedupCtx, cancel := context.WithTimeout(h.runContext(), agent.AuditDedupTimeout)
@@ -576,7 +575,6 @@ func (h *Handlers) finalizeCombinedAuditRun(plan combinedAuditPlan, setup combin
 	now := time.Now()
 	totalParsed := 0
 	totalSaved := 0
-	status := "completed"
 	var errMsg string
 	for _, r := range results {
 		if r.runner != nil {
@@ -585,13 +583,13 @@ func (h *Handlers) finalizeCombinedAuditRun(plan combinedAuditPlan, setup combin
 			totalSaved += stats.Saved
 		}
 		if r.runErr != nil {
-			status = "completed_with_errors"
 			if errMsg != "" {
 				errMsg += "; "
 			}
 			errMsg += r.name + ": " + r.runErr.Error()
 		}
 	}
+	status := combinedAuditStatus(results)
 
 	h.agentMu.Lock()
 	if memStatus := h.agenticScanStatus[plan.parentUUID]; memStatus != nil {

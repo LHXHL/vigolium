@@ -105,8 +105,7 @@ func (c *Codex) Stream(ctx context.Context, req Request) (<-chan stream.Event, e
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		raw := readErrorBody(resp.Body)
 		return nil, responsesErrorFrom("codex", resp.StatusCode, raw)
 	}
 

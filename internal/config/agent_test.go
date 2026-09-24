@@ -31,8 +31,11 @@ func TestDefaultAgentConfig_Olium(t *testing.T) {
 	if cfg.Olium.MaxTurns != 32 {
 		t.Errorf("expected agent.olium.max_turns=32, got %d", cfg.Olium.MaxTurns)
 	}
-	if cfg.Olium.MaxTokens != 1000000 {
-		t.Errorf("expected agent.olium.max_tokens=1000000, got %d", cfg.Olium.MaxTokens)
+	// 0 means "use the provider's own ceiling". The old 1000000 default was
+	// never sent anywhere; now that the value reaches the wire it would be
+	// above every model's cap.
+	if cfg.Olium.MaxTokens != 0 {
+		t.Errorf("expected agent.olium.max_tokens=0, got %d", cfg.Olium.MaxTokens)
 	}
 	if cfg.Olium.CacheSize != 1024 {
 		t.Errorf("expected agent.olium.cache_size=1024, got %d", cfg.Olium.CacheSize)

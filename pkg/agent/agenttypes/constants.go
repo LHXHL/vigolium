@@ -451,7 +451,7 @@ const (
 )
 
 // Scanning strategy names accepted by runner.LaunchParams.ScanningStrategy
-// and the run_scan tool's enum. Centralized here so preset wiring and tests
+// and the run_native_scan tool's enum. Centralized here so preset wiring and tests
 // stay in lockstep with the runner's expectations.
 const (
 	ScanStrategyLite     = "lite"

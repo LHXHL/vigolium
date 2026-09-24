@@ -1020,7 +1020,7 @@ var agentAuditExamples = FormatExamples(
 	"",
 	"# Override pi's provider/model for the piolium leg (vertex-anthropic)",
 	"vigolium agent audit --source ./backend \\",
-	"  --pi-provider vertex-anthropic --pi-model claude-opus-4-6",
+	"  --pi-provider vertex-anthropic --pi-model claude-opus-5",
 	"",
 	"# Driver-specific mode requires --driver=piolium (or =audit for mock)",
 	"vigolium agent audit --driver piolium --source ./mono-repo --mode longshot \\",

@@ -431,7 +431,7 @@ func (h *Handlers) handleAutopilotSSE(c fiber.Ctx, agenticScanUUID string, req A
 		}
 
 		if status != nil && res.result != nil {
-			status.Status = "completed"
+			status.Status = database.CompletedAgenticScanStatus(res.result.Degraded)
 			status.CompletedAt = &now
 			status.FindingCount = res.result.FindingsCount
 			if res.result.VerifiedFindingCount > 0 {
@@ -448,7 +448,7 @@ func (h *Handlers) handleAutopilotSSE(c fiber.Ctx, agenticScanUUID string, req A
 		// runBackgroundAutopilot.
 		rawOutput := snapshotAgentRawOutput(streamFile, sessionDir)
 		h.enrichAgenticScanRecord(agenticScanUUID, func(run *database.AgenticScan) {
-			run.Status = "completed"
+			run.Status = database.CompletedAgenticScanStatus(res.result != nil && res.result.Degraded)
 			run.CompletedAt = now
 			run.DurationMs = now.Sub(run.StartedAt).Milliseconds()
 			if res.result != nil {
@@ -468,10 +468,14 @@ func (h *Handlers) handleAutopilotSSE(c fiber.Ctx, agenticScanUUID string, req A
 		if clientConnected {
 			_ = sink.send(sseEvent{Type: "done", AutopilotResult: res.result})
 		}
+		var auditFindings, verifiedFindings int
+		if res.result != nil {
+			auditFindings, verifiedFindings = res.result.FindingsCount, res.result.VerifiedFindingCount
+		}
 		zap.L().Info("Autopilot run completed (streaming)",
 			zap.String("agentic_scan_uuid", agenticScanUUID),
-			zap.Int("audit_findings", res.result.FindingsCount),
-			zap.Int("verified_findings", res.result.VerifiedFindingCount))
+			zap.Int("audit_findings", auditFindings),
+			zap.Int("verified_findings", verifiedFindings))
 	})
 }
 
@@ -553,7 +557,7 @@ func (h *Handlers) runBackgroundAutopilot(agenticScanUUID string, req AgentAutop
 		status.Error = runErr.Error()
 		status.CompletedAt = &now
 	} else {
-		status.Status = "completed"
+		status.Status = database.CompletedAgenticScanStatus(result != nil && result.Degraded)
 		status.CompletedAt = &now
 		if result != nil {
 			status.FindingCount = result.FindingsCount
@@ -594,7 +598,7 @@ func (h *Handlers) runBackgroundAutopilot(agenticScanUUID string, req AgentAutop
 	// Persist the completed state plus the artifacts the CLI would have shown
 	// live: a snapshot of runtime.log plus session dir summary fields.
 	h.enrichAgenticScanRecord(agenticScanUUID, func(run *database.AgenticScan) {
-		run.Status = "completed"
+		run.Status = database.CompletedAgenticScanStatus(result != nil && result.Degraded)
 		run.CompletedAt = now
 		run.DurationMs = now.Sub(run.StartedAt).Milliseconds()
 		if result != nil {

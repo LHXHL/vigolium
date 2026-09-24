@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	neturl "net/url"
 	"slices"
@@ -506,6 +507,93 @@ func (r *Repository) GetRecordByUUID(ctx context.Context, uuid string) (*HTTPRec
 		return nil, err
 	}
 	return record, nil
+}
+
+// minRecordUUIDPrefix is the shortest prefix GetRecordByUUIDOrPrefix will
+// expand. Eight hex characters is 4 billion values - unique in any real
+// project - and short enough for a model to copy without mangling it.
+const minRecordUUIDPrefix = 8
+
+// GetRecordByUUIDOrPrefix retrieves a record by full UUID, falling back to
+// expanding an unambiguous prefix. Returns sql.ErrNoRows when nothing
+// matches, and an error naming the candidates when a prefix is ambiguous.
+//
+// Agents read record UUIDs out of a JSON tool result and re-type them into
+// the next call; transcribing 36 hex characters is something models get
+// wrong regularly (an observed run produced one UUID with an invented head
+// and another that spliced two records together). A prefix is short enough
+// to copy reliably.
+//
+// The full-UUID path costs exactly one primary-key lookup, same as before -
+// the prefix scan only runs once that has missed.
+func (r *Repository) GetRecordByUUIDOrPrefix(ctx context.Context, idOrPrefix string) (*HTTPRecord, error) {
+	rec, err := r.GetRecordByUUID(ctx, idOrPrefix)
+	if err == nil || !errors.Is(err, sql.ErrNoRows) || len(idOrPrefix) < minRecordUUIDPrefix {
+		return rec, err
+	}
+	full, resolveErr := r.ResolveRecordUUID(ctx, idOrPrefix)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	return r.GetRecordByUUID(ctx, full)
+}
+
+// ResolveRecordUUID expands a UUID prefix to the full UUID of the one record
+// it matches. Returns sql.ErrNoRows when nothing matches, and an error
+// naming the candidates when the prefix is ambiguous.
+//
+// Implemented as a range scan over the primary key rather than LIKE
+// 'prefix%': the btree is ordered by uuid, so a range is index-seekable
+// under any collation, while LIKE falls back to a full table scan on both
+// SQLite (BINARY collation, no case_sensitive_like pragma) and Postgres (no
+// text_pattern_ops index). http_records is the largest table in the schema
+// and its rows carry request/response bodies, so that scan is not cheap. A
+// range also sidesteps LIKE metacharacters entirely - a prefix containing %
+// or _ is just a prefix here, which matters when the input is a string a
+// model may have mangled.
+func (r *Repository) ResolveRecordUUID(ctx context.Context, prefix string) (string, error) {
+	const maxCandidates = 5
+	upper, ok := prefixUpperBound(prefix)
+	if !ok {
+		return "", sql.ErrNoRows
+	}
+	var uuids []string
+	err := r.db.NewSelect().
+		Model((*HTTPRecord)(nil)).
+		Column("uuid").
+		Where("uuid >= ? AND uuid < ?", prefix, upper).
+		Limit(maxCandidates+1).
+		Scan(ctx, &uuids)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case len(uuids) == 0:
+		return "", sql.ErrNoRows
+	case len(uuids) == 1:
+		return uuids[0], nil
+	}
+	shown := uuids
+	if len(shown) > maxCandidates {
+		shown = shown[:maxCandidates]
+	}
+	return "", fmt.Errorf("uuid prefix %q matches %d records (%s) - use more characters",
+		prefix, len(uuids), strings.Join(shown, ", "))
+}
+
+// prefixUpperBound returns the exclusive upper bound of the range of strings
+// starting with prefix, by incrementing its last byte. ok is false when no
+// such bound exists (empty prefix, or all-0xff), in which case the caller
+// has nothing to scan.
+func prefixUpperBound(prefix string) (string, bool) {
+	b := []byte(prefix)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] < 0xff {
+			b[i]++
+			return string(b[:i+1]), true
+		}
+	}
+	return "", false
 }
 
 // RecordProjectUUID returns just the project a record belongs to, for the

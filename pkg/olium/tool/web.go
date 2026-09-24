@@ -115,7 +115,11 @@ func (*webFetchTool) Schema() map[string]any {
 func (w *webFetchTool) Execute(ctx context.Context, args map[string]any, onUpdate UpdateFn) (Result, error) {
 	url, _ := args["url"].(string)
 	if url == "" {
-		return Result{Content: "error: url is required", IsError: true}, nil
+		return Result{
+			Content: "web_fetch: 'url' is required - an absolute http(s) URL to request, e.g. {\"url\": \"https://host/path\"}. " +
+				"To search traffic vigolium has already captured use query_records; for findings use list_findings.",
+			IsError: true,
+		}, nil
 	}
 	mode, _ := args["mode"].(string)
 	if mode == "" {
@@ -125,8 +129,17 @@ func (w *webFetchTool) Execute(ctx context.Context, args map[string]any, onUpdat
 	switch mode {
 	case "browser":
 		return w.executeBrowser(ctx, url, args)
-	default:
+	case "http":
 		return w.executeHTTP(ctx, url, args)
+	default:
+		// Falling through to plain HTTP for an unrecognized mode is worse
+		// than an error: the model asked for a rendered page, got the raw
+		// document with no warning, and concludes the page has no
+		// JS-rendered content.
+		return Result{
+			Content: fmt.Sprintf("web_fetch: unknown mode %q - use 'http' (raw request) or 'browser' (render with headless Chromium).", mode),
+			IsError: true,
+		}, nil
 	}
 }
 

@@ -167,12 +167,7 @@ func buildInitialPrompt(opts Options) string {
 	b.WriteString(`Plan briefly, then execute. Use tools freely — bash, grep, read_file,
 web_fetch, etc. Report findings as you confirm them. When you've covered the
 scope and have nothing productive left to investigate, call halt_scan with a
-short summary reason.
-
-Before your first tool call this turn, write a 1–3 line plan: what you
-learned from the prior turn (if any), the hypothesis you're testing now,
-and the tool(s) you're about to invoke. Silent tool-only turns are a
-bug — always narrate the intent first.`)
+short summary reason.`)
 
 	if opts.Instruction != "" {
 		b.WriteString("\n\n**Additional instruction:** ")

@@ -34,7 +34,12 @@ func (*searchBurpItemsTool) Label() string    { return "Search live Burp traffic
 func (*searchBurpItemsTool) Category() string { return tool.CategoryVigolium }
 func (*searchBurpItemsTool) IsReadOnly() bool { return true }
 func (*searchBurpItemsTool) Description() string {
-	return "Search the live Burp Target site map or Proxy history through an operator-enabled read-only bridge listener. Returns compact summaries and temporary refs; call inspect_burp_item for raw messages."
+	return "Search the live Burp Target site map or Proxy history through an operator-enabled read-only bridge " +
+		"listener — nothing here modifies Burp state or replays traffic. Filter by host, path substring, " +
+		"method, or status; results come back as compact summaries (method, URL, status, content-type, " +
+		"length) plus a temporary ref for each hit, valid only for this run. Pass a ref to " +
+		"inspect_burp_item for the raw request/response. Returns an error when the operator has not " +
+		"enabled the bridge listener."
 }
 func (*searchBurpItemsTool) Schema() map[string]any {
 	return map[string]any{
@@ -67,7 +72,11 @@ func (*inspectBurpItemTool) Label() string    { return "Inspect live Burp item" 
 func (*inspectBurpItemTool) Category() string { return tool.CategoryVigolium }
 func (*inspectBurpItemTool) IsReadOnly() bool { return true }
 func (*inspectBurpItemTool) Description() string {
-	return "Inspect one temporary ref returned by search_burp_items. Returns size-capped raw request and response text without modifying Burp."
+	return "Fetch the raw request and response text behind one temporary ref returned by search_burp_items. " +
+		"Both bodies are size-capped, so a large response comes back truncated rather than whole. Nothing " +
+		"is sent, re-sent, or changed in Burp. Use this when a summary looks interesting and you need the " +
+		"actual bytes to decide whether it is worth attacking; re-run search_burp_items if a ref has " +
+		"expired."
 }
 func (*inspectBurpItemTool) Schema() map[string]any {
 	return map[string]any{

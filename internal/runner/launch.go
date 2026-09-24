@@ -13,7 +13,7 @@ import (
 )
 
 // LaunchParams configures a one-shot scan started from a library caller.
-// The intended consumer is the olium agent's run_scan / run_extension tools —
+// The intended consumer is the olium agent's run_native_scan / run_extension tools —
 // anything that wants to drive a scan without rebuilding the full CLI option
 // matrix. Only Targets is required; the rest fall back to sensible defaults.
 type LaunchParams struct {
@@ -174,7 +174,14 @@ func LaunchScan(ctx context.Context, params LaunchParams) (*LaunchResult, error)
 		// CompleteScan runs in a defer inside RunNativeScan so by the time
 		// we get here the scan row should reflect final state. A read
 		// failure isn't fatal — surface what we have.
-		if scan, getErr := params.Repository.GetScanByUUID(ctx, opts.ScanUUID); getErr == nil && scan != nil {
+		//
+		// Detach from ctx: when the caller's deadline is what stopped the
+		// scan, a readback on the dead ctx fails and the caller gets a
+		// summary of all zeros — indistinguishable from "scanned fine, found
+		// nothing". The row is already written; read it regardless.
+		readCtx, readCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer readCancel()
+		if scan, getErr := params.Repository.GetScanByUUID(readCtx, opts.ScanUUID); getErr == nil && scan != nil {
 			res.Status = scan.Status
 			res.FindingCount = scan.TotalFindings
 			res.TotalRequests = scan.TotalRequests

@@ -53,7 +53,7 @@ Source: {{.Extra.FindingSource}}
    - **`false_positive`** — you have *positive* evidence the detection was wrong (e.g. response is static content unaffected by payload, payload was reflected in a JSON content-type with no rendering, error message is from an unrelated service, the vulnerability class does not apply to this stack).
    - Do not return `false_positive` solely because the finding "looks weak." Require a concrete reason.
 
-4. **Write tight reasoning.** 3–8 sentences. Cite the specific request/response field that drove your decision. If you re-probed, summarize the probe (method, path, key payload, observed result). Avoid hedging language; commit to a verdict.
+4. **Write tight reasoning.** A human reviewer reads this instead of the transcript, so cite the specific request/response field that drove your decision. If you re-probed, summarize the probe (method, path, key payload, observed result). Avoid hedging language; commit to a verdict.
 
 ## Output Format
 

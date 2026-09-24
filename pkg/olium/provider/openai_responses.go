@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -68,16 +67,14 @@ func (o *OpenAIResponses) Stream(ctx context.Context, req Request) (<-chan strea
 		return nil, fmt.Errorf("openai-responses request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		statusErr := statusErrorFrom("openai-responses", resp)
 		// 401/403 is the most common operator issue — a stale or wrong key, or
 		// a key on an org without Responses API access. Surface a hint so it
 		// doesn't read as a transient network blip and trigger a retry loop.
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			hint := " — OpenAI API key is invalid, expired, or the org lacks Responses API access"
-			return nil, fmt.Errorf("openai-responses %d: %s%s", resp.StatusCode, strings.TrimSpace(string(raw)), hint)
+			return nil, statusErr.WithHint(" — OpenAI API key is invalid, expired, or the org lacks Responses API access")
 		}
-		return nil, responsesErrorFrom("openai-responses", resp.StatusCode, raw)
+		return nil, statusErr
 	}
 
 	out := make(chan stream.Event, 32)

@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v0.5.1] - 2026-09-24
+
+### Added
+
+- Claude 5 family pricing (Fable 5.1/5, Opus 5.5/5, Sonnet 5) in audit cost estimates.
+- `reasoning_effort: max` for Anthropic; the effort level now reaches every provider that supports it.
+- Adaptive thinking enabled for Claude 4.6+ models.
+- Conversation-tail prompt caching on Anthropic, cutting input cost on long agent loops.
+- Skill `allowed-tools` now surfaced to the model, with warnings for tools the run does not expose.
+
+### Fixed
+
+- Parallel tool calls no longer cross-wire their arguments or drop a call (OpenAI chat-completions, id-less gateways).
+- Gemini parallel calls: unique synthesized call ids and tool results folded into one turn.
+- Responses API turns with multiple text blocks no longer lose all but the last.
+- A truncated provider stream is retried instead of committed as a finished turn.
+- Orphaned `tool_use` blocks are auto-answered, avoiding a hard 400 on every re-send path.
+- 429/529 and 5xx provider errors are retried with longer backoff instead of ending the run.
+- Hitting `--max-commands` or context overflow now finalizes the run (summary, triage, transcript) instead of exiting early.
+- Scan tools honor their own duration budget and read back results even after the deadline, no more all-zero summaries.
+- Timeout marker placed at the head of tool output so spilling large results no longer hides it.
+- `bash` tool timeout clamped to the engine deadline; `web_fetch` rejects unknown modes.
+- Tool args accept a bare string/number where a list is expected.
+- Repeated identical tool failures escalate their error text to break retry loops.
+- Autopilot coverage probe scans are time-capped and fail loudly on snapshot errors.
+- Prompt-cache key now uses the run UUID, not the shared session directory.
+- openai-compatible: tool-call-only assistant turns always send `content`, fixing a 400 (`messages.N.content Field required`) from Open WebUI and other strict gateways; nil tool args send `{}`; id-less tool calls get a synthesized id.
+- A model stuck repeating itself (text or `reasoning_content`/`reasoning`) is cut off instead of streaming until the server's output ceiling; reasoning from vLLM/Ollama/OpenRouter now shows as thinking.
+- Autopilot runs where the model stopped calling tools report `stalled` with a warning (and a "never called a tool" diagnosis) instead of "natural stop"; the server marks them degraded.
+- Workbench agent log: no longer yanks to the bottom while you read, reconnects replay only the last 512 KB, finished runs are capped the same way, and split UTF-8/ANSI sequences no longer garble chunks.
+- openai-compatible servers: a 200 JSON body (proxy ignoring `stream:true`, or an error sent with 200), events separated by single newlines, `content` as an array of parts, a final `message` chunk, and tool arguments sent as an object or double-encoded are all read instead of ending as "stream incomplete" or an empty turn; in-stream `{"error":...}` frames surface as errors.
+- openai-compatible `/v1` probe: when the alternate spelling answers with an error (401/429/5xx), it is remembered instead of pinning the dead URL; 405 triggers the probe like 404. Servers that reject `stream_options` get one retry without it.
+- Tool calls whose arguments do not parse (truncated at the output limit, malformed) are no longer run with `{}`; the model gets the parse error and its raw arguments back (all drivers).
+- Engine history: no two user messages in a row after a failed run, no empty assistant message, and a tool call whose name changed after it started is no longer dropped - each broke alternation-strict chat templates (Mistral, Gemma) or strict gateways.
+- Workbench: the scan-detail LOGS panel works again (it could not read the plain-text runtime.log tail), runs ending `completed_with_errors`/`completed_with_warnings` stop polling, degraded runs show amber with their warnings, the live log reconnects past the follower's 2 h cap, and abandoned log followers exit on a heartbeat.
+- Run status is decided in one place (`database.CompletedAgenticScanStatus` / `MultiDriverAgenticScanStatus`): CLI autopilot runs now record `completed_with_warnings` like the server, a CLI multi-driver audit where every driver failed is `failed`, and report metadata and `agent session` listings include degraded runs. Single-newline SSE framing is handled for every provider (Anthropic, Responses, Gemini), and id-less Responses tool calls get a stable id.
+
+### Changed
+
+- Default models bumped: `claude-sonnet-5` for LLM helpers; provider defaults centralized.
+- `agent.olium.max_tokens` defaults to `0` (provider default, 64000 on Anthropic); oversized values are ignored.
+- `temperature` is accepted but ignored, as current Claude models reject sampling params.
+- Docs and prompts now reference the real tool name `run_native_scan`; olium system prompt trimmed.
+
 ## [v0.5.0] - 2026-09-22
 
 A **trustworthy-output** release: two finding families that were entirely false positives now need evidence the transport can actually produce, the hardening advisories move off the default intensity, a run that fails to write a requested artifact exits non-zero, and scans stop leaking temp scratch.

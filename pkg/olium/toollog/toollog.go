@@ -15,7 +15,7 @@
 // of the tool's result so operators can sanity-check what the agent saw
 // without enabling full transcript dumping.
 //
-// Vigolium-domain tools (run_scan, report_finding, halt_scan, etc.) render
+// Vigolium-domain tools (run_native_scan, report_finding, halt_scan, etc.) render
 // the leading arrow and tool name in magenta; generic agent tools (bash,
 // web_fetch, …) stay cyan.
 //
@@ -411,7 +411,7 @@ func arrowAndName(category, toolName string) (string, string) {
 
 // coloredArgs renders a short summary of tool args for the start line with
 // the parameter name colored separately from its value so dense tool calls
-// (run_scan modules=[…] scanning_strategy=deep targets=[…]) stay readable:
+// (run_native_scan modules=[…] scanning_strategy=deep targets=[…]) stay readable:
 // keys are tinted teal, values blue, and the `=` separator muted. Long
 // values are clipped so the line stays readable on long runs.
 func coloredArgs(args map[string]any) string {

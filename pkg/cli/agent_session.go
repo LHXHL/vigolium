@@ -127,6 +127,8 @@ func runAgentSession(cmd *cobra.Command, args []string) error {
 		switch status {
 		case "completed":
 			status = terminal.Green(status)
+		case "completed_with_warnings", "completed_with_errors":
+			status = terminal.Yellow(status)
 		case "running":
 			status = terminal.Cyan(status)
 		case "failed":
@@ -411,6 +413,8 @@ func colorRunStatus(status string) string {
 	switch status {
 	case "completed":
 		return terminal.Green(status)
+	case "completed_with_warnings", "completed_with_errors":
+		return terminal.Yellow(status)
 	case "running":
 		return terminal.Cyan(status)
 	case "failed":

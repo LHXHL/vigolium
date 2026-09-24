@@ -105,3 +105,29 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestArgsArraysAcceptScalars pins the shapes a model actually sends for an
+// array parameter. A bare string used to return nil, which surfaced as
+// "'targets' is required and must be non-empty" for an argument that was
+// right there in the call.
+func TestArgsArraysAcceptScalars(t *testing.T) {
+	if got := argsStringArray(map[string]any{"targets": "https://example.test"}, "targets"); len(got) != 1 || got[0] != "https://example.test" {
+		t.Errorf("bare string: got %v, want one-element list", got)
+	}
+	if got := argsStringArray(map[string]any{"targets": "  "}, "targets"); got != nil {
+		t.Errorf("blank string should stay empty, got %v", got)
+	}
+	if got := argsIntArray(map[string]any{"status": float64(200)}, "status"); len(got) != 1 || got[0] != 200 {
+		t.Errorf("bare number: got %v, want [200]", got)
+	}
+	if got := argsIntArray(map[string]any{"status": "404"}, "status"); len(got) != 1 || got[0] != 404 {
+		t.Errorf("numeric string: got %v, want [404]", got)
+	}
+	if got := argsIntArray(map[string]any{"status": []any{"200", float64(404)}}, "status"); len(got) != 2 || got[0] != 200 || got[1] != 404 {
+		t.Errorf("mixed array: got %v, want [200 404]", got)
+	}
+	// Unchanged for the canonical shapes.
+	if got := argsStringArray(map[string]any{"t": []any{"a", "b"}}, "t"); len(got) != 2 {
+		t.Errorf("[]any regression: %v", got)
+	}
+}

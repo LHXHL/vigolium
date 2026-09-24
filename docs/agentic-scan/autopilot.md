@@ -194,10 +194,10 @@ Supported provider IDs and the credential they consume:
 | Provider           | Default model       | Credential                                                |
 | ------------------ | ------------------- | --------------------------------------------------------- |
 | `openai-codex-oauth`      | `gpt-5.5`           | OAuth cred file (`--oauth-cred` / `agent.olium.oauth_cred_path`) |
-| `anthropic-api-key`| `claude-opus-4-7`   | `--llm-api-key` / `$ANTHROPIC_API_KEY`                    |
-| `anthropic-oauth`     | `claude-opus-4-7`   | Bearer token from `claude setup-token` (`--oauth-token` / `$ANTHROPIC_API_KEY`) |
+| `anthropic-api-key`| `claude-opus-5`   | `--llm-api-key` / `$ANTHROPIC_API_KEY`                    |
+| `anthropic-oauth`     | `claude-opus-5`   | Bearer token from `claude setup-token` (`--oauth-token` / `$ANTHROPIC_API_KEY`) |
 | `openai-api-key`   | `gpt-5.5`           | `--llm-api-key` / `$OPENAI_API_KEY`                       |
-| `anthropic-cli`  | `claude-opus-4-7`   | The `claude` binary on `$PATH`                            |
+| `anthropic-cli`  | `claude-opus-5`   | The `claude` binary on `$PATH`                            |
 
 `EnablePromptCache: true` is set on the engine — providers that support it
 (Anthropic, Claude OAuth) cache the system prompt + tool list across turns,
@@ -228,9 +228,14 @@ The autopilot exits in one of four ways:
 1. **Natural halt** — model calls `halt_scan`. The current turn is allowed to
    finish; the engine then sees no further tool calls on the next turn and
    emits `EventRunDone`. `Result.Halted=true`, `HaltReason` populated.
-2. **Quiet halt** — model finishes a turn with no tool calls and no
-   `halt_scan`. Treated as a natural stop. `Result.Halted=false`,
-   `HaltReason="(natural stop — engine max turns or no more tool calls)"`.
+2. **Quiet halt / stall** - model finishes a turn with no tool calls and no
+   `halt_scan`. The engine nudges it twice (`[empty tool-call turn; nudging
+   model to act or halt (n/2)]`); if it still replies with text only, the run
+   ends with `Result.Halted=false` and `Result.Stalled=true`, and the summary
+   prints "model stopped calling tools". When `Result.ToolCalls==0` the
+   summary also warns that nothing was tested - usually a model without
+   tool-calling support or an endpoint that drops `tools` (Open WebUI: set
+   Function Calling to "Native").
 3. **Max turns** — turn count hits `MaxCommands`. Engine emits an `EventError`;
    autopilot returns a non-nil error.
 4. **Context cancelled** — timeout or SIGINT/SIGTERM. Engine teardown cancels

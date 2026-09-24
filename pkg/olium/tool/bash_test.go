@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBashOutputCapped(t *testing.T) {
@@ -67,5 +68,32 @@ func TestIsCatastrophic(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("IsCatastrophic(%q) = %v, want %v", tc.cmd, got, tc.want)
 		}
+	}
+}
+
+// TestBashTimeoutClampedToDeadline pins that a requested timeout longer than
+// the caller's deadline is reported as the deadline it actually got. The
+// unclamped version told the model a command ran for the requested 10
+// minutes when the engine had killed it at its own 5-minute bound.
+func TestBashTimeoutClampedToDeadline(t *testing.T) {
+	b := NewBash(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	res, err := b.Execute(ctx, map[string]any{
+		"command":         "sleep 30",
+		"timeout_seconds": float64(600),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected a timeout result")
+	}
+	if strings.Contains(res.Content, "10m0s") {
+		t.Errorf("reported the requested timeout rather than the effective one: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "timed out") {
+		t.Errorf("expected a timeout marker, got %q", res.Content)
 	}
 }

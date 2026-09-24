@@ -46,6 +46,11 @@ type OpenAI struct {
 // after construction, like every other provider in this package.
 var settledEndpoints sync.Map // normalized base URL -> the URL that answered
 
+// streamOptionsRejected remembers base URLs whose server refused
+// stream_options (see rejectsStreamOptions), so the retry without it is paid
+// once per process. Process-wide for the same reason as settledEndpoints.
+var streamOptionsRejected sync.Map // normalized base URL -> struct{}
+
 // NewOpenAI constructs the canonical OpenAI provider pointed at
 // api.openai.com. The key is wrapped in a formatter-safe secret so a stray
 // `%v` on the provider can't leak it.
@@ -187,9 +192,15 @@ type oaiFunctionCall struct {
 	Arguments string `json:"arguments"` // JSON-encoded as a string
 }
 
+// Content is deliberately NOT omitempty: an assistant turn that carries only
+// tool calls has empty text, and strict openai-compatible gateways (Open
+// WebUI's OpenAIChatCompletionForm, several pydantic-validated proxies)
+// reject a message with no `content` key outright ("messages.N.content Field
+// required"), failing the run on the first tool-using turn. OpenAI itself
+// accepts "" there.
 type oaiMessage struct {
 	Role       string        `json:"role"`
-	Content    string        `json:"content,omitempty"`
+	Content    string        `json:"content"`
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 	Name       string        `json:"name,omitempty"`
@@ -222,13 +233,12 @@ type oaiStreamOptions struct {
 // other backend in this package.
 func (a *OpenAI) Stream(ctx context.Context, req Request) (<-chan stream.Event, error) {
 	body := buildOpenAIRequest(req)
-	payload, err := json.Marshal(body)
+	if _, rejected := streamOptionsRejected.Load(a.baseURL); rejected {
+		body.StreamOptions = nil
+	}
+	payload, err := a.encode(body)
 	if err != nil {
 		return nil, err
-	}
-	payload, err = mergeExtraBody(payload, a.extraBody)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", a.Name(), err)
 	}
 
 	endpoint, alt := a.endpoints()
@@ -239,16 +249,23 @@ func (a *OpenAI) Stream(ctx context.Context, req Request) (<-chan stream.Event, 
 	}
 	// A 404 means the endpoint isn't where the base_url said, which for an
 	// openai-compatible server is nearly always the /v1 question altOpenAIBaseURL
-	// describes. Try the other spelling once and keep whichever answered.
+	// describes. Try the other spelling once and keep whichever answered. 405
+	// counts too: a catch-all static mount (Open WebUI) refuses a POST to an
+	// unknown path with 405 rather than 404.
 	var alsoTried string
-	if resp.StatusCode == http.StatusNotFound && alt != "" {
+	if isMissingEndpoint(resp.StatusCode) && alt != "" {
 		altResp, altErr := a.post(ctx, alt, payload)
 		switch {
 		case altErr != nil:
 			// The alternate is our guess, not the operator's URL; report the
 			// 404 they can act on rather than a connection error against a URL
 			// they never typed. resp still holds it.
-		case altResp.StatusCode == http.StatusOK:
+		case !isMissingEndpoint(altResp.StatusCode):
+			// The alternate exists - it answered, even if with an error (bad
+			// key, unknown model, rate limit, 5xx). Settle on it and report
+			// its answer. Settling on the configured URL here pinned the
+			// dead spelling for the whole process, so every later request,
+			// including the retry of a 429, 404'd with no fallback.
 			drainAndClose(resp.Body)
 			a.settle(alt)
 			resp = altResp
@@ -262,18 +279,79 @@ func (a *OpenAI) Stream(ctx context.Context, req Request) (<-chan stream.Event, 
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		raw := readErrorBody(resp.Body)
+		if body.StreamOptions != nil && rejectsStreamOptions(resp.StatusCode, raw) {
+			if retry := a.retryWithoutStreamOptions(ctx, body); retry != nil {
+				return a.streamBody(ctx, retry), nil
+			}
+		}
 		err := responsesErrorFrom(a.Name(), resp.StatusCode, raw)
 		if alsoTried != "" {
 			return nil, fmt.Errorf("%w (also tried %s)", err, alsoTried)
 		}
 		return nil, err
 	}
+	return a.streamBody(ctx, resp), nil
+}
 
+// encode marshals the typed request and overlays extra_body.
+func (a *OpenAI) encode(body oaiRequest) ([]byte, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	payload, err = mergeExtraBody(payload, a.extraBody)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", a.Name(), err)
+	}
+	return payload, nil
+}
+
+// retryWithoutStreamOptions resends body without stream_options after a
+// strict validator (Mistral, older Groq/LM Studio/Azure) rejected the field,
+// which otherwise fails every request. On success the server is remembered
+// so later requests omit it up front; the cost is losing streamed usage
+// counts. Returns nil when the retry did not produce a 200.
+func (a *OpenAI) retryWithoutStreamOptions(ctx context.Context, body oaiRequest) *http.Response {
+	body.StreamOptions = nil
+	payload, err := a.encode(body)
+	if err != nil {
+		return nil
+	}
+	endpoint, _ := a.endpoints()
+	resp, err := a.post(ctx, endpoint, payload)
+	if err != nil {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		drainAndClose(resp.Body)
+		return nil
+	}
+	streamOptionsRejected.Store(a.baseURL, struct{}{})
+	return resp
+}
+
+// isMissingEndpoint reports whether a status means "nothing is mounted at
+// this path" for the /v1 alternate-spelling probe.
+func isMissingEndpoint(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusMethodNotAllowed
+}
+
+// streamBody starts consuming a 200 response: as SSE normally, or as a
+// single JSON completion when the server ignored stream:true.
+func (a *OpenAI) streamBody(ctx context.Context, resp *http.Response) <-chan stream.Event {
 	out := make(chan stream.Event, 32)
-	go a.consumeSSE(ctx, resp.Body, out)
-	return out, nil
+	// Sniff inside the goroutine: the first byte of a stream can take minutes
+	// (model load, long prompt processing), and Stream must not block on it.
+	go func() {
+		body, isJSON := sniffJSONBody(resp.Body)
+		if isJSON {
+			a.consumeJSON(body, out)
+			return
+		}
+		a.consumeSSE(ctx, body, out)
+	}()
+	return out
 }
 
 // endpoints returns the URL to POST to and the one-shot alternate spelling to
@@ -343,7 +421,13 @@ func buildOpenAIRequest(req Request) oaiRequest {
 			if len(m.ToolCalls) > 0 {
 				msg.ToolCalls = make([]oaiToolCall, 0, len(m.ToolCalls))
 				for _, tc := range m.ToolCalls {
-					argsJSON, _ := json.Marshal(tc.Args)
+					// A nil map marshals to "null", which is not a JSON
+					// object; strict servers reject it as arguments.
+					args := tc.Args
+					if args == nil {
+						args = map[string]any{}
+					}
+					argsJSON, _ := json.Marshal(args)
 					msg.ToolCalls = append(msg.ToolCalls, oaiToolCall{
 						ID:   tc.ID,
 						Type: "function",
@@ -402,7 +486,7 @@ func (a *OpenAI) consumeSSE(ctx context.Context, body io.ReadCloser, out chan<- 
 	defer close(out)
 
 	reader := stream.NewSSEReader(body)
-	state := &openaiState{tools: map[int]*openaiToolBuf{}}
+	state := &openaiState{}
 
 	for {
 		select {
@@ -412,6 +496,15 @@ func (a *OpenAI) consumeSSE(ctx context.Context, body io.ReadCloser, out chan<- 
 		}
 		evt, err := reader.Next()
 		if errors.Is(err, io.EOF) {
+			// EOF is only a clean end if the stream actually terminated: the
+			// `[DONE]` sentinel, or a finish_reason (which sentinel-less
+			// gateways still send). Without either, the connection was cut
+			// mid-response - flushing here would hand the engine a truncated
+			// turn that looks finished.
+			if !state.terminated {
+				out <- stream.Event{Type: stream.EventError, Err: stream.ErrStreamIncomplete.Error()}
+				return
+			}
 			state.flushFinal(out)
 			return
 		}
@@ -419,41 +512,109 @@ func (a *OpenAI) consumeSSE(ctx context.Context, body io.ReadCloser, out chan<- 
 			out <- stream.Event{Type: stream.EventError, Err: err.Error()}
 			return
 		}
-		data := strings.TrimSpace(evt.Data)
-		if data == "" {
-			continue
-		}
 		// Provider tracing (--debug / VIGOLIUM_OLIUM_DEBUG): echo each raw SSE
 		// chunk, including the terminating [DONE], so stream-shape issues with
 		// arbitrary openai-compatible backends are diagnosable.
-		if DebugEnabled() {
-			debugFprintf(os.Stderr, "[%s-sse] %s", a.Name(), data)
+		if DebugEnabled() && evt.Data != "" {
+			debugFprintf(os.Stderr, "[%s-sse] %s", a.Name(), evt.Data)
 		}
-		if data == "[DONE]" {
-			state.flushFinal(out)
-			return
+		for _, piece := range evt.JSONPayloads() {
+			if piece == "[DONE]" {
+				state.flushFinal(out)
+				return
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(piece), &parsed); err != nil {
+				continue
+			}
+			// Gateways that fail after the 200 is on the wire (Ollama, Open
+			// WebUI, LiteLLM, vLLM) report it as an SSE frame carrying
+			// `error` and then close the stream. Ignoring it turned a model
+			// crash or a context overflow into an empty text-only turn that
+			// the engine nudged and then reported as the model giving up.
+			if msg, ok := inStreamError(parsed, []byte(piece)); ok {
+				out <- stream.Event{Type: stream.EventError, Err: fmt.Sprintf("%s: upstream error in stream: %s", a.Name(), msg)}
+				return
+			}
+			state.handle(parsed, out)
 		}
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(data), &parsed); err != nil {
-			continue
-		}
-		state.handle(parsed, out)
 	}
 }
 
+// consumeJSON handles a 200 whose body is one JSON document instead of an
+// event stream: a proxy or Open WebUI pipe that ignores stream:true, or a
+// gateway reporting an error with status 200. Read as SSE it produced no
+// events and ended as "stream incomplete", retried five times, with the
+// real body never shown.
+func (a *OpenAI) consumeJSON(body io.ReadCloser, out chan<- stream.Event) {
+	defer func() { _ = body.Close() }()
+	defer close(out)
+	parsed, raw, err := readJSONCompletion(body)
+	if err != nil {
+		out <- stream.Event{Type: stream.EventError, Err: fmt.Sprintf("%s: %v", a.Name(), err)}
+		return
+	}
+	if DebugEnabled() {
+		debugFprintf(os.Stderr, "[%s-json] %s", a.Name(), raw)
+	}
+	if msg, ok := inStreamError(parsed, raw); ok {
+		out <- stream.Event{Type: stream.EventError, Err: fmt.Sprintf("%s: upstream error: %s", a.Name(), msg)}
+		return
+	}
+	state := &openaiState{}
+	state.handle(parsed, out)
+	state.flushFinal(out)
+}
+
+// inStreamError reports whether a decoded frame (or 200 JSON body) is an
+// upstream failure rather than a chunk - it carries `error` and no `choices` -
+// and returns its message, decoded like any other provider error body.
+func inStreamError(frame map[string]any, raw []byte) (string, bool) {
+	if e, ok := frame["error"]; !ok || e == nil {
+		return "", false
+	}
+	if _, hasChoices := frame["choices"]; hasChoices {
+		return "", false
+	}
+	return providerErrorMessage(raw), true
+}
+
 type openaiToolBuf struct {
+	index     int
 	id        string
 	name      string
 	arguments strings.Builder
 	emitted   bool // true once we've sent EventToolCallStart
+	// fallbackID stands in for id when the server sent none; see
+	// fallbackCallID. Kept apart from id so resolveToolBuf's id matching
+	// still treats the call as id-less.
+	fallbackID string
+}
+
+// callID is the id to report for this call: the server's, or the fallback
+// assigned when the call started.
+func (b *openaiToolBuf) callID() string {
+	if b.id != "" {
+		return b.id
+	}
+	return b.fallbackID
 }
 
 type openaiState struct {
-	textOpen   bool
-	tools      map[int]*openaiToolBuf
+	textOpen bool
+	// calls holds every tool-call accumulator in arrival order, which is
+	// also the order flushFinal commits them in (an index-less stream has no
+	// usable index order). Each carries the `index` it was opened with.
+	calls      []*openaiToolBuf
 	stopReason stream.StopReason
 	usage      stream.Usage
 	finalSent  bool
+	// terminated records that the stream reached a real end - `[DONE]` or a
+	// finish_reason - as opposed to the connection simply closing.
+	terminated bool
+	// sawDelta records that the stream used `delta` chunks, so a trailing
+	// `message` echo of the same content is ignored.
+	sawDelta bool
 }
 
 func (s *openaiState) handle(ev map[string]any, out chan<- stream.Event) {
@@ -472,7 +633,17 @@ func (s *openaiState) handle(ev map[string]any, out chan<- stream.Event) {
 		if choice == nil {
 			continue
 		}
-		if delta, ok := choice["delta"].(map[string]any); ok {
+		delta, ok := choice["delta"].(map[string]any)
+		if ok {
+			s.sawDelta = true
+		} else if !s.sawDelta {
+			// A non-streamed `message` (a final chunk some servers send in
+			// place of deltas, or a whole non-SSE completion). Only when no
+			// delta arrived, or the text would be committed twice.
+			delta, ok = choice["message"].(map[string]any)
+		}
+		if ok {
+			normalizeOpenAIDelta(delta)
 			s.applyDelta(delta, out)
 		}
 		if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
@@ -481,7 +652,53 @@ func (s *openaiState) handle(ev map[string]any, out chan<- stream.Event) {
 	}
 }
 
+// resolveToolBuf picks the accumulator a tool_calls delta belongs to.
+// `index` is the documented key, but some OpenAI-compatible gateways omit it
+// - every call then reads as index 0, so parallel calls would merge into one
+// bucket with the last name and both argument strings concatenated. An id,
+// or a different function name arriving after this call's arguments have
+// started, therefore opens a new call instead of overwriting the old one.
+func (s *openaiState) resolveToolBuf(id, name string, idx int) *openaiToolBuf {
+	if id != "" {
+		for _, b := range s.calls {
+			if b.id == id {
+				return b
+			}
+		}
+	}
+	// Newest call at this index wins; later id-less deltas follow it.
+	for i := len(s.calls) - 1; i >= 0; i-- {
+		buf := s.calls[i]
+		if buf.index != idx {
+			continue
+		}
+		if id != "" && buf.id != "" {
+			break // a different call, already ruled out by the id scan above
+		}
+		// A name change once arguments have started means a second call. A
+		// name change before them may just be a name delivered in chunks.
+		if name != "" && buf.name != "" && name != buf.name && buf.arguments.Len() > 0 {
+			break
+		}
+		return buf
+	}
+	buf := &openaiToolBuf{index: idx}
+	s.calls = append(s.calls, buf)
+	return buf
+}
+
 func (s *openaiState) applyDelta(delta map[string]any, out chan<- stream.Event) {
+	// Reasoning models behind openai-compatible servers stream their chain of
+	// thought outside `content`: vLLM, SGLang and DeepSeek use
+	// `reasoning_content`, Ollama and OpenRouter use `reasoning`. Dropping it
+	// left a long silent gap in the UI and hid a model stuck looping in its
+	// reasoning from the engine's repetition guard. It is never sent back.
+	for _, key := range []string{"reasoning_content", "reasoning"} {
+		if r, ok := delta[key].(string); ok && r != "" {
+			out <- stream.Event{Type: stream.EventThinkingDelta, Delta: r}
+			break
+		}
+	}
 	if content, ok := delta["content"].(string); ok && content != "" {
 		if !s.textOpen {
 			out <- stream.Event{Type: stream.EventTextStart}
@@ -496,31 +713,32 @@ func (s *openaiState) applyDelta(delta map[string]any, out chan<- stream.Event) 
 		if tc == nil {
 			continue
 		}
-		idx := intField(tc, "index")
-		buf, ok := s.tools[idx]
-		if !ok {
-			buf = &openaiToolBuf{}
-			s.tools[idx] = buf
-		}
-		if id, _ := tc["id"].(string); id != "" {
+		id, _ := tc["id"].(string)
+		fn, _ := tc["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		args, _ := fn["arguments"].(string)
+
+		buf := s.resolveToolBuf(id, name, intField(tc, "index"))
+		if id != "" {
 			buf.id = id
 		}
-		if fn, ok := tc["function"].(map[string]any); ok {
-			if name, _ := fn["name"].(string); name != "" {
-				buf.name = name
-			}
-			if args, _ := fn["arguments"].(string); args != "" {
-				buf.arguments.WriteString(args)
-				if buf.emitted {
-					out <- stream.Event{Type: stream.EventToolCallDelta, Delta: args}
-				}
+		if name != "" {
+			buf.name = name
+		}
+		if args != "" {
+			buf.arguments.WriteString(args)
+			if buf.emitted {
+				out <- stream.Event{Type: stream.EventToolCallDelta, Delta: args}
 			}
 		}
 		// Emit start once we have at least the function name.
 		if !buf.emitted && buf.name != "" {
+			if buf.id == "" {
+				buf.fallbackID = fallbackCallID()
+			}
 			out <- stream.Event{
 				Type:     stream.EventToolCallStart,
-				ToolCall: &stream.ToolCall{ID: buf.id, Name: buf.name},
+				ToolCall: &stream.ToolCall{ID: buf.callID(), Name: buf.name},
 			}
 			buf.emitted = true
 			// Backfill any arguments that arrived alongside the name in the
@@ -534,6 +752,7 @@ func (s *openaiState) applyDelta(delta map[string]any, out chan<- stream.Event) 
 }
 
 func (s *openaiState) setStop(reason string) {
+	s.terminated = true
 	switch reason {
 	case "stop":
 		s.stopReason = stream.StopReasonStop
@@ -560,28 +779,19 @@ func (s *openaiState) flushFinal(out chan<- stream.Event) {
 		out <- stream.Event{Type: stream.EventTextEnd}
 		s.textOpen = false
 	}
-	// Iterate by index order so multi-tool turns commit deterministically.
-	max := -1
-	for i := range s.tools {
-		if i > max {
-			max = i
-		}
-	}
-	for i := 0; i <= max; i++ {
-		buf, ok := s.tools[i]
-		if !ok || !buf.emitted {
+	// Commit in arrival order so multi-tool turns are deterministic.
+	for _, buf := range s.calls {
+		if !buf.emitted {
 			continue
 		}
-		args := map[string]any{}
-		if buf.arguments.Len() > 0 {
-			debugToolArgErr("openai", json.Unmarshal([]byte(buf.arguments.String()), &args))
-		}
+		args, argsErr := toolArgs("openai", buf.arguments.String())
 		out <- stream.Event{
 			Type: stream.EventToolCallEnd,
 			ToolCall: &stream.ToolCall{
-				ID:        buf.id,
+				ID:        buf.callID(),
 				Name:      buf.name,
 				Arguments: args,
+				ArgsError: argsErr,
 			},
 		}
 	}

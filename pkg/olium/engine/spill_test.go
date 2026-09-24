@@ -1,12 +1,15 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vigolium/vigolium/pkg/olium/provider"
+	"github.com/vigolium/vigolium/pkg/olium/tool"
 )
 
 func TestSpillToolResultWritesFullPayload(t *testing.T) {
@@ -123,5 +126,44 @@ func TestShrinkToolResultPassesThroughSmallContent(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(dir, "tool-results", "*"))
 	if len(matches) != 0 {
 		t.Errorf("expected no spill files for small content, got %v", matches)
+	}
+}
+
+// TestCutShortMarkerSurvivesSpill pins the interaction between the
+// timed-out marker and the spill excerpt: a tool that produces a lot of
+// output and then hits its deadline must still reach the model carrying the
+// timeout notice. The marker used to be appended to the tail, which is
+// precisely the part spillToolResult drops.
+func TestCutShortMarkerSurvivesSpill(t *testing.T) {
+	toolCtx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-toolCtx.Done()
+
+	res := annotateCutShort(
+		tool.Result{Content: strings.Repeat("X", 100_000)},
+		context.Background(), toolCtx, 5*time.Minute,
+	)
+	if !res.IsError {
+		t.Error("a timed-out result must be flagged IsError")
+	}
+
+	shrunk, ok := spillToolResult(t.TempDir(), provider.ToolCall{ID: "c1", Name: "run_module"}, res.Content, 16*1024)
+	if !ok {
+		t.Fatal("spill should succeed")
+	}
+	if !strings.Contains(shrunk, "timed out after 5m0s") {
+		t.Errorf("timeout marker lost through spill; excerpt starts:\n%s", shrunk[:200])
+	}
+}
+
+// TestCutShortMarksParentCancellation covers Ctrl-C / run-budget exhaustion,
+// where the per-tool deadline never fires but the result is still partial.
+func TestCutShortMarksParentCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res := annotateCutShort(tool.Result{Content: "partial"}, parent, context.Background(), 5*time.Minute)
+	if !res.IsError || !strings.Contains(res.Content, "run cancelled") {
+		t.Errorf("cancelled run should be marked, got IsError=%v content=%q", res.IsError, res.Content)
 	}
 }

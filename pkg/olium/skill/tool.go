@@ -13,11 +13,37 @@ import (
 // embedded skills (whose "paths" point inside the binary's embed FS and
 // aren't reachable via read_file) and desirable for disk-based skills
 // (the registry already parsed them once at startup).
-func NewLoadTool(reg *Registry) tool.Tool {
-	return &loadTool{reg: reg}
+// tools, when non-nil, filters each skill's advisory allowed-tools line down
+// to the tools this run actually exposes, so a stale frontmatter entry never
+// points the model at something it cannot call.
+func NewLoadTool(reg *Registry, tools *tool.Registry) tool.Tool {
+	return &loadTool{reg: reg, tools: tools}
 }
 
-type loadTool struct{ reg *Registry }
+type loadTool struct {
+	reg   *Registry
+	tools *tool.Registry
+}
+
+// callableTools returns the subset of want that this run exposes, preserving
+// the author's order. A nil registry means "tools unknown" — pass through
+// rather than silently blanking the line.
+func (t *loadTool) callableTools(want []string) []string {
+	if t.tools == nil {
+		return want
+	}
+	known := make(map[string]struct{})
+	for _, reg := range t.tools.List() {
+		known[reg.Name()] = struct{}{}
+	}
+	out := make([]string, 0, len(want))
+	for _, name := range want {
+		if _, ok := known[strings.TrimSpace(name)]; ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 func (*loadTool) Name() string     { return "load_skill" }
 func (*loadTool) Label() string    { return "Load skill" }
@@ -71,15 +97,24 @@ func (t *loadTool) Execute(_ context.Context, args map[string]any, _ tool.Update
 	if !strings.HasSuffix(s.Body, "\n") {
 		b.WriteByte('\n')
 	}
+	// A skill's allowed-tools frontmatter used to be parsed and then dropped,
+	// so an author's declaration reached nobody. Surfacing it with the body
+	// makes it steer the tools the model reaches for while it follows the
+	// skill; it is guidance, not a sandbox — the registry is not narrowed.
+	expects := t.callableTools(s.AllowedTools)
+	if len(expects) > 0 {
+		fmt.Fprintf(&b, "\nTools this skill expects to use: %s. Anything outside that list is probably a sign you have left the skill's workflow.\n", strings.Join(expects, ", "))
+	}
 	b.WriteString("</skill>")
-	return tool.Result{
-		Content: b.String(),
-		Details: map[string]any{
-			"skill":  s.Name,
-			"source": string(s.Source),
-			"bytes":  len(s.Body),
-		},
-	}, nil
+	details := map[string]any{
+		"skill":  s.Name,
+		"source": string(s.Source),
+		"bytes":  len(s.Body),
+	}
+	if len(expects) > 0 {
+		details["allowed_tools"] = expects
+	}
+	return tool.Result{Content: b.String(), Details: details}, nil
 }
 
 func skillNames(reg *Registry) []string {

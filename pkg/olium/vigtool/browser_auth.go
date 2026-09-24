@@ -56,7 +56,7 @@ func (*browserAuthTool) IsReadOnly() bool { return false }
 func (*browserAuthTool) Description() string {
 	return "Drive a stateful headless browser session via agent-browser to complete an auth flow " +
 		"and persist the resulting cookies as an auth session — so the rest of the toolchain " +
-		"(replay_request, run_scan, list_auth_sessions / auth_session_lookup) can act as a " +
+		"(replay_request, run_native_scan, list_auth_sessions / auth_session_lookup) can act as a " +
 		"logged-in user without re-implementing the login. Pass `steps` as an ordered array " +
 		"of {action,...} entries; the typical flow is open → snapshot → fill (using @ref ids " +
 		"from the snapshot) → click → wait → snapshot → call again with save_as. The browser " +

@@ -32,7 +32,7 @@ func (r *Repository) CreateAgenticScan(ctx context.Context, run *AgenticScan) er
 }
 
 // AttributeScanToAgenticScan links a native scan (and every finding it
-// produced) to the agentic scan that launched it. The run_scan tool calls this
+// produced) to the agentic scan that launched it. The run_native_scan tool calls this
 // after a blocking LaunchScan returns, so the child scan's findings show up
 // under `finding --agentic-scan <parent>` — which filters on
 // finding.agentic_scan_uuid directly rather than joining through scans. Both
@@ -203,10 +203,48 @@ func (r *Repository) GetChildAgenticScans(ctx context.Context, parentUUID string
 var TerminalAgenticScanStatuses = []string{
 	"completed",
 	"completed_with_errors",
+	"completed_with_warnings",
 	"failed",
 	"cancelled",
 	"timeout",
 	"error",
+}
+
+// CompletedAgenticScanStatuses are the terminal statuses of a run that ran to
+// the end: cleanly, degraded, or with some drivers failed. Code that means
+// "finished successfully" should match this set, not the literal "completed",
+// or degraded runs silently drop out.
+var CompletedAgenticScanStatuses = []string{
+	"completed",
+	"completed_with_warnings",
+	"completed_with_errors",
+}
+
+// CompletedAgenticScanStatus is the status of a run that finished without an
+// error. A degraded run (audit failed to start, discovery failed, the model
+// never called a tool...) is "completed_with_warnings", so it can be told
+// apart from a clean pass. Every writer - server handlers, the CLI finalizers,
+// the swarm runner - goes through here so one outcome gets one status.
+func CompletedAgenticScanStatus(degraded bool) string {
+	if degraded {
+		return "completed_with_warnings"
+	}
+	return "completed"
+}
+
+// MultiDriverAgenticScanStatus is the parent status of a run made of several
+// drivers: "failed" when every driver failed (nothing ran, so
+// "completed_with_errors" overstated it), "completed_with_errors" when some
+// did, "completed" otherwise.
+func MultiDriverAgenticScanStatus(failed, total int) string {
+	switch {
+	case failed == 0:
+		return "completed"
+	case failed >= total:
+		return "failed"
+	default:
+		return "completed_with_errors"
+	}
 }
 
 // DeleteOldAgenticScans removes finished agent runs older than the given

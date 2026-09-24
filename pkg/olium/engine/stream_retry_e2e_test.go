@@ -180,14 +180,14 @@ func TestEngine_GivesUpAfterMaxAttempts(t *testing.T) {
 		RetryInitialBackoff: fastRetryBackoff,
 	})
 
-	// Backoff is fastRetryBackoff×{1,2,4} ≈ 70ms total; 3s ceiling.
+	// Backoff is fastRetryBackoff×{1,2,4,8} — tens of ms total; 3s ceiling.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	got := drainEngine(t, eng.Run(ctx, "test"), 3*time.Second)
 
-	if n := attempts.Load(); n != 3 {
-		t.Errorf("expected 3 provider attempts (maxAttempts), got %d", n)
+	if n := attempts.Load(); int(n) != maxStreamAttempts {
+		t.Errorf("expected %d provider attempts (maxStreamAttempts), got %d", maxStreamAttempts, n)
 	}
 	if got.errMsg == "" {
 		t.Error("expected EventError after exhausting retries, got none")

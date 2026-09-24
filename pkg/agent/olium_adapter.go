@@ -142,7 +142,7 @@ func buildOliumEngineWithSpec(cfg *config.OliumConfig, spec SessionSpec) (*oengi
 		reg := tool.NewRegistry()
 		tool.RegisterBuiltins(reg, nil)
 		if spec.Skills != nil && spec.Skills.Len() > 0 {
-			reg.Register(skill.NewLoadTool(spec.Skills))
+			reg.Register(skill.NewLoadTool(spec.Skills, reg))
 		}
 		// Read+replay subset: lets a skill-driven agent confirm/escalate against
 		// prior scan records (explore → inspect → craft → replay). Stateless

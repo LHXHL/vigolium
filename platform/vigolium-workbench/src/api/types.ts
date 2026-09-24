@@ -630,10 +630,31 @@ export interface AgentRunListResponse {
   total: number;
 }
 
-// Mirrors `pkg/server/handlers_agent.go:isTerminalAgentStatus` — keep in sync.
+// Mirrors `database.TerminalAgenticScanStatuses` (pkg/database/
+// repository_agentic_scans.go). A status missing here keeps every poll for
+// that run alive forever; TestWorkbenchTerminalStatusesMatchServer in
+// pkg/server fails when the two lists drift.
 export const TERMINAL_AGENT_STATUSES: ReadonlySet<string> = new Set([
-  'completed', 'failed', 'cancelled', 'timeout', 'error',
+  'completed', 'completed_with_errors', 'completed_with_warnings', 'failed', 'cancelled', 'timeout', 'error',
 ]);
+
+/** A run that finished but was degraded (a driver failed, the model never
+ *  called a tool...). Shown amber with its warnings, not as a clean pass. */
+export function isWarningAgentStatus(status?: string): boolean {
+  return status === 'completed_with_errors' || status === 'completed_with_warnings';
+}
+
+/** How an agent run status should read at a glance; each theme maps a tone
+ *  to its own color. */
+export type AgentStatusTone = 'ok' | 'warn' | 'fail' | 'running' | 'idle';
+
+export function agentStatusTone(status?: string): AgentStatusTone {
+  if (status === 'completed') return 'ok';
+  if (isWarningAgentStatus(status)) return 'warn';
+  if (status === 'failed' || status === 'error') return 'fail';
+  if (status === 'running') return 'running';
+  return 'idle';
+}
 
 export function isTerminalAgentStatus(status?: string): boolean {
   return !!status && TERMINAL_AGENT_STATUSES.has(status);
@@ -657,6 +678,8 @@ export interface AgentSession {
   started_at: string;
   completed_at?: string;
   created_at: string;
+  /** Failure reason, or the joined warnings of a degraded run. */
+  error_message?: string;
 }
 
 // GET /api/agent/sessions/:id
@@ -753,6 +776,9 @@ export interface ScanLogsResponse {
   project_uuid?: string;
   logs: ScanLog[];
   total: number;
+  /** Raw runtime.log tail, set when the server answers with the log file
+   *  (every scan that has one) rather than structured DB rows. */
+  text?: string;
 }
 
 export interface ScanLogsQueryParams {

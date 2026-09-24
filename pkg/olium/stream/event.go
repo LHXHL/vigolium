@@ -42,6 +42,11 @@ type ToolCall struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
+	// ArgsError is set when the model's arguments did not parse as a JSON
+	// object (truncated at the output limit, malformed, concatenated).
+	// Arguments is then empty and the engine returns this to the model
+	// instead of running the tool with no arguments.
+	ArgsError string `json:"args_error,omitempty"`
 }
 
 // Event is the single value type emitted on a provider stream. Fields are

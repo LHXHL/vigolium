@@ -27,12 +27,12 @@ hand-rolling probes for systematic vulnerability classes:
   automatically; do NOT also emit FINDING blocks for them.
 - `vigolium scan-request -i request.txt` — run native modules against a
   raw HTTP request file you've written.
-- `vigolium finding list --project-uuid <uuid>` — list findings already
+- `vigolium finding -j --project-uuid <uuid>` — list findings already
   in the DB (your own + scanner-generated). Useful before reporting to
   avoid duplicates.
-- `vigolium traffic list --project-uuid <uuid>` — inspect captured HTTP
+- `vigolium traffic -j --project-uuid <uuid>` — inspect captured HTTP
   records the pre-scan or prior runs left behind.
-- `vigolium module --list` — see available scanner modules and their
+- `vigolium module ls` — see available scanner modules and their
   tags.
 
 For ad-hoc probing, use WebFetch for single GET-style requests or Bash +

@@ -22,7 +22,7 @@ A turn-based, tool-using LLM agent written in Go. Components:
 | **TUI** | `pkg/olium/tui/` | Bubble Tea front-end (inline scrollback, slash commands, live tool cards) |
 | **Headless** | `pkg/olium/headless.go` | Non-interactive single-prompt runner for scripts and smoke tests |
 | **Autopilot** | `pkg/olium/autopilot/` | Long-running autonomous scan loop on top of the engine, with budgets, halt signal, and `report_finding` |
-| **Vigolium tools** | `pkg/olium/vigtool/` | Scanner-aware extensions: `run_scan`, `run_extension`, `list_sessions`, `list_findings`, `auth_session_lookup`, etc. |
+| **Vigolium tools** | `pkg/olium/vigtool/` | Scanner-aware extensions: `run_native_scan`, `run_extension`, `list_sessions`, `list_findings`, `auth_session_lookup`, etc. |
 | **Auth** | `pkg/olium/auth/` | Codex OAuth credential loading and refresh (handles `~/.codex/auth.json`) |
 
 Entry points:
@@ -145,7 +145,7 @@ When the engine runs under `vigolium agent autopilot`, the registry also gets:
 - `halt_scan` — model-driven exit. Sets a halt signal; the run loop exits after the current turn.
 - `report_finding` — persists a finding to the database (title, severity, description, remediation, CWE, evidence, confidence, status). Soft-warns at 50 calls, hard-caps at 200.
 - `load_skill` — fetch a skill body by name (registered whenever the skill registry is non-empty).
-- **Vigtool** — `run_scan`, `run_extension`, `list_sessions`, `get_session`, `list_findings`, `list_auth_sessions`, `auth_session_lookup` (registered when `Repo` is non-nil).
+- **Vigtool** — `run_native_scan`, `run_extension`, `list_sessions`, `get_session`, `list_findings`, `list_auth_sessions`, `auth_session_lookup` (registered when `Repo` is non-nil).
 
 ---
 

@@ -141,6 +141,12 @@ func (*bashTool) Execute(ctx context.Context, args map[string]any, onUpdate Upda
 	if v, ok := args["timeout_seconds"].(float64); ok && v > 0 {
 		timeout = time.Duration(v) * time.Second
 	}
+	// Clamp to whatever the caller's deadline actually allows. The engine
+	// bounds every tool invocation (DefaultToolTimeout, 5m unless the tool
+	// declares otherwise), so an unclamped request produced a command that
+	// died at 5 minutes while reporting "[timed out after 10m0s]" - and the
+	// model blamed the target for a limit the harness imposed.
+	timeout = BudgetFrom(ctx, timeout, 0)
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

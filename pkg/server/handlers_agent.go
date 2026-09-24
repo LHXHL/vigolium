@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -272,20 +274,39 @@ func (s *sseSink) send(evt sseEvent) error {
 // Returns true if the client stayed connected for the whole stream (no write
 // error), so the caller can skip the trailing done/error event.
 func drainAgentPipeToSSE(sink *sseSink, pr *io.PipeReader, onDisconnect func()) (clientConnected bool) {
-	clientConnected = true
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := pr.Read(buf)
-		if n > 0 && clientConnected {
-			if writeErr := sink.send(sseEvent{Type: "chunk", Text: string(buf[:n])}); writeErr != nil {
-				clientConnected = false
-				if onDisconnect != nil {
-					onDisconnect()
-				}
+	return pumpChunks(pr, 4096, func(text string) error {
+		return sink.send(sseEvent{Type: "chunk", Text: text})
+	}, onDisconnect)
+}
+
+// pumpChunks relays r to write as text chunks until r ends, never splitting
+// a UTF-8 rune or ANSI escape across chunks (see chunkSplitter). After the
+// first failed write it calls onDisconnect (if non-nil) once and stops
+// writing, but keeps draining r so the producer never blocks. Reports
+// whether every write succeeded.
+func pumpChunks(r io.Reader, bufSize int, write func(string) error, onDisconnect func()) (connected bool) {
+	connected = true
+	send := func(text string) {
+		if text == "" || !connected {
+			return
+		}
+		if write(text) != nil {
+			connected = false
+			if onDisconnect != nil {
+				onDisconnect()
 			}
 		}
+	}
+	buf := make([]byte, bufSize)
+	var split chunkSplitter
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			send(split.next(buf[:n]))
+		}
 		if readErr != nil {
-			return clientConnected
+			send(split.flush())
+			return connected
 		}
 	}
 }
@@ -606,13 +627,17 @@ func snapshotAgentRawOutput(streamFile *os.File, sessionDir string) string {
 		_ = streamFile.Sync()
 	}
 	logPath := filepath.Join(sessionDir, config.RuntimeLogFilename)
-	data, err := os.ReadFile(logPath)
+	// Read only the tail: a multi-hour run (or a model stuck repeating one
+	// line) leaves a runtime.log of hundreds of MB, and all but the last
+	// 200 KB is thrown away. Twice the cap leaves room for the ANSI escapes
+	// the strip removes.
+	data, size, err := readLogTail(logPath, 2*maxAgentRawOutputBytes)
 	if err != nil || len(data) == 0 {
 		return ""
 	}
-	clean := stripANSI(string(data))
-	if len(clean) > maxAgentRawOutputBytes {
-		clean = "...[truncated head]...\n" + clean[len(clean)-maxAgentRawOutputBytes:]
+	clean := string(stripANSIBytes(data))
+	if len(clean) > maxAgentRawOutputBytes || int64(len(data)) < size {
+		clean = "...[truncated head]...\n" + clean[max(0, len(clean)-maxAgentRawOutputBytes):]
 	}
 	return clean
 }
@@ -1007,10 +1032,15 @@ func terminalStatusForRunErr(err error) string {
 }
 
 // tailSessionLog reads logPath and writes SSE chunk events into w, polling for
-// new bytes every pollInterval until isDone reports the run has finished. A
-// safetyTimeout backstop prevents the loop from running forever if isDone is
-// buggy or a client that hung up never triggers a write error. When strip is
-// true, ANSI escape sequences are removed from each chunk before emission.
+// new bytes every pollInterval until isDone reports the run has finished. When
+// strip is true, ANSI escape sequences are removed from each chunk.
+//
+// safetyTimeout backstops a buggy isDone. Hitting it ends the stream with a
+// "reconnect" event, not "done": runs are allowed 6-12 hours, and a "done" at
+// the two-hour cap told the Workbench the run was over, freezing its log for
+// the rest of the run. While idle, a heartbeat comment is written every
+// heartbeatInterval so a client that went away (closed tab, switched session)
+// is noticed by a failed write instead of being polled for until the run ends.
 func tailSessionLog(w *bufio.Writer, logPath string, isDone func() bool, pollInterval, safetyTimeout time.Duration, strip bool) {
 	f, err := os.Open(logPath)
 	if err != nil {
@@ -1019,36 +1049,136 @@ func tailSessionLog(w *bufio.Writer, logPath string, isDone func() bool, pollInt
 	}
 	defer func() { _ = f.Close() }()
 
+	// Start near the end. Every connect (and every reconnect) used to replay
+	// the whole log from byte 0 - hundreds of MB on a long run - only for the
+	// Workbench to keep the last liveLogBacklogBytes of it.
+	if info, err := f.Stat(); err == nil && info.Size() > liveLogBacklogBytes {
+		if _, err := f.Seek(info.Size()-liveLogBacklogBytes, io.SeekStart); err == nil {
+			if err := writeSSE(w, sseEvent{Type: "chunk", Text: "...[earlier output omitted]...\n"}); err != nil {
+				return
+			}
+		}
+	}
+
+	send := func(text string) bool {
+		if strip {
+			text = stripANSI(text)
+		}
+		if text == "" {
+			return true
+		}
+		return writeSSE(w, sseEvent{Type: "chunk", Text: text}) == nil
+	}
+
 	deadline := time.Now().Add(safetyTimeout)
-	buf := make([]byte, 4096)
+	lastWrite := time.Now()
+	// 32 KB reads: the 512 KB backlog replayed on every (re)connect is 16
+	// events, not 128 JSON encodes and flushes.
+	buf := make([]byte, 32<<10)
+	var split chunkSplitter
 	for {
 		n, readErr := f.Read(buf)
 		if n > 0 {
-			text := string(buf[:n])
-			if strip {
-				text = stripANSI(text)
-			}
-			if err := writeSSE(w, sseEvent{Type: "chunk", Text: text}); err != nil {
+			if !send(split.next(buf[:n])) {
 				// Client disconnected or writer broken — stop silently.
 				return
 			}
+			lastWrite = time.Now()
 		}
 		if readErr != nil && readErr != io.EOF {
 			_ = writeSSE(w, sseEvent{Type: "error", Error: readErr.Error()})
 			return
 		}
 		if n == 0 {
-			if isDone() {
-				_ = writeSSE(w, sseEvent{Type: "done"})
+			if done := isDone(); done || time.Now().After(deadline) {
+				_ = send(split.flush())
+				end := "reconnect"
+				if done {
+					end = "done"
+				}
+				_ = writeSSE(w, sseEvent{Type: end})
 				return
 			}
-			if time.Now().After(deadline) {
-				_ = writeSSE(w, sseEvent{Type: "done"})
-				return
+			if time.Since(lastWrite) >= heartbeatInterval {
+				if _, err := w.WriteString(": ping\n\n"); err != nil || w.Flush() != nil {
+					return
+				}
+				lastWrite = time.Now()
 			}
 			time.Sleep(pollInterval)
 		}
 	}
+}
+
+// liveLogBacklogBytes is how much existing log a new live follower receives
+// before new output. It matches the Workbench's own 512 KB buffer cap
+// (useAgentSessionLogs MAX_LOG_BYTES); anything older is dropped client-side.
+const liveLogBacklogBytes = 512 << 10
+
+// heartbeatInterval spaces the SSE comment lines a log follower writes while
+// the log is idle; see tailSessionLog. A var so tests can shorten it.
+var heartbeatInterval = 15 * time.Second
+
+// chunkSplitter turns fixed-size reads into chunks that never end inside a
+// UTF-8 rune or an ANSI escape. JSON-encoding a partial rune replaces it with
+// U+FFFD, and half an escape slips past stripANSI, so any byte stream relayed
+// as SSE text events goes through one. The zero value is ready to use.
+type chunkSplitter struct {
+	pending []byte
+}
+
+// next returns the complete prefix of pending+b and holds the rest. The
+// common case (nothing held) converts b directly, with no staging copy.
+func (s *chunkSplitter) next(b []byte) string {
+	if len(s.pending) > 0 {
+		b = append(s.pending, b...)
+	}
+	cut := incompleteTailStart(b)
+	out := string(b[:cut])
+	s.pending = append(s.pending[:0], b[cut:]...)
+	return out
+}
+
+// flush returns whatever is still held, for the end of the stream.
+func (s *chunkSplitter) flush() string {
+	out := string(s.pending)
+	s.pending = s.pending[:0]
+	return out
+}
+
+// incompleteTailStart returns the index where b stops being safe to send:
+// len(b), or the start of a trailing UTF-8 rune or ANSI escape that the next
+// read will complete.
+func incompleteTailStart(b []byte) int {
+	cut := len(b)
+	// Log lines only carry short color codes, so look back a little way.
+	lo := max(0, len(b)-32)
+	if i := bytes.LastIndexByte(b[lo:], 0x1b); i >= 0 && !escapeComplete(b[lo+i:]) {
+		cut = lo + i
+	}
+	// Walk back to the start of the last rune; hold it if it is cut short.
+	for back := 1; back <= utf8.UTFMax && back <= cut; back++ {
+		if utf8.RuneStart(b[cut-back]) {
+			if !utf8.FullRune(b[cut-back : cut]) {
+				cut -= back
+			}
+			break
+		}
+	}
+	return cut
+}
+
+// escapeComplete reports whether esc, which starts with ESC, holds a whole
+// escape: a two-byte escape, or a CSI (ESC '[') through its final byte
+// (0x40-0x7E).
+func escapeComplete(esc []byte) bool {
+	if len(esc) < 2 {
+		return false
+	}
+	if esc[1] != '[' {
+		return true
+	}
+	return bytes.ContainsFunc(esc[2:], func(r rune) bool { return r >= 0x40 && r <= 0x7e })
 }
 
 // agenticScanToSessionSummary converts a database AgenticScan to a lightweight session summary.

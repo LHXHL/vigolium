@@ -139,7 +139,8 @@ func (g *getSessionTool) Execute(ctx context.Context, args map[string]any, _ too
 	uuid := argsString(args, "uuid")
 	if uuid == "" {
 		return tool.Result{
-			Content: "get_session: 'uuid' is required",
+			Content: "get_session: 'uuid' is required - the uuid of an agent run, as returned by list_sessions. " +
+				"To browse captured HTTP traffic use query_records; to read findings use list_findings.",
 			IsError: true,
 		}, nil
 	}
@@ -225,7 +226,7 @@ func (*listFindingsTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"scan_uuid": map[string]any{
 				"type":        "string",
-				"description": "Restrict to a single scan UUID (from run_scan / list_sessions).",
+				"description": "Restrict to a single scan UUID (from run_native_scan / list_sessions).",
 			},
 			"severity": map[string]any{
 				"type":        "array",

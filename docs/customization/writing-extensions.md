@@ -934,7 +934,7 @@ Session objects expose: `get()`, `post()`, `request()`, `send()`, `setHeader()`,
 
 | Function | Description |
 |---|---|
-| `complete(opts)` | Full control: model, messages, schema, temperature → `{content, model, tokens_in, tokens_out}` |
+| `complete(opts)` | Full control: model, messages, schema, max_tokens → `{content, model, tokens_in, tokens_out}` (`temperature` is accepted and ignored) |
 | `ask(prompt, opts?)` | Single prompt → text response |
 | `chat(messages, opts?)` | Conversation → text response |
 | `generatePayloads(opts)` | Generate context-aware security payloads by type, context, technology, WAF |

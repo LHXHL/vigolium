@@ -420,6 +420,8 @@ func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg Autopil
 	autopilotOpts := oautopilot.Options{
 		Provider:             prov,
 		Model:                model,
+		ReasoningEffort:      oliumCfg.ReasoningEffort,
+		MaxTokens:            oliumCfg.MaxTokens,
 		Target:               cfg.TargetURL,
 		SourcePath:           cfg.SourcePath,
 		Focus:                cfg.Focus,
@@ -429,6 +431,7 @@ func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg Autopil
 		AgenticScanUUID:      cfg.ParentAgenticScanUUID,
 		Repo:                 r.repo,
 		SessionDir:           cfg.SessionDir,
+		MaxToolCalls:         cfg.MaxCommands,
 		MaxTurns:             cfg.MaxCommands,
 		Out:                  streamWriter,
 		ToolLog:              streamWriter,
@@ -455,6 +458,11 @@ func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg Autopil
 	if autopilotResult != nil {
 		result.OperatorFindingsCount = int(autopilotResult.FindingCount)
 		result.Reentries = autopilotResult.Reentries
+		// Surfaced as a warning so the server marks the run degraded and the
+		// workbench shows why a fast zero-finding run tested nothing.
+		if d := autopilotResult.Diagnosis(); d != "" {
+			result.Warnings = append(result.Warnings, d)
+		}
 	}
 
 	if auditRunner != nil {

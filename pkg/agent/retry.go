@@ -43,17 +43,29 @@ var (
 //	"anthropic %d: %s"  — e.g. "anthropic 429: rate_limit_exceeded ..."
 //	"openai %d: %s"     — e.g. "openai 503: ..."
 //	"codex %d: %s"      — e.g. "codex 429: ..."
+//
+// That text is produced by stream.StatusError.Error(), and stream.StatusOfText
+// parses it back, so the two stay in step.
 func classifyOliumError(msg string) error {
 	lower := strings.ToLower(msg)
 
-	// HTTP 429 / explicit rate-limit signals.
-	if containsAny(lower, " 429:", " 429 ", "rate limit", "rate_limit", "rate-limit", "too many requests", "quota") {
-		return fmt.Errorf("%s: %w", msg, errProviderRateLimited)
+	// Status-carrying errors classify off the status itself. The numeric
+	// table lives in pkg/olium/stream so this cross-call classifier and the
+	// engine's in-flight one can't drift - they used to keep separate lists,
+	// and had: a Cloudflare 520 retried here but not there, a 425 there but
+	// not here.
+	if se, ok := stream.StatusOfText(msg); ok && se.Retryable() {
+		if se.RateLimited() {
+			return fmt.Errorf("%s: %w", msg, errProviderRateLimited)
+		}
+		return fmt.Errorf("%s: %w", msg, errProviderServerError)
 	}
 
-	// HTTP 5xx — transient server faults.
+	// Bodies that describe the condition without a status we can read.
+	if containsAny(lower, "rate limit", "rate_limit", "rate-limit", "too many requests", "quota") {
+		return fmt.Errorf("%s: %w", msg, errProviderRateLimited)
+	}
 	if containsAny(lower,
-		" 500:", " 502:", " 503:", " 504:", " 520:", " 521:", " 522:", " 524:",
 		"internal server error", "service unavailable", "bad gateway", "gateway timeout", "overloaded",
 	) {
 		return fmt.Errorf("%s: %w", msg, errProviderServerError)

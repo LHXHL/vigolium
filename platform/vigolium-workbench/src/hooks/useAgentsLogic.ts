@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useFollowTail } from '@/lib/useFollowTail';
 import { useSearchParamsClient } from '@/lib/useSearchParamsClient';
 import { zipSync } from 'fflate';
 import { useAgentSessions, useAgentSessionDetail, useUploadRepo, useStartAutopilotRun, useStartAgentRun, useCancelAgentRun, useAgentRunStatus } from '@/api/hooks';
@@ -192,7 +193,6 @@ export function useAgentsLogic() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [scanError, setScanError] = useState('');
   const [streamingOpen, setStreamingOpen] = useState(false);
-  const scanOutputRef = useRef<HTMLPreElement>(null);
   const startAgentRun = useStartAgentRun();
   const cancelAgentRun = useCancelAgentRun();
   const { data: activeRunStatus } = useAgentRunStatus(activeRunId);
@@ -253,15 +253,7 @@ export function useAgentsLogic() {
     if (isScanStreaming || expandedSessionUuid) setStreamingOpen(true);
   }, [isScanStreaming, expandedSessionUuid]);
 
-  const scrollScanOutput = useCallback(() => {
-    if (scanOutputRef.current) {
-      scanOutputRef.current.scrollTop = scanOutputRef.current.scrollHeight;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (sessionLogs) setTimeout(scrollScanOutput, 0);
-  }, [sessionLogs, scrollScanOutput]);
+  const scanOutputTail = useFollowTail<HTMLPreElement>(sessionLogs, expandedSessionUuid);
 
   const scrollChatToBottom = useCallback(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -667,7 +659,8 @@ export function useAgentsLogic() {
         : ''),
     isScanStreaming, handleScanCancel,
     streamingOpen, setStreamingOpen,
-    scanOutputRef,
+    scanOutputRef: scanOutputTail.ref,
+    onScanOutputScroll: scanOutputTail.onScroll,
 
     // The panel always tails the watched session's runtime.log; "streaming"
     // covers both the submit round-trip and the live log tail.

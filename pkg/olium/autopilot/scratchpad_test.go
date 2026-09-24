@@ -124,6 +124,27 @@ func TestUpdatePlanReplaceRecallAndPersist(t *testing.T) {
 	if !bad.IsError {
 		t.Error("expected error for invalid status")
 	}
+
+	// A status flip that reuses a known id may omit the task text — it
+	// carries over from the item already in the plan, so the model doesn't
+	// burn a turn re-sending text the scratchpad already holds.
+	upd, _ := tl.Execute(context.Background(), map[string]any{
+		"plan": []any{map[string]any{"id": "idor", "status": "done", "note": "no vulnerable object refs"}},
+	}, nil)
+	if upd.IsError {
+		t.Fatalf("id-only update rejected: %s", upd.Content)
+	}
+	if !strings.Contains(upd.Content, "test idor") || !strings.Contains(upd.Content, "[x]") {
+		t.Errorf("carried-over task text missing:\n%s", upd.Content)
+	}
+
+	// A new item with no task text and no matching id is still rejected.
+	missing, _ := tl.Execute(context.Background(), map[string]any{
+		"plan": []any{map[string]any{"id": "brand-new", "status": "pending"}},
+	}, nil)
+	if !missing.IsError {
+		t.Error("expected error when task is absent and id is unknown")
+	}
 }
 
 func TestRememberAppendUpsertAndRecall(t *testing.T) {

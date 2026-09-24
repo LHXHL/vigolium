@@ -81,27 +81,33 @@ func (v *vertexTransport) requireModelPrefix(providerName, prefix, model, otherP
 // vertexAnthRequest mirrors anthRequest but drops the `model` field (it's in
 // the URL on Vertex) and adds the required `anthropic_version` body field.
 type vertexAnthRequest struct {
-	AnthropicVersion string        `json:"anthropic_version"`
-	System           any           `json:"system,omitempty"`
-	MaxTokens        int           `json:"max_tokens"`
-	Messages         []anthMessage `json:"messages"`
-	Tools            []anthTool    `json:"tools,omitempty"`
-	Stream           bool          `json:"stream"`
+	AnthropicVersion string            `json:"anthropic_version"`
+	System           any               `json:"system,omitempty"`
+	MaxTokens        int               `json:"max_tokens"`
+	Messages         []anthMessage     `json:"messages"`
+	Tools            []anthTool        `json:"tools,omitempty"`
+	Stream           bool              `json:"stream"`
+	Thinking         *anthThinking     `json:"thinking,omitempty"`
+	OutputConfig     *anthOutputConfig `json:"output_config,omitempty"`
 }
 
 func (v *vertexTransport) streamAnthropic(ctx context.Context, providerName string, req Request) (<-chan stream.Event, error) {
+	// Build the canonical Anthropic body and drop the one field Vertex
+	// rejects (model lives in the URL there). Assembling it by hand instead
+	// meant every new field had to be remembered in three places, with the
+	// failure mode being a capability that silently works everywhere except
+	// Vertex.
+	b := buildAnthropicRequest(req)
 	body := vertexAnthRequest{
 		AnthropicVersion: vertexAnthropicVersion,
-		MaxTokens:        8192,
-		Messages:         buildAnthropicMessages(req.Messages),
-		Stream:           true,
+		System:           b.System,
+		MaxTokens:        b.MaxTokens,
+		Messages:         b.Messages,
+		Tools:            b.Tools,
+		Stream:           b.Stream,
+		Thinking:         b.Thinking,
+		OutputConfig:     b.OutputConfig,
 	}
-	// Reuse the system/tools/cache-control logic by piping through a
-	// synthetic anthRequest: the helper only mutates System and Tools.
-	tmp := anthRequest{}
-	applyAnthropicSystemAndTools(&tmp, req)
-	body.System = tmp.System
-	body.Tools = tmp.Tools
 
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -134,9 +140,7 @@ func (v *vertexTransport) streamAnthropic(ctx context.Context, providerName stri
 		return nil, fmt.Errorf("%s: %w", providerName, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("%s %d: %s", providerName, resp.StatusCode, string(raw))
+		return nil, statusErrorFrom(providerName, resp)
 	}
 
 	out := make(chan stream.Event, 32)
@@ -222,14 +226,19 @@ func (v *vertexTransport) streamGemini(ctx context.Context, providerName string,
 		return nil, fmt.Errorf("%s: %w", providerName, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("%s %d: %s", providerName, resp.StatusCode, string(raw))
+		return nil, statusErrorFrom(providerName, resp)
 	}
 
 	out := make(chan stream.Event, 32)
 	go consumeGeminiSSE(ctx, resp.Body, out)
 	return out, nil
+}
+
+// isToolResultContent reports whether c is the user content collecting this
+// turn's tool results, so the next result folds into it. Any other message
+// appends a content of its own, which ends the run.
+func isToolResultContent(c gemContent) bool {
+	return len(c.Parts) > 0 && c.Parts[0].FunctionResponse != nil
 }
 
 // buildGeminiRequest translates the provider-neutral Request into Gemini's
@@ -296,14 +305,20 @@ func buildGeminiRequest(req Request) gemRequest {
 			if m.IsError {
 				respObj["error"] = true
 			}
+			// Gemini requires the functionResponse parts to line up with the
+			// functionCall parts of the turn they answer, so consecutive tool
+			// results belong in ONE user content - a separate content per
+			// result is rejected as a call/response count mismatch whenever
+			// the model made parallel calls. Fold into the open tool content
+			// when there is one, exactly as buildAnthropicMessages does.
+			part := gemPart{FunctionResponse: &gemFunctionResponse{Name: name, Response: respObj}}
+			if n := len(contents) - 1; n >= 0 && isToolResultContent(contents[n]) {
+				contents[n].Parts = append(contents[n].Parts, part)
+				continue
+			}
 			contents = append(contents, gemContent{
-				Role: "user", // tool replies are surfaced as user-role per Gemini convention
-				Parts: []gemPart{{
-					FunctionResponse: &gemFunctionResponse{
-						Name:     name,
-						Response: respObj,
-					},
-				}},
+				Role:  "user", // tool replies are surfaced as user-role per Gemini convention
+				Parts: []gemPart{part},
 			})
 		}
 	}
@@ -419,17 +434,16 @@ func consumeGeminiSSE(ctx context.Context, body io.ReadCloser, out chan<- stream
 			out <- stream.Event{Type: stream.EventError, Err: err.Error()}
 			return
 		}
-		if strings.TrimSpace(evt.Data) == "" {
-			continue
+		for _, piece := range evt.JSONPayloads() {
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(piece), &parsed); err != nil {
+				continue
+			}
+			if DebugEnabled() {
+				debugFprintf(os.Stderr, "[vertex-gemini-sse] %s", piece)
+			}
+			state.handle(parsed, out)
 		}
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(evt.Data), &parsed); err != nil {
-			continue
-		}
-		if DebugEnabled() {
-			debugFprintf(os.Stderr, "[vertex-gemini-sse] %s", evt.Data)
-		}
-		state.handle(parsed, out)
 	}
 }
 
@@ -438,6 +452,9 @@ type geminiState struct {
 	stopReason stream.StopReason
 	usage      stream.Usage
 	finalSent  bool
+	// callSeq counts synthesized tool-call ids so two parallel calls to the
+	// same function don't collide. See applyPart.
+	callSeq int
 }
 
 func (s *geminiState) handle(ev map[string]any, out chan<- stream.Event) {
@@ -490,9 +507,15 @@ func (s *geminiState) applyPart(p map[string]any, out chan<- stream.Event) {
 		name, _ := fc["name"].(string)
 		args, _ := fc["args"].(map[string]any)
 		if id == "" {
-			// Some Gemini revisions omit `id`; synthesize a stable one from
-			// the name so our engine can still pair the response back.
-			id = "fn-" + name
+			// Some Gemini revisions omit `id`; synthesize one so our engine
+			// can pair the response back. It must be unique per call, not
+			// per function: Gemini happily emits two functionCall parts for
+			// the same tool in one turn, and a shared id collides in every
+			// id-keyed consumer - the engine's start/end pairing, the tool
+			// log's timing map, the TUI's live card, and the tool_use ids we
+			// replay to Anthropic/OpenAI (a duplicate there is a hard 400).
+			s.callSeq++
+			id = fmt.Sprintf("fn-%s-%d", name, s.callSeq)
 		}
 		out <- stream.Event{Type: stream.EventToolCallStart, ToolCall: &stream.ToolCall{ID: id, Name: name}}
 		argsJSON, _ := json.Marshal(args)

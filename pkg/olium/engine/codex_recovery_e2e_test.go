@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,11 +21,25 @@ import (
 type scriptedProvider struct {
 	attempts atomic.Int32
 	fn       func(attempt int32) []stream.Event
+
+	// last is the most recent request the engine handed over, so a test can
+	// assert on what left the engine rather than only on what came back.
+	mu   sync.Mutex
+	last provider.Request
 }
 
 func (p *scriptedProvider) Name() string { return "scripted" }
 
-func (p *scriptedProvider) Stream(_ context.Context, _ provider.Request) (<-chan stream.Event, error) {
+func (p *scriptedProvider) lastRequest() provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.last
+}
+
+func (p *scriptedProvider) Stream(_ context.Context, req provider.Request) (<-chan stream.Event, error) {
+	p.mu.Lock()
+	p.last = req
+	p.mu.Unlock()
 	n := p.attempts.Add(1)
 	evs := p.fn(n)
 	ch := make(chan stream.Event, len(evs))

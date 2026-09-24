@@ -21,15 +21,7 @@ Output **all routes** as **JSONL** (one JSON object per line) wrapped in a ` ```
 {"method":"DELETE","url":"{{.TargetURL}}/api/items/1?force=true","headers":{},"notes":"Delete item — admin only"}
 ```
 
-## OUTPUT REMINDER — Read This Last
-
-Before writing your response, verify against these rules:
-
-1. **JSONL block** → ` ```jsonl ` (NOT ` ```json `). One JSON object per line. No JSON array wrapper.
-2. **Body fields** → MUST be **escaped JSON strings**, NOT nested objects.
-   - CORRECT: `"body":"{\"email\":\"a@b.com\",\"password\":\"test\"}"`
-   - WRONG:   `"body":{"email":"a@b.com","password":"test"}`
-3. **Every POST/PUT/PATCH** route MUST have a non-empty `body` with all parameters from the handler code.
-4. **Every GET/DELETE** route MUST have query parameters in the URL string (e.g., `?q=test&page=1`).
-5. Each line must be **valid, parseable JSON** — no trailing commas, no comments.
-6. Use the target URL `{{.TargetURL}}` as base for all URLs.
+Two things the examples can't show: `body` is an escaped JSON *string*, never
+a nested object, and every route carries its parameters — a `body` with the
+fields its handler reads for POST/PUT/PATCH, query parameters in the URL for
+GET/DELETE.

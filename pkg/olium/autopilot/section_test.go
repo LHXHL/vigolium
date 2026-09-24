@@ -182,3 +182,49 @@ func TestBuildReconstructedBriefContent(t *testing.T) {
 		}
 	}
 }
+
+// TestStallRotationsAreTerminal pins that a stall surviving repeated fresh
+// sections stops the run. Rotation resets the stall counter and re-enters,
+// so without a cap a model stuck on a broken tool contract rotates until the
+// wall clock ends the run.
+func TestStallRotationsAreTerminal(t *testing.T) {
+	c := NewSectionController("", nil, "", "", nil, nil, 0, 2, 0)
+
+	for rotation := 1; rotation <= DefaultMaxStallRotations; rotation++ {
+		var rotated bool
+		for turn := 0; turn < 2 && !rotated; turn++ {
+			rotated, _ = c.ShouldRotate(1, 0, false)
+		}
+		if !rotated {
+			t.Fatalf("rotation %d never fired", rotation)
+		}
+		if got := c.StalledOut(); got != (rotation >= c.MaxStallRotations) {
+			t.Errorf("after rotation %d StalledOut = %v", rotation, got)
+		}
+		c.BeginSection(context.Background(), "", "") // mirrors the real handoff
+	}
+}
+
+// TestProductiveTurnClearsStallRotations: one productive turn means the run
+// is working again, so the rotation streak must not carry over.
+func TestProductiveTurnClearsStallRotations(t *testing.T) {
+	c := NewSectionController("", nil, "", "", nil, nil, 0, 1, 0)
+
+	for i := 0; i < DefaultMaxStallRotations-1; i++ {
+		if rotated, _ := c.ShouldRotate(1, 0, false); !rotated {
+			t.Fatalf("stall %d did not rotate", i)
+		}
+	}
+	if c.StalledOut() {
+		t.Fatal("not yet at the rotation cap")
+	}
+
+	c.ShouldRotate(1, 0, true) // progress
+	// One more stall must not tip it over: the streak restarted from zero.
+	for i := 0; i < c.MaxStallRotations-1; i++ {
+		c.ShouldRotate(1, 0, false)
+	}
+	if c.StalledOut() {
+		t.Error("a productive turn must clear the stall-rotation streak")
+	}
+}

@@ -188,7 +188,7 @@ func registerAuditFlags(cmd *cobra.Command) {
 
 	// Piolium-only.
 	f.StringVar(&auditPiProvider, "pi-provider", "", "[piolium] Override pi's defaultProvider (e.g. vertex-anthropic, google-vertex)")
-	f.StringVar(&auditPiModel, "pi-model", "", "[piolium] Override pi's defaultModel (e.g. claude-opus-4-6, gemini-3.1-pro)")
+	f.StringVar(&auditPiModel, "pi-model", "", "[piolium] Override pi's defaultModel (e.g. claude-opus-5, gemini-3.1-pro)")
 	f.BoolVar(&auditNoPreflight, "no-preflight", false, "Skip the pre-audit roundtrip checks for both drivers (pi+claude auth/model availability)")
 	f.DurationVar(&auditPreflightTimeout, "preflight-timeout", piolium.DefaultPreflightTimeout, "Per-driver preflight timeout (e.g. 30s, 1m); applies to both pi and claude")
 	f.IntVar(&auditPlmScanLimit, "plm-scan-limit", 0, "[piolium] Cap commit-history scan to N commits (0=piolium default)")
@@ -560,11 +560,11 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 
 	if repo != nil {
 		now := time.Now()
-		status := "completed"
 		var errMsg string
+		failed := 0
 		for _, p := range plans {
 			if p.runErr != nil {
-				status = "completed_with_errors"
+				failed++
 				if errMsg != "" {
 					errMsg += "; "
 				}
@@ -574,7 +574,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 		totalParsed, totalSaved, _ := driverTotals(plans)
 		parentUpdate := &database.AgenticScan{
 			UUID:         parentUUID,
-			Status:       status,
+			Status:       database.MultiDriverAgenticScanStatus(failed, len(plans)),
 			ErrorMessage: errMsg,
 			CompletedAt:  now,
 			DurationMs:   now.Sub(startedAt).Milliseconds(),

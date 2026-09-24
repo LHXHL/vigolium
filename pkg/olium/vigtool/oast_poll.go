@@ -44,7 +44,7 @@ func (*oastPollTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"scan_uuid": map[string]any{
 				"type":        "string",
-				"description": "Restrict to interactions tied to a specific scan UUID (from run_scan / list_sessions).",
+				"description": "Restrict to interactions tied to a specific scan UUID (from run_native_scan / list_sessions).",
 			},
 			"protocol": map[string]any{
 				"type":        "string",

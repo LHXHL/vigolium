@@ -44,7 +44,7 @@ Providers (vendor-first; the prefix tells you which credentials to provide):
                        (uses --bridge-bin / agent.olium.bridge_binary, else the embedded blob, then PATH). No key
                        needed — uses your logged-in Claude Code subscription; an explicit key/token is forwarded if set.
   anthropic-vertex   — uses --oauth-cred (GCP service-account JSON, or $GOOGLE_APPLICATION_CREDENTIALS) + --gcp-project / --gcp-location;
-                       routes claude-* model ids to publishers/anthropic on Vertex AI. Default model: claude-opus-4-6.
+                       routes claude-* model ids to publishers/anthropic on Vertex AI. Default model: claude-opus-5.
   google-vertex      — same GCP creds as anthropic-vertex; routes gemini-* model ids to publishers/google on Vertex AI.
                        Default model: gemini-2.5-pro.
   openai-compatible  — any OpenAI Chat Completions-compatible endpoint (Ollama, OpenRouter, LM Studio, vLLM,
@@ -95,6 +95,7 @@ func runAgentOlium(cmd *cobra.Command, args []string) error {
 		Model:               firstNonEmptyString(oliumModel, oliumCfg.Model),
 		SystemPrompt:        firstNonEmptyString(oliumSystem, oliumCfg.SystemPrompt),
 		ReasoningEffort:     oliumCfg.ReasoningEffort,
+		MaxTokens:           oliumCfg.MaxTokens,
 		Version:             getVersion(),
 		// openai-compatible — --base-url / --llm-api-key / --model fall back
 		// to custom_provider.* in YAML. ExtraHeaders has no CLI flag; set

@@ -2,6 +2,7 @@ package stream
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"strings"
 )
@@ -27,6 +28,29 @@ func NewSSEReader(r io.Reader) *SSEReader {
 	sc.Buffer(buf, 8*1024*1024)
 	sc.Split(bufio.ScanLines)
 	return &SSEReader{scanner: sc}
+}
+
+// JSONPayloads returns the event's data as the JSON documents it carries.
+// A server that separates events with a single newline instead of a blank
+// line gets several `data:` lines folded into one event, joined with "\n" per
+// the spec; parsed whole, that is not valid JSON and every chunk in it -
+// including a trailing [DONE] - was dropped. Normal events come back as one
+// trimmed payload; an empty event yields none.
+func (e *SSEEvent) JSONPayloads() []string {
+	data := strings.TrimSpace(e.Data)
+	if data == "" {
+		return nil
+	}
+	if !strings.Contains(data, "\n") || json.Valid([]byte(data)) {
+		return []string{data}
+	}
+	var pieces []string
+	for _, line := range strings.Split(data, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			pieces = append(pieces, line)
+		}
+	}
+	return pieces
 }
 
 // Next returns the next SSEEvent, or io.EOF when the stream ends.

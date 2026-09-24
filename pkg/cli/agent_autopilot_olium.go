@@ -266,18 +266,24 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 	}
 
 	result, runErr := autopilot.Run(ctx, autopilot.Options{
-		Provider:         prov,
-		Model:            model,
-		Target:           autopilotTarget,
-		SourcePath:       autopilotSource,
-		Focus:            autopilotFocus,
-		Instruction:      mergedInstruction,
-		ProjectUUID:      projectUUID,
-		ScanUUID:         globalScanUUID,
-		AgenticScanUUID:  parentAgenticScanUUID,
-		Repo:             repo,
-		ConfigPath:       globalConfig,
-		SessionDir:       sessionDir,
+		Provider:        prov,
+		Model:           model,
+		ReasoningEffort: settings.Agent.Olium.ReasoningEffort,
+		MaxTokens:       settings.Agent.Olium.MaxTokens,
+		Target:          autopilotTarget,
+		SourcePath:      autopilotSource,
+		Focus:           autopilotFocus,
+		Instruction:     mergedInstruction,
+		ProjectUUID:     projectUUID,
+		ScanUUID:        globalScanUUID,
+		AgenticScanUUID: parentAgenticScanUUID,
+		Repo:            repo,
+		ConfigPath:      globalConfig,
+		SessionDir:      sessionDir,
+		// --max-commands bounds tool calls, which is what it says and what
+		// an operator budgets for. The turn ceiling stays as a separate
+		// backstop so a model that never calls a tool still terminates.
+		MaxToolCalls:     autopilotMaxCommands,
 		MaxTurns:         autopilotMaxCommands,
 		MaxWallTime:      autopilotMaxDuration,
 		Out:              streamWriter,
@@ -390,6 +396,9 @@ func copyTranscriptIfRequested(sessionDir string, w io.Writer) {
 func autopilotRunStatus(result *autopilot.Result) string {
 	if result != nil && result.Halted {
 		return "halted"
+	}
+	if result != nil && result.Stalled {
+		return "stalled"
 	}
 	return "completed"
 }
@@ -725,7 +734,7 @@ func finalizeOliumAutopilotPipelineRun(repo *database.Repository, agenticScanUUI
 		return
 	}
 	completedAt := time.Now()
-	status := "completed"
+	status := database.CompletedAgenticScanStatus(result != nil && result.Degraded)
 	if runErr != nil {
 		status = "failed"
 	}
@@ -818,7 +827,8 @@ func finalizeOliumAutopilotRun(repo *database.Repository, agenticScanUUID, model
 		return
 	}
 	completedAt := time.Now()
-	status := "completed"
+	diagnosis := result.Diagnosis() // nil-safe
+	status := database.CompletedAgenticScanStatus(diagnosis != "")
 	if runErr != nil {
 		status = "failed"
 	}
@@ -856,6 +866,8 @@ func finalizeOliumAutopilotRun(repo *database.Repository, agenticScanUUID, model
 	}
 	if runErr != nil {
 		q = q.Set("error_message = ?", runErr.Error())
+	} else if diagnosis != "" {
+		q = q.Set("error_message = ?", diagnosis)
 	}
 	if _, err := q.Exec(context.Background()); err != nil {
 		zap.L().Debug("Failed to finalize autopilot parent run", zap.Error(err))
@@ -1014,10 +1026,13 @@ func printOliumAutopilotSummary(result *autopilot.Result, sessionDir string, rep
 		terminal.BoldGreen(fmt.Sprintf("%d", total)),
 		breakdown)
 	fmt.Printf("  duration:   %s\n", result.Elapsed.Round(time.Second))
-	if result.Halted {
+	switch d := result.Diagnosis(); {
+	case result.Halted:
 		fmt.Printf("  halt:       %s\n", result.HaltReason)
-	} else {
-		fmt.Printf("  halt:       %s\n", terminal.Muted("(natural stop — engine max turns or no more tool calls)"))
+	case d != "":
+		fmt.Printf("  halt:       %s\n", terminal.Yellow(d))
+	default:
+		fmt.Printf("  halt:       %s\n", terminal.Muted("(natural stop - no more tool calls)"))
 	}
 	if result.Reentries > 0 {
 		fmt.Printf("  re-entry:   %s\n",

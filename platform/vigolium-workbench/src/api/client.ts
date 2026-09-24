@@ -250,7 +250,7 @@ export function withDemoKey(urlOrPath: string): string {
 
 // ── HTTP helpers ───────────────────────────────────────────────────
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, opts: { allowText?: boolean } = {}): Promise<T> {
   guardDemoMutation(method, path);
 
   const url = buildApiUrl(path);
@@ -281,20 +281,31 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     );
   }
 
+  if (opts.allowText && (res.headers.get('Content-Type') || '').startsWith('text/plain')) {
+    return (await res.text()) as T;
+  }
   return res.json();
 }
 
-export function apiGet<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
-  let fullPath = path;
-  if (params) {
-    const sp = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== '') sp.set(k, String(v));
-    }
-    const qs = sp.toString();
-    if (qs) fullPath += '?' + qs;
+function withQuery(path: string, params?: Record<string, string | number | undefined>): string {
+  if (!params) return path;
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== '') sp.set(k, String(v));
   }
-  return request<T>('GET', fullPath);
+  const qs = sp.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+export function apiGet<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
+  return request<T>('GET', withQuery(path, params));
+}
+
+/** GET an endpoint that answers either JSON or a plain-text body - a scan's
+ *  logs are its runtime.log tail as text/plain when the file exists, and
+ *  structured JSON rows otherwise. */
+export function apiGetJSONOrText<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T | string> {
+  return request<T | string>('GET', withQuery(path, params), undefined, { allowText: true });
 }
 
 export function apiPost<T>(path: string, body?: unknown): Promise<T> {

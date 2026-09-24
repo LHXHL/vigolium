@@ -751,7 +751,7 @@ func (h *Handlers) handleSwarmSSE(c fiber.Ctx, agenticScanUUID string, req Agent
 		}
 
 		if status != nil && res.result != nil {
-			status.Status = "completed"
+			status.Status = database.CompletedAgenticScanStatus(res.result.Degraded)
 			status.CompletedAt = &now
 			status.FindingCount = res.result.TotalFindings
 			status.SwarmResult = res.result
@@ -879,7 +879,7 @@ func (h *Handlers) runBackgroundAgentSwarm(agenticScanUUID string, req AgentSwar
 		status.Error = runErr.Error()
 		status.CompletedAt = &now
 	} else {
-		status.Status = "completed"
+		status.Status = database.CompletedAgenticScanStatus(result != nil && result.Degraded)
 		status.CompletedAt = &now
 		if result != nil {
 			status.FindingCount = result.TotalFindings

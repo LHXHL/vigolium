@@ -39,6 +39,7 @@ var validReasoningEfforts = map[string]struct{}{
 	"medium":  {},
 	"high":    {},
 	"xhigh":   {},
+	"max":     {}, // Anthropic-only; the Responses providers clamp it down
 }
 
 // Status represents the state of a diagnostic check.

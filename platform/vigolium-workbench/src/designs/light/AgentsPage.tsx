@@ -4,6 +4,7 @@ import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Square, Send, Bot, Terminal, Clock, CheckCircle, XCircle, Loader2, Zap, Layers, Bug, ScrollText, Copy, Check, Upload, ChevronDown, Play, Settings2, Crosshair, Scale, ShieldCheck } from 'lucide-react';
 import type { AgentSession, AgentSessionDetail } from '@/api/types';
+import { agentStatusTone, type AgentStatusTone } from '@/api/types';
 import { formatDate, formatDuration, truncate } from '@/lib/formatters';
 import PageShell from './PageShell';
 import Dropdown from './Dropdown';
@@ -22,9 +23,13 @@ const STATUS_ICON: Record<string, typeof CheckCircle> = {
   running: Loader2,
 };
 
+const STATUS_TONE_COLOR: Record<AgentStatusTone, string> = {
+  ok: '#00b368', warn: '#b8860b', fail: '#e34e1c', running: '#0078c8', idle: '#708e8e',
+};
+
 function StatusBadge({ status }: { status: string }) {
   const Icon = STATUS_ICON[status] || Clock;
-  const color = status === 'completed' ? '#00b368' : status === 'error' ? '#e34e1c' : status === 'running' ? '#0078c8' : '#708e8e';
+  const color = STATUS_TONE_COLOR[agentStatusTone(status)];
   return (
     <span className="flex items-center gap-1 text-xs font-bold" style={{ color }}>
       <Icon className={`w-3 h-3 ${status === 'running' ? 'animate-spin' : ''}`} />
@@ -77,6 +82,11 @@ function SessionDetailPanel({ session, onClose }: { session: AgentSessionDetail;
         {session.phases_run && session.phases_run.length > 0 && (
           <div><span className="text-[#708e8e]">phases </span><span className="text-[#005661]">{session.phases_run.join(' \u2192 ')}</span></div>
         )}
+        {session.error_message && (
+          <div className="whitespace-pre-wrap break-words" style={{ color: STATUS_TONE_COLOR[agentStatusTone(session.status) === 'fail' ? 'fail' : 'warn'] }}>
+            <span className="font-bold">{agentStatusTone(session.status) === 'fail' ? 'error ' : 'warnings '}</span>{session.error_message}
+          </div>
+        )}
         {session.module_names && session.module_names.length > 0 && (
           <div><span className="text-[#708e8e]">modules </span><span className="text-[#005661]">{session.module_names.join(', ')}</span></div>
         )}
@@ -104,9 +114,9 @@ function SessionDetailPanel({ session, onClose }: { session: AgentSessionDetail;
               <button onClick={() => copyToClipboard(session.agent_raw_output!, 'output')} className="absolute top-1.5 right-2 z-10 text-[#708e8e] hover:text-[#005661] p-0.5" title="Copy to clipboard">
                 {copied === 'output' ? <Check className="w-3.5 h-3.5 text-[#00b368]" /> : <Copy className="w-3.5 h-3.5" />}
               </button>
-              <div className="px-3 py-2 bg-[#ede4d1] text-[#005661] overflow-x-auto prose prose-xs max-w-none [&_pre]:bg-[#d4e8e2] [&_pre]:p-2 [&_pre]:text-xs [&_pre]:rounded [&_code]:text-[#00b368] [&_p]:m-0 [&_p]:mb-1.5 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_h1]:mt-2 [&_h2]:mt-2 [&_h3]:mt-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0">
-                <ReactMarkdown>{session.agent_raw_output}</ReactMarkdown>
-              </div>
+              {/* ANSI-stripped terminal output, not Markdown: parsing up to 200 KB
+                  of it on every re-render stalled the page. */}
+              <pre className="px-3 py-2 bg-[#ede4d1] text-[#005661] whitespace-pre-wrap break-words font-mono overflow-x-auto">{session.agent_raw_output}</pre>
             </div>
           </details>
         )}
@@ -713,7 +723,7 @@ export default function AgentsPage() {
               </div>
             </button>
             {h.streamingOpen && (
-              <pre ref={h.scanOutputRef} className="flex-1 overflow-auto p-3 text-xs text-[#708e8e] font-mono whitespace-pre-wrap leading-relaxed">
+              <pre ref={h.scanOutputRef} onScroll={h.onScanOutputScroll} className="flex-1 overflow-auto p-3 text-xs text-[#708e8e] font-mono whitespace-pre-wrap leading-relaxed">
                 {h.panelOutput || (
                   <span className="text-[#bbc3c4]">{h.panelError || h.panelPlaceholder}</span>
                 )}

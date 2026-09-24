@@ -8,11 +8,15 @@ type Message struct {
 
 // CompletionRequest holds parameters for a completion call.
 type CompletionRequest struct {
-	Messages    []Message
-	Model       string  // optional override; uses config default if empty
-	MaxTokens   int     // optional; uses config default if 0
-	Temperature float64 // optional; uses config default if 0
-	JSONSchema  string  // optional; enables structured JSON output
+	Messages  []Message
+	Model     string // optional override; uses config default if empty
+	MaxTokens int    // optional; 0 = the provider's default ceiling
+	// Temperature is accepted for backward compatibility and ignored.
+	// Current Claude models reject sampling parameters outright (a 400), and
+	// olium's provider layer exposes no per-provider sampling knob, so
+	// forwarding this would break the default backend rather than tune it.
+	Temperature float64
+	JSONSchema  string // optional; enables structured JSON output
 }
 
 // CompletionResponse holds the result of a completion call.

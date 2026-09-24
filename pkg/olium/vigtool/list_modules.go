@@ -15,7 +15,7 @@ const defaultModuleListLimit = 200
 
 // NewListModulesTool returns the list_modules tool — a read-only enumeration
 // of the built-in active/passive module registry with filtering. Gives the
-// agent a concrete catalog so run_scan/run_module aren't guessing at names.
+// agent a concrete catalog so run_native_scan/run_module aren't guessing at names.
 func NewListModulesTool() tool.Tool {
 	return &listModulesTool{}
 }
@@ -28,7 +28,7 @@ func (*listModulesTool) Category() string { return tool.CategoryVigolium }
 func (*listModulesTool) IsReadOnly() bool { return true }
 func (*listModulesTool) Description() string {
 	return "List vigolium's built-in scanner modules (active + passive) with their tags, severity, and " +
-		"scan scope. Use this before run_scan / run_module to pick exact module IDs or tags — module " +
+		"scan scope. Use this before run_native_scan / run_module to pick exact module IDs or tags — module " +
 		"names are not stable across versions, so list and filter rather than guessing. Supports " +
 		"filters by kind ('active'|'passive'), tag (e.g. 'xss', 'spring'), severity, and substring " +
 		"match on id/name."

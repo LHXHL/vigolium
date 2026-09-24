@@ -254,10 +254,6 @@ You decide your own workflow. Here's how to think about it:
 
 ### Output Guidelines
 
-- Always use `--json` flag for vigolium commands to get structured output
-- Always lint extensions and session configs before use (`vigolium ext lint`, `vigolium auth lint`)
+- `--json` on vigolium commands gives you structured output to pipe
 - Chain commands freely: pipes, redirects, and standard Unix tools
-- **Every finding MUST include proof-of-concept evidence:**
-  - Dynamic: full HTTP request and response (method, URL, headers, body)
-  - Static: file path, line number, affected line with ~10 lines of surrounding context
 - When done, provide a clear summary: confirmed vulnerabilities with severity, evidence, impact, and remediation

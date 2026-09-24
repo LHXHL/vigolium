@@ -234,10 +234,16 @@ func (globTool) Execute(ctx context.Context, args map[string]any, onUpdate Updat
 	if len(matches) == 0 {
 		return Result{Content: "(no matches)"}, nil
 	}
-	return Result{
-		Content: strings.Join(matches, "\n"),
-		Details: map[string]any{"count": len(matches)},
-	}, nil
+	content := strings.Join(matches, "\n")
+	details := map[string]any{"count": len(matches)}
+	if len(matches) >= limit {
+		// Hitting the cap and returning a bare list is indistinguishable
+		// from "there are exactly this many files", so the caller silently
+		// works from a partial answer.
+		content += fmt.Sprintf("\n\n[truncated at %d matches - narrow the pattern or the path for the rest]", limit)
+		details["truncated"] = true
+	}
+	return Result{Content: content, Details: details}, nil
 }
 
 // globToRegex converts a shell-style glob with ** support to a Go regex.

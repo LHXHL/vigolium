@@ -1305,19 +1305,26 @@ agent:
     # Default: ""
     llm_api_key: ""
 
-    # Reasoning effort for providers that expose it (codex today).
-    # Options: minimal | low | medium | high | xhigh
+    # Reasoning effort, forwarded to every provider that exposes the dial.
+    # Options: minimal | low | medium | high | xhigh | max
+    # (minimal is OpenAI-only, max is Anthropic-only; a provider that cannot
+    # express the level you pick drops it rather than failing.)
     # Default: medium
     reasoning_effort: medium
 
     # Optional system prompt override. Empty = built-in olium prompt.
     system_prompt: ""
 
-    # Maximum tokens in the model response.
-    # Default: 1000000
-    max_tokens: 1000000
+    # Maximum output tokens per response. Honored by the Anthropic
+    # transports; other providers use their own ceiling. Reasoning tokens
+    # count against this on thinking models. 0 = the provider default
+    # (64000 on Anthropic); a value above the model's own cap is ignored
+    # rather than sent, so the legacy 1000000 below behaves as 0.
+    # Default: 0
+    max_tokens: 0
 
-    # Sampling temperature (0.0 = deterministic, 1.0 = creative).
+    # Sampling temperature. Accepted for backward compatibility and IGNORED:
+    # current Claude models reject sampling parameters outright.
     # Default: 0.0
     temperature: 0.0
 

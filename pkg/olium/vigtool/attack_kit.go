@@ -36,9 +36,15 @@ func (*attackKitTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			// The enum is built from the payload table itself, so the
+			// advertised set can never drift from the accepted one. A prose
+			// list did drift: a real run called class="idor" (a vocabulary
+			// propose_candidate does accept) and burned a turn on the
+			// rejection.
 			"class": map[string]any{
 				"type":        "string",
-				"description": "Attack class. Omit to list available classes. One of: xss, sqli, ssrf, cmd-injection, path-traversal, ssti, xxe, open-redirect, crlf.",
+				"enum":        attackClasses,
+				"description": "Attack class. Omit to list available classes.",
 			},
 		},
 	}

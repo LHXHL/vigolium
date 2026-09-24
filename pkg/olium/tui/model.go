@@ -31,7 +31,7 @@ type Config struct {
 	Engine       *engine.Engine
 	ProviderName string
 	Model        string
-	// Effort is the reasoning effort label (minimal|low|medium|high|xhigh)
+	// Effort is the reasoning effort label (minimal|low|medium|high|xhigh|max)
 	// shown next to the model id in the boot banner. Empty hides it.
 	Effort string
 	// Version is the vigolium build version, shown after "Olium agent" in

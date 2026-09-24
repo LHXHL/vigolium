@@ -38,7 +38,23 @@ func LoadSkillsFor(includeUser bool) (*skill.Registry, []string) {
 
 // DefaultModel is used when the user doesn't pass --model. Provider-specific
 // defaults override this in resolveProvider.
-const DefaultModel = "gpt-5.5"
+const DefaultModel = DefaultOpenAIModel
+
+// Per-vendor default models. resolveProvider picks from these and the
+// `agent list` driver table renders them, so those two can never disagree.
+// Flag help, usage examples and seed fixtures still quote ids literally —
+// grep for the old id when bumping a generation.
+const (
+	// DefaultAnthropicModel is the default for every first-party Anthropic
+	// transport (api key, OAuth, local CLI) and for Anthropic-on-Vertex,
+	// which takes the same bare id.
+	DefaultAnthropicModel = "claude-opus-5"
+	// DefaultOpenAIModel is the default for the OpenAI transports
+	// (api key, Responses, Codex OAuth).
+	DefaultOpenAIModel = "gpt-5.5"
+	// DefaultGoogleModel is the default for Gemini on Vertex.
+	DefaultGoogleModel = "gemini-2.5-pro"
+)
 
 // SetDebug toggles provider-level tracing (full request payload + raw SSE
 // events to stderr, credentials scrubbed) for every olium backend. The CLI
@@ -113,7 +129,12 @@ type Options struct {
 	// a request-time error.
 	CustomExtraBody map[string]any
 
-	// ReasoningEffort is shown in the TUI banner alongside the model id.
+	// MaxTokens caps each response's output tokens (0 = provider default).
+	// Mirrors agent.olium.max_tokens.
+	MaxTokens int
+
+	// ReasoningEffort is forwarded on every provider request and shown in
+	// the TUI banner alongside the model id.
 	// Plumbed from agent.olium.reasoning_effort. Display-only today; the
 	// codex provider already defaults to "medium" when unset on the request.
 	ReasoningEffort string
@@ -181,17 +202,20 @@ func RunTUI(opts Options) error {
 	// live). Surfaced so the operator can /skill:<name> them interactively.
 	skills, _ := LoadSkillsFor(true)
 	if skills != nil && skills.Len() > 0 {
-		reg.Register(skill.NewLoadTool(skills))
+		reg.Register(skill.NewLoadTool(skills, reg))
 		fmt.Fprintf(os.Stderr, "Loaded %d skills (invoke with /skill:<name>)\n", skills.Len())
 	}
 
 	eng := engine.New(engine.Config{
-		Provider: prov,
-		Tools:    reg,
-		Skills:   skills,
-		Model:    resolvedModel,
-		System:   opts.SystemPrompt,
-		Recorder: newSessionRecorder(opts, providerName, resolvedModel),
+		Provider:        prov,
+		Tools:           reg,
+		Skills:          skills,
+		Model:           resolvedModel,
+		System:          opts.SystemPrompt,
+		ReasoningEffort: opts.ReasoningEffort,
+		MaxTokens:       opts.MaxTokens,
+		SessionID:       engine.SessionCacheKey(opts.SessionDir),
+		Recorder:        newSessionRecorder(opts, providerName, resolvedModel),
 	})
 	// Flush + close the transcript when the interactive session ends. No-op
 	// when no recorder was attached.
@@ -227,16 +251,19 @@ func buildHeadlessEngine(opts Options) (*engine.Engine, string, string, error) {
 	// same skill scope as the interactive TUI (no ~/.vigolium/skills).
 	skills, _ := LoadSkillsFor(false)
 	if skills != nil && skills.Len() > 0 {
-		reg.Register(skill.NewLoadTool(skills))
+		reg.Register(skill.NewLoadTool(skills, reg))
 	}
 
 	return engine.New(engine.Config{
-		Provider: prov,
-		Tools:    reg,
-		Skills:   skills,
-		Model:    model,
-		System:   opts.SystemPrompt,
-		Recorder: newSessionRecorder(opts, name, model),
+		Provider:        prov,
+		Tools:           reg,
+		Skills:          skills,
+		Model:           model,
+		System:          opts.SystemPrompt,
+		ReasoningEffort: opts.ReasoningEffort,
+		MaxTokens:       opts.MaxTokens,
+		SessionID:       engine.SessionCacheKey(opts.SessionDir),
+		Recorder:        newSessionRecorder(opts, name, model),
 	}), name, model, nil
 }
 
@@ -250,6 +277,16 @@ func ResolveProvider(opts Options) (provider.Provider, string, string, error) {
 
 // resolveProvider is the internal implementation. Kept lowercase so
 // existing callers (RunTUI, buildHeadlessEngine) continue to work.
+// pickModel resolves a per-provider default: an unset model, or the
+// cross-provider DefaultModel sentinel left by a caller that never chose one,
+// becomes this provider's own default.
+func pickModel(model, def string) string {
+	if model == "" || model == DefaultModel {
+		return def
+	}
+	return model
+}
+
 func resolveProvider(opts Options) (provider.Provider, string, string, error) {
 	name := CanonicalProviderName(opts.Provider)
 	if name == "" {
@@ -259,35 +296,17 @@ func resolveProvider(opts Options) (provider.Provider, string, string, error) {
 	model := opts.Model
 	switch name {
 	case "openai-codex-oauth":
-		if model == "" || model == DefaultModel {
-			model = "gpt-5.5"
-		}
-		return newOpenAICodexOAuthProvider(opts, model)
+		return newOpenAICodexOAuthProvider(opts, pickModel(model, DefaultOpenAIModel))
 	case "anthropic-api-key":
-		if model == "" || model == DefaultModel {
-			model = "claude-opus-4-7"
-		}
-		return newAnthropicAPIKeyProvider(opts, model)
+		return newAnthropicAPIKeyProvider(opts, pickModel(model, DefaultAnthropicModel))
 	case "anthropic-oauth":
-		if model == "" || model == DefaultModel {
-			model = "claude-opus-4-7"
-		}
-		return newAnthropicOAuthProvider(opts, model)
+		return newAnthropicOAuthProvider(opts, pickModel(model, DefaultAnthropicModel))
 	case "openai-api-key":
-		if model == "" || model == DefaultModel {
-			model = "gpt-5.5"
-		}
-		return newOpenAIAPIKeyProvider(opts, model)
+		return newOpenAIAPIKeyProvider(opts, pickModel(model, DefaultOpenAIModel))
 	case "openai-responses":
-		if model == "" || model == DefaultModel {
-			model = "gpt-5.5"
-		}
-		return newOpenAIResponsesProvider(opts, model)
+		return newOpenAIResponsesProvider(opts, pickModel(model, DefaultOpenAIModel))
 	case "anthropic-cli":
-		if model == "" || model == DefaultModel {
-			model = "claude-opus-4-7"
-		}
-		return newAnthropicCLIProvider(opts, model)
+		return newAnthropicCLIProvider(opts, pickModel(model, DefaultAnthropicModel))
 	case "anthropic-claude-sdk-bridge":
 		// Empty model → let the bridge/Claude Code pick its own default (it
 		// accepts short aliases like "opus"/"sonnet" or full ids). Only strip
@@ -297,15 +316,9 @@ func resolveProvider(opts Options) (provider.Provider, string, string, error) {
 		}
 		return newClaudeSDKBridgeProvider(opts, model)
 	case "anthropic-vertex":
-		if model == "" || model == DefaultModel {
-			model = "claude-opus-4-6"
-		}
-		return newAnthropicVertexProvider(opts, model)
+		return newAnthropicVertexProvider(opts, pickModel(model, DefaultAnthropicModel))
 	case "google-vertex":
-		if model == "" || model == DefaultModel {
-			model = "gemini-2.5-pro"
-		}
-		return newGoogleVertexProvider(opts, model)
+		return newGoogleVertexProvider(opts, pickModel(model, DefaultGoogleModel))
 	case "openai-compatible":
 		// No universal default — local models vary wildly. Fall back to
 		// custom_provider.model_id when --model / agent.olium.model is empty.

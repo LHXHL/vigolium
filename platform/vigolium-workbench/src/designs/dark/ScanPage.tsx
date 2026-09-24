@@ -5,6 +5,7 @@ import { Copy, Check, Upload, Loader2, Zap, Scale, Layers } from 'lucide-react';
 import { zipSync } from 'fflate';
 import { useScanURL, useScanRequest, useRunScan, useUploadRepo, useScans, useDeleteScan, useStopScan, usePauseScan, useResumeScan, useScanLogs } from '@/api/hooks';
 import type { ScanURLRequest, ScanRequestRequest, RunScanRequest, ScansQueryParams, Scan, ScanLog } from '@/api/types';
+import { useFollowTail } from '@/lib/useFollowTail';
 import { formatDate } from '@/lib/formatters';
 import PageShell from './PageShell';
 import Dropdown from './Dropdown';
@@ -87,6 +88,8 @@ function StatusBadge({ status }: { status: string }) {
 function ScanDetailPanel({ scan, onClose }: { scan: Scan; onClose: () => void }) {
   const { data } = useScanLogs(scan.uuid, { limit: 200 }, scan.status === 'running');
   const logs = data?.logs ?? [];
+  const logText = data?.text;
+  const tail = useFollowTail<HTMLDivElement>(logText ?? logs.length);
   const [modulesCopied, setModulesCopied] = useState(false);
 
   const statusColor = (s: string) =>
@@ -138,10 +141,12 @@ function ScanDetailPanel({ scan, onClose }: { scan: Scan; onClose: () => void })
       </div>
       <div className="px-3 py-1.5 border-b border-[#2e2b26] shrink-0">
         <span className="text-[#7fd962] text-xs font-bold">LOGS</span>
-        <span className="text-[#403d38] text-[10px] ml-2">{logs.length} entries</span>
+        <span className="text-[#403d38] text-[10px] ml-2">{logText !== undefined ? 'runtime.log tail' : `${logs.length} entries`}</span>
       </div>
-      <div className="bg-[#141310] overflow-y-auto font-mono text-[11px] leading-relaxed flex-1 min-h-0">
-        {logs.length === 0 ? (
+      <div ref={tail.ref} onScroll={tail.onScroll} className="bg-[#141310] overflow-y-auto font-mono text-[11px] leading-relaxed flex-1 min-h-0">
+        {logText ? (
+          <pre className="px-3 py-2 whitespace-pre-wrap break-all text-[#fffbf0]">{logText}</pre>
+        ) : logs.length === 0 ? (
           <div className="px-3 py-2 text-[#403d38]">no logs</div>
         ) : (
           logs.map((log: ScanLog) => (

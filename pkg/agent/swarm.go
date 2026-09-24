@@ -392,11 +392,11 @@ func (s *SwarmRunner) Run(ctx context.Context, cfg SwarmConfig) (*SwarmResult, e
 	if err != nil {
 		agenticScan.Status = "failed"
 		agenticScan.ErrorMessage = err.Error()
-	} else if result.Degraded {
-		agenticScan.Status = "completed_with_warnings"
-		agenticScan.ErrorMessage = strings.Join(result.Warnings, "\n")
 	} else {
-		agenticScan.Status = "completed"
+		agenticScan.Status = database.CompletedAgenticScanStatus(result.Degraded)
+		if result.Degraded {
+			agenticScan.ErrorMessage = strings.Join(result.Warnings, "\n")
+		}
 	}
 
 	if s.repo != nil {
