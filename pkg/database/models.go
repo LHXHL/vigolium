@@ -338,6 +338,11 @@ type HTTPRecord struct {
 	// scales from different inputs; sharing one column would mean whichever module
 	// flushed last silently overwrote the other.
 	SurfaceScore int `bun:"surface_score,default:0" json:"surface_score"`
+
+	// BodyCompaction is set when `vigolium db compact` replaced a stored body
+	// with its head, and records what the original was. Nil means RawRequest
+	// and RawResponse hold the bodies exactly as captured. See BodyCompaction.
+	BodyCompaction *BodyCompaction `bun:"body_compaction,type:jsonb,nullzero" json:"body_compaction,omitempty"`
 }
 
 // AnalysisArtifact stores immutable derived content linked to an HTTP record.

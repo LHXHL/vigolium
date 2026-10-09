@@ -37,6 +37,7 @@ run `vigolium <command> -h`.
 - [vigolium config set](#vigolium-config-set)
 - [vigolium db](#vigolium-db)
 - [vigolium db clean](#vigolium-db-clean)
+- [vigolium db compact](#vigolium-db-compact)
 - [vigolium db export](#vigolium-db-export)
 - [vigolium db list](#vigolium-db-list)
 - [vigolium db reset](#vigolium-db-reset)
@@ -573,6 +574,24 @@ Clean database records
 | `--severity` | - | string | - | Delete findings matching the specified severity level |
 | `--status` | - | intSlice | - | Delete records with matching HTTP status codes |
 | `--table` | - | string | - | Delete all rows from a specific table (e.g., http_records, findings, scans) |
+
+## vigolium db compact
+
+Shrink stored bodies over a size limit to their head, keeping every record
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--all-projects` | - | bool | `false` | Compact records of every project in the database (default: the active project only) |
+| `--body-over` | - | string | `64k` | Compact a request or response body larger than this size |
+| `--dry-run` | - | bool | `false` | Report what would be compacted without changing anything |
+| `--keep-head` | - | string | `4k` | Bytes of each compacted body to keep (must be smaller than --body-over) |
+| `--max-db-size` | - | string | - | Size budget: compact the oldest records first until the database is at most this size after VACUUM |
+| `--no-vacuum` | - | bool | `false` | Skip the VACUUM that returns freed pages to the filesystem |
+| `--older-than` | - | string | - | Compact only records sent strictly before this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339 |
+| `--only-content-type` | - | stringSlice | - | Compact only records whose response media type matches one of these globs (OR'ed with --only-path) |
+| `--only-path` | - | stringSlice | - | Compact only records whose URL path matches one of these globs (OR'ed with --only-content-type) |
+| `--skip-content-type` | - | stringSlice | - | Never compact a record whose response media type matches one of these globs (e.g. '*javascript*') |
+| `--skip-path` | - | stringSlice | - | Never compact a record whose URL path matches one of these globs (e.g. '*.js') |
 
 ## vigolium db export
 

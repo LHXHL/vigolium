@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `vigolium db compact` — shrinks stored request/response bodies over `--body-over` (default 64k) to their first `--keep-head` bytes (default 4k) without deleting any record; `--older-than`, `--skip-content-type`/`--only-content-type`, `--skip-path`/`--only-path`, `--all-projects`, `--dry-run`, `--no-vacuum`, and `--max-db-size` (compact oldest first until the file fits). `-j` reports a summary under `items`.
+- `http_records.body_compaction` (nullable JSON) records each compacted body's original length and SHA-256; `traffic -j` shows it as `body_compaction`.
+
 ## [v0.5.2] - 2026-10-03
 
 ### Added

@@ -542,7 +542,7 @@ var (
 		"response_content_type", "response_content_length", "response_time_ms",
 		"response_words", "source", "scan_uuid", "response_title", "ip",
 		"risk_score", "surface_score", "is_authenticated", "technology", "remarks",
-		"request", "response",
+		"body_compaction", "request", "response",
 	}, database.HostFactsFieldNames...)
 	findingViewFields = []string{
 		"id", "severity", "confidence", "module_id", "module_name", "module_type",
@@ -658,6 +658,11 @@ func compactRecordView(rec *database.HTTPRecord, opts agentViewOptions) map[stri
 	}
 	if len(rec.Remarks) > 0 {
 		m["remarks"] = rec.Remarks
+	}
+	// Present only on a record `db compact` shortened, so a reader of the
+	// request/response below knows it holds a head, and what the whole was.
+	if rec.BodyCompaction != nil {
+		m["body_compaction"] = rec.BodyCompaction
 	}
 
 	if !opts.noBodies {

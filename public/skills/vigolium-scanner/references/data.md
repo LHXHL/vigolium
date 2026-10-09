@@ -16,6 +16,7 @@ Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `modu
 - [db stats](#db-stats)
 - [db export](#db-export)
 - [db clean](#db-clean)
+- [db compact](#db-compact)
 - [db seed](#db-seed)
 - [finding](#finding)
 - [finding load](#finding-load)
@@ -528,6 +529,61 @@ vigolium db clean --all --force        # delete every row (auto-VACUUM)
 vigolium db clean --orphans
 vigolium db clean --findings-only --severity info
 vigolium db reset --force              # delete + recreate the database file
+```
+
+---
+
+## db compact
+
+**Usage:** `vigolium db compact [flags]`
+
+Shrink every stored request or response body larger than `--body-over` to its first `--keep-head` bytes. Records are never deleted: URL, method, status, headers, content type, `response_content_length`, hashes and timing are untouched, and the stored message keeps its whole header block. SQLite only.
+
+### compact-specific flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--body-over` | size | `64k` | Compact a body larger than this |
+| `--keep-head` | size | `4k` | Bytes of each compacted body kept (must be smaller than `--body-over`) |
+| `--skip-content-type` | globs | — | Never compact a record whose response media type matches (e.g. `'*javascript*'`) |
+| `--only-content-type` | globs | — | Compact only records whose media type matches (OR'ed with `--only-path`) |
+| `--skip-path` | globs | — | Never compact a record whose URL path matches (e.g. `'*.js'`) |
+| `--only-path` | globs | — | Compact only records whose URL path matches |
+| `--older-than` | time | — | Only records sent strictly before this (`30d`, `12h`, a date, RFC3339 — same syntax as `db clean --before`) |
+| `--max-db-size` | size | — | Budget: compact the oldest records first (by `sent_at`) until the file would be at most this size after VACUUM |
+| `--all-projects` | bool | `false` | Compact every project in the file instead of the active one |
+| `--dry-run` | bool | `false` | Report what would be compacted; change nothing |
+| `--no-vacuum` | bool | `false` | Skip the closing VACUUM + WAL checkpoint |
+
+Sizes are a byte count or a number with a `k`/`m`/`g` suffix, binary (`64k` = 65536). Globs use `*` (any run, `/` included) and `?`, case-insensitive; content types are matched without parameters, paths without the query string. A skip glob always wins over an only glob.
+
+### What a compacted record carries
+
+`http_records.body_compaction` (also the `body_compaction` key of `traffic -j`) is NULL for a record stored as captured, and otherwise:
+
+```json
+{"version":1,"compacted_at":"2026-10-09T00:00:00Z","keep_head":4096,
+ "response":{"original_length":312004,"sha256":"<hex of the original body>","kept_length":4096},
+ "request":{"original_length":...,"sha256":"...","kept_length":...}}
+```
+
+Only the compacted parts appear. A compacted part is never compacted again, so repeating a pass is a no-op.
+
+### Special behavior
+
+- A real pass asks for confirmation on a terminal and needs `--force` otherwise; `--dry-run` never asks.
+- With `--max-db-size` the command exits 0 whether or not the budget was reached; `budget_met: false` means everything selected was compacted and the file is still over budget, and `remaining` counts selected records a met budget left whole.
+- VACUUM runs after a pass that compacted something, or when the file is over `--max-db-size` and has free pages to return; an idle pass skips it.
+- `-j` emits one envelope (`command: "db compact"`) whose `items` is the summary: `dry_run`, `records_compacted`, `response_bodies_compacted`, `request_bodies_compacted`, `body_bytes_before`, `body_bytes_after`, `db_bytes_before`, `db_bytes_after` (file + WAL; estimated on a dry run), `max_db_size`, `budget_met`, `remaining`, `vacuumed`.
+- A build without this command answers `vigolium db compact --help` with the `db` help and exit 0, so probe for the flag (`--max-db-size` in the help text), not the exit code.
+
+### Examples
+
+```bash
+vigolium db compact --db traffic.sqlite --dry-run
+vigolium db compact --db traffic.sqlite --older-than 30d --force
+vigolium db compact --db traffic.sqlite --all-projects --max-db-size 2g \
+  --skip-content-type '*javascript*,*ecmascript*' --skip-path '*.js,*.mjs' --force -j
 ```
 
 ---

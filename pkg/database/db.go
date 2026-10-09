@@ -1228,6 +1228,10 @@ var columnMigrations = []columnMigration{
 	{"scans", "completeness", "TEXT"},
 	{"scans", "stop_reason", "TEXT"},
 	{"scans", "phase_outcomes", "TEXT"},
+	// Body compaction marker (`db compact`). Nullable with no default: NULL
+	// means the stored bodies are the bodies as captured, which is what every
+	// row written before this column existed honestly holds.
+	{"http_records", "body_compaction", "TEXT"},
 }
 
 func init() {

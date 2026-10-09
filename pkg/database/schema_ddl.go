@@ -127,7 +127,8 @@ var schemaTables = []string{
 		chain_truncated INTEGER NOT NULL DEFAULT 0,
 		remarks TEXT,
 		risk_score INTEGER DEFAULT 0,
-		surface_score INTEGER DEFAULT 0
+		surface_score INTEGER DEFAULT 0,
+		body_compaction TEXT
 	)`,
 	`CREATE TABLE IF NOT EXISTS analysis_artifacts (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
