@@ -271,6 +271,6 @@ func TestDispatchScanInputsStopsOnCancel(t *testing.T) {
 
 	// Nothing is dispatched at all, so no network or database is touched: an
 	// already-cancelled context means the operator stopped before this started.
-	err := dispatchScanInputs(ctx, []scanInput{{rr: &httpmsg.HttpRequestResponse{}, target: "a"}})
+	err := dispatchScanInputs(ctx, nil, []scanInput{{rr: &httpmsg.HttpRequestResponse{}, target: "a"}})
 	assert.NoError(t, err)
 }

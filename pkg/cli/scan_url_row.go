@@ -1,0 +1,197 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/core"
+	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/terminal"
+	"go.uber.org/zap"
+)
+
+// directScanFinalizeBudget bounds the scan-row finalization write, the same
+// budget the runner's finalizer uses.
+const directScanFinalizeBudget = 30 * time.Second
+
+// directScanSession owns what one scan-url / scan-request invocation on the
+// direct path persists beyond its findings: the scan row(s) and the store
+// handle.
+//
+// The direct path used to create no scan row at all and run with an empty scan
+// UUID unless --scan-uuid was typed, so its findings carried no scan_uuid and
+// `log`, `scan status` and `finding --scan-uuid` had nothing to look up. Every
+// input now gets a UUID and, when a store is open, a row:
+//
+//   - unpinned: one row per input, each with its own freshly minted UUID,
+//     completed as soon as that input finishes;
+//   - pinned (--scan-uuid): ONE shared row for the whole invocation, its target
+//     the joined input list, re-completed after every input with the verdict
+//     over all inputs so far (so an interrupt between inputs still leaves an
+//     accurate row).
+//
+// It also owns closing the store. The handle is process-cached, and closing it
+// after the first input (as executeDirectScan used to) left every later input of
+// a batch writing into a closed database.
+type directScanSession struct {
+	name    string // database.ScanNameScanURL | database.ScanNameScanRequest
+	pinned  string
+	targets []string
+	modules string
+
+	storeOpened bool
+
+	// Shared-row state (pinned only): created once, and the raw inputs of the
+	// verdict, folded across inputs so the verdict is recomputed over all of
+	// them rather than merged from per-input verdicts.
+	sharedCreated bool
+	agg           directScanAggregate
+}
+
+// directScanAggregate is the folded input of DirectScanCompletion across the
+// inputs that share one pinned row.
+type directScanAggregate struct {
+	rep         core.ExecutionReport
+	reached     bool
+	interrupted bool
+	err         error
+	tally       database.TargetTally
+}
+
+func (a *directScanAggregate) add(rep core.ExecutionReport, reached, interrupted bool, err error, tally database.TargetTally) {
+	a.rep.StoppedEarly = a.rep.StoppedEarly || rep.StoppedEarly
+	a.rep.DrainStalled = a.rep.DrainStalled || rep.DrainStalled
+	a.rep.WorkersAbandoned = a.rep.WorkersAbandoned || rep.WorkersAbandoned
+	a.rep.DeferredFlushSkipped = a.rep.DeferredFlushSkipped || rep.DeferredFlushSkipped
+	a.rep.Unacked += rep.Unacked
+	a.rep.ScopeRejected += rep.ScopeRejected
+	a.rep.Responded += rep.Responded
+	a.reached = a.reached || reached
+	a.interrupted = a.interrupted || interrupted
+	if a.err == nil {
+		a.err = err
+	}
+	a.tally.Merge(tally)
+}
+
+// newDirectScanSession prepares the session for inputs. name is the scan-row
+// name of the invoking command.
+func newDirectScanSession(name string, inputs []scanInput) *directScanSession {
+	targets := make([]string, 0, len(inputs))
+	for _, in := range inputs {
+		targets = append(targets, in.target)
+	}
+	modules := resolveModules()
+	return &directScanSession{
+		name:    name,
+		pinned:  strings.TrimSpace(globalScanUUID),
+		targets: targets,
+		modules: strings.Join(modules, ","),
+	}
+}
+
+// scanUUID returns the UUID the next input scans under: the pinned one, or a
+// fresh one per input.
+func (s *directScanSession) scanUUID() string {
+	return pinnedOrNewUUID(s.pinned)
+}
+
+// noteStore records that an input opened the store, so close releases it.
+func (s *directScanSession) noteStore() { s.storeOpened = true }
+
+// close releases the store once every input is done. Safe to call when no
+// input opened one.
+func (s *directScanSession) close() {
+	if s != nil && s.storeOpened {
+		closeDatabaseOnExit()
+	}
+}
+
+// begin creates the scan row an input reports into, after the store was
+// acquired and before any request goes out (and before an interrupt is
+// checked: an interrupted input still gets a row that says so). A failure warns rather than fails,
+// as the runner's own row creation does: the scan is still worth running.
+func (s *directScanSession) begin(ctx context.Context, repo *database.Repository, projectUUID, scanUUID, target, method string, active, passive int) {
+	if repo == nil {
+		return
+	}
+	// Detached and bounded, like the finalizer: a Ctrl-C landing between store
+	// acquisition and here must not leave findings stamped with a UUID that
+	// has no row.
+	rowCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), directScanFinalizeBudget)
+	defer cancel()
+	logger := database.NewScanLogger(repo, scanUUID)
+	if s.pinned == "" || !s.sharedCreated {
+		rowTarget := target
+		if s.pinned != "" {
+			rowTarget = strings.Join(s.targets, ", ")
+		}
+		row := database.NewSingleRequestScan(scanUUID, projectUUID, s.name, rowTarget, s.modules, "cli")
+		row.Threads = globalConcurrency
+		if err := repo.CreateScan(rowCtx, row); err != nil {
+			zap.L().Warn("Failed to create scan record", zap.String("scan_uuid", scanUUID), zap.Error(err))
+			if !globalSilent {
+				fmt.Fprintf(os.Stderr, "%s scan row not created (%v): findings are stored but `log`/`scan status` will not find %s\n",
+					terminal.WarnPrefix(), err, scanUUID)
+			}
+		}
+		if s.pinned != "" {
+			s.sharedCreated = true
+		}
+	}
+	logger.Info("scan", fmt.Sprintf("%s started: %s %s with %d active + %d passive modules", s.name, method, target, active, passive))
+}
+
+// end completes the row for one finished input on a detached, bounded context:
+// on an interrupt the invocation's context is already cancelled, and writing on
+// it would leave the row "running" forever. Runs on every exit path that had a
+// row, interrupted or not.
+func (s *directScanSession) end(ctx context.Context, repo *database.Repository, scanUUID, target string, executor *core.Executor, interrupted bool, execErr error, findings int) {
+	if repo == nil || executor == nil {
+		return
+	}
+	rep := executor.Report()
+	reached := rep.Responded > 0
+	failures := executor.BaselineFailures()
+	tally := runner.DirectTargetTally(target, rep, failures)
+
+	completion := runner.DirectScanCompletion(rep, reached, interrupted, execErr, tally)
+	if s.pinned != "" {
+		s.agg.add(rep, reached, interrupted, execErr, tally)
+		completion = runner.DirectScanCompletion(s.agg.rep, s.agg.reached, s.agg.interrupted, s.agg.err, s.agg.tally)
+		execErr = s.agg.err
+	}
+
+	logger := database.NewScanLogger(repo, scanUUID)
+	if !reached && !interrupted {
+		detail := "no HTTP answer"
+		if len(failures) > 0 {
+			detail = failures[0].Class + ": " + failures[0].Detail
+		}
+		logger.Error("preflight", fmt.Sprintf("target %s did not answer (%s)", target, detail))
+	}
+	if execErr != nil {
+		logger.Error(string(runner.PhaseDynamicAssessment), execErr.Error())
+	}
+
+	finalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), directScanFinalizeBudget)
+	defer cancel()
+	errMsg := runner.DirectScanErrorMessage(execErr, completion)
+	if err := repo.CompleteScanWithOutcome(finalCtx, scanUUID, errMsg, completion); err != nil {
+		zap.L().Warn("Failed to complete scan record", zap.String("scan_uuid", scanUUID), zap.Error(err))
+	}
+
+	status := "completed"
+	if errMsg != "" {
+		status = "failed: " + errMsg
+	}
+	line := fmt.Sprintf("%s finished %s: %s, %d finding(s)", s.name, target, status, findings)
+	if completion.Completeness == database.CompletenessPartial {
+		line += ", partial (" + completion.StopReason + ")"
+	}
+	logger.Info("scan", line)
+}

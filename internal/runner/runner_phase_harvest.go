@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/harvester"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -108,7 +109,7 @@ func (r *Runner) ingestHarvestStubs(ctx context.Context, infra *phaseInfra, src 
 		if r.repository == nil {
 			continue
 		}
-		if _, err := r.repository.SaveRecord(ctx, req, harvestRecordSource, r.options.ProjectUUID); err != nil {
+		if _, err := r.repository.SaveRecordWithLineage(ctx, req, harvestRecordSource, r.options.ProjectUUID, database.RecordLineage{ScanUUID: r.options.ScanUUID}); err != nil {
 			failed++
 			zap.L().Debug("ExternalHarvest: failed to store harvested URL",
 				zap.String("url", req.Target()), zap.Error(err))

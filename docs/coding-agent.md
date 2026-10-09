@@ -20,8 +20,9 @@ default human output is unchanged; you opt into machine output with `-j/--json`.
     structured object with **compact, token-aware** bodies. This is what you parse.
   - **`--format jsonl`** / `export` → the bulk `{"type":...,"data":{...}}` stream
     (one object per line). Use for archival/bulk, not triage. After a scan the
-    stream covers that scan's `scan` row and findings (records stay
-    project-scoped); `export` is the whole-project dump. It is a *view*, not
+    stream covers that scan's `scan` row, findings and records (the exchanges
+    it stored first plus any its findings cite); `export` is the whole-project
+    dump. It is a *view*, not
     a lossless copy of the store: HTTP exchanges sharing a URL collapse to the
     first one (plus any exchange a finding links to), and only confirmed findings
     are emitted. `export --no-url-dedup` turns the collapse off; for the complete
@@ -113,10 +114,16 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
 
   ```json
   { "target": "https://target.example/", "method": "GET",
-    "scan_duration_ms": 1840, "modules_run": 325, "persisted": true,
-    "findings": [ … ] }
+    "scan_uuid": "9551f38a-…", "scan_duration_ms": 1840, "modules_run": 325,
+    "persisted": true, "findings": [ … ] }
   ```
 
+  `scan_uuid` is always present: every finding of the run carries it, and when
+  the run persisted it names a `scans` row (`name: scan-url|scan-request`,
+  `scan_mode: single`) with a completeness verdict, so `log <uuid>`,
+  `scan status <uuid>` and `finding --scan-uuid <uuid>` work. Each input mints
+  its own UUID; `--scan-uuid` pins one shared row for every input. The human
+  completion line prints it as `Scan ID: <uuid>`.
   `persisted` says whether the results also reached a database — `false` for a
   `-S` run, or when no store was named and the scan ran in memory. `errors` is
   omitted when there were none, so test for its presence rather than for an

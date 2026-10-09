@@ -329,3 +329,16 @@ func phaseDeadline(ctx context.Context, maxDuration time.Duration) (context.Cont
 	}
 	return context.WithTimeout(ctx, maxDuration)
 }
+
+// newScanRecordWriter returns a batched record writer for one phase of this
+// scan. Every row it inserts is stamped with the scan's UUID; a row it dedups
+// onto keeps the scan that stored it first (see RecordWriterConfig.ScanUUID).
+// Every runner phase builds its writer here, so http_records.scan_uuid is set on
+// all of them — the browser crawl writes through it without knowing about scans.
+//
+// r.options.ScanUUID, not a phaseInfra field: buildInfrastructure writes the
+// minted UUID back into the options before any phase runs, and the re-spider
+// helpers that need a writer are not handed the infra.
+func (r *Runner) newScanRecordWriter() *database.RecordWriter {
+	return database.NewRecordWriter(r.repository, database.RecordWriterConfig{ScanUUID: r.options.ScanUUID})
+}

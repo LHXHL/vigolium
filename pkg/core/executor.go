@@ -2003,6 +2003,12 @@ func (e *Executor) saveRedirectHops(ctx context.Context, rows []http.ChainRow, t
 // evidence (emitResult) goes through it too, so a change to that choice has one
 // place to land.
 func (e *Executor) writeRecord(ctx context.Context, req *httpmsg.HttpRequestResponse, source string, lineage database.RecordLineage) (string, error) {
+	// Every row this executor inserts belongs to its scan — the item's own
+	// record, its redirect hops and finding evidence alike. Applied to new rows
+	// only; a dedup hit keeps the scan that stored the exchange first.
+	if lineage.ScanUUID == "" {
+		lineage.ScanUUID = e.scanUUID
+	}
 	if e.recordWriter != nil {
 		return e.recordWriter.WriteWithLineage(ctx, req, source, e.projectUUID, lineage)
 	}

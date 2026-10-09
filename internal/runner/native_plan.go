@@ -21,6 +21,10 @@ const (
 	PhaseSeed              NativePhase = "seed"
 	PhaseKnownIssueScan    NativePhase = "known-issue-scan"
 	PhaseDynamicAssessment NativePhase = "dynamic-assessment"
+	// PhasePreflight carries the CLI-target tally (scope admission,
+	// reachability) on a scan row. Not scheduled by the plan yet; see the
+	// vocabulary entry below.
+	PhasePreflight NativePhase = "preflight"
 )
 
 // nativePhaseSpelling is one canonical phase id plus every alternative spelling

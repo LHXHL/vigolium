@@ -398,6 +398,14 @@ func TestFinishScanJSONLExport(t *testing.T) {
 				URL:         "http://" + s.suffix + ".example/",
 				Hostname:    s.suffix + ".example",
 			}))
+			// Each scan stored one exchange (http_records.scan_uuid, A5b).
+			_, err = db.NewInsert().Model(&database.HTTPRecord{
+				UUID: "rec-" + s.suffix, ProjectUUID: projA, ScanUUID: s.scan,
+				Scheme: "http", Hostname: s.suffix + ".example", Port: 80, Method: "GET",
+				Path: "/", URL: "http://" + s.suffix + ".example/", HTTPVersion: "HTTP/1.1",
+				RequestHash: "rhash-" + s.suffix,
+			}).Exec(ctx)
+			require.NoError(t, err)
 		}
 		opts := &types.Options{
 			DeferredJSONLExport: true,
@@ -409,8 +417,11 @@ func TestFinishScanJSONLExport(t *testing.T) {
 		counts := countEnvelopeTypes(t, []byte(out))
 		assert.Equal(t, 1, counts["finding"], "only this scan's finding")
 		assert.Equal(t, 1, counts["scan"], "only this scan's row")
+		assert.Equal(t, 1, counts["http_record"], "only the record this scan stored")
 		assert.Contains(t, out, `"hash-new"`)
+		assert.Contains(t, out, `"rec-new"`)
 		assert.NotContains(t, out, `"hash-old"`, "an earlier scan's finding must not leak into this scan's stream")
+		assert.NotContains(t, out, `"rec-old"`, "nor an earlier scan's records")
 		assert.NotContains(t, out, `"scan-old"`)
 
 		// `vigolium export` (streamJSONLExport, no scan UUID) stays project-wide.
@@ -418,6 +429,7 @@ func TestFinishScanJSONLExport(t *testing.T) {
 		all, err := streamJSONLExport(ctx, db, &buf, false, projA)
 		require.NoError(t, err)
 		assert.Equal(t, 2, all.byType["finding"])
+		assert.Equal(t, 2, all.byType["http_record"])
 	})
 
 	t.Run("not deferred is a no-op", func(t *testing.T) {

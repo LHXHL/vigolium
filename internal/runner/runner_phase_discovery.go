@@ -231,7 +231,7 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 
 	var discoveryRecordWriter *database.RecordWriter
 	if r.repository != nil {
-		discoveryRecordWriter = database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
+		discoveryRecordWriter = r.newScanRecordWriter()
 	}
 
 	authWalls := newAuthWallCollector()

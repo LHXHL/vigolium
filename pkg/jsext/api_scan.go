@@ -336,7 +336,7 @@ func scanFuncDefs() []JSFuncDef {
 							continue
 						}
 
-						if _, err := repo.SaveRecord(ctx, rr, extensionScanSource, opts.ProjectUUID); err != nil {
+						if _, err := repo.SaveRecordWithLineage(ctx, rr, extensionScanSource, opts.ProjectUUID, database.RecordLineage{ScanUUID: opts.ScanUUID}); err != nil {
 							errors = append(errors, fmt.Sprintf("%s: %s", target, err))
 							continue
 						}

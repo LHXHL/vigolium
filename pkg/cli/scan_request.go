@@ -9,6 +9,7 @@ import (
 	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
+	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -143,9 +144,12 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	ctx, stop := lightweightScanContext()
 	defer stop()
 
+	sess := newDirectScanSession(database.ScanNameScanRequest, []scanInput{{rr: rr, target: target, method: method}})
+	defer sess.close()
+
 	// Route through the Runner when output/persistence/phase flags are in play;
 	// otherwise take the fast in-memory direct path.
-	return withFailOnGate(dispatchSingleScan(ctx, rr, target, method))
+	return withFailOnGate(dispatchSingleScan(ctx, sess, rr, target, method))
 }
 
 // normalizeRawRequestInput prepares a raw HTTP request for the parser while

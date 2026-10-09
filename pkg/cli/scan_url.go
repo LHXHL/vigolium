@@ -152,11 +152,11 @@ func needsRunnerScan() bool {
 // context there would be a second, slower answer to the same signal. The
 // caller's loop still checks ctx between inputs, so an interrupt stops the
 // batch on both paths.
-func dispatchSingleScan(ctx context.Context, rr *httpmsg.HttpRequestResponse, target, method string) error {
+func dispatchSingleScan(ctx context.Context, sess *directScanSession, rr *httpmsg.HttpRequestResponse, target, method string) error {
 	if needsRunnerScan() {
 		return runRunnerScan(rr, target)
 	}
-	return runScanWithRR(ctx, rr, target, method)
+	return runScanWithRR(ctx, sess, rr, target, method)
 }
 
 // lightweightScanContext is the ONE cancellation context for a scan-url /
@@ -178,10 +178,10 @@ func lightweightScanContext() (context.Context, context.CancelFunc) {
 // --json contract describes. Every other mode keeps per-input dispatch (the
 // human renderer and --ci-output-format are line protocols where that is
 // correct), and all of them stop early on an interrupt.
-func runDirectScanBatch(ctx context.Context, cmd *cobra.Command, inputs []scanInput) error {
+func runDirectScanBatch(ctx context.Context, cmd *cobra.Command, sess *directScanSession, inputs []scanInput) error {
 	results, notScanned, err := scanInputs(ctx, inputs,
 		func(ctx context.Context, in scanInput) (*scanResult, error) {
-			return executeDirectScan(ctx, in.rr, in.target, in.method)
+			return executeDirectScan(ctx, sess, in.rr, in.target, in.method)
 		})
 	if writeErr := writeDirectScanBatch(commandPathWithoutRoot(cmd), results, notScanned); writeErr != nil {
 		return writeErr
@@ -196,10 +196,10 @@ func runDirectScanBatch(ctx context.Context, cmd *cobra.Command, inputs []scanIn
 // publish their own output as they go, so only the error is carried back — but
 // "stop at a cancelled context, keep the last error" has to mean the same thing
 // on both paths or a Ctrl-C behaves differently depending on which one ran.
-func dispatchScanInputs(ctx context.Context, inputs []scanInput) error {
+func dispatchScanInputs(ctx context.Context, sess *directScanSession, inputs []scanInput) error {
 	_, _, err := scanInputs(ctx, inputs,
 		func(ctx context.Context, in scanInput) (*scanResult, error) {
-			return nil, dispatchSingleScan(ctx, in.rr, in.target, in.method)
+			return nil, dispatchSingleScan(ctx, sess, in.rr, in.target, in.method)
 		})
 	return err
 }
@@ -244,10 +244,14 @@ func runScanURLCmd(cmd *cobra.Command, args []string) error {
 	ctx, stop := lightweightScanContext()
 	defer stop()
 
+	// The scan rows and the store of the direct path; see directScanSession.
+	sess := newDirectScanSession(database.ScanNameScanURL, inputs)
+	defer sess.close()
+
 	if directBatchJSON(inputs) {
-		return withFailOnGate(runDirectScanBatch(ctx, cmd, inputs))
+		return withFailOnGate(runDirectScanBatch(ctx, cmd, sess, inputs))
 	}
-	return withFailOnGate(dispatchScanInputs(ctx, inputs))
+	return withFailOnGate(dispatchScanInputs(ctx, sess, inputs))
 }
 
 // scanURLInputs resolves the command's inputs: the positional URL argument
@@ -312,8 +316,13 @@ func scanURLInputs(args []string) ([]scanInput, error) {
 
 // scanResult is the JSON output struct for scan-url and scan-request.
 type scanResult struct {
-	Target         string                `json:"target"`
-	Method         string                `json:"method"`
+	Target string `json:"target"`
+	Method string `json:"method"`
+	// ScanUUID is always set, persisted or not: it stamps every finding of this
+	// run and, when a store was open, names the scan row (`log <uuid>`,
+	// `scan status <uuid>`, `finding --scan-uuid <uuid>`). Minted per input
+	// unless --scan-uuid pinned one for the whole invocation.
+	ScanUUID       string                `json:"scan_uuid"`
 	ScanDurationMs int64                 `json:"scan_duration_ms"`
 	ModulesRun     int                   `json:"modules_run"`
 	Findings       []*output.ResultEvent `json:"findings"`
@@ -635,8 +644,8 @@ func acquireDirectScanDB(open func() (*database.DB, error)) (*database.Repositor
 // cancelled or failed execution still has findings worth reporting, and under
 // -j the document is what carries them. The error is returned after the write,
 // so the exit code reports the failure without costing the output.
-func runScanWithRR(ctx context.Context, rr *httpmsg.HttpRequestResponse, target, method string) error {
-	result, execErr := executeDirectScan(ctx, rr, target, method)
+func runScanWithRR(ctx context.Context, sess *directScanSession, rr *httpmsg.HttpRequestResponse, target, method string) error {
+	result, execErr := executeDirectScan(ctx, sess, rr, target, method)
 	if result == nil {
 		return execErr
 	}
@@ -650,9 +659,17 @@ func runScanWithRR(ctx context.Context, rr *httpmsg.HttpRequestResponse, target,
 // one request through the executor. It returns the result it assembled together
 // with the execution's own error, so the caller can publish the former and still
 // report the latter.
-func executeDirectScan(ctx context.Context, rr *httpmsg.HttpRequestResponse, target, method string) (*scanResult, error) {
+//
+// sess owns the scan row this input reports into and the store's lifetime; a
+// nil sess (a single ad-hoc call) gets a private one.
+func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg.HttpRequestResponse, target, method string) (*scanResult, error) {
 	startTime := time.Now()
 	resolvedModules := resolveModules()
+	if sess == nil {
+		sess = newDirectScanSession(database.ScanNameScanURL, []scanInput{{rr: rr, target: target, method: method}})
+		defer sess.close()
+	}
+	scanUUID := sess.scanUUID()
 
 	// Set up HTTP stack
 	httpRequester, svc, cleanup, err := setupScanHTTPStack()
@@ -680,8 +697,11 @@ func executeDirectScan(ctx context.Context, rr *httpmsg.HttpRequestResponse, tar
 		return nil, dbErr
 	}
 	if repo != nil {
-		defer closeDatabaseOnExit()
+		// Closed by the session once every input is done, not here: the
+		// handle is process-cached and later inputs of the batch reuse it.
+		sess.noteStore()
 	}
+	sess.begin(ctx, repo, scanProjectUUID, scanUUID, target, method, len(active), len(passive))
 
 	// Create source
 	src := source.NewSingleSource(rr, resolvedModules)
@@ -709,7 +729,7 @@ func executeDirectScan(ctx context.Context, rr *httpmsg.HttpRequestResponse, tar
 		Services:             svc,
 		HTTPRequester:        httpRequester,
 		Repository:           repo,
-		ScanUUID:             globalScanUUID,
+		ScanUUID:             scanUUID,
 		ProjectUUID:          scanProjectUUID,
 		MaxFindingsPerModule: globalMaxFindingsPerModule,
 		TechFilterDisabled:   globalNoTechFilter,
@@ -793,12 +813,20 @@ func executeDirectScan(ctx context.Context, rr *httpmsg.HttpRequestResponse, tar
 	if execErr != nil {
 		scanErrors = append(scanErrors, execErr.Error())
 	}
+	interrupted := ctx.Err() != nil
+
+	// Finalize the row on every exit from Execute, interrupted or not.
+	mu.Lock()
+	findingCount := len(findings)
+	mu.Unlock()
+	sess.end(ctx, repo, scanUUID, target, executor, interrupted, execErr, findingCount)
 
 	duration := time.Since(startTime)
 
 	result := &scanResult{
 		Target:         target,
 		Method:         method,
+		ScanUUID:       scanUUID,
 		ScanDurationMs: duration.Milliseconds(),
 		ModulesRun:     len(active) + len(passive),
 		Findings:       findings,
@@ -806,7 +834,7 @@ func executeDirectScan(ctx context.Context, rr *httpmsg.HttpRequestResponse, tar
 		Observations:   observations,
 		Errors:         scanErrors,
 		Persisted:      repo != nil,
-		Interrupted:    ctx.Err() != nil,
+		Interrupted:    interrupted,
 	}
 	if result.Findings == nil {
 		result.Findings = make([]*output.ResultEvent, 0)
@@ -1124,13 +1152,16 @@ func outputScanResult(result *scanResult) error {
 		return writeAgentJSON(result)
 	}
 
-	// Human-readable output
-	fmt.Fprintf(os.Stderr, "\n%s Native scan completed: %s (%s %s) in %s\n",
+	// Human-readable output. The scan ID is on the completion line because it
+	// is the handle every follow-up command takes (log, scan status,
+	// finding --scan-uuid).
+	fmt.Fprintf(os.Stderr, "\n%s Native scan completed: %s (%s %s) in %s — Scan ID: %s\n",
 		terminal.SuccessSymbol(),
 		terminal.Cyan(result.Target),
 		result.Method,
 		terminal.Gray(fmt.Sprintf("%d modules", result.ModulesRun)),
-		(time.Duration(result.ScanDurationMs) * time.Millisecond).Round(time.Second))
+		(time.Duration(result.ScanDurationMs) * time.Millisecond).Round(time.Second),
+		terminal.BoldCyan(result.ScanUUID))
 
 	if len(result.Findings) == 0 {
 		fmt.Fprintf(os.Stderr, "%s No findings.\n", terminal.InfoSymbol())

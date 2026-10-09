@@ -217,7 +217,7 @@ func (r *Runner) crawlReSpiderPerSeed(ctx context.Context, chosen []respiderSeed
 		}
 		cfg := baseCfg
 		cfg.TargetURL = s.url
-		rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
+		rw := r.newScanRecordWriter()
 		seedCtx, cancel := context.WithTimeout(ctx, perSeed)
 		// Watchdog bounds RunSpider + rw.Close so a wedged browser can't hang the phase.
 		oc := runSpiderWatchdog(seedCtx, cfg, rw, perSeed, s.url)
@@ -257,7 +257,7 @@ func (r *Runner) crawlReSpiderHostGroup(ctx context.Context, group []respiderSee
 
 	base := baseCfg
 	base.TargetURL = group[0].url
-	rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
+	rw := r.newScanRecordWriter()
 	sess, serr := spitolas.NewSpiderSession(ctx, base, rw)
 	if serr != nil {
 		// The browser couldn't launch; a fresh-browser-per-seed attempt would fail

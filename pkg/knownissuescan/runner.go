@@ -229,7 +229,7 @@ func Run(ctx context.Context, cfg Config) error {
 					httpmsg.NewHttpRequest([]byte(result.Request)),
 					httpmsg.NewHttpResponse([]byte(result.Response)),
 				)
-				recordUUID, recErr := cfg.Repository.SaveRecord(scanCtx, fuzzedRR, "spa", cfg.ProjectUUID)
+				recordUUID, recErr := cfg.Repository.SaveRecordWithLineage(scanCtx, fuzzedRR, "spa", cfg.ProjectUUID, database.RecordLineage{ScanUUID: cfg.ScanUUID})
 				if recErr != nil {
 					zap.L().Debug("KnownIssueScan: failed to save http record", zap.Error(recErr))
 				} else {

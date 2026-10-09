@@ -245,7 +245,8 @@ func streamJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitRe
 }
 
 // streamScopedJSONLExport is streamJSONLExport narrowed to one scan when
-// scanUUID is non-empty (the scan row and its findings; see streamExportData).
+// scanUUID is non-empty (the scan row, its records and its findings; see
+// streamExportData).
 // The post-scan `--format jsonl` stream passes the scan's UUID; `vigolium
 // export` passes "" and stays the whole-project path.
 func streamScopedJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitResponse bool, projectUUID, scanUUID string) (exportCounts, error) {
@@ -363,8 +364,9 @@ func exportStatelessSQLite(ctx context.Context, db *database.DB, outputPath stri
 // to this scan (opts.ScanUUID): the scan row and the findings it produced, the
 // same scope maybeGenerateReports gives the html/report files. Without the scan
 // filter `scan -t X -j` dumped every finding the project had ever stored. HTTP
-// records stay project-scoped until records carry their scan_uuid. `vigolium
-// export` remains the whole-project path. Stateless runs export the whole temp
+// records are scoped the same way: the rows this scan stored plus the evidence
+// its findings cite (database.WhereScanRecords). `vigolium export` remains the
+// whole-project path. Stateless runs export the whole temp
 // DB, which holds only this run. Output goes to the -o file or, when
 // no -o was given, to stdout. Stateless runs WITH -o are materialized by
 // finishStatelessExport (all formats), so only the stateless no-output case is

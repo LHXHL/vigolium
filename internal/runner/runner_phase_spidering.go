@@ -478,7 +478,7 @@ func (r *Runner) openSpiderSession(ctx context.Context, group []string, settings
 	}
 	base := r.buildSpiderConfig(group[0], settingsCfg, maxDuration, infra)
 	counters.wire(&base)
-	rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
+	rw := r.newScanRecordWriter()
 	sess, err := spitolas.NewSpiderSession(ctx, base, rw)
 	if err != nil {
 		zap.L().Warn("Spidering: shared session launch failed, falling back to one browser per target",
@@ -706,7 +706,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 			} else {
 				cfg := r.buildSpiderConfig(target, settingsCfg, maxDuration, infra)
 				requests.wire(&cfg)
-				rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
+				rw := r.newScanRecordWriter()
 				oc = runSpiderWatchdog(timeoutCtx, cfg, rw, maxDuration, target)
 				phaseCapture.Merge(oc.capture())
 			}

@@ -16,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -287,17 +288,7 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 	// Create scan record if database is available
 	if h.repo != nil {
 		ctx := context.Background()
-		scan := &database.Scan{
-			UUID:        scanID,
-			ProjectUUID: projectUUID,
-			Name:        "scan-url",
-			Status:      "running",
-			Target:      req.URL,
-			Modules:     req.Modules,
-			ScanSource:  "api",
-			ScanMode:    "single",
-			StartedAt:   time.Now(),
-		}
+		scan := database.NewSingleRequestScan(scanID, projectUUID, database.ScanNameScanURL, req.URL, req.Modules, "api")
 		if err := h.repo.CreateScan(ctx, scan); err != nil {
 			zap.L().Warn("Failed to create scan record", zap.Error(err))
 		}
@@ -398,17 +389,7 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 	// Create scan record if database is available
 	if h.repo != nil {
 		ctx := context.Background()
-		scan := &database.Scan{
-			UUID:        scanID,
-			ProjectUUID: projectUUID,
-			Name:        "scan-request",
-			Status:      "running",
-			Target:      target,
-			Modules:     req.Modules,
-			ScanSource:  "api",
-			ScanMode:    "single",
-			StartedAt:   time.Now(),
-		}
+		scan := database.NewSingleRequestScan(scanID, projectUUID, database.ScanNameScanRequest, target, req.Modules, "api")
 		if err := h.repo.CreateScan(ctx, scan); err != nil {
 			zap.L().Warn("Failed to create scan record", zap.Error(err))
 		}
@@ -526,9 +507,11 @@ func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *
 				zap.String("scan_uuid", scanID),
 				zap.Any("panic", r),
 				zap.ByteString("stack", stack[:n]))
-			if h.repo != nil {
-				_ = h.repo.CompleteScan(context.Background(), scanID, fmt.Sprintf("panic: %v", r))
-			}
+			// A panic is a failed assessment. Reachability is unknown here, so
+			// the verdict claims none (reached=true): partial, stop reason error.
+			panicErr := fmt.Errorf("panic: %v", r)
+			h.completeSingleRequestScan(scanID, panicErr,
+				runner.DirectScanCompletion(core.ExecutionReport{}, true, false, panicErr, database.TargetTally{}))
 		}
 	}()
 
@@ -684,12 +667,27 @@ func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *
 		terminal.Gray(fmt.Sprintf("%d modules", modulesRun)),
 		terminal.BoldMagenta(elapsed.Round(time.Second).String())))
 
-	// Complete scan record
-	if h.repo != nil {
-		if err := h.repo.CompleteScan(context.Background(), scanID, errMsg); err != nil {
-			zap.L().Error("Failed to complete scan record",
-				zap.String("scan_uuid", scanID), zap.Error(err))
-		}
+	// Complete the scan row with the coverage verdict the CLI direct path
+	// computes for the same run: cancelled (server shutdown), unreachable target
+	// and executor shortfalls are recorded instead of a bare "completed".
+	rep := scanExecutor.Report()
+	completion := runner.DirectScanCompletion(rep, rep.Responded > 0, ctx.Err() != nil, execErr,
+		runner.DirectTargetTally(target, rep, scanExecutor.BaselineFailures()))
+	h.completeSingleRequestScan(scanID, execErr, completion)
+}
+
+// completeSingleRequestScan finalizes a scan-url / scan-request row on a
+// detached, bounded context: the scan's own context is already cancelled on a
+// server shutdown, and finalizing on it would leave the row "running" forever.
+func (h *Handlers) completeSingleRequestScan(scanID string, execErr error, c database.ScanCompletion) {
+	if h.repo == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := h.repo.CompleteScanWithOutcome(ctx, scanID, runner.DirectScanErrorMessage(execErr, c), c); err != nil {
+		zap.L().Error("Failed to complete scan record",
+			zap.String("scan_uuid", scanID), zap.Error(err))
 	}
 }
 

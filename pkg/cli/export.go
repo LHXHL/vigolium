@@ -1040,6 +1040,12 @@ func streamHTTPRecords(ctx context.Context, db *database.DB, omitResponse bool, 
 		qb = qb.OmitBodies()
 	}
 	query := qb.BuildRecordsQuery()
+	// A scan-scoped export (the post-scan jsonl/report of one run) carries the
+	// exchanges that run stored plus the evidence its findings cite, not every
+	// record the project ever accumulated. `vigolium export` passes "".
+	if scanUUID != "" {
+		query = database.WhereScanRecords(query, scanUUID)
+	}
 	rows, err := query.Rows(ctx)
 	if err != nil {
 		return fmt.Errorf("export http records: %w", err)

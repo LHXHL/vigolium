@@ -42,9 +42,10 @@ vigolium scan-url -j 'https://example.com/search?q=test'
 
 JSONL is the bulk stream contract and is suitable for `jq`, a SIEM, or
 line-oriented ingestion. The post-scan stream from `scan --format jsonl` (and
-`scan -j`) is scoped to that scan: its `scan` row and the findings it produced.
-HTTP records are still project-scoped. Use `vigolium export --format jsonl` to
-dump the whole project. Select finding envelopes before reading fields:
+`scan -j`) is scoped to that scan: its `scan` row, the findings it produced, and
+its HTTP records (the exchanges it stored first, `http_records.scan_uuid`, plus
+any record its findings cite as evidence). Use `vigolium export --format jsonl`
+to dump the whole project. Select finding envelopes before reading fields:
 
 ```bash
 vigolium scan https://example.com --format jsonl \

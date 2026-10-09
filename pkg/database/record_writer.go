@@ -70,6 +70,14 @@ type RecordWriterConfig struct {
 	MaxSubmitRecords int
 	MaxSubmitBytes   int64
 
+	// ScanUUID, when set, is stamped on every row this writer INSERTS, unless
+	// the write's own lineage names a scan. A dedup hit (cache or batched lookup)
+	// keeps the existing row's scan_uuid: the column records the first scan to
+	// store the exchange. One writer belongs to one scan phase, so the runner
+	// sets it once rather than threading it through every caller (the browser
+	// crawler writes through this writer without knowing about scans).
+	ScanUUID string
+
 	// insertBatch replaces the repository batch insert. Unexported, so only this
 	// package's tests can set it — and it lives on the config rather than on the
 	// writer because NewRecordWriter starts the flush goroutines, which read the
@@ -292,6 +300,7 @@ func (w *RecordWriter) admit(ctx context.Context, rr *httpmsg.HttpRequestRespons
 		return pendingWrite{err: fmt.Errorf("failed to convert request: %w", err), resolved: true}
 	}
 	record.Source = source
+	record.ScanUUID = w.cfg.ScanUUID
 	// Lineage is applied to a NEW row only; a dedup hit below returns the
 	// existing row untouched. Deliberate: a shared redirect target already has
 	// whatever chain it was first written under, and re-parenting it to the most
