@@ -770,6 +770,16 @@ func TestFirstPhaseReason_SkipsNonStoppingReasons(t *testing.T) {
 			want: database.ReasonCancelled,
 		},
 		{
+			// oast_unavailable sorts ahead of phase_deadline, but out-of-band
+			// checks being off never stopped the scan.
+			name: "oast_unavailable is a caveat, not a stop reason",
+			phases: []database.PhaseOutcome{
+				{Phase: "dynamic-assessment", State: database.PhasePartial,
+					Reasons: []string{database.ReasonOASTUnavailable, database.ReasonPhaseDeadline}},
+			},
+			want: database.ReasonPhaseDeadline,
+		},
+		{
 			name: "a failed phase with no reasons still reports error",
 			phases: []database.PhaseOutcome{
 				{Phase: "discovery", State: database.PhaseFailed},

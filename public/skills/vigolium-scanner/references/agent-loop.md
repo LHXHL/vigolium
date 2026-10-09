@@ -291,6 +291,34 @@ What each type is for:
 | `scan.interrupting` | **Nonterminal.** A shutdown began (SIGINT/SIGTERM). The terminal event still follows — do not treat this as the end of the stream. |
 | `scan.finished` | Terminal. `status`, `findings_by_severity`, `records_written`, and `stop_reason`/`reasons` when coverage was lost. |
 
+### Reserved types and fields
+
+These are in the event vocabulary (`scanevents.Types`) but **nothing emits them
+yet**. Each row names the release expected to start emitting it; until then the
+type never appears and the field is absent. Code against them now and ignore
+them while they are missing.
+
+| Type | Carries | Emitted from |
+|---|---|---|
+| `scan.plan` | The resolved plan: phases, budgets, targets, estimate. Second event on every stream. | v0.7 |
+| `scan.setup` | A first-run install step: `component`, `state` (`started`/`finished`/`failed`), `bytes`, `duration_ms`. | v0.7 |
+| `oast.unavailable` | OAST registration failed; out-of-band checks do not run and the scan is partial with `oast_unavailable`. | v0.6 |
+| `host.quarantined` / `host.recovered` / `host.dead` | Per-host breaker transitions: `host`, `detail`. | not yet scheduled |
+| `auth.session_suspect` / `auth.relogin` | Responses look logged out; a re-login attempt and its result. | not yet scheduled |
+| `module.error` | Module failures, rate-limited: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`/`load`), `message`, `count`. | v0.7 |
+| `extension.failed` | An extension failed to load or run: `module_id`, `message`. | v0.6 |
+
+| Field | On | Means | Emitted from |
+|---|---|---|---|
+| `targets_admitted` / `targets_rejected` | `scan.started` | CLI targets scope admitted / rejected. A zero is written, not omitted. | v0.6 |
+| `targets_reached` / `targets_unreachable` | `scan.finished` | Admitted targets that did / did not give an HTTP answer. | v0.6 |
+| `budgets` | `scan.started` | `{max_requests, max_requests_per_host}`; 0 means unlimited. | not yet scheduled |
+| `egress` | `scan.started` | `{gated: [...], exempt: [{path, reason}]}`: which outbound paths share the rate and host limits. | not yet scheduled |
+| `requests_in_scope` | `phase.progress`, `phase.finished` | The in-scope share of `requests_sent` (the browser crawl also counts third-party requests). | not yet scheduled |
+| `records_basis` | `scan.finished` | Absent: `records_written` counts records stamped with this scan. `time_window`: records created since the scan started (approximate on a shared DB). | v0.6 |
+| `exports` | `scan.finished` | `[{format, path}]` for every file the scan wrote. | v0.6 |
+| `module_errors` / `extensions_failed` | `scan.finished` | Error count per module id; extensions that failed to load. | v0.7 |
+
 ### Terminal `status` values
 
 | `status` | Means |
@@ -312,8 +340,8 @@ not empty.
 
 | Field | On | Means |
 |---|---|---|
-| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `checkpoint_failed`, `input_incomplete`, … |
-| `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
+| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `checkpoint_failed`, `input_incomplete`, … Reserved, not emitted yet: `targets_out_of_scope`, `targets_unreachable`, `oast_unavailable` (a caveat, never the `stop_reason` while another reason exists), `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`, and the stop reasons `no_targets_in_scope` / `no_targets_reachable` (the scan did nothing; exit 1). |
+| `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`, `responses_while_logged_out`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
 | `stop_reason` | `scan.finished` | The scan-level roll-up of why the run stopped launching work. |
 
 The same facts are persisted on the scan row as `completeness`

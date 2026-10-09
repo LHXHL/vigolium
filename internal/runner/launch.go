@@ -128,8 +128,8 @@ func LaunchScan(ctx context.Context, params LaunchParams) (*LaunchResult, error)
 	opts := buildLaunchOptions(params)
 
 	if opts.OnlyPhase != "" || len(opts.SkipPhases) > 0 {
-		if err := ApplyNativePhaseSelection(opts, func() {
-			settings.DynamicAssessment.Extensions.Enabled = true
+		if err := ApplyNativePhaseSelection(opts, func(enabled bool) {
+			settings.DynamicAssessment.Extensions.Enabled = enabled
 		}); err != nil {
 			return nil, fmt.Errorf("LaunchScan: %w", err)
 		}

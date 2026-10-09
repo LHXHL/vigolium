@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -70,9 +71,14 @@ func TestPhaseVocabularyIsSelfConsistent(t *testing.T) {
 				t.Errorf("alias %q normalized to %q, want %q", a, got, p.Canonical)
 			}
 			// An alias must be accepted wherever its canonical is, so --only
-			// never rejects a spelling the help text lists.
-			if _, _, err := parseOnlyPhases(a); err != nil {
+			// never rejects a spelling the help text lists — and never accepts
+			// one for an internal step that cannot run alone.
+			_, _, err := parseOnlyPhases(a)
+			if p.onlyAccepted() && err != nil {
 				t.Errorf("parseOnlyPhases(%q) rejected an advertised alias: %v", a, err)
+			}
+			if !p.onlyAccepted() && err == nil {
+				t.Errorf("parseOnlyPhases(%q) accepted an alias of internal phase %q", a, p.Canonical)
 			}
 		}
 	}
@@ -305,7 +311,7 @@ func TestApplyNativePhaseSelection_ExtensionEnablesExtensions(t *testing.T) {
 	for _, only := range []string{"extension", "dynamic-assessment,extension", "spidering,ext"} {
 		called := false
 		opts := &types.Options{OnlyPhase: only}
-		if err := ApplyNativePhaseSelection(opts, func() { called = true }); err != nil {
+		if err := ApplyNativePhaseSelection(opts, func(enabled bool) { called = enabled }); err != nil {
 			t.Fatalf("--only %s: %v", only, err)
 		}
 		if !called {
@@ -480,4 +486,205 @@ func TestNativeScanPlanSendsTargetTraffic(t *testing.T) {
 		}}
 		assert.True(t, plan.SendsTargetTraffic())
 	})
+}
+
+// TestEveryPlannedPhaseIsInTheVocabulary: every step BuildNativeScanPlan can
+// schedule appears on phase.started/phase.finished, so each must be a canonical
+// vocabulary id — or a consumer sees a phase name it cannot look up, --skip,
+// or find in `strategy -j`.
+func TestEveryPlannedPhaseIsInTheVocabulary(t *testing.T) {
+	canonical := map[string]bool{}
+	for _, p := range nativePhaseVocabulary {
+		canonical[p.Canonical] = true
+	}
+	for _, step := range BuildNativeScanPlan(&types.Options{}).Steps {
+		if !canonical[string(step.Phase)] {
+			t.Errorf("plan step %q is not in nativePhaseVocabulary", step.Phase)
+		}
+	}
+}
+
+func TestPhaseVocabulary_InternalAndOnlyAccepted(t *testing.T) {
+	byName := map[string]PhaseSpelling{}
+	for _, p := range PhaseVocabulary() {
+		byName[p.Canonical] = p
+		if p.OnlyAccepted == p.Internal {
+			t.Errorf("%s: only_accepted=%v internal=%v; an internal phase is exactly one --only rejects",
+				p.Canonical, p.OnlyAccepted, p.Internal)
+		}
+	}
+	for name, want := range map[string]struct{ internal, skippable bool }{
+		"heuristics-check":  {false, true},
+		"port-sweep":        {false, true},
+		"targeted-respider": {true, true},
+		"seed":              {true, false},
+		"preflight":         {true, true},
+		"extension":         {false, true},
+	} {
+		got, ok := byName[name]
+		if !ok {
+			t.Errorf("%s missing from PhaseVocabulary", name)
+			continue
+		}
+		if got.Internal != want.internal || got.Skippable != want.skippable {
+			t.Errorf("%s: internal=%v skippable=%v, want %v/%v", name, got.Internal, got.Skippable, want.internal, want.skippable)
+		}
+	}
+	for alias, canonical := range map[string]string{
+		"heuristics": "heuristics-check", "heuristic": "heuristics-check",
+		"ports": "port-sweep", "portsweep": "port-sweep", "port-scan": "port-sweep",
+		"respider": "targeted-respider", "re-spider": "targeted-respider",
+	} {
+		if got := NormalizeNativePhase(alias); got != canonical {
+			t.Errorf("NormalizeNativePhase(%q) = %q, want %q", alias, got, canonical)
+		}
+	}
+}
+
+func planStepEnabled(plan NativeScanPlan, phase NativePhase) bool {
+	for _, step := range plan.Steps {
+		if step.Phase == phase {
+			return step.Enabled
+		}
+	}
+	return false
+}
+
+// TestPortSweepGate: the sweep runs under deep / --follow-subdomains or when
+// --only names it, and --skip port-sweep or an --only without it turn it off.
+func TestPortSweepGate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts types.Options
+		want bool
+	}{
+		{"deep schedules it", types.Options{Intensity: "deep"}, true},
+		{"follow-subdomains schedules it", types.Options{FollowSubdomains: true}, true},
+		{"balanced does not", types.Options{Intensity: "balanced"}, false},
+		{"--skip port-sweep under deep", types.Options{Intensity: "deep", SkipPhases: []string{"port-sweep"}}, false},
+		{"--skip ports alias under deep", types.Options{Intensity: "deep", SkipPhases: []string{"ports"}}, false},
+		{"--only dast under deep", types.Options{Intensity: "deep", OnlyPhase: "dast"}, false},
+		{"--only discovery under follow-subdomains", types.Options{FollowSubdomains: true, OnlyPhase: "discovery"}, false},
+		{"--only port-sweep without deep", types.Options{OnlyPhase: "port-sweep"}, true},
+		{"--only discovery,ports under deep", types.Options{Intensity: "deep", OnlyPhase: "discovery,ports"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
+				t.Fatalf("ApplyNativePhaseSelection: %v", err)
+			}
+			if got := planStepEnabled(BuildNativeScanPlan(&opts), PhasePortSweep); got != tc.want {
+				t.Errorf("port-sweep enabled = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("--only port-sweep runs nothing else", func(t *testing.T) {
+		opts := types.Options{OnlyPhase: "port-sweep", HeuristicsCheck: "basic"}
+		if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range BuildNativeScanPlan(&opts).Steps {
+			if step.Enabled && step.Phase != PhasePortSweep {
+				t.Errorf("--only port-sweep also enabled %s", step.Phase)
+			}
+		}
+	})
+}
+
+func TestSkipHeuristicsAndRespider(t *testing.T) {
+	opts := types.Options{
+		HeuristicsCheck:  "basic",
+		SpideringEnabled: true,
+		SkipPhases:       []string{"heuristics", "re-spider"},
+	}
+	if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if opts.HeuristicsCheck != "none" {
+		t.Errorf("HeuristicsCheck = %q, want none", opts.HeuristicsCheck)
+	}
+	plan := BuildNativeScanPlan(&opts)
+	if planStepEnabled(plan, PhaseHeuristicsCheck) {
+		t.Error("heuristics-check still enabled after --skip heuristics")
+	}
+	if planStepEnabled(plan, PhaseTargetedReSpider) {
+		t.Error("targeted-respider still enabled after --skip re-spider")
+	}
+	if !planStepEnabled(plan, PhaseSpidering) {
+		t.Error("--skip targeted-respider must keep spidering")
+	}
+}
+
+func TestOnlyHeuristicsCheck(t *testing.T) {
+	opts := types.Options{OnlyPhase: "heuristics-check", HeuristicsCheck: "none"}
+	if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !planStepEnabled(BuildNativeScanPlan(&opts), PhaseHeuristicsCheck) {
+		t.Error("--only heuristics-check did not schedule heuristics-check")
+	}
+	opts = types.Options{OnlyPhase: "discovery", HeuristicsCheck: "advanced"}
+	if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	if opts.HeuristicsCheck != "none" {
+		t.Errorf("--only discovery left HeuristicsCheck = %q", opts.HeuristicsCheck)
+	}
+}
+
+func TestSkipExtensionDisablesExtensions(t *testing.T) {
+	enabled := true
+	opts := types.Options{SkipPhases: []string{"ext"}}
+	if err := ApplyNativePhaseSelection(&opts, func(on bool) { enabled = on }); err != nil {
+		t.Fatalf("--skip extension rejected: %v", err)
+	}
+	if enabled {
+		t.Error("--skip extension did not disable extensions")
+	}
+	if opts.SkipDynamicAssessment {
+		t.Error("--skip extension must keep the built-in dynamic-assessment modules")
+	}
+}
+
+func TestSkipPreflightAccepted(t *testing.T) {
+	opts := types.Options{SkipPhases: []string{"preflight"}}
+	if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
+		t.Fatalf("--skip preflight rejected: %v", err)
+	}
+	if !opts.SkipPreflight {
+		t.Error("SkipPreflight not set")
+	}
+}
+
+func TestInternalPhasesRejectedByOnly(t *testing.T) {
+	for _, phase := range []string{"seed", "targeted-respider", "respider", "preflight"} {
+		opts := types.Options{OnlyPhase: phase}
+		if err := ApplyNativePhaseSelection(&opts, nil); err == nil {
+			t.Errorf("--only %s accepted; internal steps cannot run alone", phase)
+		}
+	}
+	if err := ApplyNativePhaseSelection(&types.Options{SkipPhases: []string{"seed"}}, nil); err == nil {
+		t.Error("--skip seed accepted; seed is not skippable")
+	}
+}
+
+// TestPhaseVocabularyJSONShape pins the wire keys `strategy -j` publishes under
+// "phases": a caller decides what --only/--skip accept from them.
+func TestPhaseVocabularyJSONShape(t *testing.T) {
+	raw, err := json.Marshal(PhaseVocabulary())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		for _, key := range []string{"canonical", "skippable", "internal", "only_accepted"} {
+			if _, ok := row[key]; !ok {
+				t.Errorf("phase %v lacks %q", row["canonical"], key)
+			}
+		}
+	}
 }

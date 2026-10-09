@@ -304,6 +304,17 @@ type Options struct {
 	OnlyPhase string
 	// SkipPhases disables one or more phases while keeping all others enabled
 	SkipPhases []string
+	// SkipPortSweep disables the alternate-port sweep even where deep /
+	// --follow-subdomains would schedule it. Set by --skip port-sweep and by any
+	// --only that does not list port-sweep (see runner.ApplyNativePhaseSelection).
+	SkipPortSweep bool
+	// SkipTargetedRespider disables the targeted re-spider step (--skip
+	// targeted-respider) while keeping spidering itself.
+	SkipTargetedRespider bool
+	// SkipPreflight is set by --skip preflight. The phase name is reserved in the
+	// vocabulary; the reachability preflight step that honours it lands later, so
+	// today it has no effect.
+	SkipPreflight bool
 
 	// OastURL is a fixed OAST callback URL (from --oast-url flag)
 	OastURL string

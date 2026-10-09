@@ -436,8 +436,8 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	if err := applyProbeFlags(scanOpts, cmd); err != nil {
 		return err
 	}
-	if err := runner.ApplyNativePhaseSelection(scanOpts, func() {
-		settings.DynamicAssessment.Extensions.Enabled = true
+	if err := runner.ApplyNativePhaseSelection(scanOpts, func(enabled bool) {
+		settings.DynamicAssessment.Extensions.Enabled = enabled
 	}); err != nil {
 		return err
 	}

@@ -89,7 +89,7 @@ func validateRunScanRequest(req RunScanRequest) error {
 			// The phase vocabulary has one owner (runner.nativePhaseVocabulary);
 			// a local copy of the valid set here is what let the REST API reject
 			// a spelling the CLI accepted.
-			if !runner.IsNativePhaseSpelling(p) {
+			if !runner.IsOnlyPhaseSpelling(p) {
 				return fmt.Errorf("invalid only %q; valid phases: %s", p, runner.ValidOnlyPhasesDesc)
 			}
 		}
@@ -101,10 +101,9 @@ func validateRunScanRequest(req RunScanRequest) error {
 
 	if len(req.Skip) > 0 {
 		for _, phase := range req.Skip {
-			normalized := runner.NormalizeNativePhase(phase)
-			switch normalized {
-			case "discovery", "ingestion", "external-harvest", "spidering", "known-issue-scan", "dynamic-assessment":
-			default:
+			// Same table as the CLI: a hand-listed set here is what kept the REST
+			// API rejecting phases (probe, extension, port-sweep) --skip accepted.
+			if !runner.IsSkippablePhaseSpelling(phase) {
 				return fmt.Errorf("invalid skip value %q; valid phases: %s", phase, runner.ValidSkipPhasesDesc)
 			}
 		}
@@ -397,8 +396,8 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 	opts.OnlyPhase = req.Only
 	// Copy req.Skip — ApplyNativePhaseSelection normalizes the slice in place.
 	opts.SkipPhases = append([]string(nil), req.Skip...)
-	if err := runner.ApplyNativePhaseSelection(opts, func() {
-		settings.DynamicAssessment.Extensions.Enabled = true
+	if err := runner.ApplyNativePhaseSelection(opts, func(enabled bool) {
+		settings.DynamicAssessment.Extensions.Enabled = enabled
 	}); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 			Error: err.Error(),

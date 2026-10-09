@@ -222,7 +222,11 @@ func firstPhaseReason(phases []database.PhaseOutcome) string {
 // partial — the coverage really is reduced — but it never stopped anything, so
 // it is a poor answer to "why did this scan stop".
 func nonStoppingReason(reason string) bool {
-	return reason == database.ReasonAuthUnavailable
+	switch reason {
+	case database.ReasonAuthUnavailable, database.ReasonOASTUnavailable:
+		return true
+	}
+	return false
 }
 
 // partialBannerSuffix renders the "— partial: …" tail of the terminal banner, or

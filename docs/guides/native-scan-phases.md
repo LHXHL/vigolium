@@ -9,8 +9,8 @@ Vigolium's native scan pipeline consists of multiple phases that run sequentiall
 When you run a scan, the enabled phases execute in this order (the source of
 truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 
-1. **Heuristics check** (`heuristics-check`) - fetch each target's root page and classify it (blank vs content, JSON/XML API; with `scanning_strategy.heuristics_check: advanced` also SPA detection and link counting) to decide whether spidering that target is worthwhile. It does not fingerprint technologies. On by default (`basic`); turned off by `--only`
-2. **Port Sweep** (`port-sweep`) - find extra web services on alternate ports of the CLI target hosts and add them to the target set. Only with `--intensity deep` or `--follow-subdomains`. Its HTTP confirm requests go through `--proxy`; the TCP connect that finds open ports cannot and always dials the host directly
+1. **Heuristics check** (`heuristics-check`) - fetch each target's root page and classify it (blank vs content, JSON/XML API; with `scanning_strategy.heuristics_check: advanced` also SPA detection and link counting) to decide whether spidering that target is worthwhile. It does not fingerprint technologies. On by default (`basic`); turned off by `--skip heuristics-check` and by any `--only` that does not list it
+2. **Port Sweep** (`port-sweep`) - find extra web services on alternate ports of the CLI target hosts and add them to the target set. Only with `--intensity deep`, `--follow-subdomains`, or `--only port-sweep`; turned off by `--skip port-sweep` and by any `--only` that does not list it. Its HTTP confirm requests go through `--proxy`; the TCP connect that finds open ports cannot and always dials the host directly
 3. **External Harvest** (`external-harvest`) - gather URLs about the target from third-party archives (Wayback Machine, CT logs); never contacts the target
 4. **Spidering** (`spidering`) - browser-based crawling to discover dynamic content
 5. **Probe** (`probe`) - one request per target, passive modules only, no content discovery (an httpx-style host sweep). Opt-in: runs only with `--only probe` / `vigolium run probe`
@@ -20,9 +20,13 @@ truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 9. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
 10. **Known Issue Scan** (`known-issue-scan`) - run Nuclei plus native in-process secret detection
 
-`heuristics-check`, `port-sweep`, `targeted-respider`, and `seed` are internal
-steps: they are not accepted by `--only`/`--skip` (see [Phase Aliases](#phase-aliases)
-for the names that are).
+Every step above is a name in the phase vocabulary, so each `phase.started` /
+`phase.finished` id can be looked up in `vigolium strategy -j` (`phases[]`).
+`targeted-respider` and `seed` are **internal**: the plan schedules them on its
+own gates, so `--only` rejects them. `--skip targeted-respider` is accepted
+(spidering still runs); `seed` cannot be skipped. `preflight` is also reserved as
+an internal, skippable name for the target reachability check; `--skip preflight`
+is accepted today and has no effect until that check lands.
 
 A full scan with all phases enabled:
 
@@ -166,8 +170,15 @@ Every phase answers to several spellings. They work identically with `--only`, `
 | `known-issue-scan` | `cve`, `kis`, `known-issue`, `known-issues` |
 | `dynamic-assessment` | `dast`, `audit`, `assessment`, `assess` |
 | `extension` | `ext`, `extensions` |
+| `heuristics-check` | `heuristics`, `heuristic` |
+| `port-sweep` | `ports`, `portsweep`, `port-scan` |
+| `targeted-respider` (internal: `--skip` only) | `respider`, `re-spider` |
+| `seed` (internal: neither) | |
+| `preflight` (internal: `--skip` only, reserved) | |
 
-`--skip extension` is rejected — the extension phase is opt-in, so there is nothing to skip.
+`--skip extension` turns extensions off for the run, even when the config or `--ext` enabled them; the built-in modules still run. `--skip heuristics-check` is the same as `--skip-heuristics`.
+
+`strategy -j` reports each phase with `skippable`, `internal` and `only_accepted`, so a caller can tell which list a name belongs to without parsing help text.
 
 One exception applies to the positional form only: `vigolium run audit` is rejected as ambiguous, because it reads as `vigolium agent audit` (the AI source-code audit) rather than the native module-scanning phase. Use `vigolium run dynamic-assessment` (or `dast`). `--only audit` and `--skip audit` are unaffected.
 

@@ -179,6 +179,23 @@ func TestOutcomeCodeValuesAreStable(t *testing.T) {
 		"auth_unavailable":       ReasonAuthUnavailable,
 		"login_budget":           ReasonLoginBudget,
 		"target_budget":          LimitTargetBudget,
+
+		"targets_out_of_scope":       ReasonTargetsOutOfScope,
+		"targets_unreachable":        ReasonTargetsUnreachable,
+		"oast_unavailable":           ReasonOASTUnavailable,
+		"request_budget":             ReasonRequestBudget,
+		"auth_lost":                  ReasonAuthLost,
+		"phase_error":                ReasonPhaseError,
+		"extensions_all_failed":      ReasonExtensionsAllFailed,
+		"no_targets_in_scope":        ReasonNoTargetsInScope,
+		"no_targets_reachable":       ReasonNoTargetsReachable,
+		"host_request_budget":        LimitHostRequestBudget,
+		"js_request_cap":             LimitJSRequestCap,
+		"js_input_over_hard_limit":   LimitJSInputOverHardLimit,
+		"js_template_persist_cap":    LimitJSTemplatePersistCap,
+		"cdx_max_rows":               LimitCDXMaxRows,
+		"sitemap_cap":                LimitSitemapCap,
+		"responses_while_logged_out": LimitResponsesWhileLoggedOut,
 	}
 	for literal, constant := range want {
 		if literal != constant {

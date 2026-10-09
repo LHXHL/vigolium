@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"sync"
 	"testing"
@@ -310,5 +313,76 @@ func TestInterruptingIsNotTerminal(t *testing.T) {
 	if last.Type != TypeScanFinished {
 		t.Errorf("last line is %q, want %q — scan.interrupting must not latch the emitter",
 			last.Type, TypeScanFinished)
+	}
+}
+
+// TestTypesListsEveryConstant is a drift guard: a Type* constant added without
+// a Types entry would be invisible to anything enumerating the vocabulary.
+func TestTypesListsEveryConstant(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "events.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse events.go: %v", err)
+	}
+	declared := map[string]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok || len(vs.Values) != 1 || !strings.HasPrefix(vs.Names[0].Name, "Type") {
+				continue
+			}
+			if lit, ok := vs.Values[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				declared[vs.Names[0].Name] = strings.Trim(lit.Value, `"`)
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("found no Type* constants")
+	}
+	listed := map[string]int{}
+	for _, typ := range Types {
+		listed[typ]++
+	}
+	for name, value := range declared {
+		if listed[value] != 1 {
+			t.Errorf("%s (%q) appears %d times in Types, want exactly once", name, value, listed[value])
+		}
+	}
+	if len(Types) != len(declared) {
+		t.Errorf("Types has %d entries but %d Type* constants are declared", len(Types), len(declared))
+	}
+}
+
+// TestNewFieldsOmittedWhenUnset: the reserved fields must not change the bytes
+// of any event emitted today.
+func TestNewFieldsOmittedWhenUnset(t *testing.T) {
+	var buf bytes.Buffer
+	New(&buf, "scan-1").Emit(Event{Type: TypePhaseStarted, Phase: "discovery"})
+	for _, key := range []string{
+		"targets_admitted", "targets_rejected", "targets_reached", "targets_unreachable",
+		"budgets", "egress", "requests_in_scope", "records_basis", "exports",
+		"module_errors", "extensions_failed", "error_kind", "count", "component", "state", "bytes",
+	} {
+		if strings.Contains(buf.String(), `"`+key+`"`) {
+			t.Errorf("unset field %q is on the wire: %s", key, buf.String())
+		}
+	}
+}
+
+// TestZeroTargetCountsAreEmitted: "0 admitted" is the signal a no-op scan
+// must carry, so the pointer fields keep a zero.
+func TestZeroTargetCountsAreEmitted(t *testing.T) {
+	var buf bytes.Buffer
+	New(&buf, "scan-1").Emit(Event{Type: TypeScanStarted, TargetsAdmitted: Int(0), TargetsRejected: Int(2)})
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["targets_admitted"] != float64(0) || got["targets_rejected"] != float64(2) {
+		t.Errorf("target counts = %v / %v, want 0 / 2", got["targets_admitted"], got["targets_rejected"])
 	}
 }
