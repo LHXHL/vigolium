@@ -146,6 +146,7 @@ type Engine struct {
 	formStructureCounter *dedup.Counter // Dedup form submissions by structure (max N per endpoint+structure)
 	seenJSURLs           *dedup.DiskSet // Dedup JS URLs across batches
 	seenBodyHashes       *dedup.DiskSet // Dedup response body content for jstangle on script tags
+	fuzzWordsSeen        *dedup.DiskSet // Dedup words across the fuzz wordlists (created with the fuzz task)
 
 	// Tested directories/files tracking (centralized for deduplication)
 	testedDirectories *tracker.URLTracker
@@ -1839,6 +1840,11 @@ func (e *Engine) cleanup() {
 	if e.seenBodyHashes != nil {
 		if err := e.seenBodyHashes.Close(); err != nil {
 			logger.Warn("Failed to close seen body hashes", zap.Error(err))
+		}
+	}
+	if e.fuzzWordsSeen != nil {
+		if err := e.fuzzWordsSeen.Close(); err != nil {
+			logger.Warn("Failed to close fuzz word dedup", zap.Error(err))
 		}
 	}
 	if e.extractedRequestsDedup != nil {

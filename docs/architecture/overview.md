@@ -70,7 +70,7 @@ exceptions it runs with, is one reported policy; see
 |----------|----------|
 | Lite | Fast surface-level scan: dynamic assessment only (no spidering, discovery, external harvest, or known-issue scan), under a pace ceiling |
 | Balanced | Default. Spidering, discovery, dynamic assessment and known-issue scan; no external harvest, and discovery's `/FUZZ` brute-force is off |
-| Deep | Everything in balanced plus external harvesting. The `--intensity deep` preset (which selects this strategy through a scanning profile) also turns on the alternate-port sweep, subdomain following, discovery fuzzing, and the long wordlists |
+| Deep | Everything in balanced plus external harvesting. The `--intensity deep` preset (which selects this strategy through a scanning profile) also turns on the alternate-port sweep, subdomain following, discovery fuzzing, and the large wordlist tier |
 
 ### Agentic Scan
 

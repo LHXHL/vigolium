@@ -242,8 +242,9 @@ vigolium kit wordlist jwt > jwt.txt # materialize (alias: jwt → jwt.secrets.li
 ```
 
 A name matches the embedded filename, its basename without extension, or the
-`jwt` alias. Built-ins: `dir-short`, `dir-long`, `file-short`, `file-long`,
-`fuzz`, `jwt.secrets.list`.
+`jwt` alias. Built-ins: `dir-short`, `dir-long`, `dir-large`, `file-short`,
+`file-long`, `file-large`, `fuzz`, `jwt.secrets.list` (the large lists are
+stored gzip-compressed and printed decompressed).
 
 ## payload
 

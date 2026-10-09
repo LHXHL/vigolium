@@ -879,13 +879,27 @@ discovery:
     max_depth: 5
 
   # Wordlist paths for discovery.
-  # Empty path = wordlist disabled. Supports ~ expansion.
+  # Empty path = use the embedded default for that slot. Supports ~ expansion.
   wordlists:
+    # Which embedded dir/file lists fill the "long" slot when long_file_path /
+    # long_dir_path are unset. The short lists always run.
+    #   short — short lists only (a few hundred entries)
+    #   long  — adds dir-long.txt / file-long.txt (~5k entries each)
+    #   large — adds dir-large.txt / file-large.txt (~9.3k each: the long lists
+    #           plus the bare words of fuzz.txt, deduplicated)
+    #   auto  — derive from --intensity: deep → large; quick and balanced → short
+    # A curated larger list can be bundled by dropping dir-large.txt.gz /
+    # file-large.txt.gz into internal/resources/wordlists (gzip-embedded).
+    # Default: auto
+    tier: auto
+
     # short_file_path: ~/.vigolium/wordlists/file-short.txt
     # long_file_path: ~/.vigolium/wordlists/file-long.txt
     # short_dir_path: ~/.vigolium/wordlists/dir-short.txt
     # long_dir_path: ~/.vigolium/wordlists/dir-long.txt
     # fuzz_wordlist_path: ~/.vigolium/wordlists/fuzz.txt
+    # (--discovery-wordlist replaces fuzz_wordlist_path; repeat it to stream
+    # several files in order, each word tried once.)
 
     # Use filenames observed during spidering as wordlist entries.
     # Default: true

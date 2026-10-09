@@ -200,7 +200,7 @@ jsonl`, `vigolium export`, and the REST scan endpoints.
 |------|------|---------|-------------|
 | `--discover` | bool | `false` | Enable content discovery phase before scanning |
 | `--discover-max-time` | duration | `1h` | Max time for content discovery per target |
-| `--discovery-wordlist` | string | — | Custom wordlist seeding the discovery phase (enables fuzzing on the fly). Formerly `--fuzz-wordlist`, still accepted as a deprecated alias. **Not** the same knob as `vigolium fuzz -w`. |
+| `--discovery-wordlist` | stringArray | — | Custom wordlist file seeding the discovery phase's `/FUZZ` task (enables fuzzing on the fly). Repeatable: files are streamed in order and each word is tried once; a comma-joined value is split only when every part exists. A missing file exits 2. Formerly `--fuzz-wordlist`, still accepted as a deprecated alias. **Not** the same knob as `vigolium fuzz -w`. |
 | `--no-discovery-fuzz` | bool | `false` | Disable discovery's `/FUZZ` brute-force (alias `--no-fuzz`). See the note below - it beats *every* reason the brute-force would turn itself on |
 | `--no-prefix-breaker` | bool | `false` | Disable per-prefix circuit breaker that stops trap-directory recursion |
 | `--port-sweep-ports` | string | — | Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; the sweep runs at `--intensity deep` or with `--follow-subdomains`) |

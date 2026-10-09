@@ -185,6 +185,38 @@ Response bodies are tokenized (content-type-aware for HTML, JSON, JS, CSS) to ex
 
 When a file is found at `/a/b/c/file.txt`, the engine extracts `/a/`, `/a/b/`, `/a/b/c/` as directories to test. Each new directory triggers its own full task set (wordlists + observed + modules).
 
+## Wordlists
+
+The dictionaries come from `discovery.wordlists`. A configured path always wins;
+an unset slot falls back to an embedded list, materialized under
+`~/.vigolium/wordlists/`:
+
+| Tier (`discovery.wordlists.tier`) | Long slot | Size |
+|---|---|---|
+| `short` | none (only `dir-short.txt` / `file-short.txt`) | a few hundred entries |
+| `long` | `dir-long.txt` / `file-long.txt` | ~5k entries each |
+| `large` | `dir-large.txt` / `file-large.txt` | ~9.3k entries each |
+| `auto` (default) | `--intensity deep` → `large`; `quick` and `balanced` → `short` | |
+
+The short lists run at every tier. The bundled large lists are the deduplicated
+union of both long lists plus the bare single-segment words of `fuzz.txt`, so
+they add no new third-party content. They are embedded gzip-compressed
+(`*.txt.gz`) and written out decompressed. To bundle a curated larger list,
+replace `internal/resources/wordlists/dir-large.txt.gz` /
+`file-large.txt.gz`, keeping each a superset of its long counterpart.
+
+The `/FUZZ` task (priority 12) uses `fuzz.txt`, or the files given with
+`--discovery-wordlist`. The flag is repeatable. The files are streamed in
+order, never loaded into memory, and each word is tried once across all of
+them, deduplicated through an on-disk set. A comma-joined value is split only
+when every part is an existing file. A missing file is a usage error (exit 2).
+Files ending in `.gz` are gunzipped while streaming.
+
+```bash
+vigolium run discover -t https://example.com \
+  --discovery-wordlist ./app-words.txt --discovery-wordlist ./big-list.txt.gz
+```
+
 ## Task Types
 
 | Task | Priority | Description |

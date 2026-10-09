@@ -144,7 +144,7 @@ func kitLoadJWTCandidates() (secrets [][]byte, label string, err error) {
 		data, err = wordlists.WordlistsFS.ReadFile("jwt.secrets.list")
 		label = "builtin:jwt.secrets.list"
 	} else if file, ok := resolveBuiltinWordlist(kitJWTWordlist); ok {
-		data, err = wordlists.WordlistsFS.ReadFile(file)
+		data, err = wordlists.ReadList(file)
 		label = "builtin:" + file
 	} else {
 		data, err = os.ReadFile(kitJWTWordlist)

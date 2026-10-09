@@ -122,6 +122,11 @@ type WordlistConfig struct {
 	ShortDirPath     string `json:"short_dir_path" validate:"omitempty,file"`
 	LongDirPath      string `json:"long_dir_path" validate:"omitempty,file"`
 	FuzzWordlistPath string `json:"fuzz_wordlist_path" validate:"omitempty,file"`
+
+	// FuzzWordlistPaths are the /FUZZ wordlists, streamed one after another
+	// with each word tried once across all of them. When empty,
+	// FuzzWordlistPath (the single-file form) is used instead.
+	FuzzWordlistPaths []string `json:"fuzz_wordlist_paths,omitempty" validate:"omitempty,dive,file"`
 }
 
 // HasShortFiles returns true if short file wordlist is configured.
@@ -136,8 +141,23 @@ func (w *WordlistConfig) HasShortDirs() bool { return w.ShortDirPath != "" }
 // HasLongDirs returns true if long directory wordlist is configured.
 func (w *WordlistConfig) HasLongDirs() bool { return w.LongDirPath != "" }
 
-// HasFuzzWordlist returns true if fuzz wordlist is configured.
-func (w *WordlistConfig) HasFuzzWordlist() bool { return w.FuzzWordlistPath != "" }
+// FuzzWordlists returns the configured fuzz wordlist paths: FuzzWordlistPaths
+// when set (empty entries dropped), else the legacy single FuzzWordlistPath.
+func (w *WordlistConfig) FuzzWordlists() []string {
+	var out []string
+	for _, p := range w.FuzzWordlistPaths {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 && w.FuzzWordlistPath != "" {
+		out = append(out, w.FuzzWordlistPath)
+	}
+	return out
+}
+
+// HasFuzzWordlist returns true if at least one fuzz wordlist is configured.
+func (w *WordlistConfig) HasFuzzWordlist() bool { return len(w.FuzzWordlists()) > 0 }
 
 // ExtensionConfig controls file extension testing.
 type ExtensionConfig struct {

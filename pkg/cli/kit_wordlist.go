@@ -3,10 +3,8 @@ package cli
 import (
 	"bytes"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -63,7 +61,7 @@ func runKitWordlist(cmd *cobra.Command, args []string) error {
 	if !ok {
 		return usageErrorf("unknown wordlist %q (available: %s)", args[0], strings.Join(names, ", "))
 	}
-	data, err := wordlists.WordlistsFS.ReadFile(file)
+	data, err := wordlists.ReadList(file)
 	if err != nil {
 		return err
 	}
@@ -83,7 +81,7 @@ func runKitWordlist(cmd *cobra.Command, args []string) error {
 func printKitWordlistIndex(names []string) error {
 	infos := make([]kitWordlistInfo, 0, len(names))
 	for _, n := range names {
-		data, err := wordlists.WordlistsFS.ReadFile(n)
+		data, err := wordlists.ReadList(n)
 		if err != nil {
 			continue
 		}
@@ -100,20 +98,11 @@ func printKitWordlistIndex(names []string) error {
 	return nil
 }
 
-// listEmbeddedWordlists returns the sorted filenames in the embedded wordlist FS.
+// listEmbeddedWordlists returns the sorted names of the embedded wordlists.
+// Gzip-embedded lists appear under their decompressed name; read them with
+// wordlists.ReadList.
 func listEmbeddedWordlists() ([]string, error) {
-	entries, err := fs.ReadDir(wordlists.WordlistsFS, ".")
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
-	return names, nil
+	return wordlists.ListNames()
 }
 
 // resolveBuiltinWordlist reports whether name refers to an embedded wordlist and

@@ -250,16 +250,46 @@ func wordlistDir() string {
 // usingX flags drive the header label so it can distinguish operator-supplied
 // lists from the bundled fallbacks.
 type resolvedDiscoveryWordlists struct {
-	shortFile, longFile, shortDir, longDir, fuzz string
-	usingEmbedded                                bool // at least one path came from the embedded defaults
-	usingConfigured                              bool // at least one path came from YAML / CLI
+	shortFile, longFile, shortDir, longDir string
+	fuzz                                   []string // streamed in order, deduplicated across files
+	tier                                   string   // effective discovery.wordlists.tier (never "auto")
+	usingEmbedded                          bool     // at least one path came from the embedded defaults
+	usingConfigured                        bool     // at least one path came from YAML / CLI
+}
+
+// autoWordlistTier maps --intensity to the embedded dir/file wordlist tier
+// used when discovery.wordlists.tier is auto (or unset). quick and balanced
+// keep the short lists only, which is what they always ran; deep, which used
+// to add the ~5k long lists, gets the larger tier.
+func autoWordlistTier(intensity string) string {
+	if strings.EqualFold(strings.TrimSpace(intensity), "deep") {
+		return config.WordlistTierLarge
+	}
+	return config.WordlistTierShort
+}
+
+// discoveryWordlistTier resolves discovery.wordlists.tier, applying the
+// intensity mapping for auto/empty (and for an unknown value, which config
+// validation rejects before a scan starts).
+func (r *Runner) discoveryWordlistTier() string {
+	tier := ""
+	if r.settings != nil {
+		tier = strings.ToLower(strings.TrimSpace(r.settings.Discovery.Wordlists.Tier))
+	}
+	switch tier {
+	case config.WordlistTierShort, config.WordlistTierLong, config.WordlistTierLarge:
+		return tier
+	default:
+		return autoWordlistTier(r.options.Intensity)
+	}
 }
 
 // resolveDiscoveryWordlists computes the wordlist paths feeding deparos. Operator
 // config (YAML, then the --discovery-wordlist CLI override) wins; any gap is filled
-// from the embedded defaults — short file/dir lists on every scan, and the heavy
-// long lists plus fuzz.txt (which deparos turns into a full /FUZZ brute of the
-// root) only at --intensity deep. This is shared by buildDeparosConfig and the
+// from the embedded defaults — short file/dir lists on every scan, the long slot
+// from the wordlist tier (discovery.wordlists.tier; auto = large at --intensity
+// deep, none otherwise), and fuzz.txt (which deparos turns into a full /FUZZ brute
+// of the root) whenever fuzzing is on. This is shared by buildDeparosConfig and the
 // Discovery phase header so the two never disagree on what is actually running.
 func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 	var w resolvedDiscoveryWordlists
@@ -277,31 +307,39 @@ func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 		w.longFile = expand(wl.LongFilePath)
 		w.shortDir = expand(wl.ShortDirPath)
 		w.longDir = expand(wl.LongDirPath)
-		w.fuzz = expand(wl.FuzzWordlistPath)
+		if p := expand(wl.FuzzWordlistPath); p != "" {
+			w.fuzz = []string{p}
+		}
 	}
 	// --discovery-wordlist is an explicit operator override and wins over YAML.
-	if r.options.FuzzWordlistPath != "" {
-		w.fuzz = config.ExpandPath(r.options.FuzzWordlistPath)
+	if len(r.options.FuzzWordlistPaths) > 0 {
+		w.fuzz = w.fuzz[:0:0]
+		for _, p := range r.options.FuzzWordlistPaths {
+			if p != "" {
+				w.fuzz = append(w.fuzz, config.ExpandPath(p))
+			}
+		}
 		w.usingConfigured = true
 	}
 
-	deep := strings.EqualFold(r.options.Intensity, "deep")
+	w.tier = r.discoveryWordlistTier()
+	wantLong := w.tier != config.WordlistTierShort
 	fuzzOn, _ := r.discoveryFuzzingState()
 	// A resolved fuzz path IS the switch as far as deparos is concerned
-	// (buildDeparosConfig copies it to cfg.FuzzWordlistPath, and the engine
+	// (buildDeparosConfig copies it to cfg.FuzzWordlistPaths, and the engine
 	// creates its FuzzTask whenever HasFuzzWordlist()). So fuzzing-off has to
 	// clear the path, not merely decline to materialize the embedded default —
 	// otherwise a discovery.wordlists.fuzz_wordlist_path in the config file
 	// reaches the engine anyway and --no-discovery-fuzz brute-forces the host
 	// while the phase header reports fuzzing as disabled.
 	if !fuzzOn {
-		w.fuzz = ""
+		w.fuzz = nil
 	}
 	needShortFile := w.shortFile == ""
 	needShortDir := w.shortDir == ""
-	needLongFile := w.longFile == "" && deep
-	needLongDir := w.longDir == "" && deep
-	needFuzz := w.fuzz == "" && fuzzOn
+	needLongFile := w.longFile == "" && wantLong
+	needLongDir := w.longDir == "" && wantLong
+	needFuzz := len(w.fuzz) == 0 && fuzzOn
 	needAny := needShortFile || needShortDir || needLongFile || needLongDir || needFuzz
 	if !needAny {
 		return w
@@ -312,6 +350,10 @@ func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 		zap.L().Warn("Discovery: failed to materialize embedded wordlists; deparos falls back to observed-only", zap.Error(err))
 		return w
 	}
+	longFile, longDir := paths.LongFile, paths.LongDir
+	if w.tier == config.WordlistTierLarge {
+		longFile, longDir = paths.LargeFile, paths.LargeDir
+	}
 	if needShortFile {
 		w.shortFile = paths.ShortFile
 		w.usingEmbedded = true
@@ -321,15 +363,15 @@ func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 		w.usingEmbedded = true
 	}
 	if needLongFile {
-		w.longFile = paths.LongFile
+		w.longFile = longFile
 		w.usingEmbedded = true
 	}
 	if needLongDir {
-		w.longDir = paths.LongDir
+		w.longDir = longDir
 		w.usingEmbedded = true
 	}
 	if needFuzz {
-		w.fuzz = paths.Fuzz
+		w.fuzz = []string{paths.Fuzz}
 		w.usingEmbedded = true
 	}
 	return w
@@ -351,7 +393,7 @@ func (r *Runner) discoveryFuzzingState() (bool, string) {
 	// the four sites that consume the answer.
 	case r.options.NoDiscoveryFuzz:
 		return false, "via --no-discovery-fuzz"
-	case r.options.FuzzWordlistPath != "":
+	case len(r.options.FuzzWordlistPaths) > 0:
 		return true, "via --discovery-wordlist"
 	case strings.EqualFold(r.options.Intensity, "deep"):
 		return true, "intensity=deep"
@@ -657,15 +699,15 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 	}
 
 	// Resolve wordlist paths: YAML config → CLI --discovery-wordlist → embedded
-	// defaults (short file/dir always; long lists + fuzz.txt only at --intensity
-	// deep). Done here, outside the settings block above, so the embedded defaults
-	// still apply when no YAML config is loaded.
+	// defaults (short file/dir always; the long slot per discovery.wordlists.tier;
+	// fuzz.txt when fuzzing is on). Done here, outside the settings block above,
+	// so the embedded defaults still apply when no YAML config is loaded.
 	wls := r.resolveDiscoveryWordlists()
 	cfg.ShortFilePath = wls.shortFile
 	cfg.LongFilePath = wls.longFile
 	cfg.ShortDirPath = wls.shortDir
 	cfg.LongDirPath = wls.longDir
-	cfg.FuzzWordlistPath = wls.fuzz
+	cfg.FuzzWordlistPaths = wls.fuzz
 
 	// CLI --no-prefix-breaker override (takes precedence over YAML config)
 	if r.options.NoPrefixBreaker {

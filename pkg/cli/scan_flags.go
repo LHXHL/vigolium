@@ -73,7 +73,11 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	// relationship that does not exist, so the scan-phase knob is renamed and the
 	// old spelling kept as a deprecated alias (registered via addFlagAliases, so
 	// both spellings drive ONE flag and neither can silently overwrite the other).
-	flags.StringVar(&scanOpts.FuzzWordlistPath, "discovery-wordlist", "", "Custom wordlist path seeding the discovery phase (enables fuzzing on the fly). Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'.")
+	//
+	// It is a StringArray (repeatable, no comma splitting) so a path containing
+	// a comma stays one path; normalizeDiscoveryWordlists still splits a
+	// comma-joined value when every part is an existing file.
+	flags.StringArrayVar(&scanOpts.FuzzWordlistPaths, "discovery-wordlist", nil, "Custom wordlist file seeding the discovery phase's /FUZZ brute-force (enables fuzzing on the fly). Repeatable: the files are streamed in order and each word is tried once. A missing file is a usage error. Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'.")
 	flags.BoolVar(&scanOpts.NoDiscoveryFuzz, "no-discovery-fuzz", false, "Disable discovery's /FUZZ brute-force (alias --no-fuzz). Overrides every reason it would auto-enable — --intensity deep, a discovery-only run such as 'vigolium run discover', and the low-yield auto-enable. Link extraction, JS parsing, response-word harvesting and the short dir/file wordlists still run.")
 	flags.BoolVar(&scanOpts.NoPrefixBreaker, "no-prefix-breaker", false, "Disable per-prefix circuit breaker that stops discovery from recursing into trap directories")
 	flags.BoolVar(&scanOpts.FollowSubdomains, "follow-subdomains", false, "Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep)")

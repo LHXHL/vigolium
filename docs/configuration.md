@@ -376,11 +376,12 @@ discovery:
     max_depth: 5
 
   wordlists:
-    short_file_path: ""        # custom wordlist paths
+    tier: auto                 # embedded dir/file lists: auto | short | long | large (auto: deep → large, else short)
+    short_file_path: ""        # custom wordlist paths (win over the tier)
     long_file_path: ""
     short_dir_path: ""
     long_dir_path: ""
-    fuzz_wordlist_path: ""
+    fuzz_wordlist_path: ""     # --discovery-wordlist (repeatable) replaces it
     use_observed_names: true
     use_observed_paths: true
     use_observed_files: true

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	deparosconfig "github.com/vigolium/vigolium/pkg/deparos/config"
@@ -271,8 +272,21 @@ type DiscoveryRecursionConfig struct {
 	MaxDepth int  `yaml:"max_depth"`
 }
 
+// Discovery wordlist tiers (discovery.wordlists.tier). The tier picks which
+// embedded dir/file lists fill the "long" slot when no path is configured:
+// short = none (short lists only), long = dir-long/file-long (~5k),
+// large = dir-large/file-large (~9.3k). auto (or empty) derives it from
+// --intensity: deep → large, quick and balanced → short.
+const (
+	WordlistTierAuto  = "auto"
+	WordlistTierShort = "short"
+	WordlistTierLong  = "long"
+	WordlistTierLarge = "large"
+)
+
 // DiscoveryWordlistConfig holds paths to wordlist files.
 type DiscoveryWordlistConfig struct {
+	Tier                 string `yaml:"tier"` // auto|short|long|large; empty = auto
 	ShortFilePath        string `yaml:"short_file_path"`
 	LongFilePath         string `yaml:"long_file_path"`
 	ShortDirPath         string `yaml:"short_dir_path"`
@@ -408,6 +422,13 @@ func (c *DiscoveryConfig) Validate() error {
 		// valid
 	default:
 		return fmt.Errorf("discovery.scope_mode: must be any, subdomain, or exact, got %q", c.ScopeMode)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(c.Wordlists.Tier)) {
+	case "", WordlistTierAuto, WordlistTierShort, WordlistTierLong, WordlistTierLarge:
+		// valid
+	default:
+		return fmt.Errorf("discovery.wordlists.tier: must be auto, short, long, or large, got %q", c.Wordlists.Tier)
 	}
 
 	if c.Recursion.Enabled && c.Recursion.MaxDepth < 1 {

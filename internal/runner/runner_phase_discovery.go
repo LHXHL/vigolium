@@ -485,9 +485,9 @@ func (r *Runner) discoveryWordlistSummary() string {
 		label := strings.Join(dicts, ", ")
 		switch {
 		case anyEmbedded && anyConfigured:
-			label += " " + terminal.Gray("(incl. embedded defaults)")
+			label += " " + terminal.Gray("(incl. embedded defaults, "+w.tier+" tier)")
 		case anyEmbedded:
-			label += " " + terminal.Gray("(embedded defaults)")
+			label += " " + terminal.Gray("(embedded defaults, "+w.tier+" tier)")
 		}
 		parts = append(parts, label)
 	} else {
@@ -544,12 +544,16 @@ func (r *Runner) discoveryFuzzingSummary() string {
 
 	w := r.resolveDiscoveryWordlists()
 	src := "embedded default"
-	if r.options.FuzzWordlistPath != "" {
+	if len(r.options.FuzzWordlistPaths) > 0 {
 		src = "via --discovery-wordlist"
 	}
 	list := terminal.HiTeal("fuzz.txt")
-	if w.fuzz != "" {
-		list = formatWordlistEntry(w.fuzz)
+	if len(w.fuzz) > 0 {
+		entries := make([]string, 0, len(w.fuzz))
+		for _, p := range w.fuzz {
+			entries = append(entries, formatWordlistEntry(p))
+		}
+		list = strings.Join(entries, ", ")
 	}
 	return fmt.Sprintf("%s — %s (%s), appends /FUZZ %s",
 		terminal.HiTeal("enabled"),

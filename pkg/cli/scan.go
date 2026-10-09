@@ -238,9 +238,14 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	// intents. Resolving it silently either way leaves the operator believing
 	// the other one took effect, and the two outcomes differ by thousands of
 	// requests per host — so it is an error rather than a precedence rule.
-	if scanOpts.NoDiscoveryFuzz && scanOpts.FuzzWordlistPath != "" {
+	if scanOpts.NoDiscoveryFuzz && len(scanOpts.FuzzWordlistPaths) > 0 {
 		return usageErrorf("--no-discovery-fuzz and --discovery-wordlist are mutually exclusive (--discovery-wordlist exists to turn discovery fuzzing on; drop one)")
 	}
+	wordlistPaths, werr := normalizeDiscoveryWordlists(scanOpts.FuzzWordlistPaths)
+	if werr != nil {
+		return werr
+	}
+	scanOpts.FuzzWordlistPaths = wordlistPaths
 	if err := validateParallelScan(scanOpts); err != nil {
 		return err
 	}

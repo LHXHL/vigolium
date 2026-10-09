@@ -115,7 +115,7 @@ type DeparosDiscoveryConfig struct {
 	LongFilePath         string
 	ShortDirPath         string
 	LongDirPath          string
-	FuzzWordlistPath     string
+	FuzzWordlistPaths    []string // streamed in order, deduplicated across files
 	UseObservedNames     bool
 	UseObservedPaths     bool
 	UseObservedFiles     bool
@@ -815,8 +815,8 @@ func (d *DeparosDiscoverySource) buildDeparosConfig(target string) *deparosconfi
 	if d.cfg.LongDirPath != "" {
 		cfg.Filenames.Wordlists.LongDirPath = d.cfg.LongDirPath
 	}
-	if d.cfg.FuzzWordlistPath != "" {
-		cfg.Filenames.Wordlists.FuzzWordlistPath = d.cfg.FuzzWordlistPath
+	if len(d.cfg.FuzzWordlistPaths) > 0 {
+		cfg.Filenames.Wordlists.FuzzWordlistPaths = append([]string(nil), d.cfg.FuzzWordlistPaths...)
 	}
 	cfg.Filenames.UseObservedNames = d.cfg.UseObservedNames
 	cfg.Filenames.UseObservedPaths = d.cfg.UseObservedPaths

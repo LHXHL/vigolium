@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/pkg/authsig"
+	"github.com/vigolium/vigolium/pkg/deparos/discovery/payload"
 	"github.com/vigolium/vigolium/pkg/deparos/fingerprint"
 	pkghttp "github.com/vigolium/vigolium/pkg/deparos/http"
 	"github.com/vigolium/vigolium/pkg/deparos/internal/dedup"
@@ -393,9 +394,25 @@ func (e *Engine) generateInitialTasks() {
 			fuzzTemplate = strings.TrimRight(fuzzTemplate, "/") + "/" + fuzzMarker
 		}
 
+		// Words are deduplicated across the (possibly several, possibly
+		// huge) fuzz wordlists on disk, not in memory.
+		var seen payload.SeenSet
+		if e.fuzzWordsSeen == nil && e.dedupBasePath != "" {
+			ds, dsErr := newDiskSet(e.dedupBasePath, "fuzz-words")
+			if dsErr != nil {
+				logger.Warn("Fuzz wordlist dedup store unavailable; deduplicating in memory", zap.Error(dsErr))
+			} else {
+				e.fuzzWordsSeen = ds
+			}
+		}
+		if e.fuzzWordsSeen != nil {
+			seen = e.fuzzWordsSeen
+		}
+
 		fuzzTask, err := e.factory.CreateFuzzTask(
 			fuzzTemplate,
-			e.config.Filenames.Wordlists.FuzzWordlistPath,
+			e.config.Filenames.Wordlists.FuzzWordlists(),
+			seen,
 			depth,
 		)
 		if err != nil {

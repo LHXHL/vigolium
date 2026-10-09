@@ -220,7 +220,7 @@ type Options struct {
 	// Content discovery options
 	DiscoverEnabled     bool
 	DiscoverMaxDuration time.Duration
-	FuzzWordlistPath    string // CLI override for discovery fuzz wordlist (also enables fuzzing)
+	FuzzWordlistPaths   []string // CLI --discovery-wordlist (repeatable): discovery fuzz wordlists, streamed in order and deduplicated (also enables fuzzing)
 	// NoDiscoveryFuzz turns discovery's /FUZZ brute-force OFF unconditionally.
 	// It outranks every reason fuzzing would otherwise switch on (--intensity
 	// deep, a discovery-only run, the low-yield auto-enable), because it is the
