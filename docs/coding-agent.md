@@ -182,6 +182,8 @@ duplicates the rows on the wire and exists only for consumers still migrating.
 {
   "schema_version": 1,
   "command": "finding",
+  "kind": "read",
+  "ok": true,
   "project_uuid": "00000000-0000-0000-defa-c01001000001",
   "project_scoped": true,
   "db_path": "/home/you/.vigolium/database-vgnm.sqlite",
@@ -203,6 +205,16 @@ duplicates the rows on the wire and exists only for consumers still migrating.
 
 - `schema_version` is the contract version — gate on it. It is bumped on any
   breaking field change.
+- `ok` is `true` on every result document. The error object carries
+  `"ok": false`, so `.ok` is a valid branch on anything `-j` prints.
+- `kind` names the document's shape: `read` (a row list, or a one-object answer
+  wrapped as `items: [obj]` with `total: 1`, as `db stats` does), `mutation`, or
+  `scan`. A `mutation` document adds `changed` (always present; `false` on a dry
+  run), `action` (`"compact"`, `"push_to_burp"`, …) and `dry_run: true` on a dry
+  run. Commands not yet on the envelope have no `kind`.
+- `items` is always an array: `[]` when empty, never `null`, never an object.
+- Finding rows carry `finding_hash`, the finding's stable identity (the dedup
+  key, and what SARIF fingerprints use); `--fields` accepts it.
 - `project_scoped` says whether a project filter was applied at all, so "no
   filter" is explicit rather than inferred from an absent `project_uuid`.
 - `db_path` names the store that was actually opened, so a consumer pinning

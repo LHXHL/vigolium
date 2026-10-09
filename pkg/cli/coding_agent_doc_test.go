@@ -43,10 +43,10 @@ func TestCodingAgentDocEnvelopeExample(t *testing.T) {
 			"docs/coding-agent.md documents envelope key %q, which no -j command emits", key)
 	}
 
-	// The three that make the document usable at all: the version a consumer
-	// gates on, the row array it parses, and the scope flag that tells it
-	// whether a filter was applied.
-	for _, must := range []string{"schema_version", "items", "project_scoped"} {
+	// The ones that make the document usable at all: the version a consumer
+	// gates on, the success branch and document shape, the row array it parses,
+	// and the scope flag that tells it whether a filter was applied.
+	for _, must := range []string{"schema_version", "ok", "kind", "items", "project_scoped"} {
 		assert.Contains(t, documented, must,
 			"the documented envelope must show %q", must)
 	}
