@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,7 +40,6 @@ var (
 	replayTargetURL      string
 	replayTimeout        time.Duration
 	replayOutputPath     string
-	replayPretty         bool
 	replayBurpBridgeURL  string
 	replaySaveToBurp     bool
 	replaySendViaBurp    bool
@@ -102,8 +100,10 @@ For payload / insertion-point fuzzing (wordlists, --class, matchers, calibration
 use 'vigolium fuzz' — replay is for re-sending and confirming, not fuzzing.
 
 The same engine that powers the autopilot's in-process replay_request tool. Use this
-to drive vigolium externally (Claude Code, Cursor, Pi, CI scripts) — the JSON output
-shape is stable so an agent can confirm a finding without parsing terminal output.
+to drive vigolium externally (Claude Code, Cursor, Pi, CI scripts). Output is a human
+summary by default; -j gives one JSON envelope (the result in items[0]) and
+--format jsonl one compact object per line, so an agent can confirm a finding
+without parsing terminal output.
 
 Cookies set by one replay persist to the next when --session-id is provided. Routes
 through HTTP_PROXY / HTTPS_PROXY (or --proxy) for Burp-style inspection.
@@ -124,7 +124,9 @@ stored record instead of a single source. The selection surface mirrors
 --search (AND-combined), --header-search, --body, --from/--to date range,
 --exclude-search/--exclude-header-search/--exclude-body, and
 --sort/--asc/--offset. Each matched record is re-sent verbatim through the diff
-engine and results stream as JSONL (one object per record). Throttle with
+engine. Results stream as JSONL (one object per record) by default for one more
+release, with a notice on stderr; pass --format jsonl to keep the stream, -j for
+one JSON document, or --format console for per-record tables. Throttle with
 -c/--concurrency and read a standalone export with -S --db. 'vigolium traffic
 --replay' is a shortcut for this mode.
 
@@ -174,8 +176,7 @@ func init() {
 	// Result handling.
 	f.BoolVar(&replayInReplace, "in-replace", false,
 		"When the source is a stored record, update its stored response with the replay")
-	f.StringVarP(&replayOutputPath, "output", "o", "", "Write JSON result to this file (default: stdout)")
-	f.BoolVar(&replayPretty, "pretty", false, "Human-readable summary instead of JSON")
+	f.StringVarP(&replayOutputPath, "output", "o", "", "Write the JSONL result stream (one object per record) to this file; stdout keeps the human summary, or the -j envelope")
 	registerBridgeURLFlag(replayCmd, &replayBurpBridgeURL,
 		"Loopback Burp/Caido bridge URL used by --save-to-burp / --send-via-burp / --to-repeater / --to-organizer")
 	f.BoolVar(
@@ -244,6 +245,17 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	if err := validateReplayFlags(); err != nil {
 		return err
 	}
+	// Decided before anything is sent: a contradictory output request is a
+	// usage error, not a surprise after the traffic went out. A single source
+	// prints the human summary by default; the bulk form keeps its JSONL
+	// default for one more release (--format console or the old --pretty
+	// select its tables; see streamOutputPlan).
+	bulk := replayBulkRequested(bulkFuzzy)
+	warnLegacyPretty(cmd, bulk)
+	plan, err := resolveReplayOutputPlan(cmd, !bulk || (flagChanged(cmd, "pretty") && !globalJSON))
+	if err != nil {
+		return err
+	}
 	httpMode, err := burpbridge.ParseHTTPMode(replayHTTPMode)
 	if err != nil {
 		return usageErrorf("--http-mode: %w", err)
@@ -279,12 +291,12 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	rr.sendOpts = burpbridge.SendOptions{Mode: httpMode, Timeout: replaySendTimeout}
 
 	// Bulk mode: iterate every matching stored record through the same engine.
-	if replayBulkRequested(bulkFuzzy) {
+	if bulk {
 		filters, ferr := buildReplayBulkFilters(bulkFuzzy)
 		if ferr != nil {
 			return ferr
 		}
-		return runReplayBulk(ctx, rr, filters)
+		return runReplayBulk(ctx, cmd, rr, filters, plan)
 	}
 
 	src, err := resolveReplaySource(ctx)
@@ -310,10 +322,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 
 	saveReplayJar(rr.pj)
 
-	if replayPretty {
-		return emitReplayPretty(os.Stdout, out)
-	}
-	return emitReplayJSON(out)
+	return emitReplayResult(cmd, plan, out)
 }
 
 // validateReplayFlags rejects flag combinations that can't be honored, so the
@@ -1043,33 +1052,6 @@ func buildReplayOutput(src *replaySource, result *replay.Result, jarLoaded int, 
 		out.CookiesPreloaded = jarLoaded
 	}
 	return out
-}
-
-// openReplayOutputWriter returns the JSON sink for replay output: stdout, or
-// --output if set. The returned close func is a no-op for stdout. Shared by the
-// single-source (indented object) and bulk (JSONL stream) paths.
-func openReplayOutputWriter() (io.Writer, func(), error) {
-	if replayOutputPath == "" {
-		return os.Stdout, func() {}, nil
-	}
-	f, err := os.Create(replayOutputPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create --output %q: %w", replayOutputPath, err)
-	}
-	return f, func() { _ = f.Close() }, nil
-}
-
-// emitReplayJSON pretty-prints the result. Agents that want compact
-// JSON should pipe through `jq -c .`.
-func emitReplayJSON(out *replayOutput) error {
-	w, closeOut, err := openReplayOutputWriter()
-	if err != nil {
-		return err
-	}
-	defer closeOut()
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
 }
 
 // emitReplayPretty renders one result to w, dispatching to the browser renderer

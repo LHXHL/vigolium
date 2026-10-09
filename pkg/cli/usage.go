@@ -109,7 +109,7 @@ type flagGroup struct {
 // longer appear here). Every persistent flag registered in root.go should live
 // in exactly one group so no persistent flag falls into an "Other:" section.
 var globalFlagGroups = []flagGroup{
-	{"Output", []string{"verbose", "silent", "debug", "dump-traffic", "log-file", "json", "format", "ci-output-format", "no-color", "width"}},
+	{"Output", []string{"verbose", "silent", "debug", "dump-traffic", "log-file", "json", "pretty", "format", "ci-output-format", "color", "no-color", "width"}},
 	{"Network", []string{"proxy"}},
 	{"Extensions", []string{"ext", "ext-dir"}},
 	{"Project", []string{"project-uuid", "project-name"}},
@@ -356,7 +356,7 @@ var fuzzFlagGroups = []flagGroup{
 	{"Speed & Behaviour", []string{
 		"no-calibrate", "concurrency", "delay", "timeout", "no-redirects",
 		"dry-run", "ignore-scope"}},
-	{"Output", []string{"output", "all-results", "pretty", "fail-on-match"}},
+	{"Output", []string{"output", "all-results", "fail-on-match"}},
 	{"Burp Bridge", []string{"send-via-burp", "burp-bridge-url", "http-mode", "send-timeout", "matches-to-organizer"}},
 }
 
@@ -365,7 +365,7 @@ var replayFlagGroups = []flagGroup{
 	{"Input & Selection", []string{"input", "input-file", "raw-request", "raw-request-file", "record-uuid", "finding-id", "target"}},
 	{"Bulk Filter", []string{"host", "method", "status", "path", "source", "search", "header-search", "body", "exclude-search", "exclude-header-search", "exclude-body", "from", "to", "sort", "asc", "offset", "limit", "all"}},
 	{"Request Options", []string{"header", "auth-session", "session-id", "no-cookies", "no-redirects", "timeout", "concurrency", "with-browser"}},
-	{"Output", []string{"output", "pretty", "in-replace", "stateless"}},
+	{"Output", []string{"output", "in-replace", "stateless"}},
 	{"Burp Bridge", []string{"burp-bridge-url", "save-to-burp", "send-via-burp", "http-mode", "send-timeout", "to-repeater", "repeater-tab", "to-organizer", "notes", "highlight"}},
 }
 

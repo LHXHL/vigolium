@@ -83,7 +83,9 @@ section.
   support those, assert `db_path` and sanity-check `total` against a query you
   know matches.
 - **Non-interactive by default.** TUI is opt-in (`--tui`). Destructive commands
-  need `--force`. Use `--no-color` (or `NO_COLOR=1`) for clean text.
+  need `--force`. Color is off unless stdout and stderr are both terminals, and
+  always off under `-j`/`--events`; `--color never` (or `NO_COLOR=1`) forces it
+  off anywhere. `-j` output is compact; add `--pretty` to read it by eye.
 - **Everything is project-scoped** — `--project-name`, `--project-uuid`,
   `VIGOLIUM_PROJECT_UUID`, or `VIGOLIUM_PROJECT_NAME`. Every `-j` envelope also
   names the `db_path` it opened, so assert that rather than trusting a pin
@@ -211,7 +213,7 @@ Full event table and field-by-field notes:
 | Manage JS extensions | `vigolium ext ls` / `ext docs` / `ext preset` |
 | Run a custom extension | `vigolium run extension -t <url> --ext custom-check.js` |
 | Execute arbitrary JS with the vigolium API | `vigolium js --code 'vigolium.http.get("https://t/")'` |
-| View/modify configuration | `vigolium config ls` / `config set <key> <value>` (lists as JSON: `'["a","b"]'`) / `config validate -j` |
+| View/modify configuration | `vigolium config ls` / `config set <key> <value>` |
 | Manage auth sessions | `vigolium auth lint` / `auth list` / `auth load` / `auth totp` |
 | Manage scope rules | `vigolium scope view` |
 | Manage projects | `vigolium project create\|list` / `eval "$(vigolium project use <uuid>)"` |
@@ -219,7 +221,7 @@ Full event table and field-by-field notes:
 | Import an audit folder or JSONL/SQLite export | `vigolium import <path>` |
 | View runtime logs for a scan/agent run | `vigolium log <uuid>` (`-f` to follow) |
 | Initialize `~/.vigolium/` | `vigolium init` |
-| Health check | `vigolium doctor` (`--fix` installs what's missing; exits 1 on `not_ready`, `--strict` also on `degraded`) |
+| Health check | `vigolium doctor` (`--fix` installs what's missing) |
 | Refresh nuclei templates without touching the binary | `vigolium update --skip-binary` |
 | Copy an extension authoring template | `vigolium ext example -l`, then `ext example <key>` |
 
@@ -604,7 +606,7 @@ evaluated per child; the batch fails only when every target fails.
 ```bash
 vigolium finding -j --min-severity high --compact --fields id,severity,module_id,url
 vigolium finding -j --id 42 --with-records
-vigolium replay --finding-id 42 --pretty
+vigolium replay --finding-id 42 -j
 vigolium finding --id 42 --markdown > finding-42.md
 ```
 

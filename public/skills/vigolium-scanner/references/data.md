@@ -265,14 +265,6 @@ Run a health check on the installation: verifies the config and database paths, 
 |------|------|---------|-------------|
 | `--fix` | bool | `false` | Auto-install / repair every failing check instead of only reporting it |
 | `--only` | []string | — | Restrict to specific components: `nuclei`, `chrome`, `bun`, `claude`, `agent-browser`, `pi`, `piolium`. With `--fix`, fixes only those - and the output narrows to just those checks |
-| `--strict` | bool | `false` | Exit 1 when the verdict is `degraded`, not only when it is `not_ready` |
-
-Exit status follows the verdict, after the report is written: `not_ready`
-(no usable database) exits 1 with `error.code: not_ready`; `degraded` exits 0
-unless `--strict`. Gate on the exit code, or read `.status` from `doctor -j`.
-The report also carries a `scope` check (the `config validate` scope rules;
-an error degrades the verdict) and an `oast` check (DNS + TLS reachability of
-the interactsh server; never affects the verdict).
 
 ```bash
 vigolium doctor                          # report only
@@ -1237,7 +1229,6 @@ Manage configuration settings.
 |---------|---------|-------------|
 | `config ls [filter]` | `list`, `view` | Display current configuration |
 | `config set <key> <value>` | — | Set a configuration value |
-| `config validate` | — | Check the effective config; exit 1 (`config_invalid`) on errors, `--strict` on warnings too |
 | `config clean` | — | Clean/reset configuration |
 
 ### Examples
@@ -1250,22 +1241,10 @@ vigolium config ls server          # view server config
 vigolium config ls --show-secrets  # reveal sensitive values (API keys, tokens) unredacted
 
 vigolium config set scanning_strategy.default_strategy deep
-vigolium config set scope.cli_origin_mode strict
+vigolium config set scope.origin.mode strict
+vigolium config set audit.extensions.enabled true
 vigolium config set notify.enabled true
-vigolium config set scope.host.include '["*.example.com","example.com"]'   # JSON or YAML flow lists
-vigolium config set scope.host.exclude.add admin.example.com               # append (.clear empties)
-
-vigolium config validate                   # same rules config set enforces
-vigolium config validate -j --project <uuid> --recent 5 --strict
 ```
-
-List and map values take JSON/YAML flow syntax checked against the setting's
-type; the comma form still works for lists. A value that does not parse, has
-the wrong element type, an empty element, or would introduce an error-level
-validation issue (e.g. a host pattern with `https://`) exits 2 and writes
-nothing. `config validate -j` returns `items[]` of
-`{key, severity, code, message, fix}` plus `valid`, `errors`, `warnings`; it exits
-1 with `error.code: config_invalid` on any error.
 
 Config file location: `~/.vigolium/vigolium-configs.yaml`
 
@@ -1306,7 +1285,7 @@ Manage scan scope rules for filtering traffic.
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `scope view [component]` | `ls`, `list` | Display current scope configuration |
-| `scope set <key> <value>` | — | Set a scope configuration value (validated like `config set`; `--project <uuid>` writes the project overlay) |
+| `scope set <key> <value>` | — | Set a scope configuration value |
 
 ### Scope Components
 
@@ -1317,8 +1296,7 @@ host, path, status_code, request_content_type, response_content_type, request_st
 ```bash
 vigolium scope view
 vigolium scope view host           # view host scope only
-vigolium scope set cli_origin_mode strict
-vigolium scope set host.include '["*.example.com"]' --project <uuid>
+vigolium scope set origin.mode strict
 ```
 
 ---

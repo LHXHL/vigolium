@@ -39,15 +39,17 @@ var (
 	colorEnabled     = true
 	ciMode           = false
 	stdoutIsTerminal = false
+	stderrIsTerminal = false
 )
 
 func init() {
 	stdoutIsTerminal = term.IsTerminal(int(os.Stdout.Fd()))
-	// Auto-detect terminal capabilities and NO_COLOR environment variable
-	// https://no-color.org/
-	if !stdoutIsTerminal || os.Getenv("NO_COLOR") != "" {
-		colorEnabled = false
-	}
+	stderrIsTerminal = term.IsTerminal(int(os.Stderr.Fd()))
+	// The library default is the CLI's --color=auto: color only when both
+	// streams are terminals, with the NO_COLOR / FORCE_COLOR / CLICOLOR_FORCE
+	// conventions applied. The CLI re-decides after parsing its flags
+	// (ApplyColorMode).
+	colorEnabled = colorDecision(ColorAuto, stdoutIsTerminal, stderrIsTerminal, colorEnvFromOS())
 }
 
 // IsTerminal reports whether stdout is an interactive terminal (TTY). It is
@@ -57,6 +59,18 @@ func init() {
 // greppable instead of being clipped to the 150-column TerminalWidth fallback.
 func IsTerminal() bool {
 	return stdoutIsTerminal
+}
+
+// StderrIsTerminal reports whether stderr is an interactive terminal. The
+// banner and other purely decorative stderr output key off it: a driver that
+// captures stderr (2>log, 2>&1 | …) is not a person looking at a mascot.
+func StderrIsTerminal() bool {
+	return stderrIsTerminal
+}
+
+// SetStderrIsTerminal overrides the detected stderr TTY state, for tests.
+func SetStderrIsTerminal(enabled bool) {
+	stderrIsTerminal = enabled
 }
 
 // SetIsTerminal overrides the detected TTY state. Intended for tests and any
@@ -83,17 +97,6 @@ func IsColorEnabled() bool {
 // SetColorEnabled enables or disables color output
 func SetColorEnabled(enabled bool) {
 	colorEnabled = enabled
-}
-
-// EnableCLIColor turns color on for interactive CLI use, overriding the non-TTY
-// auto-disable from init() so redirected or piped output — e.g. the -P/--parallel
-// fan-out's per-host <output>.console.log — stays colored and reads like a live
-// console scan. The explicit opt-outs win: the --no-color flag, CI output mode,
-// and the NO_COLOR env var (https://no-color.org/) all force color off. NO_COLOR
-// is re-checked here (not just in init()) because this unconditionally resets the
-// color state, so it must re-apply that opt-out rather than assume init() stuck.
-func EnableCLIColor(noColor, ciOutput bool) {
-	SetColorEnabled(!noColor && !ciOutput && os.Getenv("NO_COLOR") == "")
 }
 
 // SetCIMode enables CI mode (suppresses decorative output)

@@ -35,7 +35,6 @@ run `vigolium <command> -h`.
 - [vigolium config clean](#vigolium-config-clean)
 - [vigolium config ls](#vigolium-config-ls)
 - [vigolium config set](#vigolium-config-set)
-- [vigolium config validate](#vigolium-config-validate)
 - [vigolium db](#vigolium-db)
 - [vigolium db clean](#vigolium-db-clean)
 - [vigolium db compact](#vigolium-db-compact)
@@ -134,6 +133,7 @@ and wins for that command — read it instead of the row here.
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--ci-output-format` | - | bool | `false` | CI-friendly output: JSONL findings only, no color, no banners |
+| `--color` | - | string | `auto` | Color ANSI output: auto (only when stdout and stderr are both terminals), always, or never. --no-color is never; NO_COLOR, FORCE_COLOR and CLICOLOR_FORCE are honored under auto. -j, --events and --ci-output-format force never |
 | `--config` | - | string | - | Path to config file (default "~/.vigolium/vigolium-configs.yaml") |
 | `--db` | - | string | - | Path to SQLite database file (default "~/.vigolium/database-vgnm.sqlite"). Also honors $VIGOLIUM_DB_PATH, which additionally reads that file with project scoping off |
 | `--debug` | - | bool | `false` | Enable debug-level logging (includes outgoing HTTP request lines) |
@@ -148,7 +148,8 @@ and wins for that command — read it instead of the row here.
 | `--list-modules` | `-M` | bool | `false` | List all available scanner modules |
 | `--log-file` | - | string | - | Write all log output to this file (JSON format) |
 | `--mem-limit` | - | string | - | Soft heap ceiling (GOMEMLIMIT) for scans: empty = auto (1/3 of RAM, scaled down by -P/--parallel so all children stay under ⅔ of RAM), 'off' to disable, or an explicit size/percent like 6GiB or 50%. An existing GOMEMLIMIT env var overrides this. |
-| `--no-color` | - | bool | `false` | Disable ANSI color in all output (also honored via the NO_COLOR env var) |
+| `--no-color` | - | bool | `false` | Disable ANSI color in all output (same as --color=never; also honored via the NO_COLOR env var) |
+| `--pretty` | - | bool | `false` | Indent -j/--json output for reading (default: compact, one line). Also $VIGOLIUM_JSON_PRETTY=1. --watch stays one compact document per line |
 | `--project-name` | - | string | - | Project name to scope all operations to (must match exactly one project). Also honors $VIGOLIUM_PROJECT_NAME |
 | `--project-uuid` | - | string | - | Project UUID to scope all operations to (defaults to the default project). Also honors $VIGOLIUM_PROJECT_UUID |
 | `--proxy` | - | string | - | Route all requests through this proxy (HTTP/SOCKS5 URL) |
@@ -555,16 +556,6 @@ Set a configuration value
 
 _No command-specific flags._
 
-## vigolium config validate
-
-Check the configuration for values that break or silently weaken scans
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--project` | - | string | - | Also validate this project's config overlay, checking the merged global → project settings |
-| `--recent` | - | int | `5` | Check a wildcard-free scope.host.include against the targets of the last N scans (0 disables) |
-| `--strict` | - | bool | `false` | Exit 1 on warnings as well as errors |
-
 ## vigolium db
 
 Manage database records
@@ -705,7 +696,6 @@ Check system readiness and diagnose configuration issues
 |------|-------|------|---------|-------------|
 | `--fix` | - | bool | `false` | Auto-install/fix failing checks |
 | `--only` | - | stringSlice | - | Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium) |
-| `--strict` | - | bool | `false` | Exit 1 when the verdict is degraded, not only when it is not_ready |
 
 ## vigolium export
 
@@ -975,11 +965,10 @@ Inject payloads into a request and report per-payload response anomalies
 | `--no-calibrate` | - | bool | `false` | Disable auto-calibration of the target's catch-all response |
 | `--no-cookies` | - | bool | `false` | Don't carry cookies (overrides --session-id) |
 | `--no-redirects` | - | bool | `false` | Don't follow 30x redirects |
-| `--output` | `-o` | string | - | Write JSONL results to this file (default: stdout) |
+| `--output` | `-o` | string | - | Write the per-payload JSONL stream to this file (stdout keeps the human table, or the -j envelope) |
 | `--path-as-is` | - | bool | `false` | Send the path byte-for-byte (already the case; see pkg/replay wire fidelity) — accepted for curl compatibility |
 | `--payload` | `-p` | stringArray | - | Inline payload literal (repeatable) |
 | `--point` | - | stringArray | - | Explicit insertion point 'TYPE:name' e.g. URL_PARAM:id (repeatable) |
-| `--pretty` | - | bool | `false` | Human-readable table instead of JSONL |
 | `--record-uuid` | `-u` | string | - | Use a stored HTTP record (by UUID) as the request to fuzz |
 | `--referer` | - | string | - | Referer header, curl's -e |
 | `--request` | `-X` | string | - | HTTP method override (default: the source request's, or GET) |
@@ -1415,9 +1404,8 @@ Re-send a stored or supplied HTTP request and diff baseline vs replay
 | `--no-redirects` | - | bool | `false` | Don't follow 30x redirects |
 | `--notes` | - | string | - | Note attached to the --to-organizer item (longer than 200 chars is truncated with an ellipsis, not rejected) |
 | `--offset` | - | int | `0` | Bulk: skip this many matched records before replaying (pagination) |
-| `--output` | `-o` | string | - | Write JSON result to this file (default: stdout) |
+| `--output` | `-o` | string | - | Write the JSONL result stream (one object per record) to this file; stdout keeps the human summary, or the -j envelope |
 | `--path` | - | string | - | Bulk: filter records by URL path pattern |
-| `--pretty` | - | bool | `false` | Human-readable summary instead of JSON |
 | `--raw-request` | - | string | - | Full raw HTTP request override — send these exact bytes instead of the resolved baseline |
 | `--raw-request-file` | - | string | - | Read --raw-request from a file |
 | `--record-uuid` | `-u` | string | - | Stored HTTP record UUID to use as baseline |
@@ -1726,9 +1714,7 @@ Usage: `vigolium scope set <component.field> <value>`
 
 Set a scope rule
 
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--project` | - | string | - | Write the rule to this project's config overlay instead of the global config |
+_No command-specific flags._
 
 ## vigolium scope view
 

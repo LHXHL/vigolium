@@ -107,14 +107,12 @@ var knownNonConforming = map[string]string{
 	// Streams that ignore -j (B4/B5).
 	"db export":        "own --format stream; ignores -j",
 	"export":           "own --format stream; ignores -j",
-	"fuzz":             "raw summary; per-payload JSONL; local --pretty",
-	"replay":           "raw replayOutput by default; ignores -j; local --pretty",
 	"storage download": "raw object bytes",
 }
 
 // knownNonConformingCeiling pins the ratchet's size. Lower it when an entry is
 // removed; never raise it.
-const knownNonConformingCeiling = 68
+const knownNonConformingCeiling = 66
 
 // shadowCheckedFlags are the local flag names that must not shadow a persistent
 // one: a local --json silently replaces the global -j on that command.

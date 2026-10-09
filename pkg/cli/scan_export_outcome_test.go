@@ -324,11 +324,11 @@ func TestDirectScanPinnedDBFailureIsFatal(t *testing.T) {
 func TestScanResultPersistedIsSerialized(t *testing.T) {
 	doc, err := encodeAgentJSON(&scanResult{Target: "http://a.example/", Method: "GET"})
 	require.NoError(t, err)
-	assert.Contains(t, string(doc), `"persisted": false`)
+	assert.Contains(t, string(doc), `"persisted":false`)
 	assert.NotContains(t, string(doc), "interrupted", "interrupted is omitempty on a normal run")
 
 	doc, err = encodeAgentJSON(&scanResult{Target: "http://a.example/", Persisted: true, Interrupted: true})
 	require.NoError(t, err)
-	assert.Contains(t, string(doc), `"persisted": true`)
-	assert.Contains(t, string(doc), `"interrupted": true`)
+	assert.Contains(t, string(doc), `"persisted":true`)
+	assert.Contains(t, string(doc), `"interrupted":true`)
 }

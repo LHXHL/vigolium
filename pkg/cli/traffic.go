@@ -281,6 +281,9 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 			fuzzyTerm = args[0]
 		}
 	}
+	if err := rejectTrafficHumanViewsUnderJSON(); err != nil {
+		return err
+	}
 
 	// Built once, up front: the filters are a pure function of the flags and the
 	// positional term, so they cannot change between --watch ticks, and the
@@ -334,7 +337,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	// --replay re-sends matched records instead of listing them. Run it
 	// directly (not under --watch, which would re-fire the traffic each tick).
 	if trafficReplay {
-		return runTrafficReplayShim(context.Background(), fuzzyTerm)
+		return runTrafficReplayShim(context.Background(), cmd, fuzzyTerm)
 	}
 
 	return runWithWatch(func() error {
@@ -441,6 +444,33 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		warnIfCapped(len(records), total)
 		return nil
 	})
+}
+
+// rejectTrafficHumanViewsUnderJSON refuses -j together with a human view. -j
+// used to win silently: `traffic --tree -j` printed the flat row list, so a
+// caller that asked for a tree got something else and no sign of it. The tree,
+// markdown, raw and Burp views are renderings for a person; the machine shape
+// of the same data is the row list (or `--group-by host` for the aggregate).
+func rejectTrafficHumanViewsUnderJSON() error {
+	if !globalJSON {
+		return nil
+	}
+	var view string
+	switch {
+	case trafficTree:
+		view = "--tree"
+	case trafficMarkdown:
+		view = "--markdown"
+	case trafficBurp:
+		view = "--burp"
+	case trafficRaw:
+		view = "--raw"
+	default:
+		return nil
+	}
+	return usageErrorf("%s is a human view and cannot be combined with -j/--json.\n\n"+
+		"For the rows use: vigolium traffic -j (add --full-body for complete bodies)\n"+
+		"For a per-host tree as data use: vigolium traffic -j --group-by host", view)
 }
 
 // buildTrafficFilters constructs QueryFilters from traffic flags and an optional fuzzy term.
@@ -551,7 +581,7 @@ func printActiveTrafficFilters(filters database.QueryFilters, fuzzyTerm string) 
 	if filters.DateTo != nil {
 		s.add("to", clicommon.FormatTimeFilter(*filters.DateTo))
 	}
-	s.print()
+	s.print(trafficMarkdown || trafficBurp || trafficRaw)
 }
 
 // resolveColumns selects columns based on --columns and --exclude-columns flags.

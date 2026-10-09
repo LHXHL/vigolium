@@ -32,7 +32,7 @@ func resetReplayBulkFlags(t *testing.T) {
 		replayConcurrency = 10
 		replayWithBrowser = false
 		replayNoRedirects = false
-		replayPretty = false
+		replayOutputPath = ""
 		replayInReplace = false
 		replayBurpBridgeURL = ""
 		globalStateless = false

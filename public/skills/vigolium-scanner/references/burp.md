@@ -329,7 +329,7 @@ modules, and vigolium's findings land back in Burp's Organizer.
 
 ```bash
 vigolium finding -j --id 42 --with-records          # read it
-vigolium replay --finding-id 42 --pretty            # confirm it re-triggers
+vigolium replay --finding-id 42                     # confirm it re-triggers
 vigolium finding --id 42 --to-repeater -B http://127.0.0.1:9009   # hand to a human
 ```
 
@@ -359,7 +359,7 @@ them in Burp's Target tree without replaying anything.
 ```bash
 # Re-send Burp-captured requests under a different user's session.
 vigolium replay --host acme.test --method GET -B http://127.0.0.1:9009 \
-  -H 'Cookie: session=victim' --pretty -c 3
+  -H 'Cookie: session=victim' --format console -c 3
 ```
 
 The diff between the two responses **is** the access-control check.

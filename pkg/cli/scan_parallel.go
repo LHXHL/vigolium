@@ -398,7 +398,7 @@ func runStatelessTargetsParallel(cmd *cobra.Command, settings *config.Settings, 
 	// only the per-target -t/-o differ between children. Each child's console is
 	// captured to a per-target file, so --captured-console makes that file a useful
 	// record (live findings included, no [status] ticker noise).
-	baseChildArgs := append(childScanArgs(cmd), "--captured-console")
+	baseChildArgs := append(append(childScanArgs(cmd), "--captured-console"), childColorArgs(cmd)...)
 
 	if !scanOpts.Silent {
 		budget := parallel * scanOpts.Concurrency
@@ -725,7 +725,7 @@ func runIsolatedTargetsParallel(cmd *cobra.Command, settings *config.Settings, s
 
 	// Each child's console is captured to a per-target file; --captured-console
 	// makes that file a useful record (live findings included, no [status] noise).
-	baseChildArgs := append(childScanArgs(cmd), "--captured-console")
+	baseChildArgs := append(append(childScanArgs(cmd), "--captured-console"), childColorArgs(cmd)...)
 
 	if !scanOpts.Silent {
 		budget := parallel * scanOpts.Concurrency

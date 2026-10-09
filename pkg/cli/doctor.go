@@ -10,28 +10,20 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
-	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/diagnostics"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
 var (
-	doctorFix    bool
-	doctorOnly   []string
-	doctorStrict bool
+	doctorFix  bool
+	doctorOnly []string
 )
-
-// doctorRunDiagnostics is diagnostics.Run, replaced in tests: a real run spawns
-// a browser and extracts embedded binaries.
-var doctorRunDiagnostics = diagnostics.Run
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check system readiness and diagnose configuration issues",
-	Long: "Run diagnostic checks on database, agent backends, third-party tools, scope rules, OAST reachability, and other dependencies to verify the scanner is ready to operate.\n\n" +
-		"Exits 1 (error.code not_ready) when the verdict is not_ready; with --strict also when it is degraded. " +
-		"The report is written first either way, so -j consumers always get it on stdout.",
+	Long:  "Run diagnostic checks on database, agent backends, third-party tools, and other dependencies to verify the scanner is ready to operate.",
 	Args:  cobra.NoArgs,
 	RunE:  runDoctorCmd,
 }
@@ -40,7 +32,6 @@ func init() {
 	rootCmd.AddCommand(doctorCmd)
 	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false, "Auto-install/fix failing checks")
 	doctorCmd.Flags().StringSliceVar(&doctorOnly, "only", nil, "Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium)")
-	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "Exit 1 when the verdict is degraded, not only when it is not_ready")
 }
 
 // doctorOutput is the JSON structure when --fix is used with --json.
@@ -78,7 +69,6 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 		ConfigErr:          cfgErr,
 		ConfigPath:         effectiveConfigPath(),
 		ProbeBrowserLaunch: true,
-		ProbeNetwork:       true,
 	}
 
 	// Try to open DB (optional — report error if it fails). The error is
@@ -92,7 +82,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 		deps.DBErr = dbErr
 	}
 
-	report := doctorRunDiagnostics(deps)
+	report := diagnostics.Run(deps)
 
 	// Backfill the first-run marker only when the mandatory native-scan deps are
 	// actually present (chromium + nuclei-templates). A read-only doctor on a
@@ -104,13 +94,10 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 		if globalJSON {
 			// Through the shared writer so this counts as the invocation's one
 			// result document and the error path does not append a second.
-			if err := writeAgentJSON(report); err != nil {
-				return err
-			}
-			return doctorVerdictError(report)
+			return writeAgentJSON(report)
 		}
 		printDoctorReport(report)
-		return doctorVerdictError(report)
+		return nil
 	}
 
 	// --fix mode: print initial report, fix, then recheck. When --only narrows
@@ -140,21 +127,18 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Re-run checks to show updated status.
-	updated := doctorRunDiagnostics(deps)
+	updated := diagnostics.Run(deps)
 
 	// If --fix just installed chromium + nuclei-templates, backfill the marker
 	// so subsequent scans skip the redundant first-run check.
 	ensureInitMarkerIfDepsPresent(updated)
 
 	if globalJSON {
-		if err := writeAgentJSON(doctorOutput{
+		return writeAgentJSON(doctorOutput{
 			Report:  report,
 			Fixes:   fixes,
 			Updated: updated,
-		}); err != nil {
-			return err
-		}
-		return doctorVerdictError(updated)
+		})
 	}
 
 	fmt.Println()
@@ -176,36 +160,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 			fmt.Println()
 		}
 	}
-	return doctorVerdictError(updated)
-}
-
-// doctorVerdictError turns the report's verdict into the exit status, after
-// the report has been written: not_ready exits 1 (error.code not_ready), and
-// so does degraded under --strict. doctor always exited 0 before, so a script
-// gating on it could not tell a working install from one with no database.
-// Under --fix it is called with the re-checked report, so a fix that worked
-// exits 0.
-func doctorVerdictError(r *diagnostics.Report) error {
-	switch {
-	case r == nil:
-		return nil
-	case r.Status == "not_ready":
-		return clicommon.CodedErrorf(apicontract.CodeNotReady, "doctor: system not ready (%s)", doctorBlockers(r))
-	case doctorStrict && r.Status == "degraded":
-		return clicommon.CodedErrorf(apicontract.CodeNotReady, "doctor: system degraded (--strict)")
-	}
 	return nil
-}
-
-// doctorBlockers names the failing check behind a not_ready verdict.
-func doctorBlockers(r *diagnostics.Report) string {
-	if r.Database != nil && r.Database.Status == diagnostics.StatusError {
-		if r.Database.Message != "" {
-			return "database: " + r.Database.Message
-		}
-		return "database unavailable"
-	}
-	return "see the report"
 }
 
 func printFixResults(results []diagnostics.FixResult) {
@@ -331,11 +286,6 @@ func printDoctorReport(r *diagnostics.Report) {
 		printDetails(detailsVisible(r.Config.Status), r.Config.Details)
 		printTip(r.Config.Tip)
 	}
-	if r.Scope != nil {
-		printCheck("Scope", r.Scope.Status, r.Scope.Message)
-		printDetails(detailsVisible(r.Scope.Status), r.Scope.Details)
-		printTip(r.Scope.Tip)
-	}
 	if r.Database != nil {
 		printCheck("Database", r.Database.Status, r.Database.Message)
 		printDetails(detailsVisible(r.Database.Status), r.Database.Details)
@@ -365,12 +315,6 @@ func printDoctorReport(r *diagnostics.Report) {
 		printCheck("Embedded jstangle", c.Status, c.Message)
 		printDetails(detailsVisible(c.Status), c.Details)
 		printTip(c.Tip)
-	}
-	if r.OAST != nil {
-		printCheck("OAST", r.OAST.Status, r.OAST.Message)
-		printDoctorPurpose(doctorDetailIndent, "callback channel for blind (out-of-band) checks")
-		printDetails(detailsVisible(r.OAST.Status), r.OAST.Details)
-		printTip(r.OAST.Tip)
 	}
 
 	// ── Agentic scan ──
@@ -415,7 +359,7 @@ func printDoctorReport(r *diagnostics.Report) {
 	case "ready":
 		fmt.Printf("  %s %s\n", terminal.BoldGreen(terminal.SymbolSuccess), terminal.BoldGreen("All systems ready"))
 	case "degraded":
-		fmt.Printf("  %s %s\n", terminal.BoldYellow(terminal.SymbolWarning), terminal.BoldYellow("System degraded — some scan modes unavailable or scope rules broken"))
+		fmt.Printf("  %s %s\n", terminal.BoldYellow(terminal.SymbolWarning), terminal.BoldYellow("System degraded — some scan modes unavailable"))
 	default:
 		// "not_ready" can only mean Database failed under the new status
 		// rules; native and agentic checks degrade rather than block.

@@ -171,14 +171,13 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 			return err
 		}
 
-		// Color is on by default for every command — including output captured to
-		// a file or pipe, such as the -P/--parallel fan-out's per-host
-		// <output>.console.log, which should read like a live console scan instead
-		// of losing its color the moment stdout isn't a TTY. --no-color,
-		// --ci-output-format (CI wants plain logs), and the NO_COLOR env var opt
-		// back out; the -P parent forwards --no-color to each child and children
-		// inherit NO_COLOR via the environment, so the opt-out reaches every log.
-		terminal.EnableCLIColor(globalNoColor, globalCIOutput)
+		// --color auto|always|never (--no-color = never). Auto colors only when
+		// stdout and stderr are both terminals; machine modes force never. The -P
+		// parent passes --color=always to its children so their captured
+		// console.log keeps its color. See output_hygiene.go.
+		if err := applyColorFlag(cmd); err != nil {
+			return err
+		}
 
 		// The banner goes out here, after parsing, on stderr — not from main()
 		// before cobra has seen the command line. See banner.go for what the old
@@ -353,7 +352,8 @@ func init() {
 	pf.StringVar(&globalScanUUID, "scan-uuid", "", "Pin scan UUID for this session (use to sync results across nodes; defaults to a freshly-minted UUID)")
 	pf.StringVar(&globalFormat, "format", "console", "Output format (comma-separated for multiple): console, jsonl, html, sarif, sqlite (needs -S), fs (alias: file-system; flat traffic/finding tree)")
 	pf.BoolVar(&globalCIOutput, "ci-output-format", false, "CI-friendly output: JSONL findings only, no color, no banners")
-	pf.BoolVar(&globalNoColor, "no-color", false, "Disable ANSI color in all output (also honored via the NO_COLOR env var)")
+	pf.BoolVar(&globalNoColor, "no-color", false, "Disable ANSI color in all output (same as --color=never; also honored via the NO_COLOR env var)")
+	registerOutputHygieneFlags(pf)
 	pf.BoolVar(&globalFullExample, "full-example", false, "Show full example commands organized by section")
 	pf.StringArrayVar(&globalExtScripts, "ext", nil, "Load JavaScript extension script (repeatable)")
 	pf.StringVar(&globalExtDir, "ext-dir", "", "Override extension scripts directory")

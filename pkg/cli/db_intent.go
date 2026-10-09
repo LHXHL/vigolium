@@ -79,8 +79,6 @@ var dbIntents = map[string]string{
 	"config clean": dbIntentNone,
 	"config ls":    dbIntentNone,
 	"config set":   dbIntentNone,
-	// validate reads recent scan targets for one rule; a missing store skips it.
-	"config validate": "read",
 
 	// Database.
 	"db clean":   "write",

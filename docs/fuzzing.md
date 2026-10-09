@@ -76,8 +76,9 @@ sends a few improbable values first, learns the target's wildcard/catch-all
 
 ## Output
 
-Default: JSONL, one object per send, to stdout — matched results only unless
-`--all-results`. Each line is self-describing:
+Default: a human table, one line per send, to stdout — matched results only
+unless `--all-results`. `--format jsonl` prints the per-payload stream instead,
+one self-describing object per send:
 
 ```json
 {"position":"id","position_type":"URL_PARAM","payload":"' OR '1'='1","status":500,
@@ -85,28 +86,37 @@ Default: JSONL, one object per send, to stdout — matched results only unless
  "length_delta":48,"matched":true}
 ```
 
-`--pretty` renders an aligned table instead; `-o file` writes JSONL to a file.
+`-o file` writes that stream to a file; stdout keeps the table (or the `-j`
+envelope).
 
 ### Agent JSON contract (`-j/--json`)
 
-With the global `-j`, `fuzz` streams the per-payload JSONL to **stderr** and
-prints **one summary object** to **stdout** — a usable handle so you don't parse
-the stream:
+With the global `-j`, `fuzz` prints **one envelope** on **stdout** — a usable
+handle so you don't parse the stream. The ranked top results are `items`, the
+run summary sits beside them, and `total` is the full matched count:
 
 ```json
 {
+  "schema_version": 1, "command": "fuzz", "kind": "read", "ok": true,
   "target": "https://acme.test",
   "positions": 1, "payloads": 13,
   "sent": 13, "matched": 1, "calibrated": 8, "errors": 0,
   "baseline": {"status": 200, "length": 25, "words": 4, "lines": 0},
-  "top_results": [ { "payload": "' OR '1'='1", "status": 500, "reflected": true, "matched": true } ],
-  "query": "vigolium scan-request -i 'https://acme.test/item?id=FUZZ' -m xss,sqli,lfi,ssrf,cmdi -j   # confirm anomalies with hardened modules"
+  "total": 1, "offset": 0, "limit": 1,
+  "items": [ { "payload": "' OR '1'='1", "status": 500, "reflected": true, "matched": true } ],
+  "query": "vigolium scan-request -i 'https://acme.test/item?id=FUZZ' -m xss,sqli,lfi,ssrf,cmdi -j",
+  "query_argv": ["vigolium", "scan-request", "-i", "https://acme.test/item?id=FUZZ", "-m", "xss,sqli,lfi,ssrf,cmdi", "-j"]
 }
 ```
 
-`top_results` are ranked most-interesting first (status-changed → reflected →
-largest size delta → slowest). `query` is a ready confirmation command against
-the hardened module scanner.
+The per-payload stream is not written under `-j` unless `-o` names a file;
+`-j --format jsonl` without `-o` is a usage error (exit 2), since both would
+claim stdout. The old local `--pretty` is a deprecated no-op (the table is the
+default); `--pretty` now means the global "indent -j output".
+
+`items` are ranked most-interesting first (status-changed → reflected →
+largest size delta → slowest). `query` (or `query_argv`, ready for exec) is a
+confirmation command against the hardened module scanner.
 
 `--fail-on-match` exits non-zero (**3**) when any result matches — for CI/agent
 gating. Network policy honors `HTTP_PROXY`/`HTTPS_PROXY` (route through Burp).

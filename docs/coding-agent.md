@@ -18,6 +18,8 @@ default human output is unchanged; you opt into machine output with `-j/--json`.
 - Two JSON contracts:
   - **`-j/--json`** on read/query commands (`finding`, `traffic`, `db`) → a single
     structured object with **compact, token-aware** bodies. This is what you parse.
+    It is printed compact (one line); the global `--pretty` (or
+    `VIGOLIUM_JSON_PRETTY=1`) indents it for reading.
   - **`--format jsonl`** / `export` → the bulk `{"type":...,"data":{...}}` stream
     (one object per line). Use for archival/bulk, not triage. After a scan the
     stream covers that scan's `scan` row, findings and records (the exchanges
@@ -28,8 +30,12 @@ default human output is unchanged; you opt into machine output with `-j/--json`.
     are emitted. `export --no-url-dedup` turns the collapse off; for the complete
     store use `-S --format sqlite` or copy the database file.
 - Non-interactive by default: the TUI is opt-in (`--tui`), never auto-launched.
-  Destructive commands need `--force`. Add `--no-color` (or `NO_COLOR=1`) for
-  clean text; scope with `--project-uuid <uuid>`, `--project-name <name>`,
+  Destructive commands need `--force`. Color is automatic: on only when stdout
+  and stderr are both terminals, off under `-j`, `--events` and
+  `--ci-output-format`; `--color always|never|auto` overrides it (`--no-color`
+  = `never`; `NO_COLOR`, `FORCE_COLOR` and `CLICOLOR_FORCE` are honored under
+  `auto`). The banner prints only when stderr is a terminal and `--events` is
+  off. Scope with `--project-uuid <uuid>`, `--project-name <name>`,
   `VIGOLIUM_PROJECT_UUID`, or `VIGOLIUM_PROJECT_NAME`.
 
 ## Token-aware output (the important part)
@@ -759,6 +765,19 @@ path.
 
 - `-S` means `--stateless` on `scan` but `--scan-on-receive` on `ingest`.
 - `--json` (compact, single object) ≠ `--format jsonl` (bulk, one line per row).
+- `replay` and `fuzz` print a **human** view by default. `-j` gives one envelope
+  (`replay`: the result in `items[0]`, or one row per record in bulk mode;
+  `fuzz`: the ranked top results in `items`, the run summary beside them).
+  `--format jsonl` is their per-item stream and `-o <file>` writes that stream to
+  a file; `-j --format jsonl` without `-o` is a usage error. Bulk `replay` still
+  defaults to JSONL for one release (with a stderr notice), so pass `--format
+  jsonl` or `-j` explicitly. Their old local `--pretty` ("human instead of
+  JSON") is a deprecated no-op; `--pretty` is now the global "indent -j".
+- `traffic -j` cannot be combined with `--tree`, `--markdown`, `--raw` or
+  `--burp` (exit `2`): those are human views. The rows are `traffic -j`; a
+  per-host aggregate is `traffic -j --group-by host`.
+- `finding`/`traffic` print their "Filtered by:" echo on **stderr**, and drop it
+  entirely for `--markdown`/`--raw`/`--burp` when stdout is not a terminal.
 - `--json --watch <n>` switches to NDJSON: one compact document per line, no
   clear-screen, no heading. If the read breaks, the last line is a compact error
   object (`"ok": false`) rather than silence. `--watch` is rejected on a command

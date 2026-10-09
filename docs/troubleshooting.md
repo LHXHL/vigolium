@@ -70,12 +70,6 @@ vigolium config set scope.host.include "*.example.com"
 
 Ensure the target URL scheme (http vs https) and hostname match what the scope expects. Subdomains are not included by default unless a wildcard pattern is used.
 
-Run `vigolium config validate` to catch scope rules that can never match (a host
-pattern with `https://` or a path, a `:port` suffix, quote or bracket residue
-from a JSON list split on commas) or that admit none of your recent scan targets.
-Each issue prints the exact `config set` that fixes it; `vigolium doctor` shows
-the same scope check.
-
 ## OAST Not Working
 
 **Symptoms:** No out-of-band findings are reported, even for vulnerabilities that typically produce OAST interactions (e.g., blind SSRF, blind XXE).

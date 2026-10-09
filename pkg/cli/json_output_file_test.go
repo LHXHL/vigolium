@@ -95,8 +95,9 @@ func TestEncodeAgentJSONMatchesStdoutForm(t *testing.T) {
 	if !strings.Contains(string(doc), "?a=1&b=2") {
 		t.Errorf("ampersand was escaped: %s", doc)
 	}
-	if !strings.Contains(string(doc), "\n  \"schema_version\"") {
-		t.Errorf("indentation lost: %s", doc)
+	// Compact by default (--pretty indents): one line plus the newline.
+	if strings.Count(string(doc), "\n") != 1 {
+		t.Errorf("not one compact line: %s", doc)
 	}
 }
 

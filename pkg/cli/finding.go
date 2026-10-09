@@ -623,7 +623,7 @@ func printActiveFindingFilters(filters database.QueryFilters, fuzzyTerm string) 
 	if filters.DateTo != nil {
 		s.add("to", clicommon.FormatTimeFilter(*filters.DateTo))
 	}
-	s.print()
+	s.print(findingMarkdown || findingBurp || findingRaw)
 }
 
 func displayFindingsJSON(ctx context.Context, db *database.DB, findings []*database.Finding, total int64, projectUUID string) error {

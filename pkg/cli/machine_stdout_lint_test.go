@@ -26,7 +26,8 @@ const machineStdoutBaseline = "testdata/machine_stdout_baseline.txt"
 // streams. Keyed `<file> <func>`.
 var stdoutStreamWriters = map[string]string{
 	"agentview.go writeAgentJSONDoc":       "the single -j document writer",
-	"replay_bulk.go runReplayBulk":         "bulk replay JSONL stream",
+	"replay_bulk.go runReplayBulk":         "bulk replay per-record human tables",
+	"replay_output.go openStreamEncoder":   "replay --format jsonl per-record stream",
 	"skills.go writeBody":                  "skills get: raw SKILL.md markdown",
 	"server_ca.go runServerCAPrint":        "server ca print: the PEM certificate is the output (the -j path is an envelope)",
 	"traffic_extract.go deliverBody":       "traffic body: the body bytes are the output",

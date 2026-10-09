@@ -18,14 +18,6 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:9002/api/diagnostics 
     "status": "ok",
     "message": "driver=sqlite, schema=ok"
   },
-  "scope": {
-    "status": "ok",
-    "message": "scope rules valid"
-  },
-  "oast": {
-    "status": "ok",
-    "message": "interactsh server oast.pro (not probed)"
-  },
   "initialized": {
     "status": "ok",
     "message": "path=~/.vigolium/initialized, version=v0.3.2"
@@ -88,7 +80,7 @@ available.
 | Value | Meaning |
 |---|---|
 | `ready` | All checks passed |
-| `degraded` | Some non-critical checks failed (e.g., optional tool missing, browser disabled, a scope rule with an error-level issue) |
+| `degraded` | Some non-critical checks failed (e.g., optional tool missing, browser disabled) |
 | `not_ready` | Critical checks failed (database or agent unavailable) |
 
 ### Check Statuses
@@ -101,8 +93,6 @@ Each individual check returns one of: `ok`, `warning`, `error`.
 |---|---|---|
 | `database` | Yes | Pings the database with a 2s timeout |
 | `initialized` | No | Reports the first-run initialization marker and version |
-| `scope` | No (an error degrades) | Runs the shared scope validator (`vigolium config validate`); errors make the verdict `degraded`, warnings do not |
-| `oast` | No | OAST callback readiness. A fixed `oast_url` is ok; interactsh is resolved and TLS-connected (3s, no registration) only by the CLI doctor; the server endpoint never probes the network |
 | `agent` | Yes | Resolves the configured olium provider and confirms credentials are available |
 | `queue` | No | Reports queue depth and error counts |
 | `browser` | No | Checks `agent-browser` binary if enabled in config |
@@ -126,7 +116,3 @@ vigolium doctor --json
 ```
 
 The CLI version omits the `queue` check since the queue is only available when the server is running.
-
-`vigolium doctor` exits 1 with `error.code: not_ready` when the verdict is
-`not_ready`, and with `--strict` also when it is `degraded`. The report is
-written to stdout first either way.

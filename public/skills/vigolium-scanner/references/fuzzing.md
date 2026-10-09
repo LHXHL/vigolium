@@ -297,9 +297,10 @@ millisecond threshold.
 
 ## Output
 
-**Default:** JSONL to stdout, one object per send, matched-only unless
-`--all-results`. `--pretty` renders an aligned table; `-o file` writes the JSONL
-to a file.
+**Default:** a human table on stdout, one line per send, matched-only unless
+`--all-results`. `--format jsonl` prints the per-payload stream instead, one
+object per send; `-o file` writes that stream to a file (stdout keeps the table,
+or the `-j` envelope).
 
 ```json
 {"position":"id","position_type":"URL_PARAM","payload":"' OR '1'='1",
@@ -310,20 +311,25 @@ to a file.
  "matched":true,"calibrated":false}
 ```
 
-**Under `-j/--json`** the JSONL streams to **stderr** and ONE summary object goes
-to **stdout** — the agent handle, so you never parse the stream:
+**Under `-j/--json`** ONE envelope goes to **stdout** — the agent handle, so you
+never parse the stream. The ranked top results are `items`; the run summary sits
+beside them, and `total` is the full matched count:
 
 ```json
-{ "target":"https://acme.test", "positions":1, "payloads":13,
+{ "schema_version":1, "command":"fuzz", "kind":"read", "ok":true,
+  "target":"https://acme.test", "positions":1, "payloads":13,
   "sent":13, "matched":1, "calibrated":8, "errors":0,
   "baseline":{"status":200,"length":25,"words":4,"lines":0},
-  "top_results":[…], "anomalies":[…], "anomalies_elided":0,
-  "query":"vigolium scan-request -i '…' -m sqli -j   # confirm with hardened modules" }
+  "total":1, "items":[…], "anomalies":[…],
+  "query":"vigolium scan-request -i '…' -m sqli -j", "query_argv":[…] }
 ```
 
-`top_results` are ranked most-interesting first (status-changed → reflected →
-largest size delta → slowest). **Run the `query`** — it is a ready
-confirmation command against the hardened module scanner.
+The per-payload stream is not written under `-j` unless `-o` names a file
+(`-j --format jsonl` without `-o` is a usage error: two documents on one stdout).
+
+`items` are ranked most-interesting first (status-changed → reflected →
+largest size delta → slowest). **Run the `query`** (or exec `query_argv`) — it
+is a ready confirmation command against the hardened module scanner.
 
 `--fail-on-match` exits **3** when any result matched, for CI/agent gating.
 

@@ -32,13 +32,6 @@ type Deps struct {
 	// count, which the caller already knows — passing it avoids reflecting over
 	// the slice on the other side of the seam.
 	WriteJSON func(command, legacyKey string, items any, total int, extra map[string]any) error
-
-	// RecentScanTargets returns the targets of the n most recent scans in the
-	// given project ("" = the project the CLI resolves by default), for
-	// `config validate`'s scope_include_matches_no_recent_target rule. Injected
-	// because this package cannot reach the database. nil, or an error (no
-	// database yet), skips the rule.
-	RecentScanTargets func(projectUUID string, n int) ([]string, error)
 }
 
 // jsonRequested reports whether machine output was asked for, tolerating a Deps
@@ -49,11 +42,10 @@ func (d Deps) jsonRequested() bool {
 
 // Examples carries the per-command example blocks, defined in pkg/cli.
 type Examples struct {
-	Parent   string
-	Ls       string
-	Set      string
-	Clean    string
-	Validate string
+	Parent string
+	Ls     string
+	Set    string
+	Clean  string
 }
 
 // NewCommand builds the `config` command group with its subcommands.
@@ -61,14 +53,13 @@ func NewCommand(deps Deps, ex Examples) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "config",
 		Short:   "Manage configuration",
-		Long:    "Inspect and edit Vigolium settings stored in ~/.vigolium/vigolium-configs.yaml. Subcommands list current values, set keys via dot-notation, validate the effective settings, and reset to clean defaults.",
+		Long:    "Inspect and edit Vigolium settings stored in ~/.vigolium/vigolium-configs.yaml. Subcommands list current values, set keys via dot-notation, and reset to clean defaults.",
 		Example: ex.Parent,
 	}
 	cmd.AddCommand(
 		newLsCmd(deps, ex.Ls),
 		newSetCmd(deps, ex.Set),
 		newCleanCmd(deps, ex.Clean),
-		newValidateCmd(deps, ex.Validate),
 	)
 	return cmd
 }

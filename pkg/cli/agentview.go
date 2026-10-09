@@ -204,15 +204,20 @@ func writeAgentJSONDoc(doc []byte) error {
 // it. A second copy of this configuration is a silent divergence waiting for the
 // next encoder option.
 //
+// The document is compact — one line plus the trailing newline — unless the
+// global --pretty (or $VIGOLIUM_JSON_PRETTY=1) asked for indentation. A program
+// pays for every indent byte and reads none of them.
+//
 // In stream mode each document must occupy exactly one line, which is what makes
 // a repeated read (--watch) readable with a line-oriented consumer; indented
 // output would emit a multi-line object per tick and the "stream" would only be
-// splittable by a full JSON parser. HTML escaping stays off so body text
-// containing <, >, & stays readable — and cheap in tokens.
+// splittable by a full JSON parser, so --pretty does not apply there. HTML
+// escaping stays off so body text containing <, >, & stays readable — and cheap
+// in tokens.
 func encodeAgentJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
-	if !jsonStreamMode {
+	if globalPretty && !jsonStreamMode {
 		enc.SetIndent("", "  ")
 	}
 	enc.SetEscapeHTML(false)
@@ -222,9 +227,9 @@ func encodeAgentJSON(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// jsonStreamMode switches -j output from one indented document to NDJSON: one
-// compact document per line. Set only by a repeated read (--watch), where a
-// single document is not the shape of the answer.
+// jsonStreamMode switches -j output from one document to NDJSON: one compact
+// document per line, even under --pretty. Set only by a repeated read
+// (--watch), where a single document is not the shape of the answer.
 var jsonStreamMode bool
 
 // jsonStreamFramed records that this invocation's stdout is an NDJSON stream, so

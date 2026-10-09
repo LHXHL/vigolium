@@ -1,13 +1,9 @@
 package cli
 
 import (
-	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/vigolium/vigolium/pkg/apicontract"
-	"github.com/vigolium/vigolium/pkg/diagnostics"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -47,57 +43,4 @@ func TestHighlightTipCommands(t *testing.T) {
 			t.Errorf("surrounding prose lost: %q", plain)
 		}
 	})
-}
-
-// doctor's exit status follows its verdict, after the report is written:
-// not_ready exits 1 with error.code not_ready, degraded exits 1 only under
-// --strict. Before, doctor always exited 0.
-func TestDoctorExitFollowsVerdict(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	swapGlobal(t, &globalConfig, "")
-	swapGlobal(t, &globalDB, filepath.Join(home, "doctor.sqlite"))
-	swapGlobal(t, &globalJSON, true)
-	swapGlobal(t, &doctorFix, false)
-	swapGlobal(t, &doctorOnly, nil)
-
-	cases := []struct {
-		status   diagnostics.Status
-		strict   bool
-		wantExit int
-	}{
-		{"not_ready", false, ExitError},
-		{"not_ready", true, ExitError},
-		{"degraded", false, ExitSuccess},
-		{"degraded", true, ExitError},
-		{"ready", true, ExitSuccess},
-	}
-	for _, tc := range cases {
-		t.Run(string(tc.status)+fmt.Sprintf("/strict=%v", tc.strict), func(t *testing.T) {
-			swapGlobal(t, &doctorStrict, tc.strict)
-			swapGlobal(t, &doctorRunDiagnostics, func(diagnostics.Deps) *diagnostics.Report {
-				return &diagnostics.Report{
-					Status:   tc.status,
-					Database: &diagnostics.CheckResult{Status: diagnostics.StatusError, Message: "injected"},
-				}
-			})
-			jsonResultEmitted = false
-			t.Cleanup(func() { jsonResultEmitted = false })
-
-			var err error
-			out := captureStdout(t, func() { err = runDoctorCmd(doctorCmd, nil) })
-			if got := classifyExitCode(err); got != tc.wantExit {
-				t.Fatalf("exit = %d (err %v), want %d", got, err, tc.wantExit)
-			}
-			if err != nil {
-				if code := classifyErrorCode(err, classifyExitCode(err)); code != apicontract.CodeNotReady {
-					t.Fatalf("error.code = %q, want not_ready", code)
-				}
-			}
-			// The report is on stdout regardless of the exit status.
-			if !strings.Contains(out, `"status":"`+string(tc.status)+`"`) && !strings.Contains(out, `"status": "`+string(tc.status)+`"`) {
-				t.Fatalf("report not on stdout: %s", out)
-			}
-		})
-	}
 }

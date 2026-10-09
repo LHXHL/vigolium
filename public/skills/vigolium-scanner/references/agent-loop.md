@@ -435,9 +435,10 @@ vigolium replay -i "curl -X POST https://target.example/api -d '{\"id\":1}'"
 vigolium replay --raw-request-file ./request.txt
 ```
 
-Output is stable JSON: `result.baseline`, `result.replay`, `result.diff` (status
-delta, length delta, content hash, interpretation). `--pretty` gives a human
-summary.
+Output is a human summary by default. Under `-j` it is one envelope whose
+`items[0]` is the result: `result.baseline`, `result.replay`, `result.diff`
+(status delta, length delta, content hash, interpretation). `--format jsonl`
+prints the same object bare, on one line; `-o <file>` writes that line to a file.
 
 **Persist auth across calls.** Multi-step flows (login → CSRF → action) need
 cookies between requests:
@@ -510,6 +511,10 @@ spellings, defaults to the human comparison table, and does not follow
 redirects. Reach for `replay` directly whenever you need to *change* the
 request — the shortcut has no override flags.
 
+Bulk `replay` still streams JSONL (one object per record) by default, with a
+stderr notice; the default becomes the per-record tables in the next release.
+Say what you want: `--format jsonl` for the stream, `-j` for one envelope.
+
 ```bash
 # Re-send ALL stored traffic through Burp, 5 at a time.
 vigolium replay --all --proxy http://127.0.0.1:8080 -c 5
@@ -524,8 +529,11 @@ vigolium replay --host api.example.com --method POST --search token \
 # From a standalone export (project scoping off).
 vigolium replay -S --db scan.sqlite --all --proxy http://127.0.0.1:8080 -c 5
 
-# Human table instead of JSONL.
-vigolium replay login --pretty
+# Per-record tables instead of the JSONL stream.
+vigolium replay login --format console
+
+# One envelope, every replayed record a row in items (failed ones carry error).
+vigolium replay login -j
 ```
 
 Bulk selection mirrors `vigolium traffic`: `--host`, `--method`, `--status`,
@@ -546,7 +554,7 @@ value, so pass the complete cookie string — it is not additive per-cookie.
 
 ```bash
 # Same request, another user's session — the diff IS the IDOR/BFLA check.
-vigolium replay -u <uuid> -H 'Cookie: session=victim; csrf=xyz' --pretty
+vigolium replay -u <uuid> -H 'Cookie: session=victim; csrf=xyz'
 
 # Merge a stored auth session, then override one header on top (-H wins).
 vigolium replay -u <uuid> --auth-session staging -H 'X-Forwarded-For: 127.0.0.1'
@@ -609,7 +617,7 @@ vigolium fuzz -u <uuid> --fuzz-header X-Forwarded-For \
 # Two markers in lockstep (user/pass pairs from two lists).
 vigolium fuzz -i login.txt --mode pitchfork -w users.txt -w passwords.txt
 
-# Agent handle: JSONL to stderr, ONE summary object to stdout, exit 3 on match.
+# Agent handle: ONE envelope on stdout, exit 3 on match.
 vigolium fuzz -u <uuid> --class xss,sqli -a -j --fail-on-match
 ```
 
@@ -633,11 +641,11 @@ against the baseline *and* the run's own population and keeps what stands out,
 with `anomaly_score` + `anomaly_reasons` on each result. It reports where to
 look, never a verdict.
 
-**Output:** JSONL to stdout by default (matched only unless `--all-results`);
-`--pretty` for a human table; `-o` to a file. Under `-j`, JSONL streams to stderr
-and ONE summary object goes to stdout —
-`{target, sent, matched, calibrated, baseline, top_results, anomalies, query}` —
-where `query` is a ready `scan-request` confirmation command.
+**Output** (matched only unless `--all-results`): a human table by default;
+`--format jsonl` for the per-payload stream on stdout; `-o` writes that stream to
+a file. Under `-j`, ONE envelope goes to stdout — the ranked top results in
+`items`, plus `target, sent, matched, calibrated, baseline, anomalies` at the top
+level — and `query`/`query_argv` is a ready `scan-request` confirmation command.
 `--fail-on-match` exits 3 for CI/agent gating.
 
 Always `--dry-run` a large run first: it resolves positions and payloads and
