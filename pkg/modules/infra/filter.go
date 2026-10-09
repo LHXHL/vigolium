@@ -68,6 +68,11 @@ var urlParamTokens = map[string]bool{
 	"out": true, "to": true,
 }
 
+// ParamNameTokens is the exported form of paramNameTokens, for modules that
+// gate on whole name tokens (password_reset_poisoning, redos_probe) rather
+// than substrings.
+func ParamNameTokens(name string) []string { return paramNameTokens(name) }
+
 // paramNameTokens splits a parameter name into lower-case word tokens on
 // non-alphanumeric separators (`_`, `-`, `.`, `[`, …), camelCase humps,
 // acronym boundaries (`returnURLPath` → return, url, path) and letter/digit

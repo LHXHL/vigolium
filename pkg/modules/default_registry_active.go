@@ -132,6 +132,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/open_redirect"
 	"github.com/vigolium/vigolium/pkg/modules/active/open_redirect_confusion"
 	"github.com/vigolium/vigolium/pkg/modules/active/padding_oracle"
+	"github.com/vigolium/vigolium/pkg/modules/active/password_reset_poisoning"
 	"github.com/vigolium/vigolium/pkg/modules/active/path_normalization"
 	"github.com/vigolium/vigolium/pkg/modules/active/path_relative_stylesheet"
 	"github.com/vigolium/vigolium/pkg/modules/active/pdf_generation_injection"
@@ -151,6 +152,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/rails_info_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/rails_sensitive_files"
 	"github.com/vigolium/vigolium/pkg/modules/active/react_rsc_rce"
+	"github.com/vigolium/vigolium/pkg/modules/active/redos_probe"
 	"github.com/vigolium/vigolium/pkg/modules/active/reflected_ssti"
 	"github.com/vigolium/vigolium/pkg/modules/active/response_header_injection"
 	"github.com/vigolium/vigolium/pkg/modules/active/reverse_proxy_path_confusion"
@@ -277,6 +279,7 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(spring_actuator_misconfig.New())
 	r.RegisterActive(go_debug_endpoint_exposure.New())
 	r.RegisterActive(host_header_injection.New())
+	r.RegisterActive(password_reset_poisoning.New())
 	r.RegisterActive(web_cache_poisoning.New())
 	r.RegisterActive(prototype_pollution.New())
 	r.RegisterActive(client_path_traversal_confirm.New())
@@ -292,6 +295,8 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(backslash_transformation.New())
 	// Active modules - Race Conditions
 	r.RegisterActive(race_interference.New())
+	// Active modules - Denial of service (risk:high)
+	r.RegisterActive(redos_probe.New())
 	// Active modules - XML Security
 	r.RegisterActive(xml_saml_security.New())
 	r.RegisterActive(xpath_injection.New())

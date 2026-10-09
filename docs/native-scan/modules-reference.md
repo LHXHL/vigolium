@@ -1,6 +1,6 @@
 # Scanner Modules Reference
 
-Vigolium ships with **328 scanner modules** — 211 active and 117 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
+Vigolium ships with **331 scanner modules** — 213 active and 118 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
 
 ## Severity Scale
 
@@ -45,7 +45,7 @@ The Info-tier fingerprints, endpoint/param observers, and `surface-scoring` are 
 Some probes can do more than measure: an `OR`-guarded delay runs once per scanned row (multiplying the sleep and holding row locks), and a stacked statement (`'; WAITFOR …`) runs after whatever query it lands in, including an `UPDATE` or `DELETE`. These are **off below `--intensity deep`**:
 
 - `sqli-time-blind` keeps running at quick/balanced with its AND-guarded MySQL payload and the PostgreSQL scalar `::text` form; the `OR`-per-row (MySQL `OR SLEEP`, Oracle `OR 1=DBMS_PIPE…`) and stacked (`; SELECT pg_sleep`, `; WAITFOR DELAY`) templates are withheld. MSSQL has no non-stacked `WAITFOR`, so **MSSQL time-blind is deep-only**, and so are Oracle and numeric-context PostgreSQL.
-- A whole module tagged `risk:high` (state-changing or target-degrading checks) is dropped from a broad selection. Naming it with `-m` / `--module-id` / `--module-tag` still runs it.
+- A whole module tagged `risk:high` (state-changing or target-degrading checks) is dropped from a broad selection. Naming it with `-m` / `--module-id` / `--module-tag` still runs it. Current `risk:high` modules: `password-reset-poisoning` (each replay sends a real reset email; one replay per endpoint per scan) and `redos-probe` (a vulnerable pattern pins a server worker per probe).
 
 To allow them without the rest of deep:
 
@@ -128,6 +128,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `cors-misconfiguration` | CORS Misconfiguration | Detects permissive CORS policies allowing unauthorized cross-origin access | Low | Firm | `misconfiguration`, `auth-bypass`, `moderate` |
 | `spring-actuator-misconfig` | Spring Actuator Misconfiguration | Detects exposed Spring Boot actuator endpoints | High | Firm | `spring`, `java`, `misconfiguration`, `info-disclosure`, `light` |
 | `host-header-injection` | Host Header Injection | Detects host header injection and routing manipulation | Medium | Firm | `injection`, `misconfiguration`, `moderate` |
+| `password-reset-poisoning` | Password Reset Poisoning | Detects password-reset link poisoning by replaying recorded reset requests with OAST hosts in Host and forwarding headers | High | Firm | `authentication`, `host-header`, `oast`, `moderate`, `risk:high` |
 | `web-cache-poisoning` | Web Cache Poisoning | Detects web cache poisoning via unkeyed header injection | High | Tentative | `cache-poisoning`, `header-security`, `moderate` |
 
 ### Access Control
@@ -169,6 +170,12 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
 | `race-interference` | Race Interference Detection | Detects input storage, cross-contamination, and request interference races | Medium | Firm | `race-condition`, `heavy` |
+
+### Denial of Service
+
+| Module ID | Name | Description | Severity | Confidence | Tags |
+|---|---|---|---|---|---|
+| `redos-probe` | ReDoS Probe | Detects regular-expression denial of service by timing growing backtracking inputs against pattern-validated parameters | Medium | Tentative | `dos`, `redos`, `intrusive`, `risk:high` |
 
 ### XML, JWT & HTTP Protocol
 
@@ -366,6 +373,7 @@ Passive modules analyze existing request/response pairs without sending new traf
 | `sql-syntax-detect` | SQL Syntax in Request Detection | Detects SQL syntax in HTTP request parameter values | Info | Firm | `sqli`, `injection`, `light` |
 | `serialized-object-detect` | Serialized Object Detection | Detects serialized Java/PHP/.NET/Python/Ruby/Node.js objects in request parameters (incl. base64-wrapped) | Low | Firm | `deserialization`, `light` |
 | `input-reflection-detect` | Input Reflection Detect | Detects request parameter values reflected in responses | Info | Tentative | `xss`, `injection`, `light` |
+| `csv-formula-injection` | CSV / Formula Injection | Detects unescaped formula cells in CSV and XLSX export responses | Medium | Tentative | `injection`, `csv-injection`, `light` |
 | `base64-data-detect` | Base64 Data Detect | Identifies interesting base64 encoded data like JSON, PHP Object in requests/responses | Info | Tentative | `info-disclosure`, `deserialization`, `light` |
 
 ### Information Disclosure

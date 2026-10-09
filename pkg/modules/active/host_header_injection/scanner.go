@@ -2,7 +2,6 @@ package host_header_injection
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
@@ -16,54 +15,8 @@ import (
 
 const evilHost = "evil.vigolium-test.example.com"
 
-// hostProbe defines a host header injection test case.
-type hostProbe struct {
-	headerName string
-	value      string // literal value, or "" to use evilHost
-	desc       string
-}
-
-var probes = []hostProbe{
-	{
-		headerName: "Host",
-		desc:       "Direct Host header override",
-	},
-	{
-		headerName: "X-Forwarded-Host",
-		desc:       "X-Forwarded-Host header injection",
-	},
-	{
-		headerName: "X-Host",
-		desc:       "X-Host header injection",
-	},
-	{
-		headerName: "X-Original-URL",
-		desc:       "X-Original-URL header injection",
-	},
-	{
-		headerName: "Forwarded",
-		value:      "host=" + evilHost,
-		desc:       "RFC 7239 Forwarded header injection",
-	},
-	{
-		headerName: "X-Forwarded-Proto",
-		value:      "nothttps",
-		desc:       "X-Forwarded-Proto header injection",
-	},
-	{
-		headerName: "X-Forwarded-Port",
-		value:      "1337",
-		desc:       "X-Forwarded-Port header injection",
-	},
-	{
-		headerName: "X-Real-IP",
-		desc:       "X-Real-IP header injection",
-	},
-	{
-		headerName: "Cf-Connecting-IP",
-		desc:       "Cloudflare Cf-Connecting-IP header injection",
-	},
-}
+// The probed header set and value shapes live in infra.HostHeaderVariants,
+// shared with password_reset_poisoning.
 
 // Module implements the Host Header Injection active scanner.
 type Module struct {
@@ -120,13 +73,10 @@ func (m *Module) ScanPerRequest(
 
 	var results []*output.ResultEvent
 
-	for _, probe := range probes {
-		value := probe.value
-		if value == "" {
-			value = evilHost
-		}
+	for _, probe := range infra.HostHeaderVariants {
+		value := probe.Value(evilHost)
 
-		modifiedRaw, err := httpmsg.AddOrReplaceHeader(ctx.Request().Raw(), probe.headerName, value)
+		modifiedRaw, err := httpmsg.AddOrReplaceHeader(ctx.Request().Raw(), probe.Header, value)
 		if err != nil {
 			continue
 		}
@@ -180,7 +130,7 @@ func (m *Module) ScanPerRequest(
 			// trusts the client host; one that doesn't (an identical body each time)
 			// is dropped. Fails OPEN only on a transport error so a transient failure
 			// never suppresses a genuine finding.
-			if confirmed, cerr := m.confirmHostReflection(ctx, httpClient, probe.headerName, probe.value); cerr == nil && !confirmed {
+			if confirmed, cerr := m.confirmHostReflection(ctx, httpClient, probe); cerr == nil && !confirmed {
 				resp.Close()
 				continue
 			}
@@ -195,7 +145,7 @@ func (m *Module) ScanPerRequest(
 			}
 
 			extracted := []string{
-				fmt.Sprintf("Header: %s: %s", probe.headerName, value),
+				fmt.Sprintf("Header: %s: %s", probe.Header, value),
 			}
 			if location != "" {
 				extracted = append(extracted, fmt.Sprintf("Location: %s", location))
@@ -207,8 +157,8 @@ func (m *Module) ScanPerRequest(
 				Response:         resp.FullResponseString(),
 				ExtractedResults: extracted,
 				Info: output.Info{
-					Name:        fmt.Sprintf("Host Header Injection: %s", probe.headerName),
-					Description: probe.desc,
+					Name:        fmt.Sprintf("Host Header Injection: %s", probe.Header),
+					Description: probe.Desc,
 					Confidence:  findingConfidence,
 				},
 			})
@@ -221,8 +171,8 @@ func (m *Module) ScanPerRequest(
 	return results, nil
 }
 
-// confirmHostReflection re-sends headerName with a FRESH random canary host each
-// round (mirroring the probe's value template) and requires the canary to reflect
+// confirmHostReflection re-sends the probe's header with a FRESH random canary
+// host each round (rendered through the variant's value template) and requires the canary to reflect
 // in the response every round. Because each canary is unique and absent from the
 // no-header baseline, a reflection that reproduces proves the app echoes the
 // client-supplied host; a fixed string, a cached page, or a catch-all that serves
@@ -233,17 +183,14 @@ func (m *Module) ScanPerRequest(
 func (m *Module) confirmHostReflection(
 	ctx *httpmsg.HttpRequestResponse,
 	httpClient *http.Requester,
-	headerName, probeValue string,
+	probe infra.HostHeaderVariant,
 ) (bool, error) {
 	return modkit.ConfirmReflection(2, func(canary string) (bool, error) {
 		canaryHost := canary + ".vgn-hhi.example"
-		value := canaryHost
-		if probeValue != "" {
-			// Probes with a structured value (e.g. Forwarded: host=<h>) keep their
-			// shape with the fresh canary swapped in for the sentinel host.
-			value = strings.ReplaceAll(probeValue, evilHost, canaryHost)
-		}
-		raw, err := httpmsg.AddOrReplaceHeader(ctx.Request().Raw(), headerName, value)
+		// Probes with a structured value (e.g. Forwarded: host=<h>) keep their
+		// shape with the fresh canary in place of the sentinel host.
+		value := probe.Value(canaryHost)
+		raw, err := httpmsg.AddOrReplaceHeader(ctx.Request().Raw(), probe.Header, value)
 		if err != nil {
 			return false, err
 		}

@@ -30,6 +30,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/passive/csp_weakness_audit"
 	"github.com/vigolium/vigolium/pkg/modules/passive/csrf_detect"
 	"github.com/vigolium/vigolium/pkg/modules/passive/css_injection_detect"
+	"github.com/vigolium/vigolium/pkg/modules/passive/csv_formula_injection"
 	"github.com/vigolium/vigolium/pkg/modules/passive/dashboard_fingerprint"
 	"github.com/vigolium/vigolium/pkg/modules/passive/dependency_confusion"
 	"github.com/vigolium/vigolium/pkg/modules/passive/directory_listing_detect"
@@ -150,6 +151,7 @@ func registerPassiveModules(r *Registry) {
 	r.RegisterPassive(serialized_object_detect.New())
 	r.RegisterPassive(sql_syntax_detect.New())
 	r.RegisterPassive(content_type_mismatch.New())
+	r.RegisterPassive(csv_formula_injection.New())
 	r.RegisterPassive(csrf_detect.New())
 	r.RegisterPassive(css_injection_detect.New())
 	r.RegisterPassive(idor_params_detect.New())
