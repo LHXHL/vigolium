@@ -86,7 +86,7 @@ func init() {
 	importCmd.Flags().Bool("upload", false, "Upload the local import source to cloud storage after import")
 	importCmd.Flags().String("upload-key", "", "Explicit storage key for --upload (default: imports/<basename>-<ts>.<ext>)")
 	importCmd.Flags().StringVar(&globalGlobDB, "glob-db", "", "Glob of local files to import alongside any positional paths (use one format per run), e.g. --glob-db 'prefix-*.sqlite' or '*.jsonl'")
-	importCmd.Flags().String("format", "", "Also write a report after import: html, report, pdf, markdown (md), or sarif. Mirrors `vigolium export --format`.")
+	importCmd.Flags().String("format", "", "Also write a report after import: html, report, pdf, markdown (md), or sarif. Mirrors 'vigolium export --format'.")
 	importCmd.Flags().StringP("output", "o", "", "Report output path or gs://<project>/<key> URL (required when --format is set; supports {ts})")
 	// Report customization + finding filters — mirror `vigolium export` so a
 	// single import step can emit a fully-branded, filtered report.

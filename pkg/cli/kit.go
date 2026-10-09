@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -16,7 +17,7 @@ import (
 // codes. See `vigolium kit <cmd> --help`.
 var kitCmd = &cobra.Command{
 	Use:   "kit",
-	Short: "Standalone security utilities (secret-scan, js-beautify, oast, harvest)",
+	Short: kitShortBase, // completed from the registered subcommands by deriveKitShort
 	Long: `kit is a toolbox of small, composable primitives carved out of vigolium's own
 engine — no database, no scan pipeline, no project scope. Each is a stateless
 transform or probe meant to be driven by an orchestrator or run by hand.
@@ -28,6 +29,7 @@ transform or probe meant to be driven by an orchestrator or run by hand.
   vigolium kit jwt-crack <token>             recover a JWT's HMAC secret from a wordlist
   vigolium kit wordlist [name]               list or print the built-in wordlists
   vigolium kit payload --class <c>           emit built-in payloads by class
+  vigolium kit tmp-clean                     remove vigolium scratch left in the temp dir
 
 All commands honour -j/--json for machine-readable output and read '-' as stdin.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -37,6 +39,27 @@ All commands honour -j/--json for machine-readable output and read '-' as stdin.
 
 func init() {
 	rootCmd.AddCommand(kitCmd)
+}
+
+const kitShortBase = "Standalone security utilities"
+
+// deriveKitShort lists every visible kit subcommand in kit's one-line summary.
+// A hand-written list fell behind (it named four of eight tools), and the
+// summary is what `vigolium --help` shows. Called from prepareCommandTree,
+// because the subcommands register from init() in files that run after this
+// one. Idempotent.
+func deriveKitShort() {
+	var names []string
+	for _, sub := range kitCmd.Commands() {
+		if sub.IsAvailableCommand() {
+			names = append(names, sub.Name())
+		}
+	}
+	if len(names) == 0 {
+		kitCmd.Short = kitShortBase
+		return
+	}
+	kitCmd.Short = kitShortBase + " (" + strings.Join(names, ", ") + ")"
 }
 
 // kitReadInput reads the bytes for a single positional argument: "-" or "" means

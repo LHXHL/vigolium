@@ -41,7 +41,7 @@ secret is printed in full (it is the whole point of the operation).`,
 
 func init() {
 	f := kitJWTCrackCmd.Flags()
-	f.StringVarP(&kitJWTWordlist, "wordlist", "w", "", "Wordlist: a built-in name (see `kit wordlist`) or a file path (default: embedded jwt.secrets.list)")
+	f.StringVarP(&kitJWTWordlist, "wordlist", "w", "", "Wordlist: a built-in name (see 'vigolium kit wordlist') or a file path (default: embedded jwt.secrets.list)")
 	f.StringArrayVarP(&kitJWTSecrets, "secret", "p", nil, "Additional inline candidate secret (repeatable)")
 	f.BoolVar(&kitJWTFailOnCrack, "fail-on-crack", false, "Exit 3 when the secret is recovered (for CI/agent gating)")
 	kitCmd.AddCommand(kitJWTCrackCmd)

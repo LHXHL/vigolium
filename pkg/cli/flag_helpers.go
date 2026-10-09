@@ -69,8 +69,8 @@ const scopeOriginFlagUsage = "Host scope strictness: all, relaxed, balanced, str
 // registerScanPipelineFlags registers the phase/strategy/profile knobs that
 // only make sense for the full native scan pipeline (scan + run).
 func registerScanPipelineFlags(flags *pflag.FlagSet) {
-	flags.StringVar(&globalOnly, "only", "", "Run only these phases (comma-separated: "+runner.PhaseNamesDesc(false)+"; aliases accepted, see `vigolium run --help`)")
-	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see `vigolium run --help`)")
+	flags.StringVar(&globalOnly, "only", "", "Run only these phases (comma-separated: "+runner.PhaseNamesDesc(false)+"; aliases accepted, see 'vigolium run --help')")
+	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see 'vigolium run --help')")
 	flags.StringVar(&globalStrategy, "strategy", "", "Scanning strategy preset (lite, balanced, deep)")
 	flags.StringVar(&globalScanningProfile, "scanning-profile", "", "Scanning profile name or YAML file path")
 	flags.StringVar(&globalIntensity, "intensity", "", "Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy)")
@@ -109,8 +109,8 @@ func registerLightweightScanIOFlags(flags *pflag.FlagSet) {
 	flags.StringVarP(&scanOpts.Output, "output", "o", "", "Write findings to this file (use with --format jsonl|html; pairs with -S/--stateless)")
 	flags.BoolVarP(&globalStateless, "stateless", "S", false, "Use a temporary database that is discarded after the scan (pass --output/--format to persist results)")
 	registerKeepDBOnErrorFlag(flags)
-	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see `vigolium run --help`)")
-	flags.StringVar(&scanFailOn, "fail-on", "", "Exit non-zero if a finding at or above this severity is present (info|low|medium|high|critical) — for CI/agent gating; --soft-fail overrides.")
+	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see 'vigolium run --help')")
+	flags.StringVar(&scanFailOn, "fail-on", "", failOnUsage("for CI/agent gating; --soft-fail overrides."))
 	flags.BoolVar(&scanPrintFinding, "print-finding", false, "After the scan, print each finding to stdout as Markdown (description + matched evidence + request/response), like 'vigolium finding --markdown'. Pairs well with -S and --silent for a quick single-target scan.")
 	flags.BoolVar(&scanPrintTrafficTree, "print-traffic-tree", false, "After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent.")
 	flags.BoolVar(&scanPrintTraffic, "print-traffic", false, "After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent.")

@@ -390,12 +390,24 @@ func applyScanMemLimit(cmd *cobra.Command) {
 	scanHeapCeiling = res
 }
 
-func Execute() {
+// prepareCommandTree applies the mutations that need the finished command tree
+// (every init() has registered its subcommands). Execute and the tests that
+// inspect or parse against the tree share it, so a test sees exactly the flags
+// and help text the binary has. Safe to call more than once.
+func prepareCommandTree(root *cobra.Command) {
 	// Give every command that lacks one a local -S/--stateless, so the letter
 	// means one thing across the whole surface. Done here rather than in init:
 	// it walks the finished command tree, and every subcommand must already be
 	// registered for the walk to reach it.
-	addStatelessShorthand(rootCmd)
+	addStatelessShorthand(root)
+
+	// kit's subcommands register from their own files' init(), after kit.go's,
+	// so its summary can only be derived once the tree is complete.
+	deriveKitShort()
+}
+
+func Execute() {
+	prepareCommandTree(rootCmd)
 
 	// Claim the scratch directory for the whole process, not per scan runner.
 	//

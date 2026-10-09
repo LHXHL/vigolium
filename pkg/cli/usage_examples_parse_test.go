@@ -28,6 +28,9 @@ import (
 // or removed the moment the example stops being valid.
 
 func TestBundledExamplesParse(t *testing.T) {
+	// Execute injects -S/--stateless across the tree; parse against the same
+	// tree the binary has.
+	prepareCommandTree(rootCmd)
 	for _, ex := range collectExamples(t) {
 		t.Run(ex.line, func(t *testing.T) {
 			if err := parseExample(rootCmd, ex.argv); err != nil {

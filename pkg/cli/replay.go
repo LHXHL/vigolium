@@ -210,7 +210,7 @@ func init() {
 	f.StringArrayVar(&replayBulkSearch, "search", nil, "Bulk: search across URL, path, and the raw request/response (headers + body); repeatable, AND-combined")
 	// Named --header-search, not --header: -H/--header is the override flag on
 	// this command, so the traffic filter of the same name can't keep its spelling.
-	f.StringVar(&replayBulkHeaderSearch, "header-search", "", "Bulk: filter records by text in HTTP header names/values (the search filter `traffic --header` applies; -H/--header overrides headers instead)")
+	f.StringVar(&replayBulkHeaderSearch, "header-search", "", "Bulk: filter records by text in HTTP header names/values (the search filter 'traffic --header' applies; -H/--header overrides headers instead)")
 	f.StringVar(&replayBulkBody, "body", "", "Bulk: filter records whose request/response body contains this text")
 	f.StringArrayVar(&replayBulkExclude, "exclude-search", nil, "Bulk: drop records where the term appears in the URL, path, or raw request/response (repeatable; dropped if ANY term matches — inverse of --search)")
 	f.StringVar(&replayBulkExcludeHeader, "exclude-header-search", "", "Bulk: drop records whose HTTP header names/values contain the term (inverse of --header-search)")

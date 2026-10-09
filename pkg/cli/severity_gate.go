@@ -17,6 +17,14 @@ var severityRanks = map[string]int{
 // severityOrder lists severities ascending by rank, for deterministic expansion.
 var severityOrder = []string{"info", "suspect", "low", "medium", "high", "critical"}
 
+// failOnUsage builds the --fail-on help text from severityOrder, so the listed
+// choices are exactly the values the gate accepts (a hand-written list dropped
+// "suspect"). suffix carries the per-command tail after the choices.
+func failOnUsage(suffix string) string {
+	return "Exit non-zero if a finding at or above this severity is present (" +
+		strings.Join(severityOrder, "|") + ") — " + suffix
+}
+
 // severityAliases maps single-letter shorthands to canonical severity names so
 // filters accept 'h,c' as well as 'high,critical'.
 var severityAliases = map[string]string{
