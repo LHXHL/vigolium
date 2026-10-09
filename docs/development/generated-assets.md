@@ -11,10 +11,19 @@ These are deterministic and must stay in sync with their source:
 |---|---|---|
 | `gofmt` formatting of all Go files | the Go source itself | `make fmt` |
 | `go.mod` / `go.sum` | `import` statements | `make tidy` |
+| REST API spec: `docs/development/api-swagger.json` and its embedded copy `pkg/server/swagger_spec.json` | `components.schemas`: the Go types registered in `pkg/server/swagger_types.go`; paths and prose: hand-written in the canonical JSON | `make swagger` |
 
-`make verify-generated` fails if either is out of sync, so it is safe to run in
+`make verify-generated` fails if any of these is out of sync, so it is safe to run in
 CI as a gate. It restores `go.mod`/`go.sum` after the tidy check so it never
 leaves a dirty tree.
+
+The Swagger generator (`internal/tools/swaggergen`) rebuilds each registered
+schema from its struct and carries over hand-written descriptions, examples,
+enums and `required` lists for properties that still exist; add prose for a
+new field by editing the canonical JSON and re-running `make swagger`. The
+`pkg/server` swagger tests additionally fail when a registered route has no
+spec operation (or vice versa), when a schema's properties drift from its
+struct, or when the spec stops validating as OpenAPI 3.
 
 ## Build outputs (not diff-verifiable)
 
