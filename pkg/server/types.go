@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -66,7 +67,20 @@ type ServerConfig struct {
 	// hot-reload. Empty falls back to config.ConfigFilePath() (the default
 	// ~/.vigolium/vigolium-configs.yaml).
 	ConfigPath string
+	// ReportFormats are the post-scan report formats (html, report, …) that
+	// RenderReport can produce. REST `output_formats` accepts "jsonl" (the live
+	// stream the runner writes) plus exactly these; anything else is a 400, so a
+	// format is never accepted and then silently not produced.
+	ReportFormats []string
+	// RenderReport renders one report file for a finished REST scan. Injected by
+	// the CLI so REST output comes from the same generator `scan --format` uses
+	// (pkg/server cannot import pkg/cli). Nil means no report formats.
+	RenderReport ReportRenderFunc
 }
+
+// ReportRenderFunc renders one post-scan report file in format to outputPath
+// from db, scoped to projectUUID and scanUUID.
+type ReportRenderFunc func(ctx context.Context, db *database.DB, format, outputPath, projectUUID, scanUUID string) error
 
 // DefaultServerConfig returns sensible defaults.
 // defaultMaxUploadBytes is the framework-level request body ceiling applied when
@@ -163,8 +177,10 @@ type RunScanRequest struct {
 	// Upload results to cloud storage after scan completion
 	UploadResults bool `json:"upload_results,omitempty"`
 
-	// OutputFormats selects extra result formats to materialize on disk during
-	// the scan. Currently supports "jsonl" and "html". When set, files are
+	// OutputFormats selects extra result formats to materialize on disk: "jsonl"
+	// (written live during the scan) plus the report formats in
+	// ServerConfig.ReportFormats (html, report, pdf, sarif; rendered after the
+	// scan). Any other value is a 400. When set, files are
 	// written to <sessions_dir>/<scan_uuid>/output.<ext> and — if
 	// upload_results is also true — bundled into the uploaded tar.gz alongside
 	// runtime.log.

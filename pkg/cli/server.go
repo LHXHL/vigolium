@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -94,7 +95,7 @@ var serverCmd = &cobra.Command{
 	Long: `Start the Vigolium REST API server (Fiber-based). Exposes scan endpoints, traffic ingestion, agent runs, and a Swagger UI.
 
 Common modes:
-  • Default: full API, requires the auto-generated key from config (see config ls server.api_key)
+  • Default: full API, requires the auto-generated key from config (see config ls server.auth_api_key --force)
   • --view-only: read-only — no scan, ingest, or agent endpoints
   • --burp-bridge-url (alias --caido-bridge-url): merge live Burp/Caido proxy history into the normal HTTP records API
   • --scan-on-receive: continuously scan ingested traffic as it arrives
@@ -205,8 +206,10 @@ func newServerRunnerOptions(so *serverOptions, concurrency, maxPerHost, maxHostE
 func proxyCADir() string { return config.ExpandPath(server.DefaultIngestProxyCADir) }
 
 // exportProxyCA loads-or-creates the MITM CA and writes its certificate to dst,
-// printing trust instructions. Backs the --export-ca flag.
-func exportProxyCA(dst string) error {
+// printing trust instructions. Backs the --export-ca flag. proxyPort is the
+// --ingest-proxy-port given alongside it; the hint uses it so the printed curl
+// line targets the proxy the operator actually runs.
+func exportProxyCA(dst string, proxyPort int) error {
 	ca, err := mitm.LoadOrCreateCA(proxyCADir())
 	if err != nil {
 		return fmt.Errorf("initialize MITM CA: %w", err)
@@ -218,9 +221,19 @@ func exportProxyCA(dst string) error {
 	if !globalSilent {
 		fmt.Printf("%s Ingest-proxy CA certificate written to %s\n",
 			terminal.InfoSymbol(), terminal.Cyan(dst))
-		fmt.Printf("  Trust it to capture HTTPS, e.g.:\n    curl --proxy http://127.0.0.1:9090 --cacert %s https://target/\n", dst)
+		fmt.Printf("  Trust it to capture HTTPS, e.g.:\n    %s\n", proxyCATrustHint(dst, proxyPort))
 	}
 	return nil
+}
+
+// proxyCATrustHint is the example curl line printed after --export-ca. With a
+// known --ingest-proxy-port it names that port; without one there is no real
+// port to name, so it says which flag sets it instead of inventing one.
+func proxyCATrustHint(caPath string, proxyPort int) string {
+	if proxyPort > 0 {
+		return fmt.Sprintf("curl --proxy http://127.0.0.1:%d --cacert %s https://target/", proxyPort, caPath)
+	}
+	return fmt.Sprintf("curl --proxy http://127.0.0.1:<port> --cacert %s https://target/   (<port> = the server's --ingest-proxy-port)", caPath)
 }
 
 // armForceQuit installs a last-resort escape hatch for a graceful shutdown that
@@ -324,7 +337,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 
 	// --export-ca: generate (if needed) and write the MITM CA cert, then exit.
 	if serverOpts.ExportCA != "" {
-		return exportProxyCA(serverOpts.ExportCA)
+		return exportProxyCA(serverOpts.ExportCA, serverOpts.IngestProxyPort)
 	}
 
 	// Load settings early so config values are available for API key resolution
@@ -384,7 +397,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 			apiKeys = []string{settings.Server.AuthAPIKey}
 		}
 		if len(apiKeys) == 0 {
-			zap.L().Fatal("No API keys configured. Set auth_api_key in config, use VIGOLIUM_API_KEY env, or pass --alternative-ingest-key")
+			return asUsageError(errors.New("no API key configured: set server.auth_api_key (vigolium config set server.auth_api_key <key>), export VIGOLIUM_API_KEY, pass --alternative-ingest-key, or run with -A/--no-auth for local development"))
 		}
 		showAPIKeyHint = len(serverOpts.APIKeys) == 0
 	}
@@ -547,6 +560,8 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 		Commit:             Commit,
 		BuildTime:          BuildTime,
 		ConfigPath:         clicommon.EffectiveConfigPath(globalConfig),
+		ReportFormats:      serverReportFormats(),
+		RenderReport:       renderServerReport,
 	}, taskQueue, db, repo, settings, httpRequester, svc)
 
 	// Echo a friendly console line whenever the watcher hot-reloads config
@@ -845,4 +860,32 @@ func parseAgentQueueTimeout(s string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// serverReportFormats lists the post-scan report formats REST `output_formats`
+// accepts beyond jsonl: exactly the ones renderServerReport can produce, taken
+// from the same reportFormats table `scan --format` uses.
+func serverReportFormats() []string {
+	formats := make([]string, 0, len(reportFormats))
+	for _, rf := range reportFormats {
+		formats = append(formats, rf.format)
+	}
+	return formats
+}
+
+// renderServerReport renders one report file for a finished REST scan through
+// generateReportFromDB, the generator behind `scan --format html|report|…`,
+// scoped to the scan. Injected into the server (pkg/server cannot import
+// pkg/cli).
+func renderServerReport(ctx context.Context, db *database.DB, format, outputPath, projectUUID, scanUUID string) error {
+	for _, rf := range reportFormats {
+		if rf.format != format {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0o750); err != nil {
+			return fmt.Errorf("create report dir: %w", err)
+		}
+		return generateReportFromDB(ctx, db, outputPath, false, projectUUID, scanUUID, rf, nil)
+	}
+	return fmt.Errorf("no report renderer for format %q", format)
 }

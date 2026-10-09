@@ -16,15 +16,8 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
 	"github.com/vigolium/vigolium/pkg/storage"
-	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 )
-
-// nativeScanUploadFormats is the set of per-format output files the API
-// upload helper looks for under <scanDir>/output.<ext>. Kept narrow because
-// API-launched scans only ever emit these formats today (see
-// resolveAPIOutputFormats in handlers_scan.go).
-var nativeScanUploadFormats = []string{"jsonl", "html"}
 
 // persistAgenticScan creates an agentic_scans DB record for a new agent run.
 // Returns ErrScanProjectMismatch when the caller pinned a UUID that already
@@ -218,12 +211,14 @@ func (h *Handlers) uploadAgenticResults(projectUUID, agenticScanUUID, sessionDir
 	zap.L().Info("Uploaded agentic scan results", zap.String("agentic_scan_uuid", agenticScanUUID), zap.String("storage_url", storageURL))
 }
 
-// uploadNativeScanResults bundles the per-scan runtime.log and any per-format
-// output files (jsonl/html) the runner emitted into a tar.gz under
-// <projectUUID>/native-scans/<scanUUID>/results.tar.gz. Mirrors the CLI
-// helper at pkg/cli/storage_upload.go. Missing files are skipped silently by
-// BundleAndUploadFiles.
-func (h *Handlers) uploadNativeScanResults(projectUUID, scanID string) {
+// uploadNativeScanResults bundles the per-scan runtime.log and the scan's
+// requested output files (outputs) into a tar.gz under
+// <projectUUID>/native-scans/<scanUUID>/results.tar.gz. Mirrors the CLI helper
+// at pkg/cli/storage_upload.go. A requested file that is
+// missing is logged at error level by name rather than silently left out of the
+// bundle, so an operator reading the logs can tell "not requested" from "failed
+// to produce".
+func (h *Handlers) uploadNativeScanResults(projectUUID, scanID string, outputs scanOutputs) {
 	if h.settings == nil || !h.settings.Storage.IsEnabled() {
 		zap.L().Warn("upload_results requested but storage is not enabled")
 		return
@@ -236,9 +231,16 @@ func (h *Handlers) uploadNativeScanResults(projectUUID, scanID string) {
 	files := map[string]string{
 		config.RuntimeLogFilename: filepath.Join(scanDir, config.RuntimeLogFilename),
 	}
-	outputBase := filepath.Join(scanDir, "output")
-	for _, format := range nativeScanUploadFormats {
-		path := types.FormatOutputPath(outputBase, format)
+	var missing []string
+	for _, format := range outputs.formats {
+		path := outputs.path(format)
+		if _, err := os.Stat(path); err != nil {
+			missing = append(missing, filepath.Base(path))
+			zap.L().Error("Requested scan output is missing; not uploaded",
+				zap.String("scan_uuid", scanID), zap.String("format", format),
+				zap.String("path", path), zap.Error(err))
+			continue
+		}
 		files[filepath.Base(path)] = path
 	}
 
@@ -261,7 +263,8 @@ func (h *Handlers) uploadNativeScanResults(projectUUID, scanID string) {
 		}
 	}
 
-	zap.L().Info("Uploaded native scan results", zap.String("scan_uuid", scanID), zap.String("storage_url", storageURL))
+	zap.L().Info("Uploaded native scan results", zap.String("scan_uuid", scanID),
+		zap.String("storage_url", storageURL), zap.Strings("missing_outputs", missing))
 }
 
 // startAgenticScan is the entry point for query mode.

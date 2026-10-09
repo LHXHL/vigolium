@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -149,12 +150,16 @@ func validateRunScanRequest(req RunScanRequest) error {
 }
 
 // resolveAPIOutputFormats validates and normalizes the output_formats request
-// field. Only "jsonl" and "html" are accepted; any other value is rejected.
+// field. "jsonl" (the runner's live stream) is always accepted; every other
+// value must be one of reportFormats, the post-scan report formats the server
+// can actually render (ServerConfig.ReportFormats). Anything else is rejected,
+// so a requested format is never accepted and then silently not produced.
 // Returns a deduplicated, lowercased slice. Empty input yields a nil slice.
-func resolveAPIOutputFormats(formats []string) ([]string, error) {
+func resolveAPIOutputFormats(formats, reportFormats []string) ([]string, error) {
 	if len(formats) == 0 {
 		return nil, nil
 	}
+	supported := append([]string{"jsonl"}, reportFormats...)
 	seen := make(map[string]struct{}, len(formats))
 	out := make([]string, 0, len(formats))
 	for _, f := range formats {
@@ -162,8 +167,8 @@ func resolveAPIOutputFormats(formats []string) ([]string, error) {
 		if norm == "" {
 			continue
 		}
-		if norm != "jsonl" && norm != "html" {
-			return nil, fmt.Errorf("invalid output_format %q; supported: jsonl, html", f)
+		if !slices.Contains(supported, norm) {
+			return nil, fmt.Errorf("invalid output_format %q; supported: %s", f, strings.Join(supported, ", "))
 		}
 		if _, dup := seen[norm]; dup {
 			continue
@@ -172,6 +177,20 @@ func resolveAPIOutputFormats(formats []string) ([]string, error) {
 		out = append(out, norm)
 	}
 	return out, nil
+}
+
+// scanOutputs is where a REST scan's requested output files live:
+// <sessions>/<scan>/output.<ext>, one per format. The runner writes the live
+// jsonl stream there; runBackgroundScan renders the report formats after the
+// scan and uploads whatever was requested.
+type scanOutputs struct {
+	base    string
+	formats []string
+}
+
+// path returns the file a format is written to.
+func (o scanOutputs) path(format string) string {
+	return types.FormatOutputPath(o.base, format)
 }
 
 // buildRunScanOptions builds types.Options from the RunScanRequest.
@@ -418,19 +437,28 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 	// the single terminal CompleteScan.
 	opts.ManagedScanRecord = true
 
-	formats, err := resolveAPIOutputFormats(req.OutputFormats)
+	formats, err := resolveAPIOutputFormats(req.OutputFormats, h.config.ReportFormats)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error(), Code: fiber.StatusBadRequest})
 	}
+	var outputs scanOutputs
 	if len(formats) > 0 {
-		// Output base path is fixed under the scan's session dir so
-		// uploadNativeScanResults knows where to find the per-format files.
+		// Output base path is fixed under the scan's session dir so the post-scan
+		// renderer and uploadNativeScanResults know where each format's file is.
+		outputs = scanOutputs{
+			base: filepath.Join(
+				settings.ScanningStrategy.ScanLogs.EffectiveSessionsDir(),
+				scanID,
+				"output",
+			),
+			formats: formats,
+		}
 		opts.OutputFormats = formats
-		opts.Output = filepath.Join(
-			settings.ScanningStrategy.ScanLogs.EffectiveSessionsDir(),
-			scanID,
-			"output",
-		)
+		// The runner only writes the live jsonl stream (report formats are
+		// rendered by runBackgroundScan). Pointing -o at the jsonl path makes the
+		// single-format case (literal -o) and the multi-format case (base + .jsonl)
+		// land on the same file.
+		opts.Output = outputs.path("jsonl")
 	}
 
 	// Detached on purpose: these writes register a scan that will run in a
@@ -526,6 +554,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 			projectUUID:   projectUUID,
 			enqueued:      time.Now(),
 			uploadResults: req.UploadResults,
+			outputs:       outputs,
 		}
 		position := len(qCh)
 		h.scanMu.Unlock()
@@ -544,7 +573,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 	st.scanID = scanID
 	h.scanMu.Unlock()
 
-	go h.runBackgroundScan(scanID, scanRunner, projectUUID, req.UploadResults)
+	go h.runBackgroundScan(scanID, scanRunner, projectUUID, req.UploadResults, outputs)
 
 	return c.Status(fiber.StatusAccepted).JSON(ScanResponse{
 		ProjectUUID:  projectUUID,
@@ -1002,11 +1031,12 @@ func (h *Handlers) HandleGetScanLogs(c fiber.Ctx) error {
 	})
 }
 
-// runBackgroundScan runs the scan in a background goroutine. When
-// uploadResults is true and storage is configured, the scan's runtime.log
-// (and any output files) are bundled and uploaded to
+// runBackgroundScan runs the scan in a background goroutine. Requested report
+// formats (outputs) are rendered from the database once the scan finishes. When
+// uploadResults is true and storage is configured, the scan's runtime.log and
+// requested output files are bundled and uploaded to
 // <projectUUID>/native-scans/<scanID>/results.tar.gz after the scan completes.
-func (h *Handlers) runBackgroundScan(scanID string, scanRunner *runner.Runner, projectUUID string, uploadResults bool) {
+func (h *Handlers) runBackgroundScan(scanID string, scanRunner *runner.Runner, projectUUID string, uploadResults bool, outputs scanOutputs) {
 	defer func() {
 		h.scanMu.Lock()
 		if st, ok := h.scanStates[projectUUID]; ok {
@@ -1049,9 +1079,38 @@ func (h *Handlers) runBackgroundScan(scanID string, scanRunner *runner.Runner, p
 		}
 	}
 
+	h.renderScanReports(projectUUID, scanID, outputs)
+
 	if uploadResults {
-		h.uploadNativeScanResults(projectUUID, scanID)
+		h.uploadNativeScanResults(projectUUID, scanID, outputs)
 	}
 
 	webhook.FireNativeScan(h.settings, h.repo, scanID)
+}
+
+// renderScanReports writes every requested report format (everything but the
+// live jsonl stream) for a finished REST scan, through the same generator the
+// CLI's `scan --format` uses, scoped to this scan. A failure is logged at error
+// level naming the format and path; the upload that follows reports the file
+// as missing rather than silently bundling without it.
+func (h *Handlers) renderScanReports(projectUUID, scanID string, outputs scanOutputs) {
+	for _, format := range outputs.formats {
+		if format == "jsonl" {
+			continue
+		}
+		path := outputs.path(format)
+		if h.config.RenderReport == nil || h.db == nil {
+			zap.L().Error("Cannot render requested scan report: no report renderer configured",
+				zap.String("scan_uuid", scanID), zap.String("format", format))
+			continue
+		}
+		if err := h.config.RenderReport(context.Background(), h.db, format, path, projectUUID, scanID); err != nil {
+			zap.L().Error("Failed to render requested scan report",
+				zap.String("scan_uuid", scanID), zap.String("format", format),
+				zap.String("path", path), zap.Error(err))
+			continue
+		}
+		zap.L().Info("Rendered scan report",
+			zap.String("scan_uuid", scanID), zap.String("format", format), zap.String("path", path))
+	}
 }

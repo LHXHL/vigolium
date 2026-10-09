@@ -108,6 +108,7 @@ type queuedScan struct {
 	projectUUID   string
 	enqueued      time.Time
 	uploadResults bool
+	outputs       scanOutputs
 }
 
 // Handlers holds the HTTP handlers and their dependencies.
@@ -499,7 +500,7 @@ func (h *Handlers) scanQueueWorker(projectUUID string, ch chan *queuedScan) {
 		st.scanID = qs.scanID
 		h.scanMu.Unlock()
 
-		h.runBackgroundScan(qs.scanID, qs.runner, qs.projectUUID, qs.uploadResults)
+		h.runBackgroundScan(qs.scanID, qs.runner, qs.projectUUID, qs.uploadResults, qs.outputs)
 	}
 }
 

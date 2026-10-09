@@ -166,7 +166,7 @@ func (h *Handlers) HandleScanRecords(c fiber.Ctx) error {
 	h.scanMu.Unlock()
 
 	// Launch background scan
-	go h.runBackgroundScan(scanID, scanRunner, projectUUID, false)
+	go h.runBackgroundScan(scanID, scanRunner, projectUUID, false, scanOutputs{})
 
 	zap.L().Info("Selective scan started",
 		zap.String("scan_uuid", scanID),
@@ -477,7 +477,7 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 	st.scanID = scanID
 	h.scanMu.Unlock()
 
-	go h.runBackgroundScan(scanID, scanRunner, projectUUID, false)
+	go h.runBackgroundScan(scanID, scanRunner, projectUUID, false, scanOutputs{})
 
 	zap.L().Info("All-records scan started",
 		zap.String("scan_uuid", scanID),
