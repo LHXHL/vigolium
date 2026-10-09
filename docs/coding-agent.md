@@ -483,12 +483,16 @@ Exit codes:
 | Code | Meaning |
 |------|---------|
 | `0` | success |
-| `1` | the work failed |
-| `2` | usage error — bad flag, bad value, rejected combination, or a mutation that needed `--force` and had no terminal to ask |
+| `1` | the work failed; `error.code` says how (`source_missing`, `export_failed`, `no_targets_in_scope`, …) |
+| `2` | usage error — bad flag, bad value, rejected combination, a search that matched nothing (`module enable`), or a mutation that needed `--force` and had no terminal to ask. Always `error.code: "usage_error"` |
 | `3` | `--fail-on-match` / `--fail-on-crack` matched (`fuzz`, `kit secret-scan`, `kit jwt-crack`) |
 | `4` | the `--fail-on <severity>` gate tripped |
+| `5` | incomplete — the work ran but did not finish. `error.code` is `timed_out`, `budget_exhausted` or `partial`. Used by agent runs; a native scan that is merely partial still exits `0` (see [Partial scans](#partial-scans)), with an opt-in `--fail-on-partial` planned for a later release |
 
-`3` and `4` are *completed results*, not failures: the output was written before
+`error.code` is a closed set shared with the REST API (`pkg/apicontract`):
+values are added, never re-worded, so branch on the code rather than the message.
+
+`3`, `4` and `5` are *completed results*, not failures: the output was written before
 the code was chosen. When it was NOT written — an unwritable `-o`, a query that
 failed mid-stream — the run exits `1` with `error.code: "export_failed"`, and
 that outranks the gate: a `4` whose artifact is missing would send a CI job to
@@ -548,7 +552,8 @@ scan, and partial is **not** an error:
 - **The exit code does not change.** A partial scan still exits `0`. Nothing
   failed; coverage was simply less than complete, and a CI job that treats that
   as a failure would fail on every correctly time-boxed run. There is no
-  `--fail-on-partial` gate today.
+  `--fail-on-partial` gate today; exit `5` is reserved for it, and a later
+  release adds the flag as an opt-in.
 - **`scan.finished` reports `"status": "curtailed"`** instead of `"completed"`,
   with `stop_reason` (one code) and `reasons` (the union of every phase's
   reasons). `failed` and `interrupted` are never relabelled — a scan that failed

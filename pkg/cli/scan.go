@@ -259,7 +259,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	// the other one took effect, and the two outcomes differ by thousands of
 	// requests per host — so it is an error rather than a precedence rule.
 	if scanOpts.NoDiscoveryFuzz && scanOpts.FuzzWordlistPath != "" {
-		return fmt.Errorf("--no-discovery-fuzz and --discovery-wordlist are mutually exclusive (--discovery-wordlist exists to turn discovery fuzzing on; drop one)")
+		return usageErrorf("--no-discovery-fuzz and --discovery-wordlist are mutually exclusive (--discovery-wordlist exists to turn discovery fuzzing on; drop one)")
 	}
 	if err := validateParallelScan(scanOpts); err != nil {
 		return err
@@ -269,7 +269,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	}
 	if scanOpts.Stateless {
 		if globalDB != "" {
-			return fmt.Errorf("--stateless and --db are mutually exclusive")
+			return usageErrorf("--stateless and --db are mutually exclusive")
 		}
 		// Not warned under --json/--ci-output: those stream every record and
 		// finding to stdout as they are written, so the results are NOT
@@ -386,7 +386,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	if strategyName != "" {
 		phases, ok := settings.ScanningStrategy.GetStrategy(strategyName)
 		if !ok {
-			return fmt.Errorf("unknown scanning strategy %q; valid names: %v", strategyName, settings.ScanningStrategy.StrategyNames())
+			return usageErrorf("unknown scanning strategy %q; valid names: %v", strategyName, settings.ScanningStrategy.StrategyNames())
 		}
 		scanOpts.DiscoverEnabled = phases.Discovery
 		scanOpts.SpideringEnabled = phases.Spidering
@@ -458,7 +458,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		if phases := runner.OnlyPhaseSet(scanOpts.OnlyPhase); len(phases) > 0 {
 			for p := range phases {
 				if p != "discovery" && p != "spidering" {
-					return fmt.Errorf("--format html is only supported for discovery and spidering phases")
+					return usageErrorf("--format html is only supported for discovery and spidering phases")
 				}
 			}
 		}
@@ -466,7 +466,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 
 	for _, f := range scanOpts.OutputFormats {
 		if formatNeedsOutput(f) && scanOpts.Output == "" && !splitByHostNaming {
-			return fmt.Errorf("--format %s requires -o/--output to specify the output file path (or pass --split-by-host to name per-host files by hostname)", f)
+			return usageErrorf("--format %s requires -o/--output to specify the output file path (or pass --split-by-host to name per-host files by hostname)", f)
 		}
 	}
 
@@ -1513,7 +1513,7 @@ func normalizeScanFormats(formats []string) error {
 	for i, f := range formats {
 		formats[i] = canonicalFormat(f)
 		if !slices.Contains(scanOutputFormats, formats[i]) {
-			return fmt.Errorf("invalid --format value %q; valid formats: %s", f, strings.Join(scanOutputFormats, ", "))
+			return usageErrorf("invalid --format value %q; valid formats: %s", f, strings.Join(scanOutputFormats, ", "))
 		}
 	}
 	return nil
@@ -1541,7 +1541,7 @@ func reconcileOutputFormats(opts *types.Options) error {
 	// only well-defined in stateless mode (a per-run temp DB). A persisted run
 	// writes into the shared project DB, where "this scan's sqlite" is ambiguous.
 	if opts.HasFormat("sqlite") && !globalStateless {
-		return fmt.Errorf("--format sqlite requires -S/--stateless (it exports the standalone per-run database; for the persisted DB use `vigolium export`)")
+		return usageErrorf("--format sqlite requires -S/--stateless (it exports the standalone per-run database; for the persisted DB use `vigolium export`)")
 	}
 	// Route jsonl through the post-scan project-scoped envelope export so the
 	// scan output matches `vigolium export`/stateless. CI output keeps its own
@@ -1879,7 +1879,7 @@ func resolveDBIsolateDest(settings *config.Settings) (config.DatabaseConfig, err
 		destCfg.SQLite.Path = globalDB
 	}
 	if destCfg.Driver != "sqlite" {
-		return destCfg, fmt.Errorf("--db-isolate requires a SQLite database (got driver %q)", destCfg.Driver)
+		return destCfg, usageErrorf("--db-isolate requires a SQLite database (got driver %q)", destCfg.Driver)
 	}
 	return destCfg, nil
 }

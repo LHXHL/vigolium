@@ -146,7 +146,7 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 
 	// Validate mutual exclusivity: -t/--target and --spec-url cannot both be set
 	if ingestOpts.TargetURL != "" && ingestOpts.UseSpecServers {
-		return fmt.Errorf("--target/-t and --spec-url are mutually exclusive")
+		return usageErrorf("--target/-t and --spec-url are mutually exclusive")
 	}
 
 	// Resolve the full source list (repeated -i plus --dir). One process handles

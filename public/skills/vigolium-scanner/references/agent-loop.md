@@ -913,6 +913,7 @@ vigolium version --json   # {version, commit, schema_version, db_schema_version}
 | `2` | usage error — bad flag, bad value, rejected combination |
 | `3` | `fuzz --fail-on-match` matched |
 | `4` | `--fail-on <sev>` gate tripped |
+| `5` | incomplete — ran but did not finish; `error.code` is `timed_out`, `budget_exhausted` or `partial` (agent runs; native partial scans still exit 0) |
 
 **`4` is not a failure.** The scan ran to completion, wrote its output, and found
 something at or above the threshold — the opposite outcome from `1`, where it
