@@ -927,6 +927,7 @@ external_harvester:
   cdx:
     page_size: 10000    # Wayback CDX rows per resumeKey page
     max_rows: 200000    # CDX rows read per domain; hitting it reports limit cdx_max_rows; -1 = no cap
+  probe: true           # harvest-probe: check harvested URLs on the live target before later phases scan them
 ```
 
 Every harvested URL is normalized before dedup: scheme and host lowercased,
@@ -954,6 +955,16 @@ endpoints no CDX index holds: a path that was only ever named in a script
 bundle, or one a site owner listed in robots.txt precisely so no crawler would
 record it. Mining is on by default, is capped by fixed per-domain budgets rather
 than flags, and is skipped entirely if the index query returns nothing.
+
+The harvest never contacts the target; URLs are stored as request-only records
+(`source=harvest`). With `probe: true` (the default) and a later phase that
+reaches the target, the `harvest-probe` step runs right after the harvest: one
+liveness request per origin, then one GET per harvested URL on a live origin
+(redirects recorded, not followed). Dead origins, `404`/`410` and soft-404 answers
+are dropped and their stubs deleted; survivors keep `source=harvest` with their
+response filled in. The counts land on the step's phase outcome. `probe: false`
+(or `--skip harvest-probe` for one run) leaves every stub for the later phases to
+fetch themselves. See [native scan phases](guides/native-scan-phases.md#external-harvest).
 
 ### `oast`
 

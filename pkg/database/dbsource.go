@@ -26,6 +26,7 @@ const (
 	RecordSourceIngestCLI    = "ingest-cli"    // `vigolium ingest ...` command
 	RecordSourceScanner      = "scanner"       // executor feedback re-injection
 	RecordSourceProbe        = "probe"         // `vigolium run probe` host sweep (one request per target, no fuzzing)
+	RecordSourceHarvest      = "harvest"       // external-harvest archive URL; request-only until harvest-probe completes it
 	RecordSourceFinding      = "finding"       // request/response attached to a finding
 	RecordSourceBurp         = "burp"          // Burp Suite, via the loopback bridge or a push to /api/ingest-http
 	RecordSourceCaido        = "caido"         // Caido, via the loopback bridge or a push to /api/ingest-http

@@ -25,6 +25,19 @@ type ExternalHarvesterConfig struct {
 
 	// CDX bounds the Wayback Machine CDX index query.
 	CDX ExternalHarvesterCDXConfig `yaml:"cdx"`
+
+	// Probe checks harvested URLs against the live target (the harvest-probe
+	// step) before any later phase scans them: one liveness request per host,
+	// then one GET per harvested URL on a live host; dead hosts, 404/410 and
+	// soft-404 answers are dropped. It only runs when a later phase reaches the
+	// target anyway — a harvest-only run stays target-silent. nil = true; false
+	// leaves every harvested stub for the later phases to fetch themselves.
+	Probe *bool `yaml:"probe"`
+}
+
+// ProbeEnabled reports whether the harvest-probe step should run (default on).
+func (c *ExternalHarvesterConfig) ProbeEnabled() bool {
+	return c == nil || c.Probe == nil || *c.Probe
 }
 
 // ExternalHarvesterCDXConfig bounds the paged Wayback CDX index query.
@@ -54,6 +67,7 @@ func DefaultExternalHarvesterConfig() *ExternalHarvesterConfig {
 		Sources:  []string{"wayback", "commoncrawl", "alienvault", "arquivo"},
 		PerShape: harvester.DefaultPerShape,
 		MaxURLs:  harvester.DefaultMaxURLs,
+		Probe:    boolPtr(true),
 		CDX: ExternalHarvesterCDXConfig{
 			PageSize: harvester.DefaultCDXPageSize,
 			MaxRows:  harvester.DefaultCDXMaxRows,

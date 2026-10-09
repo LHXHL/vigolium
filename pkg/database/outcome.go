@@ -201,6 +201,10 @@ type PhaseOutcome struct {
 	// Targets is the CLI-target tally (scope admission, reachability); set only
 	// on the "preflight" pseudo-phase. See TargetTally.
 	Targets *TargetTally `json:"targets,omitempty"`
+	// Counts are phase-specific tallies keyed by a stable snake_case name (the
+	// harvest-probe step reports hosts_dead, kept, dropped_not_found, …). Only
+	// phases whose result is a set of numbers rather than records set it.
+	Counts map[string]int64 `json:"counts,omitempty"`
 }
 
 // BenignSkip reports whether this phase was skipped for having nothing to do,
@@ -276,6 +280,12 @@ func (o *PhaseOutcome) Merge(b PhaseOutcome) {
 			o.Targets = &TargetTally{}
 		}
 		o.Targets.Merge(*b.Targets)
+	}
+	for name, n := range b.Counts {
+		if o.Counts == nil {
+			o.Counts = make(map[string]int64, len(b.Counts))
+		}
+		o.Counts[name] += n
 	}
 }
 

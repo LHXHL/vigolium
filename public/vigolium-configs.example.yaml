@@ -1361,6 +1361,14 @@ external_harvester:
     # cdx_max_rows phase limit. -1 disables the cap. Default: 200000
     max_rows: 200000
 
+  # harvest-probe: when a later phase reaches the target, check the harvested
+  # URLs first — one liveness request per host, then one GET per URL — and
+  # drop dead hosts, 404/410 and soft-404 answers before anything scans them.
+  # Never runs on a harvest-only run, which stays target-silent.
+  # false leaves every harvested URL for the later phases to fetch.
+  # Default: true
+  probe: true
+
 # ============================================================================
 # AI Agent Integration
 # ============================================================================
