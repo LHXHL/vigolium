@@ -1,4 +1,4 @@
-.PHONY: build build-prof build-embedded build-all snapshot release public public-release github-release prepare-public-scripts clean test test-unit test-integration test-spitolas-browser test-browser-conformance test-e2e test-e2e-api test-e2e-agent test-e2e-rest-scan test-e2e-postgres test-canary sanity-check test-e2e-vampi test-e2e-dvwa test-e2e-juiceshop test-e2e-browser-fallback test-e2e-piolium test-benchmark test-benchmark-whitebox test-benchmark-blackbox test-benchmark-all test-benchmark-crapi test-benchmark-vuln-java test-benchmark-vuln-nginx test-benchmark-coverage test-agent-benchmark test-agent-parsing test-agent-quality test-agent-handoff test-agent-benchmark-e2e benchmark-agent-generate test-coverage coverage-gate coverage-combined test-coverage-check test-race test-ci test-xbow test-xbow-ssti test-xbow-xss test-xbow-sqli test-xbow-lfi test-xbow-cmdi test-xbow-ssrf test-xbow-xxe xbow-build lint verify-generated fmt tidy deps deps-chrome deps-chrome-update install install-gotestsum swagger help postgres-up postgres-down postgres-logs postgres-status crapi-up crapi-down crapi-logs crapi-status juiceshop-up juiceshop-down juiceshop-logs juiceshop-status vampi-up vampi-down vampi-logs vampi-status vulnerable-java-up vulnerable-java-down vulnerable-java-logs vulnerable-java-status vulnerable-nginx-up vulnerable-nginx-down vulnerable-nginx-logs vulnerable-nginx-status apps-up apps-down docker docker-build docker-build-prod docker-run docker-push docker-buildx-setup docker-publish update-jstangle ensure-jstangle sync-audit update-audit ensure-audit ensure-audit-dist restage-host-audit build-audit update-ui ssh-testbed-keygen ssh-testbed-up ssh-testbed-down ssh-testbed-status ssh-testbed-logs generate-metadata prepare-release-scripts cdn-sync bump-version npm-build npm-pack npm-publish
+.PHONY: build build-prof build-embedded build-all snapshot release public public-release github-release prepare-public-scripts clean test test-unit test-integration test-spitolas-browser test-browser-conformance test-e2e test-e2e-api test-e2e-agent test-e2e-rest-scan test-e2e-postgres test-canary sanity-check test-e2e-vampi test-e2e-dvwa test-e2e-juiceshop test-e2e-browser-fallback test-e2e-piolium test-benchmark test-benchmark-whitebox test-benchmark-blackbox test-benchmark-all test-benchmark-crapi test-benchmark-vuln-java test-benchmark-vuln-nginx test-benchmark-coverage test-agent-benchmark test-agent-parsing test-agent-quality test-agent-handoff test-agent-benchmark-e2e benchmark-agent-generate test-coverage coverage-gate coverage-combined test-coverage-check test-race test-ci test-xbow test-xbow-ssti test-xbow-xss test-xbow-sqli test-xbow-lfi test-xbow-cmdi test-xbow-ssrf test-xbow-xxe xbow-build lint verify-generated fmt tidy deps deps-chrome deps-chrome-update install install-gotestsum swagger help postgres-up postgres-down postgres-logs postgres-status crapi-up crapi-down crapi-logs crapi-status juiceshop-up juiceshop-down juiceshop-logs juiceshop-status vampi-up vampi-down vampi-logs vampi-status vulnerable-java-up vulnerable-java-down vulnerable-java-logs vulnerable-java-status vulnerable-nginx-up vulnerable-nginx-down vulnerable-nginx-logs vulnerable-nginx-status apps-up apps-down docker docker-build docker-build-prod docker-run docker-push docker-buildx-setup docker-publish update-jstangle ensure-jstangle sync-audit update-audit ensure-audit ensure-audit-dist restage-host-audit build-audit update-ui ssh-testbed-keygen ssh-testbed-up ssh-testbed-down ssh-testbed-status ssh-testbed-logs generate-metadata prepare-release-scripts release-verify release-prune cdn-sync bump-version npm-build npm-pack npm-publish
 # Phony targets defined in their own sections below (declared here so a stray
 # same-named file can never shadow them).
 .PHONY: all build-linux build-darwin build-windows deps-chrome-cft sync-platform sync-skills \
@@ -1218,35 +1218,47 @@ generate-metadata:
 	@printf '{\n  "version": "%s",\n  "commit": "%s",\n  "build_time": "%s"\n}\n' \
 		"$(VERSION)" "$(COMMIT_HASH)" "$(BUILD_TIME)" > build/dist/metadata.json
 
-# GoReleaser release and upload to R2
+# Gate a dist dir before any upload: one correctly-versioned archive per
+# PUBLIC_TARGETS entry (goreleaser builds the same set; see .goreleaser.yaml),
+# checksums.txt complete and verifying, metadata.json pointing at $(VERSION).
+# Local only, no network. Usage: make release-verify DIST=build/dist
+RELEASE_DIST?=build/dist
+release-verify:
+	@VERSION="$(VERSION)" TARGETS="$(PUBLIC_TARGETS)" REQUIRE="$(RELEASE_REQUIRE)" \
+		bash build/scripts/release-verify.sh "$(or $(DIST),$(RELEASE_DIST))"
+
+# Delete old vigolium_* archives from an R2 prefix, keeping everything in the
+# new checksums.txt plus the last RELEASE_KEEP versions (rollback window).
+# Never touches install.sh/bootstrap.sh/metadata.json/checksums.txt. Runs only
+# AFTER a successful upload. DRY_RUN=1 previews.
+# Usage: make release-prune R2_DIR=r2/vigolium-dist/$(R2_PREFIX) DIST=build/dist
+RELEASE_KEEP?=3
+release-prune:
+	@KEEP="$(RELEASE_KEEP)" DRY_RUN="$(DRY_RUN)" \
+		bash build/scripts/release-prune.sh "$(or $(R2_DIR),r2/vigolium-dist/$(R2_PREFIX))" "$(or $(DIST),$(RELEASE_DIST))"
+
+# GoReleaser release and upload to R2. Order matters: verify locally, upload
+# archives + checksums + scripts, flip the version pointer (metadata.json)
+# LAST, then prune old archives. Installers resolve the version from
+# metadata.json first, so until the pointer flips they keep resolving the
+# previous version, whose archives are still in place. Old archives are only
+# pruned after the new release is fully live.
 release: prepare-release-scripts ensure-audit-dist ensure-jstangle-dist
 	@echo "$(PREFIX) Building release..."
 	VIGOLIUM_VERSION=$(GORELEASER_VERSION) goreleaser --verbose release --snapshot --clean --parallelism 1
 	@$(MAKE) restage-host-audit
 	@$(MAKE) generate-metadata
-	@echo "$(PREFIX) Cleaning old files on R2..."
-	@mc rm --recursive --force r2/vigolium-dist/$(R2_PREFIX)/ || true
-	@echo "$(PREFIX) Uploading to R2..."
+	@$(MAKE) release-verify DIST=build/dist RELEASE_REQUIRE="build/scripts/nightly-install.sh build/scripts/bootstrap.sh"
+	@echo "$(PREFIX) Uploading to R2 (archives first, version pointer last)..."
 	@set -e; \
-		archives=$$(ls build/dist/*.tar.gz 2>/dev/null | wc -l | tr -d ' '); \
-		if [ "$$archives" -eq 0 ]; then \
-			echo "\033[31m[!] No tar.gz archives found in build/dist/ — goreleaser output appears to have been wiped before upload.\033[0m"; \
-			echo "\033[31m    Re-run 'make release' or investigate what is removing files from build/dist/.\033[0m"; \
-			exit 1; \
-		fi; \
-		for f in build/dist/checksums.txt build/dist/metadata.json build/scripts/nightly-install.sh build/scripts/bootstrap.sh; do \
-			if [ ! -f "$$f" ]; then \
-				echo "\033[31m[!] Missing required upload artifact: $$f\033[0m"; \
-				exit 1; \
-			fi; \
-		done; \
-		mc cp build/dist/*.tar.gz r2/vigolium-dist/$(R2_PREFIX)/; \
-		mc cp build/dist/*.zip r2/vigolium-dist/$(R2_PREFIX)/; \
+		mc cp build/dist/*.tar.gz build/dist/*.zip r2/vigolium-dist/$(R2_PREFIX)/; \
 		mc cp build/dist/checksums.txt r2/vigolium-dist/$(R2_PREFIX)/; \
-		mc cp build/dist/metadata.json r2/vigolium-dist/$(R2_PREFIX)/; \
+		mc cp build/scripts/bootstrap.sh r2/vigolium-dist/$(R2_PREFIX)/; \
 		mc cp build/scripts/nightly-install.sh r2/vigolium-dist/$(R2_PREFIX)/install.sh; \
-		mc cp build/scripts/bootstrap.sh r2/vigolium-dist/$(R2_PREFIX)/
+		mc cp build/dist/metadata.json r2/vigolium-dist/$(R2_PREFIX)/
 	@echo "$(PREFIX) Release uploaded successfully!"
+	@$(MAKE) release-prune R2_DIR=r2/vigolium-dist/$(R2_PREFIX) DIST=build/dist \
+		|| echo "\033[33m[!] Prune of old archives failed; the release itself is live. Re-run: make release-prune\033[0m"
 
 # Build cross-platform binaries, tar, checksum, and upload to the public/stable
 # R2 prefix (cdn.vigolium.com/vigolium-release/). Mirrors `release` but keeps a
@@ -1289,13 +1301,14 @@ public-release: prepare-public-scripts ensure-audit-dist ensure-jstangle-dist
 	@echo "$(PREFIX) Writing metadata.json..."
 	@printf '{\n  "version": "%s",\n  "commit": "%s",\n  "build_time": "%s"\n}\n' \
 		"$(VERSION)" "$(COMMIT_HASH)" "$(BUILD_TIME)" > $(PUBLIC_DIST_DIR)/metadata.json
+	@$(MAKE) release-verify DIST=$(PUBLIC_DIST_DIR) RELEASE_REQUIRE="build/public-install.sh"
 	# Retain older versioned archives for installed package recipes and rollbacks.
-	@echo "$(PREFIX) Uploading public artifacts to R2..."
-	mc cp $(PUBLIC_DIST_DIR)/*.tar.gz r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
-	mc cp $(PUBLIC_DIST_DIR)/*.zip r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
+	# Same ordering as `release`: archives first, version pointer (metadata.json) last.
+	@echo "$(PREFIX) Uploading public artifacts to R2 (archives first, version pointer last)..."
+	mc cp $(PUBLIC_DIST_DIR)/*.tar.gz $(PUBLIC_DIST_DIR)/*.zip r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
 	mc cp $(PUBLIC_DIST_DIR)/checksums.txt r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
-	mc cp $(PUBLIC_DIST_DIR)/metadata.json r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
 	mc cp build/public-install.sh r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/install.sh
+	mc cp $(PUBLIC_DIST_DIR)/metadata.json r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
 	@echo "$(PREFIX) Public release uploaded to $(PUBLIC_INSTALL_BASE_URL)/"
 
 # Run the normal public release (build cross-platform tarballs + upload to R2),
