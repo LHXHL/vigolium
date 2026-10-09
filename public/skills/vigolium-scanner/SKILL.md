@@ -213,7 +213,7 @@ Full event table and field-by-field notes:
 | Manage JS extensions | `vigolium ext ls` / `ext docs` / `ext preset` |
 | Run a custom extension | `vigolium run extension -t <url> --ext custom-check.js` |
 | Execute arbitrary JS with the vigolium API | `vigolium js --code 'vigolium.http.get("https://t/")'` |
-| View/modify configuration | `vigolium config ls` / `config set <key> <value>` |
+| View/modify configuration | `vigolium config ls` / `config set <key> <value>` (lists as JSON: `'["a","b"]'`) / `config validate -j` |
 | Manage auth sessions | `vigolium auth lint` / `auth list` / `auth load` / `auth totp` |
 | Manage scope rules | `vigolium scope view` |
 | Manage projects | `vigolium project create\|list` / `eval "$(vigolium project use <uuid>)"` |
@@ -221,7 +221,7 @@ Full event table and field-by-field notes:
 | Import an audit folder or JSONL/SQLite export | `vigolium import <path>` |
 | View runtime logs for a scan/agent run | `vigolium log <uuid>` (`-f` to follow) |
 | Initialize `~/.vigolium/` | `vigolium init` |
-| Health check | `vigolium doctor` (`--fix` installs what's missing) |
+| Health check | `vigolium doctor` (`--fix` installs what's missing; exits 1 on `not_ready`, `--strict` also on `degraded`) |
 | Refresh nuclei templates without touching the binary | `vigolium update --skip-binary` |
 | Copy an extension authoring template | `vigolium ext example -l`, then `ext example <key>` |
 

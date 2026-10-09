@@ -35,6 +35,7 @@ run `vigolium <command> -h`.
 - [vigolium config clean](#vigolium-config-clean)
 - [vigolium config ls](#vigolium-config-ls)
 - [vigolium config set](#vigolium-config-set)
+- [vigolium config validate](#vigolium-config-validate)
 - [vigolium db](#vigolium-db)
 - [vigolium db clean](#vigolium-db-clean)
 - [vigolium db compact](#vigolium-db-compact)
@@ -556,6 +557,16 @@ Set a configuration value
 
 _No command-specific flags._
 
+## vigolium config validate
+
+Check the configuration for values that break or silently weaken scans
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--project` | - | string | - | Also validate this project's config overlay, checking the merged global → project settings |
+| `--recent` | - | int | `5` | Check a wildcard-free scope.host.include against the targets of the last N scans (0 disables) |
+| `--strict` | - | bool | `false` | Exit 1 on warnings as well as errors |
+
 ## vigolium db
 
 Manage database records
@@ -696,6 +707,7 @@ Check system readiness and diagnose configuration issues
 |------|-------|------|---------|-------------|
 | `--fix` | - | bool | `false` | Auto-install/fix failing checks |
 | `--only` | - | stringSlice | - | Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium) |
+| `--strict` | - | bool | `false` | Exit 1 when the verdict is degraded, not only when it is not_ready |
 
 ## vigolium export
 
@@ -1714,7 +1726,9 @@ Usage: `vigolium scope set <component.field> <value>`
 
 Set a scope rule
 
-_No command-specific flags._
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--project` | - | string | - | Write the rule to this project's config overlay instead of the global config |
 
 ## vigolium scope view
 

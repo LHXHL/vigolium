@@ -85,6 +85,8 @@ type Report struct {
 	Status           Status                  `json:"status"` // "ready", "degraded", "not_ready"
 	Timestamp        string                  `json:"timestamp"`
 	Config           *CheckResult            `json:"config"`
+	Scope            *CheckResult            `json:"scope"`
+	OAST             *CheckResult            `json:"oast"`
 	Database         *CheckResult            `json:"database"`
 	Initialized      *CheckResult            `json:"initialized"`
 	Queue            *CheckResult            `json:"queue,omitempty"`
@@ -124,6 +126,11 @@ type Deps struct {
 	// one-shot CLI paths (doctor, first-run init) enable it; the server
 	// /diagnostics endpoint leaves it off to stay a cheap, poll-safe readout.
 	ProbeBrowserLaunch bool
+	// ProbeNetwork, when set, lets the OAST check resolve the interactsh server
+	// and open one TLS connection to it (3s budget, no registration). Like
+	// ProbeBrowserLaunch it is set by the CLI doctor only; the server
+	// /diagnostics endpoint leaves it off so a poll never touches the network.
+	ProbeNetwork bool
 }
 
 // AuditPathStatus describes one of the two driver paths under "Audit mode"
@@ -181,6 +188,8 @@ func Run(deps Deps) *Report {
 	}
 
 	r.Config = checkConfig(deps.ConfigPath, deps.ConfigErr)
+	r.Scope = checkScope(settings)
+	r.OAST = checkOAST(settings, deps.ProbeNetwork)
 	r.Database = checkDatabase(deps.DB, deps.DBErr)
 	r.Initialized = checkInitMarker()
 	r.Queue = checkQueue(deps.Queue)
@@ -1216,6 +1225,12 @@ func computeOverallStatus(r *Report) Status {
 	// Degraded, not not_ready: vigolium runs on defaults without a config file,
 	// so an unreadable one is a real problem that is not a hard stop.
 	if r.Config != nil && r.Config.Status != StatusOK {
+		return "degraded"
+	}
+	// A scope error does not stop vigolium from starting, but every scan drops
+	// the requests the broken rule touches (often all of them). Warnings do not
+	// change the verdict; neither does OAST, whose loss is reported per scan.
+	if r.Scope != nil && r.Scope.Status == StatusError {
 		return "degraded"
 	}
 

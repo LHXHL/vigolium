@@ -32,7 +32,9 @@ would delete.
 
 `vigolium doctor` never fails on a broken config — reporting it is its job. The
 config appears as its own check under **Core**, and every other check in that
-report then reflects built-in defaults rather than your settings.
+report then reflects built-in defaults rather than your settings. A broken
+config makes the verdict `degraded`, which exits 0 unless you pass `--strict`
+(doctor exits 1 only on `not_ready`, or on `degraded` under `--strict`).
 
 ### Diagnostics
 
@@ -144,7 +146,63 @@ vigolium config set server.service_port 8080
 vigolium config set scanning_strategy.http.user_agent "Mozilla/5.0 (compatible; Vigolium/{version}; +https://github.com/vigolium/vigolium)"
 ```
 
-These commands modify the main config file directly. For one-off overrides during a scan, use CLI flags instead.
+These commands modify the main config file directly (an atomic rewrite). For one-off overrides during a scan, use CLI flags instead.
+
+### Lists and maps
+
+List and map settings take JSON or YAML flow syntax, decoded against the
+setting's declared type. The comma form still works for lists:
+
+```bash
+vigolium config set scope.host.include '["*.example.com","example.com"]'   # JSON
+vigolium config set scope.host.include '[*.example.com, example.com]'      # YAML flow
+vigolium config set scope.host.include '*.example.com,example.com'         # comma form
+vigolium config set scope.host.exclude.add admin.example.com               # append one
+vigolium config set scope.host.exclude.add '["a.example.com","b.example.com"]'  # append several
+vigolium config set scope.host.exclude.clear ''                            # empty the list
+vigolium config set known_issue_scan.severity_overrides '{"tech-detect":"info"}'  # replace a map
+```
+
+A value is refused with exit 2 (`error.code: usage_error`) and the file is left
+unchanged when it does not parse (`'["a",'`), has the wrong element type (`[1,2]`
+into a list of strings), has an empty element (`a,,b`), carries JSON residue
+(`"a","b"` in the comma form), or introduces an error-level validation issue at
+that key (see below), such as a host pattern with a scheme. `vigolium scope set`
+goes through the same parser and checks; it also refuses to write when the
+config failed to load, and `--project <uuid>` writes only that key into the
+project's overlay (`~/.vigolium/projects/<uuid>/config.yaml`).
+
+### Validating the config
+
+`vigolium config validate` checks the effective settings with the same rules
+`config set` enforces and doctor's **Scope** check reports:
+
+```bash
+vigolium config validate                       # global config
+vigolium config validate --project <uuid>      # global + that project's overlay
+vigolium config validate -j --strict           # items[] of {key, severity, code, message, fix}
+```
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `scope_pattern_invalid` | error | Empty pattern, leading/trailing whitespace, quote or bracket residue, or a malformed glob |
+| `scope_host_has_scheme_or_path` | error | A host pattern containing `://` or `/` (hosts match the hostname only) |
+| `scope_host_has_port` | warning | A host pattern ending in `:port`, which never matches |
+| `scope_include_restrictive` | warning | `scope.host.include` with no wildcard: subdomains are dropped |
+| `scope_include_matches_no_recent_target` | warning | That include admits none of the last `--recent` (default 5) scans' targets; skipped when no database exists |
+| `scope_path_no_slash` | warning | A path pattern starting with neither `/` nor `*` |
+| `scope_status_invalid` | error | A `status_code` pattern that is not a code, class (`2xx`, `30*`) or range (`400-499`) |
+| `scope_origin_mode_invalid` | error | `scope.cli_origin_mode` not in `all`, `relaxed`, `balanced`, `strict` |
+| `scope_body_action_invalid` | error | `scope.body_size_exceeded_action` not in `truncate`, `drop`, `skip-scan`, `passive-only` |
+| `oast_server_missing` / `oast_server_url_invalid` / `oast_interval_invalid` | error | OAST enabled without a server, a malformed `server_url`, or a negative interval |
+| `config_value_invalid` | error | A section's own validation failed (database, spidering, storage, ...) |
+| `config_unknown_key` | warning | A key in the file that matches no setting |
+| `config_load_failed` | error | The file does not load at all |
+
+Every issue carries a `fix`, usually the exact `config set` to run. The command
+exits 1 with `error.code: config_invalid` when any error-level issue is found;
+`--strict` also fails on warnings. Under `-j` the envelope carries `valid` (the verdict, `--strict` included),
+`errors`, `warnings` and `config_path`.
 
 ## Config Sections
 

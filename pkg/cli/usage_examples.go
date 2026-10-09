@@ -323,6 +323,15 @@ var configLsExamples = FormatExamples(
 	"vigolium config ls notify --show-secrets",
 )
 
+var configValidateExamples = FormatExamples(
+	"# Check the global config (exit 1 with error.code config_invalid on any error)",
+	"vigolium config validate",
+	"# Machine-readable issues: items[] of {key, severity, code, message, fix}",
+	"vigolium config validate -j",
+	"# Check a project's merged settings, and fail on warnings too",
+	"vigolium config validate --project <uuid> --strict",
+)
+
 var configSetExamples = FormatExamples(
 	"# Enable notifications",
 	"vigolium config set notify.enabled true",
@@ -330,6 +339,9 @@ var configSetExamples = FormatExamples(
 	"vigolium config set notify.provider telegram",
 	"# Set notification severities",
 	"vigolium config set notify.severities high,critical",
+	"# Lists also take JSON or YAML flow syntax; append with .add",
+	"vigolium config set scope.host.include '[\"*.example.com\",\"example.com\"]'",
+	"vigolium config set scope.host.exclude.add admin.example.com",
 	"# Configure Telegram credentials",
 	"vigolium config set notify.telegram.bot_token <bot-token>",
 	"vigolium config set notify.telegram.chat_id <chat-id>",

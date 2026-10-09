@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/vigolium/vigolium/internal/atomicfile"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"gopkg.in/yaml.v3"
 )
@@ -344,19 +346,32 @@ func unknownKeyWarning(path, content string) string {
 var unknownKeyCache sync.Map
 
 func computeUnknownKeyWarning(path, content string) string {
-	var throwaway Settings
-	dec := yaml.NewDecoder(strings.NewReader(content))
-	dec.KnownFields(true)
-	err := dec.Decode(&throwaway)
-	if err == nil || errors.Is(err, io.EOF) {
+	unknown := unknownKeyErrors(content, &Settings{})
+	if len(unknown) == 0 {
 		return ""
 	}
+	return fmt.Sprintf("config file %s has %d key(s) vigolium does not recognize (they have no effect): %s",
+		path, len(unknown), strings.Join(unknown, "; "))
+}
+
+// unknownKeyErrors decodes content into into with KnownFields on and returns
+// the decoder's "field X not found in type T" lines, one per unknown key. The
+// throwaway destination is a zero value rather than defaults: nothing is read
+// out of it. Shared by the load-time warning and `config validate`, so both
+// name the same keys.
+func unknownKeyErrors(content string, into any) []string {
+	dec := yaml.NewDecoder(strings.NewReader(content))
+	dec.KnownFields(true)
+	err := dec.Decode(into)
+	if err == nil || errors.Is(err, io.EOF) {
+		return nil
+	}
 	// A *yaml.TypeError lists every offending key at once. Anything else here is
-	// a parse failure the lenient decode above already accepted, so it is not an
+	// a parse failure the lenient decode already accepted, so it is not an
 	// unknown key and saying "unknown key" about it would be wrong.
 	var typeErr *yaml.TypeError
 	if !errors.As(err, &typeErr) {
-		return ""
+		return nil
 	}
 	var unknown []string
 	for _, e := range typeErr.Errors {
@@ -364,11 +379,7 @@ func computeUnknownKeyWarning(path, content string) string {
 			unknown = append(unknown, e)
 		}
 	}
-	if len(unknown) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("config file %s has %d key(s) vigolium does not recognize (they have no effect): %s",
-		path, len(unknown), strings.Join(unknown, "; "))
+	return unknown
 }
 
 // DefaultSettings returns default configuration
@@ -590,8 +601,12 @@ func SaveSettings(path string, settings *Settings) error {
 		return fmt.Errorf("failed to marshal settings: %w", err)
 	}
 
-	// Write to file
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	// Atomic: a crash or a full disk mid-write must not leave a truncated
+	// config, which the next load would reject (or, discovered, ignore).
+	if err := atomicfile.WriteFile(path, 0o600, func(w *bufio.Writer) error {
+		_, err := w.Write(data)
+		return err
+	}); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 

@@ -13,9 +13,13 @@ import (
 
 func newSetCmd(deps Deps, example string) *cobra.Command {
 	return &cobra.Command{
-		Use:     "set <key> <value>",
-		Short:   "Set a configuration value",
-		Long:    "Set a configuration value using dot-notation key (e.g. notify.enabled true).\nAlso accepts 'key = value' and 'key=value' formats.",
+		Use:   "set <key> <value>",
+		Short: "Set a configuration value",
+		Long: "Set a configuration value using dot-notation key (e.g. notify.enabled true).\nAlso accepts 'key = value' and 'key=value' formats.\n\n" +
+			"List and map values take JSON or YAML flow syntax ('[\"a.example\",\"b.example\"]', '[a, b]', '{\"k\":\"v\"}'),\n" +
+			"checked against the setting's type; the comma form (a,b) still works for lists. '<list>.add <value>' appends\n" +
+			"one element or a JSON list; '<list>.clear' empties it. A value that fails validation (see 'config validate')\n" +
+			"is refused with exit 2 and the file is left unchanged.",
 		Args:    cobra.RangeArgs(1, 3),
 		Example: example,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -55,9 +59,11 @@ func runConfigSet(deps Deps, args []string) error {
 
 	// Update the field
 	if err := config.SetField(settings, key, value); err != nil {
-		// A key that names no setting is a typo on the command line (exit 2),
-		// not a failure to write the config.
-		if errors.Is(err, config.ErrUnknownKey) {
+		// A key that names no setting, or a value that cannot be stored under
+		// it (a list that does not parse, an element of the wrong type, a scope
+		// pattern that validation rejects), is a mistake on the command line
+		// (exit 2), not a failure to write the config. Nothing was written.
+		if errors.Is(err, config.ErrUnknownKey) || errors.Is(err, config.ErrInvalidValue) {
 			return clicommon.AsUsageError(fmt.Errorf("failed to set %q: %w", key, err))
 		}
 		return fmt.Errorf("failed to set %q: %w", key, err)
