@@ -1,6 +1,7 @@
 package configcmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -32,7 +33,7 @@ func runConfigSet(deps Deps, args []string) error {
 		key = strings.TrimSpace(k)
 		value = strings.TrimSpace(v)
 		if key == "" {
-			return fmt.Errorf("usage: config set <key>=<value>")
+			return clicommon.UsageErrorf("usage: config set <key>=<value>")
 		}
 	case len(args) == 3 && args[1] == "=":
 		// Support "key = value" format (copied from config ls output)
@@ -42,7 +43,7 @@ func runConfigSet(deps Deps, args []string) error {
 		key = args[0]
 		value = args[1]
 	default:
-		return fmt.Errorf("usage: config set <key> <value> | config set <key>=<value> | config set <key> = <value>")
+		return clicommon.UsageErrorf("usage: config set <key> <value> | config set <key>=<value> | config set <key> = <value>")
 	}
 
 	// Load current settings
@@ -54,6 +55,11 @@ func runConfigSet(deps Deps, args []string) error {
 
 	// Update the field
 	if err := config.SetField(settings, key, value); err != nil {
+		// A key that names no setting is a typo on the command line (exit 2),
+		// not a failure to write the config.
+		if errors.Is(err, config.ErrUnknownKey) {
+			return clicommon.AsUsageError(fmt.Errorf("failed to set %q: %w", key, err))
+		}
 		return fmt.Errorf("failed to set %q: %w", key, err)
 	}
 

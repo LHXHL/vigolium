@@ -123,10 +123,10 @@ func TestLooksGzipMatchesDecoderMagic(t *testing.T) {
 // rather than compared to themselves.
 func TestExtractionErrorCodesAreStable(t *testing.T) {
 	for name, pair := range map[string][2]string{
-		"record not found": {errCodeRecordNotFound, "record_not_found"},
-		"body unavailable": {errCodeBodyUnavailable, "body_unavailable"},
-		"decode failed":    {errCodeBodyDecodeFailed, "body_decode_failed"},
-		"incomplete":       {errCodeBodyIncomplete, "body_incomplete"},
+		"record not found": {string(errCodeRecordNotFound), "record_not_found"},
+		"body unavailable": {string(errCodeBodyUnavailable), "body_unavailable"},
+		"decode failed":    {string(errCodeBodyDecodeFailed), "body_decode_failed"},
+		"incomplete":       {string(errCodeBodyIncomplete), "body_incomplete"},
 	} {
 		if pair[0] != pair[1] {
 			t.Errorf("%s: code is %q, want %q", name, pair[0], pair[1])

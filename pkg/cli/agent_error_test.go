@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"testing"
+
+	"github.com/vigolium/vigolium/pkg/apicontract"
 )
 
 // The point of the code set is that a caller can branch on it. These cases are
@@ -15,7 +17,7 @@ func TestClassifyErrorCodeSeparatesSourceStates(t *testing.T) {
 		name string
 		err  error
 		exit int
-		want string
+		want apicontract.ErrorCode
 	}{
 		{
 			name: "missing file",

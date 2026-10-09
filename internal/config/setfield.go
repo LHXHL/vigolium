@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -8,6 +9,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// ErrUnknownKey marks a SetField key that does not name a setting. It is a
+// mistake on the caller's command line, not a failure to write the config, so
+// `config set` reports it as a usage error (exit 2).
+var ErrUnknownKey = errors.New("unknown config key")
 
 // SetField updates a field in the Settings struct using dot-notation key and string value.
 // It round-trips through a map[string]any to handle arbitrary nesting.
@@ -26,7 +32,7 @@ func SetField(settings *Settings, key string, value string) error {
 	// Split key into parts and navigate to the leaf
 	parts := strings.Split(key, ".")
 	if len(parts) == 0 {
-		return fmt.Errorf("empty key")
+		return fmt.Errorf("empty key: %w", ErrUnknownKey)
 	}
 
 	// List-op suffix: `<list_path>.add <value>` appends; `<list_path>.clear`
@@ -61,7 +67,7 @@ func SetField(settings *Settings, key string, value string) error {
 		child, ok := current[parts[i]]
 		if !ok {
 			if _, valid := resolveSettingKind(key); !valid {
-				return fmt.Errorf("key %q not found (unknown segment %q)", key, parts[i])
+				return fmt.Errorf("key %q not found (unknown segment %q): %w", key, parts[i], ErrUnknownKey)
 			}
 			newMap := map[string]any{}
 			current[parts[i]] = newMap
@@ -70,7 +76,7 @@ func SetField(settings *Settings, key string, value string) error {
 		}
 		childMap, ok := child.(map[string]any)
 		if !ok {
-			return fmt.Errorf("key %q is not a map (at segment %q)", key, parts[i])
+			return fmt.Errorf("key %q is not a map (at segment %q): %w", key, parts[i], ErrUnknownKey)
 		}
 		current = childMap
 	}
@@ -84,7 +90,7 @@ func SetField(settings *Settings, key string, value string) error {
 	} else {
 		kind, valid := resolveSettingKind(key)
 		if !valid {
-			return fmt.Errorf("key %q not found (unknown segment %q)", key, leafKey)
+			return fmt.Errorf("key %q not found (unknown segment %q): %w", key, leafKey, ErrUnknownKey)
 		}
 		current[leafKey] = coerceValueForKind(value, kind)
 	}

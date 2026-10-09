@@ -476,11 +476,18 @@ func Execute() {
 		// pipelines are not aborted by errors the operator considers expected.
 		// The structured diagnosis above still describes what actually happened,
 		// and its exit_code field reports the code that WOULD have been used.
-		if globalSoftFail {
-			os.Exit(ExitSuccess)
-		}
-		os.Exit(code)
+		os.Exit(processExitCode(code, globalSoftFail))
 	}
+}
+
+// processExitCode is the status the process actually exits with. --soft-fail
+// forces 0 for every outcome, the completed results (3, 4, 5) included: a
+// caller that opted out of exit-code gating opted out of all of it.
+func processExitCode(code int, softFail bool) int {
+	if softFail {
+		return ExitSuccess
+	}
+	return code
 }
 
 // releaseScratch removes this process's temporary storage and collects what

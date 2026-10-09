@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 )
 
@@ -19,7 +20,7 @@ import (
 // or `http_records` depending on where you asked, and drift was discovered as a
 // parse failure in production rather than as a version check at startup. There
 // is now one shape, one canonical name per field, and a number to check.
-const AgentSchemaVersion = 1
+const AgentSchemaVersion = apicontract.SchemaVersion
 
 // agentEnvelope is the single JSON shape every -j command emits.
 //

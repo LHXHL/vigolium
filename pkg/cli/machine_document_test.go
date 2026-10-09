@@ -85,7 +85,7 @@ func TestWriteAgentJSONFileFailureLeavesErrorEnvelope(t *testing.T) {
 	require.Equal(t, false, docs[0]["ok"])
 	errObj, ok := docs[0]["error"].(map[string]any)
 	require.True(t, ok, "error envelope has no error object: %v", docs[0])
-	require.Equal(t, errCodeExportFailed, errObj["code"],
+	require.Equal(t, string(errCodeExportFailed), errObj["code"],
 		"a failed -o write is a failed requested artifact, not a missing source")
 	require.Contains(t, errObj["message"], "write ")
 	require.Contains(t, errObj["message"], jsonOutputPath,

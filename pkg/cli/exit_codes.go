@@ -6,10 +6,13 @@ import (
 	"os"
 
 	"github.com/vigolium/vigolium/internal/atomicfile"
+	"github.com/vigolium/vigolium/pkg/apicontract"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
-// Process exit codes.
+// Process exit codes. The table itself lives in pkg/apicontract, shared with
+// the REST API's error vocabulary; these names keep pkg/cli's call sites short.
 //
 // `1` used to mean both "the scan crashed" and "the scan worked and found a
 // high-severity finding" — opposite outcomes that a CI job or an agent has to
@@ -21,39 +24,47 @@ import (
 //	2  usage error (bad flag, bad combination)
 //	3  fuzz --fail-on-match matched
 //	4  --fail-on <severity> gate tripped
+//	5  incomplete: the work ran but did not finish (timed_out, budget_exhausted, partial)
 //
 // --soft-fail still forces 0 everywhere, unchanged: a caller that has opted out
 // of exit-code gating opted out of all of it.
 const (
-	ExitSuccess    = 0
-	ExitError      = 1
-	ExitUsageError = 2
-	ExitFuzzMatch  = 3
-	ExitFailOnGate = 4
+	ExitSuccess    = apicontract.ExitSuccess
+	ExitError      = apicontract.ExitError
+	ExitUsageError = apicontract.ExitUsageError
+	ExitFuzzMatch  = apicontract.ExitFuzzMatch
+	ExitFailOnGate = apicontract.ExitFailOnGate
+	ExitIncomplete = apicontract.ExitIncomplete
 )
 
 // usageError marks an error as a misuse of the command line — an unknown flag
 // value, a rejected combination, a missing required flag — rather than a
 // failure of the work. Cobra's own flag-parse errors are classified separately
 // (see classifyExitCode), because they never pass through here.
-type usageError struct{ err error }
-
-func (u usageError) Error() string { return u.err.Error() }
-func (u usageError) Unwrap() error { return u.err }
+//
+// The type lives in clicommon so subpackages (configcmd) can return it without
+// importing pkg/cli; these aliases keep the existing call sites unchanged.
+type usageError = clicommon.UsageError
 
 // asUsageError wraps err so Execute exits 2. Returns nil for a nil error, so it
 // can wrap a call site's return value directly.
-func asUsageError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return usageError{err: err}
-}
+func asUsageError(err error) error { return clicommon.AsUsageError(err) }
 
 // usageErrorf builds a usage error (exit 2) from a format string, for the common
 // case of rejecting a bad flag value at its own call site.
 func usageErrorf(format string, args ...any) error {
-	return usageError{err: fmt.Errorf(format, args...)}
+	return clicommon.UsageError{Err: fmt.Errorf(format, args...)}
+}
+
+// incompleteError marks work that ran but did not finish (exit 5). Like
+// gateError it is a completed result: return it only after the output was
+// written. See clicommon.IncompleteError.
+type incompleteError = clicommon.IncompleteError
+
+// incompleteErrorf builds an exit-5 result carrying one of the incomplete codes
+// (timed_out, budget_exhausted, partial).
+func incompleteErrorf(code apicontract.ErrorCode, format string, args ...any) error {
+	return clicommon.IncompleteErrorf(code, format, args...)
 }
 
 // gateError marks the --fail-on severity gate. It is not a failure: the scan ran
@@ -119,7 +130,7 @@ func recordExportFailure(err *error, exportErr error) {
 			terminal.ErrorPrefix(), exportErr)
 		return
 	}
-	*err = codedError{code: errCodeExportFailed, err: exportErr}
+	*err = clicommon.NewCodedError(errCodeExportFailed, exportErr)
 }
 
 // writeRequestedFile publishes an artifact the caller asked for with -o, and
@@ -168,6 +179,10 @@ func classifyExitCode(err error) int {
 	var match matchError
 	if errors.As(err, &match) {
 		return ExitFuzzMatch
+	}
+	var incomplete incompleteError
+	if errors.As(err, &incomplete) {
+		return ExitIncomplete
 	}
 	var usage usageError
 	if errors.As(err, &usage) {
