@@ -1,0 +1,2 @@
+{"url":"https://example.test/admin","method":"GET","status_code":200,"content_length":10,"content_type":"text/html","title":"Admin","found_by":"wordlist","depth":1,"type":"file"}
+{"url":"https://example.test/login","method":"GET","status_code":200,"content_length":12,"content_type":"text/html","title":"Login","found_by":"crawl","depth":1,"type":"file"}

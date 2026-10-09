@@ -1,0 +1,1 @@
+{"template-id":"tech-detect","info":{"name":"Tech","severity":"info"},"type":"http","host":"https://example.test","matched-at":"https://example.test/","url":"https://example.test/","request":{"raw":"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n"},"timestamp":"2024-01-01T00:00:00Z"}

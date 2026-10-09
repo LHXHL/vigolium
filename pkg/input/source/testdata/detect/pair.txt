@@ -1,0 +1,8 @@
+GET /a HTTP/1.1
+Host: example.test
+
+***
+HTTP/1.1 200 OK
+Content-Length: 2
+
+ok

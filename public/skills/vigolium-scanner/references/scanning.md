@@ -636,7 +636,10 @@ The following phases can be used with `--only` and `--skip`:
 
 ## Input formats
 
-`-I <format>` selects the input type; OpenAPI and WSDL auto-detect from content.
+`-I <format>` selects the input type. Without `-I`, an `-i` file is detected from
+its content (HAR, Postman, OpenAPI/Swagger, WSDL, Burp XML/raw/scope, curl,
+nuclei, deparos, URL list); a file that is mostly not URLs and matches nothing
+fails with `input_unparsed`.
 
 | Format | Flag | Example |
 |--------|------|---------|

@@ -11,6 +11,7 @@ import (
 type Format struct {
 	formatOpts  formats.InputFormatOptions
 	openapiOpts Options
+	stats       ParseStats
 }
 
 // New creates a new OpenAPI Format.
@@ -45,6 +46,8 @@ func (f *Format) Parse(input string, callback formats.ParseReqRespCallback) erro
 	opts := f.openapiOpts
 	opts.RequiredOnly = f.formatOpts.RequiredOnly
 	opts.SkipFormatValidation = f.formatOpts.SkipFormatValidation
+	f.stats = ParseStats{}
+	opts.Stats = &f.stats
 
 	// Wrap callback to match ResultCallback signature
 	wrappedCallback := func(rr *httpmsg.HttpRequestResponse) bool {
@@ -53,6 +56,11 @@ func (f *Format) Parse(input string, callback formats.ParseReqRespCallback) erro
 
 	// Parse based on detected version - ParseSwagger auto-detects
 	return ParseSwagger(data, ext, opts, wrappedCallback)
+}
+
+// Stats reports the outcome of the last Parse.
+func (f *Format) Stats() ParseStats {
+	return f.stats
 }
 
 // Count returns the number of operations in the OpenAPI spec.

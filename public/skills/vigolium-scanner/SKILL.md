@@ -540,7 +540,7 @@ aliases: `ingestion` (`ingest`,`ingesting`) · `probe`
 > audit` work, but `vigolium run audit` is rejected as ambiguous with `vigolium
 > agent audit` (the AI source-code audit). Type `run dast` for the native phase.
 
-**Input** (`-I`, OpenAPI/WSDL auto-detect): `urls` (default) · `openapi` ·
+**Input** (`-I`, optional: auto-detected from content): `urls` (default) · `openapi` ·
 `swagger` · `wsdl` · `burp` · `curl` · `nuclei` · `har` · `postman` ·
 `burpscope`. **Output** (`--format`, comma-combinable): `console` (default) ·
 `jsonl` · `html` · `sarif` · `sqlite` · `fs`.

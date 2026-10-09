@@ -4828,27 +4828,23 @@
         "properties": {
           "input_mode": {
             "type": "string",
-            "enum": [
-              "burp_base64",
-              "curl",
-              "openapi",
-              "swagger",
-              "postman_collection",
-              "har",
-              "http_archive",
-              "url",
-              "url_file"
-            ],
-            "description": "Format of the input content",
-            "example": "curl"
+            "description": "url, burp_base64 or curl (single-item modes), auto (detect from content), or any -I input-format name or alias: urls/url_file, openapi/swagger, postman/postman_collection, har/http_archive, wsdl, burpxml, burpraw, burpscope, nuclei, deparos. An unknown mode returns 400 listing the accepted values.",
+            "example": "auto"
           },
           "url": {
             "type": "string",
-            "description": "URL to fetch content from (for url and url_file modes)"
+            "description": "Base URL for openapi, endpoint for wsdl, {{baseUrl}} for postman; overrides each record's host for the other modes"
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Postman {{name}} values and OpenAPI/WSDL parameter and credential values (REST form of --spec-var), e.g. baseUrl, bearer, basic"
           },
           "content": {
             "type": "string",
-            "description": "Raw content string (for curl, openapi, swagger, postman_collection, har modes)",
+            "description": "Raw content string (every mode except url and burp_base64)",
             "example": "curl -X GET https://example.com/api/users"
           },
           "content_base64": {
@@ -4878,7 +4874,25 @@
           },
           "skipped": {
             "type": "integer",
+            "description": "Records filtered by scope",
             "example": 3
+          },
+          "format": {
+            "type": "string",
+            "description": "Canonical input format the content was parsed as",
+            "example": "har"
+          },
+          "detected_format": {
+            "type": "string",
+            "description": "Format detected from content (input_mode auto only)",
+            "example": "har"
+          },
+          "skipped_reasons": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Counts of everything not stored, by reason: out_of_scope, unparsed_line, skipped_operation, skipped_request"
           },
           "errors": {
             "type": "array",

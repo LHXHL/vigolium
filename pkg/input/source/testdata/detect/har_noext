@@ -1,0 +1,6 @@
+{"log":{"version":"1.2","creator":{"name":"fixture","version":"1"},"entries":[
+  {"request":{"method":"GET","url":"https://example.test/a","httpVersion":"HTTP/1.1",
+    "headers":[{"name":"Host","value":"example.test"}],"queryString":[],"cookies":[]},
+   "response":{"status":200,"statusText":"OK","httpVersion":"HTTP/1.1",
+    "headers":[],"cookies":[],"content":{"size":2,"mimeType":"text/plain","text":"ok"}}}
+]}}

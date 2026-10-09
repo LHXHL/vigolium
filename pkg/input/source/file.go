@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -28,6 +29,7 @@ import (
 // It wraps the existing Format interface and converts push-based callback to pull-based Next().
 type FileSource struct {
 	format        formats.Format
+	detection     Detection // content detection, when the URL-list default was in play
 	filePath      string
 	enableModules []string
 
@@ -54,6 +56,11 @@ type FileSourceConfig struct {
 	BufferSize    int    // Channel buffer size (default: 100)
 	EnableModules []string
 	FormatOptions formats.InputFormatOptions
+
+	// FormatExplicit marks Format as chosen by the user (-I given, a REST mode
+	// other than "auto"). Only then does a URL-list Format skip content
+	// detection; the "urls" default is otherwise indistinguishable from it.
+	FormatExplicit bool
 }
 
 // NewFileSource creates a new FileSource for the given file and format.
@@ -63,36 +70,31 @@ func NewFileSource(cfg FileSourceConfig) (*FileSource, error) {
 		return nil, err
 	}
 
-	// A Burp scope export arrives through the same slots as a plain URL list
-	// (-T/--target-file, or -i with the default -I urls), and reading its JSON
-	// line by line would hand the scanner a pile of "{" and regex fragments as
-	// targets. Sniffing the content is the only signal available: the file has
-	// a .json extension like several other formats. Only the URL-list parser is
-	// ever displaced, so an explicit -I always wins.
-	if _, isURLList := format.(*urls.URLListFormat); isURLList && burpscope.SniffFile(cfg.FilePath) {
-		zap.L().Info("detected burp scope file, expanding include rules to targets", zap.String("file", cfg.FilePath))
-		format = burpscope.New()
-	}
-
-	// A HAR arrives through the same slot too, and reading an archive line by
-	// line hands the scanner its JSON punctuation as targets — `ingest -i
-	// traffic.har` without -I har reported "91 records ingested" for a 30-entry
-	// capture, none of which was a request anyone made. Same rule as the two
-	// sniffs around it: content, not extension (a .har may be named anything),
-	// and only the URL-list default is ever displaced.
-	if _, isURLList := format.(*urls.URLListFormat); isURLList && har.SniffFile(cfg.FilePath) {
-		zap.L().Info("detected HAR archive, parsing captured entries", zap.String("file", cfg.FilePath))
-		format = har.New()
-	}
-
-	// A WSDL/SOAP service description arrives through the same slot as a plain
-	// URL list (-i with the default -I urls) and reading it line by line would
-	// hand the scanner XML fragments as targets. Content-sniff it — the file may
-	// carry a .wsdl, .xml, or no extension — and displace only the URL-list
-	// default, so an explicit -I always wins. Mirrors the burpscope sniff above.
-	if _, isURLList := format.(*urls.URLListFormat); isURLList && wsdl.SniffFile(cfg.FilePath) {
-		zap.L().Info("detected WSDL/SOAP service description, generating SOAP requests", zap.String("file", cfg.FilePath))
-		format = wsdl.New()
+	// A file that arrives with the URL-list default (-i without -I, a -T list,
+	// REST "auto") may be any format: Burp scope and project exports, HARs,
+	// Postman collections and OpenAPI specs share .json, captures come without
+	// extensions, and reading any of them line by line hands the scanner JSON
+	// punctuation as targets. Detect by content (DetectFormat, the one detector)
+	// and displace only the URL-list default, so an explicit -I always wins.
+	var detection Detection
+	if _, isURLList := format.(*urls.URLListFormat); isURLList {
+		head, headErr := readHead(cfg.FilePath, DetectHeadBytes)
+		if headErr == nil {
+			detection = DetectFormatHead(head, filepath.Base(cfg.FilePath))
+			if !cfg.FormatExplicit && detection.Detected() {
+				e, _ := lookupFormat(detection.Format)
+				format = e.newParser()
+				zap.L().Info("detected input format",
+					zap.String("file", cfg.FilePath),
+					zap.String("format", detection.Format),
+					zap.String("reason", detection.Reason))
+			} else if err := checkURLListHead(cfg.FilePath, head, detection, cfg.FormatExplicit); err != nil {
+				// Never silent: a file that is mostly not URLs must not become a
+				// pile of junk targets (or zero of them) with a log line per line.
+				return nil, err
+			}
+		}
+		// An unreadable file keeps the URL parser, whose open error reports it.
 	}
 
 	// Apply format options
@@ -105,6 +107,7 @@ func NewFileSource(cfg FileSourceConfig) (*FileSource, error) {
 
 	return &FileSource{
 		format:        format,
+		detection:     detection,
 		filePath:      cfg.FilePath,
 		enableModules: cfg.EnableModules,
 		items:         make(chan *work.WorkItem, bufSize),
@@ -113,10 +116,11 @@ func NewFileSource(cfg FileSourceConfig) (*FileSource, error) {
 }
 
 // formatEntry binds a canonical input-format name and its accepted aliases to a
-// parser constructor. formatRegistry (below) is the single source of truth for
-// which input formats exist: resolveFormat, SupportedFormats, and
-// SupportedFormatNames all derive from it so the accepted set, the help text,
-// and the error message can never drift apart.
+// parser constructor and a content sniffer. formatRegistry (below) is the single
+// source of truth for which input formats exist: resolveFormat, LookupFormat,
+// DetectFormat, SupportedFormats, and SupportedFormatNames all derive from it so
+// the accepted set, the detector, the help text, and the error message can never
+// drift apart.
 type formatEntry struct {
 	canonical string
 	aliases   []string
@@ -127,21 +131,29 @@ type formatEntry struct {
 	// URLs are not seeds a phase can crawl from. Kept as a column here rather
 	// than as a name list elsewhere so a new alias inherits the answer.
 	targetList bool
+	// sniff scores a file head for this format (see DetectFormat). The
+	// sniffers live in detect.go.
+	sniff Sniff
 }
 
-// formatRegistry lists every supported input format in display order.
+// formatRegistry lists every supported input format in display order. Ties in
+// DetectFormat go to the earlier row.
+//
+// The REST ingest API's historical input_mode names (postman_collection,
+// http_archive, url_file) are aliases here, so REST and CLI share one
+// vocabulary.
 var formatRegistry = []formatEntry{
-	{"urls", []string{"url", "list"}, func() formats.Format { return urls.New() }, true},
-	{"nuclei", []string{"nuclei-output"}, func() formats.Format { return nuclei.New() }, false},
-	{"openapi", []string{"swagger"}, func() formats.Format { return openapi.New() }, false},
-	{"wsdl", []string{"soap", "svc"}, func() formats.Format { return wsdl.New() }, false},
-	{"postman", nil, func() formats.Format { return postman.New() }, false},
-	{"curl", nil, func() formats.Format { return curl.New() }, false},
-	{"burpraw", []string{"burp-raw", "raw"}, func() formats.Format { return burpraw.New() }, false},
-	{"burpxml", []string{"burp-xml", "burp", "burpstate"}, func() formats.Format { return burpxml.New() }, false},
-	{"burpscope", []string{"burp-scope", "burp-config", "burp-project-config"}, func() formats.Format { return burpscope.New() }, true},
-	{"har", []string{"http-archive"}, func() formats.Format { return har.New() }, false},
-	{"deparos", []string{"deparos-output"}, func() formats.Format { return deparos.New() }, false},
+	{"urls", []string{"url", "list", "url_file"}, func() formats.Format { return urls.New() }, true, sniffURLList},
+	{"nuclei", []string{"nuclei-output"}, func() formats.Format { return nuclei.New() }, false, sniffNuclei},
+	{"openapi", []string{"swagger"}, func() formats.Format { return openapi.New() }, false, sniffOpenAPI},
+	{"wsdl", []string{"soap", "svc"}, func() formats.Format { return wsdl.New() }, false, sniffWSDL},
+	{"postman", []string{"postman_collection"}, func() formats.Format { return postman.New() }, false, sniffPostman},
+	{"curl", nil, func() formats.Format { return curl.New() }, false, sniffCurl},
+	{"burpraw", []string{"burp-raw", "raw"}, func() formats.Format { return burpraw.New() }, false, sniffBurpRaw},
+	{"burpxml", []string{"burp-xml", "burp", "burpstate"}, func() formats.Format { return burpxml.New() }, false, sniffBurpXML},
+	{"burpscope", []string{"burp-scope", "burp-config", "burp-project-config"}, func() formats.Format { return burpscope.New() }, true, sniffBurpScope},
+	{"har", []string{"http-archive", "http_archive"}, func() formats.Format { return har.New() }, false, sniffHAR},
+	{"deparos", []string{"deparos-output"}, func() formats.Format { return deparos.New() }, false, sniffDeparos},
 }
 
 // FormatInfo is the public view of one formatRegistry row: everything a caller
@@ -189,6 +201,17 @@ func IsTargetListFormat(name string) bool {
 	return ok && e.targetList
 }
 
+// LookupFormat resolves an input-format name or alias (case-insensitive; empty
+// means the "urls" default) to its registry row. Callers outside this package
+// — the REST ingest handler — use it to accept exactly the names -I accepts.
+func LookupFormat(name string) (FormatInfo, bool) {
+	e, ok := lookupFormat(name)
+	if !ok {
+		return FormatInfo{}, false
+	}
+	return FormatInfo{Name: e.canonical, Aliases: append([]string(nil), e.aliases...), TargetList: e.targetList}, true
+}
+
 // lookupFormat resolves a format name or alias to its registry row. It is the
 // ONE place the registry's normalization rules live — an empty name defaulting
 // to "urls", case folding, alias scanning — so `resolveFormat` and
@@ -226,6 +249,13 @@ func resolveFormat(name string) (formats.Format, error) {
 	return nil, fmt.Errorf("unknown input format %q; supported formats: %s (see 'vigolium scan --list-input-mode')", name, SupportedFormats())
 }
 
+// NewParser returns a fresh parser for the given format name or alias, for
+// callers that drive Parse themselves (the REST ingest handler) and need to set
+// format-specific options first. Unknown names error like resolveFormat.
+func NewParser(name string) (formats.Format, error) {
+	return resolveFormat(name)
+}
+
 // ParseFileRecords parses the file at filePath using the named input format and
 // returns the discovered HTTP records. It is the synchronous, pull-everything
 // convenience wrapper over the format registry for callers that just want the
@@ -246,6 +276,13 @@ func ParseFileRecords(filePath, formatName string, max int) ([]*httpmsg.HttpRequ
 		return max <= 0 || len(records) < max
 	})
 	return records, parseErr
+}
+
+// Detection returns the content detection NewFileSource ran when the format
+// was the URL-list default (zero value otherwise). Detection.Detected reports
+// whether it displaced the default.
+func (f *FileSource) Detection() Detection {
+	return f.detection
 }
 
 // Format returns the underlying format parser.

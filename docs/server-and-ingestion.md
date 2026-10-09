@@ -556,6 +556,10 @@ See [Agent Mode](agentic-scan/agent-mode.md) for the full agent documentation (i
 | `burp_base64` | `http_request_base64` | Base64-encoded raw HTTP request |
 | `openapi` / `swagger` | `content` or `content_base64` | OpenAPI/Swagger spec (JSON or YAML) |
 | `postman_collection` | `content` or `content_base64` | Postman Collection (JSON) |
+| `auto` | `content` or `content_base64` | Detect the format from the content (`detected_format` in the response) |
+| any `-I` format name | `content` or `content_base64` | `har`, `wsdl`, `burpxml`, `burpraw`, `burpscope`, `nuclei`, `deparos`, … — the same names and aliases the CLI's `-I` accepts |
+
+See the [ingestion API reference](api-references/ingestion.md) for `variables`, `skipped_reasons` and the full mode table.
 
 For `burp_base64` mode, you can also include `http_response_base64` to store the response alongside the request.
 

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -26,7 +25,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
-	"github.com/vigolium/vigolium/pkg/input/formats/burpscope"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
 	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
 	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
@@ -810,12 +808,20 @@ func formatIngestPreviewLine(idx int, rr *httpmsg.HttpRequestResponse) string {
 	return fmt.Sprintf("  [%d] %s %s  (request only, req cl=%d)", idx, method, url, reqLen)
 }
 
-// detectInputFormat auto-detects the input format from the file extension and content.
+// detectInputFormat names the format of an -i input given with the URL-list
+// default when the caller must know it before the source is built: OpenAPI
+// (--spec-url is auto-enabled without -t) and WSDL (including a WCF/ASMX URL).
+// Files are classified by source.DetectFormat, the one content detector.
+//
+// Every other format is left to NewFileSource, which runs the same detector
+// per file. Returning it here would pin the format for the -T target files
+// built alongside -i, and would bypass ingest's preload path that keeps the
+// response of a pasted Burp request/response pair.
 func detectInputFormat(input string) string {
 	// URL convenience: a bare WCF/ASMX service endpoint (or an explicit ?wsdl
 	// URL) is a WSDL source. The wsdl loader fetches ?singleWsdl / ?WSDL for the
-	// bare .svc/.asmx forms. A remote input can't be os.ReadFile'd for the
-	// content sniff below, so decide by URL shape here.
+	// bare .svc/.asmx forms. A remote input has no file head to sniff, so decide
+	// by URL shape here.
 	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
 		lower := strings.ToLower(input)
 		pathPart := lower
@@ -829,30 +835,13 @@ func detectInputFormat(input string) string {
 		return ""
 	}
 
-	ext := strings.ToLower(filepath.Ext(input))
-	if ext == ".json" || ext == ".yaml" || ext == ".yml" {
-		data, err := os.ReadFile(input)
-		if err != nil {
-			return ""
-		}
-		if openapi.IsOpenAPISpec(data) {
-			return "openapi"
-		}
-		if burpscope.Sniff(data) {
-			return "burpscope"
-		}
+	det, err := source.DetectFormat(input)
+	if err != nil {
 		return ""
 	}
-	// A .wsdl or .xml file may be a SOAP service description — content-sniff it so
-	// `vigolium scan -i service.wsdl` works without an explicit -I wsdl.
-	if ext == ".wsdl" || ext == ".xml" {
-		data, err := os.ReadFile(input)
-		if err != nil {
-			return ""
-		}
-		if wsdl.IsWSDL(data) {
-			return "wsdl"
-		}
+	switch det.Format {
+	case "openapi", "wsdl":
+		return det.Format
 	}
 	return ""
 }

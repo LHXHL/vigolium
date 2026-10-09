@@ -316,6 +316,11 @@ type ErrorResponse struct {
 }
 
 // IngestHTTPRequest is the request body for POST /api/ingest-http.
+//
+// input_mode is one of the REST-only single-item modes (url, burp_base64,
+// curl), "auto" (detect the format from content), or any input-format name or
+// alias -I accepts (urls/url_file, har/http_archive, postman/postman_collection,
+// openapi/swagger, wsdl, burpxml, burpraw, burpscope, nuclei, deparos).
 type IngestHTTPRequest struct {
 	InputMode          string `json:"input_mode"`
 	URL                string `json:"url,omitempty"`
@@ -323,15 +328,29 @@ type IngestHTTPRequest struct {
 	ContentBase64      string `json:"content_base64,omitempty"`
 	HTTPRequestBase64  string `json:"http_request_base64,omitempty"`
 	HTTPResponseBase64 string `json:"http_response_base64,omitempty"`
+	// Variables fill {{name}} placeholders in Postman collections and named
+	// parameters / security credentials in OpenAPI and WSDL specs (the REST
+	// equivalent of --spec-var), e.g. {"baseUrl": "https://api.example.com"}.
+	Variables map[string]string `json:"variables,omitempty"`
 }
 
 // IngestHTTPResponse is the response for POST /api/ingest-http.
 type IngestHTTPResponse struct {
-	ProjectUUID string   `json:"project_uuid,omitempty"`
-	Imported    int      `json:"imported"`
-	Skipped     int      `json:"skipped,omitempty"`
-	Errors      []string `json:"errors,omitempty"`
-	Message     string   `json:"message"`
+	ProjectUUID string `json:"project_uuid,omitempty"`
+	Imported    int    `json:"imported"`
+	Skipped     int    `json:"skipped,omitempty"`
+	// Format is the canonical input format the content was parsed as (empty
+	// for the single-item url/burp_base64/curl modes).
+	Format string `json:"format,omitempty"`
+	// DetectedFormat is set when input_mode was "auto": the format the content
+	// was detected as.
+	DetectedFormat string `json:"detected_format,omitempty"`
+	// SkippedReasons counts everything that did not become a stored record, by
+	// reason (out_of_scope, unparsed_line, skipped_operation, …), so nothing
+	// is dropped silently. Skipped is the out_of_scope count.
+	SkippedReasons map[string]int `json:"skipped_reasons,omitempty"`
+	Errors         []string       `json:"errors,omitempty"`
+	Message        string         `json:"message"`
 }
 
 // PaginatedResponse wraps paginated results.

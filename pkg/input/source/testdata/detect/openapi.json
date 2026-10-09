@@ -1,0 +1,3 @@
+{"openapi":"3.0.0","info":{"title":"fixture","version":"1"},
+ "servers":[{"url":"https://example.test"}],
+ "paths":{"/pets":{"get":{"responses":{"200":{"description":"ok"}}}}}}

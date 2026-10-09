@@ -104,8 +104,10 @@ path is indistinguishable from an empty capture.
 
 ## Input formats — one example each
 
-`-I` selects the parser. OpenAPI/Swagger and WSDL auto-detect from file content,
-so `-I` is optional for those.
+`-I` selects the parser. Without `-I`, every file format below is detected from
+its content (extension ignored; the detection is logged), so `-I` is optional.
+A file that is mostly not URLs and matches no format fails with
+`input_unparsed` naming the closest format instead of becoming junk targets.
 
 ```bash
 # urls (default) — a single target, or a file of targets.
@@ -163,7 +165,18 @@ vigolium ingest -I openapi -i spec.yaml -t https://api.target.example \
 # Supply concrete values for path/query parameters, with a fallback default.
 vigolium ingest -I openapi -i spec.yaml -t https://api.target.example \
   --spec-var userId=42 --spec-var status=active --spec-default 1
+
+# Credentials for the spec's security schemes: bearer (also oauth2 /
+# openIdConnect) and basic build the Authorization header; a value already
+# starting with "Bearer "/"Basic " is not prefixed twice.
+vigolium ingest -i spec.yaml -t https://api.target.example \
+  --spec-var bearer=$TOKEN --spec-var basic=user:pass
 ```
+
+Required parameters with no example, default or usable schema get a
+type-shaped placeholder (`1`, `true`, the zero UUID) instead of dropping their
+operation; operations that still produce no request are counted in a warning.
+Path values are escaped as one segment (`a/b` → `a%2Fb`).
 
 ### WSDL / SOAP
 

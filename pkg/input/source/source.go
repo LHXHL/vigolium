@@ -63,6 +63,9 @@ type SourceConfig struct {
 	FilePath  string
 	FilePaths []string
 	Format    string // "urls", "nuclei", "openapi", etc.
+	// FormatExplicit: Format was chosen by the user, so a "urls" Format is not
+	// content-detected (see FileSourceConfig.FormatExplicit).
+	FormatExplicit bool
 
 	// Stdin
 	UseStdin bool
@@ -107,10 +110,11 @@ func NewInputSource(cfg SourceConfig) (InputSource, error) {
 			bufSize = 100
 		}
 		fs, err := NewFileSource(FileSourceConfig{
-			FilePath:      fp,
-			Format:        cfg.Format,
-			BufferSize:    bufSize,
-			EnableModules: cfg.EnableModules,
+			FilePath:       fp,
+			Format:         cfg.Format,
+			FormatExplicit: cfg.FormatExplicit,
+			BufferSize:     bufSize,
+			EnableModules:  cfg.EnableModules,
 			FormatOptions: formats.InputFormatOptions{
 				SkipFormatValidation: cfg.SkipFormatValidation,
 				RequiredOnly:         cfg.FormatUseRequiredOnly,
