@@ -86,7 +86,21 @@ curl -s -X POST http://localhost:9002/api/config \
   -d '{
     "dynamic-assessment.enabled_modules.active_modules": "xss-scanner,sqli-error-based,lfi-path-traversal"
   }' | jq .
+
+# Update a list value (JSON list inside the string)
+curl -s -X POST http://localhost:9002/api/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "scope.host.include": "[\"*.example.com\",\"example.com\"]"
+  }' | jq .
 ```
+
+Values are parsed exactly as `vigolium config set` parses them: list and map
+settings take JSON or YAML flow syntax checked against the setting's type (or
+the comma form for lists), and a value that would introduce an error-level
+`config validate` issue at its key (an empty or malformed scope pattern, a host
+pattern with a scheme, an unknown `cli_origin_mode`, ...) is rejected and
+reported under `errors` without being applied.
 
 **Response (success):**
 

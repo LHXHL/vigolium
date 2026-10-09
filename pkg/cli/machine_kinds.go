@@ -55,9 +55,10 @@ var machineKinds = map[string]machineKind{
 	"auth totp": kindRead,
 
 	// Config.
-	"config clean": kindMutation,
-	"config ls":    kindRead,
-	"config set":   kindMutation,
+	"config clean":    kindMutation,
+	"config ls":       kindRead,
+	"config set":      kindMutation,
+	"config validate": kindRead,
 
 	// Database.
 	"db clean":   kindMutation,
