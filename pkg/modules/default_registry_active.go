@@ -57,6 +57,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/django_debug_toolbar_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/drupal_misconfig"
 	"github.com/vigolium/vigolium/pkg/modules/active/drupal_user_enum"
+	"github.com/vigolium/vigolium/pkg/modules/active/esi_injection"
 	"github.com/vigolium/vigolium/pkg/modules/active/express_debug_probe"
 	"github.com/vigolium/vigolium/pkg/modules/active/express_directory_listing"
 	"github.com/vigolium/vigolium/pkg/modules/active/express_trust_proxy_misconfig"
@@ -166,6 +167,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/smart_behavior_detection"
 	"github.com/vigolium/vigolium/pkg/modules/active/smtp_header_injection"
 	"github.com/vigolium/vigolium/pkg/modules/active/sourcemap_ingest"
+	"github.com/vigolium/vigolium/pkg/modules/active/spring4shell_probe"
 	"github.com/vigolium/vigolium/pkg/modules/active/spring_actuator_misconfig"
 	"github.com/vigolium/vigolium/pkg/modules/active/spring_boot_admin_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/spring_cloud_config_exposure"
@@ -190,6 +192,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/suspect_transform"
 	"github.com/vigolium/vigolium/pkg/modules/active/swagger_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/symfony_misconfig"
+	"github.com/vigolium/vigolium/pkg/modules/active/text4shell_probe"
 	"github.com/vigolium/vigolium/pkg/modules/active/tls_cert_recon"
 	"github.com/vigolium/vigolium/pkg/modules/active/tls_protocol_cipher_audit"
 	"github.com/vigolium/vigolium/pkg/modules/active/tomcat_manager_exposure"
@@ -255,8 +258,9 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(upgrade_routing_ssrf.New())
 	// Active modules - SSTI (Blind)
 	r.RegisterActive(ssti_blind.New())
-	// Active modules - SSI / server-side JavaScript / SMTP header injection
+	// Active modules - SSI / ESI / server-side JavaScript / SMTP header injection
 	r.RegisterActive(ssi_injection.New())
+	r.RegisterActive(esi_injection.New())
 	r.RegisterActive(server_side_js_injection.New())
 	r.RegisterActive(smtp_header_injection.New())
 	// Active modules - React Server Components RCE
@@ -406,6 +410,8 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(tomcat_manager_exposure.New())
 	r.RegisterActive(struts_ognl_injection.New())
 	r.RegisterActive(log4shell_probe.New())
+	r.RegisterActive(text4shell_probe.New())
+	r.RegisterActive(spring4shell_probe.New())
 	// Active modules - LDAP Injection
 	r.RegisterActive(ldap_injection.New())
 	// Active modules - IDOR GUID

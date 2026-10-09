@@ -1,6 +1,6 @@
 # Scanner Modules Reference
 
-Vigolium ships with **324 scanner modules** — 208 active and 117 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
+Vigolium ships with **328 scanner modules** — 211 active and 117 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
 
 ## Severity Scale
 
@@ -92,6 +92,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `command-injection-oast` | OS Command Injection (Out-of-Band) | Detects blind OS command injection via out-of-band DNS/HTTP callbacks | Critical | Certain | `rce`, `command-injection`, `oast`, `moderate` |
 | `command-injection-timing` | OS Command Injection (Time-Based) | Detects blind OS command injection by confirming the response delay scales with the injected sleep duration | Critical | Tentative | `rce`, `command-injection`, `injection`, `heavy` |
 | `crlf-injection` | CRLF Injection | Detects CRLF injection | Medium | Firm | `crlf`, `injection`, `moderate` |
+| `esi-injection` | Edge Side Includes (ESI) Injection | Detects Edge Side Includes injection via an in-band ESI tag oracle and an out-of-band include | Medium | Firm | `injection`, `esi`, `ssrf`, `moderate` |
 | `xxe-generic` | XXE Generic | Detects XML external entity injection in generic XML endpoints | Critical | Certain | `injection`, `xxe`, `moderate` |
 | `insecure-deserialization` | Insecure Deserialization | Detects insecure deserialization via error-based detection | High | Firm | `deserialization`, `rce`, `moderate` |
 | `input-behavior-probe` | Input Behavior Probe | Detects behavior changes from header, path, debug param, and char probing | Info | Tentative | `injection`, `probe`, `moderate` |
@@ -223,6 +224,8 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `java-appserver-console` | Java App Server Console | Detects exposed admin consoles for WildFly/JBoss, WebLogic, and GlassFish/Payara | High | Firm | `java`, `tomcat`, `info-disclosure`, `probe`, `light` |
 | `java-sensitive-files` | Java Sensitive Files | Detects Java-specific sensitive files: application configs, WEB-INF, META-INF, and build artifacts | Medium | Tentative | `java`, `sensitive-file`, `probe`, `light` |
 | `tomcat-manager-exposure` | Tomcat Manager Exposure | Detects exposed Apache Tomcat Manager and Host Manager interfaces | High | Firm | `tomcat`, `java`, `misconfiguration`, `authentication`, `light` |
+| `spring4shell-probe` | Spring4Shell Probe | Detects Spring4Shell (CVE-2022-22965) ClassLoader data binding via a safe status differential | High | Firm | `spring`, `java`, `rce`, `moderate` |
+| `text4shell-probe` | Text4Shell Probe | Detects Text4Shell (CVE-2022-42889) Commons Text interpolation via OAST dns/url lookups | Critical | Certain | `java`, `rce`, `injection`, `oast`, `moderate` |
 
 #### Django / Flask / FastAPI (Python)
 

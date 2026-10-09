@@ -155,7 +155,7 @@ Each module also declares which `InsertionPointType`s it accepts (via `AllowedIn
 - XML/SAML injection
 - Insecure deserialization
 
-The current registry has **37 active insertion-point modules**. Examples include `sqli-error-based`, `ssti-detection`, `lfi-generic`, `ssrf-detection`, `crlf-injection`, `idor-detection`, and the hybrid `oast-probe`. Run `vigolium module ls --type active` for the authoritative live list and scope grouping.
+The current registry has **42 active insertion-point modules**. Examples include `sqli-error-based`, `ssti-detection`, `lfi-generic`, `ssrf-detection`, `crlf-injection`, `idor-detection`, and the hybrid `oast-probe`. Run `vigolium module ls --type active` for the authoritative live list and scope grouping.
 
 ---
 
@@ -258,7 +258,7 @@ Notice how none of these attacks target a single parameter — they modify the r
 - JSONP callback injection
 - Nginx path escape
 
-The current registry has **121 active** and **111 passive** request-scoped modules. Examples include `forbidden-bypass`, `host-header-injection`, `jwt-vulnerability`, `web-cache-poisoning`, `secret-detect`, `cors-headers-detect`, and `anomaly-ranking`. Run `vigolium module ls` for the complete live list.
+The current registry has **126 active** and **111 passive** request-scoped modules. Examples include `forbidden-bypass`, `host-header-injection`, `jwt-vulnerability`, `web-cache-poisoning`, `secret-detect`, `cors-headers-detect`, and `anomaly-ranking`. Run `vigolium module ls` for the complete live list.
 
 ---
 
