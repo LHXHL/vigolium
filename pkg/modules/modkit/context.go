@@ -245,6 +245,12 @@ type ScanContext struct {
 	measurementOnce   sync.Once
 	measurementCache  *lru.Cache[string, int]
 	measurementFlight singleflight.Group
+
+	// Named per-host artifacts a module derives once per host (a JWKS key set,
+	// a discovered metadata document). See HostMemo.
+	hostMemoOnce   sync.Once
+	hostMemoCache  *lru.Cache[string, any]
+	hostMemoFlight singleflight.Group
 }
 
 func (sc *ScanContext) cookiePolicies() *CookiePolicyRegistry {
