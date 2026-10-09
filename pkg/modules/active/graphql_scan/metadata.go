@@ -9,14 +9,14 @@ const (
 )
 
 var (
-	ModuleDesc = `**What it means:** A confirmed GraphQL endpoint exposes security-relevant behavior. Introspection and consoles are observations; batching, depth, predictable same-principal lookup, SQL-error differences, and reflection are candidates. A finding requires altered query logic or other demonstrated impact.
+	ModuleDesc = `**What it means:** A confirmed GraphQL endpoint exposes security-relevant behavior. Introspection and consoles are observations; batching, depth, predictable same-principal lookup, SQL-error differences, and reflection are candidates. A finding requires demonstrated impact, such as altered query logic or cross-site (CSRF) execution.
 
-**How it's exploited:** Attackers enumerate the schema, stress query execution, probe object access, inject resolver inputs, or turn reflected errors into executable markup.
+**How it's exploited:** Attackers enumerate the schema, stress query execution, probe object access, inject resolver inputs, turn reflected errors into markup, or forge operations via GET or form POSTs.
 
-**Fix:** Restrict introspection and consoles, parameterize resolvers, limit batching and complexity, authorize every object, and encode errors.`
+**Fix:** Restrict introspection and consoles, parameterize resolvers, limit batching and complexity, authorize every object, encode errors, and accept only JSON POSTs.`
 
 	ModuleConfirmation = "A live endpoint requires an exact, reproduced data.__typename response; each check is then classified as observation, candidate, or finding according to whether exploit impact is directly demonstrated"
 	ModuleSeverity     = severity.Medium
 	ModuleConfidence   = severity.Certain
-	ModuleTags         = []string{"graphql", "injection", "info-disclosure", "idor", "bola", "xss", "dos", "batching", "console", "moderate"}
+	ModuleTags         = []string{"graphql", "injection", "info-disclosure", "idor", "bola", "xss", "dos", "batching", "console", "csrf", "moderate"}
 )

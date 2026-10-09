@@ -165,7 +165,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
-| `graphql-scan` | GraphQL Security Scanner | Tests GraphQL endpoints for introspection, injection, and batching vulnerabilities | Medium | Certain | `graphql`, `injection`, `info-disclosure`, `idor`, `bola`, `xss`, `dos`, `batching`, `console`, `moderate` |
+| `graphql-scan` | GraphQL Security Scanner | Tests GraphQL endpoints for introspection, injection, and batching vulnerabilities | Medium | Certain | `graphql`, `injection`, `info-disclosure`, `idor`, `bola`, `xss`, `dos`, `batching`, `console`, `csrf`, `moderate` |
 | `file-upload-scan` | File Upload Scanner | Tests for arbitrary file upload and execution vulnerabilities | High | Certain | `rce`, `injection`, `heavy` |
 | `default-credentials` | Default Credentials | Tests for default or common credential pairs on login endpoints | High | Certain | `auth-bypass`, `probe`, `moderate` |
 | `sensitive-file-discovery` | Sensitive File Discovery | Probes for exposed sensitive files (.env, .git/config, dot files, log files, and more) | Medium | Tentative | `file-exposure`, `info-disclosure`, `moderate` |

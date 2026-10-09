@@ -154,7 +154,13 @@ func (m *Module) ScanPerRequest(
 		results = append(results, s)
 	}
 
-	// Phase 10: Missing query-depth/complexity limit — deep scans only (heavier
+	// Phase 10: Cross-site request forgery — the cookie-authenticated operation
+	// replayed as GET ?query= and as form/text-plain POSTs.
+	if c := m.phaseCSRF(ctx, httpClient, scanCtx, endpointPath, schema, target); c != nil {
+		results = append(results, c)
+	}
+
+	// Phase 11: Missing query-depth/complexity limit — deep scans only (heavier
 	// than the default surface, though the probe itself is bounded).
 	if scanCtx != nil && scanCtx.DeepScan {
 		if d := m.phaseDoS(ctx, httpClient, endpointPath, schema, target); d != nil {
