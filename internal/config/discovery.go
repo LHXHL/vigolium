@@ -26,6 +26,37 @@ type DiscoveryConfig struct {
 	PassiveModuleTags        []string                 `yaml:"passive_module_tags"` // run passive modules matching these tags during discovery (e.g., ["fingerprint"])
 	ReSpider                 DiscoveryReSpiderConfig  `yaml:"respider"`            // targeted re-spider of rich/SPA routes found after discovery dedup
 	DeparosDedup             DeparosDedupConfig       `yaml:"deparos_dedup"`       // post-discovery status-retention + reflected-URL-robust record dedup
+
+	// TargetConcurrency is how many targets are discovered at once; targets on
+	// the same host:port never overlap and the engine threads are split across
+	// the targets in flight. 0 = default (min(targets, 3)); 1 = one at a time.
+	TargetConcurrency int `yaml:"target_concurrency"`
+	// FlushInterval is how often a running target's JS/form/API-spec records are
+	// persisted and handed to the scan (also every 500 new nodes). "" = default
+	// (15s); "0" = only when the target finishes.
+	FlushInterval string `yaml:"flush_interval"`
+}
+
+// maxDiscoveryTargetConcurrency bounds discovery.target_concurrency: each
+// concurrent target holds its own engine and siteMap in memory.
+const maxDiscoveryTargetConcurrency = 32
+
+// FlushIntervalValue resolves discovery.flush_interval for the discovery
+// source: 0 means "use the source default", a negative value turns in-crawl
+// flushing off. Validate rejects anything unparseable, so a bad value here
+// falls back to the default.
+func (c *DiscoveryConfig) FlushIntervalValue() time.Duration {
+	if c.FlushInterval == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(c.FlushInterval)
+	if err != nil {
+		return 0
+	}
+	if d <= 0 {
+		return -1
+	}
+	return d
 }
 
 type DiscoveryJSTangleConfig struct {
@@ -449,6 +480,19 @@ func (c *DiscoveryConfig) Validate() error {
 	for _, status := range c.JSTangle.PersistNotFoundEmitStatuses {
 		if status < 100 || status > 599 {
 			return fmt.Errorf("discovery.jstangle.persist_not_found_emit_statuses: %d is not an HTTP status", status)
+		}
+	}
+
+	if c.TargetConcurrency < 0 || c.TargetConcurrency > maxDiscoveryTargetConcurrency {
+		return fmt.Errorf("discovery.target_concurrency must be 0 (auto) to %d, got %d", maxDiscoveryTargetConcurrency, c.TargetConcurrency)
+	}
+	if c.FlushInterval != "" {
+		d, err := time.ParseDuration(c.FlushInterval)
+		if err != nil {
+			return fmt.Errorf("discovery.flush_interval: invalid duration %q: %w", c.FlushInterval, err)
+		}
+		if d > 0 && d < time.Second {
+			return fmt.Errorf("discovery.flush_interval must be 0 (off) or >= 1s, got %v", d)
 		}
 	}
 

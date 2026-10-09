@@ -841,6 +841,20 @@ discovery:
   # Default: false
   enable_malformed_path_probe: false
 
+  # How many targets are discovered at once. Targets on the same host:port
+  # never run together, and the discovery engine threads
+  # (scanning_pace.discovery.concurrency) are split across the targets in
+  # flight: max(5, threads / active). discovery rate_limit applies per target.
+  # 0 = default (min(number of targets, 3)); 1 = one target at a time.
+  target_concurrency: 0
+
+  # How often a running target's JS-, form- and API-spec-derived requests are
+  # saved and handed to the scan, instead of waiting for the target to finish
+  # (also after every 500 new discoveries). Wordlist/fuzz results are still
+  # deduplicated and saved when the target finishes.
+  # "0" = only when the target finishes. Default: 15s
+  flush_interval: 15s
+
   # Recursion settings for directory traversal.
   recursion:
     # Enable recursive directory discovery.
@@ -970,6 +984,8 @@ discovery:
     protocol_handshake: false
 
     # 0 derives the worker count: clamp(CPUs/2, 2, memory_budget_mb/384), max 8.
+    # The worker pool is shared by the whole process; a discovery that asks for
+    # more workers or memory than it is running with grows it (never shrinks).
     worker_count: 0
     # 0 derives the budget from usable RAM: min(2048, max(768, RAM/8)) MiB.
     memory_budget_mb: 0

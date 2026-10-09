@@ -278,18 +278,39 @@ Deparos runs as an input source (`DeparosDiscoverySource`) in the scanning pipel
 
 ```
 DeparosDiscoverySource.Next()
+  → up to target_concurrency targets at once (default min(targets, 3)),
+    never two on the same host:port; engine threads split across them
   → per target: Engine.Start(), then wait for the queues to drain
                 or the target's budget to expire
-  → read that target's temporary sitemap
-  → dedup in memory, convert to httpmsg.HttpRequestResponse
-  → persist the batch (optional)
+      every flush_interval (default 15s) or 500 new nodes while it runs:
+        read the temporary sitemap from a cursor
+        → persist + emit the referenced class (JSTangle, form, API-spec)
+  → at the end of the target: read the rest of the sitemap
+  → dedup + cluster-cap the fuzz class in memory
+  → persist the batch, JS template stubs and artifacts
   → emit as WorkItems → Executor → Scanner Modules
-  → next target
 ```
 
-Discoveries are collected **per target and emitted as a batch**, not streamed as
-each one lands: the engine has to finish a target before its sitemap can be read
-and deduplicated. Each target gets its own wall-clock budget
+Discoveries are handed on in two classes. The **referenced class** (requests
+recovered from the app's JavaScript, submitted forms, endpoints from a discovered
+API spec) is exempt from the fuzz-noise dedup, so nothing later in the crawl can
+change whether one is kept: it is persisted and emitted while the target is
+still running, every `discovery.flush_interval` (default `15s`; `"0"` waits for
+the end of the target) or every 500 new nodes. A cancelled or killed scan loses
+at most one interval of them, and assessment starts on them early. The **fuzz
+class** (wordlist, spider and observed paths) is still collected **per target and
+emitted as a batch**: hard dedup keeps the shorter of two identical paths and the
+cluster cap ranks by path length, so neither is final until the engine finishes.
+Each target gets its own wall-clock budget
 (`--discover-max-time`, else `scanning_pace.discovery.max_duration`, else 1h);
-exhausting it ends that target and moves to the next, and whatever that target
-already found is still imported.
+exhausting it ends that target and starts the next pending one, and whatever
+that target already found is still imported. A cancelled phase starts no new
+targets: those are reported as skipped, and the running ones still import what
+they collected.
+
+Targets run through a bounded pool, `discovery.target_concurrency` (default
+`min(len(targets), 3)`, `1` for one at a time). Two targets on the same
+host:port never run together. The engine threads (`scanning_pace.discovery.concurrency`)
+are a phase budget split across the targets that can run together
+(`max(5, threads / active)`), so going concurrent does not multiply the requests
+in flight; an explicit discovery `rate_limit` applies to each target.

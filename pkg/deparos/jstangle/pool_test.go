@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -234,5 +235,57 @@ func TestWorkerPoolCancellationKillsAndReplacesActiveWorker(t *testing.T) {
 	}
 	if stats := service.Stats(); stats.WorkerRestarts < 1 || stats.Workers != 1 {
 		t.Fatalf("cancelled worker was not replaced: %+v", stats)
+	}
+}
+
+// TestWorkerPoolGrowMidFlight grows a one-worker pool to three while jobs are
+// running: no job is dropped or fails, the pool reaches three live workers, and
+// a smaller Grow is a no-op. Run with -race.
+func TestWorkerPoolGrowMidFlight(t *testing.T) {
+	if !isEmbeddedBinaryValid() {
+		t.Skip("jstangle helper binary not embedded")
+	}
+	service, pool := newRealWorkerService(t, 100)
+
+	const jobs = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, jobs)
+	for i := 0; i < jobs; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			endpoint := fmt.Sprintf("/api/grow-%d", i)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			result, err := service.ScanWithOptions(ctx, []byte("fetch('"+endpoint+"')"), ScanOptions{Profile: ProfileEndpoints})
+			if err != nil {
+				errs <- fmt.Errorf("%s: %w", endpoint, err)
+				return
+			}
+			if len(result.Requests) != 1 || result.Requests[0].URL != endpoint {
+				errs <- fmt.Errorf("%s: requests = %#v", endpoint, result.Requests)
+			}
+		}()
+		if i == jobs/3 {
+			if got, err := pool.Grow(3); err != nil || got != 3 {
+				t.Fatalf("Grow(3) = (%d, %v), want (3, nil)", got, err)
+			}
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for pool.Stats().Workers < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stats := pool.Stats(); stats.Workers != 3 || stats.Target != 3 {
+		t.Fatalf("pool after Grow(3): %+v, want 3 live workers", stats)
+	}
+	if got, _ := pool.Grow(2); got != 3 {
+		t.Fatalf("Grow(2) = %d, want the pool kept at 3", got)
 	}
 }

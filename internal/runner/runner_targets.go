@@ -629,6 +629,8 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 			Enabled: dc.Sitemap.IsEnabled(), MaxURLs: dc.Sitemap.MaxURLs,
 			PerShape: dc.Sitemap.PerShape, FollowIndex: dc.Sitemap.FollowsIndex(),
 		}
+		cfg.TargetConcurrency = dc.TargetConcurrency
+		cfg.FlushInterval = dc.FlushIntervalValue()
 
 		// Prefix breaker
 		cfg.PrefixBreakerEnabled = dc.Engine.PrefixBreaker.Enabled

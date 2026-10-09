@@ -591,6 +591,37 @@ func (s *SiteMap) StreamAllResults(fn NodeCallback) error {
 	})
 }
 
+// StreamResultsSince streams the results stored after lastNodeID (exclusive),
+// in insertion order, and returns the cursor to pass next time: the highest
+// node id read. Pass 0 to start from the beginning. Spam URLs are skipped but
+// still advance the cursor.
+//
+// It is the incremental counterpart of StreamAllResults for a crawl that is
+// still writing: a consumer can flush what landed so far, then resume from the
+// returned id without re-reading or missing a row. On a callback error the
+// returned id is the last row fully handled before it, so a retry resumes at the
+// failing row.
+func (s *SiteMap) StreamResultsSince(lastNodeID int64, fn NodeCallback) (int64, error) {
+	ctx := context.Background()
+	return s.repo.WalkNodesSince(ctx, lastNodeID, func(m *NodeModel) error {
+		if linkfinder.IsSpamURL(extractPath(m.URL)) {
+			return nil
+		}
+		return fn(NodeModelToDiscoveredNode(m))
+	})
+}
+
+// LatestNodeID returns the highest node id stored so far (0 when empty). A
+// cheap primary-key lookup, so a flusher can poll it to tell how many nodes
+// landed since its cursor without counting rows.
+func (s *SiteMap) LatestNodeID() int64 {
+	id, err := s.repo.MaxNodeID(context.Background())
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
 // StreamResultsBySessionName streams results for a session through callback.
 func (s *SiteMap) StreamResultsBySessionName(sessionName string, fn NodeCallback) error {
 	ctx := context.Background()

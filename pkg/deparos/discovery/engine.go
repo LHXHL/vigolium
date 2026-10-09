@@ -297,6 +297,12 @@ type EngineMetrics struct {
 	InFlightItems    int32
 	QueueSize        int
 	PrefixesBroken   int // Number of path prefixes tripped by the breaker
+
+	// Coordinator scheduling (see coordinator_expander.go).
+	InlineInFlight      int32  // inline tasks (JS replay/form/case-sense) queued for or running on the inline workers
+	ExpansionsInFlight  int32  // task expansions started and not finished, suspended ones included
+	SuspendedExpansions int32  // expansions parked on the suspended stack by a more urgent task
+	Preemptions         uint64 // times a running expansion was suspended for a more urgent task
 }
 
 // engineMiddleware builds the engine client's middleware chain.
@@ -1578,6 +1584,10 @@ func (e *Engine) GetMetrics() EngineMetrics {
 	metrics.InFlightItems = coordMetrics.InFlightItems.Load()
 	metrics.TasksCompleted = coordMetrics.TasksCompleted.Load()
 	metrics.RequestsSent = coordMetrics.RequestsSent.Load()
+	metrics.InlineInFlight = coordMetrics.InlineInFlight.Load()
+	metrics.ExpansionsInFlight = coordMetrics.ExpansionsInFlight.Load()
+	metrics.SuspendedExpansions = coordMetrics.SuspendedExpansions.Load()
+	metrics.Preemptions = coordMetrics.Preemptions.Load()
 
 	metrics.QueueSize = e.taskQueue.Size()
 	metrics.UniqueTaskHashes = int(e.taskHashes.Size())

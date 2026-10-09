@@ -294,6 +294,10 @@ paced only when a rate is set explicitly — `scanning_pace.discovery.rate_limit
 the global `rate_limit` carries a 100 rps default and adopting it would slow down
 every scan that merely loaded a config file. Unset means unpaced, and
 `concurrency` remains the throttle. The section value wins over the global flag.
+Discovery runs up to `discovery.target_concurrency` targets at once (never two on
+the same host:port): `concurrency` is the phase's thread budget, split across the
+targets in flight (`max(5, concurrency / active)`), while `rate_limit` applies to
+each target, so it is still the rate any one host sees.
 
 ### `discovery`
 
@@ -306,6 +310,8 @@ discovery:
   save_response_body: true
   enable_malformed_path_probe: false
   enrich_targets: false        # feed paths from spidering/harvest into discovery
+  target_concurrency: 0        # targets at once; 0 = min(targets, 3); same host:port never overlaps
+  flush_interval: 15s          # stream JS/form/API-spec records every interval (and per 500 nodes); "0" = at target end
 
   recursion:
     enabled: true
@@ -347,7 +353,7 @@ discovery:
     source_maps: true
     asset_graph: true
     protocol_handshake: false    # bounded WebSocket/SSE GET handshake
-    worker_count: 0              # 0 = clamp(CPUs/2, 2, memory_budget_mb/384), max 8
+    worker_count: 0              # 0 = clamp(CPUs/2, 2, memory_budget_mb/384), max 8; one pool per process, grown (never shrunk) when a later discovery asks for more
     memory_budget_mb: 0          # 0 = min(2048, max(768, RAM/8)) MiB
     cache_mb: 128
     worker_max_jobs: 100

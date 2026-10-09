@@ -87,10 +87,16 @@ func TestResolveServiceConfigDerivesWorkersFromBudget(t *testing.T) {
 // package globals afterwards.
 func swapDefaultService(t *testing.T, active ServiceConfig) {
 	t.Helper()
+	swapDefaultServiceWith(t, active, testService(&fakeServiceBackend{}, 1, 0))
+}
+
+// swapDefaultServiceWith installs service as the running default service.
+func swapDefaultServiceWith(t *testing.T, active ServiceConfig, service *Service) {
+	t.Helper()
 	defaultServiceMu.Lock()
 	savedService, savedErr, savedConfig := defaultService, defaultServiceErr, defaultServiceConfig
 	savedActive, savedWarned := activeServiceConfig, configMismatchWarned
-	defaultService = testService(&fakeServiceBackend{}, 1, 0)
+	defaultService = service
 	defaultServiceErr = nil
 	activeServiceConfig = active
 	configMismatchWarned = map[string]bool{}
@@ -139,8 +145,9 @@ func TestConfigureDefaultServiceAfterInitWarnsOnceNamingKeys(t *testing.T) {
 		t.Fatalf("warning keys = %v, want worker_count, max_unpack_input_mb, hard_input_mb", entry.ContextMap()["keys"])
 	}
 
-	// A different mismatch is its own warning.
-	_ = ConfigureDefaultService(&ServiceConfig{MemoryBudgetBytes: 1024 * mib, WorkerCount: 2})
+	// A different mismatch is its own warning. (A larger budget would be grown
+	// into rather than reported; a different cache size cannot be.)
+	_ = ConfigureDefaultService(&ServiceConfig{MemoryBudgetBytes: 768 * mib, CacheBytes: 64 * mib})
 	if logs.Len() != 2 {
 		t.Fatalf("warnings = %d, want a second warning for a new key set", logs.Len())
 	}

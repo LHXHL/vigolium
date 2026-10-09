@@ -27,6 +27,11 @@ const (
 	defaultWorkerMaxRSS    = int64(1024 * 1024 * 1024)
 	defaultWorkerStartTime = 20 * time.Second
 	workerResponseOverhead = int64(2 * 1024 * 1024)
+	// maxPoolWorkers bounds how far Grow can raise a pool. The available
+	// channel is sized to it up front, so growing never has to swap the
+	// channel acquire and release are blocked on. Twice the worker_count
+	// validation ceiling (16).
+	maxPoolWorkers = 32
 )
 
 type workerPoolConfig struct {
@@ -171,7 +176,13 @@ type WorkerPool struct {
 	mu      sync.Mutex
 	workers map[*framedWorker]struct{}
 	closed  bool
-	seq     atomic.Uint64
+	// count is the target number of workers (config.Count raised by Grow) and
+	// launched is set once ensureStarted has read it; both are guarded by mu, so
+	// a Grow either lands before the initial launch (which then starts the new
+	// count) or after it (and starts the difference itself), never in between.
+	count    int
+	launched bool
+	seq      atomic.Uint64
 
 	restarts atomic.Int64
 	retries  atomic.Int64
@@ -180,7 +191,9 @@ type WorkerPool struct {
 }
 
 type WorkerPoolStats struct {
-	Workers     int
+	Workers int
+	// Target is the worker count the pool keeps (configured, or raised by Grow).
+	Target      int
 	Jobs        int
 	JobsStarted int64
 	ActiveJobs  int64
@@ -204,14 +217,18 @@ func newWorkerPool(scanner *Scanner, config workerPoolConfig) *WorkerPool {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &WorkerPool{
-		scanner: scanner, config: config, ctx: ctx, cancel: cancel,
-		available: make(chan *framedWorker, config.Count), workers: make(map[*framedWorker]struct{}),
+		scanner: scanner, config: config, ctx: ctx, cancel: cancel, count: config.Count,
+		available: make(chan *framedWorker, max(config.Count, maxPoolWorkers)), workers: make(map[*framedWorker]struct{}),
 	}
 }
 
 func (p *WorkerPool) ensureStarted() error {
 	p.startOnce.Do(func() {
-		for i := 0; i < p.config.Count; i++ {
+		p.mu.Lock()
+		p.launched = true
+		count := p.count
+		p.mu.Unlock()
+		for i := 0; i < count; i++ {
 			worker, err := p.startWorker()
 			if err != nil {
 				p.startErr = err
@@ -308,6 +325,44 @@ func (p *WorkerPool) startWorker() (*framedWorker, error) {
 	return worker, nil
 }
 
+// Grow raises the pool to n workers and never lowers it (n is clamped to
+// maxPoolWorkers). It returns the worker target now in effect. Before the pool
+// has launched, the initial launch simply starts the larger count; after it,
+// the extra workers are started in the background, so a caller (an engine
+// being constructed) does not wait out Bun start-up. A start that fails is
+// retried with backoff, exactly as a failed replacement is. Jobs in flight are
+// unaffected: new workers only add to the available set.
+func (p *WorkerPool) Grow(n int) (int, error) {
+	p.mu.Lock()
+	if p.closed {
+		count := p.count
+		p.mu.Unlock()
+		return count, ErrServiceClosed
+	}
+	n = min(n, cap(p.available))
+	if n <= p.count {
+		count := p.count
+		p.mu.Unlock()
+		return count, nil
+	}
+	add := 0
+	if p.launched {
+		add = n - p.count
+	}
+	p.count = n
+	p.mu.Unlock()
+
+	for range add {
+		go func() {
+			if err := p.replaceWorker(); err != nil && !errors.Is(err, ErrServiceClosed) {
+				zap.L().Warn("jstangle: failed to start an added worker; scheduling retry", zap.Error(err))
+				p.replaceWorkerWithBackoff()
+			}
+		}()
+	}
+	return n, nil
+}
+
 func (p *WorkerPool) Capabilities() (*Capabilities, error) {
 	return p.scanner.Capabilities()
 }
@@ -318,7 +373,7 @@ func (p *WorkerPool) Stats() WorkerPoolStats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	stats := WorkerPoolStats{
-		Workers: len(p.workers), JobsStarted: p.started.Load(), ActiveJobs: p.active.Load(),
+		Workers: len(p.workers), Target: p.count, JobsStarted: p.started.Load(), ActiveJobs: p.active.Load(),
 		Restarts: p.restarts.Load(), Retries: p.retries.Load(),
 	}
 	for worker := range p.workers {
@@ -591,11 +646,12 @@ func (p *WorkerPool) replaceWorkerWithBackoff() {
 		p.mu.Lock()
 		live := len(p.workers)
 		closed := p.closed
+		target := p.count
 		p.mu.Unlock()
 		if closed {
 			return
 		}
-		if live >= p.config.Count {
+		if live >= target {
 			return // capacity already restored elsewhere
 		}
 

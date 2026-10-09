@@ -152,9 +152,11 @@ type analysisFlight struct {
 // Service owns weighted admission, byte-bounded caches, and cancellation-aware
 // in-flight coalescing for every JSTANGLE consumer in the process.
 type Service struct {
-	backend             serviceBackend
-	weight              *semaphore.Weighted
-	maxWeight           int64
+	backend serviceBackend
+	// gate is the weighted admission semaphore and its capacity. Grow replaces
+	// it with a larger one under growMu; a job keeps the gate it acquired from.
+	gate                atomic.Pointer[admissionGate]
+	growMu              sync.Mutex
 	normalInputBytes    int64
 	maxASTInputBytes    int64
 	maxUnpackInputBytes int64
@@ -324,10 +326,8 @@ func newServiceWithBackend(config *ServiceConfig, backend serviceBackend) *Servi
 	metadataBytes := cacheBytes / 3
 	payloadBytes := cacheBytes - metadataBytes
 	rootCtx, cancel := context.WithCancel(context.Background())
-	return &Service{
+	service := &Service{
 		backend:             backend,
-		weight:              semaphore.NewWeighted(maxWeight),
-		maxWeight:           maxWeight,
 		normalInputBytes:    normalInputBytes,
 		maxASTInputBytes:    maxASTInputBytes,
 		maxUnpackInputBytes: maxUnpackInputBytes,
@@ -343,6 +343,52 @@ func newServiceWithBackend(config *ServiceConfig, backend serviceBackend) *Servi
 		rootCtx:             rootCtx,
 		cancel:              cancel,
 	}
+	service.gate.Store(&admissionGate{sem: semaphore.NewWeighted(maxWeight), max: maxWeight})
+	return service
+}
+
+// admissionGate is one generation of the service's weighted admission.
+type admissionGate struct {
+	sem *semaphore.Weighted
+	max int64
+}
+
+// workerGrower is the backend capability Grow uses to add workers.
+type workerGrower interface {
+	Grow(workers int) (int, error)
+}
+
+// Grow raises the service's capacity to at least workers pool workers and the
+// admission weight a memoryBudgetBytes budget allows. It never lowers either:
+// a value at or below the current one is a no-op, so a later caller asking for
+// less cannot starve the one already relying on more. It returns the worker
+// count (0 when the backend has no pool) and admission capacity now in effect.
+//
+// Growing admission swaps in a larger semaphore under growMu. Jobs already
+// admitted keep (and release) the old one, so for as long as they run the
+// service may admit up to their combined weight beyond the new capacity. That
+// transient is bounded by the old capacity and ends with those jobs; the
+// alternative, resizing a semaphore in place, is not something x/sync offers.
+func (s *Service) Grow(workers int, memoryBudgetBytes int64) (int, int64, error) {
+	if s.closed.Load() {
+		return 0, 0, ErrServiceClosed
+	}
+	s.growMu.Lock()
+	defer s.growMu.Unlock()
+
+	current := s.gate.Load()
+	maxWeight := current.max
+	if wanted := memoryBudgetBytes / serviceWeightBytes; wanted > current.max {
+		s.gate.Store(&admissionGate{sem: semaphore.NewWeighted(wanted), max: wanted})
+		maxWeight = wanted
+	}
+
+	grower, ok := s.backend.(workerGrower)
+	if !ok {
+		return 0, maxWeight, nil
+	}
+	count, err := grower.Grow(workers)
+	return count, maxWeight, err
 }
 
 var (
@@ -370,8 +416,10 @@ var ErrDefaultServiceConfigured = errors.New("jstangle default service already r
 // ConfigureDefaultService sets process-wide budgets before the first caller
 // resolves DefaultService. Once initialized, changing worker/cache semantics
 // would split callers across incompatible brokers, so the running service is
-// kept. A later call is compared against it: an identical request is a no-op,
-// and a different one logs one warning per distinct set of differing keys and
+// kept. A later call that asks for more workers or a larger memory budget grows
+// it in place (Service.Grow; never shrinks). What is left is compared against
+// it: an identical request is a no-op, and a different one logs one warning per
+// distinct set of differing keys and
 // returns ErrDefaultServiceConfigured naming them, so a `kit` or passive-module
 // initialization that won the race is never silently in charge of discovery.
 func ConfigureDefaultService(config *ServiceConfig) error {
@@ -382,6 +430,9 @@ func ConfigureDefaultService(config *ServiceConfig) error {
 	defer defaultServiceMu.Unlock()
 	if defaultService != nil || defaultServiceErr != nil {
 		requested := resolveServiceConfig(config)
+		if defaultService != nil {
+			growDefaultServiceLocked(requested)
+		}
 		diffs := serviceConfigDiff(activeServiceConfig, requested)
 		if len(diffs) == 0 {
 			return nil
@@ -407,6 +458,37 @@ func ConfigureDefaultService(config *ServiceConfig) error {
 	}
 	defaultServiceConfig = &copyConfig
 	return nil
+}
+
+// growDefaultServiceLocked applies the part of a later request the running
+// service can honour: more workers and a larger memory budget (admission
+// weight). A request for less is left to the mismatch warning, so a discovery
+// engine is never stuck with the pool a `kit` command or passive module
+// happened to start first. Callers hold defaultServiceMu.
+func growDefaultServiceLocked(requested ServiceConfig) {
+	active := activeServiceConfig
+	if requested.WorkerCount <= active.WorkerCount && requested.MemoryBudgetBytes <= active.MemoryBudgetBytes {
+		return
+	}
+	workers, maxWeight, err := defaultService.Grow(
+		max(requested.WorkerCount, active.WorkerCount),
+		max(requested.MemoryBudgetBytes, active.MemoryBudgetBytes))
+	if workers > active.WorkerCount {
+		activeServiceConfig.WorkerCount = workers
+	}
+	if requested.MemoryBudgetBytes > active.MemoryBudgetBytes {
+		activeServiceConfig.MemoryBudgetBytes = requested.MemoryBudgetBytes
+		activeServiceConfig.MaxWeight = max(active.MaxWeight, maxWeight)
+	}
+	if err != nil {
+		zap.L().Warn("jstangle: growing the shared service failed; it keeps running with what it has",
+			zap.Int("requested_workers", requested.WorkerCount), zap.Error(err))
+		return
+	}
+	zap.L().Debug("jstangle: grew the shared service for a later configuration",
+		zap.Int("workers", activeServiceConfig.WorkerCount),
+		zap.Int64("memory_budget_mb", activeServiceConfig.MemoryBudgetBytes/(1024*1024)),
+		zap.Int64("max_weight", activeServiceConfig.MaxWeight))
 }
 
 // ActiveServiceConfig returns the resolved configuration of the process-wide
@@ -562,9 +644,13 @@ func (s *Service) Analyze(ctx context.Context, request AnalysisRequest) (*ScanRe
 			return cloneScanResult(result)
 		}
 
-		weight := s.estimateWeight(options.Profile, len(request.Content))
+		// One gate for the whole job: a Grow swapping in a larger semaphore
+		// mid-job must not make the release land on a semaphore this job never
+		// acquired from.
+		gate := s.gate.Load()
+		weight := s.estimateWeight(gate, options.Profile, len(request.Content))
 		queueStarted := time.Now()
-		if err := s.weight.Acquire(jobCtx, weight); err != nil {
+		if err := gate.sem.Acquire(jobCtx, weight); err != nil {
 			s.queueWaitNS.Add(time.Since(queueStarted).Nanoseconds())
 			return nil, err
 		}
@@ -572,7 +658,7 @@ func (s *Service) Analyze(ctx context.Context, request AnalysisRequest) (*ScanRe
 		s.activeWeight.Add(weight)
 		defer func() {
 			s.activeWeight.Add(-weight)
-			s.weight.Release(weight)
+			gate.sem.Release(weight)
 		}()
 
 		s.jobsStarted.Add(1)
@@ -933,7 +1019,9 @@ func (s *Service) waitFlight(ctx context.Context, key string, flight *analysisFl
 	}
 }
 
-func (s *Service) estimateWeight(profile AnalysisProfile, contentBytes int) int64 {
+// estimateWeight sizes a job against the admission gate it will acquire on,
+// clamped to that gate's capacity so the job can always be admitted.
+func (s *Service) estimateWeight(gate *admissionGate, profile AnalysisProfile, contentBytes int) int64 {
 	bytes := int64(contentBytes)
 	ceilUnits := func(unit int64) int64 {
 		if bytes == 0 {
@@ -952,7 +1040,7 @@ func (s *Service) estimateWeight(profile AnalysisProfile, contentBytes int) int6
 	default:
 		weight = 2 + ceilUnits(256*1024)
 	}
-	return min(max(int64(1), weight), s.maxWeight)
+	return min(max(int64(1), weight), gate.max)
 }
 
 func serviceCacheKey(content []byte, options ScanOptions, sourceHash string) string {

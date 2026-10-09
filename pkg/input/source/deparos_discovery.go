@@ -68,7 +68,7 @@ type spideredJSProvider interface {
 // DeparosDiscoveryConfig configures the deparos content discovery source.
 type DeparosDiscoveryConfig struct {
 	Targets     []string      // Target URLs
-	Concurrency int           // Worker threads (from -t flag); default: 25
+	Concurrency int           // Worker threads (from -t flag), split across concurrent targets; default: 25
 	MaxDuration time.Duration // default: 1h
 
 	// RateLimit caps each discovery engine's outgoing requests per second.
@@ -77,9 +77,25 @@ type DeparosDiscoveryConfig struct {
 	// buildDeparosConfig in the runner — because imposing the global 100 rps
 	// default on a crawl changes the speed of every existing scan.
 	//
-	// Targets are discovered sequentially, so a per-engine bucket is the
-	// phase-wide rate.
+	// The bucket is per engine, i.e. per target. Two targets on the same
+	// host:port never run at once (see TargetConcurrency), so it is still the
+	// rate any one host sees; with several hosts in flight the phase as a whole
+	// can send up to that many times RateLimit.
 	RateLimit int
+
+	// TargetConcurrency is how many targets are discovered at once. 0 = default
+	// (min(len(Targets), 3)); 1 = one at a time. Targets sharing a host:port are
+	// never discovered concurrently, and Concurrency is split across the
+	// targets in flight (max(5, Concurrency/active)) so the phase's total
+	// request concurrency stays about where it was.
+	TargetConcurrency int
+
+	// FlushInterval is how often a running target's referenced class (JSTangle,
+	// form and API-spec records) is persisted and emitted. 0 = default (15s);
+	// negative = only at the end of the target. FlushNodes also flushes once
+	// that many nodes landed since the last flush (0 = default, 500).
+	FlushInterval time.Duration
+	FlushNodes    int
 
 	EnableModules []string // Module selection for WorkItems
 
@@ -662,71 +678,6 @@ func (d *DeparosDiscoverySource) Next(ctx context.Context) (*work.WorkItem, erro
 	}
 }
 
-// runDiscovery runs deparos for each target and pushes results to the channel.
-//
-// parentCtx is the working context Next derived from baseCtx, so cancelling the
-// phase stops the running engine rather than letting it finish the target's full
-// MaxDuration first. runDiscovery owns releasing it. It records what it did and
-// did not get to, because a run where every target failed used to be
-// indistinguishable from a run that legitimately found nothing.
-func (d *DeparosDiscoverySource) runDiscovery(parentCtx context.Context, cancel context.CancelFunc) {
-	// Registered first so it runs last: a waiter on finished must not wake until
-	// items is closed and the working context is released.
-	defer close(d.finished)
-	defer close(d.items)
-	defer cancel()
-
-	discover := d.discoverFn
-	if discover == nil {
-		discover = d.discoverTarget
-	}
-
-	var (
-		firstErr error
-		failed   int
-	)
-	for i, target := range d.cfg.Targets {
-		stop := parentCtx.Err() != nil
-		if !stop {
-			select {
-			case <-d.done:
-				stop = true
-			default:
-			}
-		}
-		if stop {
-			d.noteSkipped(len(d.cfg.Targets) - i)
-			break
-		}
-
-		err := discover(parentCtx, target)
-		if err == nil {
-			continue
-		}
-		// A cancelled parent means we stopped it, not that the target failed. This
-		// target WAS attempted, so only the ones after it count as skipped.
-		if parentCtx.Err() != nil {
-			d.noteSkipped(len(d.cfg.Targets) - i - 1)
-			break
-		}
-		failed++
-		if firstErr == nil {
-			firstErr = err
-		}
-		d.noteTargetError(target, err)
-		zap.L().Warn("deparos discovery failed for target",
-			zap.String("target", target), zap.Error(err))
-	}
-
-	// Every target failing is a phase failure, not an empty result set. Anything
-	// less is partial coverage, which the stats already describe.
-	if failed > 0 && failed == len(d.cfg.Targets) {
-		d.mu.Lock()
-		d.runErr = fmt.Errorf("deparos discovery failed for all %d target(s): %w", failed, firstErr)
-		d.mu.Unlock()
-	}
-}
-
 // noteSkipped records targets the phase never attempted.
 func (d *DeparosDiscoverySource) noteSkipped(n int) {
 	if n <= 0 {
@@ -994,16 +945,22 @@ func loadEmbeddedFuzzWordlist() [][]byte {
 }
 
 // discoverTarget runs discovery against a single target URL.
+//
+// The engine crawls into a per-target ephemeral siteMap. While it runs, a
+// flusher streams the referenced class (JSTangle/form/API-spec records) out of
+// the siteMap every flush interval; the fuzz class, the JS template plan and the
+// artifacts are imported once the engine stops (see deparos_discovery_stream.go).
+// The engine's thread count is the share runDiscovery gave this target.
 func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, target string) error {
+	threads := targetThreads(parentCtx, d.cfg.Concurrency)
 	zap.L().Info("Starting deparos discovery",
 		zap.String("target", target),
-		zap.Int("threads", d.cfg.Concurrency),
+		zap.Int("threads", threads),
 		zap.Duration("max_time", d.cfg.MaxDuration))
 
 	// Build deparos config from all settings
 	cfg := d.buildDeparosConfig(target)
-
-	var localStats DiscoveryStats
+	cfg.Engine.DiscoveryThreads = threads
 
 	// Create ephemeral SQLite storage
 	storageCfg := deparosstorage.DefaultConfig()
@@ -1047,259 +1004,15 @@ func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, targe
 		return fmt.Errorf("start engine: %w", err)
 	}
 
+	collector := newTargetCollector(d, target, siteMap)
+	stopFlusher := collector.startFlusher(ctx)
+
 	_ = engine.WaitForQueues(ctx)
 	engine.FlushSecretFindings()
 	engine.Stop()
+	stopFlusher()
 
-	if targetExhaustedBudget(ctx, parentCtx) {
-		localStats.TargetsTimedOut++
-	}
-
-	// Collect all results into memory for in-memory hard dedup
-	var allRecords []collectedRecord
-	dedupMap := make(map[hardDedupKey]int) // key → index in allRecords
-	// Every imported node by method+URL, so a JS template that already became a
-	// node is annotated rather than persisted twice.
-	nodes := newNodeIndex(64)
-
-	err = siteMap.StreamAllResults(func(node *deparosstorage.DiscoveredNode) error {
-		// abort, not done: this reads the local temp SQLite file the requests
-		// already paid for. The consumer going away is no reason to throw it out —
-		// those records can still be persisted.
-		select {
-		case <-d.abort:
-			return fmt.Errorf("source aborted")
-		default:
-		}
-
-		nodeURL := node.URL()
-		if nodeURL == nil {
-			return nil
-		}
-
-		// Preserve the discovered method/headers/body. Deparos storage persists
-		// these (req_method/req_headers/req_body) for form POSTs and JS-derived
-		// API calls; importing them as a bodyless GET would silently drop that
-		// API/form coverage from dynamic assessment.
-		method := "GET"
-		var reqHeaders map[string]string
-		var reqBody []byte
-		if req := node.Request(); req != nil {
-			if req.Method != "" {
-				method = strings.ToUpper(req.Method)
-			}
-			reqHeaders = req.Headers
-			reqBody = req.Body
-		}
-
-		rr, err := httpmsg.GetRawRequestFromURLWithMethod(nodeURL.String(), method, reqHeaders, reqBody)
-		if err != nil {
-			return nil // skip URLs we can't parse
-		}
-		nodes.add(method, nodeURL.String(), rr.Target())
-
-		// Classify provenance: code-referenced classes (JSTangle/form) carry a
-		// distinct source label and bypass the fuzz-noise cleanup entirely.
-		recSource := crawlRecordSource
-		if meta := node.Metadata(); meta != nil {
-			recSource = classifyDiscoverySource(meta.FoundBy)
-		}
-		referenced := recSource != crawlRecordSource
-
-		resp := node.Response()
-		hasResp := resp != nil && resp.StatusCode > 0
-
-		rec := collectedRecord{rr: rr, path: nodeURL.Path, host: nodeURL.Hostname(), method: method, source: recSource}
-
-		// Attach response data if available
-		if hasResp {
-			rawResp := httpmsg.BuildRawResponse(resp.StatusCode, resp.Headers, string(resp.Body))
-			// DurationMs survives the round trip through the deparos store, so a
-			// discovery record carries the real round-trip time rather than the
-			// zero every native-scan record used to have. Zero here still means
-			// "not measured" and is passed through as such.
-			httpResp := httpmsg.NewHttpResponseWithDuration(rawResp,
-				time.Duration(resp.DurationMs)*time.Millisecond)
-			rr = rr.WithResponse(httpResp)
-			rec.rr = rr
-			rec.status = resp.StatusCode
-			rec.ctype = resp.MIMEType
-			rec.size = int64(len(resp.Body))
-			rec.words = resp.Words
-			if rec.words == 0 && len(resp.Body) > 0 {
-				rec.words = int64(len(strings.Fields(string(resp.Body))))
-			}
-		}
-
-		localStats.TotalDiscovered++
-		if hasResp {
-			localStats.AllCodes[statusCodeBucket(resp.StatusCode)]++
-		}
-
-		// Skip the fuzz-noise hard dedup for records without a response (no body to
-		// hash) and for code-referenced records (JSTangle/form): the latter are
-		// high-precision application endpoints that must all survive, even when two
-		// distinct routes happen to return byte-identical bodies (e.g. two APIs
-		// both answering `{}`).
-		if !hasResp || referenced {
-			allRecords = append(allRecords, rec)
-			return nil
-		}
-
-		// Exact dedup keyed on the response BODY hash (not the full raw
-		// response): volatile headers like Date/Set-Cookie and Go's randomized
-		// header-map ordering otherwise make every raw response hash unique,
-		// defeating the dedup. Body-only collapses byte-identical bodies served
-		// across different paths regardless of header noise.
-		h := sha256.Sum256(resp.Body)
-		key := hardDedupKey{
-			hostname: rec.host,
-			method:   rec.method,
-			status:   resp.StatusCode,
-			length:   rec.size,
-			respHash: hex.EncodeToString(h[:]),
-		}
-
-		if existingIdx, exists := dedupMap[key]; exists {
-			// Keep the shorter path
-			existingPath := allRecords[existingIdx].path
-			if len(rec.path) < len(existingPath) {
-				// Evict existing, keep new
-				localStats.DedupedCodes[statusCodeBucket(resp.StatusCode)]++
-				allRecords[existingIdx] = collectedRecord{} // mark as tombstone
-				dedupMap[key] = len(allRecords)
-				allRecords = append(allRecords, rec)
-			} else {
-				// Keep existing, discard new
-				localStats.DedupedCodes[statusCodeBucket(resp.StatusCode)]++
-			}
-		} else {
-			dedupMap[key] = len(allRecords)
-			allRecords = append(allRecords, rec)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	// JS-derived request templates and non-request facts, read before the
-	// siteMap closes: everything that did not become a node lives only here.
-	var fallbackURL *url.URL
-	if parsed, perr := url.Parse(target); perr == nil {
-		fallbackURL = parsed
-	}
-	jsPlan := planJSTemplates(engine.RequestTemplateOutcomes(), nodes, fallbackURL, d.cfg.JSTemplatePersist)
-	jsPlan.bundles = engine.JSFactBundles()
-
-	// Drop exact-dedup tombstones and partition survivors by class in one pass:
-	// only the fuzz/crawl class (crawlRecordSource) is subject to the flood-control
-	// cap below — code-referenced records (JSTangle/form) must all survive.
-	var fuzz, referenced []collectedRecord
-	for _, rec := range allRecords {
-		switch {
-		case rec.rr == nil: // tombstone
-			continue
-		case rec.source == crawlRecordSource:
-			fuzz = append(fuzz, rec)
-		default:
-			referenced = append(referenced, rec)
-		}
-	}
-	localStats.HardDedupRemoved = localStats.TotalDiscovered - (len(fuzz) + len(referenced))
-
-	// Near-identical cluster cap: backstop for catch-all/SPA targets that the
-	// exact hash and the engine's soft-404 detection can't collapse because each
-	// response differs by a few bytes/words. Keeps at most clusterCap records per
-	// (host, status, content-type, ~size, ~words) cluster.
-	clusterCap := d.cfg.resolveClusterCap()
-	localStats.ClusterCap = clusterCap
-	if clusterCap > 0 {
-		var capped int
-		var cappedCodes [5]int
-		fuzz, capped, cappedCodes = capNearIdenticalClusters(fuzz, clusterCap)
-		localStats.FuzzyCappedRemoved = capped
-		localStats.CappedCodes = cappedCodes
-	}
-
-	// Regroup the survivors by source label. The fuzz class keeps the
-	// crawlRecordSource ("deparos") label so the post-discovery dedup/status
-	// passes apply to it; code-referenced classes carry their own label and are
-	// left alone (see classifyDiscoverySource). `crawled` is the flat, all-source
-	// list used for spec extraction and source-map artifact mapping.
-	kept := make([]collectedRecord, 0, len(fuzz)+len(referenced))
-	kept = append(kept, fuzz...)
-	kept = append(kept, referenced...)
-	sourceOrder, bySource, crawled := groupCollectedBySource(kept)
-
-	// Parse API specs (OpenAPI/Swagger/Postman/WSDL) found among the crawled responses
-	// and queue their documented endpoints. They are persisted separately under
-	// specRecordSource so the deparos dedup/status passes don't drop or collapse
-	// them once each carries a real (often uniform 401) baseline response.
-	specEndpoints := extractSpecEndpoints(crawled)
-	if len(specEndpoints) > 0 {
-		terminal.Notice("api-spec", fmt.Sprintf(
-			"Ingested %d API spec endpoints from discovery of %s — extra requests "+
-				"queued for dynamic assessment (longer scan, more results)",
-			len(specEndpoints), target))
-	}
-
-	if len(referenced) > 0 {
-		terminal.NoticeArrow("jstangle", fmt.Sprintf(
-			"Preserved %d JS/form-referenced request(s), kept out of fuzz-noise "+
-				"dedup so real methods/bodies/baselines survive to assessment — %s",
-			len(referenced), terminal.Gray(target)))
-	}
-
-	// Update the discovery counters now; Imported/ImportFailed are only known once
-	// the persistence loop below has run, so they are merged separately after it.
-	d.mu.Lock()
-	d.stats.TotalDiscovered += localStats.TotalDiscovered
-	d.stats.HardDedupRemoved += localStats.HardDedupRemoved
-	d.stats.FuzzyCappedRemoved += localStats.FuzzyCappedRemoved
-	d.stats.ClusterCap = localStats.ClusterCap
-	d.stats.TargetsTimedOut += localStats.TargetsTimedOut
-	d.stats.SitemapCapped += engine.SitemapCapped()
-	for i := range d.stats.AllCodes {
-		d.stats.AllCodes[i] += localStats.AllCodes[i]
-		d.stats.DedupedCodes[i] += localStats.DedupedCodes[i]
-		d.stats.CappedCodes[i] += localStats.CappedCodes[i]
-	}
-	d.mu.Unlock()
-
-	acc, err := d.importCollected(ctx, siteMap, collectedGroups{
-		sourceOrder:   sourceOrder,
-		bySource:      bySource,
-		specEndpoints: specEndpoints,
-		jsTemplates:   jsPlan,
-		sizeHint:      len(crawled) + len(specEndpoints) + len(jsPlan.emit) + len(jsPlan.persist),
-	})
-	if err != nil {
-		return err
-	}
-	d.noteJSTemplateStats(target, jsPlan, acc.factBundles)
-
-	localStats.Imported = acc.imported
-	localStats.ImportFailed = acc.failed
-	d.mu.Lock()
-	d.stats.Imported += localStats.Imported
-	d.stats.ImportFailed += localStats.ImportFailed
-	d.mu.Unlock()
-
-	if localStats.Imported > 0 || localStats.ImportFailed > 0 {
-		zap.L().Info("Deparos discovery results imported to DB",
-			zap.String("target", target),
-			zap.Int("discovered", localStats.TotalDiscovered),
-			zap.Int("hard_dedup_removed", localStats.HardDedupRemoved),
-			zap.Int("fuzzy_capped_removed", localStats.FuzzyCappedRemoved),
-			zap.Int("cluster_cap", localStats.ClusterCap),
-			zap.Int("referenced_preserved", len(referenced)),
-			zap.Int("imported", localStats.Imported),
-			zap.Int("import_failed", localStats.ImportFailed))
-	}
-
-	return nil
+	return collector.finish(ctx, engine, targetExhaustedBudget(ctx, parentCtx))
 }
 
 // collectedGroups is one target's surviving records, partitioned the way they
@@ -1311,7 +1024,10 @@ type collectedGroups struct {
 	specEndpoints []*httpmsg.HttpRequestResponse
 	// jsTemplates is the JS template persistence for the target (nil = none).
 	jsTemplates *jsTemplatePlan
-	sizeHint    int
+	// acc carries what earlier flushes of the same target already imported, so
+	// uuidByURL and the emit latch span the whole target. nil starts a fresh one.
+	acc      *importAccum
+	sizeHint int
 }
 
 // importCollected is discovery's last stage: write everything one target
@@ -1346,7 +1062,10 @@ func (d *DeparosDiscoverySource) importCollected(
 	// the route isn't left empty. acc.uuidByURL maps every saved record's target
 	// URL to its persisted UUID across all groups, so source-map artifacts can be
 	// mapped back regardless of which label carried the asset.
-	acc := newImportAccum(groups.sizeHint)
+	acc := groups.acc
+	if acc == nil {
+		acc = newImportAccum(groups.sizeHint)
+	}
 	for _, label := range groups.sourceOrder {
 		if err := d.importGroup(importCtx, acc, groups.bySource[label], label); err != nil {
 			return acc, err
@@ -1678,7 +1397,13 @@ func originAnchorRecords(recordUUIDByURL map[string]string) map[string]string {
 // extractSpecEndpoints scans discovered records for API specs (OpenAPI/Swagger/Postman/WSDL)
 // and returns parsed endpoints as additional HttpRequestResponse items.
 func extractSpecEndpoints(records []*httpmsg.HttpRequestResponse) []*httpmsg.HttpRequestResponse {
-	specSeen := make(map[string]struct{})
+	return extractSpecEndpointsSeen(records, make(map[string]struct{}))
+}
+
+// extractSpecEndpointsSeen is extractSpecEndpoints with a caller-owned set of
+// spec body hashes already parsed, so a target read in batches parses each
+// spec document once.
+func extractSpecEndpointsSeen(records []*httpmsg.HttpRequestResponse, specSeen map[string]struct{}) []*httpmsg.HttpRequestResponse {
 	var allEndpoints []*httpmsg.HttpRequestResponse
 
 	for _, rr := range records {

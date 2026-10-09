@@ -81,6 +81,10 @@ func TestDeparosDiscovery_CancelStopsProducerAndSkipsTargets(t *testing.T) {
 			<-innerCtx.Done()
 			return innerCtx.Err()
 		})
+	// One target at a time, so "the rest" is unambiguous. The concurrent pool's
+	// version of this lives in deparos_discovery_targets_test.go. Next has not
+	// started the producer yet, so this is race-free.
+	d.cfg.TargetConcurrency = 1
 
 	// Next starts the producer; it will block in the stub until we cancel.
 	nextDone := make(chan error, 1)
