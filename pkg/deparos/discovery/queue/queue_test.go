@@ -700,3 +700,47 @@ func TestTaskQueue_RemoveByHash(t *testing.T) {
 		t.Error("removed task hash 2 should not be in queue")
 	}
 }
+
+func TestTaskQueue_PeekPriority(t *testing.T) {
+	q := New()
+	if _, ok := q.PeekPriority(); ok {
+		t.Fatal("empty queue must report no priority")
+	}
+
+	q.Enqueue(newMockTask(9, "low"))
+	q.Enqueue(newMockTask(0, "spider"))
+	if p, ok := q.PeekPriority(); !ok || p != 0 {
+		t.Fatalf("PeekPriority = (%d, %v), want (0, true)", p, ok)
+	}
+	if q.Size() != 2 {
+		t.Fatalf("PeekPriority must not remove tasks, size = %d", q.Size())
+	}
+}
+
+func TestTaskQueue_TryDequeueIf(t *testing.T) {
+	q := New()
+	if got := q.TryDequeueIf(nil); got != nil {
+		t.Fatalf("empty queue returned %v", got)
+	}
+
+	q.Enqueue(newMockTask(5, "mid"))
+	q.Enqueue(newMockTask(1, "urgent"))
+
+	// Rejected head stays queued.
+	if got := q.TryDequeueIf(func(ti TaskInfo) bool { return ti.Priority() > 3 }); got != nil {
+		t.Fatalf("rejected head was popped: %v", got.Description())
+	}
+	if q.Size() != 2 {
+		t.Fatalf("size after rejection = %d, want 2", q.Size())
+	}
+
+	got := q.TryDequeueIf(func(ti TaskInfo) bool { return ti.Priority() < 3 })
+	if got == nil || got.Description() != "urgent" {
+		t.Fatalf("TryDequeueIf returned %v, want urgent", got)
+	}
+
+	q.Stop()
+	if got := q.TryDequeueIf(nil); got != nil {
+		t.Fatalf("stopped queue returned %v", got.Description())
+	}
+}

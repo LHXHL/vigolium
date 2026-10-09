@@ -25,8 +25,13 @@ import (
 //
 // Architecture:
 //   - Expander goroutine pulls tasks from queue, expands payloads × extensions into WorkItems
+//   - Each expansion runs in its own producer goroutine feeding a small pull
+//     channel, so the expander can suspend a long expansion between items when a
+//     more urgent task is queued (see coordinator_expander.go)
 //   - WorkItems are sent to workChan (buffered channel)
 //   - N workers pull from workChan and execute HTTP requests concurrently
+//   - Inline tasks (JS replay, form submission, case-sense detection) run on a
+//     small dedicated inline worker pool, never on the expander goroutine
 //
 // Benefits over previous design:
 //   - No task boundary blocking - workers always busy if work available
@@ -40,11 +45,15 @@ type PayloadCoordinator struct {
 	// Work channel - all workers pull from this
 	workChan chan *WorkItem
 
+	// Inline task channel - the inline worker pool pulls from this
+	inlineChan chan Task
+
 	// Metrics
 	metrics CoordinatorMetrics
 
 	// Lifecycle
-	wg conc.WaitGroup
+	wg       conc.WaitGroup
+	inlineWG conc.WaitGroup
 }
 
 // CoordinatorMetrics tracks execution statistics.
@@ -54,7 +63,10 @@ type CoordinatorMetrics struct {
 	RequestsSent         atomic.Uint64
 	ActiveWorkers        atomic.Int32
 	InFlightItems        atomic.Int32 // Tracks work items being processed
-	InlineInFlight       atomic.Int32 // Tracks tasks executing inline in the expander (replay/form/case-sense/expand)
+	InlineInFlight       atomic.Int32 // Inline tasks (replay/form/case-sense) handed to or running on the inline workers
+	ExpansionsInFlight   atomic.Int32 // Expansions started and not finished, including suspended ones
+	SuspendedExpansions  atomic.Int32 // Expansions parked on the suspended stack by a more urgent task
+	Preemptions          atomic.Uint64
 	JSReplayExact        atomic.Uint64
 	JSReplayConservative atomic.Uint64
 	JSReplaySucceeded    atomic.Uint64
@@ -69,6 +81,7 @@ func NewPayloadCoordinator(q *queue.TaskQueue, workerCount int, callbacks *Callb
 		workerCount: workerCount,
 		callbacks:   callbacks,
 		workChan:    make(chan *WorkItem, workerCount*2),
+		inlineChan:  make(chan Task, inlineQueueSize),
 	}
 }
 
@@ -81,8 +94,21 @@ func (c *PayloadCoordinator) Run(ctx context.Context) error {
 		})
 	}
 
-	// Run expander (blocks until queue stops or context cancelled)
+	// Start the inline workers (JS replay, form submission, case-sense)
+	for i := 0; i < inlineWorkerCount; i++ {
+		c.inlineWG.Go(func() {
+			c.runInlineWorker(ctx)
+		})
+	}
+
+	// Run expander (blocks until queue stops or context cancelled). It returns
+	// only after every producer goroutine it started has exited.
 	c.runExpander(ctx)
+
+	// Close inlineChan and wait for queued inline tasks to finish (they skip
+	// sending once ctx is cancelled).
+	close(c.inlineChan)
+	c.inlineWG.Wait()
 
 	// Close workChan to signal workers to exit
 	close(c.workChan)
@@ -96,98 +122,26 @@ func (c *PayloadCoordinator) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// runExpander pulls tasks from queue and expands them into WorkItems.
-func (c *PayloadCoordinator) runExpander(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		taskInfo, err := c.queue.Dequeue(ctx)
-		if err != nil {
-			if errors.Is(err, queue.ErrQueueStopped) || ctx.Err() != nil {
-				return
-			}
-			continue
-		}
-		if taskInfo == nil {
-			continue
-		}
-
-		task, ok := taskInfo.(Task)
-		if !ok {
-			logger.Error("Dequeued item is not a Task", zap.Any("taskInfo", taskInfo))
-			continue
-		}
-
-		// Account for the entire per-task handling (inline execution OR expansion)
-		// as in-flight work. Inline task types send requests directly from this
-		// goroutine and never touch InFlightItems, and there is a gap between
-		// dequeue and the first workChan push during expansion — without this
-		// counter, quiescence detection (IsIdle) could observe a false "idle" mid
-		// task and stop the scan early. See IsIdle / WaitForQueues.
-		c.metrics.InlineInFlight.Add(1)
-		c.handleTask(ctx, task)
-		c.metrics.InlineInFlight.Add(-1)
-
-		if ctx.Err() != nil {
-			return
-		}
-	}
-}
-
-// handleTask expands or inline-executes a single dequeued task. Inline task
-// types (case-sensitivity detection, JS-extracted replay, form submission) run
-// entirely in the expander goroutine and send HTTP requests directly; all other
-// tasks are expanded into WorkItems dispatched to the worker pool.
-func (c *PayloadCoordinator) handleTask(ctx context.Context, task Task) {
-	logger.Info("Starting task expansion",
-		zap.String("description", task.Description()),
-		zap.String("baseURL", string(task.FullURL())),
-		zap.String("extension", task.Extension()),
-		zap.Uint8("priority", task.Priority()))
-
+// executeInlineTask runs one inline task type (case-sensitivity detection,
+// JS-extracted replay, form submission) on an inline worker. These send their
+// HTTP requests directly rather than through workChan, so they run off the
+// expander goroutine: a JS replay never waits behind a wordlist expansion.
+func (c *PayloadCoordinator) executeInlineTask(ctx context.Context, task Task) {
 	switch t := task.(type) {
 	case *CaseSenseDetectionTask:
-		// CaseSenseDetectionTask: execute inline, skip workChan
 		c.executeCaseSenseDetectionTask(ctx, t)
-		c.metrics.TasksCompleted.Add(1)
-		return
 	case *JSExtractedRequestTask:
-		// JSExtractedRequestTask: execute inline with custom Method/Body handling
+		// Custom Method/Body handling per replay variant.
 		c.executeJSExtractedRequestTask(ctx, t)
-		c.metrics.TasksCompleted.Add(1)
-		return
 	case *FormSubmissionTask:
-		// FormSubmissionTask: execute inline with custom Method/Body handling
+		// Custom Method/Body handling per form variant.
 		c.executeFormSubmissionTask(ctx, t)
-		c.metrics.TasksCompleted.Add(1)
+	default:
+		logger.Error("Non-inline task routed to inline worker",
+			zap.String("description", task.Description()))
 		return
 	}
-
-	// Expand task into WorkItems
-	c.expandTask(ctx, task)
 	c.metrics.TasksCompleted.Add(1)
-
-	// Don't log completion if context was cancelled during expansion
-	if ctx.Err() != nil {
-		return
-	}
-
-	logger.Info("Task expansion completed",
-		zap.String("description", task.Description()),
-		zap.String("baseURL", string(task.FullURL())))
-}
-
-// expandTask delegates URL expansion to the task's own Expand method.
-// Each task type knows how to build its own URLs correctly.
-func (c *PayloadCoordinator) expandTask(ctx context.Context, task Task) {
-	_ = task.Expand(ctx, func(url string, depth uint16) {
-		c.sendWorkItem(ctx, task, url, depth)
-		c.metrics.PayloadsProcessed.Add(1)
-	})
 }
 
 // sendWorkItem sends a URL to workChan.
@@ -1280,13 +1234,15 @@ func redirectPreservesPath(originalURL, redirectTargetURL string) bool {
 }
 
 // IsIdle returns true if no work is pending and no items are being processed.
-// This accounts for both worker-pool items (InFlightItems) and the expander's
-// own inline task execution (InlineInFlight) so quiescence isn't declared while
-// a JS replay / form / case-sense task is mid-flight in the expander goroutine.
+// This accounts for worker-pool items (InFlightItems), inline tasks queued to or
+// running on the inline workers (InlineInFlight), and every started expansion,
+// including suspended ones (ExpansionsInFlight), so quiescence isn't declared
+// while a JS replay is mid-flight or a preempted wordlist still has items left.
 func (c *PayloadCoordinator) IsIdle() bool {
 	return len(c.workChan) == 0 &&
 		c.metrics.InFlightItems.Load() == 0 &&
-		c.metrics.InlineInFlight.Load() == 0
+		c.metrics.InlineInFlight.Load() == 0 &&
+		c.metrics.ExpansionsInFlight.Load() == 0
 }
 
 // Metrics returns coordinator metrics.

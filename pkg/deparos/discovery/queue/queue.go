@@ -135,6 +135,42 @@ func (q *TaskQueue) Peek() TaskInfo {
 	return q.heap[0]
 }
 
+// PeekPriority returns the priority of the task Dequeue would return next, and
+// false when the queue is empty. It is the cheap check the coordinator's
+// expander runs between items of a long expansion to decide whether a more
+// urgent task is waiting (see TryDequeueIf for the atomic follow-up).
+func (q *TaskQueue) PeekPriority() (uint8, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if len(q.heap) == 0 {
+		return 0, false
+	}
+	return q.heap[0].Priority(), true
+}
+
+// TryDequeueIf pops the task Dequeue would return next, but only when accept
+// approves it. It never blocks: it returns nil when the queue is empty or
+// stopped, or when accept rejects the head (which then stays queued). Peeking
+// and popping under one lock means a concurrent Enqueue cannot swap the head
+// between the decision and the pop.
+func (q *TaskQueue) TryDequeueIf(accept func(TaskInfo) bool) TaskInfo {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if q.stopped || len(q.heap) == 0 {
+		return nil
+	}
+	if accept != nil && !accept(q.heap[0]) {
+		return nil
+	}
+	task, ok := heap.Pop(&q.heap).(TaskInfo)
+	if !ok {
+		return nil
+	}
+	return task
+}
+
 // Size returns the number of tasks in the queue.
 func (q *TaskQueue) Size() int {
 	q.mu.Lock()
