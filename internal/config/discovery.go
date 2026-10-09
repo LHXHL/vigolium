@@ -50,6 +50,12 @@ type DiscoveryJSTangleConfig struct {
 	MaxAssetsPerParent int    `yaml:"max_assets_per_parent"`
 	MaxAssetsPerHost   int    `yaml:"max_assets_per_host"`
 	MaxAssetsTotal     int    `yaml:"max_assets_total"`
+
+	// Persistence of JS-derived request templates that did not become
+	// discovery nodes; they are stored as source=jstangle http_records.
+	PersistUnreplayed           *bool `yaml:"persist_unreplayed"`              // also store templates never sent (withheld/deduped/unresolved); nil = true
+	PersistNotFoundEmitStatuses []int `yaml:"persist_not_found_emit_statuses"` // not-found replay statuses handed to later phases; nil = [400,405,415,422], [] = none
+	MaxPersistedJSTemplates     int   `yaml:"max_persisted_js_templates"`      // per-target cap on stored templates; 0 = 2000
 }
 
 // IsEnabled reports whether jstangle analysis runs; nil defaults to on, matching
@@ -318,6 +324,7 @@ func DefaultDiscoveryConfig() *DiscoveryConfig {
 			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 0, HardInputMB: 16, MaxRequestsPerFile: 500,
 			MaxASTNodes:   500_000,
 			MaxAssetDepth: 4, MaxAssetsPerParent: 64, MaxAssetsPerHost: 512, MaxAssetsTotal: 2048,
+			MaxPersistedJSTemplates: 2000,
 		},
 		SaveResponseBody: true,
 	}
@@ -408,6 +415,14 @@ func (c *DiscoveryConfig) Validate() error {
 	}
 	if c.JSTangle.MaxASTNodes != 0 && (c.JSTangle.MaxASTNodes < 1_000 || c.JSTangle.MaxASTNodes > 5_000_000) {
 		return fmt.Errorf("discovery.jstangle.max_ast_nodes must be 1000-5000000")
+	}
+	if c.JSTangle.MaxPersistedJSTemplates < 0 {
+		return fmt.Errorf("discovery.jstangle.max_persisted_js_templates must be >= 0, got %d", c.JSTangle.MaxPersistedJSTemplates)
+	}
+	for _, status := range c.JSTangle.PersistNotFoundEmitStatuses {
+		if status < 100 || status > 599 {
+			return fmt.Errorf("discovery.jstangle.persist_not_found_emit_statuses: %d is not an HTTP status", status)
+		}
 	}
 
 	if c.ReSpider.PerSeedMaxDuration != "" {

@@ -129,7 +129,9 @@ and each JS asset gets one `jstangle-facts` artifact with its non-request facts
 (client routes with `fullPath`, GraphQL operations, WebSocket/SSE endpoints,
 asset references, browser security flows, path literals and low-confidence
 request hints). At most 2000 rows are stored per target; past that the run
-reports the `js_template_persist_cap` limit.
+reports the `js_template_persist_cap` limit. The knobs are
+`discovery.jstangle.persist_unreplayed` (store never-sent templates, default
+true), `persist_not_found_emit_statuses` and `max_persisted_js_templates`.
 
 Asset references form a bounded recursive graph, so lazy chunks, workers, and
 service workers are fetched and analyzed once. Source maps are fetched under the

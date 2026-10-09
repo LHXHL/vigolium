@@ -333,6 +333,17 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 				terminal.HiTeal(fmt.Sprintf("%d", stats.ClusterCap)),
 				formatStatusCodeArray(stats.CappedCodes)))
 		}
+		if stats.JSFactsPersisted > 0 {
+			withheld := 0
+			for _, n := range stats.JSFactsWithheld {
+				withheld += n
+			}
+			r.printPhaseFeedback("Discovery", fmt.Sprintf(
+				"stored %s JS-derived request(s) the crawl did not confirm (%s not found, %s never sent) as source=jstangle",
+				terminal.Orange(fmt.Sprintf("%d", stats.JSFactsPersisted)),
+				terminal.HiTeal(fmt.Sprintf("%d", stats.JSFactsNotFound)),
+				terminal.HiTeal(fmt.Sprintf("%d", withheld))))
+		}
 		r.reportDiscoveryCoverage(stats)
 	}
 
@@ -382,6 +393,12 @@ func (r *Runner) reportDiscoveryCoverage(stats source.DiscoveryStats) {
 			"%s discovered record(s) could not be stored",
 			terminal.Orange(fmt.Sprintf("%d", stats.ImportFailed))))
 		tracker.markPartial(database.ReasonPersistence)
+	}
+	if stats.JSTemplatesCapped > 0 {
+		r.printPhaseFeedback("Discovery", fmt.Sprintf(
+			"%s JS-derived request template(s) not stored — per-target cap reached (discovery.jstangle.max_persisted_js_templates)",
+			terminal.Orange(fmt.Sprintf("%d", stats.JSTemplatesCapped))))
+		tracker.noteLimit(database.LimitJSTemplatePersistCap)
 	}
 	if stats.Abandoned {
 		r.printPhaseFeedback("Discovery", terminal.Orange(

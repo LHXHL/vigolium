@@ -620,6 +620,11 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 			MaxAssetDepth:      dc.JSTangle.MaxAssetDepth, MaxAssetsPerParent: dc.JSTangle.MaxAssetsPerParent,
 			MaxAssetsPerHost: dc.JSTangle.MaxAssetsPerHost, MaxAssetsTotal: dc.JSTangle.MaxAssetsTotal,
 		}
+		cfg.JSTemplatePersist = source.JSTemplatePersistConfig{
+			SkipUnreplayed: !boolPtrOr(dc.JSTangle.PersistUnreplayed, true),
+			EmitStatuses:   dc.JSTangle.PersistNotFoundEmitStatuses,
+			MaxPerTarget:   dc.JSTangle.MaxPersistedJSTemplates,
+		}
 
 		// Prefix breaker
 		cfg.PrefixBreakerEnabled = dc.Engine.PrefixBreaker.Enabled
