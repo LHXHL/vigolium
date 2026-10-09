@@ -42,6 +42,12 @@ func New() *Module {
 	return m
 }
 
+// ConfirmsByBodyDifferential opts this module into the executor's body-
+// differential safety net: a candidate finding is re-confirmed by replaying the
+// traversal request and requiring the included file content to reappear as
+// stable content absent from the clean baseline.
+func (m *Module) ConfirmsByBodyDifferential() bool { return true }
+
 // ScanPerInsertionPoint tests a single insertion point for advanced LFI path traversal.
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,

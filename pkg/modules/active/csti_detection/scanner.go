@@ -45,6 +45,14 @@ func New() *Module {
 	return m
 }
 
+// ConfirmsByBodyDifferential opts this module into the executor's body-
+// differential safety net: a candidate finding is re-confirmed by replaying the
+// probe request and requiring the reflected template expression to reappear as
+// stable content absent from the clean baseline. The probe is reflected
+// literally, so this guards against non-reproducible reflections (flapping or
+// cached pages), not against reflection itself.
+func (m *Module) ConfirmsByBodyDifferential() bool { return true }
+
 // ScanPerInsertionPoint tests a single insertion point for CSTI.
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,
