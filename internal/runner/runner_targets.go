@@ -625,6 +625,10 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 			EmitStatuses:   dc.JSTangle.PersistNotFoundEmitStatuses,
 			MaxPerTarget:   dc.JSTangle.MaxPersistedJSTemplates,
 		}
+		cfg.Sitemap = &deparosconfig.SitemapConfig{
+			Enabled: dc.Sitemap.IsEnabled(), MaxURLs: dc.Sitemap.MaxURLs,
+			PerShape: dc.Sitemap.PerShape, FollowIndex: dc.Sitemap.FollowsIndex(),
+		}
 
 		// Prefix breaker
 		cfg.PrefixBreakerEnabled = dc.Engine.PrefixBreaker.Enabled

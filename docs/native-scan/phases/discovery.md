@@ -11,7 +11,7 @@ Target URL
 ┌──────────────────────────────────────────────────────┐
 │  Initialization                                      │
 │  1. Probe target, extract host components            │
-│  2. Fetch robots.txt                                 │
+│  2. Fetch robots.txt, then its sitemaps              │
 │  3. Learn baseline fingerprints (3-sample soft-404)  │
 │  4. Load prior session data (if resuming)            │
 │  5. Generate initial tasks from wordlists + observed │
@@ -144,11 +144,44 @@ bounded lexical endpoint/asset pass is used. Hard-limit input is rejected with a
 diagnostic. A summary reports worker jobs, cache hits, extracted fact confidence,
 fallbacks, and worker restarts when discovery stops.
 
-### 4. Dynamic Wordlist Growth
+### 4. Sitemaps
+
+After robots.txt, discovery reads the sitemaps it names on `Sitemap:` lines.
+When it names none, it probes `/sitemap.xml` and `/sitemap_index.xml`. The
+parser streams `<urlset>`, `<sitemapindex>`, gzip (recognised by the `1f8b`
+magic, so a `.gz` URL the transport already decoded still works) and
+plain-text sitemaps. Each document is capped at 50 MiB decompressed and 50,000
+entries, and a gzip stream that expands more than 100x is treated as a bomb and
+abandoned. Index children are followed to depth 2, with at most 16 per index
+and 32 documents per target. Every `<loc>` is scope-checked.
+
+- Every in-scope `<loc>` path feeds the observed-path pool (trusted frequency).
+- A sample becomes spider links (`Sitemap` source), so each sampled page is
+  fetched and recorded. URLs are grouped by host and path shape
+  (`pkg/httpmsg/pathshape`), so `/product/41` and
+  `/product/42` are one shape. The sample takes `per_shape` URLs per shape
+  (default 3) round-robin across shapes, up to `max_urls` per target
+  (default 2000).
+- URLs a budget drops are counted. When any are dropped, the discovery phase
+  notes the `sitemap_cap` limit.
+
+```yaml
+discovery:
+  sitemap:
+    enabled: true       # default
+    max_urls: 2000      # sampled URLs spidered per target (0 = 2000)
+    per_shape: 3        # sampled URLs per host + path shape (0 = 3)
+    follow_index: true  # fetch <sitemapindex> children
+```
+
+Robots-named sitemaps are no longer spidered as opaque files. When the
+sitemap source is disabled, they are spidered as before.
+
+### 5. Dynamic Wordlist Growth
 
 Response bodies are tokenized (content-type-aware for HTML, JSON, JS, CSS) to extract candidate words. These feed into the observed name pool and are replayed against every directory.
 
-### 5. Recursive Directory Expansion
+### 6. Recursive Directory Expansion
 
 When a file is found at `/a/b/c/file.txt`, the engine extracts `/a/`, `/a/b/`, `/a/b/c/` as directories to test. Each new directory triggers its own full task set (wordlists + observed + modules).
 

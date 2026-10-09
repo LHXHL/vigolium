@@ -16,7 +16,37 @@ type Config struct {
 	Extensions ExtensionConfig `json:"extensions"`
 	Engine     EngineConfig    `json:"engine"`
 	JSTangle   JSTangleConfig  `json:"jstangle" yaml:"jstangle"`
+	Sitemap    SitemapConfig   `json:"sitemap" yaml:"sitemap"`
 	Modules    ModuleConfig    `json:"modules"`
+}
+
+// SitemapConfig controls the sitemap source: at engine start, discovery fetches
+// the sitemaps robots.txt names (or probes /sitemap.xml and /sitemap_index.xml
+// when it names none), streams every <loc>, feeds each in-scope path to the
+// observed-path wordlist, and spiders a path-shape sample of them.
+//
+// The zero value is disabled; NewDefaultConfig turns it on.
+type SitemapConfig struct {
+	Enabled     bool `json:"enabled" yaml:"enabled"`
+	MaxURLs     int  `json:"max_urls" yaml:"max_urls"`         // sampled locs spidered per target; 0 = 2000. Hitting it notes the sitemap_cap limit
+	PerShape    int  `json:"per_shape" yaml:"per_shape"`       // sampled locs per host + path shape; 0 = 3
+	FollowIndex bool `json:"follow_index" yaml:"follow_index"` // fetch <sitemapindex> children (depth <= 2, <= 16 per index)
+}
+
+// EffectiveMaxURLs returns MaxURLs, or DefaultSitemapMaxURLs when it is unset.
+func (c SitemapConfig) EffectiveMaxURLs() int {
+	if c.MaxURLs > 0 {
+		return c.MaxURLs
+	}
+	return DefaultSitemapMaxURLs
+}
+
+// EffectivePerShape returns PerShape, or DefaultSitemapPerShape when it is unset.
+func (c SitemapConfig) EffectivePerShape() int {
+	if c.PerShape > 0 {
+		return c.PerShape
+	}
+	return DefaultSitemapPerShape
 }
 
 // JSTangleConfig exposes safe, high-level JavaScript intelligence controls.

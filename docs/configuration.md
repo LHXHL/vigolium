@@ -366,6 +366,11 @@ discovery:
     persist_unreplayed: true     # also store JS templates never sent (withheld/deduped) as source=jstangle rows
     persist_not_found_emit_statuses: [400, 405, 415, 422]  # not-found replays handed to later phases
     max_persisted_js_templates: 2000  # per-target cap (js_template_persist_cap limit)
+  sitemap:                     # robots-named sitemaps, else /sitemap.xml + /sitemap_index.xml
+    enabled: true
+    max_urls: 2000               # sampled URLs spidered per target (sitemap_cap limit when hit)
+    per_shape: 3                 # sampled URLs per host + path shape
+    follow_index: true           # follow <sitemapindex> children (depth <= 2, <= 16 each)
 ```
 
 `exact` is the safe default: only high-confidence templates produce traffic.

@@ -277,6 +277,10 @@ type Engine struct {
 	// endpoint extraction, bounding them under a per-scan asset budget (see
 	// admitVendorJSFetch).
 	vendorJSFetched atomic.Int32
+
+	// sitemapCapped counts sitemap locs dropped by the sitemap budgets (see
+	// fetchSitemaps / SitemapCapped); above zero is the sitemap_cap limit.
+	sitemapCapped atomic.Int64
 }
 
 // EngineMetrics tracks discovery statistics.

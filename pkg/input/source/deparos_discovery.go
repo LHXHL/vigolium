@@ -149,6 +149,9 @@ type DeparosDiscoveryConfig struct {
 	// JSTemplatePersist controls persistence of JS-derived request templates
 	// that did not become discovery nodes (see deparos_discovery_jstangle.go).
 	JSTemplatePersist JSTemplatePersistConfig
+	// Sitemap overrides the deparos sitemap source settings; nil keeps the
+	// deparos defaults (on, 2000 sampled URLs, 3 per shape, follow indexes).
+	Sitemap *deparosconfig.SitemapConfig
 
 	// Per-prefix circuit breaker (zero values = use deparos defaults).
 	PrefixBreakerEnabled        *bool   // nil = default (true)
@@ -327,6 +330,11 @@ type DiscoveryStats struct {
 	JSTemplatesCapped int
 	// JSFactBundles counts jstangle-facts artifacts stored (one per JS asset).
 	JSFactBundles int
+
+	// SitemapCapped counts sitemap locs or documents dropped by a sitemap budget
+	// (discovery.sitemap.max_urls and the fixed size/index caps); any value
+	// above zero is the sitemap_cap limit.
+	SitemapCapped int
 }
 
 // maxReportedTargetErrors bounds TargetErrors so a sweep of thousands of hosts
@@ -933,6 +941,9 @@ func (d *DeparosDiscoverySource) buildDeparosConfig(target string) *deparosconfi
 	if d.cfg.JSTangle != nil {
 		cfg.JSTangle = *d.cfg.JSTangle
 	}
+	if d.cfg.Sitemap != nil {
+		cfg.Sitemap = *d.cfg.Sitemap
+	}
 
 	// Prefix breaker overrides — zero/nil values keep deparos defaults.
 	if d.cfg.PrefixBreakerEnabled != nil {
@@ -1249,6 +1260,7 @@ func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, targe
 	d.stats.FuzzyCappedRemoved += localStats.FuzzyCappedRemoved
 	d.stats.ClusterCap = localStats.ClusterCap
 	d.stats.TargetsTimedOut += localStats.TargetsTimedOut
+	d.stats.SitemapCapped += engine.SitemapCapped()
 	for i := range d.stats.AllCodes {
 		d.stats.AllCodes[i] += localStats.AllCodes[i]
 		d.stats.DedupedCodes[i] += localStats.DedupedCodes[i]

@@ -16,6 +16,7 @@ type DiscoveryConfig struct {
 	Extensions               DiscoveryExtensionConfig `yaml:"extensions"`
 	Engine                   DiscoveryEngineConfig    `yaml:"engine"`
 	JSTangle                 DiscoveryJSTangleConfig  `yaml:"jstangle"`
+	Sitemap                  DiscoverySitemapConfig   `yaml:"sitemap"`
 	SaveResponseBody         bool                     `yaml:"save_response_body"`
 	EnableMalformedPathProbe bool                     `yaml:"enable_malformed_path_probe"`
 	DedupClusterCap          *int                     `yaml:"dedup_cluster_cap"`   // cap near-identical discovery responses (same host/status/content-type, size & words within 0.5%) per cluster; nil=default(10), 0=disabled, N=keep at most N
@@ -57,6 +58,23 @@ type DiscoveryJSTangleConfig struct {
 	PersistNotFoundEmitStatuses []int `yaml:"persist_not_found_emit_statuses"` // not-found replay statuses handed to later phases; nil = [400,405,415,422], [] = none
 	MaxPersistedJSTemplates     int   `yaml:"max_persisted_js_templates"`      // per-target cap on stored templates; 0 = 2000
 }
+
+// DiscoverySitemapConfig controls the sitemap source: discovery fetches the
+// sitemaps robots.txt names (or /sitemap.xml and /sitemap_index.xml when it
+// names none), feeds every in-scope <loc> path to the observed-path wordlist,
+// and spiders a path-shape sample of them.
+type DiscoverySitemapConfig struct {
+	Enabled     *bool `yaml:"enabled"`      // nil = true
+	MaxURLs     int   `yaml:"max_urls"`     // sampled locs spidered per target; 0 = 2000. Hitting it notes the sitemap_cap limit
+	PerShape    int   `yaml:"per_shape"`    // sampled locs per host + path shape; 0 = 3
+	FollowIndex *bool `yaml:"follow_index"` // fetch <sitemapindex> children (depth <= 2, <= 16 per index); nil = true
+}
+
+// IsEnabled reports whether the sitemap source runs; nil defaults to on.
+func (c DiscoverySitemapConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
+// FollowsIndex reports whether sitemap index children are fetched; nil defaults to on.
+func (c DiscoverySitemapConfig) FollowsIndex() bool { return c.FollowIndex == nil || *c.FollowIndex }
 
 // IsEnabled reports whether jstangle analysis runs; nil defaults to on, matching
 // the sibling *Config.IsEnabled helpers in this file and boolPtrOr on the runner side.
@@ -326,6 +344,9 @@ func DefaultDiscoveryConfig() *DiscoveryConfig {
 			MaxAssetDepth: 4, MaxAssetsPerParent: 64, MaxAssetsPerHost: 512, MaxAssetsTotal: 2048,
 			MaxPersistedJSTemplates: 2000,
 		},
+		Sitemap: DiscoverySitemapConfig{
+			MaxURLs: deparosconfig.DefaultSitemapMaxURLs, PerShape: deparosconfig.DefaultSitemapPerShape,
+		},
 		SaveResponseBody: true,
 	}
 }
@@ -418,6 +439,12 @@ func (c *DiscoveryConfig) Validate() error {
 	}
 	if c.JSTangle.MaxPersistedJSTemplates < 0 {
 		return fmt.Errorf("discovery.jstangle.max_persisted_js_templates must be >= 0, got %d", c.JSTangle.MaxPersistedJSTemplates)
+	}
+	if c.Sitemap.MaxURLs < 0 {
+		return fmt.Errorf("discovery.sitemap.max_urls must be >= 0, got %d", c.Sitemap.MaxURLs)
+	}
+	if c.Sitemap.PerShape < 0 {
+		return fmt.Errorf("discovery.sitemap.per_shape must be >= 0, got %d", c.Sitemap.PerShape)
 	}
 	for _, status := range c.JSTangle.PersistNotFoundEmitStatuses {
 		if status < 100 || status > 599 {

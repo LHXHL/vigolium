@@ -400,6 +400,12 @@ func (r *Runner) reportDiscoveryCoverage(stats source.DiscoveryStats) {
 			terminal.Orange(fmt.Sprintf("%d", stats.JSTemplatesCapped))))
 		tracker.noteLimit(database.LimitJSTemplatePersistCap)
 	}
+	if stats.SitemapCapped > 0 {
+		r.printPhaseFeedback("Discovery", fmt.Sprintf(
+			"%s sitemap URL(s) not spidered — sitemap budget reached (discovery.sitemap.max_urls)",
+			terminal.Orange(fmt.Sprintf("%d", stats.SitemapCapped))))
+		tracker.noteLimit(database.LimitSitemapCap)
+	}
 	if stats.Abandoned {
 		r.printPhaseFeedback("Discovery", terminal.Orange(
 			"the discovery producer did not exit in time and was abandoned; some discovered records may be missing"))

@@ -48,6 +48,9 @@ const (
 	SourceMetaRefresh
 	SourceEventHandler
 	SourceScriptContent
+	// SourceSitemap marks a <loc> read from an XML/text sitemap (sitemap.go).
+	// Appended last: the numeric value is persisted as extraction source_sub.
+	SourceSitemap
 )
 
 // String returns the human-readable name of the link source type.
@@ -73,6 +76,8 @@ func (t LinkSourceType) String() string {
 		return "EventHandler"
 	case SourceScriptContent:
 		return "ScriptContent"
+	case SourceSitemap:
+		return "Sitemap"
 	default:
 		return "Unknown"
 	}
@@ -80,14 +85,14 @@ func (t LinkSourceType) String() string {
 
 // IsGenuineReference reports whether a link from this source is one the
 // application actually references — an HTML attribute, a meta-refresh, an HTTP
-// header, or a robots.txt entry. URL-like strings scavenged from JS/HTML body
+// header, a robots.txt entry, or a sitemap <loc>. URL-like strings scavenged from JS/HTML body
 // text (the inline scanner, JS string/script/comment/event-handler/SWF
 // extractors) are not genuine references: they may be dead constants, library
 // data, or legacy path tables baked into a bundle, and are no proof the server
 // serves that path.
 func (t LinkSourceType) IsGenuineReference() bool {
 	switch t {
-	case SourceHTMLAttribute, SourceMetaRefresh, SourceHTTPHeader, SourceRobotsTxt:
+	case SourceHTMLAttribute, SourceMetaRefresh, SourceHTTPHeader, SourceRobotsTxt, SourceSitemap:
 		return true
 	default:
 		return false
@@ -110,6 +115,10 @@ const (
 	ResourceAudio   ResourceType = 768
 	ResourceVideo   ResourceType = 769
 	ResourceBinary  ResourceType = 1025
+	// ResourceSitemap is an XML/text sitemap document (a robots.txt Sitemap:
+	// line or a <sitemapindex> child). Discovery fetches and parses these itself
+	// (see ParseSitemap) instead of spidering them as opaque files.
+	ResourceSitemap ResourceType = 1026
 )
 
 // String returns the human-readable name of the resource type.
@@ -137,6 +146,8 @@ func (t ResourceType) String() string {
 		return "Video"
 	case ResourceBinary:
 		return "Binary"
+	case ResourceSitemap:
+		return "Sitemap"
 	default:
 		return "Unknown"
 	}

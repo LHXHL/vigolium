@@ -11,6 +11,8 @@ import (
 	"github.com/vigolium/vigolium/pkg/authsig"
 	"github.com/vigolium/vigolium/pkg/deparos/fingerprint"
 	pkghttp "github.com/vigolium/vigolium/pkg/deparos/http"
+	"github.com/vigolium/vigolium/pkg/deparos/internal/dedup"
+	"github.com/vigolium/vigolium/pkg/deparos/spider"
 	"github.com/vigolium/vigolium/pkg/deparos/storage"
 	"go.uber.org/zap"
 )
@@ -508,11 +510,20 @@ func (e *Engine) extractWordsFromStoredResponses() error {
 	return nil
 }
 
-// fetchRobotsTxt fetches and parses robots.txt to discover initial URLs.
-// Non-fatal: logs warning on failure, does not stop discovery.
+// fetchRobotsTxt fetches and parses robots.txt to discover initial URLs, then
+// runs the sitemap source over the sitemaps it names (or the default sitemap
+// paths when it names none). Non-fatal: failures are logged and discovery goes on.
 func (e *Engine) fetchRobotsTxt(baseURL *url.URL) {
+	named := e.loadRobotsTxt(baseURL)
+	e.fetchSitemaps(baseURL, named)
+}
+
+// loadRobotsTxt fetches robots.txt, feeds it through the spider coordinator and
+// returns the Sitemap: URLs it declares (nil when it is missing or names none).
+func (e *Engine) loadRobotsTxt(baseURL *url.URL) []*url.URL {
 	robotsURL := *baseURL
 	robotsURL.Path = "/robots.txt"
+	robotsURL.RawPath = ""
 	robotsURL.RawQuery = ""
 	robotsURL.Fragment = ""
 
@@ -521,14 +532,14 @@ func (e *Engine) fetchRobotsTxt(baseURL *url.URL) {
 		Build()
 	if err != nil {
 		logger.Debug("Failed to build robots.txt request", zap.Error(err))
-		return
+		return nil
 	}
 
 	logger.Debug("Fetching robots.txt", zap.String("url", robotsURL.String()))
 	rc, err := e.httpClient.Send(e.ctx, req)
 	if err != nil {
 		logger.Debug("robots.txt fetch failed", zap.Error(err))
-		return
+		return nil
 	}
 	defer rc.Close()
 
@@ -538,12 +549,198 @@ func (e *Engine) fetchRobotsTxt(baseURL *url.URL) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Debug("robots.txt returned non-success status",
 			zap.Int("status", resp.StatusCode))
-		return
+		return nil
+	}
+
+	// With the sitemap source on, the declared sitemaps are fetched and parsed by
+	// fetchSitemaps. Mark them seen first so the robots link batch below does not
+	// also spider them as opaque files, whose inline-URL scan would queue every
+	// <loc> unsampled.
+	var named []*url.URL
+	if e.config.Sitemap.Enabled && e.spiderResolver != nil {
+		named = spider.NewRobotsTxtParser(e.spiderResolver).SitemapURLs(&robotsURL, rc.BodyBytes())
+		if e.seenDiscoveredURLs != nil {
+			for _, u := range named {
+				e.seenDiscoveredURLs.IsSeen(dedup.NormalizeURL(u.String()))
+			}
+		}
 	}
 
 	// Extract links using spider coordinator (runs RobotsTxtParser)
 	e.extractLinks(&robotsURL, rc, 0)
-	logger.Info("robots.txt parsed", zap.String("url", robotsURL.String()))
+	logger.Info("robots.txt parsed", zap.String("url", robotsURL.String()),
+		zap.Int("sitemaps", len(named)))
+	return named
+}
+
+// defaultSitemapPaths are probed when robots.txt names no sitemap.
+var defaultSitemapPaths = []string{"/sitemap.xml", "/sitemap_index.xml"}
+
+// maxSitemapDocuments bounds the sitemap documents fetched per target: the
+// robots-named (or default) roots plus the index children they lead to.
+const maxSitemapDocuments = 32
+
+// sitemapOutcome summarizes one fetchSitemaps run (logged; returned for tests).
+type sitemapOutcome struct {
+	Documents  int        // sitemap documents fetched and parsed
+	Locs       int        // in-scope page locs read (all feed the observed-path wordlist)
+	OutOfScope int        // page locs dropped by the spider scope
+	Sampled    []*url.URL // locs queued as spider links
+	Capped     int        // locs or documents dropped by a budget (sitemap_cap)
+}
+
+// fetchSitemaps is the sitemap source. It fetches the sitemaps robots.txt
+// named — or /sitemap.xml and /sitemap_index.xml when it named none — follows
+// <sitemapindex> children (depth <= 2, <= 16 per index, <= 32 documents in
+// all), and streams every <loc> (gzip and text sitemaps included, see
+// spider.ParseSitemap). Every in-scope loc feeds the observed-path wordlist;
+// a path-shape sample of them (per_shape per shape, max_urls in all) becomes
+// spider links, so each sampled page is fetched and recorded. Anything a
+// budget drops is counted in SitemapCapped.
+func (e *Engine) fetchSitemaps(baseURL *url.URL, named []*url.URL) sitemapOutcome {
+	var out sitemapOutcome
+	cfg := e.config.Sitemap
+	if !cfg.Enabled || baseURL == nil || e.spiderResolver == nil {
+		return out
+	}
+
+	type sitemapDoc struct {
+		u     *url.URL
+		depth int
+	}
+	var queue []sitemapDoc
+	if len(named) > 0 {
+		for _, u := range named {
+			queue = append(queue, sitemapDoc{u: u, depth: 1})
+		}
+	} else {
+		for _, p := range defaultSitemapPaths {
+			u := &url.URL{Scheme: baseURL.Scheme, Host: baseURL.Host, Path: p}
+			queue = append(queue, sitemapDoc{u: u, depth: 1})
+		}
+	}
+
+	extractor := spider.NewSitemapExtractor(e.spiderResolver)
+	sampler := spider.NewSitemapSampler(cfg.EffectivePerShape(), cfg.EffectiveMaxURLs())
+	fetched := make(map[string]struct{})
+
+	for len(queue) > 0 && e.ctx.Err() == nil {
+		doc := queue[0]
+		queue = queue[1:]
+
+		key := dedup.NormalizeURL(doc.u.String())
+		if _, dup := fetched[key]; dup {
+			continue
+		}
+		if !e.spiderScope.IsInScope(doc.u) {
+			logger.Debug("Skipping out-of-scope sitemap", zap.String("url", doc.u.String()))
+			continue
+		}
+		if out.Documents >= maxSitemapDocuments {
+			out.Capped++
+			continue
+		}
+		fetched[key] = struct{}{}
+		out.Documents++
+
+		children := 0
+		kind, err := e.fetchSitemapDocument(extractor, doc.u, func(link *spider.DiscoveredLink) {
+			if link.ResourceType == spider.ResourceSitemap {
+				if !cfg.FollowIndex {
+					return
+				}
+				if doc.depth >= spider.SitemapMaxIndexDepth || children >= spider.SitemapMaxIndexChildren {
+					out.Capped++
+					return
+				}
+				children++
+				queue = append(queue, sitemapDoc{u: link.URL, depth: doc.depth + 1})
+				return
+			}
+			if !e.spiderScope.IsInScope(link.URL) {
+				out.OutOfScope++
+				return
+			}
+			out.Locs++
+			e.AddObservedPathTrusted(link.URL.Path)
+			sampler.Add(link.URL)
+		})
+		switch {
+		case spider.IsSitemapLimit(err):
+			out.Capped++
+			logger.Info("Sitemap cut short by a size or entry cap",
+				zap.String("url", doc.u.String()), zap.Error(err))
+		case err != nil:
+			logger.Debug("Sitemap parse stopped", zap.String("url", doc.u.String()), zap.Error(err))
+		}
+		if kind != spider.SitemapUnknown {
+			logger.Debug("Sitemap parsed", zap.String("url", doc.u.String()),
+				zap.String("kind", kind.String()), zap.Int("depth", doc.depth))
+		}
+	}
+
+	out.Sampled = sampler.Sample()
+	out.Capped += sampler.Capped()
+	if out.Capped > 0 {
+		e.sitemapCapped.Add(int64(out.Capped))
+	}
+
+	if len(out.Sampled) > 0 {
+		links := make([]*spider.DiscoveredLink, 0, len(out.Sampled))
+		for _, u := range out.Sampled {
+			links = append(links, &spider.DiscoveredLink{
+				SourceType:   spider.SourceSitemap,
+				URL:          u,
+				RawURL:       u.String(),
+				ResourceType: spider.ResourceHTML,
+				StartPos:     -1,
+				EndPos:       -1,
+				Element:      "sitemap",
+			})
+		}
+		for _, batch := range e.collectValidatedLinks(links, 0) {
+			e.createSpiderBatchTask(batch)
+		}
+	}
+
+	if out.Documents > 0 {
+		logger.Info("Sitemaps processed",
+			zap.Int("documents", out.Documents),
+			zap.Int("locs", out.Locs),
+			zap.Int("shapes", sampler.Shapes()),
+			zap.Int("sampled", len(out.Sampled)),
+			zap.Int("capped", out.Capped))
+	}
+	return out
+}
+
+// fetchSitemapDocument GETs one sitemap and streams its entries to callback.
+// A non-2xx answer (the default probes usually 404) yields SitemapUnknown and
+// no error.
+func (e *Engine) fetchSitemapDocument(extractor *spider.SitemapExtractor, docURL *url.URL, callback spider.LinkCallback) (spider.SitemapKind, error) {
+	req, err := pkghttp.NewRequest(docURL.String()).
+		Headers(e.config.Engine.CustomHeaders).
+		Build()
+	if err != nil {
+		return spider.SitemapUnknown, err
+	}
+	rc, err := e.httpClient.Send(e.ctx, req)
+	if err != nil {
+		return spider.SitemapUnknown, err
+	}
+	defer rc.Close()
+
+	if status := rc.Response().StatusCode; status < 200 || status >= 300 {
+		return spider.SitemapUnknown, nil
+	}
+	return extractor.ExtractDeclared(e.ctx, docURL, rc.BodyBytes(), callback)
+}
+
+// SitemapCapped returns how many sitemap locs or documents this engine dropped
+// because a sitemap budget (max_urls, the per-document entry/size caps, the
+// index child/depth caps) was reached. Above zero is the sitemap_cap limit.
+func (e *Engine) SitemapCapped() int {
+	return int(e.sitemapCapped.Load())
 }
 
 // fuzzMarker is the placeholder the discovery fuzzer substitutes with each

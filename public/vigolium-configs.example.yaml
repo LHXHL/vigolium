@@ -1011,6 +1011,24 @@ discovery:
     # js_template_persist_cap limit. 0 = default (2000).
     max_persisted_js_templates: 2000
 
+  # Sitemap source. At discovery start, fetch the sitemaps robots.txt names (or
+  # probe /sitemap.xml and /sitemap_index.xml when it names none). XML urlset,
+  # sitemapindex, gzip (.gz or 1f8b magic, 50 MiB decompressed cap with a bomb
+  # guard) and plain-text sitemaps are streamed. Every in-scope <loc> path feeds
+  # the observed-path wordlist; a path-shape sample of them is spidered.
+  sitemap:
+    # Default: true
+    enabled: true
+    # Sampled URLs spidered per target, round-robin over path shapes. Past it the
+    # run reports the sitemap_cap limit. 0 = default (2000).
+    max_urls: 2000
+    # Sampled URLs per host + path shape (/product/{int} is one shape).
+    # 0 = default (3).
+    per_shape: 3
+    # Fetch <sitemapindex> children (depth <= 2, <= 16 children per index).
+    # Default: true
+    follow_index: true
+
 # ============================================================================
 # Browser-Based Spidering (Spitolas)
 # ============================================================================

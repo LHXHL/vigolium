@@ -44,7 +44,21 @@ func (c *Config) Validate() error {
 	if err := c.JSTangle.Validate(); err != nil {
 		return fmt.Errorf("jstangle config: %w", err)
 	}
+	if err := c.Sitemap.Validate(); err != nil {
+		return fmt.Errorf("sitemap config: %w", err)
+	}
 
+	return nil
+}
+
+// Validate rejects negative sitemap budgets; 0 means "use the default".
+func (c SitemapConfig) Validate() error {
+	if c.MaxURLs < 0 {
+		return fmt.Errorf("max_urls must be >= 0, got %d", c.MaxURLs)
+	}
+	if c.PerShape < 0 {
+		return fmt.Errorf("per_shape must be >= 0, got %d", c.PerShape)
+	}
 	return nil
 }
 
