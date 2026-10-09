@@ -551,7 +551,7 @@ func printActiveTrafficFilters(filters database.QueryFilters, fuzzyTerm string) 
 	if filters.DateTo != nil {
 		s.add("to", clicommon.FormatTimeFilter(*filters.DateTo))
 	}
-	s.print(trafficMarkdown || trafficBurp || trafficRaw)
+	s.print()
 }
 
 // resolveColumns selects columns based on --columns and --exclude-columns flags.
