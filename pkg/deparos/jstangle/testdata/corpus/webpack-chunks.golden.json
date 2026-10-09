@@ -1,0 +1,15 @@
+{
+  "status": "complete",
+  "counts": {
+    "pathLiteral": 1
+  },
+  "facts": [
+    {
+      "kind": "pathLiteral",
+      "url": "/static/",
+      "confidence": "low",
+      "reason": "assignment",
+      "key": "p"
+    }
+  ]
+}

@@ -399,6 +399,11 @@ func (s *Service) Analyze(ctx context.Context, request AnalysisRequest) (*ScanRe
 
 		s.jobsStarted.Add(1)
 		result, err := s.backend.ScanWithOptions(jobCtx, request.Content, options)
+		if err == nil && !caps.Has(CapabilityTruncationCounts) {
+			// A helper that counts truncation reports the cap itself. An older
+			// one returns a full bucket with no reason, inferred here.
+			markRequestCapReached(result, options.MaxRequests)
+		}
 		if err != nil {
 			if jobCtx.Err() != nil || !supportsLexicalFallback(options.Profile) {
 				return nil, err
@@ -625,6 +630,63 @@ func markProfileDegraded(result *ScanResult, requested, effective AnalysisProfil
 	if result.Completion != nil {
 		result.Completion.Status = "partial"
 		result.Completion.ReasonCode = diagnostic.Code
+	}
+}
+
+// requestCapDiagnosticCode is counted by observeResult's limit matcher, so a
+// Go-side cap inference reaches Stats().LimitHits like a helper diagnostic.
+const requestCapDiagnosticCode = "request_cap_limit"
+
+func requestCapDiagnostic(maxRequests, dropped int) Diagnostic {
+	message := fmt.Sprintf("endpoint facts reached the %d-request cap; further endpoints may have been dropped", maxRequests)
+	if dropped > 0 {
+		message = fmt.Sprintf("endpoint facts were limited to %d; %d more were dropped", maxRequests, dropped)
+	}
+	return Diagnostic{
+		Type: "diagnostic", Severity: "warning", Stage: "endpoints",
+		Code: requestCapDiagnosticCode, Message: message, Recoverable: true,
+	}
+}
+
+// markRequestCapReached marks a result whose endpoint facts filled the request
+// cap as partial with reason request_cap. Helpers that predate truncation
+// counts return exactly MaxRequests facts and a "complete" status when the
+// cap cut the list, so a full bucket is the only signal. A result that is
+// already partial keeps its own reason; the cap is still diagnosed.
+func markRequestCapReached(result *ScanResult, maxRequests int) {
+	if result == nil || maxRequests <= 0 {
+		return
+	}
+	// Older helpers already emit request_limit_reached when they drop a fact,
+	// but leave the completion reason empty.
+	helperReported := false
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == "request_limit_reached" || diagnostic.Code == requestCapDiagnosticCode {
+			helperReported = true
+			break
+		}
+	}
+	if !helperReported && len(result.RequestFacts) < maxRequests {
+		return
+	}
+	if !helperReported {
+		diagnostic := requestCapDiagnostic(maxRequests, 0)
+		result.Diagnostics = append(result.Diagnostics, diagnostic)
+		if result.Analysis != nil {
+			result.Analysis.Diagnostics = append(result.Analysis.Diagnostics, diagnostic)
+		}
+	}
+	if result.Analysis != nil && (result.Analysis.Stats.Status == "" || result.Analysis.Stats.Status == "complete") {
+		result.Analysis.Stats.Status = "partial"
+	}
+	if result.Completion != nil {
+		if result.Completion.Status == "" || result.Completion.Status == "complete" {
+			result.Completion.Status = "partial"
+		}
+		if result.Completion.ReasonCode == "" && result.Completion.Status == "partial" {
+			result.Completion.ReasonCode = ReasonRequestCap
+		}
+		result.Completion.Counts.Diagnostics = len(result.Diagnostics)
 	}
 }
 

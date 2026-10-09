@@ -1,0 +1,77 @@
+{
+  "status": "complete",
+  "counts": {
+    "httpRequest": 1,
+    "pathLiteral": 9
+  },
+  "facts": [
+    {
+      "kind": "httpRequest",
+      "url": "/api/v2/consumed",
+      "method": "GET",
+      "confidence": "high"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/account/billing",
+      "confidence": "low",
+      "reason": "array-element",
+      "key": "sitemap"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/account/settings",
+      "confidence": "low",
+      "reason": "array-element",
+      "key": "sitemap"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/api/v2/admin/config",
+      "confidence": "low",
+      "reason": "object-value",
+      "key": "admin"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/api/v2/export",
+      "confidence": "low",
+      "reason": "const-init",
+      "key": "API_EXPORT_PATH"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/api/v2/profile",
+      "confidence": "low",
+      "reason": "object-value",
+      "key": "profile"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/dashboard/home",
+      "confidence": "low",
+      "reason": "default-param",
+      "key": "target"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/internal/fallback",
+      "confidence": "low",
+      "reason": "assignment",
+      "key": "fallback"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/legacy/rpc/handler",
+      "confidence": "low",
+      "reason": "return"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/static/help/index.html",
+      "confidence": "low",
+      "reason": "object-value",
+      "key": "help"
+    }
+  ]
+}

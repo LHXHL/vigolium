@@ -1,0 +1,20 @@
+{
+  "status": "complete",
+  "counts": {
+    "assetReference": 2
+  },
+  "facts": [
+    {
+      "kind": "assetReference",
+      "url": "./chunk-settings-3f9a.js",
+      "confidence": "high",
+      "assetType": "dynamic-import"
+    },
+    {
+      "kind": "assetReference",
+      "url": "./locales/chunk-${locale}.js",
+      "confidence": "high",
+      "assetType": "dynamic-import"
+    }
+  ]
+}

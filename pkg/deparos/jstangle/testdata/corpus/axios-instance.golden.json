@@ -1,0 +1,43 @@
+{
+  "status": "complete",
+  "counts": {
+    "httpRequest": 4
+  },
+  "facts": [
+    {
+      "kind": "httpRequest",
+      "url": "/api/v3/standalone",
+      "method": "GET",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v3/things",
+      "method": "GET",
+      "confidence": "high",
+      "suppressed": [
+        "prefix:/api/v3",
+        "suffix:/things"
+      ]
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v3/things",
+      "method": "POST",
+      "bodyKind": "text",
+      "confidence": "high",
+      "suppressed": [
+        "suffix:/things"
+      ]
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v3/things/${id}",
+      "method": "DELETE",
+      "confidence": "high",
+      "suppressed": [
+        "suffix:/things/${id}"
+      ]
+    }
+  ]
+}

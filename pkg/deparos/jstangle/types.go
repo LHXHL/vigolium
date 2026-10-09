@@ -143,6 +143,36 @@ func (c *Capabilities) SupportsProfile(profile AnalysisProfile) bool {
 	return false
 }
 
+// Has reports whether the helper advertised a capability or record feature
+// (for example "facts.pathLiteral" or "completion.truncated"). Unlike
+// SupportsProfile it is strict: a nil or older record advertises nothing, so
+// callers gate new behaviour on it and degrade to the old path when absent.
+func (c *Capabilities) Has(capability string) bool {
+	if c == nil {
+		return false
+	}
+	for _, advertised := range c.Capabilities {
+		if advertised == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// Record features advertised in Capabilities.Capabilities by helper release 1.
+const (
+	CapabilityPathLiteral       = "facts.pathLiteral"
+	CapabilityRequestAuth       = "facts.httpRequest.auth"
+	CapabilityRequestCallSite   = "facts.httpRequest.callSite"
+	CapabilityRequestSuppressed = "facts.httpRequest.suppressed"
+	CapabilityRouteFullPath     = "facts.clientRoute.fullPath"
+	CapabilityTruncationCounts  = "completion.truncated"
+)
+
+// ReasonRequestCap is the completion reason for a run whose endpoint facts
+// were cut by the request cap. Other per-kind caps report "fact_cap:<kind>".
+const ReasonRequestCap = "request_cap"
+
 // Diagnostic describes a recoverable or fatal analysis degradation.
 type Diagnostic struct {
 	Type        string `json:"type"`
@@ -231,6 +261,31 @@ type Provenance struct {
 	ResolutionSteps []ResolutionStep `json:"resolutionSteps,omitempty"`
 }
 
+// AuthContext names where a request's credential comes from. It never
+// carries the credential: SourceKind "literal" only says the bundle hard-codes
+// one, which secret scanning reports separately.
+type AuthContext struct {
+	// Kind is bearer, basic, apikey-header, apikey-query, cookie or custom.
+	Kind   string `json:"kind"`
+	Header string `json:"header,omitempty"`
+	Query  string `json:"query,omitempty"`
+	Scheme string `json:"scheme,omitempty"`
+	// Source is "<sourceKind>:<key>" (localStorage:jwt, state:auth.token) or
+	// the bare source kind when no key is known.
+	Source string `json:"source"`
+	// SourceKind is localStorage, sessionStorage, cookie, state, literal or unknown.
+	SourceKind string `json:"sourceKind"`
+}
+
+// SuppressedFact records a lower-confidence fact from the same call site that
+// the helper folded into the fact carrying it (a bare base URL or an
+// un-prefixed path).
+type SuppressedFact struct {
+	ID     string `json:"id"`
+	URL    string `json:"url"`
+	Reason string `json:"reason"`
+}
+
 // HTTPRequestFact is the typed v2 endpoint record used for replay policy.
 type HTTPRequestFact struct {
 	Kind              string           `json:"kind"`
@@ -251,6 +306,28 @@ type HTTPRequestFact struct {
 	OperationType       string     `json:"operationType,omitempty"`
 	Provenance          Provenance `json:"provenance"`
 	AlternateExtractors []string   `json:"alternateExtractors,omitempty"`
+	// Auth is the credential source feeding the request, when the bundle shows one.
+	Auth *AuthContext `json:"auth,omitempty"`
+	// CallSite identifies the call expression behind the canonical fact.
+	CallSite string `json:"callSite,omitempty"`
+	// Suppressed lists noise facts folded into this one, kept for audit.
+	Suppressed []SuppressedFact `json:"suppressed,omitempty"`
+}
+
+// PathLiteralFact is a path-shaped string that never reached a request call:
+// an object value, array element, const initializer, default parameter,
+// return value or assignment. Always low confidence: a discovery and wordlist
+// hint, never a replay template.
+type PathLiteralFact struct {
+	Kind  string        `json:"kind"`
+	ID    string        `json:"id"`
+	Value ValueTemplate `json:"value"`
+	// Reason is object-value, array-element, const-init, default-param, return
+	// or assignment.
+	Reason string `json:"reason"`
+	// Key is the object key, variable or parameter the literal was bound to.
+	Key        string     `json:"key,omitempty"`
+	Provenance Provenance `json:"provenance"`
 }
 
 // DomFlowFact is the typed v2 browser security flow.
@@ -328,13 +405,29 @@ type EventSourceFact struct {
 // ClientRouteFact is a typed client-side navigation candidate. Routes are
 // deliberately distinct from replayable HTTP request templates.
 type ClientRouteFact struct {
-	Kind       string         `json:"kind"`
-	ID         string         `json:"id"`
-	Path       ValueTemplate  `json:"path"`
-	RouteType  string         `json:"routeType"`
-	Guards     []string       `json:"guards,omitempty"`
-	LazyAsset  *ValueTemplate `json:"lazyAsset,omitempty"`
+	Kind      string         `json:"kind"`
+	ID        string         `json:"id"`
+	Path      ValueTemplate  `json:"path"`
+	RouteType string         `json:"routeType"`
+	Guards    []string       `json:"guards,omitempty"`
+	LazyAsset *ValueTemplate `json:"lazyAsset,omitempty"`
+	// FullPath is the absolute route with parent paths joined. It is not
+	// static (variable "parent") when the parent route lives in another module.
+	FullPath   *ValueTemplate `json:"fullPath,omitempty"`
+	ParentID   string         `json:"parentId,omitempty"`
 	Provenance Provenance     `json:"provenance"`
+}
+
+// RoutePath is the most absolute form of the route the helper reported:
+// FullPath when present, else the raw Path.
+func (f *ClientRouteFact) RoutePath() string {
+	if f == nil {
+		return ""
+	}
+	if f.FullPath != nil && f.FullPath.Rendered != "" {
+		return f.FullPath.Rendered
+	}
+	return f.Path.Rendered
 }
 
 type FlowPathStep struct {
@@ -367,7 +460,10 @@ type AssetReferenceFact struct {
 	ParentSourceURL string        `json:"parentSourceUrl,omitempty"`
 	Eager           bool          `json:"eager"`
 	Inline          bool          `json:"inline,omitempty"`
-	Provenance      Provenance    `json:"provenance"`
+	// Loader names the runtime that loads the asset (for example
+	// "webpack-chunk"); empty for plain references.
+	Loader     string     `json:"loader,omitempty"`
+	Provenance Provenance `json:"provenance"`
 }
 
 // ArtifactDescriptor points at a worker-owned file. Content is populated only
@@ -392,6 +488,8 @@ type AnalysisStats struct {
 	DurationMS   float64        `json:"durationMs"`
 	RecordCounts map[string]int `json:"recordCounts"`
 	StageMetrics []StageMetric  `json:"stageMetrics"`
+	// Truncated counts records dropped by a per-kind cap or the output budget.
+	Truncated map[string]int `json:"truncated,omitempty"`
 }
 
 // AnalysisResultV2 is the compact typed result envelope.
@@ -425,6 +523,10 @@ type ScanCompletion struct {
 		DomFlows    int `json:"domFlows"`
 		Diagnostics int `json:"diagnostics"`
 		Artifacts   int `json:"artifacts"`
+		// Truncated counts records dropped per kind (httpRequest,
+		// pathLiteral, ...). Set by the helper, or by Service when it detects
+		// a cap an older helper did not report.
+		Truncated map[string]int `json:"truncated,omitempty"`
 	} `json:"counts"`
 	OutputBytes  int64         `json:"outputBytes,omitempty"`
 	StageMetrics []StageMetric `json:"stageMetrics,omitempty"`
@@ -526,6 +628,7 @@ type ScanResult struct {
 	EventSources      []EventSourceFact         `json:"event_sources,omitempty"`
 	ClientRoutes      []ClientRouteFact         `json:"client_routes,omitempty"`
 	BrowserFlows      []BrowserSecurityFlowFact `json:"browser_security_flows,omitempty"`
+	PathLiterals      []PathLiteralFact         `json:"path_literals,omitempty"`
 	Artifacts         []ArtifactDescriptor      `json:"artifacts,omitempty"`
 	UnknownRecordData []json.RawMessage         `json:"unknown_records_data,omitempty"`
 	Completion        *ScanCompletion           `json:"completion,omitempty"`

@@ -17,9 +17,9 @@ var (
 
 // processJSTangleCapabilityFacts connects non-legacy record families to
 // discovery without conflating them with generic HTTP traffic. GraphQL HTTP
-// operations become exact typed templates, routes become bounded navigation
-// hints, and WS/SSE/browser-flow records remain metadata for protocol-aware
-// consumers.
+// operations become exact typed templates, routes and path literals become
+// bounded navigation hints, and WS/SSE/browser-flow records remain metadata
+// for protocol-aware consumers.
 func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstangle.ScanResult) {
 	if result == nil {
 		return
@@ -69,7 +69,7 @@ func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstang
 		if route.RouteType == "redirect" || route.Provenance.Confidence == "low" {
 			continue
 		}
-		if path, ok := stableClientRoute(route.Path.Rendered); ok {
+		if path, ok := clientRouteSeed(route); ok {
 			e.AddObservedPath(path)
 		}
 		if route.LazyAsset != nil {
@@ -80,6 +80,59 @@ func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstang
 			}})
 		}
 	}
+
+	// Path literals are low-confidence hints the helper reports only when no
+	// request or route consumed them; they seed the wordlist like linkfinder.
+	for i := range result.PathLiterals {
+		path, trusted, ok := pathLiteralSeed(&result.PathLiterals[i])
+		if !ok {
+			continue
+		}
+		if trusted {
+			// Same promotion linkfinder output gets: an API-looking path is
+			// fetched, and either kind survives eviction as a trusted seed.
+			e.AddObservedPathTrusted(path)
+			e.preserveAPIPathAsRequest(path)
+			continue
+		}
+		e.AddObservedPath(path)
+	}
+}
+
+// clientRouteSeed is the discovery path for a route fact. A helper that
+// normalizes routes reports FullPath (parents joined, leading "/"); an older
+// one reports Angular/Vue children bare ("dashboard"), which used to be
+// dropped outright. Prefixing "/" loses the parent but beats discarding the
+// route, so router-config routes without FullPath get it.
+func clientRouteSeed(route *jstangle.ClientRouteFact) (string, bool) {
+	if route == nil {
+		return "", false
+	}
+	raw := strings.TrimSpace(route.RoutePath())
+	if route.FullPath == nil && route.Provenance.Extractor == "router-config" &&
+		raw != "" && !strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "$") && !strings.Contains(raw, "://") {
+		raw = "/" + raw
+	}
+	return stableClientRoute(raw)
+}
+
+// pathLiteralKeyHint marks an object key or binding name that says the
+// literal is a URL or endpoint rather than an arbitrary slash-separated value.
+var pathLiteralKeyHint = regexp.MustCompile(`(?i)url|path|endpoint|api|route|href`)
+
+// pathLiteralSeed decides how a low-confidence path literal feeds discovery.
+// Only static values are used: a templated literal has no concrete path to
+// seed. trusted is true when the binding name or the path itself says
+// "endpoint"; those get the trusted frequency boost and API promotion.
+func pathLiteralSeed(fact *jstangle.PathLiteralFact) (path string, trusted, ok bool) {
+	if fact == nil || !fact.Value.Static {
+		return "", false, false
+	}
+	path = strings.TrimSpace(fact.Value.Rendered)
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return "", false, false
+	}
+	return path, pathLiteralKeyHint.MatchString(fact.Key) || looksLikeAPIEndpointPath(path), true
 }
 
 func staticHeader(name, value string) jstangle.HeaderTemplate {

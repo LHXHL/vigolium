@@ -90,6 +90,20 @@ span. High-confidence facts use exact replay. Medium-confidence facts are only
 replayed when `replay_mode: conservative`; low-confidence strings remain hints.
 Sensitive or browser-controlled headers are never copied into replay traffic.
 
+Client routes are seeded by their full path: nested Angular/Vue `children`
+are joined onto their parents (`/admin/reports/:id` → `/admin/reports/1`).
+Path-shaped literals that no request or route consumed (`{profile:
+"/api/v2/profile"}`, `const EXPORT = "/api/v2/export"`) arrive as
+low-confidence `pathLiteral` hints: API-looking paths, or ones bound to a
+`url`/`path`/`endpoint`/`api`/`route`/`href` key, are trusted seeds and API
+paths are fetched; the rest join the observed-path pool. Request facts also
+carry the credential source (`auth.source`, for example `localStorage:jwt`),
+never the credential.
+
+When a script holds more endpoints than the request cap, the analysis is
+`partial` with reason `request_cap` and a per-kind `truncated` count, instead
+of a silently shortened list.
+
 Asset references form a bounded recursive graph, so lazy chunks, workers, and
 service workers are fetched and analyzed once. Source maps are fetched under the
 normal scope/auth/rate policy; recovered sources are retained as immutable scan

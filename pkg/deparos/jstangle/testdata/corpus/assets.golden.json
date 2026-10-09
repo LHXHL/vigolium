@@ -1,0 +1,32 @@
+{
+  "status": "complete",
+  "counts": {
+    "assetReference": 4
+  },
+  "facts": [
+    {
+      "kind": "assetReference",
+      "url": "./lazy-panel.js",
+      "confidence": "high",
+      "assetType": "dynamic-import"
+    },
+    {
+      "kind": "assetReference",
+      "url": "/sw.js",
+      "confidence": "high",
+      "assetType": "service-worker"
+    },
+    {
+      "kind": "assetReference",
+      "url": "/workers/compute.js",
+      "confidence": "high",
+      "assetType": "worker"
+    },
+    {
+      "kind": "assetReference",
+      "url": "assets.js.map",
+      "confidence": "high",
+      "assetType": "source-map"
+    }
+  ]
+}

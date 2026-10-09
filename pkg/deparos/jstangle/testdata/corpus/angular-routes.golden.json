@@ -1,0 +1,63 @@
+{
+  "status": "complete",
+  "counts": {
+    "assetReference": 1,
+    "clientRoute": 8
+  },
+  "facts": [
+    {
+      "kind": "assetReference",
+      "url": "./settings/settings.module",
+      "confidence": "high",
+      "assetType": "dynamic-import"
+    },
+    {
+      "kind": "clientRoute",
+      "url": ":reportId",
+      "fullPath": "/admin/reports/:reportId",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "admin",
+      "fullPath": "/admin",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "dashboard",
+      "fullPath": "/admin/dashboard",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "login",
+      "fullPath": "/login",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "profile",
+      "fullPath": "${parent}/profile",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "reports",
+      "fullPath": "/admin/reports",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "security",
+      "fullPath": "${parent}/security",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "settings",
+      "fullPath": "/settings",
+      "confidence": "high"
+    }
+  ]
+}
