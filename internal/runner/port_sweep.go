@@ -64,6 +64,9 @@ func (r *Runner) runPortSweepPhase(ctx context.Context, _ *phaseInfra) error {
 		DialTimeout:   time.Duration(cfg.DialTimeoutMs) * time.Millisecond,
 		HTTPTimeout:   time.Duration(cfg.HTTPTimeoutMs) * time.Millisecond,
 		HoneypotRatio: cfg.HoneypotRatio,
+		// The HTTP confirm step honours --proxy; the TCP pre-filter cannot and
+		// dials each port directly (see the portsweep package doc).
+		ProxyURL: r.options.ProxyURL,
 	}
 
 	results := r.sweepHosts(ctx, hosts, opts)

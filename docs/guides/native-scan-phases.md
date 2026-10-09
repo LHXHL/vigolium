@@ -10,7 +10,7 @@ When you run a scan, the enabled phases execute in this order (the source of
 truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 
 1. **Heuristics check** (`heuristics-check`) - fetch each target's root page and classify it (blank vs content, JSON/XML API; with `scanning_strategy.heuristics_check: advanced` also SPA detection and link counting) to decide whether spidering that target is worthwhile. It does not fingerprint technologies. On by default (`basic`); turned off by `--only`
-2. **Port Sweep** (`port-sweep`) - find extra web services on alternate ports of the CLI target hosts and add them to the target set. Only with `--intensity deep` or `--follow-subdomains`
+2. **Port Sweep** (`port-sweep`) - find extra web services on alternate ports of the CLI target hosts and add them to the target set. Only with `--intensity deep` or `--follow-subdomains`. Its HTTP confirm requests go through `--proxy`; the TCP connect that finds open ports cannot and always dials the host directly
 3. **External Harvest** (`external-harvest`) - gather URLs about the target from third-party archives (Wayback Machine, CT logs); never contacts the target
 4. **Spidering** (`spidering`) - browser-based crawling to discover dynamic content
 5. **Probe** (`probe`) - one request per target, passive modules only, no content discovery (an httpx-style host sweep). Opt-in: runs only with `--only probe` / `vigolium run probe`
