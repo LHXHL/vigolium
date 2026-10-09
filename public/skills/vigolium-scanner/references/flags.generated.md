@@ -1033,7 +1033,7 @@ Ingest HTTP requests into database (locally or via server)
 | `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-per-host` | - | int|phase=int | `50` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
 | `--no-clustering` | - | bool | `false` | Disable deduplication of identical concurrent HTTP requests |
@@ -1464,7 +1464,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--known-issue-scan-templates-dir` | - | string | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-per-host` | - | int|phase=int | `50` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
 | `--no-carry-browser-session` | - | bool | `false` | Do not carry the spidering browser's cleared session (cookies + UA) into discovery/scanning (on by default when --spider runs; scoped to the same host, respects -H) |
@@ -1555,7 +1555,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--known-issue-scan-templates-dir` | - | string | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-per-host` | - | int|phase=int | `50` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--module-id` | - | stringSlice | - | Run exactly these module IDs (exact match against active AND passive modules, repeatable). Unlike -m, also selects passive modules. |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
@@ -1627,7 +1627,7 @@ Scan a raw HTTP request for vulnerabilities
 | `--known-issue-scan` | - | bool | `false` | Run known issue scan (Nuclei + native secret scanning) |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-per-host` | - | int|phase=int | `50` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--module-id` | - | stringSlice | - | Run exactly these module IDs (exact match against active AND passive modules, repeatable). Unlike -m, also selects passive modules. |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
@@ -1668,7 +1668,7 @@ Scan a single URL for vulnerabilities
 | `--known-issue-scan` | - | bool | `false` | Run known issue scan (Nuclei + native secret scanning) |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-per-host` | - | int|phase=int | `50` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--method` | - | string | `GET` | HTTP method |
 | `--module-id` | - | stringSlice | - | Run exactly these module IDs (exact match against active AND passive modules, repeatable). Unlike -m, also selects passive modules. |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
