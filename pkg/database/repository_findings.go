@@ -484,19 +484,30 @@ func IsValidFindingStatus(s string) bool {
 	return false
 }
 
-// UpdateFindingStatus sets the lifecycle status of a single finding by ID.
-// Returns sql.ErrNoRows if no finding matches.
-func (r *Repository) UpdateFindingStatus(ctx context.Context, id int64, status string) error {
+// UpdateFindingStatusScoped sets the lifecycle status of a single finding by
+// ID, inside one project. The project predicate is part of the UPDATE itself
+// (not a check-then-write), so a raw id from another project can never be
+// flipped: it matches nothing and returns sql.ErrNoRows, indistinguishable from
+// a missing finding, so the miss reveals nothing about other projects.
+//
+// projectUUID == "" drops the project predicate. Only callers with project
+// scoping deliberately off (a standalone `-S --db file` store) pass it; every
+// writer that knows its project must pass it. This is the single id-based
+// status writer (REST PATCH, `agent triage`, the olium update_finding tool).
+func (r *Repository) UpdateFindingStatusScoped(ctx context.Context, projectUUID string, id int64, status string) error {
 	if !IsValidFindingStatus(status) {
-		return fmt.Errorf("UpdateFindingStatus: invalid status %q", status)
+		return fmt.Errorf("UpdateFindingStatusScoped: invalid status %q", status)
 	}
-	res, err := r.db.NewUpdate().
+	q := r.db.NewUpdate().
 		Model((*Finding)(nil)).
 		Set("status = ?", status).
-		Where("id = ?", id).
-		Exec(ctx)
+		Where("id = ?", id)
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
+	res, err := q.Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("UpdateFindingStatus: %w", err)
+		return fmt.Errorf("UpdateFindingStatusScoped: %w", err)
 	}
 	if rows, _ := res.RowsAffected(); rows == 0 {
 		return sql.ErrNoRows
@@ -505,10 +516,12 @@ func (r *Repository) UpdateFindingStatus(ctx context.Context, id int64, status s
 }
 
 // UpdateFindingStatusByHash sets the lifecycle status of findings matching a finding_hash
-// within an agentic_scan_uuid scope. Used by the swarm triage writeback to promote
-// draft findings to triaged / false_positive based on agent verdicts.
+// within a project and an agentic_scan_uuid scope. Used by the swarm triage writeback to
+// promote draft findings to triaged / false_positive based on agent verdicts. Either
+// scope may be empty (dropping that predicate); the swarm path passes both so a hash
+// shared across projects only ever touches the run's own project.
 // Returns the number of rows updated.
-func (r *Repository) UpdateFindingStatusByHash(ctx context.Context, agenticScanUUID, findingHash, status string) (int64, error) {
+func (r *Repository) UpdateFindingStatusByHash(ctx context.Context, projectUUID, agenticScanUUID, findingHash, status string) (int64, error) {
 	if !IsValidFindingStatus(status) {
 		return 0, fmt.Errorf("UpdateFindingStatusByHash: invalid status %q", status)
 	}
@@ -519,6 +532,9 @@ func (r *Repository) UpdateFindingStatusByHash(ctx context.Context, agenticScanU
 		Model((*Finding)(nil)).
 		Set("status = ?", status).
 		Where("finding_hash = ?", findingHash)
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
 	if agenticScanUUID != "" {
 		q = q.Where("agentic_scan_uuid = ?", agenticScanUUID)
 	}
@@ -562,17 +578,22 @@ func (r *Repository) UpdateFindingSeverity(ctx context.Context, id int64, severi
 // UpdateFindingTriage sets severity and description on a single finding in one
 // statement. Used by the agent triage flow so a false-positive verdict can't
 // land a half-updated row (severity downgraded but reasoning lost) if the
-// process is killed between two separate UPDATEs.
-func (r *Repository) UpdateFindingTriage(ctx context.Context, id int64, severity, description string) error {
+// process is killed between two separate UPDATEs. Project-scoped like
+// UpdateFindingStatusScoped: projectUUID == "" drops the predicate, and a
+// finding outside the project returns sql.ErrNoRows.
+func (r *Repository) UpdateFindingTriage(ctx context.Context, projectUUID string, id int64, severity, description string) error {
 	if !IsValidFindingSeverity(severity) {
 		return fmt.Errorf("UpdateFindingTriage: invalid severity %q", severity)
 	}
-	res, err := r.db.NewUpdate().
+	q := r.db.NewUpdate().
 		Model((*Finding)(nil)).
 		Set("severity = ?", severity).
 		Set("description = ?", description).
-		Where("id = ?", id).
-		Exec(ctx)
+		Where("id = ?", id)
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
+	res, err := q.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("UpdateFindingTriage: %w", err)
 	}

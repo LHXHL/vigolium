@@ -346,7 +346,7 @@ func RunTriageLoop(ctx context.Context, cfg TriageLoopConfig) (*TriageLoopResult
 		// false positives → false_positive. Findings without a finding_hash
 		// (older agents not echoing it back) are left as-is for manual triage.
 		if cfg.Repository != nil {
-			writeBackTriageVerdicts(ctx, cfg.Repository, cfg.AgenticScanUUID, merged)
+			writeBackTriageVerdicts(ctx, cfg.Repository, cfg.ProjectUUID, cfg.AgenticScanUUID, merged)
 		}
 
 		if cfg.ProgressCallback != nil {
@@ -455,8 +455,10 @@ func aggregateFollowUps(followUps []FollowUpScan) ScanRequest {
 // writeBackTriageVerdicts persists the triage agent's classifications back to
 // Finding.Status. Confirmed findings move draft → triaged; false positives move
 // draft → false_positive. Skips entries with empty finding_hash and logs any
-// hashes the agent emitted but that didn't match a row.
-func writeBackTriageVerdicts(ctx context.Context, repo *database.Repository, agenticScanUUID string, merged *TriageResult) {
+// hashes the agent emitted but that didn't match a row. The write is scoped to
+// the run's project (and agentic scan) so a hash shared with another project's
+// finding never flips that finding.
+func writeBackTriageVerdicts(ctx context.Context, repo *database.Repository, projectUUID, agenticScanUUID string, merged *TriageResult) {
 	if merged == nil {
 		return
 	}
@@ -465,7 +467,7 @@ func writeBackTriageVerdicts(ctx context.Context, repo *database.Repository, age
 			if t.FindingHash == "" {
 				continue
 			}
-			rows, err := repo.UpdateFindingStatusByHash(ctx, agenticScanUUID, t.FindingHash, status)
+			rows, err := repo.UpdateFindingStatusByHash(ctx, projectUUID, agenticScanUUID, t.FindingHash, status)
 			if err != nil {
 				zap.L().Warn("triage writeback failed",
 					zap.String("finding_hash", t.FindingHash),

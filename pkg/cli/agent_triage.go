@@ -168,7 +168,7 @@ func runAgentTriage(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to parse triage verdict from agent output: %w\n\n%s", err, result.RawOutput)
 	}
 
-	if err := applyTriageVerdict(ctx, repo, finding, verdict); err != nil {
+	if err := applyTriageVerdict(ctx, repo, projectUUID, finding, verdict); err != nil {
 		return fmt.Errorf("failed to persist triage verdict: %w", err)
 	}
 
@@ -295,15 +295,18 @@ func writeArtifactBlock(b *strings.Builder, body []byte) {
 	b.WriteString("```\n\n")
 }
 
-func applyTriageVerdict(ctx context.Context, repo *database.Repository, finding *database.Finding, verdict *agent.TriageConfirmResult) error {
+// applyTriageVerdict writes the verdict inside projectUUID (the active project;
+// "" only when scoping is off), so the write itself carries the project
+// predicate rather than relying on the earlier lookup check.
+func applyTriageVerdict(ctx context.Context, repo *database.Repository, projectUUID string, finding *database.Finding, verdict *agent.TriageConfirmResult) error {
 	switch verdict.Verdict {
 	case agent.TriageVerdictFalsePositive:
 		newDesc := appendTriageReasoning(finding.Description, verdict)
-		if err := repo.UpdateFindingTriage(ctx, finding.ID, database.SeverityInfo, newDesc); err != nil {
+		if err := repo.UpdateFindingTriage(ctx, projectUUID, finding.ID, database.SeverityInfo, newDesc); err != nil {
 			return fmt.Errorf("update triage: %w", err)
 		}
 	case agent.TriageVerdictConfirmed:
-		if err := repo.UpdateFindingStatus(ctx, finding.ID, database.StatusTriaged); err != nil {
+		if err := repo.UpdateFindingStatusScoped(ctx, projectUUID, finding.ID, database.StatusTriaged); err != nil {
 			return fmt.Errorf("update status: %w", err)
 		}
 	default:

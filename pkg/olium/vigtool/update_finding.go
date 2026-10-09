@@ -13,7 +13,7 @@ import (
 
 // NewUpdateFindingTool returns the update_finding tool — the agent's
 // write-side handle for triaging existing findings. Wraps
-// repo.UpdateFindingStatus so verdicts produced by the autopilot loop
+// repo.UpdateFindingStatusScoped so verdicts produced by the autopilot loop
 // (after validating an existing finding with replay_request / inspect_record)
 // land in the project DB instead of evaporating in the transcript.
 func NewUpdateFindingTool(ctx *SessionsContext) tool.Tool {
@@ -70,32 +70,18 @@ func (u *updateFindingTool) Execute(ctx context.Context, args map[string]any, _ 
 		}, nil
 	}
 
-	// Scope guard: refuse cross-project writes even when the agent supplies
-	// a finding ID from another project. The tool's SessionsContext is the
-	// authorization boundary.
-	if u.ctx.ProjectUUID != "" {
-		f, gerr := u.ctx.Repo.GetFindingByID(ctx, id)
-		if errors.Is(gerr, sql.ErrNoRows) || f == nil {
-			return tool.Result{
-				Content: fmt.Sprintf("update_finding: no finding with id %d. Use list_findings to discover valid IDs.", id),
-				IsError: true,
-			}, nil
-		}
-		if gerr != nil {
-			return tool.Result{Content: fmt.Sprintf("update_finding: %v", gerr), IsError: true}, nil
-		}
-		if f.ProjectUUID != u.ctx.ProjectUUID {
-			return tool.Result{
-				Content: fmt.Sprintf("update_finding: finding %d does not belong to the current project", id),
-				IsError: true,
-			}, nil
-		}
-	}
-
-	if err := u.ctx.Repo.UpdateFindingStatus(ctx, id, status); err != nil {
+	// Scope guard: the tool's SessionsContext is the authorization boundary, and
+	// the project predicate rides on the UPDATE itself, so an agent that supplies
+	// a finding ID from another project matches nothing. An unscoped context
+	// (ProjectUUID == "") writes by id alone.
+	if err := u.ctx.Repo.UpdateFindingStatusScoped(ctx, u.ctx.ProjectUUID, id, status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			where := ""
+			if u.ctx.ProjectUUID != "" {
+				where = " in the current project"
+			}
 			return tool.Result{
-				Content: fmt.Sprintf("update_finding: no finding with id %d", id),
+				Content: fmt.Sprintf("update_finding: no finding with id %d%s. Use list_findings to discover valid IDs.", id, where),
 				IsError: true,
 			}, nil
 		}

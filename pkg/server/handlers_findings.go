@@ -259,31 +259,12 @@ func (h *findingsHandlers) HandleUpdateFindingStatus(c fiber.Ctx) error {
 		})
 	}
 
-	// Scope the mutation to the request's project: check first so an operator
-	// scoped to one engagement can't flip another project's finding via a raw id.
-	// Only the project is read here; the updated finding is re-loaded in full
-	// below, after the write, for the response body.
-	existingProject, err := h.repo.FindingProjectUUID(c.Context(), id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrFindingNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve finding: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
-	}
-	if !inRequestProject(c, existingProject) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrFindingNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
-	}
-
-	if err := h.repo.UpdateFindingStatus(c.Context(), id, status); err != nil {
+	// Scope the mutation to the request's project: the project predicate is part
+	// of the UPDATE, so an operator scoped to one engagement can't flip another
+	// project's finding via a raw id. A finding outside the project is reported
+	// as not found, exactly like a missing one. The updated finding is re-loaded
+	// in full below, after the write, for the response body.
+	if err := h.repo.UpdateFindingStatusScoped(c.Context(), getProjectUUID(c), id, status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
 				Error: ErrFindingNotFound.Error(),
