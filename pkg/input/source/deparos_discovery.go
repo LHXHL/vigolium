@@ -146,6 +146,9 @@ type DeparosDiscoveryConfig struct {
 	MaxConsecutiveWAFBlocks int
 	ObservedMaxItems        int
 	JSTangle                *deparosconfig.JSTangleConfig
+	// JSTemplatePersist controls persistence of JS-derived request templates
+	// that did not become discovery nodes (see deparos_discovery_jstangle.go).
+	JSTemplatePersist JSTemplatePersistConfig
 
 	// Per-prefix circuit breaker (zero values = use deparos defaults).
 	PrefixBreakerEnabled        *bool   // nil = default (true)
@@ -309,6 +312,21 @@ type DiscoveryStats struct {
 	TargetErrors []string
 	// Abandoned is set when Close gave up waiting for the producer to exit.
 	Abandoned bool
+
+	// JS-derived request templates (jstangle) that did not become discovery
+	// nodes and were persisted as http_records stubs instead.
+
+	// JSFactsPersisted counts template stubs written (emitted + persist-only).
+	JSFactsPersisted int
+	// JSFactsNotFound counts persisted stubs whose replay was judged not found.
+	JSFactsNotFound int
+	// JSFactsWithheld counts templates never sent, by withheld_* outcome.
+	JSFactsWithheld map[string]int
+	// JSTemplatesCapped counts stubs dropped by max_persisted_js_templates; any
+	// value above zero is the js_template_persist_cap limit.
+	JSTemplatesCapped int
+	// JSFactBundles counts jstangle-facts artifacts stored (one per JS asset).
+	JSFactBundles int
 }
 
 // maxReportedTargetErrors bounds TargetErrors so a sweep of thousands of hosts
@@ -532,6 +550,12 @@ func (d *DeparosDiscoverySource) Stats() DiscoveryStats {
 	defer d.mu.Unlock()
 	out := d.stats
 	out.TargetErrors = slices.Clone(d.stats.TargetErrors)
+	if d.stats.JSFactsWithheld != nil {
+		out.JSFactsWithheld = make(map[string]int, len(d.stats.JSFactsWithheld))
+		for reason, n := range d.stats.JSFactsWithheld {
+			out.JSFactsWithheld[reason] = n
+		}
+	}
 	return out
 }
 
@@ -1023,6 +1047,9 @@ func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, targe
 	// Collect all results into memory for in-memory hard dedup
 	var allRecords []collectedRecord
 	dedupMap := make(map[hardDedupKey]int) // key → index in allRecords
+	// Every imported node by method+URL, so a JS template that already became a
+	// node is annotated rather than persisted twice.
+	nodes := newNodeIndex(64)
 
 	err = siteMap.StreamAllResults(func(node *deparosstorage.DiscoveredNode) error {
 		// abort, not done: this reads the local temp SQLite file the requests
@@ -1058,6 +1085,7 @@ func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, targe
 		if err != nil {
 			return nil // skip URLs we can't parse
 		}
+		nodes.add(method, nodeURL.String(), rr.Target())
 
 		// Classify provenance: code-referenced classes (JSTangle/form) carry a
 		// distinct source label and bypass the fuzz-noise cleanup entirely.
@@ -1145,6 +1173,15 @@ func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, targe
 		return err
 	}
 
+	// JS-derived request templates and non-request facts, read before the
+	// siteMap closes: everything that did not become a node lives only here.
+	var fallbackURL *url.URL
+	if parsed, perr := url.Parse(target); perr == nil {
+		fallbackURL = parsed
+	}
+	jsPlan := planJSTemplates(engine.RequestTemplateOutcomes(), nodes, fallbackURL, d.cfg.JSTemplatePersist)
+	jsPlan.bundles = engine.JSFactBundles()
+
 	// Drop exact-dedup tombstones and partition survivors by class in one pass:
 	// only the fuzz/crawl class (crawlRecordSource) is subject to the flood-control
 	// cap below — code-referenced records (JSTangle/form) must all survive.
@@ -1223,11 +1260,13 @@ func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, targe
 		sourceOrder:   sourceOrder,
 		bySource:      bySource,
 		specEndpoints: specEndpoints,
-		sizeHint:      len(crawled) + len(specEndpoints),
+		jsTemplates:   jsPlan,
+		sizeHint:      len(crawled) + len(specEndpoints) + len(jsPlan.emit) + len(jsPlan.persist),
 	})
 	if err != nil {
 		return err
 	}
+	d.noteJSTemplateStats(target, jsPlan, acc.factBundles)
 
 	localStats.Imported = acc.imported
 	localStats.ImportFailed = acc.failed
@@ -1258,7 +1297,9 @@ type collectedGroups struct {
 	sourceOrder   []string
 	bySource      map[string][]*httpmsg.HttpRequestResponse
 	specEndpoints []*httpmsg.HttpRequestResponse
-	sizeHint      int
+	// jsTemplates is the JS template persistence for the target (nil = none).
+	jsTemplates *jsTemplatePlan
+	sizeHint    int
 }
 
 // importCollected is discovery's last stage: write everything one target
@@ -1312,6 +1353,11 @@ func (d *DeparosDiscoverySource) importCollected(
 	if siteMap != nil {
 		d.persistJSTangleSourceArtifacts(importCtx, siteMap, acc.uuidByURL)
 	}
+	// After the crawl groups, so the nodes and JS assets the templates annotate
+	// and anchor to already have UUIDs.
+	if err := d.importJSTemplates(importCtx, acc, groups.jsTemplates); err != nil {
+		return acc, err
+	}
 	if err := d.importGroup(importCtx, acc, groups.specEndpoints, specRecordSource); err != nil {
 		return acc, err
 	}
@@ -1330,6 +1376,8 @@ type importAccum struct {
 	failed    int
 	emit      bool
 	aborted   bool
+	// factBundles counts jstangle-facts artifacts stored.
+	factBundles int
 }
 
 func newImportAccum(sizeHint int) *importAccum {
@@ -1350,45 +1398,8 @@ func (d *DeparosDiscoverySource) importGroup(
 	records []*httpmsg.HttpRequestResponse,
 	label string,
 ) error {
-	if len(records) == 0 {
-		return nil
-	}
-
-	var uuids []string
-	if acc.emit {
-		var err error
-		uuids, err = d.saveAndEmitWithUUIDs(ctx, records, label)
-		switch {
-		case errors.Is(err, errEmitStopped):
-			// Saved, but the hand-off stopped. Keep persisting the rest.
-			acc.emit = false
-		case err != nil:
-			return err
-		}
-	} else {
-		uuids = d.persistOnly(ctx, records, label)
-	}
-
-	noRepository := d.cfg.Repository == nil
-	for i, rr := range records {
-		if rr == nil {
-			continue
-		}
-		uuid := ""
-		if i < len(uuids) {
-			uuid = uuids[i]
-		}
-		switch {
-		case uuid != "":
-			acc.uuidByURL[rr.Target()] = uuid
-			acc.imported++
-		case noRepository:
-			acc.imported++
-		default:
-			acc.failed++
-		}
-	}
-	return nil
+	_, err := d.importRecords(ctx, acc, records, label, true)
+	return err
 }
 
 // targetExhaustedBudget distinguishes the two ways a target's context can end. A

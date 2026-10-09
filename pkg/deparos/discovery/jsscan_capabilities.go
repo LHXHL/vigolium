@@ -24,6 +24,7 @@ func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstang
 	if result == nil {
 		return
 	}
+	e.collectJSFacts(sourceURL, result)
 	if e.storage != nil {
 		if repo := e.storage.Extractions(); repo != nil {
 			var sourceNodeID int64

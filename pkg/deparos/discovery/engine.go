@@ -263,6 +263,16 @@ type Engine struct {
 	jsReplayFlushCount     int
 	jsReplayFlushCapLogged bool
 
+	// replayEvidenceBytes bounds the response bodies held for template outcomes
+	// until the crawl ends (see maxReplayEvidenceTotal).
+	replayEvidenceBytes atomic.Int64
+
+	// jsFacts collects the non-request jstangle facts per JS asset so the
+	// integrated source can persist them as one artifact per asset (see
+	// JSFactBundles). They otherwise live only in the ephemeral siteMap.
+	jsFactsMu sync.Mutex
+	jsFacts   map[string]*jsFactBundleState
+
 	// vendorJSFetched counts vendor/CDN/library JS bundles admitted for jstangle
 	// endpoint extraction, bounding them under a per-scan asset budget (see
 	// admitVendorJSFetch).
@@ -907,6 +917,7 @@ func (e *Engine) newCallbacks() *Callbacks {
 		AddExtractedRequest:         e.AddExtractedRequest,
 		AddRequestFact:              e.AddRequestFact,
 		RequeueReplayTemplate:       e.RequeueReplayTemplate,
+		NoteReplayOutcome:           e.NoteReplayOutcome,
 		StoreJSTangleRequests:       e.storeJSTangleRequests,
 		StoreJSTangleFacts:          e.storeJSTangleFacts,
 		ProcessJSTangleCapabilities: e.processJSTangleCapabilityFacts,
@@ -1356,16 +1367,28 @@ func (e *Engine) PendingRequestTemplates() []ExtractedRequestTemplate {
 	//     safety policy forbids from being sent during discovery. Withheld
 	//     templates remain in the registry (items) for controlled consumers via
 	//     All(); they are simply not auto-replayed here.
+	//
+	// Every template filtered here is noted with the reason, so the integrated
+	// source can still persist it as a request stub (RequestTemplateOutcomes).
 	requireHigh := mode != "conservative"
 	policy := ParseReplaySafety(e.config.JSTangle.ReplaySafety)
+	reg := e.templateRegistry()
 	safe := templates[:0]
 	withheld := 0
 	for _, template := range templates {
-		if requireHigh && template.Confidence != "high" {
+		// Low confidence is a discovery hint in every mode; the variant
+		// generator would drop it anyway, so note it here where the reason is known.
+		if template.Confidence == "low" || (requireHigh && template.Confidence != "high") {
+			reg.NoteOutcome(template.SourceURL, template.ID, ReplayNote{
+				Outcome: TemplateWithheldConfidence, Reason: confidenceOrUnknown(template.Confidence),
+			})
 			continue
 		}
 		if !policy.AllowsFact(&template.Request) {
 			withheld++
+			reg.NoteOutcome(template.SourceURL, template.ID, ReplayNote{
+				Outcome: TemplateWithheldPolicy, Reason: withheldPolicyReason(policy, &template.Request),
+			})
 			continue
 		}
 		safe = append(safe, template)
@@ -1376,6 +1399,89 @@ func (e *Engine) PendingRequestTemplates() []ExtractedRequestTemplate {
 			zap.Int("withheld", withheld), zap.Int("allowed", len(safe)))
 	}
 	return safe
+}
+
+// NoteReplayOutcome records what a replay attempt (or a decision not to make
+// one) said about a template. Wired into Callbacks for the coordinator. The
+// response evidence is dropped once the engine's evidence budget is spent;
+// status and headers are kept regardless.
+func (e *Engine) NoteReplayOutcome(sourceURL, templateID string, note ReplayNote) {
+	if templateID == "" {
+		return
+	}
+	if note.Response != nil && len(note.Response.Body) > 0 {
+		if e.replayEvidenceBytes.Add(int64(len(note.Response.Body))) > maxReplayEvidenceTotal {
+			trimmed := *note.Response
+			trimmed.Body = nil
+			note.Response = &trimmed
+		}
+	}
+	e.templateRegistry().NoteOutcome(sourceURL, templateID, note)
+}
+
+// RequestTemplateOutcomes reports every JS-derived request template with its
+// final outcome. Read it after Stop() and before the siteMap closes: it is the
+// only place unreplayed, withheld and not-found templates survive the crawl.
+//
+// Templates that were never sent are resolved to the URL they stand for and
+// checked against the crawl scope here, because the coordinator's scope check
+// only ever saw the ones it replayed: a withheld POST to a third-party API
+// becomes out_of_scope and is never persisted.
+func (e *Engine) RequestTemplateOutcomes() []TemplateOutcome {
+	outcomes := e.templateRegistry().Outcomes()
+	replayOff := strings.EqualFold(strings.TrimSpace(e.config.JSTangle.ReplayMode), "off")
+	fallback, _ := url.Parse(e.config.Target.StartURL)
+	for i := range outcomes {
+		o := &outcomes[i]
+		if replayOff && o.Outcome == TemplateWithheldFlushCap && o.Reason == ReasonUnreplayed {
+			o.Outcome, o.Reason = TemplateWithheldPolicy, "replay-off"
+		}
+		if o.Replayed() || o.Outcome == TemplateOutOfScope {
+			continue
+		}
+		target := o.URL
+		if target == "" {
+			stub, ok := BuildTemplateStub(o.Template, fallback)
+			if !ok {
+				continue
+			}
+			target = stub.URL
+		}
+		if parsed, err := url.Parse(target); err == nil && e.spiderScope != nil && !e.spiderScope.IsInScope(parsed) {
+			o.Reason = o.Outcome
+			o.Outcome = TemplateOutOfScope
+		}
+	}
+	return outcomes
+}
+
+func confidenceOrUnknown(confidence string) string {
+	if confidence == "" {
+		return "unknown"
+	}
+	return confidence
+}
+
+// withheldPolicyReason names the replay-safety rule that withheld a fact.
+func withheldPolicyReason(policy ReplaySafety, fact *jstangle.HTTPRequestFact) string {
+	if policy == ReplaySafetyMetadataOnly {
+		return "metadata-only"
+	}
+	method := strings.ToUpper(strings.TrimSpace(fact.Method.Rendered))
+	if method == "" {
+		method = "GET"
+	}
+	if strings.EqualFold(fact.Client, "graphql") && isReplayableMethod(method) {
+		return "graphql-" + strings.ToLower(defaultString(fact.OperationType, "mutation"))
+	}
+	return "method:" + method
+}
+
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 // RequeueReplayTemplate returns a claimed JS-replay template to the pending set

@@ -720,6 +720,20 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 			claimed[k] = replayRef{variant.SourceURL, variant.TemplateID}
 		}
 	}
+	// note records the template's outcome for the integrated source, which
+	// persists every template (not only found ones) after the crawl.
+	note := func(v RequestVariant, n ReplayNote) {
+		if cb.NoteReplayOutcome == nil || v.TemplateID == "" {
+			return
+		}
+		if n.Method == "" {
+			n.Method = v.Method
+		}
+		if n.URL == "" {
+			n.URL = v.URL
+		}
+		cb.NoteReplayOutcome(v.SourceURL, v.TemplateID, n)
+	}
 	defer func() {
 		if cb.RequeueReplayTemplate == nil || len(settled) >= len(claimed) {
 			return
@@ -749,6 +763,7 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 
 		if variant.URL == "" {
 			markSettled(variant)
+			note(variant, ReplayNote{Outcome: TemplateUnresolvable, Reason: "empty-url"})
 			continue
 		}
 
@@ -759,6 +774,7 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 				logger.Debug("Skipping out-of-scope JS extracted request",
 					zap.String("url", variant.URL))
 				markSettled(variant) // out-of-scope is definitive; a retry won't help
+				note(variant, ReplayNote{Outcome: TemplateOutOfScope})
 				continue
 			}
 		}
@@ -768,6 +784,7 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 		if cb.RequestCache.IsSeen(variant.Method, variant.URL, dedupBody) {
 			c.metrics.JSReplayDeduped.Add(1)
 			markSettled(variant) // already sent elsewhere; definitive
+			note(variant, ReplayNote{Outcome: TemplateDeduped})
 			continue
 		}
 		if variant.ReplayTier == "exact" {
@@ -794,6 +811,7 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 				zap.String("method", variant.Method),
 				zap.Error(err))
 			markSettled(variant) // build failure is deterministic; a retry won't help
+			note(variant, ReplayNote{Outcome: TemplateUnresolvable, Reason: "build-error"})
 			continue
 		}
 
@@ -836,14 +854,24 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 				zap.String("url", variant.URL),
 				zap.String("method", variant.Method),
 				zap.Error(err))
+			note(variant, ReplayNote{Outcome: TemplateReplayedNotFound, Reason: "analysis-error",
+				Status: rc.Response().StatusCode, Response: captureReplayResponse(rc)})
 			rc.Close()
 			continue
 		}
 
 		if !found {
+			// The route did not exist by the Analyzer's standard (404, a
+			// request-shape 4xx, or a soft-404). Keep the response: the stub the
+			// source persists for this template carries it as evidence.
+			note(variant, ReplayNote{Outcome: TemplateReplayedNotFound,
+				Status: rc.Response().StatusCode, Response: captureReplayResponse(rc)})
 			rc.Close()
 			continue
 		}
+		// A found template becomes a siteMap node below, which carries the full
+		// response; the note only needs the status.
+		note(variant, ReplayNote{Outcome: TemplateReplayedFound, Status: rc.Response().StatusCode})
 
 		// Discovery callbacks. This task's provenance is a genuine application
 		// reference, so a served extension confirms (keyed on provenance for

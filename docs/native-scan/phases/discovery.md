@@ -104,6 +104,33 @@ When a script holds more endpoints than the request cap, the analysis is
 `partial` with reason `request_cap` and a per-kind `truncated` count, instead
 of a silently shortened list.
 
+Every in-scope request template survives the crawl, not only the ones whose
+replay was judged to exist. After each target, a template that did not become
+a discovery node is stored as an `http_records` row with `source=jstangle`: the
+rendered method, URL, safe headers and body, plus the response when it was
+replayed. Its remarks say what happened to it:
+
+| Remark | Meaning |
+|---|---|
+| `jstangle:<outcome>` | `replayed_found`, `replayed_not_found`, `withheld_policy`, `withheld_confidence`, `withheld_flush_cap`, `deduped`, `unresolvable` |
+| `jstangle:reason=<r>` | detail, for example `method:POST`, `graphql-mutation`, `medium`, `unreplayed` |
+| `jstangle:confidence=<c>`, `jstangle:extractor=<e>` | the fact's provenance |
+| `jstangle:src=<script>#L<line>` | where the call is in the bundle |
+| `jstangle:auth=<kind>:<source>` | the credential source, for example `bearer:localStorage:jwt` |
+| `jstangle:method=unresolved` | the method was templated; the row falls back to GET |
+
+Found templates keep their existing row and gain the same remarks. Out-of-scope
+templates and low-confidence hints are never stored as rows. Only found
+templates and not-found replays that answered 400, 405, 415 or 422 (the route
+exists and wants other input) are handed to later phases; 404s and withheld
+templates are stored only, so persisting never sends a request `replay_safety`
+withheld. Each row carries its full fact as a `jstangle-fact` analysis artifact,
+and each JS asset gets one `jstangle-facts` artifact with its non-request facts
+(client routes with `fullPath`, GraphQL operations, WebSocket/SSE endpoints,
+asset references, browser security flows, path literals and low-confidence
+request hints). At most 2000 rows are stored per target; past that the run
+reports the `js_template_persist_cap` limit.
+
 Asset references form a bounded recursive graph, so lazy chunks, workers, and
 service workers are fetched and analyzed once. Source maps are fetched under the
 normal scope/auth/rate policy; recovered sources are retained as immutable scan
@@ -186,6 +213,9 @@ shape-based soft-dedup backstop. Two properties bound what they can remove:
   (`finding_records`) or by an analysis artifact, and leaves the link intact. The
   feedback line reports the spared count as `kept N referenced by findings`, so a
   deletion count lower than the candidate count is expected, not a failure.
+- **Only `source=deparos` records are touched.** JS-derived (`jstangle`),
+  form (`html-form`) and API-spec (`api-spec`) records, including stored 404
+  stubs of JS endpoints, are never pruned.
 - **Grouping is per origin.** Records are grouped by `(hostname, scheme, port, …)`,
   so `http://h/x`, `https://h/x`, and `https://h:8443/x` each keep their own
   representative rather than collapsing into one.

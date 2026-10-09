@@ -170,6 +170,12 @@ type Callbacks struct {
 	// nil (retry disabled, e.g. for non-engine callers).
 	RequeueReplayTemplate func(sourceURL, id string) bool
 
+	// NoteReplayOutcome records what became of a JS-replay template (keyed by
+	// source URL + template id): found, not found (with the response), out of
+	// scope, deduped, or unresolvable. The integrated source persists every
+	// template from these notes after the crawl. May be nil.
+	NoteReplayOutcome func(sourceURL, templateID string, note ReplayNote)
+
 	// StoreJSTangleRequests persists extracted jstangle requests to database.
 	// Called after jstangle completes. jsURL is the source JavaScript file.
 	StoreJSTangleRequests       func(jsURL *url.URL, reqs []jstangle.ExtractedRequest)
