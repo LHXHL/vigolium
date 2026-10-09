@@ -93,6 +93,15 @@ account creation, credential attempts, dialog answers — is one explicit policy
   `--browser-engine`; availability of the latter two depends on the platform and
   build. Embedded browser archives are extracted on first use and cached by
   version. An explicit `spidering.browser_path` overrides automatic resolution.
+- **Stealth** (`spidering.stealth`: `auto` | `on` | `off`, default `auto`):
+  drops the trivial automation markers — the `enable-automation` switch,
+  `navigator.webdriver`, an empty plugin list, the `HeadlessChrome` brand in
+  `Sec-CH-UA` / `navigator.userAgentData`, mismatched languages, a SwiftShader
+  WebGL renderer under headless. It reduces false negatives where a simple bot
+  wall serves the crawler a challenge page instead of the application; it is
+  not bot-detection evasion. `auto` is on for the `chromium` engine and off for
+  `ungoogled` / `fingerprint`, which carry their own fingerprint flags. Module
+  browser confirmations (`ProbeURL`) use the same default.
 - **Display mode**: headless is the default. Use `--headed` to show browser
   windows, or set `spidering.headless: false` in configuration.
 - **Security posture**: sandbox on (dropped, with a named warning, only where

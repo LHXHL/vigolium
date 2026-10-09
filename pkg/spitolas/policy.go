@@ -21,6 +21,11 @@ const (
 // DialogPolicies lists every accepted DialogPolicy value, default first.
 var DialogPolicies = []DialogPolicy{DialogRecordDismiss, DialogAcceptAll}
 
+// StealthModes lists the accepted SpiderConfig.Stealth / ProbeConfig.Stealth
+// values, default (auto) first. Auto is on for the default chromium engine and
+// off for ungoogled/fingerprint, which bring their own fingerprint flags.
+var StealthModes = config.StealthModes
+
 // InteractionPolicy is the single table of what a browser run is permitted to
 // change. One struct, carried from resolved operator config through to every
 // dispatch gate, so a control cannot describe more than it enforces. Its fields

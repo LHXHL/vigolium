@@ -104,10 +104,12 @@ func TestConfigDefaults(t *testing.T) {
 		t.Errorf("PageLoadTimeout = %v, want 30s", cfg.PageLoadTimeout)
 	}
 
-	// Clickable detection
-	// Must be explicitly enabled via clickElementsWithClickEventHandler()
-	if cfg.UseCDPDetection {
-		t.Error("UseCDPDetection should be false by default")
+	// Clickable detection: on by default, like spidering.no_cdp: false.
+	if !cfg.UseCDPDetection {
+		t.Error("UseCDPDetection should be true by default")
+	}
+	if cfg.Stealth != "" || !cfg.StealthEnabled() {
+		t.Errorf("Stealth = %q (enabled %v), want unset auto resolving to on for chromium", cfg.Stealth, cfg.StealthEnabled())
 	}
 	if !cfg.ClickOnce {
 		t.Error("ClickOnce should be true by default")
@@ -159,6 +161,12 @@ func TestConfigValidate(t *testing.T) {
 			name:    "valid config passes",
 			modify:  func(c *Config) {},
 			wantErr: false,
+		},
+		{
+			name:    "unknown stealth mode fails",
+			modify:  func(c *Config) { c.Stealth = "max" },
+			wantErr: true,
+			errMsg:  "Stealth must be one of",
 		},
 		{
 			name: "nil URL fails",
@@ -552,5 +560,27 @@ func TestConditionTypes(t *testing.T) {
 			t.Errorf("duplicate condition type: %v", typ)
 		}
 		seen[typ] = true
+	}
+}
+
+func TestStealthEnabled(t *testing.T) {
+	cases := []struct {
+		stealth, engine string
+		want            bool
+	}{
+		{"", "chromium", true},
+		{"", "", true},
+		{StealthAuto, "chromium", true},
+		{StealthAuto, "ungoogled", false},
+		{StealthAuto, "fingerprint", false},
+		{"", "ungoogled", false},
+		{StealthOn, "ungoogled", true},
+		{StealthOff, "chromium", false},
+	}
+	for _, c := range cases {
+		cfg := &Config{Stealth: c.stealth, BrowserEngine: c.engine}
+		if got := cfg.StealthEnabled(); got != c.want {
+			t.Errorf("Stealth=%q engine=%q: StealthEnabled = %v, want %v", c.stealth, c.engine, got, c.want)
+		}
 	}
 }

@@ -22,6 +22,14 @@ type SpideringConfig struct {
 	NoCDP               bool   `yaml:"no_cdp"`                // disable CDP event listener detection
 	NoForms             bool   `yaml:"no_forms"`              // disable automatic form filling
 
+	// Stealth drops the browser's automation markers (enable-automation,
+	// navigator.webdriver, the HeadlessChrome client-hint brand, an empty plugin
+	// list) so a trivial bot wall does not hand the crawl a challenge page. Not
+	// an evasion feature. "auto" (default, also "") is on for the chromium
+	// engine and off for ungoogled/fingerprint, which carry their own
+	// fingerprint flags; "on" and "off" force it.
+	Stealth string `yaml:"stealth,omitempty"`
+
 	// SelfRegister lets the crawl complete a public signup form and continue as
 	// the account it creates. On an app with open registration this is the
 	// difference between crawling the marketing shell and crawling the product.
@@ -108,6 +116,11 @@ func (c *SpideringBrowserCompatConfig) SetAll(v bool) {
 // the two together; config cannot import the browser package).
 var SpideringDialogPolicies = []string{"record-dismiss", "accept-all"}
 
+// SpideringStealthModes lists the accepted spidering.stealth values, default
+// first. Mirrors spitolas.StealthModes (pinned by a spitolas test; config
+// cannot import the browser package).
+var SpideringStealthModes = []string{"auto", "on", "off"}
+
 // DefaultSpideringConfig returns sensible defaults for spidering.
 func DefaultSpideringConfig() *SpideringConfig {
 	return &SpideringConfig{
@@ -125,6 +138,7 @@ func DefaultSpideringConfig() *SpideringConfig {
 		Strategy:            "adaptive",
 		IncludeResponseBody: true,
 		BrowserEngine:       "chromium",
+		Stealth:             "auto",
 		NoCDP:               false,
 		NoForms:             false,
 	}
@@ -174,6 +188,9 @@ func (c *SpideringConfig) Validate() error {
 	}
 	if !validEngines[c.BrowserEngine] {
 		return fmt.Errorf("spidering.browser_engine must be 'chromium', 'ungoogled', or 'fingerprint', got: %s", c.BrowserEngine)
+	}
+	if c.Stealth != "" && !slices.Contains(SpideringStealthModes, c.Stealth) {
+		return fmt.Errorf("spidering.stealth must be one of %s, got: %s", strings.Join(SpideringStealthModes, ", "), c.Stealth)
 	}
 	if c.MaxCaptureBodyBytes < -1 {
 		return fmt.Errorf("spidering.max_capture_body_bytes must be 0 (default), -1 (no ceiling) or a positive byte count, got: %d", c.MaxCaptureBodyBytes)

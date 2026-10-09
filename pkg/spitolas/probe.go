@@ -112,6 +112,11 @@ type ProbeConfig struct {
 	BrowserPath   string
 	BrowserEngine string
 
+	// Stealth is the stealth mode, as for the crawl: "auto" (or ""), "on" or
+	// "off". Auto is on for the default chromium engine, so a module
+	// confirmation sees the same page the crawl did.
+	Stealth string
+
 	// Headed disables headless mode. Zero value keeps headless on so a
 	// default-config caller can never pop a window on the user's desktop.
 	Headed bool
@@ -255,6 +260,10 @@ func ProbeURL(ctx context.Context, cfg ProbeConfig) (res *ProbeResult, err error
 	}
 	if cfg.BrowserEngine != "" {
 		crawlerCfg.BrowserEngine = cfg.BrowserEngine
+	}
+	crawlerCfg.Stealth = cfg.Stealth
+	if err := config.ValidateStealth(cfg.Stealth); err != nil {
+		return nil, fmt.Errorf("ProbeURL: %w", err)
 	}
 	if cfg.ProxyURL != "" {
 		crawlerCfg.ProxyURL = cfg.ProxyURL

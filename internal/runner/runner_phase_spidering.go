@@ -403,6 +403,7 @@ func (r *Runner) buildSpiderConfig(target string, settingsCfg config.SpideringCo
 		BrowserEngine:       settingsCfg.BrowserEngine,
 		BrowserPath:         settingsCfg.BrowserPath,
 		NoCDP:               settingsCfg.NoCDP,
+		Stealth:             settingsCfg.Stealth,
 		ProxyURL:            r.options.ProxyURL,
 		ProjectUUID:         r.options.ProjectUUID,
 		// The resolved interaction policy is authoritative; the legacy switches

@@ -149,3 +149,18 @@ func TestSpideringValidateRejectsNegativeDuration(t *testing.T) {
 		t.Errorf("zero must remain valid (it means the default), got %v", err)
 	}
 }
+
+func TestSpideringValidate_Stealth(t *testing.T) {
+	for _, v := range append([]string{""}, SpideringStealthModes...) {
+		c := DefaultSpideringConfig()
+		c.Stealth = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("stealth %q rejected: %v", v, err)
+		}
+	}
+	c := DefaultSpideringConfig()
+	c.Stealth = "max"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "spidering.stealth") {
+		t.Errorf("stealth \"max\" = %v, want a spidering.stealth error", err)
+	}
+}

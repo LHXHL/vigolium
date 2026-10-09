@@ -39,6 +39,9 @@ type Browser struct {
 	// (uaOnce) so NewPage doesn't re-query the browser version per page/tab.
 	uaOnce     sync.Once
 	uaOverride string
+	// uaMetadata is the client-hint metadata sent with uaOverride when stealth
+	// is on (see stealthUserAgentMetadata); nil otherwise.
+	uaMetadata *proto.EmulationUserAgentMetadata
 
 	// crawlCtx, when set, is bound onto every page created by NewPage so that
 	// the crawl's deadline/cancellation propagates into every rod operation
@@ -453,10 +456,20 @@ func (b *Browser) newLauncher(binPath string, compat config.BrowserCompat) *laun
 		Set("use-fake-device-for-media-stream").
 		Set("dbus-stub").
 		Set("lang", "en-US").
-		Set("disable-background-networking").
-		// Disable HTTPS upgrade features to prevent Chrome from auto-upgrading HTTP to HTTPS
-		// which causes timeout when target doesn't have HTTPS server
-		Set("disable-features", "ChromeWhatsNewUI,HttpsUpgrades,HttpsFirstModeV2,HttpsFirstBalancedMode,HttpsFirstModeForAdvancedProtectionUsers,ImageServiceObserveSyncDownloadStatus,TrackingProtection3pcd,LensOverlay,AutomationControlled")
+		Set("disable-background-networking")
+
+	// Appended, not Set: rod's own disable-features (site-per-process,
+	// TranslateUI) must survive. The HTTPS-upgrade features are off so Chrome
+	// does not auto-upgrade HTTP to HTTPS, which times out against a target with
+	// no HTTPS server.
+	l = appendDisableFeatures(l,
+		"ChromeWhatsNewUI", "HttpsUpgrades", "HttpsFirstModeV2", "HttpsFirstBalancedMode",
+		"HttpsFirstModeForAdvancedProtectionUsers", "ImageServiceObserveSyncDownloadStatus",
+		"TrackingProtection3pcd", "LensOverlay")
+
+	if b.config.StealthEnabled() {
+		l = applyStealthFlags(l)
+	}
 
 	// Security boundaries are configured, not hard-coded: the sandbox, TLS
 	// verification, mixed-content blocking and the same-origin policy each
@@ -611,15 +624,24 @@ func (b *Browser) NewPage() (*Page, error) {
 	// its real content. Strip "Headless" from the actual UA (keeping the accurate
 	// Chrome version) and pin Accept-Language to en-US. The UA is resolved once per
 	// browser; the override itself is a page-level CDP call, so it's applied here.
+	//
+	// With stealth on, the override also carries client-hint metadata for the
+	// same version, so navigator.userAgentData and Sec-CH-UA stop naming
+	// HeadlessChrome either.
+	stealth := b.config.StealthEnabled()
 	b.uaOnce.Do(func() {
 		if ver, verr := (proto.BrowserGetVersion{}).Call(b.boundedBrowser()); verr == nil {
 			b.uaOverride = strings.ReplaceAll(ver.UserAgent, "HeadlessChrome", "Chrome")
+			if stealth {
+				b.uaMetadata = stealthUserAgentMetadata(ver.Product, runtime.GOOS, runtime.GOARCH)
+			}
 		}
 	})
 	if b.uaOverride != "" {
 		_ = proto.NetworkSetUserAgentOverride{
-			UserAgent:      b.uaOverride,
-			AcceptLanguage: "en-US,en;q=0.9",
+			UserAgent:         b.uaOverride,
+			AcceptLanguage:    defaultAcceptLanguage,
+			UserAgentMetadata: b.uaMetadata,
 		}.Call(rodPage)
 	}
 
@@ -628,6 +650,12 @@ func (b *Browser) NewPage() (*Page, error) {
 		config:  b.config,
 		browser: b,
 		release: release,
+	}
+
+	// Registered before the first navigation so it runs ahead of page scripts
+	// in every document this tab loads.
+	if stealth {
+		page.installStealth(stealthOptionsFor(b.config.Headless, runtime.GOOS, runtime.GOARCH))
 	}
 
 	// This runs in background and answers JS dialogs per the dialog policy.

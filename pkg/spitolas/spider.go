@@ -42,6 +42,7 @@ type SpiderConfig struct {
 	BrowserEngine       string // "chromium" or "ungoogled"
 	BrowserPath         string // explicit path to browser binary (overrides auto-detection)
 	NoCDP               bool   // disable CDP event listener detection
+	Stealth             string // "auto" (or ""), "on", "off"; see StealthModes
 	NoForms             bool   // disable automatic form filling
 	ProxyURL            string // HTTP proxy URL for browser traffic
 	ScopeFilter         func(host, path string) bool
@@ -124,6 +125,19 @@ type SpiderConfig struct {
 	// RunID names the run in graph file names and manifests — the scan UUID
 	// when the runner has one. Empty falls back to a per-process timestamp.
 	RunID string
+
+	// RequestCounter, when set, is incremented for every http(s) request the
+	// browser sends — third-party and out-of-scope included, each redirect hop
+	// separately — so a caller can report the crawl's network cost while it
+	// runs. InScopeRequestCounter counts the share the ScopeFilter admits (all
+	// of them without one). Shared across concurrent crawls is fine.
+	RequestCounter        *atomic.Int64
+	InScopeRequestCounter *atomic.Int64
+}
+
+// requestCounters is cfg's live counter pair in the capture's shape.
+func (cfg SpiderConfig) requestCounters() network.RequestCounters {
+	return network.RequestCounters{Sent: cfg.RequestCounter, InScope: cfg.InScopeRequestCounter}
 }
 
 // SpiderResult contains the results of a spidering run.
@@ -141,6 +155,12 @@ type SpiderResult struct {
 	FormSubmitsUncertain int
 	Duration             time.Duration
 	RecordsSaved         int
+
+	// RequestsSent counts every http(s) request the browser sent during the run
+	// (third-party included); RequestsInScope is the share the scope admits.
+	// See SpiderConfig.RequestCounter for the live figure.
+	RequestsSent    int64
+	RequestsInScope int64
 
 	// Capture is what the run's traffic capture actually retained (see
 	// CaptureReceipt.Complete). From RunSpider it is final. A SpiderSession
@@ -307,6 +327,7 @@ func buildCrawlerConfig(cfg SpiderConfig) (*config.Config, error) {
 		crawlerCfg.BrowserPath = cfg.BrowserPath
 	}
 	crawlerCfg.UseCDPDetection = !cfg.NoCDP
+	crawlerCfg.Stealth = cfg.Stealth
 	// The policy sets form filling, GET/POST form submission, self-registration
 	// and credential attempts in one place; see config.ApplyPolicy.
 	crawlerCfg.ApplyPolicy(config.InteractionPolicy(cfg.EffectivePolicy()))
@@ -448,6 +469,10 @@ func RunSpider(ctx context.Context, cfg SpiderConfig, repo RecordSaver) (*Spider
 		return nil, err
 	}
 	c.SetWriter(writer)
+	// This run's own counters for the result, plus the caller's live ones.
+	runCounters := network.RequestCounters{Sent: new(atomic.Int64), InScope: new(atomic.Int64)}
+	c.AddRequestCounters(runCounters)
+	c.AddRequestCounters(cfg.requestCounters())
 
 	result, runErr := c.Run(ctx)
 	// The crawl's capture closes the writer on its way out (on every path that
@@ -462,11 +487,19 @@ func RunSpider(ctx context.Context, cfg SpiderConfig, repo RecordSaver) (*Spider
 		// account goes back with the error.
 		// AuthState travels too: a RequireAuth failure is this error, and the
 		// caller should be able to say why without parsing it.
-		return &SpiderResult{RecordsSaved: writer.Count(), Capture: receipt, AuthState: c.GetStats().AuthState}, runErr
+		return &SpiderResult{
+			RecordsSaved:    writer.Count(),
+			Capture:         receipt,
+			AuthState:       c.GetStats().AuthState,
+			RequestsSent:    runCounters.Sent.Load(),
+			RequestsInScope: runCounters.InScope.Load(),
+		}, runErr
 	}
 
 	res := spiderResultFromCrawl(result, writer.Count())
 	res.Capture = receipt
+	res.RequestsSent = runCounters.Sent.Load()
+	res.RequestsInScope = runCounters.InScope.Load()
 	writeCrawlGraph(c, cfg, crawlerCfg, receipt)
 	return res, nil
 }

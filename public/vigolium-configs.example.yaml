@@ -996,6 +996,21 @@ discovery:
     max_assets_per_host: 512
     max_assets_total: 2048
 
+    # JS-derived requests the crawl did not confirm (404/soft-404 replays,
+    # medium-confidence or withheld templates) are still stored as
+    # source=jstangle http_records with jstangle:* remarks, so later phases and
+    # read commands see every endpoint the bundle references.
+    # Also store templates that were never sent (withheld by replay_mode or
+    # replay_safety, deduped, unresolved). Default: true.
+    persist_unreplayed: true
+    # Not-found replay statuses that still prove the route exists; these stubs
+    # are handed to later phases, every other stub is stored only.
+    # Default: [400, 405, 415, 422]
+    persist_not_found_emit_statuses: [400, 405, 415, 422]
+    # Per-target cap on stored templates; past it the run reports the
+    # js_template_persist_cap limit. 0 = default (2000).
+    max_persisted_js_templates: 2000
+
 # ============================================================================
 # Browser-Based Spidering (Spitolas)
 # ============================================================================
@@ -1051,6 +1066,18 @@ spidering:
   # Options: "chromium" (default), "ungoogled" (Linux only)
   # Default: chromium
   browser_engine: chromium
+
+  # Drop the browser's automation markers: the enable-automation switch,
+  # navigator.webdriver, an empty plugin list, a "HeadlessChrome" client-hint
+  # brand (Sec-CH-UA / navigator.userAgentData) and similar trivial checks. This
+  # reduces false negatives where a simple bot wall serves the crawler a
+  # challenge page instead of the application. It is not bot-detection evasion:
+  # anything that fingerprints harder still sees an automated browser.
+  # Also applies to module browser confirmations (XSS dialog probes).
+  # Options: "auto" (on for the chromium engine, off for ungoogled/fingerprint,
+  # which bring their own --fingerprint flags), "on", "off"
+  # Default: auto
+  stealth: auto
 
   # Disable CDP (Chrome DevTools Protocol) event listener detection.
   # When false (default), the crawler uses CDP to detect click handlers

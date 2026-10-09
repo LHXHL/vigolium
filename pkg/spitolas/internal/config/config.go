@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -139,6 +141,10 @@ type Config struct {
 	BrowserCount  int
 	BrowserEngine string // "chromium" (default), "ungoogled", or "fingerprint"
 	BrowserPath   string // explicit path to browser binary (overrides auto-detection)
+
+	// Stealth is the stealth mode: StealthAuto (or ""), StealthOn or StealthOff.
+	// See StealthEnabled for what auto resolves to.
+	Stealth string
 
 	// BrowserCompat is the set of browser security exceptions in force; see
 	// DefaultBrowserCompat for the defaults.
@@ -526,10 +532,10 @@ func New(targetURL string) (*Config, error) {
 		ExcludeSelectors:             []string{},
 		DontClickSelectors:           []string{},
 		DontClickChildrenOfSelectors: []string{},
-		// WebDriverBackedEmbeddedBrowser.USE_CDP defaults to false
-		// Must be explicitly enabled via BrowserOptions.setUSE_CDP(true) or
-		// crawlRules().clickElementsWithClickEventHandler()
-		UseCDPDetection: false,
+		// On by default, matching the product runs (spidering.no_cdp: false):
+		// library and test callers that build a Config directly detect elements
+		// whose only clue is a JS click listener, too.
+		UseCDPDetection: true,
 		ClickOnce:       true,
 		// CRITICAL FIX: (true instead of false)
 		CrawlFrames:        true,
@@ -773,8 +779,46 @@ func (c *Config) Validate() error {
 	if !validEngines[c.BrowserEngine] {
 		return fmt.Errorf("BrowserEngine must be 'chromium', 'ungoogled', or 'fingerprint', got: %s", c.BrowserEngine)
 	}
+	if err := ValidateStealth(c.Stealth); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+// Stealth modes (Config.Stealth). The default, auto, applies the stealth
+// patches to the default chromium engine and leaves the ungoogled/fingerprint
+// engines alone: those carry their own --fingerprint* identity, which the
+// patches would contradict.
+const (
+	StealthAuto = "auto"
+	StealthOn   = "on"
+	StealthOff  = "off"
+)
+
+// StealthModes lists the accepted Config.Stealth values, default first.
+var StealthModes = []string{StealthAuto, StealthOn, StealthOff}
+
+// ValidateStealth rejects a stealth mode outside StealthModes ("" is auto).
+func ValidateStealth(mode string) error {
+	if mode != "" && !slices.Contains(StealthModes, mode) {
+		return fmt.Errorf("Stealth must be one of %s, got: %s", strings.Join(StealthModes, ", "), mode)
+	}
+	return nil
+}
+
+// StealthEnabled reports whether the browser should drop its automation
+// markers (launcher flags, init script, User-Agent client hints). It reduces
+// false negatives from trivial bot walls; it is not an evasion feature.
+func (c *Config) StealthEnabled() bool {
+	switch c.Stealth {
+	case StealthOn:
+		return true
+	case StealthOff:
+		return false
+	default:
+		return c.BrowserEngine != "ungoogled" && c.BrowserEngine != "fingerprint"
+	}
 }
 
 // GetBasicAuthURL returns the URL with basic auth credentials embedded.
