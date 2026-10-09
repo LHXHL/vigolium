@@ -71,7 +71,7 @@ func (m *Module) tryHPPFallback(
 	if err != nil {
 		return nil, err
 	}
-	if ctrlBlocked || !statusOK(ctrlSig) || !ratioSimilar(ctrlSig, baselineSig) {
+	if ctrlBlocked || !ratioSimilar(ctrlSig, baselineSig) { // ratioSimilar also requires the baseline status
 		return nil, nil
 	}
 
@@ -96,9 +96,9 @@ func (m *Module) tryHPPFallback(
 		if err != nil {
 			return nil, err
 		}
-		// A variant whose own benign form is blocked or non-200 is not a usable
-		// 200-vs-200 differential surface — skip it.
-		if vBaseBlocked || !statusOK(vBaseSig) {
+		// A variant whose own benign form is blocked, or whose status cannot
+		// anchor a differential (see statusEligible), is not a usable surface.
+		if vBaseBlocked || !statusEligible(vBaseSig, locationOf(vBaseFull)) {
 			continue
 		}
 		for _, pair := range candidates {

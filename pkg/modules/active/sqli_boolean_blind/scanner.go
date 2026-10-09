@@ -2,6 +2,7 @@ package sqli_boolean_blind
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/types/severity"
 )
 
 // negotiationHeaders are request headers consumed by content-negotiation /
@@ -174,9 +176,11 @@ ipScan:
 			continue
 		}
 
-		// Only meaningful to look for a 200-vs-200 content differential when the
-		// unmodified request itself returns 200. Skip non-200 baselines outright.
-		if !statusOK(baselineSig) {
+		// The unmodified response must be able to anchor a differential: a 2xx,
+		// or a 3xx/4xx with a body that is neither a login redirect nor an
+		// auth/WAF/rate-limit status (see statusEligible). 5xx baselines and
+		// empty redirects/errors are skipped outright.
+		if !statusEligible(baselineSig, locationOf(baselineFull)) {
 			continue
 		}
 
@@ -289,14 +293,21 @@ func (m *Module) testPayloadPair(
 		return nil, nil
 	}
 
-	// Step 3a: All three responses must be HTTP 200. Boolean-blind manifests as
-	// content differences *within* a successful response; a differential that is
-	// really a status flip (e.g. baseline/TRUE 200 vs FALSE 302 redirect, or a
-	// 4xx/5xx error) is a classic false positive, so reject anything that isn't
-	// 200/200/200.
-	if !statusOK(baselineSig) || !statusOK(trueSig1) || !statusOK(falseSig1) {
+	// Step 3a: classify the status triplet. A same-status triplet (200/200/200,
+	// 201/201/201, a 404-with-body triplet, …) is judged on content by steps 3b–8
+	// below. A stable 2xx/2xx/other split is a status oracle, which skips the
+	// content-ratio steps but must clear its own controls. Anything else —
+	// TRUE leaving the baseline status, a 5xx, an auth/WAF/rate-limit status, a
+	// login redirect — is the classic status-flip false positive and is rejected.
+	mode := classifyStatusPair(baselineSig, trueSig1, falseSig1,
+		locationOf(baselineFull), locationOf(trueFull), locationOf(falseFull))
+	switch mode {
+	case modeReject:
 		return nil, nil
+	case modeStatusOracle:
+		return m.confirmStatusOracle(ctx, httpClient, ip, baseValue, pair, baselineSig, baselineFull, trueFull, falseFull, falseSig1)
 	}
+	prof := contentProfile(baselineSig.StatusCode)
 
 	// Step 3b: TRUE and FALSE must produce materially different responses.
 	// Fast length/hash reject first, then require textual divergence so that
@@ -364,23 +375,8 @@ func (m *Module) testPayloadPair(
 		return nil, nil // Baseline is unstable — responses are too dynamic to trust
 	}
 
-	// Step 8: Multi-round, multi-factor confirmation. Boolean-blind is the
-	// technique most prone to false positives, so a single TRUE/FALSE
-	// differential is never trusted on its own. For pairs whose breakout
-	// boundary is known (the randomized matrix), run the full logic battery. For
-	// curated/bypass/WAF pairs — which historically only re-ran the same literal
-	// `1=1`/`1=2` strings and so could not tell a real boolean oracle from a WAF
-	// tautology signature — re-derive the condition with fresh RANDOM operands in
-	// the same boundary (preserving any comment/encoding evasion) and require the
-	// differential to reproduce. A differential bound to the literal token, not to
-	// boolean truth, vanishes under random operands and is rejected.
-	isHeader := ip.Type() == httpmsg.INS_HEADER
-	var confirmed bool
-	if pair.boundaried {
-		confirmed, err = m.confirmLogic(ctx, httpClient, ip, baseValue, pair.prefix, pair.suffix)
-	} else {
-		confirmed, err = m.confirmRandomized(ctx, httpClient, ip, truePayload, falsePayload, isHeader)
-	}
+	// Step 8: multi-round, multi-factor confirmation (see confirmBoolean).
+	confirmed, err := m.confirmBoolean(ctx, httpClient, ip, baseValue, pair, prof)
 	if err != nil {
 		return nil, err
 	}
@@ -388,24 +384,145 @@ func (m *Module) testPayloadPair(
 		return nil, nil
 	}
 
-	// All checks passed — confirmed blind SQLi. Attach the differential that proves
-	// it: the TRUE payload is the primary (proof) pair; the clean baseline and the
-	// FALSE payload — the two responses TRUE was discriminated against — go in the
-	// evidence so a reviewer can see all three sides of the comparison.
-	fuzzedRaw := ip.BuildRequest([]byte(truePayload))
+	// All checks passed — confirmed blind SQLi.
+	return buildFinding(ip, baseValue, truePayload, falsePayload, baselineFull, trueFull, falseFull,
+		"Boolean-based blind SQL injection confirmed via TRUE/FALSE response differential with baseline verification"), nil
+}
+
+// confirmBoolean runs step 8, the multi-round, multi-factor confirmation, under
+// the given branch profile. Boolean-blind is the technique most prone to false
+// positives, so a single TRUE/FALSE differential is never trusted on its own.
+// For pairs whose breakout boundary is known (the randomized matrix), run the
+// full logic battery. For curated/bypass/WAF pairs — which historically only
+// re-ran the same literal `1=1`/`1=2` strings and so could not tell a real
+// boolean oracle from a WAF tautology signature — re-derive the condition with
+// fresh RANDOM operands in the same boundary (preserving any comment/encoding
+// evasion) and require the differential to reproduce. A differential bound to
+// the literal token, not to boolean truth, vanishes under random operands and
+// is rejected. Header points and status oracles may not fall back to
+// repeat-only confirmation.
+func (m *Module) confirmBoolean(
+	ctx *httpmsg.HttpRequestResponse,
+	httpClient *http.Requester,
+	ip httpmsg.InsertionPoint,
+	baseValue string,
+	pair payloadPair,
+	prof branchProfile,
+) (bool, error) {
+	if pair.boundaried {
+		return m.confirmLogic(ctx, httpClient, ip, baseValue, pair.prefix, pair.suffix, prof)
+	}
+	requireOperands := ip.Type() == httpmsg.INS_HEADER || prof.isStatusOracle()
+	return m.confirmRandomized(ctx, httpClient, ip, baseValue+pair.trueVal, baseValue+pair.falseVal, requireOperands, prof)
+}
+
+// confirmStatusOracle confirms a status-flip differential (baseline and TRUE
+// share a 2xx status, FALSE returns another status). The content-ratio steps
+// are skipped, so the status itself must prove the boolean logic:
+//
+//	(a) the FALSE status reproduces on retry, TRUE keeps the baseline status,
+//	    and the baseline status is stable;
+//	(b) a syntax-break control (base value + `'")`) must NOT return the FALSE
+//	    status — otherwise any malformed input yields that status and the flip
+//	    is input validation, not a SQL condition;
+//	(c) the multi-round random-operand battery (confirmLogic/confirmRandomized)
+//	    reproduces the split with status as the comparator.
+//
+// A confirmed oracle is reported at Firm confidence with all statuses in the
+// evidence.
+func (m *Module) confirmStatusOracle(
+	ctx *httpmsg.HttpRequestResponse,
+	httpClient *http.Requester,
+	ip httpmsg.InsertionPoint,
+	baseValue string,
+	pair payloadPair,
+	baselineSig responseSignature,
+	baselineFull, trueFull, falseFull string,
+	falseSig responseSignature,
+) (*output.ResultEvent, error) {
+	truePayload := baseValue + pair.trueVal
+	falsePayload := baseValue + pair.falseVal
+	prof := statusOracleProfile(baselineSig.StatusCode, falseSig.StatusCode)
+
+	// (a) Reproduce the split, and prove the baseline status itself is stable.
+	_, trueSig2, trueBlocked2, err := m.sendPayload(ctx, httpClient, ip, truePayload)
+	if err != nil {
+		return nil, err
+	}
+	_, falseSig2, falseBlocked2, err := m.sendPayload(ctx, httpClient, ip, falsePayload)
+	if err != nil {
+		return nil, err
+	}
+	if trueBlocked2 || falseBlocked2 || !prof.distinct(trueSig2, falseSig2) {
+		return nil, nil
+	}
+	_, baselineSig2, baselineBlocked2, err := m.sendPayload(ctx, httpClient, ip, baseValue)
+	if err != nil {
+		return nil, err
+	}
+	if baselineBlocked2 || baselineSig2.StatusCode != baselineSig.StatusCode {
+		return nil, nil
+	}
+
+	// (b) Syntax-break control: malformed input must not land on the FALSE status.
+	breakPayload := baseValue + syntaxBreakSuffix
+	breakFull, breakSig, breakBlocked, err := m.sendPayload(ctx, httpClient, ip, breakPayload)
+	if err != nil {
+		return nil, err
+	}
+	if breakBlocked || breakSig.StatusCode == prof.falseStatus {
+		return nil, nil
+	}
+
+	// (c) Random-operand battery with status as the comparator.
+	confirmed, err := m.confirmBoolean(ctx, httpClient, ip, baseValue, pair, prof)
+	if err != nil || !confirmed {
+		return nil, err
+	}
+
+	statuses := fmt.Sprintf("baseline=%d TRUE=%d FALSE=%d syntax-break=%d",
+		baselineSig.StatusCode, prof.trueStatus, prof.falseStatus, breakSig.StatusCode)
+	r := buildFinding(ip, baseValue, truePayload, falsePayload, baselineFull, trueFull, falseFull,
+		"Boolean-based blind SQL injection confirmed via a TRUE/FALSE HTTP status differential ("+statuses+
+			"): TRUE keeps the original status, FALSE reproducibly returns another, the split follows random operands, "+
+			"and malformed SQL does not produce the FALSE status")
+	r.Info.Confidence = severity.Firm
+	if r.Metadata == nil {
+		r.Metadata = map[string]interface{}{}
+	}
+	r.Metadata["differential"] = modeStatusOracle.String()
+	r.Metadata["statuses"] = statuses
+	ev := modkit.NewEvidenceCollector()
+	ev.Add(fmt.Sprintf("syntax-break control (status %d)", breakSig.StatusCode),
+		string(ip.BuildRequest([]byte(breakPayload))), breakFull)
+	r.AdditionalEvidence = append(r.AdditionalEvidence, ev.Entries()...)
+	r.AdditionalEvidence = append(r.AdditionalEvidence, "# [status-oracle] "+statuses)
+	return r, nil
+}
+
+// buildFinding assembles a confirmed boolean-blind finding. The TRUE payload is
+// the primary (proof) pair; the clean baseline and the FALSE payload — the two
+// responses TRUE was discriminated against — go in the evidence so a reviewer
+// can see all three sides of the comparison.
+func buildFinding(
+	ip httpmsg.InsertionPoint,
+	baseValue, truePayload, falsePayload string,
+	baselineFull, trueFull, falseFull string,
+	description string,
+) *output.ResultEvent {
 	ev := modkit.NewEvidenceCollector()
 	ev.Add("baseline (unmodified value)", string(ip.BuildRequest([]byte(baseValue))), baselineFull)
 	ev.Add("false-payload", string(ip.BuildRequest([]byte(falsePayload))), falseFull)
 	return &output.ResultEvent{
-		Request:            string(fuzzedRaw),
+		Request:            string(ip.BuildRequest([]byte(truePayload))),
 		Response:           trueFull,
 		AdditionalEvidence: ev.Entries(),
 		FuzzingParameter:   ip.Name(),
 		ExtractedResults:   []string{truePayload, falsePayload},
 		Info: output.Info{
-			Description: "Boolean-based blind SQL injection confirmed via TRUE/FALSE response differential with baseline verification",
+			Description: description,
 		},
-	}, nil
+	}
 }
 
 // sendPayload sends a payload through an insertion point and returns the response

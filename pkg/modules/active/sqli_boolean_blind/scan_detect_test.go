@@ -253,7 +253,7 @@ func TestConfirmLogic_Confirms(t *testing.T) {
 	rr := modtest.Request(t, srv.URL+"/item?id=1")
 	ip := modtest.InsertionPoint(t, rr, "id")
 
-	ok, err := New().confirmLogic(rr, client, ip, "1", "", "-- -")
+	ok, err := New().confirmLogic(rr, client, ip, "1", "", "-- -", contentProfile(http.StatusOK))
 	require.NoError(t, err)
 	assert.True(t, ok, "boolean sink should pass the logic battery")
 }
@@ -280,7 +280,7 @@ func TestConfirmLogic_RejectsValidityIgnorer(t *testing.T) {
 	rr := modtest.Request(t, srv.URL+"/item?id=1")
 	ip := modtest.InsertionPoint(t, rr, "id")
 
-	ok, err := New().confirmLogic(rr, client, ip, "1", "", "-- -")
+	ok, err := New().confirmLogic(rr, client, ip, "1", "", "-- -", contentProfile(http.StatusOK))
 	require.NoError(t, err)
 	assert.False(t, ok, "an endpoint that ignores SQL validity must be rejected")
 }

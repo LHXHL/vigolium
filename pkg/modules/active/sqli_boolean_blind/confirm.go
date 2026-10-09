@@ -30,11 +30,16 @@ const confirmRounds = 3
 //   - an invalid-syntax probe ("AND <n> <m>") that must NOT render the TRUE
 //     page — otherwise the endpoint ignores SQL validity and the differential
 //     was spurious.
+//
+// prof fixes the status each branch must return and the comparator that decides
+// whether two responses are the same page (body ratio for a same-status triplet,
+// status code for a status oracle).
 func (m *Module) confirmLogic(
 	ctx *httpmsg.HttpRequestResponse,
 	httpClient *http.Requester,
 	ip httpmsg.InsertionPoint,
 	baseValue, prefix, suffix string,
+	prof branchProfile,
 ) (bool, error) {
 	// cond builds "<base><prefix> <logic> <left><cmp><right><suffix>", e.g.
 	// "1' AND 42<>17-- -". With cmp "=", a=a is TRUE and a=b is FALSE; with cmp
@@ -44,7 +49,7 @@ func (m *Module) confirmLogic(
 	}
 
 	// Determine which logical operator is the working oracle for this row.
-	logic, ok, err := m.detectLogicOp(ctx, httpClient, ip, cond)
+	logic, ok, err := m.detectLogicOp(ctx, httpClient, ip, cond, prof)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -73,17 +78,14 @@ func (m *Module) confirmLogic(
 			return false, err
 		}
 
-		// Factor: neither form may be a WAF/CDN block, and both must be HTTP 200
-		// producing different pages. A blocked probe or a branch flipping to a
-		// redirect/error is a status/edge artifact, not a 200-vs-200 boolean
-		// signal — reject.
+		// Factor: neither form may be a WAF/CDN block, each must return the
+		// status its branch was classified with, and the two must be different
+		// pages under the profile's comparator. A blocked probe or a branch
+		// drifting to another status is an edge/status artifact — reject.
 		if tBlocked || fBlocked {
 			return false, nil
 		}
-		if !statusOK(tSig) || !statusOK(fSig) {
-			return false, nil
-		}
-		if quickRatio(tSig, fSig) >= upperRatioBound {
+		if !prof.distinct(tSig, fSig) {
 			return false, nil
 		}
 		trueSigs = append(trueSigs, tSig)
@@ -93,7 +95,7 @@ func (m *Module) confirmLogic(
 	// Factor: each branch must be stable across rounds even though the operands
 	// and comparison operator changed — it is the boolean truth value that
 	// decides the page, not the literal tokens (defeats apps echoing the input).
-	if !roundsStable(trueSigs, falseSigs) {
+	if !roundsStable(trueSigs, falseSigs, prof.same) {
 		return false, nil
 	}
 
@@ -108,7 +110,7 @@ func (m *Module) confirmLogic(
 	if invBlocked {
 		return false, nil
 	}
-	if ratioSimilar(invSig, trueSigs[0]) {
+	if prof.same(invSig, trueSigs[0]) {
 		return false, nil
 	}
 
@@ -123,6 +125,7 @@ func (m *Module) detectLogicOp(
 	httpClient *http.Requester,
 	ip httpmsg.InsertionPoint,
 	cond func(logic, cmp, left, right string) string,
+	prof branchProfile,
 ) (string, bool, error) {
 	for _, logic := range []string{"AND", "OR"} {
 		a, b := distinctNums()
@@ -139,9 +142,9 @@ func (m *Module) detectLogicOp(
 		if tBlocked || fBlocked {
 			continue
 		}
-		// Require a 200-vs-200 divergence: a 200↔redirect/error split is a status
-		// flip, not the boolean oracle we want.
-		if statusOK(tSig) && statusOK(fSig) && quickRatio(tSig, fSig) < upperRatioBound {
+		// Require the divergence the triplet was classified with: the expected
+		// status on each branch and distinguishable responses.
+		if prof.distinct(tSig, fSig) {
 			return logic, true, nil
 		}
 	}
@@ -161,6 +164,7 @@ func (m *Module) confirmRepeat(
 	httpClient *http.Requester,
 	ip httpmsg.InsertionPoint,
 	truePayload, falsePayload string,
+	prof branchProfile,
 ) (bool, error) {
 	var trueSigs, falseSigs []responseSignature
 	for i := 0; i < confirmRounds; i++ {
@@ -172,30 +176,27 @@ func (m *Module) confirmRepeat(
 		if err != nil {
 			return false, err
 		}
-		// A blocked probe or a status flip is an edge/status artifact, not a
-		// 200-vs-200 boolean signal — reject.
+		// A blocked probe or a status drift is an edge/status artifact, not a
+		// boolean signal — reject.
 		if tBlocked || fBlocked {
 			return false, nil
 		}
-		if !statusOK(tSig) || !statusOK(fSig) {
-			return false, nil
-		}
-		if quickRatio(tSig, fSig) >= upperRatioBound {
+		if !prof.distinct(tSig, fSig) {
 			return false, nil
 		}
 		trueSigs = append(trueSigs, tSig)
 		falseSigs = append(falseSigs, fSig)
 	}
-	return roundsStable(trueSigs, falseSigs), nil
+	return roundsStable(trueSigs, falseSigs, prof.same), nil
 }
 
-// roundsStable reports whether each branch's responses are mutually
-// ratio-similar across rounds: every TRUE response resembles the first TRUE
-// response (and likewise for FALSE). It confirms the boolean truth value, not
-// the changing operands, is what decides the page.
-func roundsStable(trueSigs, falseSigs []responseSignature) bool {
+// roundsStable reports whether each branch's responses match across rounds
+// under the comparator: every TRUE response matches the first TRUE response
+// (and likewise for FALSE). It confirms the boolean truth value, not the
+// changing operands, is what decides the page.
+func roundsStable(trueSigs, falseSigs []responseSignature, same comparator) bool {
 	for i := 1; i < len(trueSigs); i++ {
-		if !ratioSimilar(trueSigs[0], trueSigs[i]) || !ratioSimilar(falseSigs[0], falseSigs[i]) {
+		if !same(trueSigs[0], trueSigs[i]) || !same(falseSigs[0], falseSigs[i]) {
 			return false
 		}
 	}

@@ -132,14 +132,56 @@ func TestIsDifferent(t *testing.T) {
 	}
 }
 
-func TestStatusOK(t *testing.T) {
-	if !statusOK(responseSignature{StatusCode: 200}) {
-		t.Error("200 should be OK")
+func TestClassifyStatusPair(t *testing.T) {
+	sig := func(code, bodyLen int) responseSignature {
+		return responseSignature{StatusCode: code, BodyLength: bodyLen}
 	}
-	for _, code := range []int{301, 302, 304, 403, 404, 500} {
-		if statusOK(responseSignature{StatusCode: code}) {
-			t.Errorf("status %d should not be OK", code)
-		}
+	tests := []struct {
+		name                       string
+		base, tru, fal             responseSignature
+		baseLoc, trueLoc, falseLoc string
+		want                       statusMode
+	}{
+		{"200 triplet", sig(200, 100), sig(200, 100), sig(200, 40), "", "", "", modeSameStatus},
+		{"201 triplet", sig(201, 100), sig(201, 100), sig(201, 40), "", "", "", modeSameStatus},
+		{"404 triplet with body", sig(404, 100), sig(404, 100), sig(404, 40), "", "", "", modeSameStatus},
+		{"404 triplet without body", sig(404, 0), sig(404, 0), sig(404, 0), "", "", "", modeReject},
+		{"302 triplet with body, differing Location", sig(302, 50), sig(302, 50), sig(302, 50), "/a", "/a", "/b", modeSameStatus},
+		{"302 triplet to login", sig(302, 50), sig(302, 50), sig(302, 50), "/login", "/login", "/login", modeReject},
+		{"403 triplet", sig(403, 100), sig(403, 100), sig(403, 40), "", "", "", modeReject},
+		{"500 triplet", sig(500, 100), sig(500, 100), sig(500, 40), "", "", "", modeReject},
+		{"200/200/404 oracle", sig(200, 100), sig(200, 100), sig(404, 40), "", "", "", modeStatusOracle},
+		{"200/200/302 non-login oracle", sig(200, 100), sig(200, 100), sig(302, 0), "", "", "/items", modeStatusOracle},
+		{"200/200/302 login redirect", sig(200, 100), sig(200, 100), sig(302, 0), "", "", "/login?next=x", modeReject},
+		{"200/200/401", sig(200, 100), sig(200, 100), sig(401, 10), "", "", "", modeReject},
+		{"200/200/403", sig(200, 100), sig(200, 100), sig(403, 10), "", "", "", modeReject},
+		{"200/200/407", sig(200, 100), sig(200, 100), sig(407, 10), "", "", "", modeReject},
+		{"200/200/429", sig(200, 100), sig(200, 100), sig(429, 10), "", "", "", modeReject},
+		{"200/200/500", sig(200, 100), sig(200, 100), sig(500, 10), "", "", "", modeReject},
+		{"TRUE leaves baseline status", sig(200, 100), sig(404, 100), sig(404, 40), "", "", "", modeReject},
+		{"TRUE 5xx", sig(200, 100), sig(500, 100), sig(200, 40), "", "", "", modeReject},
+		{"404 baseline cannot be an oracle", sig(404, 100), sig(404, 100), sig(200, 40), "", "", "", modeReject},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyStatusPair(tt.base, tt.tru, tt.fal, tt.baseLoc, tt.trueLoc, tt.falseLoc)
+			if got != tt.want {
+				t.Errorf("classifyStatusPair() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLocationOf(t *testing.T) {
+	full := "HTTP/1.1 302 Found\r\nContent-Type: text/html\r\nlocation:  /login?next=%2F \r\n\r\nLocation: /body-not-header"
+	if got := locationOf(full); got != "/login?next=%2F" {
+		t.Errorf("locationOf() = %q", got)
+	}
+	if got := locationOf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nLocation: /x"); got != "" {
+		t.Errorf("locationOf() must stop at the header block, got %q", got)
+	}
+	if got := locationOf(""); got != "" {
+		t.Errorf("locationOf(\"\") = %q", got)
 	}
 }
 
