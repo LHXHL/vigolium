@@ -5,6 +5,8 @@ import type { WebpackBundleState } from '../mapping/extractors/webpackExtractor'
 export interface AxiosInstanceState {
   baseURL: string;
   headers: string[];
+  /** The `create(...)` call, so requests can name it as a related call site. */
+  node?: import('@babel/types').Node;
 }
 
 /** All mutable analyzer state owned by one analysis job. */
@@ -16,6 +18,10 @@ export interface EngineState {
   trackedVariables: Map<string, Set<string>>;
   trackedVariablesFinalized: boolean;
   axiosInstances: Map<string, AxiosInstanceState>;
+  /** Folded URL/URLSearchParams renderings keyed by their constructor node. */
+  urlModels: WeakMap<object, string[]>;
+  /** Identifier references to a modelled URL/URLSearchParams binding. */
+  urlModelRefs: WeakSet<object>;
   limits: {
     maxAlternativesPerValue: number;
     maxTemplateCombinations: number;
@@ -42,6 +48,8 @@ export function createEngineState(): EngineState {
     trackedVariables: new Map(),
     trackedVariablesFinalized: false,
     axiosInstances: new Map(),
+    urlModels: new WeakMap(),
+    urlModelRefs: new WeakSet(),
     limits: {
       maxAlternativesPerValue: 16,
       maxTemplateCombinations: 64,

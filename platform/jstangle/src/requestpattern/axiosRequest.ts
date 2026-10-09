@@ -93,7 +93,8 @@ export function collectAxiosInstances(
 ): void {
   if (!ast) return;
 
-  const record = (name: string, configArg: t.Node | undefined, requireBaseURL: boolean) => {
+  const record = (name: string, call: t.CallExpression, requireBaseURL: boolean) => {
+    const configArg = call.arguments[0];
     let baseURL = '';
     let headers: string[] = [];
     if (configArg && t.isObjectExpression(configArg)) {
@@ -107,7 +108,7 @@ export function collectAxiosInstances(
       }
     }
     if (requireBaseURL && !baseURL) return;
-    axiosInstances().set(name, { baseURL, headers });
+    axiosInstances().set(name, { baseURL, headers, node: call });
   };
 
   traverse(ast, {
@@ -117,14 +118,14 @@ export function collectAxiosInstances(
       if (!t.isIdentifier(id) || !init || !t.isCallExpression(init)) return;
       const info = isAxiosCreateCall(init);
       if (!info) return;
-      record(id.name, init.arguments[0], info.requireBaseURL);
+      record(id.name, init, info.requireBaseURL);
     },
     AssignmentExpression(path) {
       const { left, right } = path.node;
       if (!t.isIdentifier(left) || !t.isCallExpression(right)) return;
       const info = isAxiosCreateCall(right);
       if (!info) return;
-      record(left.name, right.arguments[0], info.requireBaseURL);
+      record(left.name, right, info.requireBaseURL);
     },
   } as TraverseOptions);
 }
@@ -206,6 +207,7 @@ function emitFromUrlNode(args: {
     }), {
       extractor: 'axios', client: 'axios', confidence: 'high',
       node: path.node, functionName: context?.currentFunction,
+      ...(instance.node && baseURL === instance.baseURL ? { relatedNodes: [instance.node] } : {}),
     });
   }
 }

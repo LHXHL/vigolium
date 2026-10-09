@@ -23,7 +23,23 @@ export type AnalysisCapability =
   | 'graphqlOperations'
   | 'realtimeProtocols'
   | 'clientRoutes'
-  | 'browserSecurityFlows';
+  | 'browserSecurityFlows'
+  | 'pathLiterals';
+
+/**
+ * Additive record features advertised next to the analysis capabilities so a
+ * consumer can gate on them (Go: `Capabilities.Has`) without a protocol bump.
+ * A helper that predates a feature simply does not list it.
+ */
+export type FeatureCapability =
+  | 'facts.pathLiteral'
+  | 'facts.httpRequest.auth'
+  | 'facts.httpRequest.callSite'
+  | 'facts.httpRequest.suppressed'
+  | 'facts.httpRequest.urlModel'
+  | 'facts.httpRequest.queryFromUrl'
+  | 'facts.clientRoute.fullPath'
+  | 'completion.truncated';
 
 export type ScanStatus = 'complete' | 'partial' | 'failed' | 'cancelled';
 
@@ -114,6 +130,30 @@ export interface BodyTemplate {
   contentType?: string;
 }
 
+/**
+ * Where a request's credential comes from. Never carries the credential value:
+ * `literal` only says the bundle hard-codes one (secret scanning reports it).
+ */
+export interface AuthContext {
+  kind: 'bearer' | 'basic' | 'apikey-header' | 'apikey-query' | 'cookie' | 'custom';
+  /** Header carrying the credential, for header-borne kinds. */
+  header?: string;
+  /** Query parameter carrying the credential, for `apikey-query`. */
+  query?: string;
+  /** Authorization scheme (`Bearer`, `Basic`, `Token`, ...) when one is prefixed. */
+  scheme?: string;
+  /** `<sourceKind>:<key>`, e.g. `localStorage:jwt` or `state:auth.token`. */
+  source: string;
+  sourceKind: 'localStorage' | 'sessionStorage' | 'cookie' | 'state' | 'literal' | 'unknown';
+}
+
+/** A lower-confidence fact dropped in favour of the one that carries it. */
+export interface SuppressedFact {
+  id: string;
+  url: string;
+  reason: 'prefix' | 'suffix';
+}
+
 export type HttpClientKind =
   | 'fetch'
   | 'xhr'
@@ -143,6 +183,34 @@ export interface HttpRequestFact {
   client: HttpClientKind;
   provenance: Provenance;
   alternateExtractors?: string[];
+  /** Credential source feeding this request, when the bundle shows one. */
+  auth?: AuthContext;
+  /** Stable id of the call expression that produced the canonical fact. */
+  callSite?: string;
+  /** Noise facts from the same call site folded into this one. */
+  suppressed?: SuppressedFact[];
+}
+
+export type PathLiteralReason =
+  | 'object-value'
+  | 'array-element'
+  | 'const-init'
+  | 'default-param'
+  | 'return'
+  | 'assignment';
+
+/**
+ * A path-shaped string that never reached a request call. Always low
+ * confidence: a wordlist and discovery hint, never a replay template.
+ */
+export interface PathLiteralFact {
+  kind: 'pathLiteral';
+  id: string;
+  value: ValueTemplate;
+  reason: PathLiteralReason;
+  /** Object key, variable or parameter name the literal was bound to. */
+  key?: string;
+  provenance: Provenance;
 }
 
 export interface DomFlowFact {
@@ -233,6 +301,13 @@ export interface ClientRouteFact {
   routeType: 'page' | 'api' | 'redirect' | 'lazy' | 'unknown';
   guards?: string[];
   lazyAsset?: ValueTemplate;
+  /**
+   * Absolute route: parent paths joined, leading `/`, `//` collapsed. Not
+   * static (variable `parent`) when the parent lives in another module.
+   */
+  fullPath?: ValueTemplate;
+  /** Id of the enclosing route record for nested `children`. */
+  parentId?: string;
   provenance: Provenance;
 }
 
@@ -269,7 +344,11 @@ export type AnalysisRecord =
   | WebSocketFact
   | EventSourceFact
   | ClientRouteFact
-  | BrowserSecurityFlowFact;
+  | BrowserSecurityFlowFact
+  | PathLiteralFact;
+
+/** Records dropped by a per-kind cap or the output budget, keyed by record kind. */
+export type TruncationCounts = Record<string, number>;
 
 export interface AnalysisStats {
   status: ScanStatus;
@@ -277,6 +356,7 @@ export interface AnalysisStats {
   durationMs: number;
   recordCounts: Record<string, number>;
   stageMetrics: StageMetric[];
+  truncated?: TruncationCounts;
 }
 
 export interface AnalysisResultV2 {
@@ -317,6 +397,7 @@ export interface ScanCompletedRecord {
     domFlows: number;
     diagnostics: number;
     artifacts: number;
+    truncated?: TruncationCounts;
   };
   outputBytes?: number;
   stageMetrics?: StageMetric[];
@@ -328,7 +409,7 @@ export interface CapabilitiesRecord {
   toolVersion: string;
   sourceHash: string;
   schemaVersions: Record<string, number>;
-  capabilities: AnalysisCapability[];
+  capabilities: Array<AnalysisCapability | FeatureCapability>;
   profiles: AnalysisProfile[];
   /** Supported deobfuscation aggressiveness levels for the rewriteLevel option. */
   rewriteLevels?: Array<'strict' | 'standard' | 'aggressive'>;

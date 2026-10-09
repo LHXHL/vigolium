@@ -131,9 +131,16 @@ function looksSensitiveMessage(node: t.Node | null | undefined): boolean {
   return /(?:token|secret|auth|cookie|session|password|credential|apiKey|user|account|profile|personal)/i.test(generate(node));
 }
 
-function routeObject(path: NodePath<t.ObjectExpression>, context: AnalysisContext): ClientRouteFact | undefined {
+interface RouteShape {
+  /** Raw `path` as written (may be relative or empty). */
+  raw: string;
+  routeType: ClientRouteFact['routeType'];
+  properties: Map<string, t.ObjectProperty>;
+}
+
+function routeShape(node: t.ObjectExpression): RouteShape | undefined {
   const properties = new Map<string, t.ObjectProperty>();
-  for (const property of path.node.properties) {
+  for (const property of node.properties) {
     if (!t.isObjectProperty(property)) continue;
     const name = t.isIdentifier(property.key) ? property.key.name : t.isStringLiteral(property.key) ? property.key.value : '';
     if (name) properties.set(name, property);
@@ -144,11 +151,111 @@ function routeObject(path: NodePath<t.ObjectExpression>, context: AnalysisContex
     .some((name) => properties.has(name)) ||
     (properties.has('id') && ['pattern', 'page', 'endpoint'].some((name) => properties.has(name)));
   if (!hasRouterSignal) return undefined;
-  const rendered = stringValue(pathProperty.value);
-  if (!rendered || rendered === '*') return undefined;
-  let routeType: ClientRouteFact['routeType'] = rendered.startsWith('/api/') ? 'api' : 'page';
+  const raw = stringValue(pathProperty.value);
+  if (raw === undefined || raw === '*' || raw === '**') return undefined;
+  let routeType: ClientRouteFact['routeType'] = raw.startsWith('/api/') ? 'api' : 'page';
   if (properties.has('redirectTo')) routeType = 'redirect';
   if (properties.has('loadChildren') || properties.has('loadComponent')) routeType = 'lazy';
+  return { raw, routeType, properties };
+}
+
+interface RouteLineage {
+  full: string;
+  /** True when the parent route lives in another module (forChild, lazy). */
+  unknownParent: boolean;
+  /** Nearest emitted ancestor route id. */
+  parentId?: string;
+  /** Id this route is emitted under. */
+  id: string;
+}
+
+const MAX_ROUTE_DEPTH = 12;
+
+function joinRoute(parent: string, child: string): string {
+  const joined = `${parent}/${child}`.replace(/\/{2,}/g, '/');
+  return joined.length > 1 ? joined.replace(/\/$/, '') : joined;
+}
+
+/** True for `RouterModule.forChild(...)` and minified `x.forChild(...)`. */
+function isForChildCall(node: t.Node | null | undefined): boolean {
+  return t.isCallExpression(node) && t.isMemberExpression(node.callee) &&
+    t.isIdentifier(node.callee.property, { name: 'forChild' });
+}
+
+/**
+ * The route object enclosing `array` through a `children` property, directly
+ * or through a binding (`children: adminRoutes`). `lazy` when the array is a
+ * forChild table, whose parent is the lazy route in another module.
+ */
+function enclosingRoute(array: NodePath): { parent?: NodePath<t.ObjectExpression>; lazy: boolean } {
+  const viaChildren = (holder: NodePath | null): NodePath<t.ObjectExpression> | undefined => {
+    if (!holder?.isObjectProperty()) return undefined;
+    const key = holder.node.key;
+    const name = t.isIdentifier(key) ? key.name : t.isStringLiteral(key) ? key.value : '';
+    const owner = holder.parentPath;
+    return name === 'children' && owner?.isObjectExpression() ? owner : undefined;
+  };
+  const direct = viaChildren(array.parentPath);
+  if (direct) return { parent: direct, lazy: false };
+  if (isForChildCall(array.parentPath?.node)) return { lazy: true };
+  const declarator = array.parentPath;
+  if (declarator?.isVariableDeclarator() && t.isIdentifier(declarator.node.id)) {
+    const binding = declarator.scope.getBinding(declarator.node.id.name);
+    for (const ref of binding?.referencePaths ?? []) {
+      const parent = viaChildren(ref.parentPath);
+      if (parent) return { parent, lazy: false };
+      if (isForChildCall(ref.parentPath?.node)) return { lazy: true };
+    }
+  }
+  return { lazy: false };
+}
+
+function routeLineage(
+  path: NodePath<t.ObjectExpression>,
+  shape: RouteShape,
+  memo: WeakMap<object, RouteLineage | null>,
+  depth = 0,
+): RouteLineage {
+  const cached = memo.get(path.node);
+  if (cached) return cached;
+  let parent: RouteLineage | undefined;
+  let parentShape: RouteShape | undefined;
+  let unknownParent = false;
+  const array = path.parentPath;
+  if (array?.isArrayExpression() && depth < MAX_ROUTE_DEPTH) {
+    const enclosing = enclosingRoute(array);
+    unknownParent = enclosing.lazy;
+    parentShape = enclosing.parent ? routeShape(enclosing.parent.node) : undefined;
+    if (enclosing.parent && parentShape) parent = routeLineage(enclosing.parent, parentShape, memo, depth + 1);
+  }
+  let full: string;
+  if (shape.raw.startsWith('/')) full = shape.raw;
+  else if (parent) full = shape.raw ? joinRoute(parent.full, shape.raw) : parent.full;
+  else if (unknownParent) full = joinRoute('${parent}', shape.raw);
+  else full = joinRoute('', shape.raw);
+  if (shape.raw.startsWith('/')) unknownParent = false;
+  else if (parent) unknownParent = parent.unknownParent;
+  // A route emitted under its absolute path keeps its historical id; nested
+  // ones hash the full path so siblings named alike under different parents
+  // stay distinct.
+  const id = hashId('route', full === shape.raw ? shape.raw : full, shape.routeType);
+  // An empty-path parent is never emitted, so point at its own parent instead.
+  const parentId = parent ? (parentShape?.raw ? parent.id : parent.parentId) : undefined;
+  const lineage: RouteLineage = { full, unknownParent, id, ...(parentId ? { parentId } : {}) };
+  memo.set(path.node, lineage);
+  return lineage;
+}
+
+function routeObject(
+  path: NodePath<t.ObjectExpression>,
+  context: AnalysisContext,
+  memo: WeakMap<object, RouteLineage | null>,
+): ClientRouteFact | undefined {
+  const shape = routeShape(path.node);
+  // An empty path only contributes to its children's full path.
+  if (!shape || !shape.raw) return undefined;
+  const { raw: rendered, routeType, properties } = shape;
+  const lineage = routeLineage(path, shape, memo);
   const guardProperty = properties.get('canActivate') ?? properties.get('beforeEnter');
   const guards = guardProperty && t.isArrayExpression(guardProperty.value)
     ? guardProperty.value.elements.flatMap((element) => element && t.isIdentifier(element) ? [element.name] : [])
@@ -161,14 +268,17 @@ function routeObject(path: NodePath<t.ObjectExpression>, context: AnalysisContex
     if (match) lazyAsset = valueTemplate(match[1]);
   }
   return {
-    kind: 'clientRoute', id: hashId('route', rendered, routeType), path: valueTemplate(rendered), routeType,
+    kind: 'clientRoute', id: lineage.id, path: valueTemplate(rendered), routeType,
     ...(guards.length ? { guards } : {}), ...(lazyAsset ? { lazyAsset } : {}),
+    fullPath: valueTemplate(lineage.full),
+    ...(lineage.parentId ? { parentId: lineage.parentId } : {}),
     provenance: locationProvenance(path, context, 'router-config', 'high'),
   };
 }
 
 export function analyzeBrowserCapabilities(ast: ParseResult<t.File>, context: AnalysisContext): void {
   const socketBindings = new Map<string, WebSocketFact>();
+  const routeMemo = new WeakMap<object, RouteLineage | null>();
   const eventSourceBindings = new Map<string, EventSourceFact>();
 
   traverse(ast, {
@@ -219,7 +329,7 @@ export function analyzeBrowserCapabilities(ast: ParseResult<t.File>, context: An
 	},
     ObjectExpression(path) {
       if (context.has('clientRoutes')) {
-        const route = routeObject(path, context);
+        const route = routeObject(path, context, routeMemo);
         if (route) context.addClientRoute(route);
       }
     },

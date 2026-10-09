@@ -115,14 +115,28 @@ An `analysisResult` contains:
 Current typed records are:
 
 - `httpRequest`: method, URL/query/body/header templates, client adapter,
-  confidence, source span, and resolution evidence.
+  confidence, source span, and resolution evidence. Optional `auth` names the
+  credential source (`localStorage:jwt`, `cookie:XSRF-TOKEN`,
+  `state:auth.token`, `literal`) and never its value; `callSite` identifies the
+  producing call; `suppressed` lists base-URL and un-prefixed facts from the
+  same call site that were folded into this one. `new URL(...)` with
+  `searchParams.set/append` and `URLSearchParams` (query string, body, axios
+  `params`) are modelled, and a query left in a rendered URL is split into
+  `query[]`.
 - `domFlow`: binding/order-aware source-to-sink browser flow.
 - `assetReference`: dynamic/static chunks, workers, service workers, manifests,
   source maps, Wasm, and config assets.
 - `graphqlOperation`: parsed operation/document, variables, persisted hash,
   endpoint, and transport.
 - `websocket` and `eventSource`: protocol metadata and message/event behavior.
-- `clientRoute`: framework-aware routes, guards, and lazy assets.
+- `clientRoute`: framework-aware routes, guards, and lazy assets. `fullPath`
+  joins nested `children` into an absolute path (`/admin/reports/:id`);
+  `parentId` points at the enclosing route. A `forChild` table whose parent
+  lives in another module gets `${parent}/…` with `static: false`.
+- `pathLiteral`: low-confidence path-shaped strings bound to an object key,
+  array, const, default parameter, return or assignment (`reason`, `key`) that
+  no request or route consumed. Discovery hints only, capped by
+  `maxPathLiterals` (2000).
 - `browserSecurityFlow`: postMessage trust, open redirect, script/network URL,
   dynamic execution, sensitive exfiltration, and prototype-pollution evidence.
 
@@ -139,6 +153,14 @@ budget, allowing forward-compatible diagnostics instead of silent loss.
   bounded lexical endpoint/asset fallback. Hard-limit input is rejected.
 - AST node, resolution, evidence, request, artifact, output, graph, and time
   budgets produce explicit diagnostics.
+- A per-kind cap (requests, path literals, assets, protocol facts) or the
+  output budget marks the run `partial`, counts the dropped records per kind in
+  `stats.truncated` and `scanCompleted.counts.truncated`, and sets
+  `reasonCode` to `request_cap` (endpoint facts dropped) or `fact_cap:<kind>`.
+- `--capabilities` lists additive record features (`facts.pathLiteral`,
+  `facts.httpRequest.auth`, `facts.clientRoute.fullPath`,
+  `completion.truncated`, ...) so a host can gate on them without a protocol
+  bump.
 - Artifact paths are verified to remain inside the job directory before Go
   reads them; all job directories are removed after success, failure, or cancel.
 

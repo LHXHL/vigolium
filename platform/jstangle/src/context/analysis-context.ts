@@ -13,6 +13,9 @@ import type {
   EventSourceFact,
   ClientRouteFact,
   BrowserSecurityFlowFact,
+  PathLiteralFact,
+  TruncationCounts,
+  AuthContext,
 } from '../protocol';
 import { createEngineState, type EngineState } from './engine-state';
 import type { StructuralIndex } from '../structure';
@@ -22,6 +25,19 @@ export interface RequestOrigin {
   client: HttpClientKind;
   provenance: Provenance;
   extractors: string[];
+  /** Call node behind the canonical provenance (never serialized). */
+  node?: object;
+  /** Stable id of that call node; see callSiteId. */
+  callSite?: string;
+  /**
+   * Every call site that emitted or shaped this request: each merged emission
+   * plus related nodes such as the `axios.create` that supplied its baseURL.
+   * Prefix/suffix suppression only folds a fact into one that shares all of
+   * the folded fact's sites.
+   */
+  sites: Set<string>;
+  /** Credential source recovered by the requestAuth stage. */
+  auth?: AuthContext;
   alternatives: {
     url: string[];
     method: string[];
@@ -49,6 +65,8 @@ export interface AnalysisLimits {
   maxDeobfuscatePasses: number;
   /** Max unpacked bundle modules independently re-scanned for endpoints. */
   maxBundleModules: number;
+  /** Max pathLiteral facts; extra literals are counted in `truncated`. */
+  maxPathLiterals: number;
   deadlineMs: number;
 }
 
@@ -73,6 +91,7 @@ export const DEFAULT_LIMITS: AnalysisLimits = {
   // stays bounded by remainingMs per module, and scanBundleModules orders
   // endpoint-bearing modules first so a truncated scan loses the least.
   maxBundleModules: 512,
+  maxPathLiterals: 2_000,
   deadlineMs: 60_000,
 };
 
@@ -90,11 +109,11 @@ const PROFILE_CAPABILITIES: Record<AnalysisProfile, AnalysisCapability[]> = {
   beautify: ['beautifiedCode', 'diagnostics', 'stageMetrics'],
   discovery: [
     'endpoints', 'transformedCode', 'assetReferences', 'graphqlOperations',
-    'realtimeProtocols', 'clientRoutes', 'diagnostics', 'stageMetrics',
+    'realtimeProtocols', 'clientRoutes', 'pathLiterals', 'diagnostics', 'stageMetrics',
   ],
   'discovery-lite': [
     'endpoints', 'assetReferences', 'graphqlOperations', 'realtimeProtocols',
-    'clientRoutes', 'diagnostics', 'stageMetrics',
+    'clientRoutes', 'pathLiterals', 'diagnostics', 'stageMetrics',
   ],
   full: [
     'endpoints',
@@ -109,6 +128,7 @@ const PROFILE_CAPABILITIES: Record<AnalysisProfile, AnalysisCapability[]> = {
     'realtimeProtocols',
     'clientRoutes',
     'browserSecurityFlows',
+    'pathLiterals',
   ],
   inspect: [
     'endpoints',
@@ -123,6 +143,7 @@ const PROFILE_CAPABILITIES: Record<AnalysisProfile, AnalysisCapability[]> = {
     'realtimeProtocols',
     'clientRoutes',
     'browserSecurityFlows',
+    'pathLiterals',
   ],
 };
 
@@ -181,6 +202,9 @@ export class AnalysisContext {
   readonly eventSources: EventSourceFact[] = [];
   readonly clientRoutes: ClientRouteFact[] = [];
   readonly browserSecurityFlows: BrowserSecurityFlowFact[] = [];
+  readonly pathLiterals: PathLiteralFact[] = [];
+  /** Records dropped by a per-kind cap, keyed by record kind. */
+  readonly truncated: TruncationCounts = {};
   structuralIndex?: StructuralIndex;
   astNodeCount = 0;
   readonly assetDedup = new Set<string>();
@@ -278,43 +302,64 @@ export class AnalysisContext {
         confidence: 'low',
       },
       extractors: ['legacy-unknown'],
+      sites: new Set(),
       alternatives: { url: [], method: [], params: [], body: [] },
     };
+  }
+
+  /**
+   * Count a record dropped by a cap. The run becomes partial, and the first
+   * drop per kind adds one diagnostic; later drops only bump the count, so a
+   * file far over a cap cannot flood the diagnostic budget.
+   */
+  noteTruncated(kind: string, stage: string, code: string, message: string, count = 1): void {
+    if (count <= 0) return;
+    this.partial = true;
+    const first = !this.truncated[kind];
+    this.truncated[kind] = (this.truncated[kind] ?? 0) + count;
+    if (first) {
+      this.addDiagnostic({
+        type: 'diagnostic', severity: 'warning', stage, code, message, recoverable: true,
+      });
+    }
   }
 
   addAssetReference(reference: AssetReferenceFact): void {
     const key = `${reference.assetType}\u0000${reference.url.rendered}`;
     if (this.assetDedup.has(key)) return;
     if (this.assetReferences.length >= this.limits.maxAssetReferences) {
-      this.partial = true;
-      this.addDiagnostic({
-        type: 'diagnostic', severity: 'warning', stage: 'assetDiscovery',
-        code: 'asset_reference_limit_reached',
-        message: `Asset references were limited to ${this.limits.maxAssetReferences}`,
-        recoverable: true,
-      });
+      this.assetDedup.add(key);
+      this.noteTruncated('assetReference', 'assetDiscovery', 'asset_reference_limit_reached',
+        `Asset references were limited to ${this.limits.maxAssetReferences}`);
       return;
     }
     this.assetDedup.add(key);
     this.assetReferences.push(reference);
   }
 
-  private addBoundedFact<T extends { id: string }>(fact: T, target: T[], stage: string): void {
+  private addBoundedFact<T extends { id: string; kind: string }>(fact: T, target: T[], stage: string): void {
     if (this.factDedup.has(fact.id)) return;
     const total = this.graphqlOperations.length + this.webSockets.length + this.eventSources.length +
       this.clientRoutes.length + this.browserSecurityFlows.length;
     if (total >= this.limits.maxEvidenceRecords) {
-      this.partial = true;
-      this.addDiagnostic({
-        type: 'diagnostic', severity: 'warning', stage,
-        code: 'analysis_record_limit_reached',
-        message: `Additional analysis records were limited to ${this.limits.maxEvidenceRecords}`,
-        recoverable: true,
-      });
+      this.factDedup.add(fact.id);
+      this.noteTruncated(fact.kind, stage, 'analysis_record_limit_reached',
+        `Additional analysis records were limited to ${this.limits.maxEvidenceRecords}`);
       return;
     }
     this.factDedup.add(fact.id);
     target.push(fact);
+  }
+
+  addPathLiteral(fact: PathLiteralFact): void {
+    if (this.factDedup.has(fact.id)) return;
+    this.factDedup.add(fact.id);
+    if (this.pathLiterals.length >= this.limits.maxPathLiterals) {
+      this.noteTruncated('pathLiteral', 'pathLiterals', 'path_literal_limit_reached',
+        `Path literals were limited to ${this.limits.maxPathLiterals}`);
+      return;
+    }
+    this.pathLiterals.push(fact);
   }
 
   addGraphQLOperation(fact: GraphQLOperationFact): void {
