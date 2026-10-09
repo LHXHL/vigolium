@@ -138,6 +138,7 @@ func (r *Runner) sweepHosts(ctx context.Context, hosts []string, opts portsweep.
 	}
 	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
+	progress := r.currentPhase.Load().trackTargets(len(hosts))
 	for i, host := range hosts {
 		select {
 		case <-ctx.Done():
@@ -150,6 +151,7 @@ func (r *Runner) sweepHosts(ctx context.Context, hosts []string, opts portsweep.
 			defer wg.Done()
 			defer func() { <-sem }()
 			results[i] = portsweep.Sweep(ctx, host, opts)
+			progress.Add(1)
 		}(i, host)
 	}
 	wg.Wait()

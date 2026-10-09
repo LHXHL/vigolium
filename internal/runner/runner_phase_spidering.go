@@ -635,6 +635,9 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 	// which a fresh browser per target can do.
 	groups := groupByHost(targets, httpmsg.HostnameFromURL)
 	processed := 0
+	// done/total on phase.progress, in targets. processed counts a target when
+	// its crawl starts, so the reading is taken once the crawl has returned.
+	progress := r.currentPhase.Load().trackTargets(len(targets))
 
 	for _, group := range groups {
 		// Overall ceiling exhausted — skip the remaining targets rather than
@@ -682,6 +685,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 				budgetExhaustedTargets++
 			}
 			cancel()
+			progress.Set(processed)
 
 			if oc.err != nil {
 				zap.L().Error("Spidering failed",
@@ -873,6 +877,9 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 
 			r.reportSpiderCoverage(result, target)
 		}
+		// Picks up the host's remaining targets when a failed session gave up
+		// on them (they are counted as processed, not left waiting on budget).
+		progress.Set(processed)
 
 		if sess != nil {
 			phaseCapture.Merge(sessionCapture(sess, sessRW, abandoned))

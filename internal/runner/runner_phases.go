@@ -13,6 +13,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
@@ -245,21 +246,11 @@ func (r *Runner) RunNativeScan() (err error) {
 	scanStartedAt := time.Now()
 	if !r.options.Silent {
 		defer func() {
-			duration := time.Since(scanStartedAt)
-			findingSummary := ""
-			if r.repository != nil {
-				// Use the run context (consistent with the CompleteScan defer
-				// above) so this terminal summary read participates in
-				// cancellation instead of running on a detached Background.
-				if scan, err := r.repository.GetScanByUUID(ctx, infra.scanUUID); err == nil && scan != nil {
-					findingSummary = fmt.Sprintf(", findings: %d", scan.TotalFindings)
-				}
-			}
-			fmt.Fprintf(os.Stderr, "  %s Scan finished %s %s%s\n",
-				terminal.SuccessSymbol(),
-				terminal.BoldCyan(infra.scanUUID),
-				terminal.Gray(fmt.Sprintf("duration: %s%s", fmtDuration(duration), findingSummary)),
-				partialBannerSuffix(r.Completion()))
+			// Detached, like the completion defer: on Ctrl-C the run context is
+			// already cancelled, and a read on it fails and drops the count.
+			finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(r.ctx), 10*time.Second)
+			defer finalCancel()
+			r.printFinishedBanner(finalCtx, os.Stderr, infra.scanUUID, time.Since(scanStartedAt))
 		}()
 	}
 
@@ -356,6 +347,36 @@ func (r *Runner) RunNativeScan() (err error) {
 	return nil
 }
 
+// printFinishedBanner writes the "Scan finished" line: the scan id, wall-clock
+// duration, the scan's finding count, and the partial-coverage suffix.
+//
+// The count comes from repository.ScanFindingTotal — the findings table, not the
+// scan row — which is the same helper the CLI's completion summary prints. The
+// row was the bug: this banner runs before the completion defer finalizes it
+// (defers are LIFO, and this one is registered later so it stays inside the
+// stderr capture), so total_findings still held its pre-finalize 0 and the
+// banner said "findings: 0" a line above the summary's "5 issues found". The
+// table is already final here: finding grouping has run, and nothing between
+// this defer and finalization writes findings.
+//
+// With no repository the line carries the duration only; on a failed count it
+// omits the count rather than print a zero it does not know to be true.
+func (r *Runner) printFinishedBanner(ctx context.Context, w io.Writer, scanUUID string, duration time.Duration) {
+	findingSummary := ""
+	if r.repository != nil {
+		if total, _, err := r.repository.ScanFindingTotal(ctx, scanUUID); err == nil {
+			findingSummary = fmt.Sprintf(", findings: %d", total)
+		} else {
+			zap.L().Debug("Scan finished banner: finding count unavailable", zap.Error(err))
+		}
+	}
+	fmt.Fprintf(w, "  %s Scan finished %s %s%s\n",
+		terminal.SuccessSymbol(),
+		terminal.BoldCyan(scanUUID),
+		terminal.Gray(fmt.Sprintf("duration: %s%s", fmtDuration(duration), findingSummary)),
+		partialBannerSuffix(r.Completion()))
+}
+
 func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phase NativePhase) (err error) {
 	// One tracker per phase, wrapped around the whole switch rather than
 	// duplicated into its nine arms: the arms disagree about what an error means
@@ -368,6 +389,15 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 	// against the phase that produced it.
 	tracker := r.beginPhase(ctx, string(phase), infra.httpRequester)
 	r.currentPhase.Store(tracker)
+	// Phases that run core.Executor report done/total off every executor they
+	// start, however deep in the phase it is built (dynamic assessment builds
+	// one per feedback round). A context value rather than a parameter so the
+	// executor sites need not know the event stream exists. Values only: the
+	// derived context cancels exactly as ctx does, so finish reads the same Err.
+	if unit, ok := executorProgressUnit[phase]; ok {
+		tracker.setProgress(unit, tracker.executorProgress)
+		ctx = core.WithExecutorObserver(ctx, tracker.observeExecutor)
+	}
 	defer func() {
 		r.currentPhase.Store((*phaseTracker)(nil))
 		r.scanOutcome.append(tracker.finish(ctx, err))

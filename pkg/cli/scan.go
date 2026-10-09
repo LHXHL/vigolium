@@ -967,7 +967,7 @@ func reportScanCompletion(
 	)
 	if !opts.Silent {
 		hosts := summaryScopeHosts(context.Background(), repo, settings, opts.Targets, opts.ProjectUUID, opts.ScanUUID)
-		printScanCompletionSummary(repo, opts.ProjectUUID, hosts, time.Since(scanStart))
+		printScanCompletionSummary(repo, opts.ProjectUUID, opts.ScanUUID, hosts, time.Since(scanStart))
 	}
 	maybePrintScanFindings(context.Background(), db, opts.ProjectUUID, opts.ScanUUID)
 	maybePrintScanTraffic(context.Background(), db, opts.ProjectUUID)
@@ -2639,10 +2639,15 @@ func summaryScopeHosts(ctx context.Context, repo *database.Repository, settings 
 
 // printScanCompletionSummary prints a compact summary of ingested records,
 // findings, and total wall-clock duration after scan completion. The record count is
-// scoped to the in-scope origins (scheme/host/port); the finding count is scoped to the
-// same project + in-scope hostnames (findings carry no port column), so the summary
-// reflects the current scan's targets rather than the whole project.
-func printScanCompletionSummary(repo *database.Repository, projectUUID string, hosts []database.HostTarget, elapsed time.Duration) {
+// scoped to the in-scope origins (scheme/host/port), so it reflects the current
+// scan's targets rather than the whole project.
+//
+// The finding count is THIS scan's (repository.ScanFindingTotal), the same figure
+// the runner's "Scan finished … findings: N" banner prints and the --fail-on gate
+// judges. It used to be a project-wide count over the in-scope hostnames, which
+// disagreed with the banner a line above it on any project with earlier scans.
+// Without a scan id it falls back to that host-scoped count.
+func printScanCompletionSummary(repo *database.Repository, projectUUID, scanUUID string, hosts []database.HostTarget, elapsed time.Duration) {
 	// Header line carries the total wall-clock duration, so it prints first and
 	// unconditionally: even if the count queries below fail, the operator still
 	// sees the completion banner and how long the run took.
@@ -2689,15 +2694,9 @@ func printScanCompletionSummary(repo *database.Repository, projectUUID string, h
 	}
 	fmt.Fprintln(os.Stderr, recordsLine)
 
-	// Count findings by severity, scoped to the same project + in-scope hostnames.
-	counts, err := database.CountFindingsBySeverity(ctx, repo.DB(), projectUUID, database.HostnamesOf(hosts)...)
+	totalFindings, counts, err := summaryFindingCounts(ctx, repo, projectUUID, scanUUID, hosts)
 	if err != nil {
 		return
-	}
-
-	var totalFindings int64
-	for _, c := range counts {
-		totalFindings += c
 	}
 
 	if totalFindings == 0 {
@@ -2730,4 +2729,30 @@ func printScanCompletionSummary(repo *database.Repository, projectUUID string, h
 		terminal.Purple(terminal.SymbolInfo),
 		terminal.Orange(fmt.Sprintf("%d", totalFindings)),
 		strings.Join(parts, ", "))
+}
+
+// summaryFindingCounts is the completion summary's finding total and severity
+// breakdown: the scan's own (shared with the runner's banner) when there is a
+// scan id, else the project's findings on the in-scope hostnames.
+func summaryFindingCounts(ctx context.Context, repo *database.Repository, projectUUID, scanUUID string, hosts []database.HostTarget) (int64, map[string]int64, error) {
+	if scanUUID != "" {
+		total, tally, err := repo.ScanFindingTotal(ctx, scanUUID)
+		if err != nil {
+			return 0, nil, err
+		}
+		counts := make(map[string]int64, len(tally))
+		for k, v := range tally {
+			counts[k] = int64(v)
+		}
+		return int64(total), counts, nil
+	}
+	counts, err := database.CountFindingsBySeverity(ctx, repo.DB(), projectUUID, database.HostnamesOf(hosts)...)
+	if err != nil {
+		return 0, nil, err
+	}
+	var total int64
+	for _, c := range counts {
+		total += c
+	}
+	return total, counts, nil
 }

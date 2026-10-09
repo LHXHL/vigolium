@@ -63,6 +63,39 @@ type phaseTracker struct {
 	hasPersist bool
 	unacked    int64
 	counters   []phaseCounter
+
+	// Work-item progress (done/total/unit on phase.progress and phase.finished).
+	// progress is nil for a phase with no count to report; lastTotal is the
+	// largest total reported so far, the floor that keeps Total non-decreasing.
+	// Guarded by mu.
+	progressUnit string
+	progress     func() (done, total int64)
+	lastTotal    int64
+	executors    []*core.Executor
+}
+
+// Units for phase progress. One table so a consumer sees one spelling per kind.
+const (
+	progressUnitRecords = "records"
+	progressUnitTargets = "targets"
+)
+
+// executorProgressUnit names the phases whose progress is read off the
+// executors they run, and the unit each one counts. These phases feed an input
+// source through core.Executor, so done is the executors' processed count and
+// total is their sources' size.
+//
+// Phases that walk a target list themselves report through trackTargets
+// instead. Discovery is absent on purpose: its executor's input is the deparos
+// output stream, which has no size, and the honest figure is the coordinator's
+// tasks done/enqueued.
+//
+// TODO(plan D): wire discovery as progressUnit "tasks" from the deparos
+// coordinator's Progress() accessor once the discovery source exposes it.
+var executorProgressUnit = map[NativePhase]string{
+	PhaseDynamicAssessment: progressUnitRecords,
+	PhaseSeed:              progressUnitRecords,
+	PhaseProbe:             progressUnitTargets,
 }
 
 // phaseCounter is one additional request counter a phase contributes, with the
@@ -104,12 +137,14 @@ func (t *phaseTracker) heartbeat(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			scanevents.Emit(scanevents.Event{
+			ev := scanevents.Event{
 				Type:         scanevents.TypePhaseProgress,
 				Phase:        t.phase,
 				RequestsSent: scanevents.Int64(t.sentSoFar()),
 				Findings:     scanevents.Int64(t.findings.Load()),
-			})
+			}
+			t.fillProgress(&ev)
+			scanevents.Emit(ev)
 		case <-t.stop:
 			return
 		case <-ctx.Done():
@@ -150,6 +185,126 @@ func (t *phaseTracker) addCounter(f func() int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.counters = append(t.counters, phaseCounter{read: f, base: base})
+}
+
+// setProgress installs the phase's work-item progress source: f reports how many
+// items are done and the current bound on how many there are, in unit. The last
+// call wins. Safe to call concurrently with the heartbeat that reads it.
+//
+// f may return a total that shrinks or reads below done (a live source's
+// snapshot, a coalesced round); the tracker clamps it, so f can report its raw
+// figures.
+func (t *phaseTracker) setProgress(unit string, f func() (done, total int64)) {
+	if t == nil || f == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.progressUnit = unit
+	t.progress = f
+}
+
+// observeExecutor is the core.ExecutorObserver for a phase whose progress is
+// read off its executors. Every executor the phase starts is summed, so a
+// multi-round phase reports cumulative done and a total that grows round by
+// round as each new round's source learns its size.
+func (t *phaseTracker) observeExecutor(e *core.Executor) {
+	if t == nil || e == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, seen := range t.executors {
+		if seen == e {
+			return
+		}
+	}
+	t.executors = append(t.executors, e)
+}
+
+// executorProgress sums done/total over the executors the phase has started.
+func (t *phaseTracker) executorProgress() (done, total int64) {
+	t.mu.Lock()
+	execs := append([]*core.Executor(nil), t.executors...)
+	t.mu.Unlock()
+	for _, e := range execs {
+		done += e.Processed()
+		total += e.KnownTotal()
+	}
+	return done, total
+}
+
+// targetProgress counts the targets a phase has finished against the number it
+// set out to cover. Nil-safe, so a phase can call it whether or not a tracker is
+// running.
+type targetProgress struct {
+	done  atomic.Int64
+	total atomic.Int64
+}
+
+// Add records n more targets finished.
+func (p *targetProgress) Add(n int) {
+	if p == nil {
+		return
+	}
+	p.done.Add(int64(n))
+}
+
+// Set records the number of targets finished so far, for a loop that already
+// keeps its own running count.
+func (p *targetProgress) Set(n int) {
+	if p == nil {
+		return
+	}
+	p.done.Store(int64(n))
+}
+
+// trackTargets makes the phase report done/total in targets, against total
+// targets. Returns the counter the phase advances as each target finishes.
+func (t *phaseTracker) trackTargets(total int) *targetProgress {
+	if t == nil {
+		return nil
+	}
+	p := &targetProgress{}
+	p.total.Store(int64(total))
+	t.setProgress(progressUnitTargets, func() (int64, int64) {
+		return p.done.Load(), p.total.Load()
+	})
+	return p
+}
+
+// fillProgress sets done/total/unit on ev from the phase's progress source, and
+// leaves them unset when the phase has none.
+//
+// Total is clamped to be non-decreasing and never below done, which is the
+// documented contract: an upper bound that may grow. A total of zero with no
+// earlier reading means "no bound known yet" and is omitted rather than
+// reported as 0, which would read as "nothing to do".
+func (t *phaseTracker) fillProgress(ev *scanevents.Event) {
+	t.mu.Lock()
+	f, unit := t.progress, t.progressUnit
+	t.mu.Unlock()
+	if f == nil {
+		return
+	}
+	done, total := f()
+
+	t.mu.Lock()
+	known := total > 0 || t.lastTotal > 0
+	if total < t.lastTotal {
+		total = t.lastTotal
+	}
+	if known && total < done {
+		total = done
+	}
+	t.lastTotal = total
+	t.mu.Unlock()
+
+	ev.Done = scanevents.Int64(done)
+	if known {
+		ev.Total = scanevents.Int64(total)
+	}
+	ev.Unit = unit
 }
 
 // recordFinding counts a finding against the running phase, so phase.finished
@@ -311,6 +466,7 @@ func (t *phaseTracker) finish(ctx context.Context, err error) database.PhaseOutc
 	if out.Message != "" {
 		ev.Message = out.Message
 	}
+	t.fillProgress(&ev)
 	scanevents.Emit(ev)
 	return out
 }

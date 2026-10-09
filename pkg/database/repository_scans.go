@@ -93,10 +93,18 @@ type scanSeverityCounts struct {
 	Suspect  int64
 }
 
-// aggregateScanFindings queries finding severity counts for a scan.
+// aggregateScanFindings queries finding severity counts for a scan. A failed
+// query reads as zero counts; callers that must tell the two apart use
+// queryScanFindings.
 func (r *Repository) aggregateScanFindings(ctx context.Context, scanUUID string) scanSeverityCounts {
+	sc, _ := r.queryScanFindings(ctx, scanUUID)
+	return sc
+}
+
+// queryScanFindings is aggregateScanFindings with the query error reported.
+func (r *Repository) queryScanFindings(ctx context.Context, scanUUID string) (scanSeverityCounts, error) {
 	var rows []SeverityCount
-	_ = r.db.NewSelect().
+	err := r.db.NewSelect().
 		TableExpr("findings").
 		ColumnExpr("severity").
 		ColumnExpr("COUNT(*) AS count").
@@ -123,7 +131,7 @@ func (r *Repository) aggregateScanFindings(ctx context.Context, scanUUID string)
 			sc.Suspect = row.Count
 		}
 	}
-	return sc
+	return sc, err
 }
 
 // ScanSeverityTally returns a scan's persisted finding counts keyed by severity
@@ -131,7 +139,32 @@ func (r *Repository) aggregateScanFindings(ctx context.Context, scanUUID string)
 // row's own counters are computed from, so a consumer reading the machine event
 // stream's scan.finished and a consumer querying the database afterwards agree.
 func (r *Repository) ScanSeverityTally(ctx context.Context, scanUUID string) map[string]int {
-	sc := r.aggregateScanFindings(ctx, scanUUID)
+	return severityTally(r.aggregateScanFindings(ctx, scanUUID))
+}
+
+// ScanFindingTotal returns how many findings a scan persisted, with the same
+// per-severity breakdown ScanSeverityTally gives, read from the findings table
+// rather than the scan row.
+//
+// It is the ONE count every end-of-scan summary prints. The runner's "Scan
+// finished … findings: N" banner and the CLI's "N issues found" line used to
+// read two different things — the scan row's total_findings (stale until the
+// row is finalized) and a project-wide count over the in-scope hosts — and
+// disagreed on the same run. Both now call this, so they cannot.
+//
+// Reading the table rather than the row also means a scan whose terminal
+// CompleteScanWithOutcome write failed still reports its true count. The error
+// is the query's: a caller should print no count rather than a wrong zero.
+func (r *Repository) ScanFindingTotal(ctx context.Context, scanUUID string) (int, map[string]int, error) {
+	sc, err := r.queryScanFindings(ctx, scanUUID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return int(sc.Total), severityTally(sc), nil
+}
+
+// severityTally renders counts as a severity-name map, omitting zeros.
+func severityTally(sc scanSeverityCounts) map[string]int {
 	out := map[string]int{}
 	for name, n := range map[string]int64{
 		"critical": sc.Critical,

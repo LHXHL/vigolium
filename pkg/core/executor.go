@@ -866,6 +866,7 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("executor already running")
 	}
 	defer e.running.Store(false)
+	notifyExecutorObserver(ctx, e)
 
 	// Fresh report per run. An executor is normally single-use (dynamic
 	// assessment builds one per feedback round), but a reused one must not

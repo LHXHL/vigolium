@@ -110,6 +110,9 @@ type DBInputSource struct {
 	nextSeq        uint64
 	nextAckSeq     uint64
 	pendingBySeq   map[uint64]*cursorAck
+
+	// count is the eligible-record snapshot taken on the first fetch; see Count.
+	count atomic.Int64
 }
 
 type cursorAck struct {
@@ -300,6 +303,7 @@ func (s *DBInputSource) fetchNextBatch(ctx context.Context) ([]*HTTPRecord, erro
 		s.readCursorUUID = scan.CursorUUID
 		s.projectUUID = scan.ProjectUUID
 		s.readCursorInit = true
+		s.captureCount(ctx)
 	}
 
 	// Select next records after cursor.
@@ -311,21 +315,8 @@ func (s *DBInputSource) fetchNextBatch(ctx context.Context) ([]*HTTPRecord, erro
 	// scalar columns per record. The hostname/source WHERE filters below don't
 	// require selecting those columns. Modules receive the reconstructed
 	// HttpRequestResponse, never the HTTPRecord, so no consumer reads the rest.
-	q := s.db.NewSelect().Model(&records).
-		Column(scanRecordColumns...)
-
-	if !s.readCursorAt.IsZero() {
-		cursorAt := dbTimestampString(s.db.Driver(), s.readCursorAt)
-		q = q.Where("(created_at > ? OR (created_at = ? AND uuid > ?))",
-			cursorAt, cursorAt, s.readCursorUUID)
-	}
-
-	q = applyHostScopeFilter(q, s.hostScopes)
-	q = applyProjectFilter(q, s.projectUUID)
-
-	if len(s.includeSources) > 0 {
-		q = q.Where("source IN (?)", bun.List(s.includeSources))
-	}
+	q := s.applyEligibility(s.db.NewSelect().Model(&records).
+		Column(scanRecordColumns...))
 
 	limit := s.pageSize
 	if limit <= 0 {
@@ -357,6 +348,54 @@ func (s *DBInputSource) fetchNextBatch(ctx context.Context) ([]*HTTPRecord, erro
 	}
 
 	return records, nil
+}
+
+// applyEligibility restricts q to the records this source will serve: after the
+// read cursor, in the in-scope origins, in the owning project, and from the
+// allowed sources. One builder for both the page query and the Count snapshot,
+// so the count is over exactly the rows iteration walks. Caller holds s.mu (it
+// reads the cursor).
+func (s *DBInputSource) applyEligibility(q *bun.SelectQuery) *bun.SelectQuery {
+	if !s.readCursorAt.IsZero() {
+		cursorAt := dbTimestampString(s.db.Driver(), s.readCursorAt)
+		q = q.Where("(created_at > ? OR (created_at = ? AND uuid > ?))",
+			cursorAt, cursorAt, s.readCursorUUID)
+	}
+
+	q = applyHostScopeFilter(q, s.hostScopes)
+	q = applyProjectFilter(q, s.projectUUID)
+
+	if len(s.includeSources) > 0 {
+		q = q.Where("source IN (?)", bun.List(s.includeSources))
+	}
+	return q
+}
+
+// captureCount snapshots how many records are eligible right now, once, on the
+// first fetch (when the cursor and project are first known). A failed count
+// leaves the figure at 0 — "unknown" — rather than failing the fetch: the count
+// is a progress reading, and the scan must not stop for the want of one. Caller
+// holds s.mu.
+func (s *DBInputSource) captureCount(ctx context.Context) {
+	n, err := s.applyEligibility(s.db.NewSelect().Model((*HTTPRecord)(nil))).Count(ctx)
+	if err != nil {
+		zap.L().Debug("DBInputSource: count eligible records", zap.Error(err))
+		return
+	}
+	s.count.Store(int64(n))
+}
+
+// Count implements source.Countable: the number of records that were eligible
+// when the source first read from the database, or 0 before its first Next.
+//
+// An upper bound at the moment it is taken, not a promise: a polling source
+// keeps serving records that arrive later, so Done can pass it, and a consumer
+// reporting progress must clamp (the phase tracker does). It is deliberately
+// NOT computed when the executor is built — callers size caches off a known
+// total at construction, and a database round-trip there would change that
+// behaviour for every DB-fed scan.
+func (s *DBInputSource) Count() int64 {
+	return s.count.Load()
 }
 
 func (s *DBInputSource) workItemFromRecord(record *HTTPRecord, seq uint64) (*work.WorkItem, error) {
@@ -552,6 +591,9 @@ type RiskPrioritizedDBInputSource struct {
 	streamsExhausted bool  // the stream is drained → total is final, so the commit can fire
 	commitErr        error // the last failed checkpoint attempt, cleared on success
 
+	// count is the snapshot window's size, taken once with the bound; see Count.
+	count atomic.Int64
+
 	// advanceCursor is the durable checkpoint write, injectable so the failure
 	// path is testable without a broken database. Defaults to the repository's
 	// AdvanceScanCursorBy.
@@ -726,7 +768,26 @@ func (s *RiskPrioritizedDBInputSource) captureBoundLocked(ctx context.Context) e
 	s.boundAt = rows[0].CreatedAt
 	s.boundID = rows[0].UUID
 	s.hasBound = true
+
+	// The round's eligible window is now fixed, so its size is too: count it
+	// with the same window and scope the page queries use. Coalescing can only
+	// drop records from it, which makes this an upper bound on what the round
+	// serves. A failed count is a missing progress reading, not a failed round.
+	cq := applyHostScopeFilter(s.applyResumeAndBound(s.db.NewSelect().Model((*HTTPRecord)(nil))), s.hostScopes)
+	if n, err := cq.Count(ctx); err == nil {
+		s.count.Store(int64(n))
+	} else {
+		zap.L().Debug("RiskPrioritizedDBInputSource: count eligible records", zap.Error(err))
+	}
 	return nil
+}
+
+// Count implements source.Countable: the number of records in this round's
+// snapshot window, or 0 before the first Next (and for an empty snapshot). An
+// upper bound on what the round serves, since param-shape coalescing removes
+// records from it as pages are read.
+func (s *RiskPrioritizedDBInputSource) Count() int64 {
+	return s.count.Load()
 }
 
 // pageColumns is the projection each lane page selects — coalescing columns are

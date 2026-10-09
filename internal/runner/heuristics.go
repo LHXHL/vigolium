@@ -68,6 +68,7 @@ func (r *Runner) runHeuristicsCheckPhase(ctx context.Context, infra *phaseInfra)
 	results := make(map[string]*HeuristicsResult, len(r.options.Targets))
 	var resultsMu sync.Mutex
 	probePool := pool.New().WithMaxGoroutines(heuristicsProbeConcurrency(len(r.options.Targets)))
+	progress := r.currentPhase.Load().trackTargets(len(r.options.Targets))
 	for _, target := range r.options.Targets {
 		target := target
 		rootURL := normalizeToRoot(target)
@@ -79,6 +80,7 @@ func (r *Runner) runHeuristicsCheckPhase(ctx context.Context, infra *phaseInfra)
 			resultsMu.Lock()
 			results[target] = result
 			resultsMu.Unlock()
+			progress.Add(1)
 		})
 	}
 	probePool.Wait()

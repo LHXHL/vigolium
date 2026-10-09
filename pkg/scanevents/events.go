@@ -119,8 +119,24 @@ type Event struct {
 	// dropped by omitempty — "0 requests sent" is a meaningful reading.
 	RequestsSent   *int64 `json:"requests_sent,omitempty"`
 	Findings       *int64 `json:"findings,omitempty"`
-	Total          *int64 `json:"total,omitempty"`
 	RecordsWritten *int64 `json:"records_written,omitempty"`
+
+	// Work-item progress on phase.progress and phase.finished: Done items of
+	// Total have been handled, counted in Unit ("records", "targets", …).
+	//
+	// Total is a NON-DECREASING UPPER BOUND, not a fixed denominator: a phase
+	// may learn of more work as it runs (a dynamic-assessment feedback round
+	// adds the records the previous round produced; a live database source sees
+	// records arrive), so Total can grow between heartbeats but never shrinks,
+	// and never reads below Done. It is omitted while the phase does not yet
+	// know any bound. Done/Total/Unit are absent on phases that have no work-item
+	// count to report.
+	//
+	// Total is shared with import.summary, where it is the number of items the
+	// import will write (see Source/Matched below).
+	Done  *int64 `json:"done,omitempty"`
+	Total *int64 `json:"total,omitempty"`
+	Unit  string `json:"unit,omitempty"`
 
 	// WAF / edge.
 	Host            string `json:"host,omitempty"`

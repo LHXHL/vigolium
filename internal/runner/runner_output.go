@@ -203,8 +203,12 @@ func (r *Runner) formatTargetCounts(ctx context.Context, cliCount int) string {
 	// caller's count wins when it is a phase-local target list the source can't
 	// know about.
 	seeded := int64(cliCount)
-	if n := source.GetTotal(r.inputSource); n > seeded {
-		seeded = n
+	// A database-backed input source (full-scan-on-receive) counts http_records,
+	// which dbCount already reports; adding it as "input" would count them twice.
+	if _, fromDB := r.inputSource.(*database.DBInputSource); !fromDB {
+		if n := source.GetTotal(r.inputSource); n > seeded {
+			seeded = n
+		}
 	}
 	return fmt.Sprintf("Targets: %s (%s input | %s HTTP Records)",
 		terminal.Orange(fmt.Sprintf("%d", seeded+dbCount)),
