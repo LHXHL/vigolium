@@ -5,14 +5,30 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/vigolium/vigolium/pkg/core"
-	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
 )
 
+// harvestRecordSource is the http_records.source label external-harvest stubs
+// carry. It names where the URL came from (a third-party archive), and it is what
+// tells a later phase — or a reader of `traffic --source harvest` — that the row
+// has never been fetched from the target.
+//
+// TODO(plan D15): move next to the other labels in pkg/database/dbsource.go when
+// the harvest-probe step lands; it is local here only because this hotfix may not
+// touch pkg/database.
+const harvestRecordSource = "harvest"
+
 // runExternalHarvestPhase runs external intelligence harvesting as a standalone phase.
-// Harvested URLs are ingested into the httpRecords table via an Executor with zero modules.
+//
+// The phase never contacts the target. Harvested URLs come from third-party
+// archives and are persisted as request-only stubs (has_response=false,
+// source=harvest); any later phase that reaches the target fetches them with the
+// scan's own session, hooks and limiter. It used to push every archived URL
+// through an executor, which fetched a baseline for each one: an unbounded,
+// unauthenticated, hook-less GET sweep of the live target from a phase that is
+// documented — and planned (SkipsTarget) — as target-silent.
 func (r *Runner) runExternalHarvestPhase(ctx context.Context, infra *phaseInfra) error {
 	if len(r.options.Targets) == 0 {
 		return nil
@@ -28,52 +44,80 @@ func (r *Runner) runExternalHarvestPhase(ctx context.Context, infra *phaseInfra)
 
 	r.printPhaseStart("ExternalHarvest", "harvest URLs from external intelligence sources")
 
-	ehSpeedDetail := fmt.Sprintf("Speed: concurrency=%s, max-per-host=%s",
-		terminal.HiBlue(fmt.Sprintf("%d", r.options.Concurrency)),
-		terminal.HiBlue(fmt.Sprintf("%d", r.options.MaxPerHost)))
+	ehDetail := "Mode: " + terminal.HiBlue("request-only") + " (archived URLs are stored, never fetched from the target)"
 	if budget := PhaseSpeedDetail(r.settings, "external_harvester", 0); budget != "" {
-		ehSpeedDetail += ", " + budget
+		ehDetail += ", " + budget
 	}
-	r.printPhaseDetail(ehSpeedDetail)
+	r.printPhaseDetail(ehDetail)
 	r.printTargetDetail(r.formatTargetCounts(ctx, len(r.options.Targets)))
 	r.printVerboseTargets(r.options.Targets)
 
-	zap.L().Info("ExternalHarvest: ingesting harvested URLs into database")
+	zap.L().Info("ExternalHarvest: storing harvested URLs as request-only records")
 
-	executorCfg := core.ExecutorConfig{
-		Workers:       r.options.Concurrency,
-		Services:      infra.svc,
-		HTTPRequester: infra.httpRequester,
-		Repository:    r.repository,
-		ScanUUID:      infra.scanUUID,
-		ProjectUUID:   r.options.ProjectUUID,
-		ScopeMatcher:  infra.scopeMatcher,
-		PauseCtrl:     r.pauseCtrl,
-		OnTraffic:     r.makeOnTraffic("harvest"),
-		OnResult: func(result *output.ResultEvent) {
-			if err := r.output.Write(result); err != nil {
-				zap.L().Error("Failed to write result", zap.Error(err))
-			}
-		},
-	}
-
-	executor := core.NewExecutor(executorCfg, src, nil, nil)
-	_, err := executor.Execute(ctx)
-	r.currentPhase.Load().noteExecution(executor.Report())
+	stored, err := r.ingestHarvestStubs(ctx, infra, src)
 	if err != nil {
 		return err
 	}
 
 	// Increment processed_count for external harvest phase
-	if r.repository != nil && executor.Processed() > 0 {
-		if err := r.repository.IncrementProcessedCount(ctx, infra.scanUUID, executor.Processed()); err != nil {
+	if r.repository != nil && stored > 0 {
+		if err := r.repository.IncrementProcessedCount(ctx, infra.scanUUID, stored); err != nil {
 			zap.L().Warn("ExternalHarvest: failed to increment processed count", zap.Error(err))
 		}
 	}
 
 	elapsed := time.Since(phaseStart)
 	r.printPhaseComplete("ExternalHarvest", fmt.Sprintf("completed — %s items ingested in %s",
-		terminal.Orange(fmt.Sprintf("%d", executor.Processed())), terminal.HiPurple(fmtDuration(elapsed))))
-	zap.L().Info("ExternalHarvest: completed", zap.Int64("processed", executor.Processed()))
+		terminal.Orange(fmt.Sprintf("%d", stored)), terminal.HiPurple(fmtDuration(elapsed))))
+	zap.L().Info("ExternalHarvest: completed", zap.Int64("stored", stored))
 	return nil
+}
+
+// ingestHarvestStubs drains src and persists each in-scope URL as a request-only
+// record. It sends nothing to the target: no baseline, no pre-hook, no passive
+// module. Scope is matched on host and path alone, the same pre-request check the
+// executor applies before it would have fetched anything.
+//
+// Returns how many records are in the store for this harvest (a URL already
+// recorded counts, since the repository adopts the existing row). A cancelled
+// context ends the phase with what was stored so far and no error, matching the
+// executor-based phase it replaces.
+func (r *Runner) ingestHarvestStubs(ctx context.Context, infra *phaseInfra, src source.InputSource) (int64, error) {
+	defer func() { _ = src.Close() }()
+
+	var stored, outOfScope, failed int64
+	for {
+		item, err := src.Next(ctx)
+		if err != nil {
+			if source.IsEOF(err) || ctx.Err() != nil {
+				break
+			}
+			return stored, fmt.Errorf("external harvest: read source: %w", err)
+		}
+		if item == nil || item.Request == nil || item.Request.Request() == nil {
+			continue
+		}
+		req := item.Request
+		if infra != nil && infra.scopeMatcher != nil && req.Service() != nil &&
+			!infra.scopeMatcher.InScopeRequest(req.Service().Host(), req.Request().Path(), "", "") {
+			outOfScope++
+			continue
+		}
+		if r.repository == nil {
+			continue
+		}
+		if _, err := r.repository.SaveRecord(ctx, req, harvestRecordSource, r.options.ProjectUUID); err != nil {
+			failed++
+			zap.L().Debug("ExternalHarvest: failed to store harvested URL",
+				zap.String("url", req.Target()), zap.Error(err))
+			continue
+		}
+		stored++
+	}
+
+	if outOfScope > 0 || failed > 0 {
+		zap.L().Info("ExternalHarvest: skipped harvested URLs",
+			zap.Int64("out_of_scope", outOfScope), zap.Int64("store_failed", failed))
+	}
+	return stored, nil
 }

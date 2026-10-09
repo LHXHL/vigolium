@@ -219,9 +219,11 @@ func effectiveRateLimit(opts *types.Options) int {
 }
 
 // buildScanRateLimiter returns a global requests-per-second token bucket for the
-// scan, or nil when no explicit --rate-limit was set (perSec <= 0) so default
-// scans keep their current throughput. Burst equals the rate so a fresh scan can
-// send up to one second's worth immediately, then settles to the steady cap.
+// scan, or nil when the rate is 0 ("unlimited"). The default scan is limited:
+// Options.RateLimit carries the 100 rps default whether or not --rate-limit was
+// typed, so this bucket is always on unless an operator or profile sets 0. Burst
+// equals the rate so a fresh scan can send up to one second's worth immediately,
+// then settles to the steady cap.
 func buildScanRateLimiter(perSec int) *rate.Limiter {
 	if perSec <= 0 {
 		return nil

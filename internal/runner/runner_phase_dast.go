@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/passive/secret_detect"
 	"github.com/vigolium/vigolium/pkg/oast"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/spitolas"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
 )
@@ -168,6 +170,11 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	// Resolve dynamic-assessment concurrency: scanning_pace.dynamic-assessment overrides global when CLI not explicit
 	daConcurrency := r.phaseConcurrency("dynamic-assessment")
 
+	// Browser confirmations (XSS dialog probes) launch their own Chrome from a
+	// module that has no route back to the scan options; without this default
+	// they went around --proxy entirely. Restored when the phase ends.
+	defer spitolas.SetDefaultProbeProxy(r.options.ProxyURL)()
+
 	// Initialize OAST service if enabled
 	var oastService *oast.Service
 	if r.settings != nil && r.settings.OAST.Enabled {
@@ -198,17 +205,17 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	ipCache := core.NewInsertionPointCache(4096)
 
 	// Resolve per-phase settings from scanning pace config (static across rounds)
-	var daMaxDuration time.Duration
-	daParallelPassive := true // default for dynamic-assessment phase
-	var daFeedbackDrain time.Duration
-	var daActiveModuleTimeout time.Duration
+	// ResolvePhase owns every default here (parallel_passive is on for this
+	// phase); with no settings, the built-in pace config supplies them.
+	paceCfg := config.DefaultScanningPaceConfig()
 	if r.settings != nil {
-		daPace := r.settings.ScanningPace.ResolvePhase("dynamic-assessment")
-		daMaxDuration = daPace.MaxDuration
-		daParallelPassive = daPace.ParallelPassive
-		daFeedbackDrain = daPace.FeedbackDrainTimeout
-		daActiveModuleTimeout = daPace.ActiveModuleTimeout
+		paceCfg = &r.settings.ScanningPace
 	}
+	daPace := paceCfg.ResolvePhase("dynamic-assessment")
+	daMaxDuration := daPace.MaxDuration
+	daParallelPassive := daPace.ParallelPassive
+	daFeedbackDrain := daPace.FeedbackDrainTimeout
+	daActiveModuleTimeout := daPace.ActiveModuleTimeout
 
 	// Enforce dynamic-assessment phase deadline across all feedback rounds. Without this wrap
 	// each round's executor would start a fresh timeout, letting total phase time

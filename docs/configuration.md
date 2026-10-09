@@ -280,11 +280,13 @@ as effective.
 | `probe` | yes | yes | yes |
 | `dynamic-assessment` | yes (workers) | no (scan-wide limiter) | no (scan-wide semaphore) |
 | `known-issue-scan` | yes | yes | no |
-| `external-harvest` | yes | no | no |
+| `external-harvest` | no | no | no |
 
 `spidering` applies none of them: it drives one browser, with a per-target
 `max_duration` as its only bound. Its entry is therefore absent from the
-`scan.started` pace table rather than reported as zeros.
+`scan.started` pace table rather than reported as zeros. `external-harvest`
+applies none either: it only queries third-party archives and stores what they
+return as request-only records, so it never sends a request to the target.
 
 `discovery` is the one dial that does **not** inherit the global value. It is
 paced only when a rate is set explicitly — `scanning_pace.discovery.rate_limit`
@@ -849,6 +851,10 @@ oast:
   blind_xss_src: ""                # JS script src for blind XSS payloads
   enabled_blind_xss: false
 ```
+
+A `server_url` without a scheme registers over https only. If that fails, OAST
+is unavailable for the scan; it is never retried over cleartext http. Write
+`http://…` explicitly to use a cleartext interactsh server.
 
 ### `notify`
 

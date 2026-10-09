@@ -690,6 +690,12 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}, retryOpts)
 
+	// retryablehttp's HTTP/2 fallback client is built from its own defaults and
+	// ignored --proxy; both retry clients share one replacement that does not.
+	h2Fallback := newHTTP2FallbackTransport(poolStats.countDials(dialer.Dial), tlsConfig, options.ProxyURL, respHeaderTimeout)
+	pinHTTP2Fallback(client, h2Fallback)
+	pinHTTP2Fallback(clientNoRedir, h2Fallback)
+
 	// Raw HTTP clients. rawhttp.DefaultOptions is a shared package-level
 	// *Options; copy it by value so per-requester tuning stays local. The old
 	// `rawOpts := rawhttp.DefaultOptions` aliased the global pointer, so every
@@ -982,7 +988,13 @@ func cloneRetryClientWithJar(src *retryablehttp.Client, jar http.CookieJar, opts
 	// Timeout" above true. Done at this single seam rather than at each caller:
 	// this is the only function that can drop it, so it cannot be forgotten.
 	opts.Timeout = base.Timeout
-	return retryablehttp.NewWithHTTPClient(&base, opts)
+	clone := retryablehttp.NewWithHTTPClient(&base, opts)
+	// NewWithHTTPClient builds a fresh HTTP/2 fallback client from retryablehttp's
+	// defaults; carry src's proxy-aware one across instead.
+	if src.HTTPClient2 != nil {
+		pinHTTP2Fallback(clone, src.HTTPClient2.Transport)
+	}
+	return clone
 }
 
 // stripCredentialHeaderMap returns a copy of the header map with credential-bearing

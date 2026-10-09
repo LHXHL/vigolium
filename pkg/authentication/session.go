@@ -75,6 +75,15 @@ type LoginFlow struct {
 	Expect *ExpectResponse `yaml:"expect,omitempty" json:"expect,omitempty"`
 	// Multi-step login flows. When set, URL/Method/Body/Extract on the parent are ignored.
 	Steps []LoginStep `yaml:"steps,omitempty" json:"steps,omitempty"`
+
+	// headers are extra request headers sent with the login request. Only a
+	// flow converted from a session's login_request carries them (the raw
+	// request's own headers); the file schema has no field for them.
+	headers map[string]string
+	// discoverTokens marks a flow converted from login_request: with no
+	// configured Extract, its rules are discovered from each login response,
+	// as `auth load` does for a raw request.
+	discoverTokens bool
 }
 
 // Session represents a named authentication identity used during scanning.
@@ -107,7 +116,8 @@ func (s *Session) Validate() error {
 		return fmt.Errorf("session %q: invalid role %q (must be 'primary' or 'compare')", s.Name, s.Role)
 	}
 	hasStatic := len(s.Headers) > 0
-	hasLogin := s.Login != nil
+	// A Login converted from login_request is the same source, not a second one.
+	hasLogin := s.Login != nil && !s.Login.discoverTokens
 	hasRawLogin := s.LoginRequest != ""
 	sources := 0
 	if hasStatic {

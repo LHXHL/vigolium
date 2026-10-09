@@ -377,7 +377,7 @@ func TestPhasePaceSupports(t *testing.T) {
 		{"dynamic-assessment", PaceFieldRateLimit, false},
 		{"known-issue-scan", PaceFieldRateLimit, true},
 		{"known-issue-scan", PaceFieldMaxPerHost, false},
-		{"external-harvest", PaceFieldConcurrency, true},
+		{"external-harvest", PaceFieldConcurrency, false},
 		// Unknown phase and unknown field both fail closed.
 		{"not-a-phase", PaceFieldRateLimit, false},
 		{"probe", "not_a_field", false},
@@ -418,5 +418,31 @@ func TestDiscoveryRateLimit(t *testing.T) {
 	var nilPace *ScanningPaceConfig
 	if got := nilPace.DiscoveryRateLimit(&types.Options{RateLimit: 9, RateLimitExplicitlySet: true}); got != 9 {
 		t.Errorf("nil pace config: got %d, want 9", got)
+	}
+}
+
+// TestResolvePhase_ParallelPassiveDefaultIsPerPhase: parallel_passive defaults
+// on for dynamic-assessment even when the pace config never went through
+// DefaultScanningPaceConfig (a zero Settings, as the agent's run_scan once built,
+// or a config file without the section), and stays off for other phases. An
+// explicit value always wins.
+func TestResolvePhase_ParallelPassiveDefaultIsPerPhase(t *testing.T) {
+	var zero ScanningPaceConfig
+	if !zero.ResolvePhase("dynamic-assessment").ParallelPassive {
+		t.Error("dynamic-assessment with a zero pace config: ParallelPassive = false, want true")
+	}
+	for _, phase := range []string{"discovery", "spidering", "known-issue-scan", "external-harvest", "probe"} {
+		if zero.ResolvePhase(phase).ParallelPassive {
+			t.Errorf("%s: ParallelPassive = true, want false", phase)
+		}
+	}
+
+	off := ScanningPaceConfig{DynamicAssessment: PhasePace{ParallelPassive: boolPtr(false)}}
+	if off.ResolvePhase("dynamic-assessment").ParallelPassive {
+		t.Error("explicit parallel_passive: false was overridden by the default")
+	}
+	on := ScanningPaceConfig{Discovery: PhasePace{ParallelPassive: boolPtr(true)}}
+	if !on.ResolvePhase("discovery").ParallelPassive {
+		t.Error("explicit parallel_passive: true on discovery was ignored")
 	}
 }

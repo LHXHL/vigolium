@@ -124,6 +124,11 @@ func New(cfg *config.OASTConfig, emitResult func(*output.ResultEvent), repo *dat
 	opts := &interactshclient.Options{
 		ServerURL: serverURL,
 		Token:     cfg.Token,
+		// interactsh retries a failed https registration over cleartext http
+		// by default, which sends the registration (correlation id, secret
+		// key, token) in the clear to whatever answered on port 80. Only an
+		// operator who wrote http:// asked for cleartext.
+		DisableHTTPFallback: !explicitCleartextServer(serverURL),
 	}
 
 	client, err := interactshclient.New(opts)
@@ -156,6 +161,14 @@ func New(cfg *config.OASTConfig, emitResult func(*output.ResultEvent), repo *dat
 		blindXSSSrc:        cfg.BlindXSSSrc,
 		enabledBlindXSS:    cfg.EnabledBlindXSS,
 	}, nil
+}
+
+// explicitCleartextServer reports whether the configured interactsh server_url
+// names the http:// scheme itself. Only then is a cleartext registration what
+// the operator asked for; a bare host (the default "oast.pro") or https:// must
+// never be silently downgraded.
+func explicitCleartextServer(serverURL string) bool {
+	return len(serverURL) >= len("http://") && strings.EqualFold(serverURL[:len("http://")], "http://")
 }
 
 // ServerURL returns the interactsh server hostname (e.g. "oast.pro").

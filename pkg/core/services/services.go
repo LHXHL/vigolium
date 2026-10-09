@@ -20,10 +20,11 @@ type Services struct {
 
 	// RateLimiter, when non-nil, caps the GLOBAL outbound request rate (requests
 	// per second) across all hosts — distinct from HostLimiter's per-host
-	// concurrency. It is engaged only when the operator sets an explicit
-	// --rate-limit, so default scans keep their current throughput. Shared across
-	// every Requester built from these Services (and their WithContext clones), so
-	// one token bucket governs the whole scan.
+	// concurrency. It is on by default: Options.RateLimit carries the documented
+	// 100 rps default (scanning_pace.rate_limit) even when --rate-limit is not
+	// typed, and only a rate of 0 ("unlimited") leaves it nil. Shared across every
+	// Requester built from these Services (and their WithContext clones), so one
+	// token bucket governs the whole scan.
 	RateLimiter *rate.Limiter
 
 	// HostErrors tracks host failures for circuit breaking

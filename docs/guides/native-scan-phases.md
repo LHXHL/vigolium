@@ -91,7 +91,9 @@ vigolium run spitolas -t https://example.com
 
 ### External Harvest
 
-Pulls endpoints from external intelligence sources (Wayback Machine, certificate transparency logs):
+Pulls endpoints from external intelligence sources (Wayback Machine, certificate transparency logs).
+It never contacts the target: each harvested URL is stored as a request-only record
+(`source=harvest`, no response) that later phases fetch with the scan's session, hooks and limiter:
 
 ```bash
 vigolium run external-harvest -t https://example.com

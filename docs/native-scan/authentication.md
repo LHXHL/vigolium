@@ -404,6 +404,15 @@ SessionConfig
 
 Only one of `headers`, `login`, or `login_request` can be set per session.
 
+A `login_request` session logs in when the scan starts, like a `login` flow: the raw
+request is sent with its own headers, and the credential is discovered from the
+response the same way `vigolium auth load` does it (a known token field in a JSON
+body becomes `Authorization: Bearer …`, cookies the login set become `Cookie`, and
+known auth response headers are copied). A response with none of those fails the
+login. The URL comes from the request line, or from `Host` with `https` (or `http`
+when the port is 80); write an absolute request line such as
+`POST http://localhost:3000/login HTTP/1.1` for a cleartext target on another port.
+
 ## Environment Variables
 
 Session files (both YAML and JSON) support `${VAR}` syntax for secrets. This keeps credentials out of config files:

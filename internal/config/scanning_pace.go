@@ -185,8 +185,10 @@ var phasePaceSupport = map[string]struct{ Concurrency, RateLimit, MaxPerHost boo
 	"dynamic-assessment": {Concurrency: true},
 	// Nuclei owns its own HTTP stack and takes both.
 	"known-issue-scan": {Concurrency: true, RateLimit: true},
-	// Archive/API fan-out, bounded by worker count.
-	"external-harvest": {Concurrency: true},
+	// Request-only: harvested URLs are stored, never fetched from the target,
+	// so no target-facing dial applies (the archive queries are bounded by the
+	// phase's max_duration alone).
+	"external-harvest": {},
 }
 
 // Pace field names, as they appear in warnings and in the support table.
@@ -282,7 +284,13 @@ func (c *ScanningPaceConfig) ResolvePhase(phase string) ResolvedPhasePace {
 		resolved.MaxDuration = commonDuration
 	}
 
-	// ParallelPassive: per-phase pointer overrides common default (false)
+	// ParallelPassive: an explicit per-phase value wins; otherwise the built-in
+	// per-phase default, which is on for dynamic-assessment (the only phase that
+	// runs passive modules at volume) and off elsewhere. The default lives here,
+	// not only in DefaultScanningPaceConfig, so a pace config that never went
+	// through the defaults (a zero Settings, a config file without the section)
+	// still gets it.
+	resolved.ParallelPassive = defaultParallelPassive(phase)
 	if pp.ParallelPassive != nil {
 		resolved.ParallelPassive = *pp.ParallelPassive
 	}
@@ -302,6 +310,12 @@ func (c *ScanningPaceConfig) ResolvePhase(phase string) ResolvedPhasePace {
 	}
 
 	return resolved
+}
+
+// defaultParallelPassive is the built-in parallel_passive for phase when its
+// pace section does not set one.
+func defaultParallelPassive(phase string) bool {
+	return phase == "dynamic-assessment"
 }
 
 // boolPtr returns a pointer to a bool value. Used for optional YAML fields.

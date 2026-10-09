@@ -76,9 +76,13 @@ func NewManager(sessions []*Session, opts ...ManagerOption) (*Manager, error) {
 		return nil, fmt.Errorf("at least one session is required")
 	}
 
-	// Validate all sessions
+	// Validate all sessions, then give each login_request-only session the
+	// LoginFlow HydrateSessions runs.
 	for _, s := range sessions {
 		if err := s.Validate(); err != nil {
+			return nil, err
+		}
+		if err := s.convertLoginRequest(); err != nil {
 			return nil, err
 		}
 	}

@@ -78,6 +78,9 @@ func executeLogin(ctx context.Context, sess *Session, client *http.Client) error
 		return fmt.Errorf("session %q: failed to create login request: %w", sess.Name, err)
 	}
 
+	for k, v := range login.headers {
+		req.Header.Set(k, v)
+	}
 	if login.ContentType != "" {
 		req.Header.Set("Content-Type", login.ContentType)
 	} else if login.Body != "" {
@@ -114,8 +117,20 @@ func executeLogin(ctx context.Context, sess *Session, client *http.Client) error
 		sess.Headers = make(map[string]string)
 	}
 
-	// Extract credentials from response
-	for _, rule := range login.Extract {
+	// Extract credentials from response. A flow converted from login_request
+	// has no configured rules: discover them from this response.
+	rules := login.Extract
+	if login.discoverTokens && len(rules) == 0 {
+		cookies := jar.Cookies(req.URL)
+		if len(cookies) == 0 {
+			cookies = resp.Cookies()
+		}
+		rules, _, _ = discoverTokenRules(resp, respBody, cookies)
+		if len(rules) == 0 {
+			return fmt.Errorf("session %q: no auth tokens found in login response (status %d)", sess.Name, resp.StatusCode)
+		}
+	}
+	for _, rule := range rules {
 		if err := applyExtractRule(sess, resp, respBody, jar, req, rule); err != nil {
 			return fmt.Errorf("session %q: extraction failed: %w", sess.Name, err)
 		}

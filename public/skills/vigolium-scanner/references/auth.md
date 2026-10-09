@@ -83,7 +83,7 @@ sessions:
 | `login.extract` | []object | How to extract auth token from login response |
 | `login.expect` | object | Response validation: `status` ([]int) and/or `body_contains` (string) |
 | `login.steps` | []object | Multi-step login flow. When set, parent URL/Method/Body/Extract are ignored |
-| `login_request` | string | Raw HTTP request string for the login flow (alternative to structured login) |
+| `login_request` | string | Raw HTTP request string for the login flow (alternative to structured login). Logs in at scan start; the token is auto-discovered from the response (JSON token field, cookies, auth headers) |
 
 ## Extract Rule Fields
 

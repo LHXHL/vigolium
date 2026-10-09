@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -54,6 +55,40 @@ type DialogEvent struct {
 	URL      string    `json:"url"`
 	At       time.Time `json:"at"`
 	Answered string    `json:"answered,omitempty"`
+}
+
+// defaultProbeProxy is the proxy a ProbeURL call uses when its config names
+// none. See SetDefaultProbeProxy.
+var defaultProbeProxy atomic.Pointer[string]
+
+// SetDefaultProbeProxy makes proxyURL the proxy every ProbeURL call uses when
+// its ProbeConfig.ProxyURL is empty, and returns a func that restores the
+// previous default. An empty proxyURL changes nothing and returns a no-op.
+//
+// It exists for the browser confirmations active modules run (xss_stored,
+// xss_dom_confirm, xss_light_scanner, aem_xss, client_path_traversal_confirm):
+// they build their ProbeConfig from a context.Background()-derived context with
+// no route back to the scan's options, so a scan run with --proxy confirmed its
+// XSS findings around the proxy — traffic the operator's proxy log never saw.
+// The runner installs the scan's proxy here for the dynamic-assessment phase.
+//
+// Process-wide by necessity: two in-process scans with DIFFERENT proxies running
+// concurrently share one default (last setter wins until it restores). A caller
+// that knows its proxy should still set ProbeConfig.ProxyURL, which always wins.
+func SetDefaultProbeProxy(proxyURL string) (restore func()) {
+	if proxyURL == "" {
+		return func() {}
+	}
+	prev := defaultProbeProxy.Swap(&proxyURL)
+	return func() { defaultProbeProxy.CompareAndSwap(&proxyURL, prev) }
+}
+
+// DefaultProbeProxy returns the proxy installed by SetDefaultProbeProxy, or "".
+func DefaultProbeProxy() string {
+	if p := defaultProbeProxy.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // ProbeConfig configures a single-page probe used to confirm DOM/reflected
@@ -196,6 +231,9 @@ func applyReadiness(res *ProbeResult, cfg ProbeConfig, waitErr error, waited tim
 func ProbeURL(ctx context.Context, cfg ProbeConfig) (res *ProbeResult, err error) {
 	if cfg.URL == "" {
 		return nil, errors.New("ProbeURL: URL is required")
+	}
+	if cfg.ProxyURL == "" {
+		cfg.ProxyURL = DefaultProbeProxy()
 	}
 
 	crawlerCfg, err := config.New(cfg.URL)

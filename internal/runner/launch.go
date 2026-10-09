@@ -206,8 +206,10 @@ func loadLaunchSettings(configPath string) (*config.Settings, error) {
 	}
 	if settings == nil {
 		// LoadSettings returns defaults when no file exists — but be
-		// defensive.
-		settings = &config.Settings{}
+		// defensive, and with the defaults: a zero Settings has no pace,
+		// rate limit or phase defaults at all, which is how an agent-launched
+		// scan once ran with parallel_passive off.
+		settings = config.DefaultSettings()
 	}
 	return settings, nil
 }

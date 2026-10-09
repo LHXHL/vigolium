@@ -140,51 +140,8 @@ func DiscoverLogin(loginReq *LoginRequest) (*DiscoverResult, error) {
 	}
 
 	// Discover tokens from the response.
-	var extractRules []ExtractRule
-	headers := make(map[string]string)
-
-	// 1. JSON body: look for known token fields.
-	if isJSONResponse(resp) && len(respBody) > 0 {
-		jsonRules, jsonHeaders := discoverJSONTokens(respBody)
-		extractRules = append(extractRules, jsonRules...)
-		for k, v := range jsonHeaders {
-			headers[k] = v
-		}
-		for _, r := range jsonRules {
-			result.TokenSources = append(result.TokenSources,
-				fmt.Sprintf("json body: %s -> %s", r.Path, r.ApplyAs))
-		}
-	}
-
-	// 2. Set-Cookie headers.
-	if cookies := resp.Cookies(); len(cookies) > 0 {
-		cookieRule, cookieHeader := discoverCookieTokens(cookies)
-		if cookieRule != nil {
-			extractRules = append(extractRules, *cookieRule)
-			for k, v := range cookieHeader {
-				headers[k] = v
-			}
-			result.TokenSources = append(result.TokenSources,
-				fmt.Sprintf("cookies: %d cookie(s)", len(cookies)))
-		}
-	}
-
-	// 3. Auth response headers.
-	for _, hdr := range knownAuthResponseHeaders {
-		val := resp.Header.Get(hdr)
-		if val == "" {
-			continue
-		}
-		rule := ExtractRule{
-			Source:  ExtractHeader,
-			Name:    hdr,
-			ApplyAs: hdr + ": {value}",
-		}
-		extractRules = append(extractRules, rule)
-		headers[hdr] = val
-		result.TokenSources = append(result.TokenSources,
-			fmt.Sprintf("header: %s", hdr))
-	}
+	extractRules, headers, sources := discoverTokenRules(resp, respBody, resp.Cookies())
+	result.TokenSources = append(result.TokenSources, sources...)
 
 	if len(extractRules) == 0 {
 		return result, fmt.Errorf("no auth tokens found in response (status %d)", resp.StatusCode)
@@ -213,6 +170,106 @@ func DiscoverLogin(loginReq *LoginRequest) (*DiscoverResult, error) {
 
 	result.Session = sess
 	return result, nil
+}
+
+// discoverTokenRules derives extract rules from a login response: a known token
+// field in a JSON body, the cookies the login set, and known auth response
+// headers. It also returns the header values those rules yield on this response
+// and a human-readable line per source. cookies is what the login set — the
+// response's Set-Cookie, or the flow's jar when redirects were followed.
+//
+// It is the one definition of "what counts as a token", shared by `auth load`'s
+// DiscoverLogin and by a login_request session logging in during a scan, so the
+// two cannot disagree about the same request.
+func discoverTokenRules(resp *http.Response, body []byte, cookies []*http.Cookie) ([]ExtractRule, map[string]string, []string) {
+	var rules []ExtractRule
+	var sources []string
+	headers := make(map[string]string)
+
+	// 1. JSON body: look for known token fields.
+	if isJSONResponse(resp) && len(body) > 0 {
+		jsonRules, jsonHeaders := discoverJSONTokens(body)
+		rules = append(rules, jsonRules...)
+		for k, v := range jsonHeaders {
+			headers[k] = v
+		}
+		for _, r := range jsonRules {
+			sources = append(sources, fmt.Sprintf("json body: %s -> %s", r.Path, r.ApplyAs))
+		}
+	}
+
+	// 2. Cookies set by the login.
+	if len(cookies) > 0 {
+		cookieRule, cookieHeader := discoverCookieTokens(cookies)
+		if cookieRule != nil {
+			rules = append(rules, *cookieRule)
+			for k, v := range cookieHeader {
+				headers[k] = v
+			}
+			sources = append(sources, fmt.Sprintf("cookies: %d cookie(s)", len(cookies)))
+		}
+	}
+
+	// 3. Auth response headers.
+	for _, hdr := range knownAuthResponseHeaders {
+		val := resp.Header.Get(hdr)
+		if val == "" {
+			continue
+		}
+		rules = append(rules, ExtractRule{
+			Source:  ExtractHeader,
+			Name:    hdr,
+			ApplyAs: hdr + ": {value}",
+		})
+		headers[hdr] = val
+		sources = append(sources, fmt.Sprintf("header: %s", hdr))
+	}
+
+	return rules, headers, sources
+}
+
+// loginFlowFromRequest turns a parsed raw login request into a LoginFlow whose
+// extract rules are discovered from each login response (see discoverTokenRules)
+// rather than configured. The raw request's own headers ride along, except the
+// ones the HTTP client derives itself.
+func loginFlowFromRequest(lr *LoginRequest) *LoginFlow {
+	lf := &LoginFlow{
+		URL:            lr.URL,
+		Method:         strings.ToUpper(lr.Method),
+		Body:           lr.Body,
+		discoverTokens: true,
+	}
+	for k, v := range lr.Headers {
+		switch {
+		case strings.EqualFold(k, "Content-Type"):
+			lf.ContentType = v
+		case strings.EqualFold(k, "Host"), strings.EqualFold(k, "Content-Length"):
+			// Set by the client from the URL and the body.
+		default:
+			if lf.headers == nil {
+				lf.headers = make(map[string]string)
+			}
+			lf.headers[k] = v
+		}
+	}
+	return lf
+}
+
+// convertLoginRequest gives a session that carries only a raw login_request a
+// LoginFlow, so it actually logs in when a scan hydrates its sessions. Before,
+// HydrateSessions skipped every session without a Login: a login_request session
+// validated, loaded, and then scanned anonymously without a word. A session that
+// already has a Login, or no login_request, is left alone.
+func (s *Session) convertLoginRequest() error {
+	if s.LoginRequest == "" || s.Login != nil {
+		return nil
+	}
+	lr, err := ParseRawLoginRequest(s.LoginRequest)
+	if err != nil {
+		return fmt.Errorf("session %q: login_request: %w", s.Name, err)
+	}
+	s.Login = loginFlowFromRequest(lr)
+	return nil
 }
 
 // LoginRequest holds a parsed raw HTTP login request.

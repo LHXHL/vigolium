@@ -318,10 +318,11 @@ type Options struct {
 	// ask for this rate" can no longer be read off the value.
 	RateLimitExplicitlySet bool
 
-	// RateLimit is the global outbound requests-per-second cap for native scanning,
-	// set only when the operator explicitly passes --rate-limit (0 = unlimited, the
-	// default, preserves current throughput). When > 0 the scan's Services get a
-	// shared token-bucket rate limiter enforced at the request boundary.
+	// RateLimit is the global outbound requests-per-second cap for native scanning.
+	// It carries the documented 100 rps default when --rate-limit is not typed
+	// (see RateLimitExplicitlySet), so the cap is on by default; 0 means unlimited.
+	// When > 0 the scan's Services get a shared token-bucket rate limiter enforced
+	// at the request boundary.
 	RateLimit int
 
 	// ExtensionsOnly skips all built-in Go modules; runs only JS/YAML extension modules.
