@@ -21,7 +21,7 @@ import (
 // vulnClass is intentionally distinct from reflected "xss" so a reflected
 // finding on the same parameter does not suppress stored detection (and vice
 // versa) via the cross-module ParameterFindingRegistry.
-const vulnClass = "xss-stored"
+const vulnClass = modkit.VulnClassXSSStored
 
 const (
 	probeNavTimeout = 25 * time.Second
@@ -78,8 +78,7 @@ func (m *Module) ScanPerInsertionPoint(
 		return nil, nil
 	}
 
-	hostPath := urlx.Host + urlx.Path
-	if reg := scanCtx.ParamFindingsRegistry(); reg != nil && reg.HasFinding(hostPath, ip.Name(), vulnClass) {
+	if scanCtx.ParamAlreadyFound(ctx, ip.Name(), vulnClass) {
 		return nil, nil
 	}
 
@@ -103,9 +102,9 @@ func (m *Module) ScanPerInsertionPoint(
 		return nil, nil
 	}
 
-	if reg := scanCtx.ParamFindingsRegistry(); reg != nil {
-		reg.MarkFound(hostPath, ip.Name(), vulnClass)
-	}
+	// The finding's URL is the render page, not the scanned item, so the
+	// executor's post-emit mark lands on a different key; mark the item's too.
+	scanCtx.MarkParamFound(ctx, ip.Name(), vulnClass)
 
 	return []*output.ResultEvent{m.buildResult(ctx, ip, payload, bodyUsed, probeURL, *dialog)}, nil
 }

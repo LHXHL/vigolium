@@ -87,10 +87,10 @@ func (e *Executor) processResults(ctx context.Context, results []*output.ResultE
 		// Cross-module finding dedup: mark (URL, param, vuln_class) as found
 		// so that lower-priority modules with the same vuln class can skip.
 		if emitted.outcome == emissionFinding && emitted.event != nil {
-			if vc, ok := m.(modules.VulnClassifier); ok && e.scanCtx != nil && e.scanCtx.ParamFindings != nil {
+			if vc, ok := m.(modules.VulnClassifier); ok && e.scanCtx.ParamDedupEnabled() {
 				param := emitted.event.FuzzingParameter
-				if param != "" {
-					e.scanCtx.ParamFindings.MarkFound(paramFindingLocationKeyFromResult(emitted.event), param, vc.VulnClass())
+				if class := vc.VulnClass(); param != "" && class != "" {
+					e.scanCtx.ParamFindings.MarkFound(modkit.ParamFindingKeyFromResult(emitted.event), param, class)
 				}
 			}
 		}

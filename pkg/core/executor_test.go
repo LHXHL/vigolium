@@ -240,9 +240,9 @@ func TestFeedbackChannel(t *testing.T) {
 
 func TestParamFindingLocationKeyNormalization(t *testing.T) {
 	item, _ := makeTestItem("example.com", "/users?id=1", "<html>body</html>")
-	got := paramFindingLocationKeyFromItem(item.Request)
+	got := modkit.ParamFindingKey(item.Request)
 	if got != "https://example.com/users" {
-		t.Fatalf("paramFindingLocationKeyFromItem() = %q, want %q", got, "https://example.com/users")
+		t.Fatalf("modkit.ParamFindingKey() = %q, want %q", got, "https://example.com/users")
 	}
 
 	result := &output.ResultEvent{
@@ -250,8 +250,8 @@ func TestParamFindingLocationKeyNormalization(t *testing.T) {
 		Matched:          "https://example.com/users?id=1",
 		FuzzingParameter: "id",
 	}
-	if key := paramFindingLocationKeyFromResult(result); key != got {
-		t.Fatalf("paramFindingLocationKeyFromResult() = %q, want %q", key, got)
+	if key := modkit.ParamFindingKeyFromResult(result); key != got {
+		t.Fatalf("modkit.ParamFindingKeyFromResult() = %q, want %q", key, got)
 	}
 }
 

@@ -200,6 +200,11 @@ type ScanContext struct {
 	// and feeds them for scanning. Off by default (recon-only).
 	FollowSubdomains bool
 
+	// NoParamDedup mirrors --no-param-dedup: when true, modules sharing a vuln
+	// class no longer skip a parameter another module already reported, so an
+	// audit run gets every (param, technique) hit. See ParamDedupEnabled.
+	NoParamDedup bool
+
 	// DeepScan mirrors --intensity=deep: modules may use it to unlock heavier,
 	// broader probing (e.g. dashboard_exposure's full mount-path sweep). Off by
 	// default so normal scans stay bounded.

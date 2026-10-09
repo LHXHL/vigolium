@@ -8,6 +8,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules"
+	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
 	"go.uber.org/zap"
 )
@@ -128,10 +129,12 @@ func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *ht
 		return
 	}
 
-	// Pre-compute host+path for cross-module finding dedup
-	itemHostPath := ""
-	if e.scanCtx != nil && e.scanCtx.ParamFindings != nil {
-		itemHostPath = paramFindingLocationKeyFromItem(item)
+	// Pre-compute the registry location key for cross-module finding dedup
+	// (the same key modules use via ScanContext.ParamAlreadyFound).
+	paramDedup := e.scanCtx.ParamDedupEnabled()
+	itemKey := ""
+	if paramDedup {
+		itemKey = modkit.ParamFindingKey(item)
 	}
 
 	// Module-outer, insertion-point-inner: the module-level gates
@@ -152,8 +155,10 @@ func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *ht
 		}
 
 		allowedTypes := module.AllowedInsertionPointTypes()
-		vc, isVulnClassifier := module.(modules.VulnClassifier)
-		dedupByParam := isVulnClassifier && e.scanCtx != nil && e.scanCtx.ParamFindings != nil
+		vulnClass := ""
+		if paramDedup {
+			vulnClass = modules.ModuleVulnClass(module)
+		}
 
 		for _, ip := range allPoints {
 			if !allowedTypes.Contains(ip.Type()) {
@@ -162,12 +167,19 @@ func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *ht
 
 			// Cross-module dedup: skip if another module already found this vuln
 			// class on this param.
-			if dedupByParam && e.scanCtx.ParamFindings.HasFinding(itemHostPath, ip.Name(), vc.VulnClass()) {
+			if vulnClass != "" && e.scanCtx.ParamFindings.HasFinding(itemKey, ip.Name(), vulnClass) {
 				continue
 			}
 
 			mod, pt := module, ip // capture loop variables
 			e.goActiveTask(ctx, g, func(releaseSlot func()) {
+				// Re-check when the task actually runs: it may have waited on the
+				// active-task semaphore while a same-class module confirmed this
+				// param, and the dispatch-time check above could not see that.
+				if vulnClass != "" && e.scanCtx.ParamFindings.HasFinding(itemKey, pt.Name(), vulnClass) {
+					releaseSlot()
+					return
+				}
 				results, completed := e.runActiveWithTimeout(ctx,
 					func(runCtx context.Context, client *http.Requester) ([]*output.ResultEvent, error) {
 						if contextual, ok := mod.(modules.ContextualActiveModule); ok {
@@ -207,4 +219,14 @@ func (e *Executor) goActiveTask(ctx context.Context, g *conc.WaitGroup, fn func(
 	g.Go(func() {
 		fn(releaseSlot)
 	})
+}
+
+// SetNoParamDedup mirrors --no-param-dedup into this executor's ScanContext:
+// when true, modules sharing a vuln class stop skipping parameters another
+// module already reported (dispatch-time, in-task and in-module checks alike).
+// Call it after NewExecutor and before Execute.
+func (e *Executor) SetNoParamDedup(disabled bool) {
+	if e.scanCtx != nil {
+		e.scanCtx.NoParamDedup = disabled
+	}
 }

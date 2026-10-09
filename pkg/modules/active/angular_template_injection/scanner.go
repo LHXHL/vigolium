@@ -69,6 +69,10 @@ func New() *Module {
 // reappear as stable content absent from the clean baseline.
 func (m *Module) ConfirmsByBodyDifferential() bool { return true }
 
+// VulnClass enables cross-module (param, class) dedup: once any csti module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassCSTI }
+
 // ScanPerInsertionPoint tests a single insertion point for Angular template injection.
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,

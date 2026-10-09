@@ -64,6 +64,13 @@ func New() *Module {
 // appears as content absent from the clean baseline before being reported.
 func (m *Module) ConfirmsByBodyDifferential() bool { return true }
 
+// VulnClass enables cross-module (param, class) dedup: once any ssti module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassSSTI }
+
+// ClassPriority orders this module within its vuln class (lower runs first).
+func (m *Module) ClassPriority() int { return modkit.ClassCostInBand }
+
 // ScanPerInsertionPoint tests a single insertion point for SSTI.
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,

@@ -64,6 +64,13 @@ func New() *Module {
 	return m
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any sqli module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassSQLi }
+
+// ClassPriority orders this module within its vuln class (lower runs first).
+func (m *Module) ClassPriority() int { return modkit.ClassCostBoolean }
+
 func (m *Module) ScanPerRequest(
 	ctx *httpmsg.HttpRequestResponse,
 	httpClient *http.Requester,
@@ -147,6 +154,10 @@ ipScan:
 		}
 		// Skip content-negotiation request headers (see negotiationHeaders).
 		if isExcludedHeader(ip) {
+			continue
+		}
+		// Another module of this vuln class already reported this param here.
+		if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
 			continue
 		}
 		// Claim dedup for THIS point immediately before scanning it (marks it seen).

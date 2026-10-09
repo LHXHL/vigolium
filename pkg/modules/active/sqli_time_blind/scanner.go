@@ -62,6 +62,13 @@ func New() *Module {
 	return m
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any SQLi module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassSQLi }
+
+// ClassPriority orders this module within its vuln class (lower runs first).
+func (m *Module) ClassPriority() int { return modkit.ClassCostTiming }
+
 // ScanPerRequest tests all insertion points for time-based blind SQL injection.
 func (m *Module) ScanPerRequest(
 	ctx *httpmsg.HttpRequestResponse,
@@ -96,6 +103,10 @@ func (m *Module) ScanPerRequest(
 
 ipScan:
 	for _, ip := range points {
+		// Another module of this vuln class already reported this param here.
+		if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
+			continue
+		}
 		baseValue := ip.BaseValue()
 
 		// Model the target's normal latency for this insertion point and derive

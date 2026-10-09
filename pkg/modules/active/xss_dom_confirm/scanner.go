@@ -23,7 +23,7 @@ import (
 
 // Cross-module dedup tag — must match xss_scanner / xss_light_scanner so a
 // confirmation here suppresses redundant work in the lighter modules.
-const vulnClass = "xss"
+const vulnClass = modkit.VulnClassXSS
 
 const (
 	probeNavTimeout = 25 * time.Second
@@ -64,6 +64,10 @@ func New() *Module {
 
 func (m *Module) VulnClass() string { return vulnClass }
 
+// ClassPriority: headless-browser confirmation runs after the HTTP-only
+// xss-light variants within the reflected-XSS class.
+func (m *Module) ClassPriority() int { return modkit.ClassCostBrowser }
+
 // Browser confirmation is much pricier than HTTP-only XSS modules — let them
 // run first so cross-module dedup can skip already-confirmed targets here.
 func (m *Module) Priority() int { return 200 }
@@ -82,8 +86,7 @@ func (m *Module) ScanPerInsertionPoint(
 		return nil, nil
 	}
 
-	hostPath := urlx.Host + urlx.Path
-	if reg := scanCtx.ParamFindingsRegistry(); reg != nil && reg.HasFinding(hostPath, ip.Name(), vulnClass) {
+	if scanCtx.ParamAlreadyFound(ctx, ip.Name(), vulnClass) {
 		return nil, nil
 	}
 
@@ -104,7 +107,7 @@ func (m *Module) ScanPerInsertionPoint(
 	// universal HTML payload (payload.Hash) doubles as a DOM-source navigation.
 	evt, plain := m.attempt(ctx, ip, httpClient, urlx.Host, payload, payload.Body, payload.Hash)
 	if evt != nil {
-		m.markFound(scanCtx, hostPath, ip.Name())
+		scanCtx.MarkParamFound(ctx, ip.Name(), vulnClass)
 		return []*output.ResultEvent{evt}, nil
 	}
 
@@ -123,7 +126,7 @@ func (m *Module) ScanPerInsertionPoint(
 		mevt, _ := m.attempt(ctx, ip, httpClient, urlx.Host, payload, v.Value, payload.Hash)
 		if mevt != nil {
 			mevt.Info.Description += fmt.Sprintf(" [waf-bypass: %s/%s]", wafType, v.Name)
-			m.markFound(scanCtx, hostPath, ip.Name())
+			scanCtx.MarkParamFound(ctx, ip.Name(), vulnClass)
 			return []*output.ResultEvent{mevt}, nil
 		}
 	}
@@ -140,7 +143,7 @@ func (m *Module) ScanPerInsertionPoint(
 				jevt, _ := m.attempt(ctx, ip, httpClient, urlx.Host, payload, body, "")
 				if jevt != nil {
 					jevt.Info.Description += " [js-string-breakout]"
-					m.markFound(scanCtx, hostPath, ip.Name())
+					scanCtx.MarkParamFound(ctx, ip.Name(), vulnClass)
 					return []*output.ResultEvent{jevt}, nil
 				}
 			}
@@ -148,12 +151,6 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	return nil, nil
-}
-
-func (m *Module) markFound(scanCtx *modkit.ScanContext, hostPath, name string) {
-	if reg := scanCtx.ParamFindingsRegistry(); reg != nil {
-		reg.MarkFound(hostPath, name, vulnClass)
-	}
 }
 
 // capturedResp holds the response parts the fallback needs to classify a WAF

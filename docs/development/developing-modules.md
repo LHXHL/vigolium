@@ -209,7 +209,8 @@ picks it up automatically. None of them break the base interface.
 |-----------|---------|
 | `ContextualActiveModule` / `ContextualPassiveModule` | Receive a `context.Context` so HTTP calls cancel on phase deadline / scan shutdown |
 | `Prioritized` | `Priority() int` — lower runs first (default 100); high-priority modules get earlier rate-limit slots |
-| `VulnClassifier` | `VulnClass() string` — enables cross-module dedup (e.g. don't re-test XSS another module already confirmed) |
+| `VulnClassifier` | `VulnClass() string` — return a `modkit.VulnClass*` constant to join cross-module dedup: once any module of the class reports a parameter, the others skip it at that location (see below) |
+| `ClassPrioritized` | `ClassPriority() int` — order within a vuln class (`modkit.ClassCostInBand` < `Boolean` < `Timing` < `Browser` < `OAST`; default: tier rank × 10) so cheap in-band modules claim a parameter first |
 | `BodyDifferentialConfirmable` | Opt an active module into the executor's replay-and-baseline differential safety net; only for non-state-changing in-band body/header signals |
 | `TechAware` | `RequiredTechs() []string` — allowlist; module only runs when the host's fingerprint matches (fails open if no tech detected yet) |
 | `PerScanModule` | `Fresh() any` — return isolated mutable state for each scan when registry-singleton state cannot live in `ScanContext` |
@@ -217,6 +218,31 @@ picks it up automatically. None of them break the base interface.
 | `TimeoutHinter` | `TimeoutHint() time.Duration` — raise the per-module timeout for legitimately slow analysis (e.g. timing-based DiffScan) |
 | `Flusher` / `BatchFlusher` | End-of-scan finalization; `BatchFlusher` returns deferred findings through the normal pipeline |
 | `ScopeAwareModule` | `ScopeAware() bool` — passive modules that should skip out-of-scope records |
+
+### Cross-module parameter dedup
+
+The executor keeps one finding per (location, parameter, vuln class). Location is
+`modkit.ParamFindingKey(item)` (`scheme://host/path`, host lowercased, query
+dropped); never build the key by hand. Per-insertion-point modules with a
+`VulnClass()` are skipped at dispatch and again when their queued task starts.
+Request-scope modules loop over insertion points themselves, so they must check
+in that loop:
+
+```go
+for _, ip := range points {
+    if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
+        continue
+    }
+    // ... probe ip
+}
+```
+
+The executor marks every emitted finding that sets `FuzzingParameter`. Call
+`scanCtx.MarkParamFound(ctx, ip.Name(), class)` only when the finding's URL is
+not the scanned item's (for example a stored-XSS render page). Keep
+tech-specific probes (log4shell, struts OGNL, PDF generators) unclassified.
+`--no-param-dedup` turns the skip off for audit runs. The registry contract test
+in `pkg/modules/vulnclass_test.go` pins each injection module's class.
 
 ## Test the module without Docker
 

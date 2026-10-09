@@ -647,6 +647,7 @@ type ScanContext struct {
     WAFStack            *WAFRegistry
     ContentClass        *ContentClassRegistry
     FollowSubdomains    bool
+    NoParamDedup        bool
     DeepScan            bool
     // bounded baseline/wildcard caches and singleflight groups are private
 }
@@ -655,7 +656,7 @@ type ScanContext struct {
 - **DedupManager** — request-level deduplication.
 - **OASTProvider** — generates out-of-band callback URLs for blind vulnerability detection.
 - **RequestFeeder / ScopeExpander** — feed discovered requests back into the executor and, when allowed, expand exact-host scope.
-- **InsertionPoints / ParamFindings** — reuse parsed insertion points and suppress duplicate vulnerability-class work on the same parameter.
+- **InsertionPoints / ParamFindings** — reuse parsed insertion points and suppress duplicate vulnerability-class work on the same parameter. Modules use `ParamAlreadyFound` / `MarkParamFound`, keyed by `modkit.ParamFindingKey`, the same key the executor uses; `NoParamDedup` (`--no-param-dedup`) turns the skip off.
 - **TechStack / WAFStack / ContentClass** — per-host registries used for conservative module gating and pacing signals.
 - Private bounded caches plus `singleflight` coalesce baseline, wildcard, and decoy probes.
 

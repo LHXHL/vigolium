@@ -59,6 +59,13 @@ func (m *Module) CanProcess(ctx *httpmsg.HttpRequestResponse) bool {
 	return true
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any nosqli module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassNoSQLi }
+
+// ClassPriority orders this module within its vuln class (lower runs first).
+func (m *Module) ClassPriority() int { return modkit.ClassCostBoolean }
+
 // ScanPerInsertionPoint tests a single insertion point for NoSQL operator injection.
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,
