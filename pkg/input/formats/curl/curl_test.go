@@ -54,7 +54,8 @@ func TestTokenizeCurlCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tokenizeCurlCommand(tt.input)
+			got, err := tokenizeCurlCommand(tt.input)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expect, got)
 		})
 	}
@@ -261,19 +262,13 @@ func TestExtractFromMarkdown(t *testing.T) {
 	assert.Contains(t, commands[1], "users")
 }
 
-func TestJoinContinuationLines(t *testing.T) {
-	lines := []string{
-		"curl -X POST \\",
-		"  http://example.com \\",
-		"  -H 'Content-Type: application/json'",
-		"",
-		"echo done",
-	}
-	joined := joinContinuationLines(lines)
-	assert.Len(t, joined, 3)
-	assert.Contains(t, joined[0], "curl")
-	assert.Contains(t, joined[0], "http://example.com")
-	assert.Contains(t, joined[0], "Content-Type: application/json")
+func TestSplitStatements_Continuations(t *testing.T) {
+	stmts := splitStatements("curl -X POST \\\n  http://example.com \\\n  -H 'Content-Type: application/json'\n\necho done\n")
+	require.Len(t, stmts, 2)
+	assert.Contains(t, stmts[0], "curl")
+	assert.Contains(t, stmts[0], "http://example.com")
+	assert.Contains(t, stmts[0], "Content-Type: application/json")
+	assert.Equal(t, "echo done", stmts[1])
 }
 
 func TestFormat_Parse_RawCommands(t *testing.T) {

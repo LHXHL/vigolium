@@ -1,0 +1,341 @@
+{
+  "info": {
+    "_postman_id": "4c1e8a1e-0000-4000-8000-000000000001",
+    "name": "G7a fixture",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.example.test"
+    },
+    {
+      "key": "token",
+      "value": "tok-123"
+    },
+    {
+      "key": "port",
+      "value": 8443
+    }
+  ],
+  "item": [
+    {
+      "name": "Search (inherits bearer, raw+query)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/search?q=shoes&page=2",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "search"
+          ],
+          "query": [
+            {
+              "key": "q",
+              "value": "shoes"
+            },
+            {
+              "key": "page",
+              "value": "2"
+            },
+            {
+              "key": "debug",
+              "value": "1",
+              "disabled": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Query only in url.query",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/list",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "list"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": "5"
+            },
+            {
+              "key": "off",
+              "value": "x",
+              "disabled": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Admin",
+      "auth": {
+        "type": "basic",
+        "basic": [
+          {
+            "key": "username",
+            "value": "admin"
+          },
+          {
+            "key": "password",
+            "value": "s3cret"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Users (inherits basic)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/admin/users"
+          }
+        },
+        {
+          "name": "Health (noauth)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/admin/health",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Export (apikey query)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/admin/export",
+            "auth": {
+              "type": "apikey",
+              "apikey": [
+                {
+                  "key": "key",
+                  "value": "api_key"
+                },
+                {
+                  "key": "value",
+                  "value": "k-999"
+                },
+                {
+                  "key": "in",
+                  "value": "query"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Nested",
+          "item": [
+            {
+              "name": "Explicit header wins",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer explicit"
+                  }
+                ],
+                "url": "{{baseUrl}}/admin/me"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Public",
+      "auth": {
+        "type": "noauth"
+      },
+      "item": [
+        {
+          "name": "Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/status"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Keys",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {
+            "key": "key",
+            "value": "X-API-Key"
+          },
+          {
+            "key": "value",
+            "value": "{{token}}"
+          },
+          {
+            "key": "in",
+            "value": "header"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Login (urlencoded)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/login",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "user",
+                  "value": "alice"
+                },
+                {
+                  "key": "pass",
+                  "value": "p&ss word"
+                },
+                {
+                  "key": "skip",
+                  "value": "x",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upload (formdata)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data"
+              }
+            ],
+            "url": "{{baseUrl}}/upload",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "title",
+                  "value": "hello",
+                  "type": "text"
+                },
+                {
+                  "key": "doc",
+                  "type": "file",
+                  "src": "/Users/me/docs/report.pdf"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Import (raw xml)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/import",
+            "body": {
+              "mode": "raw",
+              "raw": "<a>1</a>",
+              "options": {
+                "raw": {
+                  "language": "xml"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create (raw json)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"x\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GraphQL",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/graphql",
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query($id: ID!) { item(id: $id) { name } }",
+                "variables": "{\"id\": \"7\"}"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Unresolved host",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{missingHost}}/x"
+      }
+    },
+    {
+      "name": "Unresolved host 2",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{missingHost}}/y"
+      }
+    },
+    {
+      "name": "Unresolved header",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Trace",
+            "value": "{{traceId}}"
+          }
+        ],
+        "url": "{{baseUrl}}/trace"
+      }
+    }
+  ]
+}

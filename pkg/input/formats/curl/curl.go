@@ -59,22 +59,14 @@ func (f *Format) Parse(input string, callback formats.ParseReqRespCallback) erro
 		content = f.replaceVariables(content)
 	}
 
-	// Extract curl commands based on file type
-	var commands []string
-	switch {
-	case strings.HasSuffix(input, ".sh") || strings.HasSuffix(input, ".bash"):
-		commands = extractFromShellScript(content)
-	case strings.HasSuffix(input, ".md") || strings.HasSuffix(input, ".markdown"):
-		commands = extractFromMarkdown(content)
-	default:
-		// Treat as raw curl commands, one per line (with continuation support)
-		commands = extractRawCommands(content)
-	}
+	commands := extractCommands(input, content)
 
 	for _, cmd := range commands {
 		rr, err := ParseSingleCommand(cmd)
 		if err != nil {
-			zap.L().Debug("curl: skipping command",
+			// Warn, not Debug: a command that will not parse (an unknown flag,
+			// an unterminated quote) is otherwise silently missing from the scan.
+			zap.L().Warn("curl: skipping command",
 				zap.String("cmd", truncate(cmd, 100)),
 				zap.Error(err))
 			continue
@@ -94,19 +86,21 @@ func (f *Format) Count(input string) (int64, error) {
 		return 0, err
 	}
 
-	content := string(data)
+	commands := extractCommands(input, string(data))
+	return int64(len(commands)), nil
+}
 
-	var commands []string
+// extractCommands picks the extractor by extension: .sh/.bash → shell script,
+// .md/.markdown → fenced code blocks, otherwise a plain list of commands.
+func extractCommands(input, content string) []string {
 	switch {
 	case strings.HasSuffix(input, ".sh") || strings.HasSuffix(input, ".bash"):
-		commands = extractFromShellScript(content)
+		return extractFromShellScript(content)
 	case strings.HasSuffix(input, ".md") || strings.HasSuffix(input, ".markdown"):
-		commands = extractFromMarkdown(content)
+		return extractFromMarkdown(content)
 	default:
-		commands = extractRawCommands(content)
+		return extractRawCommands(content)
 	}
-
-	return int64(len(commands)), nil
 }
 
 var (
@@ -142,25 +136,6 @@ func (f *Format) replaceVariables(s string) string {
 	})
 
 	return s
-}
-
-// extractRawCommands treats content as raw curl commands (one per line, with continuation).
-func extractRawCommands(content string) []string {
-	lines := strings.Split(content, "\n")
-	joined := joinContinuationLines(lines)
-
-	var commands []string
-	for _, line := range joined {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		// Must start with "curl" or contain "curl "
-		if strings.HasPrefix(trimmed, "curl ") || trimmed == "curl" {
-			commands = append(commands, trimmed)
-		}
-	}
-	return commands
 }
 
 // truncate returns the first n characters of s, appending "..." if truncated.
