@@ -46,6 +46,16 @@ func TestPathToTemplate(t *testing.T) {
 
 		// No leading slash
 		{name: "no leading slash", path: "api/users/123", want: "api/users/*"},
+
+		// Delegated to pkg/httpmsg/pathshape.
+		{name: "one", path: "/users/1", want: "/users/*"},
+		{name: "hex digest prefix", path: "/blobs/e3b0c442", want: "/blobs/*"},
+		{name: "date", path: "/archive/2024-01-02", want: "/archive/*"},
+		{name: "email", path: "/users/a@b.example.com/keys", want: "/users/*/keys"},
+		{name: "users me stays literal", path: "/users/me", want: "/users/me"},
+		{name: "slug stays literal", path: "/about-us", want: "/about-us"},
+		{name: "blog slug stays literal", path: "/blog/my-post", want: "/blog/my-post"},
+		{name: "v2 alone", path: "/v2", want: "/v2"},
 	}
 
 	for _, tt := range tests {

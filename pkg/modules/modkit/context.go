@@ -7,7 +7,6 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
-	"github.com/vigolium/vigolium/pkg/mutation"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -154,12 +153,6 @@ type OASTProvider interface {
 	Enabled() bool
 }
 
-// MutationGenerator provides value-aware mutation capabilities.
-type MutationGenerator interface {
-	Classify(value string, hint *mutation.SchemaHint) mutation.ValueType
-	Generate(value string, vtype mutation.ValueType, opts *mutation.GenerateOptions) mutation.MutationSet
-}
-
 // InsertionPointProvider retrieves cached insertion points for a request,
 // avoiding redundant parsing across modules.
 type InsertionPointProvider interface {
@@ -191,7 +184,6 @@ type ScanContext struct {
 	RequestUUIDResolver RequestUUIDResolver
 	Scope               ScopeChecker
 	OASTProvider        OASTProvider
-	MutationGen         MutationGenerator
 	RequestFeeder       RequestFeeder
 	ScopeExpander       ScopeExpander // Optional: add discovered hosts to runtime scope (--follow-subdomains)
 	InsertionPoints     InsertionPointProvider
@@ -396,23 +388,4 @@ func (sc *ScanContext) DetectedWAF(host string) string {
 		return ""
 	}
 	return sc.WAFStack.Get(host)
-}
-
-// MutGen returns the MutationGenerator or a default implementation if nil.
-func (sc *ScanContext) MutGen() MutationGenerator {
-	if sc == nil || sc.MutationGen == nil {
-		return &defaultMutationGen{}
-	}
-	return sc.MutationGen
-}
-
-// defaultMutationGen is the fallback implementation using the mutation package directly.
-type defaultMutationGen struct{}
-
-func (d *defaultMutationGen) Classify(value string, hint *mutation.SchemaHint) mutation.ValueType {
-	return mutation.Classify(value, hint)
-}
-
-func (d *defaultMutationGen) Generate(value string, vtype mutation.ValueType, opts *mutation.GenerateOptions) mutation.MutationSet {
-	return mutation.Generate(value, vtype, opts)
 }

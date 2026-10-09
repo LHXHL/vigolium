@@ -639,7 +639,6 @@ type ScanContext struct {
     RequestUUIDResolver RequestUUIDResolver
     Scope               ScopeChecker
     OASTProvider        OASTProvider
-    MutationGen         MutationGenerator
     RequestFeeder       RequestFeeder
     ScopeExpander       ScopeExpander
     InsertionPoints     InsertionPointProvider
@@ -655,7 +654,6 @@ type ScanContext struct {
 
 - **DedupManager** — request-level deduplication.
 - **OASTProvider** — generates out-of-band callback URLs for blind vulnerability detection.
-- **MutationGenerator** — classifies parameter values and generates test mutations.
 - **RequestFeeder / ScopeExpander** — feed discovered requests back into the executor and, when allowed, expand exact-host scope.
 - **InsertionPoints / ParamFindings** — reuse parsed insertion points and suppress duplicate vulnerability-class work on the same parameter.
 - **TechStack / WAFStack / ContentClass** — per-host registries used for conservative module gating and pacing signals.

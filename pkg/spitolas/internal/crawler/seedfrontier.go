@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/httpmsg/pathshape"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/browser"
 	"go.uber.org/zap"
 )
@@ -291,31 +292,25 @@ func seedPathShape(path string) string {
 }
 
 // seedSegmentIsIdentifier reports whether a path segment looks like a per-record
-// identifier (a number, a hash, or a long slug) rather than a named section.
+// identifier rather than a named section: anything the shared pathshape
+// normalizer collapses (a number, uuid, hash, date, …), plus a long slug that
+// carries digits (2026-08-06-some-post-title). The slug rule is seed-sampling
+// specific — pathshape never collapses slugs — and only widens grouping, which
+// costs nothing here beyond seed diversity.
 func seedSegmentIsIdentifier(seg string) bool {
 	if seg == "" {
 		return false
 	}
-	digits, hexish := 0, 0
+	if pathshape.Kind(seg).Dynamic() {
+		return true
+	}
+	digits := 0
 	for _, r := range seg {
-		switch {
-		case r >= '0' && r <= '9':
+		if r >= '0' && r <= '9' {
 			digits++
-			hexish++
-		case (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F'):
-			hexish++
 		}
 	}
-	n := len([]rune(seg))
-	switch {
-	case digits == n: // 42
-		return true
-	case hexish == n && n >= 8: // 9f8ae1c2, a uuid chunk
-		return true
-	case digits > 0 && n >= 12: // 2026-08-06-some-post-title
-		return true
-	}
-	return false
+	return digits > 0 && len([]rune(seg)) >= 12 // dated slug
 }
 
 // seedIsDocument reports whether a path is worth rendering in a browser. A known

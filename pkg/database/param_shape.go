@@ -3,7 +3,10 @@ package database
 import (
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/vigolium/vigolium/pkg/httpmsg/pathshape"
 )
 
 // DefaultMaxParamShapeSamples is the per-shape representative cap used when
@@ -23,15 +26,22 @@ type recordURLDesc struct {
 }
 
 // paramShapeRepresentative decides whether a record participates in param-shape
-// coalescing and, if so, returns its grouping key (host + path + method + sorted
-// coalescable param NAMES, values ignored) and a value signature (sorted
+// coalescing and, if so, returns its grouping key (host + path shape + method +
+// sorted coalescable param NAMES, values ignored) and a value signature (sorted
 // name=value pairs).
 //
-// Coalescable params are the "same endpoint, varying values" fan-out inputs: URL
-// query params (read from the URL) plus form ("body") and JSON params (read from
-// the stored parameter list). Cookie/header params are auth/session churn rather
-// than endpoint fan-out; path params already separate records via the path
-// component of the key; xml params we don't flatten reliably — all excluded.
+// The path component of the key is the pathshape template, so /users/1 and
+// /users/2 share the shape /users/{int} while /users/me and /blog/my-post keep
+// their own. Every normalized segment is a coalescable "param" of its own
+// (p:<index>=<concrete value>), so the value signature still tells /users/1
+// from /users/2, and a path-only record becomes coalescable once at least one
+// segment was normalized.
+//
+// Coalescable params are the "same endpoint, varying values" fan-out inputs:
+// normalized path segments, URL query params (read from the URL) plus form
+// ("body") and JSON params (read from the stored parameter list). Cookie/header
+// params are auth/session churn rather than endpoint fan-out; xml params we
+// don't flatten reliably — all excluded.
 //
 // The hard safety rule is preserved from the GET-only original: coalescing must
 // never drop a request whose body we cannot fully see. A body-bearing method
@@ -51,6 +61,15 @@ func paramShapeRepresentative(d recordURLDesc) (shapeKey, valueSig string, coale
 
 	type pv struct{ key, val string }
 	var collected []pv
+
+	shapePath, kinds := pathshape.Shape(u.Path)
+	if shapePath != u.Path {
+		for i, seg := range pathshape.Segments(u.Path) {
+			if kinds[i].Dynamic() {
+				collected = append(collected, pv{"p:" + strconv.Itoa(i), seg})
+			}
+		}
+	}
 
 	// u.Query() allocates a map even for an empty query; skip it when the URL
 	// carries no query string (the common case for body-bearing requests).
@@ -79,7 +98,7 @@ func paramShapeRepresentative(d recordURLDesc) (shapeKey, valueSig string, coale
 		return "", "", false // unseen body — never coalesce
 	}
 	if len(collected) == 0 {
-		return "", "", false // nothing varies that we can key on
+		return "", "", false // nothing varies that we can key on (no params, no normalized segment)
 	}
 
 	sort.Slice(collected, func(i, j int) bool { return collected[i].key < collected[j].key })
@@ -91,7 +110,7 @@ func paramShapeRepresentative(d recordURLDesc) (shapeKey, valueSig string, coale
 		names[i] = c.key
 		pairs[i] = c.key + "=" + c.val
 	}
-	shapeKey = strings.ToLower(u.Host) + sep + u.Path + sep + method + sep + strings.Join(names, ",")
+	shapeKey = strings.ToLower(u.Host) + sep + shapePath + sep + method + sep + strings.Join(names, ",")
 	valueSig = strings.Join(pairs, "&")
 	return shapeKey, valueSig, true
 }

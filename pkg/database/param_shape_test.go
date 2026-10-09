@@ -1,6 +1,11 @@
 package database
 
-import "testing"
+import (
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestParamShapeRepresentative(t *testing.T) {
 	cases := []struct {
@@ -255,4 +260,95 @@ func TestSelectKeepersNilCoalescerKeepsEverything(t *testing.T) {
 		t.Errorf("nil coalescer must keep every record, got %d", len(kept))
 	}
 	c.commit(plan) // must not panic
+}
+
+// Path-segment normalization: per-record path ids share the pathshape template,
+// so path-only records become coalescable; routes that only look varied (me,
+// slugs, versions) keep their own shape.
+func TestParamShapeRepresentative_PathShape(t *testing.T) {
+	rep := func(method, rawURL string) (string, string, bool) {
+		return paramShapeRepresentative(recordURLDesc{method: method, url: rawURL})
+	}
+
+	k1, v1, ok1 := rep("GET", "https://a.com/users/1")
+	k2, v2, ok2 := rep("GET", "https://a.com/users/2")
+	if !ok1 || !ok2 {
+		t.Fatal("a path-only GET with a normalized segment must be coalescable")
+	}
+	if k1 != k2 {
+		t.Errorf("/users/1 and /users/2 must share a shape key: %q vs %q", k1, k2)
+	}
+	if v1 == v2 {
+		t.Error("the value signature must carry the concrete normalized segment")
+	}
+	if !strings.Contains(v1, "p:1=1") {
+		t.Errorf("value signature %q should name the normalized segment as p:1=1", v1)
+	}
+
+	// /users/me is a literal route: no normalized segment, nothing to key on.
+	kMe, _, okMe := rep("GET", "https://a.com/users/me")
+	if okMe {
+		t.Error("/users/me has no normalized segment and must not be coalescable")
+	}
+	if kMe == k1 {
+		t.Error("/users/me must not share the /users/{int} shape")
+	}
+	for _, raw := range []string{"https://a.com/blog/my-post", "https://a.com/about-us", "https://a.com/api/v2/users"} {
+		if _, _, ok := rep("GET", raw); ok {
+			t.Errorf("%s has no normalized segment and must not be coalescable", raw)
+		}
+	}
+
+	// UUID and hex segments normalize; distinct kinds are distinct shapes.
+	kU1, _, okU1 := rep("GET", "https://a.com/orders/550e8400-e29b-41d4-a716-446655440000")
+	kU2, _, okU2 := rep("GET", "https://a.com/orders/9b2f0c1e-1111-4222-8333-444455556666")
+	kH, _, okH := rep("GET", "https://a.com/orders/e3b0c44298fc1c14")
+	if !okU1 || !okU2 || !okH {
+		t.Fatal("uuid and hex path segments must be coalescable")
+	}
+	if kU1 != kU2 {
+		t.Error("two uuid orders must share a shape")
+	}
+	if kU1 == kH {
+		t.Error("a uuid and a hex segment must not share a shape")
+	}
+
+	// Path normalization composes with query params: same names, different ids.
+	kq1, _, _ := rep("GET", "https://a.com/users/1/posts?page=1")
+	kq2, _, _ := rep("GET", "https://a.com/users/7/posts?page=3")
+	if kq1 != kq2 {
+		t.Error("query-bearing records on one path shape must share a key")
+	}
+
+	// The body-safety rule still wins over a normalized path.
+	if _, _, ok := paramShapeRepresentative(recordURLDesc{method: "POST", url: "https://a.com/users/1"}); ok {
+		t.Error("a POST with an unseen body must never be coalescable, even on a normalized path")
+	}
+	if _, _, ok := paramShapeRepresentative(recordURLDesc{method: "GET", url: "https://a.com/users/1", contentLength: 10}); ok {
+		t.Error("a request with an unseen body must never be coalescable, even on a normalized path")
+	}
+}
+
+func TestCoalesceUUIDsByParamShape_PathIDs(t *testing.T) {
+	desc := map[string]recordURLDesc{
+		"me":   {method: "GET", url: "https://a.com/users/me"},
+		"blog": {method: "GET", url: "https://a.com/blog/my-post"},
+		"post": {method: "POST", url: "https://a.com/users/99"},
+	}
+	uuids := []string{"me", "blog", "post"}
+	for i := 1; i <= 50; i++ {
+		id := fmt.Sprintf("u%d", i)
+		desc[id] = recordURLDesc{method: "GET", url: fmt.Sprintf("https://a.com/users/%d", i)}
+		uuids = append(uuids, id)
+	}
+
+	kept, dropped := coalesceUUIDsByParamShape(uuids, desc, 3)
+
+	want := []string{"me", "blog", "post", "u1", "u2", "u3"}
+	if !reflect.DeepEqual(kept, want) {
+		t.Errorf("kept = %v, want %v", kept, want)
+	}
+	if dropped != 47 {
+		t.Errorf("dropped = %d, want 47", dropped)
+	}
 }

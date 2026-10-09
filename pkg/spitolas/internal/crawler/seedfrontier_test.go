@@ -15,6 +15,9 @@ func TestSeedSegmentIsIdentifier(t *testing.T) {
 		{"9f8ae1c2", true},                // hex run
 		{"deadbeefcafe", true},            // long hex
 		{"2026-08-06-a-post-title", true}, // dated slug
+		{"2024-01-02", true},              // date (via pathshape)
+		{"550e8400-e29b-41d4-a716-446655440000", true},
+		{"about-us", false}, // slug without digits stays a section
 		{"admin", false},
 		{"products", false},
 		{"v2", false},  // short, has a letter — a version segment, not an id
