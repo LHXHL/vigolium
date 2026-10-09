@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sourcegraph/conc"
+	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -238,7 +239,7 @@ func (h *HostRateLimiter) notifyEvict(host string) {
 
 // HostRateLimiterConfig configures the HostRateLimiter.
 type HostRateLimiterConfig struct {
-	MaxPerHost     int           // Max concurrent requests per host (default: 20)
+	MaxPerHost     int           // Max concurrent requests per host (default: types.DefaultMaxPerHost)
 	MaxEntries     int           // Max tracked hosts (default: 1000)
 	EvictAfter     time.Duration // Evict idle hosts after (default: 30s)
 	EvictInterval  time.Duration // How often to run eviction (default: 10s)
@@ -275,7 +276,7 @@ type HostRateLimiterConfig struct {
 // DefaultHostRateLimiterConfig returns sensible defaults.
 func DefaultHostRateLimiterConfig() HostRateLimiterConfig {
 	return HostRateLimiterConfig{
-		MaxPerHost:     20,
+		MaxPerHost:     types.DefaultMaxPerHost,
 		MaxEntries:     1000,
 		EvictAfter:     30 * time.Second,
 		EvictInterval:  10 * time.Second,
@@ -322,7 +323,7 @@ func resolveCeilingPerHost(cfg HostRateLimiterConfig) int {
 // NewHostRateLimiter creates a new HostRateLimiter with the given configuration.
 func NewHostRateLimiter(cfg HostRateLimiterConfig) *HostRateLimiter {
 	if cfg.MaxPerHost <= 0 {
-		cfg.MaxPerHost = 20
+		cfg.MaxPerHost = types.DefaultMaxPerHost
 	}
 	if cfg.MaxEntries <= 0 {
 		cfg.MaxEntries = 1000

@@ -13,8 +13,8 @@ func TestDefaultOptions(t *testing.T) {
 	if o.Concurrency != 25 {
 		t.Errorf("Concurrency = %d, want 25", o.Concurrency)
 	}
-	if o.MaxPerHost != 50 {
-		t.Errorf("MaxPerHost = %d, want 50", o.MaxPerHost)
+	if o.MaxPerHost != 40 {
+		t.Errorf("MaxPerHost = %d, want 40", o.MaxPerHost)
 	}
 	if o.Timeout != 15*time.Second {
 		t.Errorf("Timeout = %v, want 15s", o.Timeout)

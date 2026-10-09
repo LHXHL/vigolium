@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -310,13 +311,13 @@ func (r *Runner) buildModulesString(active []modules.ActiveModule, passive []mod
 // its MaxPerHost differs: three hand-written copies had already started to drift
 // (the eviction and WAF-pacing defaults were restated in each, and one dropped
 // the fallback below). maxPerHost <= 0 means "not chosen" and falls back to the
-// common scanning_pace value, then to 10.
+// common scanning_pace value, then to types.DefaultMaxPerHost.
 func newHostLimiter(maxPerHost int, settings *config.Settings, noWafPacing bool) *hostlimit.HostRateLimiter {
 	if maxPerHost <= 0 && settings != nil && settings.ScanningPace.MaxPerHost > 0 {
 		maxPerHost = settings.ScanningPace.MaxPerHost
 	}
 	if maxPerHost <= 0 {
-		maxPerHost = 10
+		maxPerHost = types.DefaultMaxPerHost
 	}
 	adaptive, minPerHost, ceilingPerHost := adaptiveHostLimiterSettings(settings)
 	return hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{

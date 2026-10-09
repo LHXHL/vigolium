@@ -74,7 +74,7 @@ func DefaultScanningPaceConfig() *ScanningPaceConfig {
 	return &ScanningPaceConfig{
 		Concurrency: types.DefaultConcurrency,
 		RateLimit:   100,
-		MaxPerHost:  40,
+		MaxPerHost:  types.DefaultMaxPerHost,
 		MaxDuration: "45m",
 
 		Discovery:         PhasePace{DurationFactor: 0.5},

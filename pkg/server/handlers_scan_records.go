@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
-	"github.com/vigolium/vigolium/pkg/agent"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
@@ -231,7 +230,7 @@ func newAllRecordsScanRecord(scanID, projectUUID, scanMode, status string, modul
 // ScanResponse shape the non-dry path used to produce, so a caller sees no
 // difference; only the way records_to_scan is obtained changed, from
 // enumerating every matching UUID to counting them.
-func (h *Handlers) respondScanAllRecordsDryRun(c fiber.Ctx, projectUUID, scanMode string, modules []string, matchCount int64) error {
+func (h *Handlers) respondScanAllRecordsDryRun(c fiber.Ctx, projectUUID, scanMode string, modules []string, matchCount int64, resolved *ScanResolved) error {
 	scanID := uuid.New().String()
 	// Detached on purpose: the row outlives this request as scan history.
 	if err := h.repo.CreateScan(context.Background(),
@@ -249,6 +248,7 @@ func (h *Handlers) respondScanAllRecordsDryRun(c fiber.Ctx, projectUUID, scanMod
 		Message:       "scan record created (dry run)",
 		RecordsToScan: matchCount,
 		ScanMode:      scanMode,
+		Resolved:      resolved,
 	})
 }
 
@@ -282,8 +282,29 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 
 	projectUUID := getProjectUUID(c)
 
+	// Clone settings
+	var settings *config.Settings
+	if h.settings != nil {
+		clone := *h.settings
+		settings = &clone
+	} else {
+		settings = config.DefaultSettings()
+	}
+
+	// Same resolution as the CLI and POST /api/scans/run, before anything else
+	// so a dry run validates it too. A profile that cannot be loaded used to be
+	// swallowed here, so the scan ran without the profile the caller named; it
+	// is a 400 like every other client error.
+	opts, strategy, err := resolveScanAllRecordsOptions(settings, h.config.Concurrency, req, projectUUID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
+			Error: err.Error(),
+			Code:  fiber.StatusBadRequest,
+		})
+	}
+
 	// Both branches below describe the same run, so derive these once.
-	modules := resolveAPIModules(req.Modules, req.ModuleTags)
+	modules := opts.Modules
 	scanMode := "full"
 	if !req.Force {
 		scanMode = "incremental"
@@ -336,7 +357,7 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 				Code:  fiber.StatusBadRequest,
 			})
 		}
-		return h.respondScanAllRecordsDryRun(c, projectUUID, scanMode, modules, matchCount)
+		return h.respondScanAllRecordsDryRun(c, projectUUID, scanMode, modules, matchCount, newScanResolved(strategy.Name, opts))
 	}
 
 	var matchingUUIDs []string
@@ -353,85 +374,6 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 			Code:  fiber.StatusBadRequest,
 		})
 	}
-
-	// Build runner options
-	opts := types.DefaultOptions()
-	opts.Modules = modules
-	opts.ProjectUUID = projectUUID
-	opts.SkipIngestion = true
-	opts.DiscoverEnabled = false
-	opts.ExternalHarvestEnabled = false
-	opts.SpideringEnabled = false
-	opts.KnownIssueScanEnabled = false
-	opts.SkipDynamicAssessment = false
-
-	concurrency := h.config.Concurrency
-	if concurrency <= 0 {
-		concurrency = types.DefaultConcurrency
-	}
-	if req.Concurrency > 0 {
-		concurrency = req.Concurrency
-	}
-	opts.Concurrency = concurrency
-
-	if req.MaxPerHost > 0 {
-		opts.MaxPerHost = req.MaxPerHost
-	}
-
-	if req.Timeout != "" {
-		d, _ := time.ParseDuration(req.Timeout) // already validated
-		opts.Timeout = d
-	}
-
-	if len(req.Headers) > 0 {
-		headers := make([]string, 0, len(req.Headers))
-		for k, v := range req.Headers {
-			headers = append(headers, k+": "+v)
-		}
-		opts.Headers = headers
-	}
-
-	// Resolve intensity to scanning profile
-	if req.Intensity != "" {
-		if profileName, resolvedIntensity, err := agent.ResolveNativeScanIntensity(req.Intensity); err == nil {
-			opts.Intensity = resolvedIntensity
-			if req.ScanningProfile == "" {
-				req.ScanningProfile = profileName
-			}
-		}
-	}
-
-	if req.ScanningProfile != "" {
-		opts.ScanningProfile = req.ScanningProfile
-	}
-
-	// Clone settings
-	var settings *config.Settings
-	if h.settings != nil {
-		clone := *h.settings
-		settings = &clone
-	} else {
-		settings = config.DefaultSettings()
-	}
-
-	// Load and apply scanning profile to settings
-	if opts.ScanningProfile != "" {
-		profilePath := settings.ScanningStrategy.ResolveProfilePath(opts.ScanningProfile)
-		if profile, profileErr := config.LoadProfile(profilePath); profileErr == nil {
-			_ = config.ApplyProfile(settings, profile)
-		}
-	}
-
-	if req.HeuristicsCheck != "" {
-		opts.HeuristicsCheck = req.HeuristicsCheck
-	}
-	if req.ScanningMaxDuration != "" {
-		settings.ScanningPace.MaxDuration = req.ScanningMaxDuration
-	}
-	applyRequestRateLimit(opts, &settings.ScanningPace, req.RateLimit)
-
-	// Resolve per-phase durations from scanning_pace (mirrors CLI behavior in scan.go)
-	applyResolvedPhaseDurations(opts, &settings.ScanningPace)
 
 	scanID := uuid.New().String()
 	dbSource := database.NewUUIDListDBInputSource(h.repo, matchingUUIDs)
@@ -491,5 +433,6 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 		Message:       "all-records scan started",
 		RecordsToScan: int64(len(matchingUUIDs)),
 		ScanMode:      scanMode,
+		Resolved:      newScanResolved(strategy.Name, opts),
 	})
 }

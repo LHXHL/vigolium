@@ -10,12 +10,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
-	"github.com/vigolium/vigolium/pkg/agent"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
-	"go.uber.org/zap"
 )
 
 var scanOpts = types.DefaultOptions()
@@ -284,17 +282,6 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		return err
 	}
 
-	if scanOpts.ScopeOriginMode != "" {
-		settings.Scope.CLIOriginMode = scanOpts.ScopeOriginMode
-	}
-
-	scanOpts.RateLimitExplicitlySet = rateLimitKnob.globalChanged()
-
-	// Override OAST URL if --oast-url flag is set
-	if scanOpts.OastURL != "" {
-		settings.OAST.OastURL = scanOpts.OastURL
-	}
-
 	// Override SQLite path if --db flag is set
 	if globalDB != "" {
 		settings.Database.Driver = "sqlite"
@@ -314,124 +301,32 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("invalid scanning strategy configuration: %w", err)
 	}
 
-	// Resolve --intensity to scanning profile name.
-	if cmd.Flags().Changed("intensity") {
-		profileName, resolvedIntensity, intensityErr := agent.ResolveNativeScanIntensity(globalIntensity)
-		if intensityErr != nil {
-			return intensityErr
-		}
-		scanOpts.Intensity = resolvedIntensity
-		if !cmd.Flags().Changed("scanning-profile") {
-			globalScanningProfile = profileName
+	// A negative budget is an already-expired deadline, not "unlimited": every
+	// consumer feeds it straight to context.WithTimeout, so the phase it governs
+	// does nothing and reports no error. Reject it before any side effect rather
+	// than silently running an empty scan. (Zero stays legal and means "default"
+	// for these two phases — see docs/configuration.md.)
+	for _, d := range []struct {
+		flag  string
+		value time.Duration
+	}{
+		{"discover-max-time", scanOpts.DiscoverMaxDuration},
+		{"spider-max-time", scanOpts.SpideringMaxDuration},
+		{"scanning-max-duration", globalScanningMaxDuration},
+	} {
+		if d.value < 0 {
+			return fmt.Errorf("--%s must not be negative, got %s", d.flag, d.value)
 		}
 	}
 
-	// Determine scanning profile: CLI --scanning-profile > config scanning_strategy.scanning_profile
-	profileName := globalScanningProfile
-	if profileName == "" {
-		profileName = settings.ScanningStrategy.ScanningProfile
-	}
-
-	// Load and apply scanning profile before strategy resolution
-	if profileName != "" {
-		profilePath := settings.ScanningStrategy.ResolveProfilePath(profileName)
-		profile, profileErr := config.LoadProfile(profilePath)
-		if profileErr != nil {
-			return fmt.Errorf("failed to load scanning profile %q: %w", profileName, profileErr)
-		}
-		if err := config.ApplyProfile(settings, profile); err != nil {
-			return fmt.Errorf("failed to apply scanning profile %q: %w", profileName, err)
-		}
-		scanOpts.ScanningProfile = profileName
-		zap.L().Info("Applied scanning profile", zap.String("profile", profileName), zap.String("path", profilePath))
-	}
-
-	// Propagate --rate-limit into the scanning pace so the known-issue-scan /
-	// nuclei limiter honors it. Only when the operator typed the flag: the flag's
-	// default IS the applied default, and a config file that wants a different one
-	// sets scanning_pace.rate_limit.
-	//
-	// This has to run AFTER ApplyProfile. It used to run before, so a profile
-	// carrying its own scanning_pace.rate_limit overwrote the typed flag and
-	// known-issue-scan quietly paced itself at the profile's rate while the native
-	// scan honored the flag. A flag the operator typed outranks a profile.
-	if scanOpts.RateLimitExplicitlySet {
-		settings.ScanningPace.RateLimit = globalRateLimit
-	}
-
-	// Apply scanning strategy as baseline before per-phase overrides
-	scanOpts.ScanningStrategy = globalStrategy
-	strategyName := globalStrategy
-	if strategyName == "" {
-		strategyName = settings.ScanningStrategy.DefaultStrategy
-	}
-	if strategyName != "" {
-		phases, ok := settings.ScanningStrategy.GetStrategy(strategyName)
-		if !ok {
-			return usageErrorf("unknown scanning strategy %q; valid names: %v", strategyName, settings.ScanningStrategy.StrategyNames())
-		}
-		scanOpts.DiscoverEnabled = phases.Discovery
-		scanOpts.SpideringEnabled = phases.Spidering
-		scanOpts.KnownIssueScanEnabled = phases.KnownIssueScan
-		if !phases.DynamicAssessment {
-			scanOpts.SkipDynamicAssessment = true
-		}
-		// --external-harvest is a per-phase override on top of the strategy
-		// baseline: when explicitly set on the command line it wins, so the
-		// harvest phase can be toggled on demand without switching strategies
-		// (e.g. --intensity balanced --external-harvest). When the flag is not
-		// set, the strategy's ExternalHarvesting value applies.
-		if !cmd.Flags().Changed("external-harvest") {
-			scanOpts.ExternalHarvestEnabled = phases.ExternalHarvesting
-		}
-		// A strategy is a narrowing request, so its pace ceiling applies before
-		// the per-phase overrides below and before the pace validation. Without
-		// this `lite` selected fewer modules and opened the crawl exactly as wide
-		// as `balanced`.
-		applyStrategyPace(settings, phases, scanOpts)
-		zap.L().Debug("Applied scanning strategy",
-			zap.String("strategy", strategyName),
-			zap.Bool("external_harvest", scanOpts.ExternalHarvestEnabled))
-	}
-
-	// Resolve heuristics check level
-	// Precedence: --skip-heuristics > --heuristics-check > config default > "basic"
-	scanOpts.HeuristicsCheck = "basic"
-	if settings.ScanningStrategy.HeuristicsCheck != "" {
-		scanOpts.HeuristicsCheck = settings.ScanningStrategy.HeuristicsCheck
-	}
-	if globalHeuristicsCheck != "" {
-		scanOpts.HeuristicsCheck = globalHeuristicsCheck
-	}
-	if globalSkipHeuristics {
-		scanOpts.HeuristicsCheck = "none"
-	}
-
-	// A hand-picked module selection (--module-id / -m) implies a targeted,
-	// low-noise scan, so auto-skip the broad known-issue-scan pass before phase
-	// selection resolves it. Must run after the strategy sets KnownIssueScanEnabled
-	// and before ApplyNativePhaseSelection consumes SkipPhases.
-	autoSkipKnownIssueScanForModuleSelection(scanOpts)
-
-	// Before ApplyNativePhaseSelection: it applies the probe phase's own
-	// defaults, and needs to know whether --record-redirect-chain was typed.
-	if err := applyProbeFlags(scanOpts, cmd); err != nil {
+	// Scan-options resolution: profile → settings overrides (--oast-url,
+	// --scope-origin, --scanning-max-duration) → strategy (explicit rate limit,
+	// phases, pace ceiling, heuristics) → --only/--skip → per-phase qualifiers →
+	// scanning_pace. REST and the agent launcher run the same runner functions;
+	// the ordering contract lives in runner/strategy_apply.go.
+	strategyName, err := resolveNativeScanOptions(cmd, settings, scanOpts)
+	if err != nil {
 		return err
-	}
-	if err := runner.ApplyNativePhaseSelection(scanOpts, func(enabled bool) {
-		settings.DynamicAssessment.Extensions.Enabled = enabled
-	}); err != nil {
-		return err
-	}
-	warnInertProbeFlags(scanOpts, cmd)
-	if err := applyExportScope(scanOpts); err != nil {
-		return err
-	}
-	if scanOpts.OnlyPhase != "" {
-		zap.L().Info("Phase isolation active", zap.String("only", scanOpts.OnlyPhase))
-	}
-	if len(scanOpts.SkipPhases) > 0 {
-		zap.L().Info("Phases skipped", zap.Strings("skip", scanOpts.SkipPhases))
 	}
 
 	// HTML's -o requirement is covered by the generic formatNeedsOutput loop
@@ -456,73 +351,6 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	// --split-by-host supplies a per-host base from each target's hostname.
 	if len(scanOpts.OutputFormats) > 1 && scanOpts.Output == "" && !splitByHostNaming {
 		return fmt.Errorf("multiple --format values require -o/--output to specify the base output path (or pass --split-by-host to name per-host files by hostname)")
-	}
-
-	// A negative budget is an already-expired deadline, not "unlimited": every
-	// consumer feeds it straight to context.WithTimeout, so the phase it governs
-	// does nothing and reports no error. Reject it before any side effect rather
-	// than silently running an empty scan. (Zero stays legal and means "default"
-	// for these two phases — see docs/configuration.md.)
-	for _, d := range []struct {
-		flag  string
-		value time.Duration
-	}{
-		{"discover-max-time", scanOpts.DiscoverMaxDuration},
-		{"spider-max-time", scanOpts.SpideringMaxDuration},
-		{"scanning-max-duration", globalScanningMaxDuration},
-	} {
-		if d.value < 0 {
-			return fmt.Errorf("--%s must not be negative, got %s", d.flag, d.value)
-		}
-	}
-
-	// Override scanning_pace.max_duration if --scanning-max-duration flag is set.
-	// This value plays two roles: it seeds the per-phase base (each phase scales
-	// it by its duration_factor) AND caps total wall-clock time for the whole
-	// scan via Options.ScanMaxDuration, so the per-phase factors distribute time
-	// within the total budget rather than stacking sequentially past it.
-	if cmd.Flags().Changed("scanning-max-duration") && globalScanningMaxDuration > 0 {
-		settings.ScanningPace.MaxDuration = globalScanningMaxDuration.String()
-		scanOpts.ScanMaxDuration = globalScanningMaxDuration
-	}
-
-	// Per-phase pace qualifiers (`--rate-limit known-issue-scan=20`) land in the
-	// matching scanning_pace section, so ResolvePhase stays the one place
-	// per-phase pace is merged. Applied after the phase selection is settled so a
-	// qualifier naming a phase this run skips can be reported.
-	applyPhasePaceOverrides(settings, scanOpts)
-
-	// Validate and apply scanning_pace centralized speed control
-	if err := settings.ScanningPace.Validate(); err != nil {
-		return fmt.Errorf("invalid scanning_pace configuration: %w", err)
-	}
-
-	// Apply scanning_pace common values (precedence 4 — lowest after built-in defaults)
-	pace := &settings.ScanningPace
-	if !scanOpts.ConcurrencyExplicitlySet && pace.Concurrency > 0 {
-		scanOpts.Concurrency = pace.Concurrency
-	}
-	if !scanOpts.MaxPerHostExplicitlySet && pace.MaxPerHost > 0 {
-		scanOpts.MaxPerHost = pace.MaxPerHost
-	}
-	// The rate limit follows the same rung as its two siblings. It used to be the
-	// odd one out: only a typed flag reached scanOpts, so a config file that set
-	// scanning_pace.rate_limit paced known-issue-scan while the native scan ran
-	// at the flag default — one invocation, two different documented rates.
-	if !scanOpts.RateLimitExplicitlySet && pace.RateLimit > 0 {
-		scanOpts.RateLimit = pace.RateLimit
-	}
-
-	// Apply scanning_pace.discovery.max_duration (precedence 3) to scanOpts
-	discoveryPace := pace.ResolvePhase("discovery")
-	if !cmd.Flags().Changed("discover-max-time") && discoveryPace.MaxDuration > 0 {
-		scanOpts.DiscoverMaxDuration = discoveryPace.MaxDuration
-	}
-
-	// Apply scanning_pace.spidering.max_duration to scanOpts
-	spideringPace := pace.ResolvePhase("spidering")
-	if !cmd.Flags().Changed("spider-max-time") && spideringPace.MaxDuration > 0 {
-		scanOpts.SpideringMaxDuration = spideringPace.MaxDuration
 	}
 
 	// Validate per-phase configs when enabled (strategy + CLI flags are the only sources)

@@ -125,14 +125,9 @@ func LaunchScan(ctx context.Context, params LaunchParams) (*LaunchResult, error)
 		return nil, fmt.Errorf("LaunchScan: extensions: %w", err)
 	}
 
-	opts := buildLaunchOptions(params)
-
-	if opts.OnlyPhase != "" || len(opts.SkipPhases) > 0 {
-		if err := ApplyNativePhaseSelection(opts, func(enabled bool) {
-			settings.DynamicAssessment.Extensions.Enabled = enabled
-		}); err != nil {
-			return nil, fmt.Errorf("LaunchScan: %w", err)
-		}
+	opts, err := resolveLaunchOptions(settings, params)
+	if err != nil {
+		return nil, fmt.Errorf("LaunchScan: %w", err)
 	}
 
 	r, err := New(opts)
@@ -233,6 +228,48 @@ func applyExtensionOverrides(settings *config.Settings, paths []string) error {
 	ext.Enabled = true
 	ext.CustomDir = append(ext.CustomDir, abs...)
 	return nil
+}
+
+// resolveLaunchOptions builds the options for a launch and runs them through
+// the same scan-options resolution the CLI and REST use (strategy_apply.go), so
+// an agent's `scanning_strategy: lite` gets lite's pace ceiling rather than
+// being recorded and ignored.
+//
+// Launch keeps two of its own semantics on top of the shared resolver:
+//   - EnableDiscovery / EnableSpidering are the agent's explicit phase toggles
+//     (default off), so they win over the strategy's discovery/spidering.
+//   - No strategy named means no strategy phases: an agent scan stays
+//     dynamic-assessment-centric instead of inheriting default_strategy's
+//     known-issue-scan. The pace still resolves from scanning_pace.
+//
+// Heuristics stay off: the check only decides whether spidering is worth it,
+// and launch callers choose spidering explicitly.
+func resolveLaunchOptions(settings *config.Settings, params LaunchParams) (*types.Options, error) {
+	opts := buildLaunchOptions(params)
+	explicit := ExplicitPace{Concurrency: params.Concurrency > 0}
+	ApplyScanSettingOverrides(settings, opts)
+	if params.ScanningStrategy != "" {
+		if _, err := ApplyScanStrategy(settings, opts, StrategyRequest{
+			Name:           params.ScanningStrategy,
+			SkipHeuristics: true,
+			Explicit:       explicit,
+		}); err != nil {
+			return nil, err
+		}
+		opts.DiscoverEnabled = params.EnableDiscovery
+		opts.SpideringEnabled = params.EnableSpidering
+	}
+	if opts.OnlyPhase != "" || len(opts.SkipPhases) > 0 {
+		if err := ApplyNativePhaseSelection(opts, func(enabled bool) {
+			settings.DynamicAssessment.Extensions.Enabled = enabled
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if err := ApplyScanPace(settings, opts, explicit); err != nil {
+		return nil, err
+	}
+	return opts, nil
 }
 
 // buildLaunchOptions constructs the *types.Options the runner expects from

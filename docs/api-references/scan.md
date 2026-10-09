@@ -253,9 +253,12 @@ curl -s -X POST http://localhost:9002/api/scans/run \
   "status": "running",
   "message": "scan started",
   "targets_count": 1,
-  "scan_mode": "target"
+  "scan_mode": "target",
+  "resolved": {"strategy": "balanced", "concurrency": 25, "rate_limit": 100, "max_per_host": 40}
 }
 ```
+
+`resolved` is the pace the scan will run with. The request goes through the same resolution as `vigolium scan`: profile, then strategy (a `lite` ceiling of concurrency 10, rate limit 20 and max-per-host 10 narrows every value the request left unset), then `scanning_pace`. A positive `concurrency`, `rate_limit` or `max_per_host` in the request is explicit and is never narrowed. Queued and dry-run responses carry it too. An unknown profile, strategy or phase, or an invalid `scanning_pace`, is a `400`.
 
 **Response — queued (202):**
 
@@ -1043,9 +1046,12 @@ curl -s -X POST http://localhost:9002/api/scan-all-records \
   "status": "running",
   "message": "all-records scan started",
   "records_to_scan": 142,
-  "scan_mode": "full"
+  "scan_mode": "full",
+  "resolved": {"strategy": "balanced", "concurrency": 25, "rate_limit": 100, "max_per_host": 40}
 }
 ```
+
+This route always runs dynamic-assessment only. The strategy (from `intensity` or `default_strategy`) sets the pace ceiling but not the phases. A `scanning_profile` or `intensity` that cannot be loaded is a `400`.
 
 **Response — dry run (200):**
 

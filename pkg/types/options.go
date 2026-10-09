@@ -423,7 +423,7 @@ const DefaultConcurrency = 25
 func DefaultOptions() *Options {
 	return &Options{
 		Concurrency:          DefaultConcurrency,
-		MaxPerHost:           50,
+		MaxPerHost:           DefaultMaxPerHost,
 		Timeout:              15 * time.Second,
 		Retries:              1,
 		MaxHostError:         30,

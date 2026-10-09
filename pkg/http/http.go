@@ -546,7 +546,8 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	// least MaxPerHost keep-alive connections warm — otherwise every request past
 	// MaxIdleConnsPerHost closes its connection on return and the next one pays a
 	// fresh TCP+TLS handshake (~50-150ms). The old hardcoded 10 throttled reuse
-	// badly: MaxPerHost defaults to 50, so 40 of every 50 connections churned.
+	// badly: MaxPerHost defaults to types.DefaultMaxPerHost (40), so 30 of every
+	// 40 connections churned.
 	//
 	// Sized from the per-host limiter's CEILING, not MaxPerHost: the limiter can
 	// ramp a healthy host above MaxPerHost, and a pool sized to the starting value

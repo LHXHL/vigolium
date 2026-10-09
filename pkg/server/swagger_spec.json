@@ -3091,6 +3091,24 @@
             "format": "int64",
             "type": "integer"
           },
+          "resolved": {
+            "nullable": true,
+            "properties": {
+              "concurrency": {
+                "type": "integer"
+              },
+              "max_per_host": {
+                "type": "integer"
+              },
+              "rate_limit": {
+                "type": "integer"
+              },
+              "strategy": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "scan_mode": {
             "example": "target",
             "type": "string"
@@ -3307,12 +3325,24 @@
             "description": "SPDX identifier of the build's license",
             "type": "string"
           },
+          "mirror_dropped": {
+            "description": "--mirror-fs jobs dropped after the writer stayed saturated past its 2s enqueue timeout; present only with --mirror-fs",
+            "example": 0,
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
           "name": {
             "example": "vigolium",
             "type": "string"
           },
           "proxy_addr": {
-            "example": "0.0.0.0:9003",
+            "example": "127.0.0.1:9003",
+            "type": "string"
+          },
+          "proxy_auth": {
+            "description": "Ingest proxy access control: none, token, allowlist or token+allowlist; present only with the ingest proxy",
+            "example": "token",
             "type": "string"
           },
           "queue_depth": {
@@ -3321,7 +3351,7 @@
             "type": "integer"
           },
           "service_addr": {
-            "example": "0.0.0.0:9002",
+            "example": "127.0.0.1:9002",
             "type": "string"
           },
           "source": {

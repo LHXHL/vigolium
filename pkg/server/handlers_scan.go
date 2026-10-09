@@ -15,7 +15,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
-	"github.com/vigolium/vigolium/pkg/agent"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
@@ -192,25 +191,16 @@ func (o scanOutputs) path(format string) string {
 	return types.FormatOutputPath(o.base, format)
 }
 
-// buildRunScanOptions builds types.Options from the RunScanRequest.
-func (h *Handlers) buildRunScanOptions(req RunScanRequest, projectUUID string) (*types.Options, error) {
+// buildRunScanOptions builds the request-shaped types.Options for a
+// RunScanRequest: targets, modules, transport knobs and the pace values the
+// caller typed. Intensity, profile, strategy and scanning_pace are resolved
+// afterwards by ResolveRunScanRequest through the shared runner functions.
+func buildRunScanOptions(req RunScanRequest, projectUUID string, serverConcurrency int) (*types.Options, error) {
 	opts := types.DefaultOptions()
 	opts.Targets = req.Targets
 	opts.Modules = resolveAPIModules(req.Modules, req.ModuleTags)
 	opts.ProjectUUID = projectUUID
-
-	concurrency := h.config.Concurrency
-	if concurrency <= 0 {
-		concurrency = types.DefaultConcurrency
-	}
-	if req.Concurrency > 0 {
-		concurrency = req.Concurrency
-	}
-	opts.Concurrency = concurrency
-
-	if req.MaxPerHost > 0 {
-		opts.MaxPerHost = req.MaxPerHost
-	}
+	applyRequestPace(opts, serverConcurrency, req.Concurrency, req.RateLimit, req.MaxPerHost)
 
 	if req.Timeout != "" {
 		d, err := time.ParseDuration(req.Timeout)
@@ -218,6 +208,13 @@ func (h *Handlers) buildRunScanOptions(req RunScanRequest, projectUUID string) (
 			return nil, fmt.Errorf("invalid timeout: %w", err)
 		}
 		opts.Timeout = d
+	}
+	if req.ScanningMaxDuration != "" {
+		d, err := time.ParseDuration(req.ScanningMaxDuration)
+		if err != nil {
+			return nil, fmt.Errorf("invalid scanning_max_duration: %w", err)
+		}
+		opts.ScanMaxDuration = d
 	}
 
 	if len(req.Headers) > 0 {
@@ -231,92 +228,44 @@ func (h *Handlers) buildRunScanOptions(req RunScanRequest, projectUUID string) (
 	if req.ScopeOrigin != "" {
 		opts.ScopeOriginMode = req.ScopeOrigin
 	}
-
-	// Resolve intensity to scanning profile
-	if req.Intensity != "" {
-		profileName, resolvedIntensity, err := agent.ResolveNativeScanIntensity(req.Intensity)
-		if err != nil {
-			return nil, err
-		}
-		opts.Intensity = resolvedIntensity
-		if req.ScanningProfile == "" {
-			req.ScanningProfile = profileName
-		}
-	}
-
-	if req.ScanningProfile != "" {
-		opts.ScanningProfile = req.ScanningProfile
-	}
-
 	return opts, nil
 }
 
-// applyStrategy resolves the scanning strategy and heuristics-check level into
-// opts. Phase-isolation/skip handling is delegated to runner.ApplyNativePhaseSelection
-// so the server tracks the same case list the CLI uses.
+// ResolveRunScanRequest resolves a POST /api/scans/run body into the options the
+// runner will use, applying the same scan-options resolution the CLI runs
+// (runner/strategy_apply.go): profile → settings overrides → strategy (explicit
+// rate limit, phases, pace ceiling, heuristics) → only/skip → scanning_pace.
 //
-// strategy and heuristicsCheck are request-level overrides (empty = fall back
-// to settings).
-func applyStrategy(opts *types.Options, settings *config.Settings, strategy, heuristicsCheck string) error {
-	strategyName := strategy
-	if strategyName == "" {
-		strategyName = settings.ScanningStrategy.DefaultStrategy
+// settings is mutated and must be the request's own clone. Every error is a
+// client error (an unknown profile, strategy or phase, an invalid pace config).
+// serverConcurrency is the server's worker default, used when the request and
+// scanning_pace leave concurrency unset.
+func ResolveRunScanRequest(settings *config.Settings, serverConcurrency int, req RunScanRequest, projectUUID string) (*types.Options, runner.ResolvedStrategy, error) {
+	opts, err := buildRunScanOptions(req, projectUUID, serverConcurrency)
+	if err != nil {
+		return nil, runner.ResolvedStrategy{}, err
 	}
-	if strategyName != "" {
-		phases, ok := settings.ScanningStrategy.GetStrategy(strategyName)
-		if !ok {
-			return fmt.Errorf("unknown scanning strategy %q; valid names: %v", strategyName, settings.ScanningStrategy.StrategyNames())
-		}
-		opts.ExternalHarvestEnabled = phases.ExternalHarvesting
-		opts.DiscoverEnabled = phases.Discovery
-		opts.SpideringEnabled = phases.Spidering
-		opts.KnownIssueScanEnabled = phases.KnownIssueScan
-		if !phases.DynamicAssessment {
-			opts.SkipDynamicAssessment = true
-		}
+	explicit := requestExplicitPace(req.Concurrency, req.RateLimit, req.MaxPerHost)
+	strategy, err := resolveRequestStrategy(settings, opts, req.Intensity, req.ScanningProfile, runner.StrategyRequest{
+		Name:            req.Strategy,
+		HeuristicsCheck: req.HeuristicsCheck,
+		Explicit:        explicit,
+	})
+	if err != nil {
+		return nil, runner.ResolvedStrategy{}, err
 	}
-
-	opts.HeuristicsCheck = "basic"
-	if settings.ScanningStrategy.HeuristicsCheck != "" {
-		opts.HeuristicsCheck = settings.ScanningStrategy.HeuristicsCheck
+	opts.OnlyPhase = req.Only
+	// Copy req.Skip — ApplyNativePhaseSelection normalizes the slice in place.
+	opts.SkipPhases = append([]string(nil), req.Skip...)
+	if err := runner.ApplyNativePhaseSelection(opts, func(enabled bool) {
+		settings.DynamicAssessment.Extensions.Enabled = enabled
+	}); err != nil {
+		return nil, runner.ResolvedStrategy{}, err
 	}
-	if heuristicsCheck != "" {
-		opts.HeuristicsCheck = heuristicsCheck
+	if err := runner.ApplyScanPace(settings, opts, explicit); err != nil {
+		return nil, runner.ResolvedStrategy{}, err
 	}
-
-	return nil
-}
-
-// applyResolvedPhaseDurations resolves per-phase max durations from the scanning
-// pace config (applying duration_factor to the global max_duration) and writes
-// them into opts. This mirrors the CLI logic in scan.go that ensures phases like
-// spidering get their factored duration (e.g. 0.15 × 2h = 18m) instead of
-// falling back to their own hard-coded defaults (30m).
-func applyResolvedPhaseDurations(opts *types.Options, pace *config.ScanningPaceConfig) {
-	if discoveryPace := pace.ResolvePhase("discovery"); discoveryPace.MaxDuration > 0 {
-		opts.DiscoverMaxDuration = discoveryPace.MaxDuration
-	}
-	if spideringPace := pace.ResolvePhase("spidering"); spideringPace.MaxDuration > 0 {
-		opts.SpideringMaxDuration = spideringPace.MaxDuration
-	}
-}
-
-// applyRequestRateLimit records a requested global rate limit in both places the
-// native scan reads it: the scanning pace (which paces known-issue-scan) and
-// Options.RateLimit (which builds the scan's own limiter).
-//
-// Writing only the pace is what REST scans used to do, and DefaultOptions leaves
-// RateLimit at 0, so an API caller that asked for a rate limit got an unlimited
-// native scan — the setting was accepted and then ignored. n <= 0 means unset and
-// leaves both alone, so default throughput is unchanged.
-func applyRequestRateLimit(opts *types.Options, pace *config.ScanningPaceConfig, n int) {
-	if n <= 0 {
-		return
-	}
-	pace.RateLimit = n
-	if opts != nil {
-		opts.RateLimit = n
-	}
+	return opts, strategy, nil
 }
 
 // HandleRunScan handles POST /api/scans/run — triggers an async target-based scan.
@@ -356,69 +305,20 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 
 	projectUUID := getProjectUUID(c)
 
-	// Build runner options
-	opts, err := h.buildRunScanOptions(req, projectUUID)
+	// Clone settings and force persist_logs so API-triggered scans always
+	// produce a runtime.log for `vigolium log <uuid>`.
+	settings := forceNativePersistLogs(h.settings)
+
+	// Profile, strategy, phase selection and pace resolve exactly as the CLI
+	// resolves them. Every failure here — an unknown profile or strategy, an
+	// invalid pace config — is the caller's to fix, so it is a 400.
+	opts, strategy, err := ResolveRunScanRequest(settings, h.config.Concurrency, req, projectUUID)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
 			Error: err.Error(),
 		})
 	}
-
-	// Clone settings and force persist_logs so API-triggered scans always
-	// produce a runtime.log for `vigolium log <uuid>`.
-	settings := forceNativePersistLogs(h.settings)
-
-	// Load and apply scanning profile to settings (mirrors CLI logic in scan.go).
-	// Profile-load errors are surfaced as 400s — same contract the CLI honors.
-	if opts.ScanningProfile != "" {
-		profilePath := settings.ScanningStrategy.ResolveProfilePath(opts.ScanningProfile)
-		profile, profileErr := config.LoadProfile(profilePath)
-		if profileErr != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: fmt.Sprintf("failed to load scanning profile %q: %v", opts.ScanningProfile, profileErr),
-			})
-		}
-		if err := config.ApplyProfile(settings, profile); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: fmt.Sprintf("failed to apply scanning profile %q: %v", opts.ScanningProfile, err),
-			})
-		}
-	}
-
-	// Apply strategy + heuristics, then delegate only/skip to the same helper
-	// the CLI uses so the case list (incl. dynamic-assessment, extension)
-	// stays in sync across both entry points.
-	if err := applyStrategy(opts, settings, req.Strategy, req.HeuristicsCheck); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-		})
-	}
-	opts.OnlyPhase = req.Only
-	// Copy req.Skip — ApplyNativePhaseSelection normalizes the slice in place.
-	opts.SkipPhases = append([]string(nil), req.Skip...)
-	if err := runner.ApplyNativePhaseSelection(opts, func(enabled bool) {
-		settings.DynamicAssessment.Extensions.Enabled = enabled
-	}); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-		})
-	}
-
-	// Apply scanning_max_duration
-	if req.ScanningMaxDuration != "" {
-		settings.ScanningPace.MaxDuration = req.ScanningMaxDuration
-	}
-
-	// Apply rate_limit
-	applyRequestRateLimit(opts, &settings.ScanningPace, req.RateLimit)
-
-	// Resolve per-phase durations from scanning_pace (mirrors CLI behavior in scan.go)
-	applyResolvedPhaseDurations(opts, &settings.ScanningPace)
-
-	// Apply scanning_profile
-	if req.ScanningProfile != "" {
-		opts.ScanningProfile = req.ScanningProfile
-	}
+	resolved := newScanResolved(strategy.Name, opts)
 
 	resolvedModules := opts.Modules
 	scanID := req.ScanUUID
@@ -479,6 +379,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 			Message:      "scan validated (dry run)",
 			TargetsCount: len(req.Targets),
 			ScanMode:     scanMode,
+			Resolved:     resolved,
 		})
 	}
 
@@ -564,6 +465,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 			Message:      fmt.Sprintf("scan queued (position %d)", position),
 			TargetsCount: len(req.Targets),
 			ScanMode:     scanMode,
+			Resolved:     resolved,
 		})
 	}
 
@@ -581,6 +483,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 		Message:      "scan started",
 		TargetsCount: len(req.Targets),
 		ScanMode:     scanMode,
+		Resolved:     resolved,
 	})
 }
 

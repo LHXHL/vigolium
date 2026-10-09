@@ -291,6 +291,18 @@ type ScanResponse struct {
 	RecordsToScan int64  `json:"records_to_scan,omitempty"`
 	TargetsCount  int    `json:"targets_count,omitempty"`
 	ScanMode      string `json:"scan_mode,omitempty"` // "target", "full", "incremental"
+	// Resolved is the pace the scan will run with after profile, strategy and
+	// scanning_pace resolution — the same values `vigolium scan` resolves for
+	// the same inputs.
+	Resolved *ScanResolved `json:"resolved,omitempty"`
+}
+
+// ScanResolved is the invocation-wide pace a submitted scan resolved to.
+type ScanResolved struct {
+	Strategy    string `json:"strategy"`
+	Concurrency int    `json:"concurrency"`
+	RateLimit   int    `json:"rate_limit"`
+	MaxPerHost  int    `json:"max_per_host"`
 }
 
 // ScanStatusResponse is the response for GET /api/scan/status.

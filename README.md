@@ -404,7 +404,7 @@ Authentication:
 Performance:
   -c, --concurrency      Concurrent workers (default: 25)
   -r, --rate-limit       Max requests/sec (default: 100; 0 = unlimited)
-      --max-per-host     Per-host concurrency cap (default: 50)
+      --max-per-host     Per-host concurrency cap (default: 40)
       --proxy            HTTP/SOCKS5 proxy URL
       --timeout          HTTP request timeout (default: 15s)
 

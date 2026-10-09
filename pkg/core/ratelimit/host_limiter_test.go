@@ -8,12 +8,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/types"
 )
 
 func TestDefaultHostRateLimiterConfig(t *testing.T) {
 	cfg := DefaultHostRateLimiterConfig()
-	if cfg.MaxPerHost != 20 {
-		t.Errorf("MaxPerHost = %d, want 20", cfg.MaxPerHost)
+	if cfg.MaxPerHost != types.DefaultMaxPerHost {
+		t.Errorf("MaxPerHost = %d, want %d", cfg.MaxPerHost, types.DefaultMaxPerHost)
 	}
 	if cfg.MaxEntries != 1000 {
 		t.Errorf("MaxEntries = %d, want 1000", cfg.MaxEntries)
@@ -32,8 +34,8 @@ func TestNewHostRateLimiter_AppliesDefaults(t *testing.T) {
 	h := NewHostRateLimiter(HostRateLimiterConfig{})
 	defer func() { _ = h.Close() }()
 
-	if h.maxPerHost != 20 {
-		t.Errorf("maxPerHost = %d, want 20", h.maxPerHost)
+	if h.maxPerHost != types.DefaultMaxPerHost {
+		t.Errorf("maxPerHost = %d, want %d", h.maxPerHost, types.DefaultMaxPerHost)
 	}
 	if h.maxEntries != 1000 {
 		t.Errorf("maxEntries = %d, want 1000", h.maxEntries)
