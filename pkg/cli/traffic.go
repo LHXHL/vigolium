@@ -239,31 +239,31 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	// operator asked for that number or merely inherited the default.
 	limitTyped := cmd.Flags().Changed("limit")
 	if trafficSaveToVigoliumDB && strings.TrimSpace(trafficBurpBridgeURL) == "" {
-		return fmt.Errorf("--save-to-vigolium-db requires --burp-bridge-url")
+		return usageErrorf("--save-to-vigolium-db requires --burp-bridge-url")
 	}
 	if trafficSaveToBurp && strings.TrimSpace(trafficBurpBridgeURL) == "" {
-		return fmt.Errorf("--save-to-burp requires --burp-bridge-url")
+		return usageErrorf("--save-to-burp requires --burp-bridge-url")
 	}
 	if trafficSaveToBurp && trafficSaveToVigoliumDB {
-		return fmt.Errorf("--save-to-burp and --save-to-vigolium-db cannot be combined")
+		return usageErrorf("--save-to-burp and --save-to-vigolium-db cannot be combined")
 	}
 	// Validate against the flags the user actually passed, not the effective
 	// read mode: $VIGOLIUM_DB_PATH also implies a stateless read, and rejecting
 	// the run over it would name two flags that never appeared on the command
 	// line — while saving into the pinned session DB is exactly what it means.
 	if trafficSaveToVigoliumDB && (globalStateless || strings.TrimSpace(globalGlobDB) != "") {
-		return fmt.Errorf("--save-to-vigolium-db cannot be used with --stateless or --glob-db")
+		return usageErrorf("--save-to-vigolium-db cannot be used with --stateless or --glob-db")
 	}
 	if trafficSaveToVigoliumDB && trafficReplay {
-		return fmt.Errorf("--save-to-vigolium-db cannot be combined with --replay")
+		return usageErrorf("--save-to-vigolium-db cannot be combined with --replay")
 	}
 	if trafficSaveToBurp && trafficReplay {
-		return fmt.Errorf("--save-to-burp cannot be combined with --replay")
+		return usageErrorf("--save-to-burp cannot be combined with --replay")
 	}
 	if trafficBurpBridgeURL != "" {
 		validated, err := burpbridge.ValidateURL(trafficBurpBridgeURL)
 		if err != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", err)
+			return usageErrorf("--burp-bridge-url: %w", err)
 		}
 		trafficBurpBridgeURL = validated
 	}

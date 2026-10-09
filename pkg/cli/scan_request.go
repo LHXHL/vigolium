@@ -91,7 +91,7 @@ func runScanRequestCmd(_ *cobra.Command, _ []string) error {
 
 	rawStr := string(raw)
 	if strings.TrimSpace(rawStr) == "" {
-		return fmt.Errorf("empty request input")
+		return usageErrorf("empty request input")
 	}
 
 	// Detect format and parse request. Detection runs on the fully trimmed text

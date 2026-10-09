@@ -246,7 +246,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	}
 	httpMode, err := burpbridge.ParseHTTPMode(replayHTTPMode)
 	if err != nil {
-		return fmt.Errorf("--http-mode: %w", err)
+		return usageErrorf("--http-mode: %w", err)
 	}
 	if replayHTTPMode != "" && !replaySendViaBurp {
 		fmt.Fprintf(os.Stderr, "%s --http-mode only applies with --send-via-burp; ignoring\n", terminal.WarningSymbol())
@@ -255,7 +255,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	if replayBurpBridgeURL != "" {
 		validated, verr := burpbridge.ValidateURL(replayBurpBridgeURL)
 		if verr != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", verr)
+			return usageErrorf("--burp-bridge-url: %w", verr)
 		}
 		replayBurpBridgeURL = validated
 		bridgeClient, verr = burpbridge.New(validated)
@@ -323,7 +323,7 @@ func validateReplayFlags() error {
 	// Any Burp write target needs the loopback bridge URL.
 	if replaySaveToBurp || replaySendViaBurp || replayToRepeater || replayToOrganizer {
 		if strings.TrimSpace(replayBurpBridgeURL) == "" {
-			return fmt.Errorf("--save-to-burp/--send-via-burp/--to-repeater/--to-organizer require --burp-bridge-url")
+			return usageErrorf("--save-to-burp/--send-via-burp/--to-repeater/--to-organizer require --burp-bridge-url")
 		}
 	}
 
@@ -338,7 +338,7 @@ func validateReplayFlags() error {
 	// --glob-db it would write into the throwaway merge DB and vanish. -S is
 	// fine: the update lands in the standalone export being read.
 	if replayInReplace && globalGlobDB != "" {
-		return fmt.Errorf("--in-replace cannot be combined with --glob-db: the merged database is temporary, so the updated responses would be discarded")
+		return usageErrorf("--in-replace cannot be combined with --glob-db: the merged database is temporary, so the updated responses would be discarded")
 	}
 
 	// The browser path navigates a URL; it produces no response bytes and does
@@ -358,7 +358,7 @@ func validateReplayFlags() error {
 			{replayRawRequest != "" || replayRawRequestFile != "", "--raw-request/--raw-request-file", "a navigation cannot send arbitrary request bytes"},
 		} {
 			if conflict.set {
-				return fmt.Errorf("--with-browser cannot be combined with %s: %s", conflict.flag, conflict.why)
+				return usageErrorf("--with-browser cannot be combined with %s: %s", conflict.flag, conflict.why)
 			}
 		}
 		if globalProxy == "" {
@@ -551,7 +551,7 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 		set++
 	}
 	if set > 1 {
-		return nil, fmt.Errorf("--record-uuid, --finding-id and --input/--input-file are mutually exclusive")
+		return nil, usageErrorf("--record-uuid, --finding-id and --input/--input-file are mutually exclusive")
 	}
 
 	// openReadDB honors -S/--stateless: a standalone .sqlite/.jsonl export via
@@ -566,12 +566,14 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 	switch {
 	case replayRecordUUID != "":
 		if repo == nil {
+			//vigolium:not-usage database open failure
 			return nil, fmt.Errorf("--record-uuid requires database access: %w", dbErr)
 		}
 		return sourceFromRecord(ctx, repo, replayRecordUUID)
 
 	case replayFindingID > 0:
 		if repo == nil {
+			//vigolium:not-usage database open failure
 			return nil, fmt.Errorf("--finding-id requires database access: %w", dbErr)
 		}
 		return sourceFromFinding(ctx, repo, replayFindingID)
@@ -583,7 +585,7 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 		if data, ok := readStdinIfPiped(); ok {
 			return sourceFromInputString(ctx, repo, data, "")
 		}
-		return nil, fmt.Errorf("no source specified: pass one of --record-uuid, --finding-id, --input, or pipe a request on stdin")
+		return nil, usageErrorf("no source specified: pass one of --record-uuid, --finding-id, --input, or pipe a request on stdin")
 	}
 }
 
@@ -733,7 +735,7 @@ func sourceFromRawRequest(rawReq, rawResp []byte, urlStr string) (*replaySource,
 func applyTargetOverride(src *replaySource, target string) error {
 	u, err := url.Parse(target)
 	if err != nil || u == nil || u.Hostname() == "" {
-		return fmt.Errorf("invalid --target %q: %w", target, err)
+		return usageErrorf("invalid --target %q: %w", target, err)
 	}
 	src.Scheme = u.Scheme
 	src.Hostname = u.Hostname()
@@ -759,7 +761,7 @@ func portFromURL(u *url.URL) int {
 func loadReplayRawOverride() ([]byte, error) {
 	switch {
 	case replayRawRequest != "" && replayRawRequestFile != "":
-		return nil, fmt.Errorf("--raw-request and --raw-request-file are mutually exclusive")
+		return nil, usageErrorf("--raw-request and --raw-request-file are mutually exclusive")
 	case replayRawRequestFile != "":
 		b, err := os.ReadFile(replayRawRequestFile)
 		if err != nil {
@@ -806,6 +808,7 @@ func buildReplayOverlay(ctx context.Context, src *replaySource) (map[string]stri
 func resolveAuthSessionHeaders(ctx context.Context, sessionName, hostname string) (map[string]string, error) {
 	db, err := openReadDB(globDBSkipSet{})
 	if err != nil {
+		//vigolium:not-usage database open failure
 		return nil, fmt.Errorf("--auth-session requires database access: %w", err)
 	}
 	repo := database.NewRepository(db)
@@ -830,7 +833,7 @@ func parseReplayHeaderFlags() (map[string]string, error) {
 	for i, h := range replayHeaders {
 		name, value, err := replay.ParseHeaderFlag(h)
 		if err != nil {
-			return nil, fmt.Errorf("--header[%d]: %w", i, err)
+			return nil, usageErrorf("--header[%d]: %w", i, err)
 		}
 		overlay[name] = value
 	}
@@ -857,14 +860,17 @@ func openSessionJar(sessionID string) (*jar.PersistentJar, int, error) {
 
 func persistReplayResponse(ctx context.Context, src *replaySource, result *replay.Result) error {
 	if src.RecordUUID == "" {
+		//vigolium:not-usage reached after the replay was sent
 		return fmt.Errorf("--in-replace requires a stored record (got %s)", src.OriginLabel)
 	}
 	// Records merged in from a live Burp bridge have no row to update: they
 	// exist only in Burp's proxy history for the duration of the query.
 	if burpbridge.IsBridgeUUID(src.RecordUUID) {
+		//vigolium:not-usage reached after the replay was sent
 		return fmt.Errorf("--in-replace skipped: live Burp records are read-only")
 	}
 	if result.Replay == nil || result.Replay.Error != "" {
+		//vigolium:not-usage reached after the replay was sent
 		return fmt.Errorf("--in-replace skipped: replay had no usable response")
 	}
 	body := result.Replay.RawBody
@@ -872,6 +878,7 @@ func persistReplayResponse(ctx context.Context, src *replaySource, result *repla
 		// Defensive: the engine populates RawBody on every successful
 		// send. If we ever stop doing that, refuse rather than write
 		// the clipped excerpt back as the canonical body.
+		//vigolium:not-usage reached after the replay was sent
 		return fmt.Errorf("--in-replace skipped: engine did not return body bytes")
 	}
 	// Write back to the same store the record was read from — openReadDB, not

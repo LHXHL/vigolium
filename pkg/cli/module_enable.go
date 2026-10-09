@@ -125,13 +125,20 @@ func expandAllModuleIDs(moduleType string) []string {
 	return modules.GetPassiveModulesID()
 }
 
+// noModulesMatchError rejects a search that matched nothing. It used to print a
+// warning to stdout and exit 0, so a typo'd module ID in a setup script looked
+// exactly like a successful enable. It is a usage error (exit 2): nothing was
+// read or written, and the fix is a different search term.
+func noModulesMatchError(search string) error {
+	return usageErrorf("no modules matching %q (list module IDs with `vigolium module ls`)", search)
+}
+
 func runModuleEnable(cmd *cobra.Command, args []string) error {
 	search := args[0]
 	matches := findMatchingModules(search, moduleExactID)
 
 	if len(matches) == 0 {
-		fmt.Printf("%s No modules matching %q\n", terminal.WarnPrefix(), search)
-		return nil
+		return noModulesMatchError(search)
 	}
 
 	// EffectiveConfigPath, not ConfigFilePath: with --config set, this command
@@ -180,8 +187,7 @@ func runModuleDisable(cmd *cobra.Command, args []string) error {
 	matches := findMatchingModules(search, moduleExactID)
 
 	if len(matches) == 0 {
-		fmt.Printf("%s No modules matching %q\n", terminal.WarnPrefix(), search)
-		return nil
+		return noModulesMatchError(search)
 	}
 
 	// Load and save the SAME file — see runModuleEnable.

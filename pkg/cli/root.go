@@ -225,7 +225,7 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 
 		// Mutual exclusivity check
 		if globalProjectUUID != "" && globalProjectName != "" {
-			return fmt.Errorf("--project-uuid and --project-name are mutually exclusive")
+			return usageErrorf("--project-uuid and --project-name are mutually exclusive")
 		}
 
 		// Fold the retiring -S on server/ingest into --scan-on-receive before

@@ -94,7 +94,7 @@ var projectCreateCmd = &cobra.Command{
 		// project) doesn't silently dictate the new project's UUID.
 		if cmd.Flags().Changed("project-uuid") && globalProjectUUID != "" {
 			if _, parseErr := uuid.Parse(globalProjectUUID); parseErr != nil {
-				return fmt.Errorf("--project-uuid value %q is not a valid UUID: %w", globalProjectUUID, parseErr)
+				return usageErrorf("--project-uuid value %q is not a valid UUID: %w", globalProjectUUID, parseErr)
 			}
 			existing, lookupErr := repo.GetProjectByUUID(ctx, globalProjectUUID)
 			if lookupErr == nil && existing != nil {
@@ -311,10 +311,10 @@ var projectDeleteCmd = &cobra.Command{
 
 		projectUUID := strings.TrimSpace(args[0])
 		if projectUUID == "" {
-			return fmt.Errorf("project UUID is required")
+			return usageErrorf("project UUID is required")
 		}
 		if projectUUID == database.DefaultProjectUUID {
-			return fmt.Errorf("cannot delete the default project (%s)", database.DefaultProjectUUID)
+			return usageErrorf("cannot delete the default project (%s)", database.DefaultProjectUUID)
 		}
 
 		ctx := context.Background()

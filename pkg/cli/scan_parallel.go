@@ -54,7 +54,7 @@ const childExitGrace = 10 * time.Second
 // it is rejected up front rather than silently serialized.
 func validateParallelScan(opts *types.Options) error {
 	if opts.Parallel < 1 {
-		return fmt.Errorf("--parallel must be >= 1 (got %d)", opts.Parallel)
+		return usageErrorf("--parallel must be >= 1 (got %d)", opts.Parallel)
 	}
 	if opts.Parallel <= 1 {
 		return nil
@@ -77,7 +77,7 @@ func validateParallelScan(opts *types.Options) error {
 	statelessOK := opts.Stateless && opts.SplitByHost
 	isolateOK := opts.DBIsolate
 	if !statelessOK && !isolateOK {
-		return fmt.Errorf("--parallel > 1 requires either --stateless (-S) -T --split-by-host, or --db-isolate -T (results merge into --db)")
+		return usageErrorf("--parallel > 1 requires either --stateless (-S) -T --split-by-host, or --db-isolate -T (results merge into --db)")
 	}
 	return nil
 }
@@ -834,6 +834,7 @@ func parallelBatchError(failed, interrupted, gated, total int) error {
 		return fmt.Errorf("all %d target scans failed", total)
 	}
 	if gated > 0 {
+		//vigolium:not-usage gate result (exit 4), not a usage error
 		return gateError{fmt.Errorf("--fail-on: %d of %d targets tripped the severity gate", gated, total)}
 	}
 	return nil

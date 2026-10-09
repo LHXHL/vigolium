@@ -148,7 +148,7 @@ func (s exportScope) includes(dataType string) bool {
 func (s exportScope) validate(flagName string) error {
 	for _, t := range s.only {
 		if !slices.Contains(validExportTypes, t) {
-			return fmt.Errorf("invalid %s value %q; valid values: %s",
+			return usageErrorf("invalid %s value %q; valid values: %s",
 				flagName, t, strings.Join(validExportTypes, ", "))
 		}
 	}
@@ -210,7 +210,7 @@ func parseExportFormats(raw string) ([]exportFormatSpec, error) {
 		}
 		canonical := canonicalFormat(token)
 		if !slices.Contains(validExportFormats, canonical) {
-			return nil, fmt.Errorf("unsupported format %q; valid formats: %s", token, strings.Join(validExportFormats, ", "))
+			return nil, usageErrorf("unsupported format %q; valid formats: %s", token, strings.Join(validExportFormats, ", "))
 		}
 		if seen[canonical] {
 			continue
@@ -219,7 +219,7 @@ func parseExportFormats(raw string) ([]exportFormatSpec, error) {
 		specs = append(specs, exportFormatSpec{format: canonical, raw: token})
 	}
 	if len(specs) == 0 {
-		return nil, fmt.Errorf("--format requires at least one format; valid formats: %s", strings.Join(validExportFormats, ", "))
+		return nil, usageErrorf("--format requires at least one format; valid formats: %s", strings.Join(validExportFormats, ", "))
 	}
 	return specs, nil
 }
@@ -252,10 +252,10 @@ func assignExportPaths(specs []exportFormatSpec, base string) {
 // the path the format actually resolved to.
 func validateExportFormatPath(s exportFormatSpec) error {
 	if formatNeedsOutput(s.format) && s.path == "" {
-		return fmt.Errorf("--format %s requires -o/--output to specify the report file path", s.raw)
+		return usageErrorf("--format %s requires -o/--output to specify the report file path", s.raw)
 	}
 	if s.format == "bundle" && !strings.HasSuffix(s.path, ".tar.gz") && !strings.HasSuffix(s.path, ".tgz") {
-		return fmt.Errorf("--format %s requires -o ending in .tar.gz or .tgz (got %q)", s.raw, s.path)
+		return usageErrorf("--format %s requires -o ending in .tar.gz or .tgz (got %q)", s.raw, s.path)
 	}
 	return nil
 }

@@ -291,7 +291,7 @@ func translateFFUF(args []string) ([]string, error) {
 		return nil, err
 	}
 	if target == "" {
-		return nil, fmt.Errorf("ffuf: -u/--url is required")
+		return nil, usageErrorf("ffuf: -u/--url is required")
 	}
 	out = append(out, "-t", target)
 	if wordlist != "" {
@@ -373,7 +373,7 @@ func translateKatana(args []string) ([]string, error) {
 		return nil, err
 	}
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("katana: -u is required")
+		return nil, usageErrorf("katana: -u is required")
 	}
 	return emitTargets(out, targets), nil
 }
@@ -390,7 +390,7 @@ func translateGau(args []string) ([]string, error) {
 		return nil, err
 	}
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("gau: a target domain is required")
+		return nil, usageErrorf("gau: a target domain is required")
 	}
 	// gau takes a bare domain; every vigolium phase takes a URL. https rather
 	// than the scan default because gau's own callers write bare domains for
@@ -421,7 +421,7 @@ func translateArjun(args []string) ([]string, error) {
 		return nil, err
 	}
 	if target == "" {
-		return nil, fmt.Errorf("arjun: -u/--url is required")
+		return nil, usageErrorf("arjun: -u/--url is required")
 	}
 	// --anomaly, because parameter discovery is exactly the case where the
 	// interesting response is not knowable in advance: the caller cannot write a

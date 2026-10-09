@@ -87,7 +87,7 @@ func planAgentStateless(cmd *cobra.Command, cmdLabel string, stateless bool, out
 
 	if !stateless {
 		if formatRequested && wantsFiles {
-			return plan, fmt.Errorf("--format %s requires -S/--stateless on %s: a persisted run writes into the project database, so export it afterwards instead — `vigolium export --format %s -o <path>`",
+			return plan, usageErrorf("--format %s requires -S/--stateless on %s: a persisted run writes into the project database, so export it afterwards instead — `vigolium export --format %s -o <path>`",
 				strings.Join(plan.formats, ","), cmdLabel, strings.Join(plan.formats, ","))
 		}
 		if output != "" {
@@ -100,7 +100,7 @@ func planAgentStateless(cmd *cobra.Command, cmdLabel string, stateless bool, out
 	// -S is a write-into-a-throwaway-DB flag, so an explicit --db (a database the
 	// operator named and expects to keep) cannot also be the destination.
 	if strings.TrimSpace(globalDB) != "" {
-		return plan, fmt.Errorf("--stateless/-S cannot be combined with --db: -S runs into a throwaway temporary database, so the --db you named would never be written")
+		return plan, usageErrorf("--stateless/-S cannot be combined with --db: -S runs into a throwaway temporary database, so the --db you named would never be written")
 	}
 	// Ordered after the --db check above: a database the operator named by hand
 	// stays a hard conflict, while --db-isolate's destination is implicit and

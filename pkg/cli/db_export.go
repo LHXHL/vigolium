@@ -248,7 +248,7 @@ func writeDBExport(ctx context.Context, db *database.DB, dateFrom, dateTo *time.
 	case "markdown-table":
 		return exportMarkdownTable(records, out)
 	default:
-		return fmt.Errorf("unsupported export format: %s", exportFormat)
+		return usageErrorf("unsupported export format: %s", exportFormat)
 	}
 }
 

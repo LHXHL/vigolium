@@ -32,7 +32,7 @@ func resetFailOnGate() error {
 	}
 	scanFailOn = strings.ToLower(strings.TrimSpace(scanFailOn))
 	if severitiesAtOrAbove(scanFailOn) == nil {
-		return fmt.Errorf("invalid --fail-on %q (want one of: %s)", scanFailOn, strings.Join(severityOrder, ", "))
+		return usageErrorf("invalid --fail-on %q (want one of: %s)", scanFailOn, strings.Join(severityOrder, ", "))
 	}
 	return nil
 }
@@ -99,6 +99,7 @@ func markFailOnTriggered(n int, silent bool) {
 // ignores real breakage or treats every finding as an outage.
 func failOnGateError() error {
 	if failOnGateTriggered {
+		//vigolium:not-usage gate result (exit 4), not a usage error
 		return gateError{err: fmt.Errorf("--fail-on %s: matching findings were found", scanFailOn)}
 	}
 	return nil

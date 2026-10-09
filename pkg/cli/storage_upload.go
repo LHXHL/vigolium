@@ -91,6 +91,7 @@ func doUploadNativeScanResults(settings *config.Settings, opts *types.Options, r
 		return nil
 	}
 	if !settings.Storage.IsEnabled() {
+		//vigolium:not-usage reached after the scan ran; a config state, reported as a failed delivery
 		return errors.New("--upload-results was requested but storage is not enabled in config")
 	}
 

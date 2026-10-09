@@ -102,7 +102,7 @@ func runUpdateCmd(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 
 	if updateSkipBinary && updateSkipTemplates {
-		return fmt.Errorf("--skip-binary and --skip-templates are mutually exclusive (nothing to do)")
+		return usageErrorf("--skip-binary and --skip-templates are mutually exclusive (nothing to do)")
 	}
 
 	doBinary := !updateSkipBinary

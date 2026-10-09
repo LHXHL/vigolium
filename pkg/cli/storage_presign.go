@@ -48,7 +48,7 @@ func runStoragePresign(cmd *cobra.Command, _ []string) error {
 	case "PUT":
 		url, err = sc.PresignedPutURL(context.Background(), projectUUID, key, expiry)
 	default:
-		return fmt.Errorf("invalid --method %q: must be GET or PUT", methodFlag)
+		return usageErrorf("invalid --method %q: must be GET or PUT", methodFlag)
 	}
 	if err != nil {
 		return err

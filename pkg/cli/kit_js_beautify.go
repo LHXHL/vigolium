@@ -163,7 +163,7 @@ func runKitJSBeautify(cmd *cobra.Command, args []string) error {
 	if kitBeautifyProfile != "" {
 		profile = jstangle.AnalysisProfile(kitBeautifyProfile)
 		if !kitBeautifyProfileKnown(profile) {
-			return fmt.Errorf("unknown profile %q (want one of: %s)", kitBeautifyProfile,
+			return usageErrorf("unknown profile %q (want one of: %s)", kitBeautifyProfile,
 				strings.Join(kitBeautifyProfileNames(), ", "))
 		}
 		beautify = true

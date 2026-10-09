@@ -131,15 +131,15 @@ func runImport(cmd *cobra.Command, args []string) error {
 	if bridgeURL != "" {
 		validated, err := burpbridge.ValidateURL(bridgeURL)
 		if err != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", err)
+			return usageErrorf("--burp-bridge-url: %w", err)
 		}
 		bridgeURL = validated
 	}
 	if bridgeURL != "" && (len(args) > 0 || globDB != "") {
-		return fmt.Errorf("--burp-bridge-url is an import source and cannot be combined with path arguments or --glob-db")
+		return usageErrorf("--burp-bridge-url is an import source and cannot be combined with path arguments or --glob-db")
 	}
 	if bridgeURL != "" && upload {
-		return fmt.Errorf("--upload and --upload-key are not applicable to a live Burp bridge import")
+		return usageErrorf("--upload and --upload-key are not applicable to a live Burp bridge import")
 	}
 
 	// Gather every import source: positional paths plus any local files matched
@@ -165,7 +165,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 	// source it would clobber, so reject it up front rather than silently
 	// overwrite. Auto-generated per-source keys (empty --upload-key) are fine.
 	if uploadKey != "" && multi {
-		return fmt.Errorf("--upload-key cannot be used with multiple import sources (%d resolved); drop --upload-key to auto-generate a key per source", len(sources))
+		return usageErrorf("--upload-key cannot be used with multiple import sources (%d resolved); drop --upload-key to auto-generate a key per source", len(sources))
 	}
 
 	// Validate report flags up front so a typo fails before the import work,
@@ -174,13 +174,13 @@ func runImport(cmd *cobra.Command, args []string) error {
 	reportOutput, _ := cmd.Flags().GetString("output")
 	if reportFormat != "" {
 		if bridgeURL != "" {
-			return fmt.Errorf("--format is not applicable to a traffic-only Burp bridge import")
+			return usageErrorf("--format is not applicable to a traffic-only Burp bridge import")
 		}
 		if _, _, ok := reportGenerator(reportFormat); !ok {
-			return fmt.Errorf("--format %q is not a report format; use html, report, pdf, markdown, or sarif", reportFormat)
+			return usageErrorf("--format %q is not a report format; use html, report, pdf, markdown, or sarif", reportFormat)
 		}
 		if reportOutput == "" {
-			return fmt.Errorf("--format %s requires -o/--output for the report path", reportFormat)
+			return usageErrorf("--format %s requires -o/--output for the report path", reportFormat)
 		}
 	}
 
@@ -219,7 +219,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 		client, cErr := burpbridge.New(bridgeURL)
 		if cErr != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", cErr)
+			return usageErrorf("--burp-bridge-url: %w", cErr)
 		}
 		// Count first, write second. An operator who asked for one host and is
 		// shown 12,400 records across their whole history stops here — which is
@@ -416,7 +416,7 @@ func gatherImportSources(args []string, globDB string) ([]string, error) {
 	if globDB != "" {
 		matches, err := filepath.Glob(expandUserHome(globDB))
 		if err != nil {
-			return nil, fmt.Errorf("invalid --glob-db pattern %q: %w", globDB, err)
+			return nil, usageErrorf("invalid --glob-db pattern %q: %w", globDB, err)
 		}
 		if len(matches) == 0 {
 			fmt.Fprintf(os.Stderr, "%s --glob-db %q matched no files\n", terminal.WarningSymbol(), globDB)

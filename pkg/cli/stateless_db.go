@@ -187,9 +187,10 @@ func expandUserHome(p string) string {
 func globDBMatches(pattern string) ([]string, error) {
 	matches, err := filepath.Glob(expandUserHome(pattern))
 	if err != nil {
-		return nil, fmt.Errorf("invalid --glob-db pattern %q: %w", pattern, err)
+		return nil, usageErrorf("invalid --glob-db pattern %q: %w", pattern, err)
 	}
 	if len(matches) == 0 {
+		//vigolium:not-usage filesystem state, not the command line
 		return nil, fmt.Errorf("--glob-db %q matched no files", pattern)
 	}
 	return matches, nil
@@ -498,9 +499,11 @@ func statelessReadRequested() bool {
 func statelessSourceError(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
+		//vigolium:not-usage stat failure; classified source_missing by the wrapped os error
 		return fmt.Errorf("--db %q: %w", path, err)
 	}
 	if info.IsDir() {
+		//vigolium:not-usage filesystem state, not the command line
 		return fmt.Errorf("--db %q is a directory; expected a .jsonl export or .sqlite file", path)
 	}
 	return nil
@@ -664,7 +667,7 @@ func openStatelessDB(skip globDBSkipSet) (*database.DB, error) {
 		return openGlobDB(pattern, skip)
 	}
 	if strings.TrimSpace(globalDB) == "" {
-		return nil, fmt.Errorf("--stateless requires --db <file.jsonl|file.sqlite> or --glob-db <pattern>")
+		return nil, usageErrorf("--stateless requires --db <file.jsonl|file.sqlite> or --glob-db <pattern>")
 	}
 	path := globalDB
 	if err := statelessSourceError(path); err != nil {
@@ -783,6 +786,7 @@ func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
 		marks, markErr := globMergeMarksAt(ctx, db)
 		if markErr != nil {
 			_ = db.Close()
+			//vigolium:not-usage database failure during the merge
 			return nil, fmt.Errorf("--glob-db: cannot snapshot the scratch database before %s: %w", m, markErr)
 		}
 		res, impErr := globImportPath(ctx, repo, m, "", dbimport.Options{
@@ -824,11 +828,13 @@ func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
 				// adding that to the chain makes classifyErrorCode report
 				// source_missing — which names a missing file when what actually
 				// happened is an inconsistent scratch database.
+				//vigolium:not-usage database failure during the merge
 				return nil, fmt.Errorf("--glob-db: %s failed to import (%s) and its partial rows could not be removed, so the merge is inconsistent: %w",
 					m, impErr.Error(), rbErr)
 			}
 			if globalGlobStrict {
 				_ = db.Close()
+				//vigolium:not-usage import failure during the merge
 				return nil, fmt.Errorf("--glob-db: %s: %w", m, impErr)
 			}
 			globDBSkippedFiles = append(globDBSkippedFiles, globSkippedFile{File: m, Error: impErr.Error()})
@@ -856,6 +862,7 @@ func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
 	}
 	if loaded == 0 {
 		_ = db.Close()
+		//vigolium:not-usage every source failed to load, after I/O
 		return nil, fmt.Errorf("--glob-db %q: none of the %d matched file(s) could be loaded", pattern, len(matches))
 	}
 

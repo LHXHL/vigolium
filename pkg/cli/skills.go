@@ -208,7 +208,7 @@ func resolveNamedTargets(skills []bundledSkill, names []string) ([]bundledSkill,
 	for _, n := range names {
 		b, ok := findBundle(skills, n)
 		if !ok {
-			return nil, fmt.Errorf("unknown skill %q (available: %s)", n, bundleNames(skills))
+			return nil, usageErrorf("unknown skill %q (available: %s)", n, bundleNames(skills))
 		}
 		targets = append(targets, b)
 	}
@@ -318,7 +318,7 @@ func skillsInstallBaseDir(agent, scope string) (string, error) {
 	case "codex", "agents":
 		sub = skill.AgentsSkillsSubdir
 	default:
-		return "", fmt.Errorf("unknown --agent %q (want: claude, codex, or agents)", agent)
+		return "", usageErrorf("unknown --agent %q (want: claude, codex, or agents)", agent)
 	}
 
 	switch strings.ToLower(scope) {
@@ -335,7 +335,7 @@ func skillsInstallBaseDir(agent, scope string) (string, error) {
 		}
 		return filepath.Join(home, sub), nil
 	default:
-		return "", fmt.Errorf("unknown --scope %q (want: project or global)", scope)
+		return "", usageErrorf("unknown --scope %q (want: project or global)", scope)
 	}
 }
 

@@ -111,7 +111,7 @@ func runSessionLoad(cmd *cobra.Command, args []string) error {
 		sessionLoadHost = deriveHostFromSessions(sessions)
 	}
 	if sessionLoadHost == "" {
-		return fmt.Errorf("--host is required when session configs have no login URLs")
+		return usageErrorf("--host is required when session configs have no login URLs")
 	}
 
 	// Validate login flows unless --no-validate.
@@ -198,7 +198,7 @@ func runSessionLoadRawRequest(data []byte) error {
 		}
 	}
 	if sessionLoadHost == "" {
-		return fmt.Errorf("--host is required")
+		return usageErrorf("--host is required")
 	}
 
 	// Show summary of what was discovered.
@@ -224,7 +224,7 @@ func runSessionLoadRawRequest(data []byte) error {
 // persistSessionsWithResponse is like persistSessions but also stores a login response.
 func persistSessionsWithResponse(sessions []*authentication.Session, loginResponse string) error {
 	if sessionLoadHost == "" {
-		return fmt.Errorf("--host is required")
+		return usageErrorf("--host is required")
 	}
 
 	db, err := getDB()
@@ -289,7 +289,7 @@ func persistSessionsWithResponse(sessions []*authentication.Session, loginRespon
 // persistSessions converts sessions to DB rows and saves them.
 func persistSessions(sessions []*authentication.Session) error {
 	if sessionLoadHost == "" {
-		return fmt.Errorf("--host is required")
+		return usageErrorf("--host is required")
 	}
 
 	db, err := getDB()

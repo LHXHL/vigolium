@@ -65,7 +65,7 @@ func runKitPayload(cmd *cobra.Command, args []string) error {
 		}
 		list, ok := payloads.ByClass(c)
 		if !ok {
-			return fmt.Errorf("unknown payload class %q (available: %s)", c, strings.Join(classes, ", "))
+			return usageErrorf("unknown payload class %q (available: %s)", c, strings.Join(classes, ", "))
 		}
 		used = append(used, c)
 		for _, p := range list {

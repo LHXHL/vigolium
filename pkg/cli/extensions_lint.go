@@ -40,7 +40,7 @@ func runExtensionsLint(cmd *cobra.Command, args []string) error {
 
 	if lintStdin {
 		if len(args) > 0 {
-			return fmt.Errorf("cannot use both --stdin and a file argument")
+			return usageErrorf("cannot use both --stdin and a file argument")
 		}
 		data, err := readStdin()
 		if err != nil {

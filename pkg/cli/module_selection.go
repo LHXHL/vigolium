@@ -125,7 +125,7 @@ func selectModulesByIDs(activeIDs, passiveIDs []string) ([]modules.ActiveModule,
 // --no-passive value.
 func validateModuleSelectionFlags(noPassive bool) error {
 	if globalPassiveOnly && noPassive {
-		return fmt.Errorf("--passive-only and --no-passive are mutually exclusive (nothing would run)")
+		return usageErrorf("--passive-only and --no-passive are mutually exclusive (nothing would run)")
 	}
 	if len(globalModuleIDs) == 0 {
 		return nil

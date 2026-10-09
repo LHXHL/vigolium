@@ -238,7 +238,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	// the DB connection is closed.
 	if auditStateless {
 		if auditInteractive {
-			return fmt.Errorf("--stateless/-S cannot be combined with --interactive (interactive bypasses the database and report import)")
+			return usageErrorf("--stateless/-S cannot be combined with --interactive (interactive bypasses the database and report import)")
 		}
 		tmpFile, tmpErr := scratch.CreateTemp("audit-stateless-*.sqlite")
 		if tmpErr != nil {
@@ -254,7 +254,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 
 	if !agent.IsValidAuditDriver(auditDriver) {
-		return fmt.Errorf("invalid --driver %q (must be: auto, both, audit, or piolium)", auditDriver)
+		return usageErrorf("invalid --driver %q (must be: auto, both, audit, or piolium)", auditDriver)
 	}
 
 	// --agent is a pure agent selector for the audit leg. Reject bad
@@ -264,7 +264,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	auditAgent = strings.TrimSpace(auditAgent)
 	if auditAgent != "" {
 		if !agent.IsValidAuditDriverAgent(auditAgent) {
-			return fmt.Errorf("invalid --agent %q (must be: claude or codex)", auditAgent)
+			return usageErrorf("invalid --agent %q (must be: claude or codex)", auditAgent)
 		}
 		if auditDriver == agent.AuditDriverPiolium {
 			fmt.Fprintf(os.Stderr, "%s --agent is audit-only and has no effect with --driver=piolium\n",
@@ -277,7 +277,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	// with --driver=piolium is contradictory; auto/both/audit all run
 	// the audit leg interactively (the piolium leg is dropped).
 	if auditInteractive && auditDriver == agent.AuditDriverPiolium {
-		return fmt.Errorf("--interactive is audit-only and cannot be combined with --driver=piolium (omit --driver or use --driver=audit)")
+		return usageErrorf("--interactive is audit-only and cannot be combined with --driver=piolium (omit --driver or use --driver=audit)")
 	}
 
 	// --keep-raw / --clean-raw are audit-only. keep-raw is on by default, so
@@ -286,7 +286,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	// (otherwise the default-on flag would warn on every --driver=piolium run).
 	keepRawSet := cmd != nil && cmd.Flags().Changed("keep-raw")
 	if auditCleanRaw && keepRawSet && auditKeepRaw {
-		return fmt.Errorf("--keep-raw and --clean-raw are mutually exclusive (omit --keep-raw, which is on by default, to clean the source folder)")
+		return usageErrorf("--keep-raw and --clean-raw are mutually exclusive (omit --keep-raw, which is on by default, to clean the source folder)")
 	}
 	if auditDriver == agent.AuditDriverPiolium {
 		if keepRawSet && auditKeepRaw {
@@ -350,7 +350,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	auditDriverModes = auditChain
 	auditPioliumModes = pioliumModes
 	if auditSource == "" {
-		return fmt.Errorf("--source is required (local path or git URL)")
+		return usageErrorf("--source is required (local path or git URL)")
 	}
 
 	// Interactive mode always drives audit, so the embedded binary must
@@ -358,10 +358,11 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	// audit understands. Fail before the git clone.
 	if auditInteractive {
 		if !bin.Available() {
+			//vigolium:not-usage environment: the embedded binary is missing, not a bad command line
 			return fmt.Errorf("--interactive requires the embedded vigolium-audit binary — run `make build-audit` and rebuild vigolium")
 		}
 		if len(auditDriverModes) == 0 {
-			return fmt.Errorf("--interactive runs the audit leg, but mode chain %q contains no audit-supported modes", agent.JoinModes(auditModeChain))
+			return usageErrorf("--interactive runs the audit leg, but mode chain %q contains no audit-supported modes", agent.JoinModes(auditModeChain))
 		}
 	}
 	// --provider is now permissive — anthropic-* + openai-* both
@@ -1111,7 +1112,7 @@ func ensureAuditDriversFeasible(driver string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("invalid --driver %q", driver)
+	return usageErrorf("invalid --driver %q", driver)
 }
 
 // orchestrateAuditDrivers runs the configured driver(s) and returns the

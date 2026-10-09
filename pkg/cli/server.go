@@ -358,7 +358,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	if serverOpts.BurpBridgeURL != "" {
 		validated, verr := burpbridge.ValidateURL(serverOpts.BurpBridgeURL)
 		if verr != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", verr)
+			return usageErrorf("--burp-bridge-url: %w", verr)
 		}
 		serverOpts.BurpBridgeURL = validated
 	}

@@ -180,7 +180,7 @@ func resolveTriageFinding(ctx context.Context, db *database.DB, repo *database.R
 	if len(args) == 1 {
 		id, err := strconv.ParseInt(strings.TrimSpace(args[0]), 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid finding id %q: %w", args[0], err)
+			return nil, usageErrorf("invalid finding id %q: %w", args[0], err)
 		}
 		f, err := repo.GetFindingByID(ctx, id)
 		if err != nil {

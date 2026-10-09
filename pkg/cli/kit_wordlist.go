@@ -61,7 +61,7 @@ func runKitWordlist(cmd *cobra.Command, args []string) error {
 
 	file, ok := resolveWordlistName(args[0], names)
 	if !ok {
-		return fmt.Errorf("unknown wordlist %q (available: %s)", args[0], strings.Join(names, ", "))
+		return usageErrorf("unknown wordlist %q (available: %s)", args[0], strings.Join(names, ", "))
 	}
 	data, err := wordlists.WordlistsFS.ReadFile(file)
 	if err != nil {

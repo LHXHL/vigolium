@@ -102,7 +102,7 @@ func resolveJsSource() (string, error) {
 
 	// Check for conflicting inputs
 	if hasCode && hasFile {
-		return "", fmt.Errorf("--code and --code-file are mutually exclusive")
+		return "", usageErrorf("--code and --code-file are mutually exclusive")
 	}
 
 	// --code: inline

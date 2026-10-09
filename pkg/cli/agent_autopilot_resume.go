@@ -26,13 +26,16 @@ import (
 // re-enters the operator loop seeded from the durable scratchpad + candidates.
 func prepareAutopilotResume(ctx context.Context, repo *database.Repository, resumeUUID, sessionsDir string) error {
 	if repo == nil {
+		//vigolium:not-usage no database is open; a store problem, not a flag problem
 		return fmt.Errorf("--resume requires a database connection")
 	}
 	run, err := repo.GetAgenticScan(ctx, resumeUUID)
 	if err != nil {
+		//vigolium:not-usage database lookup result
 		return fmt.Errorf("--resume: agentic scan %s not found: %w", resumeUUID, err)
 	}
 	if run.Mode != "autopilot" {
+		//vigolium:not-usage decided from the stored run, after I/O
 		return fmt.Errorf("--resume: %s is a %q run, not an autopilot run", resumeUUID, run.Mode)
 	}
 

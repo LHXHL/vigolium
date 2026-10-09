@@ -88,7 +88,7 @@ type kitOASTNewResult struct {
 
 func runKitOASTNew(cmd *cobra.Command, args []string) error {
 	if kitOASTCount < 1 {
-		return fmt.Errorf("--count must be at least 1")
+		return usageErrorf("--count must be at least 1")
 	}
 
 	client, err := interactshclient.New(&interactshclient.Options{

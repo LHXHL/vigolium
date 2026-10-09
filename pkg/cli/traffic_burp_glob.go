@@ -151,6 +151,7 @@ func saveGlobToBurp(ctx context.Context, pattern string, filters database.QueryF
 	}
 
 	if read == 0 {
+		//vigolium:not-usage every source failed to read, after I/O
 		return fmt.Errorf("--glob-db %q: none of the %d matched file(s) could be read", pattern, len(matches))
 	}
 

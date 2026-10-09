@@ -61,7 +61,7 @@ func resolveInstruction(instruction, instructionFile string) (string, error) {
 // file is missing/unreadable or yields neither an instruction nor a request.
 func resolvePlanFile(path, input string) (planInstruction string, requests []string, err error) {
 	if input != "" {
-		return "", nil, fmt.Errorf("--plan-file cannot be combined with --input")
+		return "", nil, usageErrorf("--plan-file cannot be combined with --input")
 	}
 	data, rerr := os.ReadFile(path)
 	if rerr != nil {
@@ -416,26 +416,28 @@ func resolveRawPrompt(args []string, promptFlag, promptFile, planFile string) (s
 	if len(args) > 0 {
 		if pos := strings.TrimSpace(args[0]); pos != "" {
 			if prompt != "" {
-				return "", fmt.Errorf("pass the task guidance once: use the positional [prompt] or --prompt, not both")
+				return "", usageErrorf("pass the task guidance once: use the positional [prompt] or --prompt, not both")
 			}
 			prompt = pos
 		}
 	}
 	if pf := strings.TrimSpace(promptFile); pf != "" {
 		if prompt != "" {
-			return "", fmt.Errorf("pass the task guidance once: use --prompt-file or the positional [prompt]/--prompt, not both")
+			return "", usageErrorf("pass the task guidance once: use --prompt-file or the positional [prompt]/--prompt, not both")
 		}
 		data, rerr := os.ReadFile(config.ExpandPath(pf))
 		if rerr != nil {
+			//vigolium:not-usage file read failure
 			return "", fmt.Errorf("--prompt-file %q: %w", pf, rerr)
 		}
 		prompt = strings.TrimSpace(string(data))
 		if prompt == "" {
+			//vigolium:not-usage decided from file contents, after I/O
 			return "", fmt.Errorf("--prompt-file %q is empty", pf)
 		}
 	}
 	if prompt != "" && planFile != "" {
-		return "", fmt.Errorf("--plan-file cannot be combined with a prompt (--prompt / --prompt-file / positional): the plan file owns the instruction channel; fold the guidance into the plan file instead")
+		return "", usageErrorf("--plan-file cannot be combined with a prompt (--prompt / --prompt-file / positional): the plan file owns the instruction channel; fold the guidance into the plan file instead")
 	}
 	return prompt, nil
 }

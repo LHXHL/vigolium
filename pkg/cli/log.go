@@ -297,7 +297,7 @@ func runLogShow(cmd *cobra.Command, args []string) error {
 
 	uuid := strings.TrimSpace(args[0])
 	if uuid == "" {
-		return errors.New("uuid argument is required")
+		return usageErrorf("uuid argument is required")
 	}
 
 	return showLogForUUID(uuid, cmd.Flags().Changed("follow"))

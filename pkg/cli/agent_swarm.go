@@ -253,7 +253,7 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 
 	// Validate: at least one input source (stdin is checked later in buildSwarmInputs)
 	if swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && swarmSource == "" && len(swarmPlanInputs) == 0 && !stdinIsPiped() {
-		return fmt.Errorf("at least one input is required: --target, --input, --record-uuid, --all-records, --records-from, --source, --plan-file, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent swarm \"scan source at ~/src/app on localhost:3005\"")
+		return usageErrorf("at least one input is required: --target, --input, --record-uuid, --all-records, --records-from, --source, --plan-file, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent swarm \"scan source at ~/src/app on localhost:3005\"")
 	}
 
 	// Source-only mode: --source without any target/input is allowed but skips dynamic testing
@@ -271,7 +271,7 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 
 	// --source-analysis-only requires --source
 	if swarmSourceAnalysisOnly && swarmSource == "" {
-		return fmt.Errorf("--source-analysis-only requires --source")
+		return usageErrorf("--source-analysis-only requires --source")
 	}
 
 	// Resolve intensity preset — apply before other flag processing
@@ -858,9 +858,11 @@ func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUI
 	if swarmAllRecords {
 		uuids, err := expandProjectRecordsFromQuery(ctx, repo, database.QueryFilters{ProjectUUID: projectUUID})
 		if err != nil {
+			//vigolium:not-usage database query failure
 			return nil, fmt.Errorf("--all-records: %w", err)
 		}
 		if len(uuids) == 0 {
+			//vigolium:not-usage project data state, not the command line
 			return nil, fmt.Errorf("--all-records: no HTTP records in project %s", projectUUID)
 		}
 		fmt.Fprintf(os.Stderr, "%s --all-records expanded to %d HTTP records from project\n",
@@ -871,13 +873,15 @@ func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUI
 	if swarmRecordsFrom != "" {
 		filters, err := parseRecordsFromSpec(swarmRecordsFrom, projectUUID)
 		if err != nil {
-			return nil, fmt.Errorf("--records-from: %w", err)
+			return nil, usageErrorf("--records-from: %w", err)
 		}
 		uuids, err := expandProjectRecordsFromQuery(ctx, repo, filters)
 		if err != nil {
+			//vigolium:not-usage database query failure
 			return nil, fmt.Errorf("--records-from: %w", err)
 		}
 		if len(uuids) == 0 {
+			//vigolium:not-usage project data state, not the command line
 			return nil, fmt.Errorf("--records-from %q matched 0 records in project %s", swarmRecordsFrom, projectUUID)
 		}
 		fmt.Fprintf(os.Stderr, "%s --records-from %q matched %d HTTP records\n",
@@ -1149,7 +1153,7 @@ func buildSyntheticCheckpoint(startFrom string) (*agent.SwarmCheckpoint, error) 
 	}
 
 	if !found {
-		return nil, fmt.Errorf("unknown --start-from phase %q; valid phases: %s",
+		return nil, usageErrorf("unknown --start-from phase %q; valid phases: %s",
 			startFrom, strings.Join(allPhases, ", "))
 	}
 	if len(completed) == 0 {

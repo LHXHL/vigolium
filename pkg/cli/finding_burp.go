@@ -28,18 +28,18 @@ const findingRepeaterWarnThreshold = 20
 // "Repeater only", so no existing command line changes meaning.
 func pushFindingsToBurp(ctx context.Context, db *database.DB, findings []*database.Finding) error {
 	if strings.TrimSpace(findingBurpBridgeURL) == "" {
-		return fmt.Errorf("--push-to-burp/--to-repeater require --burp-bridge-url")
+		return usageErrorf("--push-to-burp/--to-repeater require --burp-bridge-url")
 	}
 	httpMode, err := burpbridge.ParseHTTPMode(findingHTTPMode)
 	if err != nil {
-		return fmt.Errorf("--http-mode: %w", err)
+		return usageErrorf("--http-mode: %w", err)
 	}
 	if findingHTTPMode != "" && !findingSendViaBurp {
 		fmt.Fprintf(os.Stderr, "%s --http-mode only applies with --send-via-burp; ignoring\n", terminal.WarningSymbol())
 	}
 	validated, err := burpbridge.ValidateURL(findingBurpBridgeURL)
 	if err != nil {
-		return fmt.Errorf("--burp-bridge-url: %w", err)
+		return usageErrorf("--burp-bridge-url: %w", err)
 	}
 	client, err := burpbridge.New(validated)
 	if err != nil {

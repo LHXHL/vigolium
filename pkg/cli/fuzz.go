@@ -725,18 +725,18 @@ func setupFuzzBurpBridge(ctx context.Context, _ *replaySource) (*fuzzBurpBridge,
 		return nil, nil
 	}
 	if strings.TrimSpace(fuzzBurpBridgeURL) == "" {
-		return nil, fmt.Errorf("--send-via-burp/--matches-to-organizer require --burp-bridge-url")
+		return nil, usageErrorf("--send-via-burp/--matches-to-organizer require --burp-bridge-url")
 	}
 	httpMode, err := burpbridge.ParseHTTPMode(fuzzHTTPMode)
 	if err != nil {
-		return nil, fmt.Errorf("--http-mode: %w", err)
+		return nil, usageErrorf("--http-mode: %w", err)
 	}
 	if fuzzHTTPMode != "" && !fuzzSendViaBurp {
 		fmt.Fprintf(os.Stderr, "%s --http-mode only applies with --send-via-burp; ignoring\n", terminal.WarningSymbol())
 	}
 	validated, err := burpbridge.ValidateURL(fuzzBurpBridgeURL)
 	if err != nil {
-		return nil, fmt.Errorf("--burp-bridge-url: %w", err)
+		return nil, usageErrorf("--burp-bridge-url: %w", err)
 	}
 	client, err := burpbridge.New(validated)
 	if err != nil {
@@ -859,6 +859,7 @@ func resolveFuzzSource(ctx context.Context, args []string) (*replaySource, error
 
 	case fuzzRecordUUID != "":
 		if repo == nil {
+			//vigolium:not-usage no database is open; a store problem, not a flag problem
 			return nil, fmt.Errorf("--record-uuid requires database access")
 		}
 		return sourceFromRecord(ctx, repo, fuzzRecordUUID)

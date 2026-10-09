@@ -218,7 +218,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 		// combination never prints the plan's default-base notice on its way to
 		// the error.
 		if autopilotStateless && autopilotResume != "" {
-			return fmt.Errorf("--stateless/-S cannot be combined with --resume: a resumed run restores its target, scratchpad, and prior findings from the project database, which a throwaway one does not have")
+			return usageErrorf("--stateless/-S cannot be combined with --resume: a resumed run restores its target, scratchpad, and prior findings from the project database, which a throwaway one does not have")
 		}
 		plan, planErr := planAgentStateless(cmd, "agent autopilot", autopilotStateless, autopilotOutput)
 		if planErr != nil {
@@ -385,7 +385,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	// (clicommon.PinProjectUUID), so scoping no longer depends on this ordering.
 	if autopilotResume != "" {
 		if autopilotInput != "" || autopilotRecordUUID != "" || autopilotPlanFile != "" {
-			return fmt.Errorf("--resume cannot be combined with --input/--record-uuid/--plan-file")
+			return usageErrorf("--resume cannot be combined with --input/--record-uuid/--plan-file")
 		}
 		if err := prepareAutopilotResume(context.Background(), repo, autopilotResume, settings.Agent.EffectiveSessionsDir()); err != nil {
 			return err
@@ -401,7 +401,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	if bridge := strings.TrimSpace(autopilotBurpBridgeURL); bridge != "" && repo != nil {
 		validated, verr := burpbridge.ValidateURL(bridge)
 		if verr != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", verr)
+			return usageErrorf("--burp-bridge-url: %w", verr)
 		}
 		projectUUID, _ := resolveProjectUUID()
 		fmt.Fprintf(os.Stderr, "%s Importing live bridge traffic from %s ...\n",
@@ -428,7 +428,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 		// is multi-valued and just adds more seeds alongside the plan's, so
 		// combining is allowed there.
 		if autopilotRecordUUID != "" {
-			return fmt.Errorf("--plan-file cannot be combined with --record-uuid")
+			return usageErrorf("--plan-file cannot be combined with --record-uuid")
 		}
 		planInstruction, planRequests, perr := resolvePlanFile(autopilotPlanFile, autopilotInput)
 		if perr != nil {
@@ -448,10 +448,11 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	// dedicated flag makes intent obvious in scripts and shell history.
 	if autopilotRecordUUID != "" {
 		if repo == nil {
+			//vigolium:not-usage no database is open; a store problem, not a flag problem
 			return fmt.Errorf("--record-uuid requires a database connection")
 		}
 		if autopilotInput != "" || autopilotTarget != "" {
-			return fmt.Errorf("--record-uuid cannot be combined with --input or --target")
+			return usageErrorf("--record-uuid cannot be combined with --input or --target")
 		}
 		autopilotInput = strings.TrimSpace(autopilotRecordUUID)
 	}
@@ -464,7 +465,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	autopilotTarget = resolved.Target
 
 	if autopilotTarget == "" && autopilotSource == "" {
-		return fmt.Errorf("target is required: use --target, --input, --record-uuid, --source, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent autopilot \"scan source at ~/src/app on localhost:3005\"")
+		return usageErrorf("target is required: use --target, --input, --record-uuid, --source, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent autopilot \"scan source at ~/src/app on localhost:3005\"")
 	}
 
 	// autopilotInstruction is populated only by --plan-file (above); the raw
@@ -518,6 +519,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	if autopilotKnowledgeBase != "" {
 		expanded := config.ExpandPath(autopilotKnowledgeBase)
 		if _, statErr := os.Stat(expanded); statErr != nil {
+			//vigolium:not-usage filesystem stat failure
 			return fmt.Errorf("--knowledge-base %q: %w", autopilotKnowledgeBase, statErr)
 		}
 		autopilotKnowledgeBase = expanded

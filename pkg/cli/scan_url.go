@@ -895,7 +895,7 @@ func validateRunnerScanOutput(opts *types.Options) error {
 		// able to be requested and unable to be written.
 		for _, f := range opts.OutputFormats {
 			if formatNeedsOutput(f) {
-				return fmt.Errorf("--format %s requires -o/--output to specify the report file path", f)
+				return usageErrorf("--format %s requires -o/--output to specify the report file path", f)
 			}
 		}
 		if len(opts.OutputFormats) > 1 {
@@ -935,7 +935,7 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 		return err
 	}
 	if opts.Stateless && globalDB != "" {
-		return fmt.Errorf("--stateless and --db are mutually exclusive")
+		return usageErrorf("--stateless and --db are mutually exclusive")
 	}
 
 	// One signal handler for the whole invocation — see executeNativeScan.

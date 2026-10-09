@@ -142,6 +142,7 @@ func expandIngestDir(dir, pattern string) ([]string, error) {
 	dir = expandUserHome(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		//vigolium:not-usage directory read failure
 		return nil, fmt.Errorf("--dir %q: %w", dir, err)
 	}
 	var out []string
@@ -151,7 +152,7 @@ func expandIngestDir(dir, pattern string) ([]string, error) {
 		}
 		ok, err := filepath.Match(pattern, e.Name())
 		if err != nil {
-			return nil, fmt.Errorf("--dir-glob %q: %w", pattern, err)
+			return nil, usageErrorf("--dir-glob %q: %w", pattern, err)
 		}
 		if ok {
 			out = append(out, filepath.Join(dir, e.Name()))
@@ -161,6 +162,7 @@ func expandIngestDir(dir, pattern string) ([]string, error) {
 		// An empty expansion is a hard error, not an empty run: a caller who
 		// pointed at a directory expected files there, and reporting "ingested 0
 		// records" for a typo'd path is indistinguishable from an empty capture.
+		//vigolium:not-usage filesystem state, not the command line
 		return nil, fmt.Errorf("--dir %q matched no files with --dir-glob %q", dir, pattern)
 	}
 	sort.Strings(out)
