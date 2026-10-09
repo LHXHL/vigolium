@@ -133,6 +133,7 @@ func TestParseFindingCarriesScanAndRecordUUIDs(t *testing.T) {
 
 // TestGenerateMarkdownReportGolden pins the whole rendered report for a seeded
 // finding. Regenerate with: go test ./pkg/output -run Golden -update
+// The seeded messages use LF line endings: git normalizes CRLF in the golden.
 func TestGenerateMarkdownReportGolden(t *testing.T) {
 	items := []any{
 		map[string]any{"type": "scan", "data": map[string]any{"target": "https://shop.example", "total_requests": 3}},
@@ -148,8 +149,8 @@ func TestGenerateMarkdownReportGolden(t *testing.T) {
 			"description":       "The `id` parameter reaches a SQL query.",
 			"matched_at":        []string{"https://shop.example/item?id=1'"},
 			"extracted_results": []string{"You have an error in your SQL syntax"},
-			"request":           "GET /item?id=1' HTTP/1.1\r\nHost: shop.example\r\n\r\n",
-			"response":          "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nYou have an error in your SQL syntax near ```'``` — 日本語 " + strings.Repeat("ü", 40),
+			"request":           "GET /item?id=1' HTTP/1.1\nHost: shop.example\n\n",
+			"response":          "HTTP/1.1 500 Internal Server Error\nContent-Type: text/plain\n\nYou have an error in your SQL syntax near ```'``` — 日本語 " + strings.Repeat("ü", 40),
 			"finding_hash":      "f00dfeed",
 			"scan_uuid":         "11111111-2222-3333-4444-555555555555",
 			"http_record_uuids": []string{"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},

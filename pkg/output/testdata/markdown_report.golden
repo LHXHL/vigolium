@@ -69,10 +69,10 @@ Host: shop.example
 HTTP/1.1 500 Internal Server Error
 Content-Type: text/plain
 
-You have an error in your SQL syntax near ```'``` — 日本語 üüüüüü
+You have an error in your SQL syntax near ```'``` — 日本語 üüüüüüü
 ````
 
-… [truncated, 140 of 208 bytes; full: vigolium traffic body --uuid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee]
+… [truncated, 139 of 205 bytes; full: vigolium traffic body --uuid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee]
 
 </details>
 
