@@ -286,6 +286,7 @@ What each type is for:
 | `waf.block` | The edge started filtering. Results for that host are **incomplete** — do not read a thin surface as a clean target. |
 | `waf.pacing` | Vigolium slowed itself down on purpose. Attribute the slowdown here, not to the target. |
 | `finding.new` | Metadata only. Evidence lives in `db_path`; query it with `finding -j --with-records` afterwards. |
+| `oast.unavailable` | OAST registration with the interactsh server failed or did not finish within 3s of `dynamic-assessment` starting. `message` names the server and cause (`oast.pro: dial timeout`). Blind/out-of-band checks did not run; the phase carries the `oast_unavailable` reason and the scan is `partial`. |
 | `error` | A phase failed and the scan **carried on** — non-fatal by construction. A failure that ends the run rides on `scan.finished{status:"failed"}` instead, so this is never a reason to abandon a run that is still producing findings. |
 | `phase.finished` | `status` plus `reasons`/`limits` (below) for that phase. |
 | `scan.interrupting` | **Nonterminal.** A shutdown began (SIGINT/SIGTERM). The terminal event still follows — do not treat this as the end of the stream. |
@@ -302,7 +303,6 @@ them while they are missing.
 |---|---|---|
 | `scan.plan` | The resolved plan: phases, budgets, targets, estimate. Second event on every stream. | v0.7 |
 | `scan.setup` | A first-run install step: `component`, `state` (`started`/`finished`/`failed`), `bytes`, `duration_ms`. | v0.7 |
-| `oast.unavailable` | OAST registration failed; out-of-band checks do not run and the scan is partial with `oast_unavailable`. | v0.6 |
 | `host.quarantined` / `host.recovered` / `host.dead` | Per-host breaker transitions: `host`, `detail`. | not yet scheduled |
 | `auth.session_suspect` / `auth.relogin` | Responses look logged out; a re-login attempt and its result. | not yet scheduled |
 | `module.error` | Module failures, rate-limited: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`/`load`), `message`, `count`. | v0.7 |
@@ -340,7 +340,7 @@ not empty.
 
 | Field | On | Means |
 |---|---|---|
-| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `checkpoint_failed`, `input_incomplete`, … Reserved, not emitted yet: `targets_out_of_scope`, `targets_unreachable`, `oast_unavailable` (a caveat, never the `stop_reason` while another reason exists), `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`, and the stop reasons `no_targets_in_scope` / `no_targets_reachable` (the scan did nothing; exit 1). |
+| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, … Reserved, not emitted yet: `targets_out_of_scope`, `targets_unreachable`, `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`, and the stop reasons `no_targets_in_scope` / `no_targets_reachable` (the scan did nothing; exit 1). |
 | `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`, `responses_while_logged_out`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
 | `stop_reason` | `scan.finished` | The scan-level roll-up of why the run stopped launching work. |
 

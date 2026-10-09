@@ -649,7 +649,7 @@ terminal `scan.finished`. Human output stays on stderr throughout.
 
 New event types and fields are added, never renamed; an event type you do not
 recognise is safe to ignore. Some types and fields (`scan.plan`, `scan.setup`,
-`oast.unavailable`, `host.*`, `auth.*`, `module.error`, `extension.failed`,
+`host.*`, `auth.*`, `module.error`, `extension.failed`,
 `targets_admitted`, …) are already reserved in the vocabulary before anything
 emits them; the skill's `references/agent-loop.md` lists each with the release
 expected to start emitting it.

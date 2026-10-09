@@ -892,6 +892,15 @@ A `server_url` without a scheme registers over https only. If that fails, OAST
 is unavailable for the scan; it is never retried over cleartext http. Write
 `http://…` explicitly to use a cleartext interactsh server.
 
+Registration runs in the background from the start of a scan whose plan includes
+`dynamic-assessment`, so earlier phases hide its latency. The registration
+request is bounded at 3s with no retry, and dynamic assessment waits at most 3s
+more for it. When OAST is unavailable the scan prints one line
+(`OAST unavailable (oast.pro: dial timeout) — blind/out-of-band checks skipped`),
+emits an `oast.unavailable` event, records the non-stopping reason
+`oast_unavailable` (the scan is `partial`), and runs without out-of-band checks.
+`grace_period` is only waited out when a round actually planted a callback URL.
+
 ### `notify`
 
 Vigolium ships three notification channels:

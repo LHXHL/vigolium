@@ -75,7 +75,6 @@ func TestFlushCloseNilService(t *testing.T) {
 	var svc *Service
 	svc.Flush()
 	svc.Close()
-	svc.Start()
 }
 
 func TestSetRequestUUIDResolverNilService(t *testing.T) {

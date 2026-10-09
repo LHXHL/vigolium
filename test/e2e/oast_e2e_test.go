@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"os"
@@ -96,16 +97,24 @@ func waitForOASTResults(t *testing.T, rc *oastResultCollector, minCount int, tim
 		minCount, os.Getenv("VIGOLIUM_OAST_DOMAIN"), rc.count())
 }
 
-// tryOASTService attempts a single interactsh registration. oast.New degrades
-// to (nil, nil) — by design — when the external interactsh server can't be
-// reached or the registration handshake fails, so production scans keep running
-// without OAST. Returns (nil, false) in that case so callers can decide whether
-// to retry, skip, or fail.
+// tryOASTService attempts a single interactsh registration. oast.New returns at
+// once and registers in the background (polling starts on success); WaitReady
+// reports the outcome. Returns (nil, false) when the external interactsh server
+// can't be reached or the handshake fails, so callers can decide whether to
+// retry, skip, or fail.
 func tryOASTService(t *testing.T, cfg *config.OASTConfig, emit func(*output.ResultEvent), scanUUID, projectUUID string) (*oast.Service, bool) {
 	t.Helper()
 	svc, err := oast.New(cfg, emit, nil, scanUUID, projectUUID, nil)
 	require.NoError(t, err)
-	return svc, svc != nil
+	if svc == nil {
+		return nil, false
+	}
+	if err := svc.WaitReady(context.Background(), 30*time.Second); err != nil {
+		t.Logf("interactsh registration failed: %v", err)
+		svc.Close()
+		return nil, false
+	}
+	return svc, true
 }
 
 // newOASTService builds an OAST service, retrying transient interactsh
@@ -153,8 +162,6 @@ func TestOASTPayloadAndCallback(t *testing.T) {
 	collector := &oastResultCollector{}
 	svc := newOASTService(t, cfg, collector.emit, "scan-callback-e2e", "proj-callback-e2e")
 	t.Cleanup(func() { svc.Close() })
-
-	svc.Start()
 
 	callbackURL := svc.GenerateURL("http://target.example.com/vuln", "redirect", "ssrf", "mod-ssrf-e2e", "reqhash-1")
 	require.NotEmpty(t, callbackURL)
@@ -209,8 +216,6 @@ func TestOASTPayloadCorrelation(t *testing.T) {
 	collector := &oastResultCollector{}
 	svc := newOASTService(t, cfg, collector.emit, "scan-correlation-e2e", "proj-correlation-e2e")
 	t.Cleanup(func() { svc.Close() })
-
-	svc.Start()
 
 	cases := []struct {
 		targetURL string
@@ -277,8 +282,6 @@ func TestOASTDNSInteraction(t *testing.T) {
 	collector := &oastResultCollector{}
 	svc := newOASTService(t, cfg, collector.emit, "scan-dns-e2e", "proj-dns-e2e")
 	t.Cleanup(func() { svc.Close() })
-
-	svc.Start()
 
 	callbackURL := svc.GenerateURL("http://target.example.com/dns-test", "hostname", "dns-injection", "mod-dns-e2e", "hash-dns")
 	require.NotEmpty(t, callbackURL)

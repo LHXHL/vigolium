@@ -2,7 +2,12 @@ package vigtool
 
 import (
 	"context"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestOASTMintRequiresRepo(t *testing.T) {
@@ -39,5 +44,37 @@ func TestOASTMintToolMetadata(t *testing.T) {
 	}
 	if _, ok := tl.Schema()["properties"]; !ok {
 		t.Error("schema missing properties")
+	}
+}
+
+// TestOASTMintReportsUnavailableServer: registration is asynchronous, so the
+// first mint waits for it and turns a failed registration into a tool error
+// that names the cause, instead of minting a canary nobody polls.
+func TestOASTMintReportsUnavailableServer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close() // nothing listens: registration is refused at once
+
+	cfgPath := filepath.Join(t.TempDir(), "vigolium-configs.yaml")
+	cfg := "oast:\n  enabled: true\n  server_url: http://" + addr + "\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tl := NewOASTMintTool(&ScanContext{Repo: newVigtoolTestRepo(t), ConfigPath: cfgPath})
+	t.Cleanup(tl.Shutdown)
+	start := time.Now()
+	res, _ := tl.Execute(context.Background(), map[string]any{}, nil)
+	if !res.IsError {
+		t.Fatalf("oast_mint against an unreachable server succeeded: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "OAST unavailable") || !strings.Contains(res.Content, addr) {
+		t.Errorf("error = %q, want it to say OAST is unavailable and name the server", res.Content)
+	}
+	if elapsed := time.Since(start); elapsed > oastMintReadyWait+time.Second {
+		t.Errorf("oast_mint took %s, want <= %s", elapsed, oastMintReadyWait)
 	}
 }

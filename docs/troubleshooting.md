@@ -76,7 +76,9 @@ Ensure the target URL scheme (http vs https) and hostname match what the scope e
 
 **Solutions:**
 
-OAST requires outbound DNS and HTTP connectivity from the target application to the OAST callback server. Check that:
+If the scan printed `OAST unavailable (<server>: <reason>) — blind/out-of-band checks skipped` (event `oast.unavailable`, reason `oast_unavailable`), the scanner itself could not register with the interactsh server within 3s: check outbound https from the scanning host to `oast.server_url`, the `oast.token`, or point `server_url` at a reachable server.
+
+Otherwise, OAST requires outbound DNS and HTTP connectivity from the target application to the OAST callback server. Check that:
 
 1. The scanned application can make outbound DNS queries.
 2. The scanned application can make outbound HTTP requests.

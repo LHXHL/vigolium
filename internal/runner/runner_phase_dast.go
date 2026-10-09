@@ -175,24 +175,15 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	// they went around --proxy entirely. Restored when the phase ends.
 	defer spitolas.SetDefaultProbeProxy(r.options.ProxyURL)()
 
-	// Initialize OAST service if enabled
-	var oastService *oast.Service
-	if r.settings != nil && r.settings.OAST.Enabled {
-		onOASTResult := func(result *output.ResultEvent) {
-			if err := r.output.Write(result); err != nil {
-				zap.L().Error("Failed to write OAST result", zap.Error(err))
-			}
-		}
-		var err error
-		oastService, err = oast.New(&r.settings.OAST, onOASTResult, r.repository, infra.scanUUID, r.options.ProjectUUID, nil)
-		if err != nil {
-			zap.L().Warn("DynamicAssessment: OAST initialization failed, continuing without OAST", zap.Error(err))
-		}
-		if oastService != nil {
-			oastService.Start()
-			defer oastService.Close()
-			r.printPhaseDetail(fmt.Sprintf("OAST: enabled via %s (out-of-band callback detection active)", oastService.ServerURL()))
-		}
+	// OAST registration started with the infrastructure; collect it here with a
+	// bounded wait. Unavailable OAST is reported once and the phase proceeds
+	// without out-of-band checks (see awaitOAST).
+	oastService := r.awaitOAST(ctx, infra)
+	if oastService != nil {
+		// Stop polling and deregister when the phase ends, as before;
+		// infra.Close repeats it harmlessly.
+		defer oastService.Close()
+		r.printPhaseDetail(fmt.Sprintf("OAST: enabled via %s (out-of-band callback detection active)", oastService.ServerURL()))
 	}
 
 	// Compute in-scope origins (scheme/host/port) to filter DB records by CLI targets.

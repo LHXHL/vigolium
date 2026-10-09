@@ -11,11 +11,16 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/core/services"
+	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/notify"
 	"github.com/vigolium/vigolium/pkg/notify/discord"
 	"github.com/vigolium/vigolium/pkg/notify/telegram"
+	"github.com/vigolium/vigolium/pkg/oast"
+	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/scanevents"
+	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
 )
 
@@ -57,6 +62,7 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 			infra.authFailureReason = authFailureReason(ctx, err)
 			zap.L().Warn("Failed to initialize sessions", zap.Error(err))
 		}
+		r.startOASTRegistration(plan, infra)
 		return infra, nil
 	}
 
@@ -202,7 +208,107 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 		}
 	}
 
+	r.startOASTRegistration(plan, infra)
 	return infra, nil
+}
+
+// oastReadyWait bounds how long dynamic assessment waits, at its start, for an
+// OAST registration that has not finished yet. Registration starts while the
+// infrastructure is built, so on any scan with a discovery or spidering phase it
+// has long finished by then; this only matters for a slow server on a scan that
+// goes straight to assessment.
+const oastReadyWait = 3 * time.Second
+
+// startOASTRegistration begins interactsh registration in the background when
+// OAST is enabled and dynamic assessment is in the plan, so the earlier phases
+// hide its latency. It never blocks; the outcome is collected by awaitOAST.
+func (r *Runner) startOASTRegistration(plan NativeScanPlan, infra *phaseInfra) {
+	if infra.oast != nil || r.settings == nil || !r.settings.OAST.Enabled || !planRunsDynamicAssessment(plan) {
+		return
+	}
+	infra.oast = r.newOASTService(infra)
+}
+
+// planRunsDynamicAssessment reports whether the dynamic-assessment step is
+// enabled in plan.
+func planRunsDynamicAssessment(plan NativeScanPlan) bool {
+	for _, step := range plan.Steps {
+		if step.Phase == PhaseDynamicAssessment {
+			return step.Enabled
+		}
+	}
+	return false
+}
+
+// newOASTService constructs the scan's OAST service; registration with an
+// interactsh server proceeds in the background (see oast.New).
+func (r *Runner) newOASTService(infra *phaseInfra) *oast.Service {
+	onOASTResult := func(result *output.ResultEvent) {
+		if r.output == nil {
+			return
+		}
+		if err := r.output.Write(result); err != nil {
+			zap.L().Error("Failed to write OAST result", zap.Error(err))
+		}
+	}
+	svc, err := oast.New(&r.settings.OAST, onOASTResult, r.repository, infra.scanUUID, r.options.ProjectUUID, nil)
+	if err != nil {
+		zap.L().Debug("OAST: service construction failed", zap.Error(err))
+		return nil
+	}
+	return svc
+}
+
+// awaitOAST resolves the scan's OAST service at the start of dynamic
+// assessment. It waits at most oastReadyWait for a registration still in flight.
+// When OAST is ready it returns the service for the executors; otherwise it
+// closes it, reports the gap once (phase reason oast_unavailable, an
+// oast.unavailable event and one stderr line) and returns nil, and the phase
+// runs without out-of-band checks. A registration that would have finished later
+// is abandoned on purpose: the scan has already said OAST was unavailable, and
+// planting payloads halfway through the phase would contradict it.
+func (r *Runner) awaitOAST(ctx context.Context, infra *phaseInfra) *oast.Service {
+	if r.settings == nil || !r.settings.OAST.Enabled {
+		return nil
+	}
+	if infra.oast == nil {
+		// Not started with the infrastructure (a caller that built phaseInfra
+		// some other way): start now and give it the same bounded wait.
+		infra.oast = r.newOASTService(infra)
+		if infra.oast == nil {
+			return nil
+		}
+	}
+	svc := infra.oast
+	err := svc.WaitReady(ctx, oastReadyWait)
+	if err == nil {
+		return svc
+	}
+	svc.Close()
+	infra.oast = nil
+	if ctx.Err() != nil {
+		// The phase is being torn down anyway; its own reason says why.
+		return nil
+	}
+	r.reportOASTUnavailable(err)
+	return nil
+}
+
+// reportOASTUnavailable is the single operator-facing notice that out-of-band
+// checks were skipped: a non-stopping phase reason, an oast.unavailable event,
+// and one stderr line.
+func (r *Runner) reportOASTUnavailable(err error) {
+	r.currentPhase.Load().markPartial(database.ReasonOASTUnavailable)
+	scanevents.Emit(scanevents.Event{
+		Type:    scanevents.TypeOASTUnavailable,
+		Phase:   string(PhaseDynamicAssessment),
+		Message: err.Error(),
+		Detail:  "blind/out-of-band checks skipped",
+	})
+	msg := fmt.Sprintf("OAST unavailable (%s) — blind/out-of-band checks skipped", err.Error())
+	r.scanLogger.Warn("dynamic-assessment", msg)
+	zap.L().Debug("OAST unavailable", zap.Error(err))
+	r.printPhaseDetail(fmt.Sprintf("%s %s", terminal.Yellow(terminal.SymbolWarning), msg))
 }
 
 // runDiscoveryPhase ingests all input into the database without running modules.

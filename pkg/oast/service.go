@@ -8,12 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	interactshclient "github.com/projectdiscovery/interactsh/pkg/client"
 	"github.com/projectdiscovery/interactsh/pkg/server"
-	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/output"
@@ -55,8 +55,31 @@ type PayloadContext struct {
 const oastTrackerCacheSize = 65536
 
 // Service wraps an interactsh client with payload tracking and result emission.
+//
+// Registration with the interactsh server runs in the background (see New and
+// registration.go): until it succeeds the service is "registering", Enabled()
+// is false and GenerateURL returns "".
 type Service struct {
-	client             *interactshclient.Client
+	// client is published by the registration goroutine once the server has
+	// accepted the registration; nil while registering, after a failed
+	// registration, and in fixed-URL mode.
+	client atomic.Pointer[interactshclient.Client]
+	// ready is closed when registration ends, successfully or not. Nil on a
+	// zero-value Service (tests) and in fixed-URL mode, which is ready at once.
+	ready chan struct{}
+	// regErr holds the *UnavailableError of a failed registration. Read it only
+	// after ready is closed.
+	regErr atomic.Pointer[UnavailableError]
+	// lifeMu serialises publishing the client against Close, so a registration
+	// that finishes after Close never leaves a polling client behind.
+	lifeMu sync.Mutex
+	closed bool
+	// unavailableFns are the OnUnavailable callbacks; guarded by lifeMu.
+	unavailableFns []func(error)
+	// minted counts callback URLs handed out since the last Flush, so Flush
+	// only waits out the grace period when a blind payload was planted.
+	minted atomic.Int64
+
 	trackerOnce        sync.Once
 	tracker            *lru.Cache[string, PayloadContext] // nonce → PayloadContext (bounded LRU)
 	emitResult         func(*output.ResultEvent)
@@ -93,76 +116,6 @@ type Service struct {
 	resolverMu sync.RWMutex
 }
 
-// New creates a new OAST service. Returns (nil, nil) if the interactsh client
-// cannot be created — callers should treat nil as "OAST unavailable" and continue.
-// resolveRequestUUID is an optional function that maps a request hash to a database
-// record UUID, enabling Finding records to be linked to their originating HTTP records.
-func New(cfg *config.OASTConfig, emitResult func(*output.ResultEvent), repo *database.Repository, scanUUID string, projectUUID string, resolveRequestUUID func(string) string) (*Service, error) {
-	if cfg == nil || !cfg.Enabled {
-		return nil, nil
-	}
-
-	// Fixed URL mode: skip interactsh client entirely
-	if cfg.OastURL != "" {
-		return &Service{
-			fixedURL:           cfg.OastURL,
-			emitResult:         emitResult,
-			resolveRequestUUID: resolveRequestUUID,
-			repo:               repo,
-			scanUUID:           scanUUID,
-			projectUUID:        projectUUID,
-			blindXSSSrc:        cfg.BlindXSSSrc,
-			enabledBlindXSS:    cfg.EnabledBlindXSS,
-		}, nil
-	}
-
-	serverURL := cfg.ServerURL
-	if serverURL == "" {
-		serverURL = "oast.pro"
-	}
-
-	opts := &interactshclient.Options{
-		ServerURL: serverURL,
-		Token:     cfg.Token,
-		// interactsh retries a failed https registration over cleartext http
-		// by default, which sends the registration (correlation id, secret
-		// key, token) in the clear to whatever answered on port 80. Only an
-		// operator who wrote http:// asked for cleartext.
-		DisableHTTPFallback: !explicitCleartextServer(serverURL),
-	}
-
-	client, err := interactshclient.New(opts)
-	if err != nil {
-		zap.L().Warn("OAST: failed to create interactsh client, continuing without OAST",
-			zap.String("server", serverURL),
-			zap.Error(err))
-		return nil, nil
-	}
-
-	pollInterval := time.Duration(cfg.PollInterval) * time.Second
-	if pollInterval <= 0 {
-		pollInterval = 5 * time.Second
-	}
-	gracePeriod := time.Duration(cfg.GracePeriod) * time.Second
-	if gracePeriod <= 0 {
-		gracePeriod = 10 * time.Second
-	}
-
-	return &Service{
-		client:             client,
-		serverURL:          serverURL,
-		emitResult:         emitResult,
-		resolveRequestUUID: resolveRequestUUID,
-		repo:               repo,
-		scanUUID:           scanUUID,
-		projectUUID:        projectUUID,
-		pollInterval:       pollInterval,
-		gracePeriod:        gracePeriod,
-		blindXSSSrc:        cfg.BlindXSSSrc,
-		enabledBlindXSS:    cfg.EnabledBlindXSS,
-	}, nil
-}
-
 // explicitCleartextServer reports whether the configured interactsh server_url
 // names the http:// scheme itself. Only then is a cleartext registration what
 // the operator asked for; a bare host (the default "oast.pro") or https:// must
@@ -180,21 +133,6 @@ func (s *Service) ServerURL() string {
 		return s.fixedURL
 	}
 	return s.serverURL
-}
-
-// Start begins polling the interactsh server for interactions.
-func (s *Service) Start() {
-	if s == nil || s.client == nil {
-		return
-	}
-
-	if err := s.client.StartPolling(s.pollInterval, s.handleInteraction); err != nil {
-		zap.L().Warn("OAST: failed to start polling", zap.Error(err))
-	}
-
-	zap.L().Info("OAST: polling started",
-		zap.Duration("interval", s.pollInterval),
-		zap.Duration("grace_period", s.gracePeriod))
 }
 
 // trackerCache lazily initializes the bounded payload tracker so a zero-value
@@ -218,14 +156,18 @@ func (s *Service) GenerateURL(targetURL, paramName, injectionType, moduleID, req
 		return s.fixedURL
 	}
 
-	if s.client == nil {
+	// Still registering, or registration failed: no callback host exists yet.
+	// Callers treat "" as "OAST unavailable" for this probe.
+	client := s.client.Load()
+	if client == nil {
 		return ""
 	}
 
-	url := s.client.URL()
+	url := client.URL()
 	if url == "" {
 		return ""
 	}
+	s.minted.Add(1)
 
 	// Extract nonce from the URL: format is "correlationID+nonce.server.host"
 	// The nonce is everything before the first dot minus the correlation ID prefix.
@@ -252,7 +194,7 @@ func (s *Service) GenerateURL(targetURL, paramName, injectionType, moduleID, req
 // written at the injection point (header value, parameter value, …). A no-op
 // when OAST is in fixed-URL mode or the context has already been evicted.
 func (s *Service) RecordPayload(callbackURL, payload string) {
-	if s == nil || s.client == nil || callbackURL == "" || payload == "" {
+	if s == nil || s.client.Load() == nil || callbackURL == "" || payload == "" {
 		return
 	}
 	nonce := extractNonce(callbackURL)
@@ -266,11 +208,6 @@ func (s *Service) RecordPayload(callbackURL, payload string) {
 	}
 	pctx.Payload = payload
 	cache.Add(nonce, pctx)
-}
-
-// Enabled returns true if the OAST service is active.
-func (s *Service) Enabled() bool {
-	return s != nil && (s.client != nil || s.fixedURL != "")
 }
 
 // BlindXSSSrc returns the configured blind XSS script src URL.
@@ -296,28 +233,6 @@ func (s *Service) SetRequestUUIDResolver(fn func(string) string) {
 	s.resolverMu.Lock()
 	s.resolveRequestUUID = fn
 	s.resolverMu.Unlock()
-}
-
-// Flush waits for the grace period and then performs a final poll to catch late callbacks.
-func (s *Service) Flush() {
-	if s == nil || s.client == nil {
-		return
-	}
-
-	zap.L().Info("OAST: grace period started, waiting for late callbacks",
-		zap.Duration("grace_period", s.gracePeriod))
-	time.Sleep(s.gracePeriod)
-}
-
-// Close stops polling and deregisters from the interactsh server.
-func (s *Service) Close() {
-	if s == nil || s.client == nil {
-		return
-	}
-
-	if err := s.client.Close(); err != nil {
-		zap.L().Debug("OAST: error closing client", zap.Error(err))
-	}
 }
 
 // handleInteraction processes a single interaction from the interactsh server.

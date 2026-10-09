@@ -1,11 +1,13 @@
 package oast
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
 )
@@ -39,9 +41,12 @@ func TestNew_NoCleartextRegistrationFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if svc != nil {
-		svc.Close()
+	t.Cleanup(svc.Close)
+	if err := svc.WaitReady(context.Background(), 5*time.Second); err == nil {
 		t.Fatal("OAST registered with a schemeless server_url over a plain-http server: the cleartext fallback is still on")
+	}
+	if svc.Enabled() {
+		t.Error("Enabled() = true after a failed registration")
 	}
 	if n := registrations.Load(); n != 0 {
 		t.Errorf("cleartext /register requests = %d, want 0", n)
@@ -57,8 +62,9 @@ func TestNew_ExplicitHTTPServerStillRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if svc == nil {
-		t.Fatal("OAST failed to register against an explicit http:// server_url")
+	if err := svc.WaitReady(context.Background(), 5*time.Second); err != nil {
+		svc.Close()
+		t.Fatalf("OAST failed to register against an explicit http:// server_url: %v", err)
 	}
 	svc.Close()
 	if n := registrations.Load(); n != 1 {

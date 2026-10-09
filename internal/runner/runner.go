@@ -25,6 +25,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/notify"
+	"github.com/vigolium/vigolium/pkg/oast"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
 
@@ -117,6 +118,12 @@ type phaseInfra struct {
 	jsEngine      *jsext.Engine
 	scanUUID      string
 
+	// oast is the scan's OAST service, registering in the background from
+	// buildInfrastructure when dynamic assessment is in the plan (nil
+	// otherwise, or when OAST is disabled). Owned by this scan even when the
+	// rest of the infrastructure is borrowed. See startOASTRegistration.
+	oast *oast.Service
+
 	// borrowedInfra marks this phaseInfra as holding components OWNED by a
 	// SharedInfra (reused across rescans) rather than built for this phase. A
 	// borrower must not close them: the shared limiter would be stopped — and its
@@ -161,6 +168,9 @@ type compareSession struct {
 // Close releases infrastructure resources this phase OWNS. Components borrowed
 // from a SharedInfra are left alone; their owner closes them.
 func (p *phaseInfra) Close() {
+	// Per-scan, so closed whether or not the rest is borrowed. Idempotent: the
+	// dynamic-assessment phase usually closed it already.
+	p.oast.Close()
 	if p.borrowedInfra {
 		return
 	}
