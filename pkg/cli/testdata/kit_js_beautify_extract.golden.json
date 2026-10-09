@@ -1,0 +1,209 @@
+{
+  "source": "bundle.js",
+  "status": "partial",
+  "changed": false,
+  "module_count": 0,
+  "bytes_in": 75,
+  "bytes_out": 75,
+  "content": "const cfg={profile:\"/api/v2/profile\"};fetch(\"/admin/settings/export.json\");",
+  "endpoints": [
+    {
+      "url": "/api/v2/orders",
+      "method": "POST",
+      "params": "page=${page}",
+      "body": "{\"sku\":\"x\"}",
+      "headers": [
+        "Authorization: Bearer ${token}"
+      ],
+      "cookies": [],
+      "id": "req-1",
+      "confidence": "high",
+      "extractor": "fetch-call",
+      "line": 3,
+      "column": 17,
+      "module_path": "./src/api.js",
+      "client": "fetch",
+      "query": [
+        {
+          "name": "page",
+          "value": "${page}",
+          "static": false
+        }
+      ],
+      "header_fields": [
+        {
+          "name": "Authorization",
+          "value": "Bearer ${token}",
+          "static": false,
+          "sensitive": true
+        }
+      ],
+      "body_template": {
+        "kind": "json",
+        "value": "{\"sku\":\"x\"}",
+        "static": true,
+        "content_type": "application/json"
+      },
+      "auth": {
+        "kind": "bearer",
+        "header": "Authorization",
+        "scheme": "Bearer",
+        "source": "localStorage:jwt",
+        "source_kind": "localStorage"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "id": "route-2",
+      "confidence": "high",
+      "extractor": "angular-router",
+      "line": 12,
+      "column": 4,
+      "module_path": "./src/app.routes.ts",
+      "path": "users/:id",
+      "full_path": "/admin/users/:id",
+      "type": "angular",
+      "guards": [
+        "AuthGuard"
+      ],
+      "lazy_asset": "./users.chunk.js",
+      "parent_id": "route-1"
+    }
+  ],
+  "assets": [
+    {
+      "id": "asset-1",
+      "confidence": "medium",
+      "extractor": "webpack-runtime",
+      "line": 1,
+      "column": 900,
+      "url": "/static/js/42.abc.chunk.js",
+      "type": "chunk",
+      "loader": "webpack-chunk",
+      "eager": false,
+      "parent_source_url": "https://acme.test/main.js"
+    }
+  ],
+  "graphql": [
+    {
+      "id": "gql-1",
+      "confidence": "high",
+      "extractor": "apollo-gql",
+      "line": 2,
+      "column": 1,
+      "module_path": "./src/me.graphql.js",
+      "operation_type": "query",
+      "operation_name": "Me",
+      "endpoint": "/graphql",
+      "transport": "http-post",
+      "variables": [
+        {
+          "name": "id",
+          "type": "ID!",
+          "required": true
+        }
+      ],
+      "document": "query Me { me { id } }"
+    }
+  ],
+  "realtime": [
+    {
+      "id": "ws-1",
+      "confidence": "high",
+      "extractor": "websocket-ctor",
+      "line": 9,
+      "column": 2,
+      "protocol": "websocket",
+      "url": "wss://acme.test/live",
+      "library": "native",
+      "subprotocols": [
+        "v1.live"
+      ],
+      "event_names": [
+        "tick"
+      ]
+    },
+    {
+      "id": "sse-1",
+      "confidence": "medium",
+      "extractor": "eventsource-ctor",
+      "line": 10,
+      "column": 2,
+      "protocol": "sse",
+      "url": "/events",
+      "library": "native",
+      "event_names": [
+        "update"
+      ],
+      "with_credentials": true
+    }
+  ],
+  "dom_flows": [
+    {
+      "id": "flow-1",
+      "confidence": "high",
+      "extractor": "taint",
+      "line": 20,
+      "flow_class": "dom",
+      "flow_type": "dom-xss",
+      "source": "location.hash",
+      "sink": "innerHTML",
+      "evidence": "el.innerHTML = location.hash"
+    },
+    {
+      "id": "bflow-1",
+      "confidence": "medium",
+      "extractor": "browser-flow",
+      "line": 22,
+      "column": 5,
+      "flow_class": "browser_security",
+      "flow_type": "open-redirect",
+      "source": "URLSearchParams.get",
+      "sink": "location.assign",
+      "evidence": "location.assign(q.get('next'))"
+    }
+  ],
+  "paths": [
+    {
+      "id": "path-1",
+      "confidence": "low",
+      "extractor": "path-literal",
+      "line": 1,
+      "column": 20,
+      "path": "/api/v2/profile",
+      "source": "both",
+      "reason": "object-value",
+      "key": "profile"
+    },
+    {
+      "id": "path-2",
+      "confidence": "low",
+      "extractor": "path-literal",
+      "line": 1,
+      "column": 60,
+      "path": "/internal/debug",
+      "source": "jstangle",
+      "reason": "const-init"
+    },
+    {
+      "confidence": "low",
+      "extractor": "linkfinder",
+      "path": "/admin/settings/export.json",
+      "source": "linkfinder"
+    }
+  ],
+  "counts": {
+    "assets": 1,
+    "dom_flows": 2,
+    "endpoints": 1,
+    "graphql": 1,
+    "paths": 3,
+    "realtime": 2,
+    "routes": 1
+  },
+  "truncated": {
+    "httpRequest": 7
+  }
+}
+

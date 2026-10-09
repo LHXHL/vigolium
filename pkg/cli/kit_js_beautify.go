@@ -15,6 +15,7 @@ import (
 	"github.com/vigolium/vigolium/internal/atomicfile"
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
 	"github.com/vigolium/vigolium/pkg/harvester"
+	"github.com/vigolium/vigolium/pkg/secretscan"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -28,7 +29,25 @@ var (
 	kitBeautifyMaxASTNodes   int
 	kitBeautifyMaxInputMB    int
 	kitBeautifyDeadline      time.Duration
+	kitBeautifyKindsFlag     []string
+	kitBeautifyScanSecrets   bool
+	kitBeautifyShowSecrets   bool
 )
+
+// kitBeautifyScanner is the slice of *jstangle.Service the command uses. It
+// is a seam so tests can stand in a fake backend that returns one fact of
+// every kind without the embedded helper binary.
+type kitBeautifyScanner interface {
+	ScanWithOptions(ctx context.Context, content []byte, options jstangle.ScanOptions) (*jstangle.ScanResult, error)
+}
+
+var kitBeautifyService = func() (kitBeautifyScanner, error) {
+	service, err := jstangle.DefaultService()
+	if err != nil {
+		return nil, err
+	}
+	return service, nil
+}
 
 var kitJSBeautifyCmd = &cobra.Command{
 	Use:   "js-beautify [file|url|-]",
@@ -43,11 +62,23 @@ deobfuscation). The argument is a local file, an http(s):// URL (fetched), or
   cat bundle.js | vigolium kit js-beautify -              # stdin
   vigolium kit js-beautify -o app.js app.min.js           # write to a file
   vigolium kit js-beautify --modules ./out app.min.js     # one file per module
-  vigolium kit js-beautify -j --extract app.min.js        # + extracted endpoints
+  vigolium kit js-beautify -j --extract app.min.js        # + every extracted fact
+  vigolium kit js-beautify -j --kinds routes,paths app.js # only these fact kinds
+  vigolium kit js-beautify -j --secrets app.min.js        # + leaked credentials
 
 By default the beautified source is written to stdout. If the input is neither
-minified nor bundled it is emitted unchanged (a note goes to stderr). --extract
-also runs endpoint extraction and, with -j, includes discovered requests.
+minified nor bundled it is emitted unchanged (a note goes to stderr).
+
+--extract runs a full analysis pass and reports every fact kind: endpoints,
+routes, assets, graphql, realtime (WebSocket/SSE), dom_flows, and paths (the
+jstangle path literals merged with the linkfinder pass a scan runs, each
+tagged source jstangle|linkfinder|both). With -j they are lists in the
+document plus a counts map; otherwise a per-kind summary goes to stderr.
+--kinds narrows the set and implies --extract.
+
+--secrets runs the built-in secret catalog over the beautified source (per
+recovered module when the bundle splits). Values are redacted unless
+--show-secrets is set.
 
 A bundle of several hundred modules is far more useful as a directory than as
 one document: --modules writes each recovered module to its own file under the
@@ -58,7 +89,7 @@ given directory, at its recovered path.`,
 
 func init() {
 	f := kitJSBeautifyCmd.Flags()
-	f.BoolVar(&kitBeautifyExtract, "extract", false, "Also extract endpoints/requests (a full analysis pass); included in -j output")
+	f.BoolVar(&kitBeautifyExtract, "extract", false, "Also extract every fact kind (a full analysis pass); listed in -j output, summarized on stderr otherwise")
 	f.DurationVar(&kitBeautifyTimeout, "timeout", 30*time.Second, "Timeout for fetching a URL argument")
 	f.StringVarP(&kitBeautifyOutput, "output", "o", "", "Write the beautified source to this file instead of stdout")
 	f.StringVar(&kitBeautifyModulesDir, "modules", "", "Write each recovered bundle module to its own file under this directory")
@@ -67,6 +98,9 @@ func init() {
 	f.IntVar(&kitBeautifyMaxASTNodes, "max-ast-nodes", 0, "Maximum parsed AST nodes before the analysis degrades to a per-module scan (0 = engine default)")
 	f.IntVar(&kitBeautifyMaxInputMB, "max-input-mb", 0, "Lower the input size limit, in MiB; cannot raise it above the service ceiling (0 = engine default)")
 	f.DurationVar(&kitBeautifyDeadline, "deadline", 0, "Analysis deadline (0 = engine default)")
+	f.StringSliceVar(&kitBeautifyKindsFlag, "kinds", nil, "Only report these fact kinds ("+strings.Join(kitBeautifyKinds, ", ")+"); implies --extract")
+	f.BoolVar(&kitBeautifyScanSecrets, "secrets", false, "Also scan the beautified source for leaked credentials (values redacted)")
+	f.BoolVar(&kitBeautifyShowSecrets, "show-secrets", false, "With --secrets, print secret values in full instead of redacted")
 	kitCmd.AddCommand(kitJSBeautifyCmd)
 }
 
@@ -75,56 +109,31 @@ type kitBeautifyResult struct {
 	// Status is the engine's own verdict: complete, partial, or failed. Without
 	// it, output from a clean AST pass and from the degraded string fallback are
 	// identical in shape, and a programmatic caller cannot tell them apart.
-	Status         string                `json:"status,omitempty"`
-	Changed        bool                  `json:"changed"`
-	Format         string                `json:"format,omitempty"`
-	ModuleCount    int                   `json:"module_count"`
-	ModulePaths    []string              `json:"module_paths,omitempty"`
-	BytesIn        int                   `json:"bytes_in"`
-	BytesOut       int                   `json:"bytes_out"`
-	Content        string                `json:"content"`
-	Endpoints      []kitBeautifyEndpoint `json:"endpoints,omitempty"`
+	Status      string                `json:"status,omitempty"`
+	Changed     bool                  `json:"changed"`
+	Format      string                `json:"format,omitempty"`
+	ModuleCount int                   `json:"module_count"`
+	ModulePaths []string              `json:"module_paths,omitempty"`
+	BytesIn     int                   `json:"bytes_in"`
+	BytesOut    int                   `json:"bytes_out"`
+	Content     string                `json:"content"`
+	Endpoints   []kitBeautifyEndpoint `json:"endpoints,omitempty"`
+	Routes      []kitRoute            `json:"routes,omitempty"`
+	Assets      []kitAsset            `json:"assets,omitempty"`
+	GraphQL     []kitGraphQLOp        `json:"graphql,omitempty"`
+	Realtime    []kitRealtime         `json:"realtime,omitempty"`
+	DOMFlows    []kitFlow             `json:"dom_flows,omitempty"`
+	Paths       []kitPath             `json:"paths,omitempty"`
+	Secrets     []kitSecretMatch      `json:"secrets,omitempty"`
+	// Counts holds one entry per reported kind, zero included, whenever facts
+	// or secrets were asked for: a kind missing from Counts was not looked for.
+	Counts map[string]int `json:"counts,omitempty"`
+	// Truncated is records the analyzer dropped at a cap, by jstangle kind.
+	Truncated      map[string]int        `json:"truncated,omitempty"`
 	Diagnostics    []jstangle.Diagnostic `json:"diagnostics,omitempty"`
 	OutputPath     string                `json:"output_path,omitempty"`
 	ModulesDir     string                `json:"modules_dir,omitempty"`
 	ModulesWritten int                   `json:"modules_written,omitempty"`
-}
-
-// kitBeautifyEndpoint is the legacy flat request plus the provenance the typed
-// fact carries. ExtractedRequest alone cannot say whether a method was resolved
-// from the AST or guessed by a regex, which is the difference that decides
-// whether a downstream planner should replay it.
-type kitBeautifyEndpoint struct {
-	jstangle.ExtractedRequest
-	Extractor  string `json:"extractor,omitempty"`
-	Confidence string `json:"confidence,omitempty"`
-	ModulePath string `json:"module_path,omitempty"`
-}
-
-// kitBeautifyEndpoints prefers the typed facts (which carry provenance) and
-// falls back to the flat legacy list when a backend produced only that.
-func kitBeautifyEndpoints(res *jstangle.ScanResult) []kitBeautifyEndpoint {
-	if res == nil {
-		return nil
-	}
-	if len(res.RequestFacts) > 0 {
-		endpoints := make([]kitBeautifyEndpoint, 0, len(res.RequestFacts))
-		for i := range res.RequestFacts {
-			fact := res.RequestFacts[i]
-			endpoints = append(endpoints, kitBeautifyEndpoint{
-				ExtractedRequest: jstangle.LegacyRequestFromFact(fact),
-				Extractor:        fact.Provenance.Extractor,
-				Confidence:       fact.Provenance.Confidence,
-				ModulePath:       fact.Provenance.ModulePath,
-			})
-		}
-		return endpoints
-	}
-	endpoints := make([]kitBeautifyEndpoint, 0, len(res.Requests))
-	for _, request := range res.Requests {
-		endpoints = append(endpoints, kitBeautifyEndpoint{ExtractedRequest: request})
-	}
-	return endpoints
 }
 
 func runKitJSBeautify(cmd *cobra.Command, args []string) error {
@@ -141,16 +150,24 @@ func runKitJSBeautify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no input: %s is empty", label)
 	}
 
-	service, err := jstangle.DefaultService()
+	kinds, err := kitBeautifyKindSet(kitBeautifyKindsFlag)
+	if err != nil {
+		return err
+	}
+	if kitBeautifyShowSecrets && !kitBeautifyScanSecrets {
+		return usageErrorf("--show-secrets only applies with --secrets")
+	}
+
+	service, err := kitBeautifyService()
 	if err != nil {
 		return fmt.Errorf("jstangle unavailable (embedded binary missing or unsupported platform): %w", err)
 	}
 
-	// --unpack-modules only means anything alongside endpoint extraction.
-	extract := kitBeautifyExtract || kitBeautifyUnpackModules
+	// --unpack-modules and --kinds only mean anything alongside extraction.
+	extract := kitBeautifyExtract || kitBeautifyUnpackModules || len(kitBeautifyKindsFlag) > 0
 	// An over-budget bundle can return endpoints even under the plain beautify
 	// profile (the engine's per-module rescue), so this guard is load-bearing.
-	withEndpoints := extract || kitBeautifyProfile != ""
+	withFacts := extract || kitBeautifyProfile != ""
 
 	// Resolve the profile once: an explicit --profile wins, otherwise --extract
 	// asks for the full pass, otherwise beautify alone. Mutating opts in sequence
@@ -205,8 +222,19 @@ func runKitJSBeautify(cmd *cobra.Command, args []string) error {
 		result.Content = b.Content
 	}
 	result.BytesOut = len(result.Content)
-	if withEndpoints {
-		result.Endpoints = kitBeautifyEndpoints(res)
+	if withFacts {
+		kitPopulateBeautifyFacts(&result, res, data, kinds)
+	}
+	if kitBeautifyScanSecrets {
+		detector, derr := secretscan.Default()
+		if derr != nil {
+			return fmt.Errorf("loading secret catalog: %w", derr)
+		}
+		result.Secrets = kitBeautifySecrets(detector, res, label, result.Content, kitBeautifyShowSecrets)
+		if result.Counts == nil {
+			result.Counts = map[string]int{}
+		}
+		result.Counts[kitKindSecrets] = len(result.Secrets)
 	}
 
 	if kitBeautifyModulesDir != "" {
@@ -253,23 +281,7 @@ func runKitJSBeautify(cmd *cobra.Command, args []string) error {
 			fmt.Println()
 		}
 	}
-	if len(result.Endpoints) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%s %d endpoint(s) extracted:\n", terminal.InfoSymbol(), len(result.Endpoints))
-		for _, endpoint := range result.Endpoints {
-			method := endpoint.Method
-			if method == "" {
-				method = "?" // unresolved, not a guess
-			}
-			line := fmt.Sprintf("  %-6s %s", method, endpoint.URL)
-			if endpoint.ModulePath != "" {
-				line += "  (" + endpoint.ModulePath + ")"
-			}
-			if endpoint.Confidence != "" {
-				line += "  [" + endpoint.Confidence + "]"
-			}
-			fmt.Fprintln(os.Stderr, line)
-		}
-	}
+	kitPrintBeautifySummary(os.Stderr, &result)
 	return nil
 }
 

@@ -145,6 +145,7 @@ Full event table and field-by-field notes:
 | Scan a single URL with custom method/headers | `vigolium scan-url <url> --method POST --body '...'` |
 | Scan a raw HTTP request from file/stdin | `vigolium scan-request -i request.txt` |
 | Run only one scan phase | `vigolium run <phase>` or `scan --only <phase>` |
+| Rescan every record already in the DB | `vigolium scan --all-records` (or `run dast --all-records`). Bare `scan`/`run <phase>` with no target is exit `2` |
 | Sweep a big host list (httpx-style) | `vigolium run probe -T hosts.txt --json --no-response` |
 | Tune scan aggressiveness (phases + profile) | `vigolium scan -t <url> --intensity quick\|balanced\|deep` |
 | Content discovery with a custom wordlist | `vigolium scan -t <url> --discover --discovery-wordlist ./words.txt` |
@@ -187,7 +188,8 @@ Full event table and field-by-field notes:
 | Scan files/stdin for leaked secrets | `vigolium kit secret-scan <files\|dirs\|-> --fail-on-match` |
 | Unminify / unpack a JS bundle | `vigolium kit js-beautify <file\|url\|->` |
 | Split a bundle into per-module files | `vigolium kit js-beautify --modules ./out app.min.js` |
-| Pull endpoints out of a JS bundle | `vigolium kit js-beautify -j --extract app.min.js` (check `status`) |
+| Pull endpoints, routes, paths, flows out of a JS bundle | `vigolium kit js-beautify -j --extract app.min.js` (check `status`, `truncated`) |
+| Find leaked keys in a JS bundle | `vigolium kit js-beautify -j --secrets app.min.js` |
 | OOB (OAST) callback URL + polling | `vigolium kit oast new` → `vigolium kit oast poll --session run.yaml` |
 | Harvest known URLs for a domain | `vigolium kit harvest target.example` |
 | Crack a JWT's HMAC secret | `vigolium kit jwt-crack <token>` |

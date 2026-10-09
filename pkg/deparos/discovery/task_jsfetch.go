@@ -158,5 +158,15 @@ func (t *JSFetchTask) Expand(ctx context.Context, callback func(url string, dept
 // ExtractPathsFromContent extracts paths from content using linkfinder.
 // Content can be raw JS body or transformed code from jstangle's CodeRecord.
 func (t *JSFetchTask) ExtractPathsFromContent(content []byte) []string {
+	return ExtractJSPaths(content)
+}
+
+// ExtractJSPaths is the linkfinder pass discovery runs over every fetched
+// script, seeding observed paths and names. It is exported so
+// `kit js-beautify --extract` reports exactly the paths a scan would seed:
+// two callers of one function cannot drift apart the way two extractors would.
+//
+// The result is unordered and may hold duplicates; callers sort and dedupe.
+func ExtractJSPaths(content []byte) []string {
 	return linkfinder.ExtractPaths(content)
 }

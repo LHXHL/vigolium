@@ -76,16 +76,23 @@ Unminify + unpack minified/bundled JavaScript with the embedded jstangle tool
 vigolium kit js-beautify app.min.js                     # local file
 vigolium kit js-beautify https://target.example/main.abc.js
 cat bundle.js | vigolium kit js-beautify -              # stdin
-vigolium kit js-beautify -j --extract app.min.js        # + extracted endpoints
+vigolium kit js-beautify -j --extract app.min.js        # + every extracted fact
+vigolium kit js-beautify -j --kinds routes,paths app.js # only these fact kinds
+vigolium kit js-beautify -j --secrets app.min.js        # + leaked credentials (redacted)
 vigolium kit js-beautify --modules ./out app.min.js     # one file per module
 ```
 
 Default: beautified source to stdout (input emitted unchanged if it is neither
-minified nor bundled). `--extract` also runs endpoint extraction.
+minified nor bundled). `--extract` also runs a full analysis and reports every
+fact kind; without `-j` a per-kind summary (counts plus the first 20 of each)
+goes to stderr and stdout stays the source.
 
 | Flag | Effect |
 |------|--------|
-| `--extract` | also run endpoint extraction (a full analysis pass); included in `-j` output |
+| `--extract` | also extract every fact kind (a full analysis pass); listed in `-j` output, summarized on stderr otherwise |
+| `--kinds <list>` | only report these kinds: `endpoints`, `routes`, `assets`, `graphql`, `realtime`, `dom_flows`, `paths` (implies `--extract`) |
+| `--secrets` | run the built-in secret catalog over the beautified source; values **redacted** by default |
+| `--show-secrets` | with `--secrets`, print values in full |
 | `--modules <dir>` | write each recovered module to its own file under `<dir>`, at its recovered path |
 | `-o, --output <file>` | write the beautified source to a file instead of stdout (`-` means stdout) |
 | `--profile <p>` | `beautify` \| `endpoints` \| `discovery` \| `discovery-lite` \| `full` \| `inspect` \| `dom-security` \| `legacy`; default depends on `--extract` |
@@ -96,9 +103,42 @@ minified nor bundled). `--extract` also runs endpoint extraction.
 | `--timeout` | fetch timeout for a URL argument (default 30s) |
 
 JSON: `{source, status, changed, format, module_count, module_paths?, bytes_in,
-bytes_out, content, endpoints?, diagnostics?, output_path?, modules_dir?,
-modules_written?}`. Endpoints carry `{url, method, params, body, headers,
-cookies, extractor, confidence, module_path?}`.
+bytes_out, content, endpoints?, routes?, assets?, graphql?, realtime?,
+dom_flows?, paths?, secrets?, counts, truncated?, diagnostics?, output_path?,
+modules_dir?, modules_written?}`.
+
+Every fact item carries flattened provenance: `id?`, `confidence`, `extractor`,
+`line?`, `column?`, `module_path?`. Per kind:
+
+| Kind | Item fields (besides provenance) |
+|------|-------------------------------|
+| `endpoints` | `url, method, params, body, headers, cookies` (legacy flat strings) plus typed `client?, query?[{name,value,static}], header_fields?[{name,value,static,sensitive?}], body_template?{kind,value,static,content_type?}, auth?{kind,header?,query?,scheme?,source,source_kind}` |
+| `routes` | `path, full_path?, type, guards?, lazy_asset?, parent_id?` (`parent_id` is another route's `id`) |
+| `assets` | `url, type, loader?, eager, inline?, parent_source_url?` |
+| `graphql` | `operation_type, operation_name?, endpoint?, transport?, persisted_query_hash?, variables?[{name,type?,required?}], document?` |
+| `realtime` | `protocol` (`websocket`\|`sse`), `url, library?, subprotocols?, event_names?, with_credentials?` |
+| `dom_flows` | `flow_class` (`dom`\|`browser_security`), `flow_type?, source, sink, evidence?` |
+| `paths` | `path, source` (`jstangle`\|`linkfinder`\|`both`), `reason?, key?` |
+| `secrets` | the `secret-scan` match: `rule_id, rule_name, confidence, secret, entropy, file, line, start, end` |
+
+`counts` has one entry per kind that was looked for, zero included, so a kind
+missing from `counts` was filtered out by `--kinds`, not empty. `truncated`
+maps a jstangle record kind (`httpRequest`, `pathLiteral`, ...) to how many
+records the analyzer dropped at a cap; any entry means the lists are incomplete.
+
+**`paths` is what a scan would seed.** It merges the jstangle path-literal pass
+with the same Go linkfinder discovery runs over every fetched script
+(`source: "both"` when they agree). Linkfinder hits are always `confidence:
+"low"` and have no line: wordlist hints, not requests.
+
+**`auth` names where a credential comes from, never the credential.**
+`source: "localStorage:jwt"` tells you which storage key to fill from a logged-in
+browser. A hard-coded token shows up under `--secrets` instead.
+
+**`--secrets` scans the beautified text**, per recovered module when the bundle
+splits (so `file` is the module path and `line` is within it), else the whole
+document (which is the raw input when nothing changed). One entry per
+rule+value: a key repeated across modules is reported once, at its first hit.
 
 **Read `status` before trusting `endpoints`.** `complete` is a clean AST pass.
 `partial` means some stages did not run, and the `diagnostics` codes say which.
