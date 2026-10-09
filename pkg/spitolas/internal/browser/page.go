@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -535,11 +536,59 @@ func (p *Page) boundedPage(timeout time.Duration) *rod.Page {
 	return p.rodPage.Timeout(firstPositiveDuration(timeout, p.config.PageLoadTimeout, 30*time.Second))
 }
 
+// evalContextID is the execution context a raw Runtime.evaluate on this page
+// must name. A frame page shares its tab's CDP session, and a Runtime.evaluate
+// without a contextId runs in the session's default context, the TOP document:
+// every expression "evaluated in a frame" would silently read the parent page
+// instead (and the CDP clickable pass would then resolve the parent's XPaths
+// inside the frame, burning an element timeout per miss). For a frame page this
+// resolves the frame document's main-world context, where the Command Line API
+// (getEventListeners) and the page's own globals (jQuery) live. A top-level page
+// returns 0, which the request omits.
+func (p *Page) evalContextID() (proto.RuntimeExecutionContextID, error) {
+	if !p.rodPage.IsIframe() {
+		return 0, nil
+	}
+	var objID proto.RuntimeRemoteObjectID
+	if err := safeRod("evalContextID", func() error {
+		// rod's Evaluate is frame-aware: it calls the function on the frame's
+		// own window.
+		bp := p.boundedPage(0)
+		obj, err := bp.Evaluate(rod.Eval(`() => window`).ByObject())
+		if err != nil {
+			return err
+		}
+		objID = obj.ObjectID
+		_ = proto.RuntimeReleaseObject{ObjectID: objID}.Call(bp)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return contextIDFromObjectID(objID)
+}
+
+// contextIDFromObjectID reads the execution context out of a V8 remote object
+// id, which V8 serialises as "<isolateId>.<contextId>.<objectId>".
+func contextIDFromObjectID(id proto.RuntimeRemoteObjectID) (proto.RuntimeExecutionContextID, error) {
+	parts := strings.Split(string(id), ".")
+	if len(parts) == 3 {
+		if n, err := strconv.Atoi(parts[1]); err == nil && n > 0 {
+			return proto.RuntimeExecutionContextID(n), nil
+		}
+	}
+	return 0, fmt.Errorf("frame execution context: unrecognised remote object id %q", id)
+}
+
 // Eval evaluates JavaScript expression on the page.
 // Uses CDP RuntimeEvaluate directly to support arbitrary expressions (not just functions).
 func (p *Page) Eval(script string) (interface{}, error) {
+	ctxID, err := p.evalContextID()
+	if err != nil {
+		return nil, err
+	}
 	result, err := proto.RuntimeEvaluate{
 		Expression:            script,
+		ContextID:             ctxID,
 		IncludeCommandLineAPI: true,
 		ReturnByValue:         true,
 	}.Call(p.boundedPage(0))
@@ -576,8 +625,13 @@ func (p *Page) EvalWithArgs(script string, args ...interface{}) (interface{}, er
 // evaluation (0 = no explicit timeout). Used for in-page async work such as
 // priming service-worker assets with fetch().
 func (p *Page) EvalAwait(script string, timeout time.Duration) (interface{}, error) {
+	ctxID, err := p.evalContextID()
+	if err != nil {
+		return nil, err
+	}
 	eval := proto.RuntimeEvaluate{
 		Expression:            script,
+		ContextID:             ctxID,
 		IncludeCommandLineAPI: true,
 		ReturnByValue:         true,
 		AwaitPromise:          true,
@@ -602,8 +656,13 @@ func (p *Page) EvalAwait(script string, timeout time.Duration) (interface{}, err
 
 // EvalCDP executes a CDP command via Runtime.evaluate.
 func (p *Page) EvalCDP(expression string) (interface{}, error) {
+	ctxID, err := p.evalContextID()
+	if err != nil {
+		return nil, err
+	}
 	result, err := proto.RuntimeEvaluate{
 		Expression:            expression,
+		ContextID:             ctxID,
 		IncludeCommandLineAPI: true,
 		ReturnByValue:         true,
 	}.Call(p.boundedPage(0))
