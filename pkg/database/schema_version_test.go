@@ -52,7 +52,7 @@ func TestCreateSchema_VersionGuardGatesBackfill(t *testing.T) {
 
 	// Legacy database (version 0): the backfill runs and reconstructs the link.
 	clearLinks()
-	db.setSchemaVersion(ctx, 0)
+	forceSchemaVersion(t, db, 0)
 	if err := db.CreateSchema(ctx); err != nil {
 		t.Fatalf("CreateSchema (legacy): %v", err)
 	}
@@ -68,5 +68,37 @@ func TestCreateSchema_VersionGuardGatesBackfill(t *testing.T) {
 	}
 	if got := countLinks(); got != 0 {
 		t.Fatalf("current backfill should be skipped: finding_records = %d, want 0", got)
+	}
+}
+
+// forceSchemaVersion rewrites the stored version directly, simulating a legacy
+// database: setSchemaVersion itself never lowers it.
+func forceSchemaVersion(t *testing.T, db *DB, v int) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(), "UPDATE schema_meta SET version = ? WHERE id = 1", v); err != nil {
+		t.Fatalf("force schema version: %v", err)
+	}
+}
+
+// TestSetSchemaVersion_NeverLowers is the regression for the downgrade bug: an
+// older binary (lower currentSchemaVersion) running CreateSchema against a
+// database a newer binary already stamped must not rewrite the version down.
+func TestSetSchemaVersion_NeverLowers(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	newer := currentSchemaVersion + 5
+	db.setSchemaVersion(ctx, newer)
+	if v := db.schemaVersion(ctx); v != newer {
+		t.Fatalf("raise: version = %d, want %d", v, newer)
+	}
+
+	// What an older binary does on open.
+	db.setSchemaVersion(ctx, currentSchemaVersion)
+	if err := db.CreateSchema(ctx); err != nil {
+		t.Fatalf("CreateSchema: %v", err)
+	}
+	if v := db.schemaVersion(ctx); v != newer {
+		t.Fatalf("older binary lowered schema version to %d, want %d", v, newer)
 	}
 }

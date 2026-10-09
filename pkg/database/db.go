@@ -813,9 +813,19 @@ func (db *DB) schemaVersion(ctx context.Context) int {
 
 // setSchemaVersion records the schema version so later opens can skip the
 // one-time backfills. Best-effort: a failure just re-runs them next open.
+//
+// The stored version only ever moves up. An older binary opening a database a
+// newer one already migrated used to stamp its own (lower) version over it,
+// which then re-ran every backfill on the next newer open and lied to any
+// version check. MAX is SQLite's scalar form; Postgres spells it GREATEST.
 func (db *DB) setSchemaVersion(ctx context.Context, v int) {
+	maxFn := "MAX"
+	if db.driver == driverPostgres {
+		maxFn = "GREATEST"
+	}
 	db.execBestEffort(ctx, "record schema version",
-		"INSERT INTO schema_meta (id, version) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET version = excluded.version",
+		"INSERT INTO schema_meta (id, version) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET version = "+
+			maxFn+"(schema_meta.version, excluded.version)",
 		v)
 }
 
