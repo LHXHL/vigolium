@@ -227,6 +227,10 @@ scanning_strategy:
 
   http:
     user_agent: preset           # preset | random | literal value; blank behaves like random
+    host_errors:                 # dead-host breaker; the trip threshold is --max-host-error
+      cooldown: 30s              # quarantine before the first re-probe
+      max_cooldown: 5m           # cap for the doubling cooldown after failed probes
+      max_trips: 5               # failed probes before the host is dead for the scan (<0 = never)
 
   # Phase toggles per strategy:
   balanced:

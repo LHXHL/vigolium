@@ -1119,9 +1119,14 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 
 	// Quarantined-host short-circuit BEFORE acquiring a limiter slot, so a
 	// request already known to be unresponsive doesn't consume scarce per-host
-	// concurrency only to be rejected immediately after.
-	if r.services.HostErrors != nil && r.services.HostErrors.Check(input.ID()) {
-		return nil, 0, hosterrors.ErrUnresponsiveHost
+	// concurrency only to be rejected immediately after. Quarantined is
+	// read-only; the half-open probe is claimed by Admit just before the send.
+	hostKey := ""
+	if r.services.HostErrors != nil {
+		hostKey = httpmsg.HostPortKey(input)
+		if r.services.HostErrors.Quarantined(hostKey) {
+			return nil, 0, hosterrors.ErrUnresponsiveHost
+		}
 	}
 
 	// Global requests-per-second cap (only when --rate-limit was set). Acquire a
@@ -1147,6 +1152,13 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 		defer r.services.HostLimiter.Release(host)
 	}
 
+	// Admit immediately before the send: for a host whose quarantine cooldown
+	// has elapsed this is the Open→HalfOpen transition, and only one caller
+	// gets through as the probe. Everything else waits out the probe.
+	if r.services.HostErrors != nil && !r.services.HostErrors.Admit(hostKey) {
+		return nil, 0, hosterrors.ErrUnresponsiveHost
+	}
+
 	// The clock starts HERE — after the global rate token and the per-host
 	// permit have been acquired, immediately before the send. Queue time is
 	// vigolium's own saturation, not the target's latency, and folding it in
@@ -1163,7 +1175,7 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 	resp, err := r.doRequest(ctx, input, opts)
 	if err != nil {
 		if r.services.HostErrors != nil {
-			r.services.HostErrors.MarkFailed(input.ID(), err, opts.IgnoreTimeoutTracking)
+			r.services.HostErrors.MarkFailed(hostKey, err, opts.IgnoreTimeoutTracking)
 		}
 		// Feed transport failures (timeout/reset/refused) to the adaptive limiter
 		// so it can back the host off; a no-op in static mode.
@@ -1172,7 +1184,7 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 	}
 
 	if r.services.HostErrors != nil {
-		r.services.HostErrors.MarkSuccess(input.ID())
+		r.services.HostErrors.MarkSuccess(hostKey)
 	}
 	// Classify a WAF/CDN block once (cheap status pre-gate; only reads the body on a
 	// block-status response) and feed that single result to both consumers: the

@@ -295,6 +295,18 @@ scanning_strategy:
     # docs (we promise they're good): https://docs.vigolium.com/
     user_agent: "preset"
 
+    # Dead-host breaker. A host:port that hits --max-host-error consecutive
+    # transport errors (refused, reset, DNS, i/o timeout) is quarantined for
+    # `cooldown`; then one probe request is let through. A good probe restores
+    # the host; a failed one doubles the cooldown (capped at `max_cooldown`).
+    # After `max_trips` failed probes the host is skipped for the rest of the
+    # scan (negative = never give up). Items skipped meanwhile are reported as
+    # skipped_quarantined / targets_unreachable.
+    host_errors:
+      cooldown: 30s
+      max_cooldown: 5m
+      max_trips: 5
+
   lite:
     external_harvesting: false
     discovery: false

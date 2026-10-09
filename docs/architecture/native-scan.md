@@ -389,7 +389,7 @@ For each item from `source.Next()`:
 
 1. **Static file filter**: if a path matches a static extension, skip it unless it looks like an object-storage asset. Storage candidates are retained as metadata-only items and fetched with `HEAD` (or a one-byte ranged `GET` fallback), never as full large/binary bodies.
 2. **Pre-request scope check**: `ScopeMatcher.InScopeRequest(host, path, "", "")` — host + path only, no HTTP round-trip. Rejects obviously out-of-scope items early.
-3. **Host error check**: if `HostErrors.Check(hostID)` returns true (host has been circuit-broken), skip.
+3. **Host error check**: if `HostErrors.Quarantined(host:port)` returns true (host has been circuit-broken), skip the item and count it as `skipped_quarantined`.
 4. Send item to the worker channel.
 
 ### worker() — The Consumer
@@ -901,12 +901,18 @@ type RecordWriter struct {
 
 ### Host Error Circuit Breaker — `pkg/core/hosterrors/`
 
-`hosterrors.Cache` tracks consecutive errors per host:
+`hosterrors.Cache` is a per-`host:port` circuit breaker (key from `httpmsg.HostPortKey`, no method, so a GET failure also quarantines POSTs):
 
-- `MarkFailed()` increments the error counter (with regex-based error matching).
-- `Check()` returns true when the counter reaches `MaxHostError` (default 30).
-- `MarkSuccess()` resets the counter (but not if already at threshold).
-- The executor's `feedItems()` pre-checks this to skip items for quarantined hosts.
+- **Closed → Open:** `MarkFailed()` counts consecutive transport errors (regex-matched); at `--max-host-error` (default 30) the host is quarantined for the cooldown (default 30s).
+- **Open → HalfOpen:** after the cooldown, the first `Admit()` lets one probe request through (CAS on the state).
+- **HalfOpen → Closed:** the probe succeeds (`MarkSuccess()`); the counter and cooldown reset.
+- **HalfOpen → Open:** the probe fails; the cooldown doubles, up to the max (default 5m). A probe not reported within 2 × the request timeout is treated as lost and another caller may probe.
+- **Dead:** after `max_trips` failed probes (default 5) the host stays quarantined for the rest of the scan.
+- Config: `scanning_strategy.http.host_errors.{cooldown, max_cooldown, max_trips}`.
+- The API is split. `Quarantined()` is read-only, and the executor's `sendItem` uses it to drop items. `Admit()` is called by the requester just before the send. The executor never consumes the probe.
+- Dropped items are counted per host as `skipped_quarantined` (`ExecutionReport.SkippedQuarantined`/`QuarantinedHosts`). The phase becomes partial with `targets_unreachable`, and each host is listed on the phase outcome's `targets.unreachable`.
+- Transitions emit `host.quarantined`, `host.recovered` and `host.dead` events.
+- Open/HalfOpen/Dead entries live in a non-evicting map. Only healthy hosts' counters sit in the bounded ARC, so eviction can never silently un-quarantine a host.
 
 ### JS Extension Hooks — `pkg/jsext/hooks.go`
 

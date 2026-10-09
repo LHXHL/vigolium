@@ -184,6 +184,9 @@ func DefaultScanningStrategyConfig() *ScanningStrategyConfig {
 
 // Validate checks that DefaultStrategy refers to a known strategy name.
 func (c *ScanningStrategyConfig) Validate() error {
+	if err := c.HTTP.HostErrors.Validate(); err != nil {
+		return err
+	}
 	if c.DefaultStrategy == "" {
 		return nil
 	}

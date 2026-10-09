@@ -285,6 +285,9 @@ What each type is for:
 | `phase.progress` | Liveness. `requests_sent` every 5s is the real slope — a crawl that is working versus one that is wedged. Where the phase has a work-item count, `done`/`total`/`unit` give progress: `records` for `dynamic-assessment` and `seed`, `targets` for `heuristics-check`, `port-sweep`, `spidering` and `probe` (also on `phase.finished`). `total` is a **non-decreasing upper bound**, not a fixed denominator: it can grow (a feedback round adds records) but never shrinks or drops below `done`, and is omitted until a bound is known. |
 | `waf.block` | The edge started filtering. Results for that host are **incomplete** — do not read a thin surface as a clean target. |
 | `waf.pacing` | Vigolium slowed itself down on purpose. Attribute the slowdown here, not to the target. |
+| `host.quarantined` | `host` (`host:port`) hit `--max-host-error` consecutive transport errors; `detail` gives the error class and when it is re-probed. Its pending items are skipped (counted as `skipped_quarantined`, phase reason `targets_unreachable`), so coverage of that host is **incomplete**. |
+| `host.recovered` | A re-probe of a quarantined `host` succeeded; requests to it resume. |
+| `host.dead` | Every re-probe failed (`host_errors.max_trips`); nothing more is sent to `host` this scan. |
 | `finding.new` | Metadata only. Evidence lives in `db_path`; query it with `finding -j --with-records` afterwards. |
 | `oast.unavailable` | OAST registration with the interactsh server failed or did not finish within 3s of `dynamic-assessment` starting. `message` names the server and cause (`oast.pro: dial timeout`). Blind/out-of-band checks did not run; the phase carries the `oast_unavailable` reason and the scan is `partial`. |
 | `error` | A phase failed and the scan **carried on** — non-fatal by construction. A failure that ends the run rides on `scan.finished{status:"failed"}` instead, so this is never a reason to abandon a run that is still producing findings. |
@@ -303,7 +306,6 @@ them while they are missing.
 |---|---|---|
 | `scan.plan` | The resolved plan: phases, budgets, targets, estimate. Second event on every stream. | v0.7 |
 | `scan.setup` | A first-run install step: `component`, `state` (`started`/`finished`/`failed`), `bytes`, `duration_ms`. | v0.7 |
-| `host.quarantined` / `host.recovered` / `host.dead` | Per-host breaker transitions: `host`, `detail`. | not yet scheduled |
 | `auth.session_suspect` / `auth.relogin` | Responses look logged out; a re-login attempt and its result. | not yet scheduled |
 | `module.error` | Module failures, rate-limited: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`/`load`), `message`, `count`. | v0.7 |
 | `extension.failed` | An extension failed to load or run: `module_id`, `message`. | v0.6 |

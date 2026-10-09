@@ -76,6 +76,10 @@ type phaseTracker struct {
 	progress     func() (done, total int64)
 	lastTotal    int64
 	executors    []*core.Executor
+
+	// quarantined are the hosts whose items the phase's executors dropped for
+	// the dead-host breaker, merged across runs. Guarded by mu.
+	quarantined map[string]core.QuarantinedHost
 }
 
 // Units for phase progress. One table so a consumer sees one spelling per kind.
@@ -439,6 +443,7 @@ func (t *phaseTracker) noteExecution(rep core.ExecutionReport) {
 	if rep.DeferredFlushSkipped {
 		t.markPartial(database.ReasonDeferredFlushSkipped)
 	}
+	t.noteQuarantineSkips(rep)
 	if rep.Unacked > 0 {
 		t.mu.Lock()
 		t.unacked += rep.Unacked
@@ -524,6 +529,7 @@ func (t *phaseTracker) outcome() database.PhaseOutcome {
 		DurationMS:  time.Since(t.start).Milliseconds(),
 	}
 	out.State = database.ResolvePhaseState(out.Errors, out.Reasons, t.skipped)
+	t.fillQuarantined(&out)
 	if t.hasPersist {
 		p := t.persist
 		out.Persistence = &p

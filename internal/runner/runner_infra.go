@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/vigolium/vigolium/internal/config"
-	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
@@ -121,13 +120,7 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 		RateLimiter:  buildScanRateLimiter(effectiveRateLimit(r.options)),
 	}
 
-	if r.options.ShouldUseHostError() {
-		cache := hosterrors.New(
-			r.options.MaxHostError,
-			hosterrors.DefaultMaxHostsCount,
-			[]string{},
-		)
-		cache.SetVerbose(r.options.Verbose)
+	if cache := newHostErrorCache(r.options, r.settings, r.currentPhaseName); cache != nil {
 		svc.HostErrors = cache
 	}
 

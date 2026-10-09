@@ -12,7 +12,6 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/core"
-	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/core/network"
 	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/core/services"
@@ -251,13 +250,7 @@ func BuildSharedInfra(opts *types.Options, settings *config.Settings, repo *data
 		RateLimiter: buildScanRateLimiter(effectiveRateLimit(opts)),
 	}
 
-	if opts.ShouldUseHostError() {
-		cache := hosterrors.New(
-			opts.MaxHostError,
-			hosterrors.DefaultMaxHostsCount,
-			[]string{},
-		)
-		cache.SetVerbose(opts.Verbose)
+	if cache := newHostErrorCache(opts, settings, nil); cache != nil {
 		svc.HostErrors = cache
 	}
 

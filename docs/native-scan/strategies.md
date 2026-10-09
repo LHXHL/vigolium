@@ -188,7 +188,7 @@ vigolium scan -t https://example.com --oast-url https://your-oast.example.com/ca
 | `-c` / `--concurrency` | 25 | Number of concurrent scan workers |
 | `--max-per-host` | 40 | Max concurrent requests per host |
 | `-r` / `--rate-limit` | 100 | Max request submissions per second |
-| `--max-host-error` | 30 | Skip host after N consecutive errors |
+| `--max-host-error` | 30 | Quarantine a host:port after N consecutive transport errors; it is re-probed after `scanning_strategy.http.host_errors.cooldown` (30s, doubling to `max_cooldown` 5m) and dropped for the scan after `max_trips` (5) failed probes |
 | `--max-findings-per-module` | 10 | Suppress findings after this many per module (0 = unlimited) |
 | `--no-waf-pacing` | off | Disable proactive CDN/WAF-edge throttling (reactive backoff still applies) |
 | `--timeout` | 15s | Per-request HTTP timeout |

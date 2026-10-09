@@ -92,8 +92,8 @@ func TestExecute_QuarantinedHostSkipsLimiterAcquire(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 
-	hostErrors.MarkFailed(rr.ID(), errors.New("boom"), false)
-	if !hostErrors.Check(rr.ID()) {
+	hostErrors.MarkFailed(httpmsg.HostPortKey(rr), errors.New("boom"), false)
+	if !hostErrors.Quarantined(httpmsg.HostPortKey(rr)) {
 		t.Fatal("precondition: request's host should be quarantined")
 	}
 	// Saturate the host's single limiter slot.

@@ -14,6 +14,7 @@ import (
 	"github.com/sourcegraph/conc"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/core/stats"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -426,6 +427,10 @@ type Executor struct {
 	// recordBaselineFailure.
 	baselineFailures baselineFailureRing
 
+	// quarantine counts input items dropped because their host:port was
+	// quarantined by the dead-host breaker. Per run: reset by Execute.
+	quarantine quarantineSkips
+
 	// reportBase holds the cumulative counters' values at the start of the
 	// current Execute, so Report() describes this run only (see Execute).
 	reportBase struct{ responded, scopeRejected int64 }
@@ -498,6 +503,15 @@ type ExecutionReport struct {
 	ScopeRejected int64
 	// Responded counts input items this run got an HTTP response for.
 	Responded int64
+	// SkippedQuarantined counts input items this run dropped because their
+	// host:port was quarantined by the dead-host breaker — before dispatch, or
+	// when the baseline fetch was refused for the same reason. A coverage gap
+	// (the runner reports it as targets_unreachable), but not one Clean
+	// covers: it is the target's doing, not the executor's.
+	SkippedQuarantined int64
+	// QuarantinedHosts breaks SkippedQuarantined down per host:port, sorted
+	// by host and capped.
+	QuarantinedHosts []QuarantinedHost
 }
 
 // Clean reports whether the run covered its whole input with nothing abandoned.
@@ -518,6 +532,7 @@ func (e *Executor) Report() ExecutionReport {
 	rep.Unacked = e.unacked.Load()
 	rep.ScopeRejected = e.scopeRejected.Load() - e.reportBase.scopeRejected
 	rep.Responded = e.responded.Load() - e.reportBase.responded
+	e.quarantineReport(&rep)
 	return rep
 }
 
@@ -914,6 +929,7 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 	// the report's copies are this run's share.
 	e.reportBase.responded = e.responded.Load()
 	e.reportBase.scopeRejected = e.scopeRejected.Load()
+	e.quarantine.reset()
 
 	// Observe server-error probe responses so a leaked database error surfaced by
 	// ANY module's probe is corroborated even when the sending module didn't check
@@ -1341,9 +1357,9 @@ func (e *Executor) sendItem(ctx context.Context, item *work.WorkItem, itemCh cha
 		}
 	}
 
-	// Per-module filtering via CanProcess() replaces global ShouldSkip
-	if e.cfg.Services != nil && e.cfg.Services.HostErrors != nil &&
-		e.cfg.Services.HostErrors.Check(item.Request.ID()) {
+	// Dead-host breaker: drop items for a quarantined host:port, with a count
+	// (skipped_quarantined). Read-only — see skipQuarantined.
+	if e.skipQuarantined(item.Request) {
 		item.Complete()
 		return true
 	}
@@ -1733,7 +1749,13 @@ func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestRe
 			zap.Error(err))
 		// A cancelled phase fails every in-flight fetch; that says nothing
 		// about the target, so it is not recorded as the target's failure.
-		if ctx.Err() == nil {
+		// A fetch the breaker refused (the host was quarantined after the
+		// item was dispatched, or another request holds the half-open probe)
+		// is a quarantine skip, not a transport failure of its own.
+		switch {
+		case errors.Is(err, hosterrors.ErrUnresponsiveHost):
+			e.quarantine.add(httpmsg.HostPortKey(req))
+		case ctx.Err() == nil:
 			e.recordBaselineFailure(req.Target(), err)
 		}
 		return baselineFetch{}, false
