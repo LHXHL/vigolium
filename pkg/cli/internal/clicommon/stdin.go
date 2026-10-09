@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -62,35 +63,55 @@ func ReadStdinBounded(limit int64, timeout time.Duration) ([]byte, error) {
 // ReadBounded applies the same bounds to an arbitrary reader, for the file
 // branches that sit beside a stdin branch and should fail the same way.
 //
-// NOTE for a future caller: on timeout the read goroutine is left blocked. Every
-// caller today is one-shot and on its way to reporting the failure and exiting,
-// so the abandoned goroutine and its buffer live for microseconds. A long-lived
-// caller that times out repeatedly would leak one goroutine per timeout.
+// It is ReadBoundedWait with no first-byte deadline: the whole read, measured
+// from the start, is bounded by timeout.
 func ReadBounded(r io.Reader, name string, limit int64, timeout time.Duration) ([]byte, error) {
+	return ReadBoundedWait(r, name, limit, 0, timeout)
+}
+
+// ErrStdinNoData marks an input that produced no byte at all within the
+// first-byte window. It is distinct from ErrStdinTimeout: nothing arrived, so
+// the input was most likely an inherited pipe nobody writes to, not a slow
+// producer that started and stalled.
+var ErrStdinNoData = errors.New("no data on stdin")
+
+// ReadBoundedWait reads r subject to a size limit, a first-byte deadline and a
+// total deadline.
+//
+// An inherited stdin is indistinguishable from a piped one: a CI runner, an
+// agent harness or a supervisor hands the child a pipe it never writes to, and
+// fileutil.HasStdin reports it as "piped". A command that drains stdin only
+// because it MIGHT carry input then sat for the full --input-read-timeout
+// before failing with "no targets". firstByte bounds that guess: when it is
+// positive and no byte (and no EOF) arrives within it, the read gives up with
+// ErrStdinNoData. Once the first byte (or EOF) arrives the producer is real,
+// and total — measured from that first byte — bounds the rest.
+//
+// A zero or negative firstByte disables the first-byte phase, and total is then
+// measured from the start; that is ReadBounded. A zero or negative total means
+// no overall deadline. An EOF with zero bytes returns an empty slice and no
+// error at once: an empty pipe is an answer, not a stall.
+//
+// NOTE for a future caller: on a deadline the read goroutine is left blocked.
+// Every caller today is one-shot and on its way to reporting the failure and
+// exiting, so the abandoned goroutine and its buffer live for microseconds. A
+// long-lived caller that times out repeatedly would leak one goroutine per
+// timeout.
+func ReadBoundedWait(r io.Reader, name string, limit int64, firstByte, total time.Duration) ([]byte, error) {
 	if limit <= 0 {
 		limit = DefaultStdinLimit
 	}
 
+	fr := &firstByteReader{r: r, started: make(chan struct{})}
 	done := make(chan stdinResult, 1)
 	go func() {
 		// Read one byte past the limit so exceeding it is detectable rather
 		// than silently truncating the caller's input into a parse error.
-		data, err := io.ReadAll(io.LimitReader(r, limit+1))
+		data, err := io.ReadAll(io.LimitReader(fr, limit+1))
 		done <- stdinResult{data: data, err: err}
 	}()
 
-	// A nil channel blocks forever, which is exactly what "no deadline" means —
-	// so the select below covers both cases without a second copy of its first
-	// arm.
-	var deadline <-chan time.Time
-	if timeout > 0 {
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-		deadline = timer.C
-	}
-
-	select {
-	case res := <-done:
+	finish := func(res stdinResult) ([]byte, error) {
 		if res.err != nil {
 			return nil, fmt.Errorf("failed to read %s: %w", name, res.err)
 		}
@@ -98,9 +119,54 @@ func ReadBounded(r io.Reader, name string, limit int64, timeout time.Duration) (
 			return nil, fmt.Errorf("%w: %s exceeds %d bytes", ErrStdinTooLarge, name, limit)
 		}
 		return res.data, nil
+	}
+
+	if firstByte > 0 {
+		timer := time.NewTimer(firstByte)
+		select {
+		case res := <-done:
+			timer.Stop()
+			return finish(res)
+		case <-fr.started:
+			timer.Stop()
+		case <-timer.C:
+			return nil, fmt.Errorf("%w: nothing arrived on %s within %s", ErrStdinNoData, name, firstByte)
+		}
+	}
+
+	// A nil channel blocks forever, which is exactly what "no deadline" means —
+	// so the select below covers both cases without a second copy of its first
+	// arm.
+	var deadline <-chan time.Time
+	if total > 0 {
+		timer := time.NewTimer(total)
+		defer timer.Stop()
+		deadline = timer.C
+	}
+
+	select {
+	case res := <-done:
+		return finish(res)
 	case <-deadline:
 		return nil, fmt.Errorf("%w after %s: no complete input arrived on %s "+
 			"(raise or disable the deadline with --input-read-timeout)",
-			ErrStdinTimeout, timeout, name)
+			ErrStdinTimeout, total, name)
 	}
+}
+
+// firstByteReader closes started on the first read that returns data or an
+// error (EOF included), so the caller can tell "the producer has begun" from
+// "nothing has happened yet" without consuming a byte itself.
+type firstByteReader struct {
+	r       io.Reader
+	started chan struct{}
+	once    sync.Once
+}
+
+func (f *firstByteReader) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if n > 0 || err != nil {
+		f.once.Do(func() { close(f.started) })
+	}
+	return n, err
 }

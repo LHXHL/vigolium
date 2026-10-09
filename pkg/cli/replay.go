@@ -582,7 +582,11 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 		return sourceFromInput(ctx, repo, replayInput, replayInputFile)
 
 	default:
-		if data, ok := readStdinIfPiped(); ok {
+		data, ok, err := readStdinIfPiped()
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			return sourceFromInputString(ctx, repo, data, "")
 		}
 		return nil, usageErrorf("no source specified: pass one of --record-uuid, --finding-id, --input, or pipe a request on stdin")

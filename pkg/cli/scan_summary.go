@@ -124,7 +124,14 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 		// the store and printed the total on the Targets line, which reads as
 		// "these records are input for this scan" — they are not, and a
 		// project-scoped scan cannot even see them.
-		if dbCount, err := repo.CountRecordsAfterCursor(ctx, opts.ProjectUUID, time.Time{}, ""); err == nil && dbCount > 0 {
+		dbCount, err := repo.CountRecordsAfterCursor(ctx, opts.ProjectUUID, time.Time{}, "")
+		switch {
+		case err == nil && globalAllRecords:
+			// Under --all-records the stored records ARE the input, so say so
+			// instead of "Targets: 0".
+			targetsLine = fmt.Sprintf("All records: %s HTTP records in the %s",
+				terminal.Orange(fmt.Sprintf("%d", dbCount)), describeScanStore(settings, opts.ProjectUUID))
+		case err == nil && dbCount > 0:
 			targetsLine += fmt.Sprintf(" | %s (HTTP Records)", terminal.Orange(fmt.Sprintf("%d", dbCount)))
 		}
 	}

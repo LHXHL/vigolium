@@ -23,6 +23,9 @@ func TestResolveStdinInput(t *testing.T) {
 		targets     int
 		targetFiles int
 		want        bool
+		// explicit: stdin was asked for with a typed -i -, so it gets the full
+		// --input-read-timeout rather than the implicit first-byte window.
+		explicit bool
 	}{
 		{
 			name:       "no pipe, no targets: nothing to read",
@@ -53,6 +56,15 @@ func TestResolveStdinInput(t *testing.T) {
 			inputValue: "-",
 			targets:    1,
 			want:       true,
+			explicit:   true,
+		},
+		{
+			name:       "typed -i - with no targets is still explicit",
+			stdinPiped: true,
+			inputTyped: true,
+			inputValue: "-",
+			want:       true,
+			explicit:   true,
 		},
 		{
 			// -i defaults to "-", so an untyped flag carrying that value is the
@@ -99,8 +111,9 @@ func TestResolveStdinInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveStdinInput(tc.stdinPiped, tc.inputTyped, tc.inputValue, tc.targets, tc.targetFiles)
+			got, explicit := resolveStdinInput(tc.stdinPiped, tc.inputTyped, tc.inputValue, tc.targets, tc.targetFiles)
 			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.explicit, explicit, "explicit")
 		})
 	}
 }

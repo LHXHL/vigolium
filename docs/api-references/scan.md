@@ -358,7 +358,7 @@ Every scan record has a `scan_mode` field that indicates how the scan was trigge
 
 | Mode          | Origin                                   | Description                                                                                    |
 |---------------|------------------------------------------|------------------------------------------------------------------------------------------------|
-| `full`        | `vigolium scan`, `vigolium run`          | Batch scan over all in-scope HTTP records in the database                                      |
+| `full`        | `vigolium scan`, `vigolium run`          | Native scan; with `--all-records`, a batch scan over all in-scope HTTP records in the database   |
 | `target`      | `POST /api/scans/run`                    | API-initiated scan targeting a specific URL or scope                                           |
 | `incremental` | Server scan-on-receive                   | Continuous scan that processes each HTTP record as it is ingested into the server (proxy, Burp, etc.) |
 | `single`      | `POST /api/scan-url`                     | One-off scan of a single URL with optional method, body, and headers                           |

@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -42,7 +44,7 @@ func init() {
 	registerLightweightScanIOFlags(flags)
 }
 
-func runScanRequestCmd(_ *cobra.Command, _ []string) error {
+func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	defer syncLogger()
 
 	if err := resetFailOnGate(); err != nil {
@@ -72,7 +74,10 @@ func runScanRequestCmd(_ *cobra.Command, _ []string) error {
 	var err error
 
 	if scanReqInput == "-" {
-		raw, err = readStdin()
+		raw, err = readScanRequestStdin(cmd.Flags().Changed("input"))
+		if err != nil {
+			return err
+		}
 	} else {
 		// Bounded like the stdin branch rather than an unbounded os.ReadFile:
 		// -i accepts a FIFO or /dev/stdin just as readily as a regular file, and
@@ -241,4 +246,33 @@ func requestLineHasScheme(raw string) bool {
 	}
 	target := strings.ToLower(fields[1])
 	return strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
+}
+
+// scanRequestNoInput is the usage message for scan-request with nothing to read.
+const scanRequestNoInput = "no request: scan-request reads a raw HTTP request or curl command from -i <file> or stdin"
+
+// readScanRequestStdin reads the request from stdin. -i defaults to "-", so an
+// untyped -i is the implicit case: a terminal stdin fails fast (it used to block
+// on the keyboard) and a pipe gets the first-byte window. A typed `-i -` is an
+// explicit request for stdin and waits the full --input-read-timeout.
+func readScanRequestStdin(inputTyped bool) ([]byte, error) {
+	if inputTyped {
+		raw, err := readStdin()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read input: %w", err)
+		}
+		return raw, nil
+	}
+	if !fileutil.HasStdin() {
+		return nil, usageErrorf("%s (stdin is a terminal)", scanRequestNoInput)
+	}
+	raw, err := readImplicitStdin()
+	if err != nil {
+		if errors.Is(err, clicommon.ErrStdinNoData) {
+			return nil, usageErrorf("%s (nothing arrived on stdin within %s; use -i - to wait for a slow producer)",
+				scanRequestNoInput, implicitStdinWait)
+		}
+		return nil, fmt.Errorf("failed to read input: %w", err)
+	}
+	return raw, nil
 }

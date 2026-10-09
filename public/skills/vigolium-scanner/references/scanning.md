@@ -106,9 +106,10 @@ to read as "what this target looks like".
 |------|-------|------|---------|-------------|
 | `--target` | `-t` | []string | — | Target URL. **Repeat the flag** for several targets - commas are *literal*, so a query like `?ids=1,2,3` stays one target instead of splitting into three |
 | `--target-file` | `-T` | []string | — | File of target URLs, one per line. Repeatable for several files; commas in the path are literal too |
+| `--all-records` | — | bool | `false` | Rescan every HTTP record already in the active project. **Required** for a no-target run: bare `scan` / `run <phase>` is exit `2` (the message names the DB and project). Not combinable with `-t`/`-T`/`-i`/`-S` |
 | `--input` | `-i` | string | `-` (stdin) | Spec / export to expand into requests (see `-i` vs `-T` below). A **single** value on `scan`/`run` - repeating it overwrites. Only `vigolium ingest` accumulates repeated `-i` |
 | `--input-mode` | `-I` | string | `urls` | Input format. Canonical names: `urls`, `nuclei`, `openapi`, `wsdl`, `postman`, `curl`, `burpraw`, `burpxml`, `burpscope`, `har`, `deparos`. Old spellings still work as aliases (`swagger`→`openapi`, `burp`→`burpxml`, `raw`→`burpraw`). `vigolium --list-input-mode` prints the table with aliases and examples |
-| `--input-read-timeout` | — | duration | `3m` | Deadline for reading input from stdin; `0` disables it, a negative value is exit `2`. Also on `scan-url`/`scan-request`. Raise it when piping a very large export through stdin |
+| `--input-read-timeout` | — | duration | `3m` | Deadline for reading input from stdin; `0` disables it, a negative value is exit `2`. Also on `scan-url`/`scan-request`. Raise it when piping a very large export through stdin. Implicit stdin (nothing else given) gives up after **2s with no first byte** (exit `2`); a typed `-i -` waits the full deadline |
 | `--required-only` | — | bool | `false` | Parse only required fields from input format (ignore optional) |
 | `--skip-format-validation` | — | bool | `false` | Skip validation of input file format |
 

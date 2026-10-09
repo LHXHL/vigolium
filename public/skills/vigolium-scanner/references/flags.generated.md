@@ -1432,6 +1432,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--advanced-options` | `-a` | stringToString | - | Module-specific options as key=value (e.g. -a xss.dom=true) |
+| `--all-records` | - | bool | `false` | Scan every HTTP record already stored in the active project (the database rescan). Required when no -t/-T/-i/stdin target is given; cannot be combined with them |
 | `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
 | `--auth` | - | stringArray | - | Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas). |
 | `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |
@@ -1523,6 +1524,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--advanced-options` | `-a` | stringToString | - | Module-specific options as key=value (e.g. -a xss.dom=true) |
+| `--all-records` | - | bool | `false` | Scan every HTTP record already stored in the active project (the database rescan). Required when no -t/-T/-i/stdin target is given; cannot be combined with them |
 | `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
 | `--auth` | - | stringArray | - | Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas). |
 | `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |

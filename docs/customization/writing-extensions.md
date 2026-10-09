@@ -1004,10 +1004,10 @@ The fastest way to test your extension against already-ingested traffic without 
 
 ```bash
 # Run only extensions against existing scan data
-vigolium scan --config vigolium-configs.yaml --only extension
+vigolium scan --all-records --config vigolium-configs.yaml --only extension
 
 # Alias: ext works too
-vigolium scan --config vigolium-configs.yaml --only ext
+vigolium scan --all-records --config vigolium-configs.yaml --only ext
 ```
 
 This skips discovery, spidering, and standard dynamic-assessment modules — only your extensions run against traffic already in the database.

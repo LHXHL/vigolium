@@ -865,7 +865,11 @@ func resolveFuzzSource(ctx context.Context, args []string) (*replaySource, error
 		return sourceFromRecord(ctx, repo, fuzzRecordUUID)
 
 	default:
-		if data, ok := readStdinIfPiped(); ok {
+		data, ok, err := readStdinIfPiped()
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			return sourceFromInputString(ctx, repo, data, "")
 		}
 		return nil, fmt.Errorf("no source: pass a URL, --input, --record-uuid, or pipe a request on stdin")

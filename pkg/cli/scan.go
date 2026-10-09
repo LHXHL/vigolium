@@ -43,6 +43,7 @@ func init() {
 	rootCmd.AddCommand(scanCmd)
 	flags := scanCmd.Flags()
 	registerInputSourceFlags(flags)
+	registerAllRecordsFlag(flags)
 	registerHTTPClientFlags(flags)
 	registerScanModuleFlags(flags)
 	registerModuleSelectionFlags(flags)
@@ -170,11 +171,17 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.ProxyURL = globalProxy
 	scanOpts.ConfigPath = globalConfig
 	// Targets and TargetsFilePaths are bound above, so both are readable here.
-	scanOpts.Stdin = resolveStdinInput(
+	scanOpts.Stdin, scanStdinExplicit = resolveStdinInput(
 		fileutil.HasStdin(),
 		cmd.Flags().Changed("input"), globalInput,
 		len(scanOpts.Targets), len(scanOpts.TargetsFilePaths),
 	)
+	// --all-records names the input source outright, the way -t does, so an
+	// inherited pipe is not it. A typed -i - is still seen, and rejected as a
+	// conflict by resolveScanTargetSource.
+	if globalAllRecords && !scanStdinExplicit {
+		scanOpts.Stdin = false
+	}
 	scanOpts.OnlyPhase = globalOnly
 	scanOpts.SkipPhases = globalSkipPhases
 	scanOpts.ScopeOriginMode = globalScopeOrigin
@@ -600,6 +607,17 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		if err := settings.ExternalHarvester.Validate(); err != nil {
 			return fmt.Errorf("invalid external harvester configuration: %w", err)
 		}
+	}
+
+	// No implicit work: no target source without --all-records is a usage error
+	// (a deprecation warning on a TTY), and --all-records must stand alone. Then
+	// drain a piped URL list now, so an inherited pipe that never writes fails in
+	// seconds instead of after the database, banner and scan.started.
+	if err := resolveScanTargetSource(cmd, settings); err != nil {
+		return err
+	}
+	if err := prefetchScanStdin(); err != nil {
+		return err
 	}
 
 	// A target file that yields no targets is a misconfiguration in every mode;

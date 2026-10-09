@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
@@ -252,12 +253,12 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	}
 
 	// Validate: at least one input source (stdin is checked later in buildSwarmInputs)
-	if swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && swarmSource == "" && len(swarmPlanInputs) == 0 && !stdinIsPiped() {
+	if swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && swarmSource == "" && len(swarmPlanInputs) == 0 && !fileutil.HasStdin() {
 		return usageErrorf("at least one input is required: --target, --input, --record-uuid, --all-records, --records-from, --source, --plan-file, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent swarm \"scan source at ~/src/app on localhost:3005\"")
 	}
 
 	// Source-only mode: --source without any target/input is allowed but skips dynamic testing
-	sourceOnly := swarmSource != "" && swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && len(swarmPlanInputs) == 0 && !stdinIsPiped()
+	sourceOnly := swarmSource != "" && swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && len(swarmPlanInputs) == 0 && !fileutil.HasStdin()
 	if sourceOnly {
 		fmt.Fprintf(os.Stderr, "%s No --target specified. Dynamic testing (discovery, scanning, triage) will be skipped.\n",
 			terminal.WarningSymbol())
@@ -891,7 +892,11 @@ func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUI
 
 	// Auto-detect stdin when no explicit input is provided
 	if len(inputs) == 0 {
-		if data, ok := readStdinIfPiped(); ok {
+		data, ok, err := readStdinIfPiped()
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			inputs = append(inputs, data)
 		}
 	}

@@ -1006,7 +1006,7 @@ Scanning profiles are YAML files stored in `~/.vigolium/profiles/` that override
 Apply a profile with:
 
 ```bash
-vigolium scan --scanning-profile aggressive
+vigolium scan -t https://example.com --scanning-profile aggressive
 ```
 
 This loads `~/.vigolium/profiles/aggressive.yaml` and overlays it onto the active config. Only non-zero fields in the profile override the base config; unspecified fields are left unchanged.

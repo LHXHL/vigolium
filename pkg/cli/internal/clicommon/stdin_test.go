@@ -119,3 +119,78 @@ func TestReadBoundedPropagatesReadErrors(t *testing.T) {
 type failingReader struct{ err error }
 
 func (f *failingReader) Read(p []byte) (int, error) { return 0, f.err }
+
+// An inherited pipe nobody writes to must not hold the process for the whole
+// --input-read-timeout: the first-byte window gives up with ErrStdinNoData.
+func TestReadBoundedWaitGivesUpOnASilentPipe(t *testing.T) {
+	r, w := io.Pipe()
+	defer func() { _ = w.Close() }()
+
+	start := time.Now()
+	_, err := ReadBoundedWait(r, "stdin", 0, 100*time.Millisecond, time.Minute)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrStdinNoData) {
+		t.Fatalf("error = %v, want one wrapping ErrStdinNoData", err)
+	}
+	if errors.Is(err, ErrStdinTimeout) {
+		t.Errorf("a pipe that never started is not a stalled producer: %v", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("returned after %s; the first-byte window was 100ms", elapsed)
+	}
+}
+
+func TestReadBoundedWaitReadsAProducerThatStartsInsideTheWindow(t *testing.T) {
+	r, w := io.Pipe()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = w.Write([]byte("https://a.example\n"))
+		_ = w.Close()
+	}()
+
+	got, err := ReadBoundedWait(r, "stdin", 0, time.Second, time.Second)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "https://a.example\n" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// After the first byte the producer is real; a stall past total is the old
+// timeout, not "no data".
+func TestReadBoundedWaitTimesOutAStallAfterTheFirstByte(t *testing.T) {
+	r, w := io.Pipe()
+	defer func() { _ = w.Close() }()
+	go func() { _, _ = w.Write([]byte("partial")) }()
+
+	_, err := ReadBoundedWait(r, "stdin", 0, time.Second, 150*time.Millisecond)
+	if !errors.Is(err, ErrStdinTimeout) {
+		t.Fatalf("error = %v, want one wrapping ErrStdinTimeout", err)
+	}
+	if errors.Is(err, ErrStdinNoData) {
+		t.Errorf("data arrived, so this is not ErrStdinNoData: %v", err)
+	}
+}
+
+func TestReadBoundedWaitImmediateEOFIsEmptyNotAnError(t *testing.T) {
+	start := time.Now()
+	got, err := ReadBoundedWait(strings.NewReader(""), "stdin", 0, time.Second, time.Second)
+	if err != nil {
+		t.Fatalf("an empty pipe is an answer, not an error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %q, want empty", got)
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Errorf("EOF must return at once, took %s", time.Since(start))
+	}
+}
+
+func TestReadBoundedWaitStillEnforcesTheSizeLimit(t *testing.T) {
+	_, err := ReadBoundedWait(bytes.NewReader(bytes.Repeat([]byte("a"), 100)), "stdin", 10, time.Second, time.Second)
+	if !errors.Is(err, ErrStdinTooLarge) {
+		t.Errorf("error = %v, want one wrapping ErrStdinTooLarge", err)
+	}
+}

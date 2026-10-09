@@ -183,12 +183,14 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 		return runScanWithIngest(settings, db, repo, scanStart)
 	}
 
-	// If no targets/input/stdin, fall back to scanning DB records
+	// If no targets/input/stdin, scan the DB records. runScanCmd has already
+	// required --all-records for this (or warned on a TTY), see
+	// resolveScanTargetSource.
 	hasTargets := len(scanOpts.Targets) > 0
 	hasTargetFile := len(scanOpts.TargetsFilePaths) > 0
 	hasStdin := scanOpts.Stdin
 	if !hasTargets && !hasTargetFile && !hasStdin {
-		return runDBScan(settings, db, repo, scanStart)
+		return runDBScanFn(settings, db, repo, scanStart)
 	}
 
 	// Promote -T/--target-file lines into scanOpts.Targets so the phases that
@@ -210,7 +212,8 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	// the target-list test alone admits the auto-detect case too.)
 	inputModeExplicit := cmd.Flags().Changed("input-mode")
 	if hasStdin && source.IsTargetListFormat(scanOpts.InputFileMode) {
-		raw, readErr := readStdin()
+		// Usually already drained by prefetchScanStdin in runScanCmd.
+		raw, readErr := takeScanStdin()
 		if readErr != nil {
 			return fmt.Errorf("failed to read stdin: %w", readErr)
 		}

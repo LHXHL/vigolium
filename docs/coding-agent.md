@@ -543,6 +543,24 @@ closes its end cannot hang the process:
 - `scan-url` and `scan-request` accept it too; they read a request from stdin
   like `scan` does, and had no way to bound it before.
 - A single stdin or `-i` read is also capped at 512 MiB, deadline or not.
+- **Implicit stdin waits 2s for its first byte.** When stdin is read only
+  because nothing else was given (`scan` with no `-t`/`-T`/`-i`, `scan-url`
+  with no URL, `scan-request` with the default `-i`, and the stdin fallback of
+  `agent autopilot`/`swarm`, `replay` and `fuzz`), a pipe that produces nothing
+  within 2s counts as no input: `scan`, `scan-url` and `scan-request` exit `2`,
+  and the others report "no source". Once the first byte arrives the
+  `--input-read-timeout` deadline applies. A typed `-i -` is an explicit request
+  for stdin and waits the full deadline, so use it for a producer that is slow
+  to start (`subfinder | vigolium scan -i -`). `scan-request` with a terminal
+  stdin and the default `-i` fails at once instead of blocking on the keyboard.
+
+`scan` and `run <phase>` never fall back to the database on their own. With no
+`-t`/`-T`/`-i`/stdin they exit `2`, and the message names the database and
+project a rescan would touch. Pass `--all-records` to rescan every HTTP record
+in the active project; it cannot be combined with `-t`, `-T`, `-i` or `-S`
+(exit `2`). On an interactive terminal the bare form still rescans for one
+release, with a deprecation warning; under `-j`, `--events`, `--ci-output`, or
+when stdout or stderr is not a terminal it is already an error.
 
 ### Partial scans
 

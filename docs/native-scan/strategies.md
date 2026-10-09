@@ -448,8 +448,9 @@ vigolium scan -t https://example.com --strategy deep \
 # Quick CI check with JSON output
 vigolium scan -t https://staging.example.com --strategy lite -j
 
-# Rescan existing database records
-vigolium scan
+# Rescan every HTTP record already in the active project
+# (--all-records is required; a bare `vigolium scan` with no target is exit 2)
+vigolium scan --all-records
 
 # Scan with proxy (Burp, ZAP)
 vigolium scan -t https://example.com --proxy http://127.0.0.1:8080

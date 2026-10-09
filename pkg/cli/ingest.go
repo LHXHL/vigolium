@@ -138,7 +138,7 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 	// and handed os.Stdin to the parser. That read has no --input-read-timeout
 	// behind it, so unlike the scan path it hung forever rather than for three
 	// minutes. A typed `-i -` still asks for stdin explicitly.
-	if !resolveStdinInput(hasStdin, cmd.Flags().Changed("input"), globalInput, len(globalTargets), len(globalTargetFiles)) {
+	if useStdin, _ := resolveStdinInput(hasStdin, cmd.Flags().Changed("input"), globalInput, len(globalTargets), len(globalTargetFiles)); !useStdin {
 		if ingestOpts.Input == "-" {
 			ingestOpts.Input = ""
 		}

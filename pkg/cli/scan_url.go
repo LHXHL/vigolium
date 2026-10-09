@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -272,19 +273,26 @@ func scanURLInputs(args []string) ([]scanInput, error) {
 		return inputs, nil
 	}
 
-	// No args — try reading from stdin
+	// No args — try reading from stdin. This read is always implicit (scan-url
+	// has no -i), so it gets the first-byte window: an inherited pipe nobody
+	// writes to fails in seconds instead of holding the call for the whole
+	// --input-read-timeout.
+	const noTarget = "no target: pass a <url> argument, -t <url>, or pipe a URL, curl command or raw request on stdin"
 	if !fileutil.HasStdin() {
-		return nil, fmt.Errorf("no URL argument provided and no stdin input detected")
+		return nil, usageErrorf("%s", noTarget)
 	}
 
-	raw, err := readStdin()
+	raw, err := readImplicitStdin()
 	if err != nil {
+		if errors.Is(err, clicommon.ErrStdinNoData) {
+			return nil, usageErrorf("%s (nothing arrived on stdin within %s)", noTarget, implicitStdinWait)
+		}
 		return nil, fmt.Errorf("failed to read stdin: %w", err)
 	}
 
 	content := strings.TrimSpace(string(raw))
 	if content == "" {
-		return nil, fmt.Errorf("empty stdin input")
+		return nil, usageErrorf("%s (stdin was empty)", noTarget)
 	}
 
 	detected := detect.DetectStdinFormat(content)
