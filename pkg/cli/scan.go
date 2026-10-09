@@ -798,7 +798,7 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	defer func() {
 		recordExportFailure(&err, finishStatelessExport(db, scanOpts, statelessOutputPath, transcriptActive))
 	}()
-	// Persisted (non-stateless) --format jsonl emits the same project-scoped
+	// Persisted (non-stateless) --format jsonl emits the same scan-scoped
 	// unified envelope post-scan instead of StandardWriter's live nuclei stream
 	// (suppressed via DeferredJSONLExport). No-ops for stateless and CI runs.
 	defer func() {
@@ -2066,10 +2066,18 @@ func encodeJSONL(w io.Writer, items []any) (int, error) {
 // SetEscapeHTML(false) is load-bearing and shared with encodeJSONL: payload
 // evidence is full of & < >, which Go escapes by default.
 func streamJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitResponse bool, projectUUID string) (exportCounts, error) {
+	return streamScopedJSONLExport(ctx, db, w, omitResponse, projectUUID, "")
+}
+
+// streamScopedJSONLExport is streamJSONLExport narrowed to one scan when
+// scanUUID is non-empty (the scan row and its findings; see streamExportData).
+// The post-scan `--format jsonl` stream passes the scan's UUID; `vigolium
+// export` passes "" and stays the whole-project path.
+func streamScopedJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitResponse bool, projectUUID, scanUUID string) (exportCounts, error) {
 	counts := newExportCounts()
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	err := streamExportData(ctx, db, scanExportScope, omitResponse, projectUUID, "", func(item any) error {
+	err := streamExportData(ctx, db, scanExportScope, omitResponse, projectUUID, scanUUID, func(item any) error {
 		if err := enc.Encode(item); err != nil {
 			return err
 		}
@@ -2083,11 +2091,11 @@ func streamJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitRe
 // writes to a temp sibling and renames into place on success, so a failed or
 // partial export never replaces or half-writes the destination file. Returns the
 // number of records written.
-func streamJSONLToFile(ctx context.Context, db *database.DB, outputPath string, omitResponse bool, projectUUID string) (int, error) {
+func streamJSONLToFile(ctx context.Context, db *database.DB, outputPath string, omitResponse bool, projectUUID, scanUUID string) (int, error) {
 	var counts exportCounts
 	err := atomicfile.Write(outputPath, func(w *bufio.Writer) error {
 		var werr error
-		counts, werr = streamJSONLExport(ctx, db, w, omitResponse, projectUUID)
+		counts, werr = streamScopedJSONLExport(ctx, db, w, omitResponse, projectUUID, scanUUID)
 		return werr
 	})
 	if err != nil {
@@ -2096,11 +2104,12 @@ func streamJSONLToFile(ctx context.Context, db *database.DB, outputPath string, 
 	return counts.total, nil
 }
 
-// writeJSONLExport streams the (optionally project-scoped) database export to w.
-// projectUUID == "" exports the whole DB. Used for the stdout path, where there
-// is no output file to leave half-written on error.
-func writeJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitResponse bool, projectUUID string) (int, error) {
-	counts, err := streamJSONLExport(ctx, db, w, omitResponse, projectUUID)
+// writeJSONLExport streams the (optionally project- and scan-scoped) database
+// export to w. projectUUID == "" exports the whole DB; scanUUID == "" keeps
+// every scan of the project. Used for the stdout path, where there is no output
+// file to leave half-written on error.
+func writeJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitResponse bool, projectUUID, scanUUID string) (int, error) {
+	counts, err := streamScopedJSONLExport(ctx, db, w, omitResponse, projectUUID, scanUUID)
 	return counts.total, err
 }
 
@@ -2109,7 +2118,7 @@ func writeJSONLExport(ctx context.Context, db *database.DB, w io.Writer, omitRes
 // the whole-DB export is implicitly scoped to the current scan. The query runs
 // before the file is created so a query failure leaves no empty output file.
 func exportStatelessJSONL(ctx context.Context, db *database.DB, opts *types.Options, outputPath string) (exportedFile, error) {
-	n, err := streamJSONLToFile(ctx, db, outputPath, opts.OmitResponse, "")
+	n, err := streamJSONLToFile(ctx, db, outputPath, opts.OmitResponse, "", "")
 	if err != nil {
 		return exportedFile{}, fmt.Errorf("export jsonl %s: %w", outputPath, err)
 	}
@@ -2175,8 +2184,13 @@ func exportStatelessSQLite(ctx context.Context, db *database.DB, outputPath stri
 }
 
 // finishScanJSONLExport emits the post-scan unified JSONL envelope for a scan
-// run with --format jsonl. Persisted runs are scoped to the scan's project;
-// stateless runs export the whole temp DB. Output goes to the -o file or, when
+// run with --format jsonl. Persisted runs are scoped to the scan's project AND
+// to this scan (opts.ScanUUID): the scan row and the findings it produced, the
+// same scope maybeGenerateReports gives the html/report files. Without the scan
+// filter `scan -t X -j` dumped every finding the project had ever stored. HTTP
+// records stay project-scoped until records carry their scan_uuid. `vigolium
+// export` remains the whole-project path. Stateless runs export the whole temp
+// DB, which holds only this run. Output goes to the -o file or, when
 // no -o was given, to stdout. Stateless runs WITH -o are materialized by
 // finishStatelessExport (all formats), so only the stateless no-output case is
 // handled here (otherwise jsonl results would be silently discarded with the
@@ -2190,12 +2204,16 @@ func finishScanJSONLExport(db *database.DB, opts *types.Options) error {
 	}
 	ctx := context.Background()
 	projectUUID := exportProjectScope(opts)
+	scanUUID := ""
+	if !opts.Stateless {
+		scanUUID = opts.ScanUUID
+	}
 
 	if opts.Output == "" {
 		// No -o: stream the envelope to stdout once the scan completes. A failure
 		// here is reported like any other: the stream is the artifact, and a
 		// consumer that read a truncated envelope needs to know it was truncated.
-		if _, err := writeJSONLExport(ctx, db, os.Stdout, opts.OmitResponse, projectUUID); err != nil {
+		if _, err := writeJSONLExport(ctx, db, os.Stdout, opts.OmitResponse, projectUUID, scanUUID); err != nil {
 			return fmt.Errorf("export jsonl to stdout: %w", err)
 		}
 		return nil
@@ -2208,7 +2226,7 @@ func finishScanJSONLExport(db *database.DB, opts *types.Options) error {
 	if len(opts.OutputFormats) > 1 {
 		outPath = opts.OutputPathForFormat("jsonl")
 	}
-	n, err := streamJSONLToFile(ctx, db, outPath, opts.OmitResponse, projectUUID)
+	n, err := streamJSONLToFile(ctx, db, outPath, opts.OmitResponse, projectUUID, scanUUID)
 	if err != nil {
 		return fmt.Errorf("export jsonl %s: %w", outPath, err)
 	}

@@ -866,6 +866,11 @@ func streamExportData(ctx context.Context, db *database.DB, scope exportScope, o
 	if scope.includes("scans") && db != nil && !excluded["scan"] {
 		var scans []*database.Scan
 		q := scopeProjectBun(db.NewSelect().Model(&scans).OrderExpr("created_at DESC"), projectUUID)
+		// A scan-scoped export (the post-scan report/jsonl of one run) carries
+		// only that run's scan row, not every scan the project ever ran.
+		if scanUUID != "" {
+			q = q.Where("uuid = ?", scanUUID)
+		}
 		if topExportSearch != "" {
 			p := database.LikeContains(topExportSearch)
 			q = q.Where(database.WithLikeEscape("(uuid LIKE ? OR status LIKE ? OR error_message LIKE ?)"), p, p, p)
@@ -1112,8 +1117,8 @@ func streamFindings(ctx context.Context, db *database.DB, projectUUID, scanUUID 
 	q = q.Where("(f.record_kind IS NULL OR f.record_kind = '' OR f.record_kind = ?)", database.RecordKindFinding)
 	// Post-scan report scope: restrict to the current scan's findings so a re-run's
 	// report reflects that run, not the project's whole history. maybeGenerateReports
-	// passes the scan uuid; every other export path passes "" (project-wide),
-	// parallel to how projectUUID is threaded.
+	// and finishScanJSONLExport pass the scan uuid; `vigolium export` passes ""
+	// (project-wide), parallel to how projectUUID is threaded.
 	if scanUUID != "" {
 		q = q.Where("f.scan_uuid = ?", scanUUID)
 	}

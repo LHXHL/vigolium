@@ -19,7 +19,9 @@ default human output is unchanged; you opt into machine output with `-j/--json`.
   - **`-j/--json`** on read/query commands (`finding`, `traffic`, `db`) → a single
     structured object with **compact, token-aware** bodies. This is what you parse.
   - **`--format jsonl`** / `export` → the bulk `{"type":...,"data":{...}}` stream
-    (one object per line). Use for archival/bulk, not triage. It is a *view*, not
+    (one object per line). Use for archival/bulk, not triage. After a scan the
+    stream covers that scan's `scan` row and findings (records stay
+    project-scoped); `export` is the whole-project dump. It is a *view*, not
     a lossless copy of the store: HTTP exchanges sharing a URL collapse to the
     first one (plus any exchange a finding links to), and only confirmed findings
     are emitted. `export --no-url-dedup` turns the collapse off; for the complete
