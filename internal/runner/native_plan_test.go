@@ -181,6 +181,30 @@ func TestApplyNativePhaseSelection_OnlyPhase(t *testing.T) {
 			},
 		},
 		{
+			name:  "extension with dynamic-assessment keeps built-ins",
+			input: "dynamic-assessment,extension",
+			want: want{
+				onlyPhase:     "dynamic-assessment,extension",
+				skipIngestion: true,
+			},
+		},
+		{
+			name:  "extension aliases with dast alias keep built-ins",
+			input: "ext,dast",
+			want: want{
+				onlyPhase:     "extension,dynamic-assessment",
+				skipIngestion: true,
+			},
+		},
+		{
+			name:  "dynamic-assessment alone is not extensions-only",
+			input: "dynamic-assessment",
+			want: want{
+				onlyPhase:     "dynamic-assessment",
+				skipIngestion: true,
+			},
+		},
+		{
 			name:  "duplicates collapse",
 			input: "discovery,discovery,spidering",
 			want: want{
@@ -270,6 +294,25 @@ func TestApplyNativePhaseSelection_SkipDiscoveryClearsDiscoverEnabled(t *testing
 	for _, step := range plan.Steps {
 		if step.Phase == PhaseDiscovery && step.Enabled {
 			t.Errorf("PhaseDiscovery still enabled in plan after --skip discovery")
+		}
+	}
+}
+
+// TestApplyNativePhaseSelection_ExtensionEnablesExtensions pins that any --only
+// containing "extension" turns extensions on, whether or not the built-in
+// dynamic-assessment modules run alongside them.
+func TestApplyNativePhaseSelection_ExtensionEnablesExtensions(t *testing.T) {
+	for _, only := range []string{"extension", "dynamic-assessment,extension", "spidering,ext"} {
+		called := false
+		opts := &types.Options{OnlyPhase: only}
+		if err := ApplyNativePhaseSelection(opts, func() { called = true }); err != nil {
+			t.Fatalf("--only %s: %v", only, err)
+		}
+		if !called {
+			t.Errorf("--only %s did not enable extensions", only)
+		}
+		if opts.SkipDynamicAssessment {
+			t.Errorf("--only %s skipped dynamic-assessment; extensions run inside it", only)
 		}
 	}
 }

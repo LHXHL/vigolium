@@ -27,7 +27,7 @@ func NewYAMLPassiveModule(def *ExtensionDef, configVars map[string]string) (*YAM
 		"YAML extension: "+def.Name,
 		def.ConfirmationCriteria,
 		sev,
-		severity.Firm,
+		ParseConfidence(def.Confidence, severity.Firm),
 		scanTypes,
 		scope,
 	)
@@ -144,7 +144,7 @@ func (m *YAMLPassiveModule) buildRuleFinding(
 	} else {
 		result.Info.Severity = m.Severity()
 	}
-	result.Info.Confidence = severity.Firm
+	result.Info.Confidence = ParseConfidence(finding.Confidence, m.Confidence())
 
 	matchedStr := Render(finding.Matched, tctx)
 	if matchedStr != "" {

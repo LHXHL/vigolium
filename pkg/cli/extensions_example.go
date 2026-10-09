@@ -53,12 +53,12 @@ Each example is emitted inside a fenced code block with its suggested
 filename so it can be copied directly into ~/.vigolium/extensions/ — or
 referenced by another agent as an authoring template.`,
 	Args: cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		filter := ""
 		if len(args) > 0 {
 			filter = args[0]
 		}
-		printExtensionExamples(filter)
+		return printExtensionExamples(filter)
 	},
 }
 
@@ -74,7 +74,7 @@ func init() {
 		"Restrict to one language: javascript (js), yaml, or json")
 }
 
-func printExtensionExamples(filter string) {
+func printExtensionExamples(filter string) error {
 	catalog := extensionExampleCatalog()
 
 	langFilter := strings.ToLower(strings.TrimSpace(exampleLang))
@@ -83,6 +83,9 @@ func printExtensionExamples(filter string) {
 		langFilter = "javascript"
 	case "yml":
 		langFilter = "yaml"
+	case "", "javascript", "yaml", "json":
+	default:
+		return usageErrorf("invalid --lang %q; valid values: javascript (js), yaml (yml), json", exampleLang)
 	}
 
 	var matched []extExample
@@ -97,14 +100,7 @@ func printExtensionExamples(filter string) {
 	}
 
 	if len(matched) == 0 {
-		fmt.Printf("%s No examples matching %q\n", terminal.WarningSymbol(), filter)
-		fmt.Printf("  Try: %s, %s, %s, %s\n",
-			terminal.Gray("ext example js"),
-			terminal.Gray("ext example yaml"),
-			terminal.Gray("ext example pre_hook"),
-			terminal.Gray("ext example --list"))
-		fmt.Println()
-		return
+		return fmt.Errorf("no examples matching %q; try: ext example js, ext example yaml, ext example pre_hook, ext example --list", filter)
 	}
 
 	if exampleListOnly {
@@ -125,7 +121,7 @@ func printExtensionExamples(filter string) {
 			terminal.InfoSymbol(),
 			terminal.Gray("vigolium ext example <key>"))
 		fmt.Println()
-		return
+		return nil
 	}
 
 	fmt.Printf("\n  %s\n",
@@ -162,6 +158,7 @@ func printExtensionExamples(filter string) {
 		terminal.InfoSymbol(),
 		terminal.Gray("vigolium ext preset"))
 	fmt.Println()
+	return nil
 }
 
 func exampleMatchesFilter(ex extExample, filter string) bool {

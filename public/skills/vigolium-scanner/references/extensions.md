@@ -45,6 +45,7 @@ module.exports = {
 
   // Optional metadata
   description: "Checks for ...",
+  confirmationCriteria: "...",     // how a finding is confirmed; string or array of lines
   scope: "response",               // "request", "response", "both" (passive only)
   tags: ["custom", "light"],       // Module tags for filtering
   scanTypes: ["per_request"],      // "per_request", "per_host", "per_insertion_point"
@@ -52,18 +53,27 @@ module.exports = {
   // Scan functions (implement one or more)
   scanPerRequest: function(ctx) {
     // Analyze the request/response pair
-    // Return a finding object or null
+    // Return a finding object, an array of them, or null
   },
 
   scanPerHost: function(ctx) {
     // Analyze all records for a host
   },
 
-  scanPerInsertionPoint: function(ctx) {
-    // Test a specific insertion point (active modules)
+  scanPerInsertionPoint: function(ctx, insertion) {
+    // Test one insertion point (active modules).
+    // insertion = {name, baseValue, type, buildRequest(payload) -> raw request string}
   }
 };
 ```
+
+A returned finding may override the module defaults per result: `confidence`,
+`tags`, `cwe` (e.g. `"CWE-79"`), `fuzzingParameter` (or `param`), and
+`evidence` (an array of strings or `{request, response, note}` objects).
+
+For editor autocompletion, `vigolium ext types -o <dir>` writes `vigolium.d.ts`
+(also written by `vigolium ext preset`); reference it with
+`/// <reference path="./vigolium.d.ts" />`.
 
 ---
 
@@ -82,6 +92,9 @@ vigolium scan -t https://example.com --ext custom-check.js
 # Run only extensions, skip built-in modules
 vigolium scan -t https://example.com --only extension --ext custom-check.js
 
+# Run extensions together with the built-in dynamic-assessment modules
+vigolium scan -t https://example.com --only dynamic-assessment,extension --ext custom-check.js
+
 # Load multiple extensions
 vigolium scan -t https://example.com --ext check1.js --ext check2.js
 
@@ -99,6 +112,10 @@ vigolium ext preset
 vigolium ext docs
 vigolium ext docs --example
 vigolium ext docs http   # filter by namespace
+vigolium ext docs -j     # API catalog as JSON
+
+# TypeScript declarations for the API (stdout, or -o <file|dir>)
+vigolium ext types -o ./my-extensions/
 ```
 
 ---

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/vigolium/vigolium/pkg/types/severity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -111,11 +112,24 @@ func lintCommonYAML(def *ExtensionDef) []YAMLLintIssue {
 
 	// Validate confidence
 	if def.Confidence != "" {
-		validConfidences := map[string]bool{"tentative": true, "firm": true, "certain": true}
-		if !validConfidences[strings.ToLower(def.Confidence)] {
+		if !isValidYAMLConfidence(def.Confidence) {
 			issues = append(issues, YAMLLintIssue{
-				Severity: "warning",
+				Severity: "error",
 				Message:  fmt.Sprintf("unknown confidence %q; expected one of: tentative, firm, certain", def.Confidence),
+			})
+		}
+	}
+	if def.Finding != nil && !isValidYAMLConfidence(def.Finding.Confidence) {
+		issues = append(issues, YAMLLintIssue{
+			Severity: "error",
+			Message:  fmt.Sprintf("finding.confidence: unknown confidence %q; expected one of: tentative, firm, certain", def.Finding.Confidence),
+		})
+	}
+	for i, rule := range def.Rules {
+		if !isValidYAMLConfidence(rule.Finding.Confidence) {
+			issues = append(issues, YAMLLintIssue{
+				Severity: "error",
+				Message:  fmt.Sprintf("rules[%d].finding.confidence: unknown confidence %q; expected one of: tentative, firm, certain", i, rule.Finding.Confidence),
 			})
 		}
 	}
@@ -309,4 +323,10 @@ func isValidYAMLScanType(s string) bool {
 		return true
 	}
 	return false
+}
+
+// isValidYAMLConfidence reports whether s is empty (module default applies)
+// or one of tentative, firm, certain.
+func isValidYAMLConfidence(s string) bool {
+	return strings.TrimSpace(s) == "" || severity.ToConfidence(s) != severity.ConfidenceUndefined
 }

@@ -308,7 +308,9 @@ func ApplyNativePhaseSelection(opts *types.Options, enableExtensions func()) err
 		opts.SkipIngestion = !allowed["discovery"] && !allowed["ingestion"]
 		opts.SkipDynamicAssessment = !allowed["dynamic-assessment"] && !allowed["extension"]
 		if allowed["extension"] {
-			opts.ExtensionsOnly = true
+			// "extension" alone narrows dynamic-assessment to extension modules;
+			// alongside "dynamic-assessment" it ADDS extensions to the built-ins.
+			opts.ExtensionsOnly = !allowed["dynamic-assessment"]
 			if enableExtensions != nil {
 				enableExtensions()
 			}

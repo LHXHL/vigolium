@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/types/severity"
 )
 
 func makeRequestResponse(method, url string, respStatus int, respHeaders map[string]string, respBody string) *httpmsg.HttpRequestResponse {
@@ -197,4 +198,39 @@ func TestYAMLPassiveModule_NilResponse(t *testing.T) {
 	results, err := mod.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	assert.Nil(t, results)
+}
+
+func TestYAMLPassiveModule_ConfidencePassthrough(t *testing.T) {
+	def := &ExtensionDef{
+		ID:                   "conf",
+		Type:                 "passive",
+		Severity:             "low",
+		Confidence:           "certain",
+		ConfirmationCriteria: "body contains the marker",
+		Scope:                "response",
+		Matchers:             []MatcherDef{{Type: "body", Contains: "marker"}},
+		Finding:              &FindingDef{Name: "Marker"},
+	}
+	mod, err := NewYAMLPassiveModule(def, nil)
+	require.NoError(t, err)
+	assert.Equal(t, severity.Certain, mod.Confidence())
+	assert.Equal(t, "body contains the marker", mod.ConfirmationCriteria())
+
+	ctx := makeRequestResponse("GET", "/", 200, nil, "the marker")
+	results, err := mod.ScanPerRequest(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, severity.Certain, results[0].Info.Confidence, "finding inherits module confidence")
+
+	// A per-finding confidence overrides the module default.
+	def.Finding.Confidence = "tentative"
+	results, err = mod.ScanPerRequest(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, severity.Tentative, results[0].Info.Confidence)
+
+	// No confidence at all → firm.
+	mod, err = NewYAMLPassiveModule(&ExtensionDef{ID: "x", Type: "passive"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, severity.Firm, mod.Confidence())
 }

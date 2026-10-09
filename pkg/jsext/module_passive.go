@@ -36,7 +36,7 @@ func NewJSPassiveModule(script *LoadedScript, opts APIOptions) (*JSPassiveModule
 		"JS extension: "+script.Metadata.Name,
 		script.Metadata.ConfirmationCriteria,
 		sev,
-		severity.Firm,
+		ParseConfidence(script.Metadata.Confidence, severity.Firm),
 		scanTypes,
 		scope,
 	)

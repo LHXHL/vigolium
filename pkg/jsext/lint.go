@@ -257,6 +257,14 @@ func checkMetadata(source string) []LintIssue {
 		}
 	}
 
+	// Validate confidence: an unknown value would silently fall back to "firm".
+	if !IsValidConfidence(meta.Confidence) {
+		issues = append(issues, LintIssue{
+			Severity: LintError,
+			Message:  fmt.Sprintf("unknown confidence %q; expected one of: tentative, firm, certain", meta.Confidence),
+		})
+	}
+
 	// Validate scan types for active modules
 	if meta.Type == ScriptTypeActive {
 		for _, st := range meta.ScanTypes {

@@ -57,7 +57,8 @@ type MatcherDef struct {
 type FindingDef struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
-	Severity    string `yaml:"severity"` // override module severity
+	Severity    string `yaml:"severity"`   // override module severity
+	Confidence  string `yaml:"confidence"` // override module confidence
 	Matched     string `yaml:"matched"`
 }
 

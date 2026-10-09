@@ -240,8 +240,6 @@ declare namespace vigolium {
     function analyzeResponse(opts: AnalyzeResponseOpts): AnalyzeResponseResult;
     /** High-level: confirm whether a scanner finding is a true positive. */
     function confirmFinding(opts: ConfirmFindingOpts): ConfirmFindingResult;
-    /** Subprocess: run a full agent backend (claude, codex, gemini, etc.). */
-    function run(opts: AgentRunOpts): AgentRunResult;
   }
 
   namespace mcp {
@@ -590,20 +588,6 @@ interface ConfirmFindingResult {
   confidence: "high" | "medium" | "low";
   reasoning: string;
   false_positive_indicators: string[];
-}
-
-interface AgentRunOpts {
-  /** Agent backend name (claude, codex, gemini, etc.) */
-  agent: string;
-  prompt: string;
-  /** Timeout in seconds. Default: 60. */
-  timeout?: number;
-}
-
-interface AgentRunResult {
-  output: string;
-  findings: any[];
-  http_records: any[];
 }
 
 // ── vigolium.db types ────────────────────────────────────────────────────────
@@ -1257,3 +1241,96 @@ interface MCPClient {
   /** Send a raw JSON-RPC body verbatim (e.g. batched arrays). */
   send(rawJSONRPC: string): MCPResponse;
 }
+
+// ── Extension module contract (module.exports) ────────────────────────────────
+
+type ExtensionSeverity = "critical" | "high" | "medium" | "low" | "info" | "suspect";
+type ExtensionConfidence = "tentative" | "firm" | "certain";
+
+/** Insertion point passed as the second argument to scanPerInsertionPoint(ctx, insertion). */
+interface InsertionPoint {
+  /** Parameter or header name, e.g. "id". */
+  name: string;
+  /** Original value at this insertion point. */
+  baseValue: string;
+  /** Insertion point type, e.g. "URL_PARAM", "BODY_PARAM", "HEADER". */
+  type: string;
+  /** Build the full raw request with `payload` substituted at this insertion point. */
+  buildRequest(payload: string): string;
+}
+
+/**
+ * A finding returned from scanPerRequest / scanPerHost / scanPerInsertionPoint.
+ * Return one object, an array of them, or null/undefined for no finding.
+ * Per-result fields override the module-level defaults in module.exports.
+ */
+interface ExtensionResult {
+  name?: string;
+  description?: string;
+  severity?: ExtensionSeverity;
+  /** Overrides module.exports.confidence for this finding. */
+  confidence?: ExtensionConfidence;
+  /** Overrides module.exports.tags for this finding. */
+  tags?: string[];
+  /** CWE identifier, e.g. "CWE-79". */
+  cwe?: string;
+  /** Parameter that triggered the finding (alias: `param`). */
+  fuzzingParameter?: string;
+  param?: string;
+  /** Extra evidence strings (or objects, stored as JSON) attached to the finding. */
+  evidence?: Array<string | { request?: string; response?: string; note?: string }>;
+  url?: string;
+  matched?: string;
+  request?: string;
+  response?: string;
+}
+
+/** Request object passed to a pre_hook's execute(request). */
+interface PreHookRequest {
+  raw: string;
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+}
+
+/** Finding object passed to a post_hook's execute(result). */
+interface PostHookResult {
+  moduleId: string;
+  /** @deprecated alias of moduleId. */
+  templateId: string;
+  url: string;
+  host: string;
+  matched: string;
+  request: string;
+  response: string;
+  info: { name: string; description: string; severity: string; confidence: string };
+}
+
+/** Shape of module.exports for a JS/TS extension. */
+interface ModuleExports {
+  /** Module ID (the runtime prefixes "ext-"). Defaults to the file name. */
+  id?: string;
+  name?: string;
+  description?: string;
+  type: "active" | "passive" | "pre_hook" | "post_hook";
+  /** Default severity for findings. */
+  severity?: ExtensionSeverity;
+  /** Default confidence for findings (default "firm"). Results may override it. */
+  confidence?: ExtensionConfidence;
+  /** How a finding from this module is confirmed; a string or lines joined with "\n". */
+  confirmationCriteria?: string | string[];
+  tags?: string[];
+  /** Active modules: which handlers run. Default ["per_request"]. */
+  scanTypes?: Array<"per_insertion_point" | "per_request" | "per_host">;
+  /** Passive modules: which part of the exchange is analysed. */
+  scope?: "request" | "response" | "both";
+
+  scanPerRequest?(ctx: ExtensionContext): ExtensionResult | ExtensionResult[] | null | undefined;
+  scanPerHost?(ctx: ExtensionContext): ExtensionResult | ExtensionResult[] | null | undefined;
+  scanPerInsertionPoint?(ctx: ExtensionContext, insertion: InsertionPoint): ExtensionResult | ExtensionResult[] | null | undefined;
+  /** pre_hook: return the (modified) request, or null to skip it. post_hook: return the (modified) finding, or null to drop it. */
+  execute?(input: any): any;
+}
+
+declare var module: { exports: ModuleExports };
+declare var exports: ModuleExports;

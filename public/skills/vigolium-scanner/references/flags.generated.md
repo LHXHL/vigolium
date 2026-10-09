@@ -52,6 +52,7 @@ run `vigolium <command> -h`.
 - [vigolium extensions lint](#vigolium-extensions-lint)
 - [vigolium extensions ls](#vigolium-extensions-ls)
 - [vigolium extensions preset](#vigolium-extensions-preset)
+- [vigolium extensions types](#vigolium-extensions-types)
 - [vigolium ffuf](#vigolium-ffuf)
 - [vigolium finding](#vigolium-finding)
 - [vigolium finding load](#vigolium-finding-load)
@@ -795,6 +796,14 @@ Aliases: `presets`, `init`
 Install example extension presets into extensions directory
 
 _No command-specific flags._
+
+## vigolium extensions types
+
+Print or write vigolium.d.ts, the extension API type declarations
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--output` | `-o` | string | - | Write the declarations to this file, or to <dir>/vigolium.d.ts when it is a directory (default: stdout) |
 
 ## vigolium ffuf
 

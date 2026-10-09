@@ -29,9 +29,14 @@ func LoadScripts(cfg *config.ExtensionsConfig) ([]*LoadedScript, error) {
 		}
 	}
 
-	// Load explicit script paths
+	// Load explicit script paths. CustomDir is shared with the YAML loader, so
+	// YAML extensions and TypeScript declaration files are not ours to load:
+	// feeding them to the JS VM only produced a spurious "Failed to load script".
 	for _, scriptPath := range cfg.CustomDir {
 		path := config.ExpandPath(scriptPath)
+		if isNonScriptExtensionFile(path) {
+			continue
+		}
 		script, err := loadScript(path, extractor)
 		if err != nil {
 			zap.L().Warn("Failed to load script",
@@ -56,15 +61,11 @@ func loadFromDir(dir string, extractor *metadataExtractor) ([]*LoadedScript, err
 		if entry.IsDir() {
 			continue
 		}
-		// Skip YAML extensions — handled by yamlext package
-		if strings.HasSuffix(entry.Name(), ".vgm.yaml") {
+		name := entry.Name()
+		if isNonScriptExtensionFile(name) {
 			continue
 		}
-		if !strings.HasSuffix(entry.Name(), ".js") && !strings.HasSuffix(entry.Name(), ".ts") {
-			continue
-		}
-		// Skip TypeScript declaration files
-		if strings.HasSuffix(entry.Name(), ".d.ts") {
+		if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".ts") {
 			continue
 		}
 
@@ -79,6 +80,16 @@ func loadFromDir(dir string, extractor *metadataExtractor) ([]*LoadedScript, err
 	}
 
 	return scripts, nil
+}
+
+// isNonScriptExtensionFile reports whether a file that may sit next to (or be
+// passed alongside) JS/TS extensions is not a script for this loader: YAML
+// extensions belong to the yamlext package, and .d.ts files are type
+// declarations (e.g. the vigolium.d.ts written by `ext preset`).
+func isNonScriptExtensionFile(name string) bool {
+	return strings.HasSuffix(name, ".vgm.yaml") ||
+		strings.HasSuffix(name, ".vgm.yml") ||
+		strings.HasSuffix(name, ".d.ts")
 }
 
 func loadScript(path string, extractor *metadataExtractor) (*LoadedScript, error) {
@@ -227,6 +238,9 @@ func (me *metadataExtractor) Extract(source, path string) (*ScriptMetadata, erro
 	if v := obj.Get("scope"); v != nil && !sobek.IsUndefined(v) {
 		meta.Scope = v.String()
 	}
+	if v := obj.Get("confirmationCriteria"); v != nil && !sobek.IsUndefined(v) && !sobek.IsNull(v) {
+		meta.ConfirmationCriteria = stringOrLines(vm, v)
+	}
 
 	// Parse scanTypes array
 	if v := obj.Get("scanTypes"); v != nil && !sobek.IsUndefined(v) {
@@ -277,4 +291,27 @@ func (me *metadataExtractor) Extract(source, path string) (*ScriptMetadata, erro
 	}
 
 	return meta, nil
+}
+
+// stringOrLines reads a JS value that may be a string or an array of strings,
+// joining array elements with newlines.
+func stringOrLines(vm *sobek.Runtime, v sobek.Value) string {
+	if _, isStr := v.Export().(string); isStr {
+		return v.String()
+	}
+	obj := v.ToObject(vm)
+	length := obj.Get("length")
+	if length == nil || sobek.IsUndefined(length) {
+		return v.String()
+	}
+	n := int(length.ToInteger())
+	lines := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		item := obj.Get(fmt.Sprintf("%d", i))
+		if item == nil || sobek.IsUndefined(item) || sobek.IsNull(item) {
+			continue
+		}
+		lines = append(lines, item.String())
+	}
+	return strings.Join(lines, "\n")
 }

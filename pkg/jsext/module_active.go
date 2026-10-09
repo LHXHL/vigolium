@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -74,7 +75,7 @@ func NewJSActiveModule(script *LoadedScript, opts APIOptions) (*JSActiveModule, 
 		"JS extension: "+script.Metadata.Name,
 		script.Metadata.ConfirmationCriteria,
 		sev,
-		severity.Firm,
+		ParseConfidence(script.Metadata.Confidence, severity.Firm),
 		scanTypes,
 		modkit.AllInsertionPointTypes,
 	)
@@ -428,6 +429,29 @@ func parseSingleJSResult(vm *sobek.Runtime, obj *sobek.Object, ctx *httpmsg.Http
 	if v := obj.Get("severity"); v != nil && !sobek.IsUndefined(v) {
 		result.Info.Severity = ParseSeverity(v.String())
 	}
+	// Per-result overrides. Anything left unset is filled from the module
+	// defaults (confidence, tags) by the executor.
+	if v := obj.Get("confidence"); isSet(v) {
+		result.Info.Confidence = ParseConfidence(v.String(), severity.ConfidenceUndefined)
+	}
+	if v := obj.Get("tags"); isSet(v) {
+		for _, tag := range jsStringSlice(vm, v) {
+			result.Info.Tags = append(result.Info.Tags, strings.ToLower(tag))
+		}
+	}
+	if v := obj.Get("cwe"); isSet(v) {
+		if cwe := v.String(); cwe != "" {
+			result.Metadata = map[string]interface{}{"cwe": cwe}
+		}
+	}
+	if v := obj.Get("fuzzingParameter"); isSet(v) {
+		result.FuzzingParameter = v.String()
+	} else if v := obj.Get("param"); isSet(v) {
+		result.FuzzingParameter = v.String()
+	}
+	if v := obj.Get("evidence"); isSet(v) {
+		result.AdditionalEvidence = jsEvidence(vm, v)
+	}
 
 	// Fill defaults from context
 	if result.URL == "" && ctx != nil {
@@ -437,6 +461,64 @@ func parseSingleJSResult(vm *sobek.Runtime, obj *sobek.Object, ctx *httpmsg.Http
 		result.Matched = result.URL
 	}
 
-	_ = vm // suppress unused warning in future
 	return []*output.ResultEvent{result}
+}
+
+// isSet reports whether a JS property value is present (not undefined/null).
+func isSet(v sobek.Value) bool {
+	return v != nil && !sobek.IsUndefined(v) && !sobek.IsNull(v)
+}
+
+// jsStringSlice reads a JS string or array of strings into a Go slice.
+func jsStringSlice(vm *sobek.Runtime, v sobek.Value) []string {
+	if s, ok := v.Export().(string); ok {
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	}
+	obj := v.ToObject(vm)
+	length := obj.Get("length")
+	if length == nil || sobek.IsUndefined(length) {
+		return nil
+	}
+	n := int(length.ToInteger())
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		if item := obj.Get(strconv.Itoa(i)); isSet(item) {
+			out = append(out, item.String())
+		}
+	}
+	return out
+}
+
+// jsEvidence reads a result's `evidence` field: a string, or an array whose
+// items are strings or objects ({request, response, note}). Objects are kept
+// as compact JSON so nothing the script attached is lost.
+func jsEvidence(vm *sobek.Runtime, v sobek.Value) []string {
+	toString := func(item sobek.Value) string {
+		if s, ok := item.Export().(string); ok {
+			return s
+		}
+		if b, err := json.Marshal(item.Export()); err == nil {
+			return string(b)
+		}
+		return item.String()
+	}
+	if _, ok := v.Export().(string); ok {
+		return []string{v.String()}
+	}
+	obj := v.ToObject(vm)
+	length := obj.Get("length")
+	if length == nil || sobek.IsUndefined(length) {
+		return []string{toString(v)}
+	}
+	n := int(length.ToInteger())
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		if item := obj.Get(strconv.Itoa(i)); isSet(item) {
+			out = append(out, toString(item))
+		}
+	}
+	return out
 }

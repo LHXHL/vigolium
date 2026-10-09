@@ -13,9 +13,29 @@ import (
 
 const yamlExtSuffix = ".vgm.yaml"
 
-// IsYAMLExtension returns true if the filename has the .vgm.yaml extension.
+// yamlExtSuffixes lists every accepted YAML extension suffix. The JS loader
+// skips the same set, so a file never falls between the two loaders.
+var yamlExtSuffixes = []string{yamlExtSuffix, ".vgm.yml"}
+
+// IsYAMLExtension returns true if the filename has the .vgm.yaml (or .vgm.yml)
+// extension.
 func IsYAMLExtension(name string) bool {
-	return strings.HasSuffix(name, yamlExtSuffix)
+	for _, suffix := range yamlExtSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// trimYAMLExtSuffix strips the YAML extension suffix from a file name.
+func trimYAMLExtSuffix(name string) string {
+	for _, suffix := range yamlExtSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return strings.TrimSuffix(name, suffix)
+		}
+	}
+	return name
 }
 
 // LoadExtension parses and validates a single .vgm.yaml file.
@@ -38,7 +58,7 @@ func LoadExtension(path string) (*ExtensionDef, error) {
 	}
 	if def.ID == "" {
 		base := filepath.Base(path)
-		def.ID = strings.TrimSuffix(base, yamlExtSuffix)
+		def.ID = trimYAMLExtSuffix(base)
 		def.ID = strings.ReplaceAll(def.ID, "_", "-")
 	}
 	if def.Name == "" {
@@ -77,7 +97,7 @@ func LoadFromConfig(cfg *config.ExtensionsConfig) ([]*ExtensionDef, error) {
 		}
 	}
 
-	// Load explicit script paths (only .vgm.yaml ones)
+	// Load explicit script paths (only .vgm.yaml/.vgm.yml ones)
 	for _, scriptPath := range cfg.CustomDir {
 		path := config.ExpandPath(scriptPath)
 		if !IsYAMLExtension(path) {

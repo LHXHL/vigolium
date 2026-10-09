@@ -1,12 +1,14 @@
 package yamlext
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/internal/config"
 )
 
 func testdataDir() string {
@@ -19,7 +21,18 @@ func TestIsYAMLExtension(t *testing.T) {
 	assert.True(t, IsYAMLExtension("some/path/bar.vgm.yaml"))
 	assert.False(t, IsYAMLExtension("foo.yaml"))
 	assert.False(t, IsYAMLExtension("foo.js"))
-	assert.False(t, IsYAMLExtension("foo.vgm.yml"))
+	assert.True(t, IsYAMLExtension("foo.vgm.yml"))
+}
+
+func TestLoadFromConfig_ExplicitVgmYml(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "short_ext.vgm.yml")
+	require.NoError(t, os.WriteFile(path, []byte("type: passive\nseverity: low\n"), 0o644))
+
+	defs, err := LoadFromConfig(&config.ExtensionsConfig{CustomDir: []string{path}})
+	require.NoError(t, err)
+	require.Len(t, defs, 1)
+	assert.Equal(t, "short-ext", defs[0].ID, "ID derives from the file name minus .vgm.yml")
 }
 
 func TestLoadExtension_ActiveScanner(t *testing.T) {
