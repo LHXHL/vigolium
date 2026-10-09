@@ -509,7 +509,7 @@ vigolium ingest -t https://api.example.com -I openapi -i spec.yaml
 > Import the spec and scan immediately
 ```
 ```bash
-vigolium ingest -t https://api.example.com -I openapi -i spec.yaml -S
+vigolium ingest -t https://api.example.com -I openapi -i spec.yaml --scan-on-receive
 ```
 
 **Ingest Burp export:**

@@ -11,9 +11,9 @@ Vigolium can run as a persistent REST API server, accepting traffic ingestion, s
 export VIGOLIUM_API_KEY=my-secret-key
 vigolium server
 
-# Custom host and port
+# Expose the API beyond this machine, on a custom port
 export VIGOLIUM_API_KEY=my-secret-key
-vigolium server --host 127.0.0.1 --service-port 9002
+vigolium server --host 0.0.0.0 --service-port 9002
 
 # With an upstream proxy for outgoing scanner traffic
 export VIGOLIUM_API_KEY=my-secret-key
@@ -23,7 +23,10 @@ vigolium server --proxy http://corporate-proxy:8080
 vigolium server -A
 ```
 
-The server listens on `0.0.0.0:9002` by default.
+The server listens on `127.0.0.1:9002` by default. Pass `--host 0.0.0.0` (or set
+`VIGOLIUM_SERVER_HOST=0.0.0.0`, as the Docker images do) to accept remote
+connections; the ingest proxy keeps its own `--ingest-proxy-host` (also
+loopback by default).
 
 Useful server controls:
 

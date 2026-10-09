@@ -301,9 +301,9 @@ func TestFlagOn(t *testing.T) {
 	})
 }
 
-// `ingest -S=false` asked for ingestion WITHOUT scanning. It used to turn
-// scan-on-receive on.
-func TestDeprecatedScanOnReceiveFalse(t *testing.T) {
+// -S on server/ingest used to mean --scan-on-receive. It is now a usage error
+// whatever its value, and the long flag is unaffected.
+func TestRetiredScanOnReceiveShorthand(t *testing.T) {
 	orig := globalScanOnReceive
 	t.Cleanup(func() { globalScanOnReceive = orig })
 
@@ -313,17 +313,20 @@ func TestDeprecatedScanOnReceiveFalse(t *testing.T) {
 		return cmd
 	}
 
-	globalScanOnReceive = false
-	cmd := newIngest()
-	require.NoError(t, cmd.Flags().Set("scan-on-receive-shorthand", "false"))
-	applyDeprecatedScanOnReceive(cmd)
-	assert.False(t, globalScanOnReceive, "-S=false must not enable scan-on-receive")
+	for _, v := range []string{"true", "false"} {
+		cmd := newIngest()
+		require.NoError(t, cmd.Flags().Set(retiredScanOnReceiveFlag, v))
+		err := rejectRetiredScanOnReceive(cmd)
+		require.Error(t, err, "-S=%s", v)
+		assert.Equal(t, 2, classifyExitCode(err), "usage error")
+		assert.Contains(t, err.Error(), "--scan-on-receive")
+	}
 
 	globalScanOnReceive = false
-	cmd = newIngest()
-	require.NoError(t, cmd.Flags().Set("scan-on-receive-shorthand", "true"))
-	applyDeprecatedScanOnReceive(cmd)
-	assert.True(t, globalScanOnReceive, "-S=true still folds into --scan-on-receive")
+	cmd := newIngest()
+	require.NoError(t, cmd.Flags().Set("scan-on-receive", "true"))
+	assert.NoError(t, rejectRetiredScanOnReceive(cmd))
+	assert.True(t, globalScanOnReceive)
 }
 
 // --read-only rejects flags that WRITE. An explicitly-false writer flag writes

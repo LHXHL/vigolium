@@ -13,20 +13,31 @@ const DefaultBurpBridgeURL = "http://127.0.0.1:9009"
 
 // ServerConfig holds API server configuration
 type ServerConfig struct {
-	AuthAPIKey         string `yaml:"auth_api_key"`
-	UsersFile          string `yaml:"users_file"`
-	ServicePort        int    `yaml:"service_port"`
-	IngestProxyPort    int    `yaml:"ingest_proxy_port"`
-	CORSAllowedOrigins string `yaml:"cors_allowed_origins"`
-	EnableMetrics      bool   `yaml:"enable_metrics"`
-	DisableSwagger     bool   `yaml:"disable_swagger"`
-	AgentHeavyMax      int    `yaml:"agent_heavy_max"`     // max concurrent heavy agent runs (autopilot/swarm); 0 = default 5
-	AgentLightMax      int    `yaml:"agent_light_max"`     // max concurrent light agent runs (query/chat); 0 = default 10
-	AgentQueueTimeout  string `yaml:"agent_queue_timeout"` // max wait when all agent slots busy; 0/empty = default 30s
-	License            string `yaml:"license"`             // license identifier surfaced in /server-info for UI display
-	MirrorFSPath       string `yaml:"mirror_fs_path"`      // when set, mirror ingested traffic + findings to this dir as a live filesystem tree (see --mirror-fs)
-	EnableBurpBridge   bool   `yaml:"enable_burp_bridge"`  // opt in to merging live Burp Proxy history into /api/http-records using BurpBridgeURL (see -B/--burp-bridge-url)
-	BurpBridgeURL      string `yaml:"burp_bridge_url"`     // loopback Burp bridge address used when EnableBurpBridge is set; -B/--burp-bridge-url and $VIGOLIUM_BURP_BRIDGE_URL take precedence
+	AuthAPIKey      string `yaml:"auth_api_key"`
+	UsersFile       string `yaml:"users_file"`
+	ServicePort     int    `yaml:"service_port"`
+	IngestProxyPort int    `yaml:"ingest_proxy_port"`
+	// IngestProxyHost is the ingest proxy's bind address; empty means
+	// 127.0.0.1. --ingest-proxy-host wins. Binding anything but loopback needs
+	// IngestProxyToken or IngestProxyAllow, or the server refuses to start.
+	IngestProxyHost string `yaml:"ingest_proxy_host"`
+	// IngestProxyToken, when set, is required on every proxied request as
+	// Proxy-Authorization (Basic with the token as password, or Bearer).
+	// --proxy-token wins.
+	IngestProxyToken string `yaml:"ingest_proxy_token"`
+	// IngestProxyAllow lists client CIDRs (or bare IPs) the ingest proxy
+	// accepts; empty allows every client. --proxy-allow replaces it.
+	IngestProxyAllow   []string `yaml:"ingest_proxy_allow"`
+	CORSAllowedOrigins string   `yaml:"cors_allowed_origins"`
+	EnableMetrics      bool     `yaml:"enable_metrics"`
+	DisableSwagger     bool     `yaml:"disable_swagger"`
+	AgentHeavyMax      int      `yaml:"agent_heavy_max"`     // max concurrent heavy agent runs (autopilot/swarm); 0 = default 5
+	AgentLightMax      int      `yaml:"agent_light_max"`     // max concurrent light agent runs (query/chat); 0 = default 10
+	AgentQueueTimeout  string   `yaml:"agent_queue_timeout"` // max wait when all agent slots busy; 0/empty = default 30s
+	License            string   `yaml:"license"`             // license identifier surfaced in /server-info for UI display
+	MirrorFSPath       string   `yaml:"mirror_fs_path"`      // when set, mirror ingested traffic + findings to this dir as a live filesystem tree (see --mirror-fs)
+	EnableBurpBridge   bool     `yaml:"enable_burp_bridge"`  // opt in to merging live Burp Proxy history into /api/http-records using BurpBridgeURL (see -B/--burp-bridge-url)
+	BurpBridgeURL      string   `yaml:"burp_bridge_url"`     // loopback Burp bridge address used when EnableBurpBridge is set; -B/--burp-bridge-url and $VIGOLIUM_BURP_BRIDGE_URL take precedence
 }
 
 // DefaultServerConfig returns default server configuration

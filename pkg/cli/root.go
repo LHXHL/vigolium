@@ -228,11 +228,12 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 			return usageErrorf("--project-uuid and --project-name are mutually exclusive")
 		}
 
-		// Fold the retiring -S on server/ingest into --scan-on-receive before
-		// anything reads it. Must run before applyDBPathEnv, which asks whether
-		// the command wants a throwaway database and would otherwise see a
-		// half-resolved flag state.
-		applyDeprecatedScanOnReceive(cmd)
+		// -S on server/ingest used to mean --scan-on-receive; it is now a usage
+		// error naming the replacement. Before applyDBPathEnv, so a rejected
+		// command line never touches a database.
+		if err := rejectRetiredScanOnReceive(cmd); err != nil {
+			return err
+		}
 
 		// Env var fallback for --db (and -S on the read commands), so a shell
 		// can be pinned to one session database.

@@ -58,9 +58,13 @@ Large payloads should use the `*_base64` fields to avoid JSON escaping. The same
 
 ### Transparent proxy
 
-`vigolium server --ingest-proxy-port 9003` opens a recording proxy. Plain HTTP
+`vigolium server --ingest-proxy-port 9003` opens a recording proxy on
+`--ingest-proxy-host` (default `127.0.0.1`, independent of the API's `--host`).
+A non-loopback bind requires `--proxy-token` and/or `--proxy-allow`; the check
+runs in `proxyHandler.ServeHTTP` before either the HTTP or the CONNECT path, and
+`Proxy-Authorization` is stripped before forwarding and recording. Plain HTTP
 is captured; HTTPS `CONNECT` is tunnelled without inspection by default. Add
-`--proxy-mitm`, trust the generated CA, and optionally use `--export-ca` to
+`--proxy-mitm` and trust the generated CA (`vigolium server ca install`) to
 record decrypted HTTPS. `--proxy-insecure` disables upstream TLS verification.
 
 ---

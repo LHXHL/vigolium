@@ -674,6 +674,9 @@ server:
   users_file: ~/.vigolium/users.json
   service_port: 9002
   ingest_proxy_port: 0             # 0 = disabled
+  ingest_proxy_host: ""            # empty = 127.0.0.1; --ingest-proxy-host wins
+  ingest_proxy_token: ""           # Proxy-Authorization secret; --proxy-token wins
+  ingest_proxy_allow: []           # client CIDRs/IPs; --proxy-allow replaces
   cors_allowed_origins: reflect-origin
   enable_metrics: true
   enable_burp_bridge: false        # opt in to merging live Burp Proxy history into /api/http-records
@@ -688,6 +691,12 @@ otherwise every config would silently enable it. Precedence is
 `--caido-bridge-url` is an alias of the same flag (a Caido plugin exposing the
 same loopback bridge); both spellings set the same value and read the same env
 var and config key.
+
+The REST API binds `127.0.0.1` unless `--host` or `$VIGOLIUM_SERVER_HOST` says
+otherwise. The ingest proxy binds `ingest_proxy_host` (default `127.0.0.1`); a
+non-loopback proxy bind needs `ingest_proxy_token` and/or `ingest_proxy_allow`
+(or the `--proxy-token` / `--proxy-allow` flags), otherwise `vigolium server`
+exits 2 before listening.
 
 ### `agent`
 

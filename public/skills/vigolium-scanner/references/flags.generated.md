@@ -97,6 +97,11 @@ run `vigolium <command> -h`.
 - [vigolium scope set](#vigolium-scope-set)
 - [vigolium scope view](#vigolium-scope-view)
 - [vigolium server](#vigolium-server)
+- [vigolium server ca](#vigolium-server-ca)
+- [vigolium server ca install](#vigolium-server-ca-install)
+- [vigolium server ca path](#vigolium-server-ca-path)
+- [vigolium server ca print](#vigolium-server-ca-print)
+- [vigolium server ca uninstall](#vigolium-server-ca-uninstall)
 - [vigolium skills](#vigolium-skills)
 - [vigolium skills get](#vigolium-skills-get)
 - [vigolium skills install](#vigolium-skills-install)
@@ -1729,9 +1734,10 @@ Serve the REST API, ingest live traffic, and scan it as it arrives
 | `--demo-only` | - | bool | `false` | Expose only the demo allowlist: GET /api/findings[/:id], /api/http-records[/:uuid], /api/modules, /api/stats, /api/extensions[/:name\|/docs] |
 | `--disable-catchup` | - | bool | `false` | Deprecated: no-op (catch-up scanning is already disabled) |
 | `--disable-warm-session` | - | bool | `false` | Disable agent subprocess warm session pooling |
-| `--export-ca` | - | string | - | Write the ingest-proxy MITM CA certificate to this path and exit (generates the CA if needed) |
+| `--discard-queued` | - | bool | `false` | Drop tasks a previous run left in the disk-spill queue instead of resuming them (tasks older than 24h are always dropped) |
 | `--full-native-scan-on-receive` | - | bool | `false` | Run the full native scan pipeline (discovery + spidering + dynamic-assessment) continuously on received records, instead of dynamic-assessment only |
-| `--host` | - | string | `0.0.0.0` | Bind address for the API server |
+| `--host` | - | string | `127.0.0.1` | Bind address for the API server ($VIGOLIUM_SERVER_HOST when unset; use 0.0.0.0 to expose it) |
+| `--ingest-proxy-host` | - | string | `127.0.0.1` | Bind address for the ingest proxy (config server.ingest_proxy_host). A non-loopback address needs --proxy-token or --proxy-allow |
 | `--ingest-proxy-port` | - | int | `0` | Transparent HTTP proxy port for recording traffic (0 = disabled) |
 | `--mem-buffer` | - | int | `10000` | In-memory queue capacity before spilling to disk |
 | `--mirror-fs` | - | string | - | Mirror ingested traffic + findings to a live flat filesystem tree under this dir (<dir>/traffic, <dir>/findings), in addition to the database — readable by an external agent with ls/grep/jq |
@@ -1739,13 +1745,51 @@ Serve the REST API, ingest live traffic, and scan it as it arrives
 | `--no-auth` | `-A` | bool | `false` | Run server without API key authentication |
 | `--no-swagger` | - | bool | `false` | Disable Swagger UI and API spec endpoint |
 | `--output` | `-o` | string | - | Write findings to specified output file |
-| `--passive-only` | - | bool | `false` | With -S/--scan-on-receive, run passive modules only (no active scan traffic; includes secret detection) |
+| `--passive-only` | - | bool | `false` | With --scan-on-receive, run passive modules only (no active scan traffic; includes secret detection) |
+| `--proxy-allow` | - | stringArray | - | Accept ingest-proxy clients only from this CIDR or IP (repeatable; config server.ingest_proxy_allow) |
 | `--proxy-insecure` | - | bool | `false` | When intercepting HTTPS (--proxy-mitm), skip verification of the upstream server's TLS certificate |
-| `--proxy-mitm` | - | bool | `false` | Intercept HTTPS through --ingest-proxy-port using a generated CA so TLS traffic is recorded (and scanned with -S). Trust the CA printed at startup |
+| `--proxy-mitm` | - | bool | `false` | Intercept HTTPS through --ingest-proxy-port using a generated CA so TLS traffic is recorded (and scanned with --scan-on-receive). Trust it with 'vigolium server ca install' |
+| `--proxy-token` | - | string | - | Require this secret on every ingest-proxy request as Proxy-Authorization (Basic with any username, or Bearer); config server.ingest_proxy_token |
 | `--scan-on-receive` | - | bool | `false` | Continuously scan new HTTP records as they arrive in the database |
 | `--service-port` | - | int | `9002` | Port for the REST API server |
 | `--timeout` | - | duration | `15s` | HTTP request timeout for background scan workers (e.g. 30s, 1m) |
 | `--view-only` | - | bool | `false` | Run server in read-only mode (disables scanning, ingestion, agent, and all write endpoints) |
+
+## vigolium server ca
+
+Show, export and trust the ingest-proxy MITM CA certificate
+
+_No command-specific flags._
+
+## vigolium server ca install
+
+Trust the MITM CA on this machine (prints the commands; --yes runs them)
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--yes` | - | bool | `false` | Run the commands instead of printing them (may prompt for sudo) |
+
+## vigolium server ca path
+
+Print the path of the MITM CA certificate
+
+_No command-specific flags._
+
+## vigolium server ca print
+
+Print the MITM CA certificate (PEM), or write it with --out
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--out` | - | string | - | Write the PEM certificate to this file instead of stdout |
+
+## vigolium server ca uninstall
+
+Remove trust in the MITM CA (prints the commands; --yes runs them)
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--yes` | - | bool | `false` | Run the commands instead of printing them (may prompt for sudo) |
 
 ## vigolium skills
 

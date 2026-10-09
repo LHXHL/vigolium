@@ -17,7 +17,9 @@ To *push* traffic into a running server (or ingest locally without a server), se
 - [Authentication](#server-authentication)
 - [Key global flags](#key-global-flags-for-server)
 - [Recording proxy (`--ingest-proxy-port`)](#recording-proxy)
-- [HTTPS interception (`--proxy-mitm`)](#https-interception)
+- [Proxy access control (`--proxy-token`, `--proxy-allow`)](#proxy-access-control)
+- [HTTPS interception (`--proxy-mitm`, `server ca`)](#https-interception)
+- [Disk-spill queue](#disk-spill-queue)
 - [Live filesystem mirror (`--mirror-fs`)](#live-filesystem-mirror---mirror-fs)
 - [REST API endpoints](#rest-api-endpoints)
 - [Examples](#examples)
@@ -32,6 +34,12 @@ Start the API server. By default it exposes the Swagger UI, the `/api/ingest`
 endpoint, and the agent endpoints, all behind API-key auth. It does **not** scan
 anything until you either call an endpoint or pass `--scan-on-receive`.
 
+**Both listeners bind `127.0.0.1` by default.** Pass `--host 0.0.0.0` (or set
+`VIGOLIUM_SERVER_HOST=0.0.0.0`, which the Docker images do) to expose the API.
+The ingest proxy has its own `--ingest-proxy-host`; a non-loopback proxy bind
+needs `--proxy-token` and/or `--proxy-allow`, or the server exits 2 before
+listening.
+
 ### server-specific flags
 
 | Flag | Short | Type | Default | Description |
@@ -42,8 +50,9 @@ anything until you either call an endpoint or pass `--scan-on-receive`.
 | `--demo-only` | — | bool | `false` | Expose only the demo allowlist (GET `/api/findings`, `/api/http-records`, `/api/modules`, `/api/stats`, `/api/extensions`) |
 | `--disable-catchup` | — | bool | `false` | **Deprecated: no-op** (catch-up scanning is already disabled) |
 | `--disable-warm-session` | — | bool | `false` | Disable agent warm session pooling |
-| `--export-ca` | — | string | — | Write the ingest-proxy MITM CA certificate to this path and exit |
-| `--host` | — | string | `0.0.0.0` | Bind address for the API server |
+| `--discard-queued` | — | bool | `false` | Drop tasks a previous run left in the disk-spill queue instead of resuming them (tasks older than 24h are always dropped) |
+| `--host` | — | string | `127.0.0.1` | Bind address for the API server (`$VIGOLIUM_SERVER_HOST` when unset; `0.0.0.0` exposes it) |
+| `--ingest-proxy-host` | — | string | `127.0.0.1` | Bind address for the ingest proxy (config `server.ingest_proxy_host`); non-loopback needs `--proxy-token` or `--proxy-allow` |
 | `--ingest-proxy-port` | — | int | `0` (disabled) | Transparent HTTP proxy port for recording traffic |
 | `--mem-buffer` | — | int | `10000` | In-memory queue capacity before spilling to disk |
 | `--mirror-fs` | — | string | — | Mirror ingested traffic + findings to a live flat file tree under this dir (`<dir>/traffic`, `<dir>/findings`), in addition to the DB (config `server.mirror_fs_path`) |
@@ -52,14 +61,17 @@ anything until you either call an endpoint or pass `--scan-on-receive`.
 | `--no-swagger` | — | bool | `false` | Disable the Swagger UI and API spec endpoint |
 | `--output` | `-o` | string | — | Write findings to specified output file |
 | `--passive-only` | — | bool | `false` | With `--scan-on-receive`, run passive modules only (no active scan traffic; includes secret detection) |
+| `--proxy-allow` | — | []string | — | Accept ingest-proxy clients only from this CIDR or IP (repeatable; config `server.ingest_proxy_allow`) |
 | `--proxy-insecure` | — | bool | `false` | When intercepting HTTPS (`--proxy-mitm`), skip verification of the upstream server's TLS certificate |
-| `--proxy-mitm` | — | bool | `false` | Intercept HTTPS through `--ingest-proxy-port` using a generated CA so TLS traffic is recorded (trust the CA printed at startup) |
+| `--proxy-mitm` | — | bool | `false` | Intercept HTTPS through `--ingest-proxy-port` using a generated CA so TLS traffic is recorded (trust it with `vigolium server ca install`) |
+| `--proxy-token` | — | string | — | Require this secret on every ingest-proxy request as `Proxy-Authorization` (Basic with any username, or Bearer); config `server.ingest_proxy_token` |
 | `--service-port` | — | int | `9002` | Port for the REST API server |
 | `--timeout` | — | duration | `15s` | HTTP request timeout for background scan workers (e.g. `30s`, `1m`) |
 | `--view-only` | — | bool | `false` | Run server in read-only mode (disables scanning, ingestion, agent, and all write endpoints) |
 
 (`--disable-fetch-response` is an **ingest-only** flag — it is not registered on
-`server`. See [ingest.md](ingest.md).)
+`server`. See [ingest.md](ingest.md). `--export-ca <file>` still works as a
+hidden alias of `server ca print --out <file>`.)
 
 ### Server Authentication
 
@@ -84,14 +96,14 @@ vigolium server \
 | Flag | Description |
 |------|-------------|
 | `-t <url>` | Target URL (used with `--scan-on-receive` for scope) |
-| `--scan-on-receive` | Auto-scan every ingested request (`-S` is a deprecated alias here and warns) |
+| `--scan-on-receive` | Auto-scan every ingested request (`-S` is rejected here with exit 2) |
 | `--full-native-scan-on-receive` | Run the full native pipeline (discovery + spidering + dynamic-assessment) on received records, not dynamic-assessment only |
 | `-c` / `--concurrency` | Worker pool size |
 | `--proxy` | Proxy for outgoing requests |
 
 **Write `--scan-on-receive`, not `-S`.** `-S` means `--stateless` on every other
-command; here it is a *deprecated alias* for scan-on-receive that still works but
-warns, and it will be removed. Pair the flag with `-t <url>` so the auto-scan has
+command; on `server` and `ingest` it used to mean scan-on-receive and is now a
+usage error (exit 2) naming `--scan-on-receive`. Pair the flag with `-t <url>` so the auto-scan has
 a scope; without a scope it scans every host it receives.
 
 ---
@@ -114,15 +126,40 @@ vigolium scan --only dynamic-assessment -t http://target.example
 For an all-in-one capture-and-scan, add `--scan-on-receive -t <url>` so each request is scanned
 as it arrives.
 
+## Proxy access control
+
+The proxy listens on `--ingest-proxy-host` (default `127.0.0.1`), independent of
+the API's `--host`. To capture from another machine, bind it to a routable
+address **and** gate it — the server refuses to start an open proxy on a
+non-loopback address:
+
+```bash
+# Token: clients send Proxy-Authorization (Basic, any username, token as password; or Bearer).
+vigolium server --ingest-proxy-port 8080 --ingest-proxy-host 0.0.0.0 --proxy-token "$TOKEN"
+curl -x "http://vigolium:$TOKEN@proxy-host:8080" http://target.example/
+
+# Allow-list: only these client networks (repeatable). With a token too, both must pass.
+vigolium server --ingest-proxy-port 8080 --ingest-proxy-host 0.0.0.0 --proxy-allow 10.0.0.0/8
+```
+
+A missing or wrong token gets `407 Proxy Authentication Required` with
+`Proxy-Authenticate: Basic realm="vigolium"`; a client outside the allow-list
+gets `403`. The `Proxy-Authorization` header is stripped before the request is
+forwarded or recorded. `/server-info` reports the mode as `proxy_auth`.
+
 ## HTTPS interception
 
 Plain `--ingest-proxy-port` records HTTP only; HTTPS passes through opaquely. Add
-`--proxy-mitm` to decrypt TLS with a generated CA (trust the CA printed at
-startup, or export it up front):
+`--proxy-mitm` to decrypt TLS with a generated CA (`~/.vigolium/ca`, created on
+first use). Manage it with `vigolium server ca`:
 
 ```bash
-# Write the CA out so you can trust it in the client first.
-vigolium server --export-ca ./vigolium-ca.pem
+vigolium server ca path                # where the certificate lives
+vigolium server ca print > ca.pem      # PEM to stdout (or --out ca.pem)
+vigolium server ca print -j            # {path, sha256, subject, not_after}
+vigolium server ca install             # print the trust commands for this OS
+vigolium server ca install --yes       # ...and run them (may prompt for sudo)
+vigolium server ca uninstall [--yes]   # remove that trust again
 
 # Then run the intercepting proxy.
 vigolium server --ingest-proxy-port 8080 --proxy-mitm
@@ -130,6 +167,21 @@ vigolium server --ingest-proxy-port 8080 --proxy-mitm
 # Skip upstream TLS verification (self-signed / staging origins).
 vigolium server --ingest-proxy-port 8080 --proxy-mitm --proxy-insecure
 ```
+
+`install` covers macOS (login keychain), Debian/Ubuntu
+(`update-ca-certificates`), Fedora/RHEL (`update-ca-trust`) and Windows
+(`certutil -user`); Firefox and Linux Chrome keep their own NSS store, which it
+prints as a note rather than changing.
+
+## Disk-spill queue
+
+With `--scan-on-receive`, work beyond `--mem-buffer` spills to a LevelDB queue in
+`~/.vigolium/server-queue/<hash of the database>` (mode 0700, locked with a
+`LOCK` file). A restart against the same database resumes what was left queued
+(logging `recovered N queued tasks`); tasks older than 24h are dropped, and
+`--discard-queued` drops them all. A second server on the same database uses a
+PID-suffixed sibling for that run. Per-PID `$TMPDIR/vigolium-server-queue-<pid>`
+directories left by older versions are removed once their process is gone.
 
 ## Live Filesystem Mirror (`--mirror-fs`)
 
@@ -140,8 +192,9 @@ Burp/proxy traffic as files in real time (`ls`/`grep`/`jq`).
 
 - **Same layout as `--format fs`**: per-host subdirs with `0001.req` (a leading `@target <scheme>://<authority>` line then the raw request), `0001.resp.headers`, `0001.resp.body` (gzip-decoded), and `0001.md` for findings cross-linked to their `.req`. Full layout + consumption walkthrough: [agent-loop.md → Filesystem tree output](agent-loop.md#filesystem-tree-output).
 - **Append-only index**: writes `<root>/traffic/index.jsonl` + `<root>/findings/index.jsonl` (one JSON object per line), vs the one-shot export's single `index.json` array — so you can `tail -f` it while traffic lands.
-- **Non-blocking**: a background goroutine handles all disk I/O and never blocks the DB save path (the buffer drops jobs with a warning if it overflows — the database is unaffected).
-- **Resumes across restarts**: per-host id numbering continues from the highest existing `.req`/`.md` file.
+- **Owner-only, atomic**: files are written 0600 through a temp file and rename (a reader never sees a half-written file), directories 0700.
+- **Bounded, never silent**: a background goroutine does all disk I/O. When its buffer is full a save waits up to 2s, then the job is dropped (the database is unaffected), counted in `/server-info` as `mirror_dropped`, and logged at most once a minute.
+- **Resumes across restarts**: per-host id numbering continues from the highest existing `.req`/`.md` file (or index entry); a torn last index line from a crash is trimmed.
 - **Server-ingestion-only**: wired via the repository's `OnRecordSaved`/`OnFindingSaved` callbacks, which fire only on genuinely new inserts (deduplicated saves do not). CLI scans and other repo users are unaffected. Setup is best-effort — a failure logs a warning and the server continues without it.
 
 ## REST API Endpoints
@@ -182,8 +235,14 @@ vigolium server --scan-on-receive --passive-only
 # Full native pipeline (discovery + spidering + assessment) on each record.
 vigolium server --scan-on-receive --full-native-scan-on-receive
 
-# Transparent recording proxy.
+# Transparent recording proxy (loopback only).
 vigolium server --ingest-proxy-port 8080
+
+# Recording proxy reachable from the LAN (token required).
+vigolium server --ingest-proxy-port 8080 --ingest-proxy-host 0.0.0.0 --proxy-token "$TOKEN"
+
+# Expose the API itself (e.g. in a container).
+vigolium server --host 0.0.0.0
 
 # Intercepting HTTPS proxy (records TLS traffic under a generated CA).
 vigolium server --ingest-proxy-port 8080 --proxy-mitm

@@ -159,6 +159,7 @@ func NewServer(cfg ServerConfig, q queue.Queue, db *database.DB, repo *database.
 				zap.String("path", cfg.MirrorFSPath), zap.Error(err))
 		} else {
 			s.fsMirror = mirror
+			handlers.mirrorDropped = mirror.Dropped
 			repo.OnRecordSaved = mirror.OnRecord
 			repo.OnFindingSaved = mirror.OnFinding
 			zap.L().Info("Filesystem mirror enabled", zap.String("path", cfg.MirrorFSPath))
@@ -215,7 +216,7 @@ func NewServer(cfg ServerConfig, q queue.Queue, db *database.DB, repo *database.
 			}
 		}
 		s.proxyServer = newIngestProxy(cfg.IngestProxyAddr, db, repo, recordWriter, settings,
-			handlers.getScopeMatcher, mitmCA, cfg.IngestProxyInsecure)
+			handlers.getScopeMatcher, mitmCA, cfg.IngestProxyInsecure, cfg.IngestProxyAuth)
 	}
 
 	return s

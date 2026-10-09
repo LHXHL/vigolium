@@ -130,6 +130,12 @@ var machineKinds = map[string]machineKind{
 	"scope set":  kindMutation,
 	"scope view": kindRead,
 
+	// Server MITM CA (the server itself is interactive, above).
+	"server ca install":   kindMutation,
+	"server ca path":      kindRead,
+	"server ca print":     kindRead,
+	"server ca uninstall": kindMutation,
+
 	// Skills.
 	"skills":         kindRead,
 	"skills get":     kindRead,

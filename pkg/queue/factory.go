@@ -13,6 +13,8 @@ type Config struct {
 	// Disk queue options
 	DiskDir       string
 	MaxPerSegment int
+	// DiscardOlderThan drops recovered disk tasks older than this (0 = keep).
+	DiscardOlderThan time.Duration
 
 	// Hybrid queue options
 	// MemBufferSize is the in-memory channel capacity for hybrid mode.
@@ -40,6 +42,7 @@ func NewQueue(cfg Config) (Queue, error) {
 		diskCfg := DiskQueueConfig{
 			BaseDir:              cfg.DiskDir,
 			MaxRecordsPerSegment: cfg.MaxPerSegment,
+			DiscardOlderThan:     cfg.DiscardOlderThan,
 		}
 		if diskCfg.MaxRecordsPerSegment == 0 {
 			diskCfg.MaxRecordsPerSegment = 10000
@@ -63,6 +66,7 @@ func NewQueue(cfg Config) (Queue, error) {
 		backendCfg := DiskQueueConfig{
 			BaseDir:              cfg.DiskDir,
 			MaxRecordsPerSegment: cfg.MaxPerSegment,
+			DiscardOlderThan:     cfg.DiscardOlderThan,
 		}
 		if backendCfg.MaxRecordsPerSegment == 0 {
 			backendCfg.MaxRecordsPerSegment = 10000

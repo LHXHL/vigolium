@@ -56,4 +56,9 @@ RUN vigolium doctor --fix
 
 WORKDIR /root
 
+# `vigolium server` binds 127.0.0.1 by default, which a published port cannot
+# reach inside a container; bind the API to all interfaces here. The ingest
+# proxy keeps its own --ingest-proxy-host (and needs --proxy-token off loopback).
+ENV VIGOLIUM_SERVER_HOST=0.0.0.0
+
 ENTRYPOINT ["dumb-init", "--", "vigolium"]

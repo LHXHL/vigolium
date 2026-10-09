@@ -21,10 +21,12 @@ import (
 //
 // Two changes retire the trap:
 //
-//  1. On server/ingest the shorthand is deprecated. --scan-on-receive keeps
-//     working and is now the spelling in the help text; -S still sets it for one
-//     minor version, with a warning naming the replacement, so no existing
-//     command line breaks today.
+//  1. On server/ingest the shorthand is retired. --scan-on-receive is the only
+//     spelling; -S is a usage error (exit 2) naming it, for one release, so a
+//     command line that meant "scan what you receive" fails loudly rather than
+//     silently turning into "scan nothing". After that release the hidden flag
+//     goes and addStatelessShorthand gives these two commands -S/--stateless
+//     like every other.
 //  2. --stateless is accepted everywhere as a persistent root flag. On a command
 //     where it is meaningless it is a documented no-op — a flag that is harmless
 //     everywhere is one a driver never has to keep a per-command acceptance
@@ -32,48 +34,39 @@ import (
 //
 // The root flag is deliberately LONG-ONLY. Giving it the -S shorthand at root
 // level would collide with the local -S the read commands and the deprecated
-// scan-on-receive alias still register, and pflag resolves that by panicking at
-// startup rather than by picking one.
+// scan-on-receive tombstone still register, and pflag resolves that by panicking
+// at startup rather than by picking one.
 
-// deprecatedScanOnReceiveShorthand backs the retiring -S on server/ingest. It is
-// a separate variable from globalScanOnReceive so PreRun can tell "the operator
-// typed the deprecated shorthand" from "the operator typed the long flag".
-var deprecatedScanOnReceiveShorthand bool
+// retiredScanOnReceiveShorthand backs the hidden -S tombstone on server/ingest.
+// Its value is never used: typing the flag at all is the error.
+var retiredScanOnReceiveShorthand bool
 
-// registerScanOnReceiveFlags declares --scan-on-receive plus its deprecated -S
-// shorthand on a server/ingest flagset.
+// retiredScanOnReceiveFlag is the hidden long name behind the -S tombstone.
+const retiredScanOnReceiveFlag = "scan-on-receive-shorthand"
+
+// registerScanOnReceiveFlags declares --scan-on-receive plus the hidden -S
+// tombstone on a server/ingest flagset.
 func registerScanOnReceiveFlags(flags *pflag.FlagSet, usage string) {
 	flags.BoolVar(&globalScanOnReceive, "scan-on-receive", false, usage)
 	// A hidden second flag rather than a shorthand on the first: pflag binds a
-	// shorthand to one flag, and the whole point is to tell the two spellings
-	// apart so only the old one warns.
-	flags.BoolVarP(&deprecatedScanOnReceiveShorthand, "scan-on-receive-shorthand", "S", false,
-		"Deprecated alias for --scan-on-receive")
-	_ = flags.MarkHidden("scan-on-receive-shorthand")
+	// shorthand to one flag, and the point is to reject the old spelling while
+	// the long one keeps working.
+	flags.BoolVarP(&retiredScanOnReceiveShorthand, retiredScanOnReceiveFlag, "S", false,
+		"Retired: -S no longer means --scan-on-receive")
+	_ = flags.MarkHidden(retiredScanOnReceiveFlag)
 }
 
-// applyDeprecatedScanOnReceive folds the deprecated -S into the real flag and
-// warns once. Called from the root PersistentPreRunE so every command that
-// registered the alias is covered without repeating the check.
-// The value matters, not just the spelling: `ingest -S=false` is an operator
-// saying "do not scan what you receive", and folding it in on Changed alone
-// turned ingestion into a scanner against an explicit instruction.
-func applyDeprecatedScanOnReceive(cmd *cobra.Command) {
-	if !flagOn(cmd, "scan-on-receive-shorthand") {
-		return
+// rejectRetiredScanOnReceive fails a server/ingest command line that used -S.
+// Any value counts (-S=false too): the letter is changing meaning, and a usage
+// error is the only answer that is right for both readings. Called from the
+// root PersistentPreRunE so every command that registered the tombstone is
+// covered without repeating the check.
+func rejectRetiredScanOnReceive(cmd *cobra.Command) error {
+	f := cmd.Flags().Lookup(retiredScanOnReceiveFlag)
+	if f == nil || !f.Changed {
+		return nil
 	}
-	globalScanOnReceive = true
-	if machineOutputMode() {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "%s %s on %s is deprecated and will be removed — use %s. "+
-		"(%s now means %s everywhere else, and this is the last command where it did not.)\n",
-		terminal.WarnPrefix(),
-		terminal.BoldCyan("-S"),
-		terminal.BoldCyan(cmd.Name()),
-		terminal.BoldCyan("--scan-on-receive"),
-		terminal.BoldCyan("-S"),
-		terminal.BoldCyan("--stateless"))
+	return usageErrorf("-S no longer means --scan-on-receive on %s; pass --scan-on-receive to scan received traffic, or --stateless for a throwaway DB", cmd.Name())
 }
 
 // registerStatelessRootFlag declares the persistent, long-only --stateless so it
@@ -99,7 +92,7 @@ func registerStatelessRootFlag(cmd *cobra.Command) {
 // is what lets those keep theirs while every other command accepts the letter.
 //
 // Two structural guards, no exemption list. `server`/`ingest` still bind -S to
-// the retiring --scan-on-receive alias — but by the time this runs (from
+// the retired --scan-on-receive tombstone — but by the time this runs (from
 // Execute, after every init) that shorthand is already registered, so the
 // ShorthandLookup guard skips them on its own and self-heals when the alias is
 // finally removed. A name-keyed exemption list would rot in both directions:
@@ -118,7 +111,7 @@ func addStatelessShorthand(c *cobra.Command) {
 		return // already has its own, shorthand and all
 	}
 	if c.Flags().ShorthandLookup("S") != nil {
-		return // the letter is taken on this command (the deprecated alias)
+		return // the letter is taken on this command (the retired-alias tombstone)
 	}
 	c.Flags().BoolVarP(&globalStateless, "stateless", "S", false,
 		"Read from --db (a .jsonl export or standalone .sqlite) with project scoping off; ignored where it does not apply")

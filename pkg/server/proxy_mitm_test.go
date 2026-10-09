@@ -70,7 +70,7 @@ func TestIngestProxy_MITMRecordsHTTPS(t *testing.T) {
 	// upstreamInsecure=true: the httptest server uses a self-signed cert, so the
 	// proxy must skip verification when re-originating.
 	proxySrv := newIngestProxy("127.0.0.1:0", db, repo, nil, nil,
-		func() *config.ScopeMatcher { return nil }, ca, true)
+		func() *config.ScopeMatcher { return nil }, ca, true, nil)
 	proxyURL := startProxy(t, proxySrv)
 
 	client := proxyClientTrusting(t, proxyURL, caCertPool(t, ca))
@@ -120,7 +120,7 @@ func TestIngestProxy_NoMITM_DoesNotRecordHTTPS(t *testing.T) {
 
 	// No MITM CA → plain CONNECT tunnel.
 	proxySrv := newIngestProxy("127.0.0.1:0", db, repo, nil, nil,
-		func() *config.ScopeMatcher { return nil }, nil, false)
+		func() *config.ScopeMatcher { return nil }, nil, false, nil)
 	proxyURL := startProxy(t, proxySrv)
 
 	// In tunnel mode the client speaks TLS directly to the upstream, so it must

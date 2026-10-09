@@ -28,6 +28,7 @@ var stdoutStreamWriters = map[string]string{
 	"agentview.go writeAgentJSONDoc":       "the single -j document writer",
 	"replay_bulk.go runReplayBulk":         "bulk replay JSONL stream",
 	"skills.go writeBody":                  "skills get: raw SKILL.md markdown",
+	"server_ca.go runServerCAPrint":        "server ca print: the PEM certificate is the output (the -j path is an envelope)",
 	"traffic_extract.go deliverBody":       "traffic body: the body bytes are the output",
 	"traffic_extract.go runTrafficHeaders": "traffic headers: human header block (the -j path is an envelope)",
 }

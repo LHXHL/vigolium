@@ -125,6 +125,9 @@ type Handlers struct {
 	settings      *config.Settings
 	httpRequester *http.Requester
 	services      *services.Services // shared with httpRequester; may be nil
+	// mirrorDropped reports the --mirror-fs drop counter for /server-info;
+	// nil when the mirror is off.
+	mirrorDropped func() int64
 	configWatcher *config.ConfigWatcher
 	startTime     time.Time
 
@@ -400,6 +403,13 @@ func (h *Handlers) HandleServerInfo(c fiber.Ctx) error {
 		Source:      "https://github.com/vigolium/vigolium",
 		DemoOnly:    h.config.DemoOnly,
 		ViewOnly:    h.config.ViewOnly,
+	}
+	if h.config.IngestProxyAddr != "" {
+		resp.ProxyAuth = proxyAuthMode(h.config.IngestProxyAuth)
+	}
+	if h.mirrorDropped != nil {
+		dropped := h.mirrorDropped()
+		resp.MirrorDropped = &dropped
 	}
 
 	if h.db != nil {

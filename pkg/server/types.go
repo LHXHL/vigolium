@@ -11,14 +11,15 @@ import (
 
 // ServerConfig holds configuration for the API server.
 type ServerConfig struct {
-	ServiceAddr          string   // e.g. "0.0.0.0:9002"
-	BurpBridgeURL        string   // optional loopback Burp listener merged into GET /api/http-records
-	IngestProxyAddr      string   // e.g. "0.0.0.0:9003" (empty = disabled)
-	IngestProxyMITM      bool     // Intercept HTTPS via a generated CA (records + scans TLS traffic)
-	IngestProxyInsecure  bool     // Skip upstream TLS verification when intercepting HTTPS
-	IngestProxyCADir     string   // Directory holding the MITM CA (empty = ~/.vigolium/ca)
-	APIKeys              []string // Valid Bearer tokens
-	NoAuth               bool     // If true, skip auth
+	ServiceAddr          string     // e.g. "0.0.0.0:9002"
+	BurpBridgeURL        string     // optional loopback Burp listener merged into GET /api/http-records
+	IngestProxyAddr      string     // e.g. "0.0.0.0:9003" (empty = disabled)
+	IngestProxyMITM      bool       // Intercept HTTPS via a generated CA (records + scans TLS traffic)
+	IngestProxyInsecure  bool       // Skip upstream TLS verification when intercepting HTTPS
+	IngestProxyCADir     string     // Directory holding the MITM CA (empty = ~/.vigolium/ca)
+	IngestProxyAuth      *ProxyAuth // Token and/or client allow-list for the ingest proxy (nil = open; loopback only)
+	APIKeys              []string   // Valid Bearer tokens
+	NoAuth               bool       // If true, skip auth
 	ScanOnReceive        bool
 	DisableFetchResponse bool
 	Concurrency          int // Worker concurrency for API-triggered scans
@@ -403,15 +404,18 @@ type AppInfoResponse struct {
 
 // ServerInfoResponse is the response for GET /server-info.
 type ServerInfoResponse struct {
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	Author        string `json:"author"`
-	Docs          string `json:"docs"`
-	BuildTime     string `json:"build_time,omitempty"`
-	Commit        string `json:"commit,omitempty"`
-	Uptime        string `json:"uptime"`
-	ServiceAddr   string `json:"service_addr"`
-	ProxyAddr     string `json:"proxy_addr,omitempty"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Author      string `json:"author"`
+	Docs        string `json:"docs"`
+	BuildTime   string `json:"build_time,omitempty"`
+	Commit      string `json:"commit,omitempty"`
+	Uptime      string `json:"uptime"`
+	ServiceAddr string `json:"service_addr"`
+	ProxyAddr   string `json:"proxy_addr,omitempty"`
+	// ProxyAuth names the ingest proxy's access control: "token",
+	// "allowlist", "token+allowlist" or "none". Omitted without a proxy.
+	ProxyAuth     string `json:"proxy_auth,omitempty"`
 	QueueDepth    int64  `json:"queue_depth"`
 	TotalRecords  int64  `json:"total_records"`
 	TotalFindings int64  `json:"total_findings"`
@@ -420,6 +424,9 @@ type ServerInfoResponse struct {
 	Source        string `json:"source"`
 	DemoOnly      bool   `json:"demo_only,omitempty"`
 	ViewOnly      bool   `json:"view_only,omitempty"`
+	// MirrorDropped counts --mirror-fs jobs dropped because the mirror writer
+	// stayed saturated past its enqueue timeout. Present only with --mirror-fs.
+	MirrorDropped *int64 `json:"mirror_dropped,omitempty"`
 }
 
 // StatsResponse is the response for GET /api/stats.

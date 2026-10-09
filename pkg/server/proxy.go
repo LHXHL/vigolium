@@ -30,9 +30,11 @@ import (
 // decrypted request/response, and re-originates to the real target. When nil,
 // CONNECT tunnels are passed through unmodified (HTTPS traffic is not recorded).
 // upstreamInsecure skips verification of the real server's certificate during
-// re-origination (only meaningful when mitmCA is set).
-func newIngestProxy(addr string, db *database.DB, repo *database.Repository, rw *database.RecordWriter, settings *config.Settings, getScopeMatcher func() *config.ScopeMatcher, mitmCA *mitm.CA, upstreamInsecure bool) *http.Server {
+// re-origination (only meaningful when mitmCA is set). auth gates every request
+// (nil = no checks; CheckProxyBind decides whether that is acceptable).
+func newIngestProxy(addr string, db *database.DB, repo *database.Repository, rw *database.RecordWriter, settings *config.Settings, getScopeMatcher func() *config.ScopeMatcher, mitmCA *mitm.CA, upstreamInsecure bool, auth *ProxyAuth) *http.Server {
 	handler := &proxyHandler{
+		auth:            auth,
 		db:              db,
 		repo:            repo,
 		recordWriter:    rw,
@@ -70,6 +72,9 @@ func newIngestProxy(addr string, db *database.DB, repo *database.Repository, rw 
 }
 
 type proxyHandler struct {
+	// auth gates the proxy (token and/or client allow-list). Nil = open.
+	auth *ProxyAuth
+
 	db              *database.DB
 	repo            *database.Repository
 	recordWriter    *database.RecordWriter
@@ -85,6 +90,12 @@ type proxyHandler struct {
 }
 
 func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Before either path: a CONNECT carries Proxy-Authorization on the tunnel
+	// request itself, so refusing here covers HTTPS (intercepted or tunnelled)
+	// as well as plain HTTP. authorize strips the header on success.
+	if !p.auth.authorize(w, r) {
+		return
+	}
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 		return
@@ -329,6 +340,9 @@ func (p *proxyHandler) serveDecrypted(tlsConn *tls.Conn, hostPort string) {
 		}
 		req.RequestURI = "" // must be empty on a client request
 		req.Header.Del("Proxy-Connection")
+		// The tunnel was authorized at CONNECT; a credential repeated inside it
+		// must not reach the target or the recorded transaction either.
+		req.Header.Del("Proxy-Authorization")
 		// Let the transport negotiate (and transparently decompress) encoding so
 		// recorded + returned bodies are plaintext — far more useful to the
 		// scanner than gzipped bytes.

@@ -12,8 +12,9 @@ vigolium server -A
 export VIGOLIUM_API_KEY="my-secret-key"
 vigolium server
 
-# Custom host/port
-vigolium server -A --host 127.0.0.1 --service-port 8080
+# Custom port; the API binds 127.0.0.1 unless --host (or $VIGOLIUM_SERVER_HOST) says otherwise
+vigolium server -A --service-port 8080
+vigolium server --host 0.0.0.0        # reachable from other machines
 ```
 
 ## Authentication
@@ -140,18 +141,24 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "build_time": "2026-07-14T08:08:41Z",
   "commit": "c50ba85",
   "uptime": "5m32s",
-  "service_addr": "0.0.0.0:9002",
-  "proxy_addr": "",
+  "service_addr": "127.0.0.1:9002",
+  "proxy_addr": "127.0.0.1:9003",
+  "proxy_auth": "token",
   "queue_depth": 0,
   "total_records": 1234,
   "total_findings": 42,
   "license": "community-demo",
   "demo_only": true,
-  "view_only": false
+  "view_only": false,
+  "mirror_dropped": 0
 }
 ```
 
-`license`, `demo_only`, and `view_only` are omitted when unset/false. Configure `license` under `server.license` in `vigolium-configs.yaml`; `demo_only` / `view_only` reflect the `--demo-only` / `--view-only` server flags.
+`license`, `demo_only`, and `view_only` are omitted when unset/false.
+`proxy_addr` and `proxy_auth` (`none`, `token`, `allowlist` or
+`token+allowlist`) appear only when the ingest proxy is on. `mirror_dropped`
+appears only with `--mirror-fs`: it counts mirror jobs dropped because the
+mirror writer stayed saturated for more than 2s (the database is unaffected). Configure `license` under `server.license` in `vigolium-configs.yaml`; `demo_only` / `view_only` reflect the `--demo-only` / `--view-only` server flags.
 
 ---
 

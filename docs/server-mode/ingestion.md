@@ -237,13 +237,13 @@ Local ingestion can feed records directly into a long-running scanner:
 
 ```bash
 # Dynamic assessment on records as they arrive
-cat traffic.txt | vigolium ingest -S -m xss,sqli
+cat traffic.txt | vigolium ingest --scan-on-receive -m xss,sqli
 
 # Run the full native pipeline instead of dynamic assessment alone
-vigolium ingest -T targets.txt -S --full-native-scan-on-receive
+vigolium ingest -T targets.txt --scan-on-receive --full-native-scan-on-receive
 
 # Apply module and scope controls to the continuous scanner
-vigolium ingest -T targets.txt -S \
+vigolium ingest -T targets.txt --scan-on-receive \
   --module-tag injection --scope-origin balanced
 ```
 

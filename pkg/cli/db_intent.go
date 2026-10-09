@@ -63,6 +63,12 @@ var dbIntents = map[string]string{
 	"agent":           dbIntentNone, // --list-agents / --list-templates
 	"agent session":   "read",
 
+	// server ca: the MITM CA lives on disk, outside the store.
+	"server ca install":   dbIntentNone,
+	"server ca path":      dbIntentNone,
+	"server ca print":     dbIntentNone,
+	"server ca uninstall": dbIntentNone,
+
 	// Auth.
 	"auth lint": dbIntentNone,
 	"auth list": "read",

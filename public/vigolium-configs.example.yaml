@@ -25,6 +25,19 @@ server:
   # HTTPS CONNECT tunneling passes through without recording.
   ingest_proxy_port: 0
 
+  # Ingest proxy bind address (empty = 127.0.0.1). A non-loopback address
+  # requires ingest_proxy_token and/or ingest_proxy_allow, or the server
+  # refuses to start. Same as --ingest-proxy-host.
+  ingest_proxy_host: ""
+
+  # Secret required on every proxied request as Proxy-Authorization (Basic
+  # with any username and this as password, or Bearer). Same as --proxy-token.
+  ingest_proxy_token: ""
+
+  # Client CIDRs or IPs the ingest proxy accepts (empty = any). Same as
+  # --proxy-allow.
+  ingest_proxy_allow: []
+
   # CORS allowed origins for the API server.
   # Options:
   #   "reflect-origin" — echoes the requesting Origin back (allows credentials)

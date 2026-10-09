@@ -368,8 +368,8 @@ Things `-h` won't tell you:
 
 - **`-S` means `--stateless` everywhere**, and is accepted (as a no-op) on
   commands where it is meaningless — you never need a per-command acceptance
-  table. The one exception is retiring: on `server`/`ingest` it is still a
-  deprecated alias for `--scan-on-receive` and warns; **use the long
+  table. The one exception: on `server`/`ingest`, where it used to mean
+  `--scan-on-receive`, `-S` is now a usage error (exit 2) — **write the long
   `--scan-on-receive` there**.
 - **Which DB a command opens:** `--db` → `$VIGOLIUM_DB_PATH` →
   `database.sqlite.path` in config → the built-in default. Pinning

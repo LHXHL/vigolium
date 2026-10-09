@@ -108,7 +108,17 @@ docker run --rm j3ssie/vigolium:latest scan -h
 # Scan a target and write a report to the host
 docker run --rm -v "$PWD:/out" j3ssie/vigolium:latest \
   scan --stateless -t https://example.com --format jsonl -o /out/results
+
+# Run the REST server; publish the port to the host's loopback only
+docker run --rm -p 127.0.0.1:9002:9002 -e VIGOLIUM_API_KEY=change-me \
+  j3ssie/vigolium:latest server
 ```
+
+The images set `VIGOLIUM_SERVER_HOST=0.0.0.0`, because a server bound to the
+container's own loopback is unreachable through a published port; outside a
+container `vigolium server` binds `127.0.0.1` unless you pass `--host`. The
+ingest proxy is not covered by that variable: inside a container give it
+`--ingest-proxy-host 0.0.0.0` plus `--proxy-token` (or `--proxy-allow`).
 
 ## Verify the installation
 

@@ -162,7 +162,7 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 	run := runLocalIngest
 	if remote {
 		if globalScanOnReceive {
-			zap.L().Warn("--scan-on-receive/-S is ignored in remote mode; the server handles scanning independently")
+			zap.L().Warn("--scan-on-receive is ignored in remote mode; the server handles scanning independently")
 		}
 		run = runRemoteIngest
 	}

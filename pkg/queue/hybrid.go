@@ -195,6 +195,15 @@ func (q *HybridQueue) Close() error {
 	return err
 }
 
+// RecoveredTasks reports the backend's recovered count (0 when the backend
+// cannot tell).
+func (q *HybridQueue) RecoveredTasks() int64 {
+	if r, ok := q.backend.(interface{ RecoveredTasks() int64 }); ok {
+		return r.RecoveredTasks()
+	}
+	return 0
+}
+
 // Metrics returns current queue statistics.
 func (q *HybridQueue) Metrics() *QueueMetrics {
 	backendMetrics := q.backend.Metrics()
