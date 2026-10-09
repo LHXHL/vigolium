@@ -398,6 +398,12 @@ type Options struct {
 	// regardless of the host's detected stack. Set by --no-tech-filter and
 	// applied automatically when Intensity == "deep".
 	NoTechFilter bool
+
+	// AllowRiskyPayloads is the --allow-risky-payloads flag: nil when the flag
+	// was not passed (config dynamic-assessment.allow_risky_payloads decides),
+	// otherwise the explicit CLI value, which wins over config. When the resolved
+	// value is true (or Intensity == "deep"), risk:high payloads and modules run.
+	AllowRiskyPayloads *bool
 }
 
 // DefaultConcurrency is the built-in scan worker count, used wherever nobody

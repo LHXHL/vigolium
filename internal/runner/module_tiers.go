@@ -35,6 +35,44 @@ func intensityTierCeiling(intensity string) int {
 	}
 }
 
+// resolveAllowRiskyPayloads resolves the operator's risky-payload opt-in.
+// Precedence follows the config chain: an explicit --allow-risky-payloads
+// (true or false) wins; otherwise dynamic-assessment.allow_risky_payloads from
+// the merged global → project → profile settings; otherwise off. Deep intensity
+// is applied separately (RiskyPayloadsAllowed), so this is the opt-in alone.
+func resolveAllowRiskyPayloads(opts *types.Options, settings *config.Settings) bool {
+	if opts != nil && opts.AllowRiskyPayloads != nil {
+		return *opts.AllowRiskyPayloads
+	}
+	return settings != nil && settings.DynamicAssessment.AllowRiskyPayloads
+}
+
+// RiskyPayloadsAllowed reports whether risk:high payloads and modules run for a
+// scan with these options and settings: always at --intensity deep, otherwise
+// only with the --allow-risky-payloads / config opt-in.
+func RiskyPayloadsAllowed(opts *types.Options, settings *config.Settings) bool {
+	if opts != nil && isDeepIntensity(opts.Intensity) {
+		return true
+	}
+	return resolveAllowRiskyPayloads(opts, settings)
+}
+
+// isDeepIntensity matches the deep preset and its profile-name alias.
+func isDeepIntensity(intensity string) bool {
+	switch strings.ToLower(strings.TrimSpace(intensity)) {
+	case "deep", "full":
+		return true
+	}
+	return false
+}
+
+func (r *Runner) riskyPayloadsAllowed() bool {
+	if r == nil {
+		return false
+	}
+	return RiskyPayloadsAllowed(r.options, r.settings)
+}
+
 // loginCredsPolicy resolves the spider's common-credential login pass for an
 // intensity in one place: enabled off at quick/lite (a fast pass never makes
 // active login attempts), on with the full documented list at deep/full, and on
@@ -274,6 +312,30 @@ func filterModulesByTier[T modules.Module](r *Runner, mods []T, ceiling int, kin
 			zap.String("intensity", r.intensityLabel()),
 			zap.Int("ceiling", ceiling),
 			zap.Int("deferred", len(dropped)),
+			zap.Strings("ids", dropped))
+	}
+	return kept
+}
+
+// filterRiskHighModules drops modules tagged modules.TagRiskHigh and logs what
+// was withheld. Shared by the active and passive filters; kind labels the log.
+func filterRiskHighModules[T modules.Module](r *Runner, mods []T, kind string) []T {
+	if len(mods) == 0 {
+		return mods
+	}
+	kept := make([]T, 0, len(mods))
+	dropped := make([]string, 0)
+	for _, m := range mods {
+		if modules.IsRiskHighModule(m.Tags()) {
+			dropped = append(dropped, m.ID())
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if len(dropped) > 0 {
+		zap.L().Info(kind+" risk:high modules withheld (use --intensity deep, --allow-risky-payloads, or -m <id>)",
+			zap.String("intensity", r.intensityLabel()),
+			zap.Int("withheld", len(dropped)),
 			zap.Strings("ids", dropped))
 	}
 	return kept

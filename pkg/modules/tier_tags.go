@@ -22,6 +22,29 @@ const (
 	TagTierIntrusive = "intrusive"
 )
 
+// TagRiskHigh marks a whole module whose probes can change server state or
+// degrade the target (send real emails, overrun limits, lock rows, DoS a
+// regex). It is orthogonal to the tier tags: the native scan runner drops a
+// risk:high module from a broad selection unless the scan runs at --intensity
+// deep or the operator opted in with --allow-risky-payloads (config
+// dynamic-assessment.allow_risky_payloads). Naming the module explicitly
+// (-m/--module-id/--module-tag) still runs it, like the tier ceiling.
+//
+// Modules whose risk lives in a subset of payloads (sqli-time-blind's per-row
+// OR and stacked forms) gate those payloads themselves via
+// modkit.ScanContext.RiskyPayloadsAllowed instead of carrying this tag.
+const TagRiskHigh = "risk:high"
+
+// IsRiskHighModule reports whether a module's tags include TagRiskHigh.
+func IsRiskHighModule(tags []string) bool {
+	for _, t := range tags {
+		if strings.EqualFold(strings.TrimSpace(t), TagRiskHigh) {
+			return true
+		}
+	}
+	return false
+}
+
 // TierAlwaysOn is the rank assigned to a module that declares no tier tag. It is
 // strictly below every real tier so an untagged module is never excluded by an
 // intensity ceiling — a missing tag must never silently drop a module (e.g. the

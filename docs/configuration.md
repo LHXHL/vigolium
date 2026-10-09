@@ -561,6 +561,7 @@ dynamic-assessment:
     passive_modules: ["all"]
 
   # hygiene_modules: true     # unset = follow intensity (see below)
+  # allow_risky_payloads: true # risk:high payloads/modules below deep (see below)
 
   extensions:
     enabled: false
@@ -607,6 +608,14 @@ vigolium config set dynamic-assessment.hygiene_modules true    # every scan
 runs them at every intensity, `false` suppresses them even at deep. Naming them
 explicitly with `--module-tag` or `--module-id` always wins, the same way an
 explicit selection already bypasses the intensity tier ceiling.
+
+**Risky payloads (`allow_risky_payloads`).** `OR`-per-row and stacked time-blind
+SQLi payloads, and whole modules tagged `risk:high`, run only at `--intensity
+deep` by default (MSSQL time-blind is therefore deep-only). Set
+`allow_risky_payloads: true` to allow them at every intensity. The
+`--allow-risky-payloads` flag on `scan`, `run`, `scan-url` and `scan-request`
+overrides this value in either direction; deep always allows them. See
+[Risky Payloads](native-scan/modules-reference.md#risky-payloads-riskhigh).
 
 ### `scope`
 

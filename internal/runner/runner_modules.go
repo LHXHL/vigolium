@@ -185,6 +185,18 @@ func (r *Runner) getModulesToExecute() ([]modules.ActiveModule, []modules.Passiv
 		passiveModules = r.filterPassiveModulesByTier(passiveModules, ceiling)
 	}
 
+	// Withhold risk:high modules (state-changing or target-degrading probes)
+	// below deep unless the operator opted in. Same "only narrows a broad
+	// selection" rule as the tier ceiling: -m / --module-tag still runs them.
+	if !r.riskyPayloadsAllowed() {
+		if activeUsingAll && !activeNarrowedByConfig {
+			activeModules = filterRiskHighModules(r, activeModules, "Active")
+		}
+		if passiveUsingAll && !passiveNarrowedByConfig {
+			passiveModules = filterRiskHighModules(r, passiveModules, "Passive")
+		}
+	}
+
 	// Apply the hardening-advisory gate. Same "only narrows a broad selection"
 	// rule as the tier ceiling, plus one extra escape hatch: `--module-tag hygiene`
 	// resolves to exact IDs for the active category but leaves passive on the

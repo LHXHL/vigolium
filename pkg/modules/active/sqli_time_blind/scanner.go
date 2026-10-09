@@ -115,7 +115,7 @@ ipScan:
 			continue // Target too slow/jittery to time-test reliably
 		}
 
-		payloads := prioritizeByDBMS(getPayloadsForValue(baseValue), scanCtx, urlx.Host)
+		payloads := prioritizeByDBMS(getPayloadsForValue(baseValue, scanCtx.RiskyPayloadsAllowed()), scanCtx, urlx.Host)
 
 		for _, pair := range payloads {
 			result, err := m.confirmTiming(ctx, httpClient, ip, pair, baseValue, threshold)

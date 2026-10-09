@@ -705,6 +705,8 @@ func executeDirectScan(ctx context.Context, rr *httpmsg.HttpRequestResponse, tar
 		ProjectUUID:          scanProjectUUID,
 		MaxFindingsPerModule: globalMaxFindingsPerModule,
 		TechFilterDisabled:   globalNoTechFilter,
+		// The direct path loads no settings, so only the flag can opt in here.
+		AllowRiskyPayloads: scanOpts.AllowRiskyPayloads != nil && *scanOpts.AllowRiskyPayloads,
 		OnResult: func(result *output.ResultEvent) {
 			mu.Lock()
 			findings = append(findings, result)
@@ -823,6 +825,7 @@ func buildPhaseOptions(target string) (*types.Options, error) {
 	// --passive-only / --no-passive overrides.
 	opts.Modules, opts.PassiveModules = resolveModuleSelection(scanURLNoPassive)
 	opts.NoTechFilter = globalNoTechFilter
+	opts.AllowRiskyPayloads = scanOpts.AllowRiskyPayloads
 
 	// Global CLI flags
 	opts.ScanUUID = globalScanUUID

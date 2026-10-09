@@ -218,7 +218,7 @@ var scanFlagGroups = []flagGroup{
 	{"Target & Input", []string{"target", "target-file", "input", "input-mode", "input-read-timeout"}},
 	{"Input Format", []string{"required-only", "skip-format-validation"}},
 	{"Spec Options", []string{"spec-url", "spec-header", "spec-var", "spec-default"}},
-	{"Module Selection", []string{"modules", "module-tag", "module-id", "passive-only", "no-passive", "no-tech-filter"}},
+	{"Module Selection", []string{"modules", "module-tag", "module-id", "passive-only", "no-passive", "no-tech-filter", "allow-risky-payloads"}},
 	{"Scanning", []string{"only", "skip", "strategy", "scanning-profile", "intensity", "scope-origin", "scanning-max-duration", "heuristics-check", "skip-heuristics", "oast-url"}},
 	{"Discovery", []string{"discover", "discover-max-time", "discovery-wordlist", "no-discovery-fuzz", "no-prefix-breaker", "follow-subdomains", "port-sweep-ports"}},
 	{"Spidering", []string{"spider", "spider-max-time", "browser-engine", "browsers", "headless", "headed", "no-cdp", "no-forms", "browser-insecure", "require-auth", "no-carry-browser-session"}},

@@ -205,6 +205,12 @@ type ScanContext struct {
 	// default so normal scans stay bounded.
 	DeepScan bool
 
+	// AllowRiskyPayloads is the operator's opt-in (--allow-risky-payloads or
+	// config dynamic-assessment.allow_risky_payloads) to payloads that can
+	// multiply work per row or append statements to a write query, below deep.
+	// Modules should read RiskyPayloadsAllowed, which also honors DeepScan.
+	AllowRiskyPayloads bool
+
 	baselineOnce   sync.Once
 	baselineCache  *lru.Cache[string, *BaselineEntry]
 	baselineFlight singleflight.Group
@@ -276,6 +282,13 @@ func (sc *ScanContext) DedupMgr() *dedup.Manager {
 		return nil
 	}
 	return sc.DedupManager
+}
+
+// RiskyPayloadsAllowed reports whether modules may send payloads marked
+// risk:high (per-row OR delays, stacked statements): true at --intensity deep
+// or when the operator opted in via AllowRiskyPayloads. nil-safe (false).
+func (sc *ScanContext) RiskyPayloadsAllowed() bool {
+	return sc != nil && (sc.DeepScan || sc.AllowRiskyPayloads)
 }
 
 // OASTProv returns the OASTProvider or nil safely.

@@ -317,6 +317,10 @@ type ExecutorConfig struct {
 	// DeepScan mirrors --intensity=deep into ScanContext so modules can unlock
 	// heavier probing (e.g. dashboard_exposure's full mount-path sweep).
 	DeepScan bool
+	// AllowRiskyPayloads mirrors --allow-risky-payloads (or config
+	// dynamic-assessment.allow_risky_payloads) into ScanContext, unlocking
+	// risk:high payloads below deep.
+	AllowRiskyPayloads bool
 	// ContentClassByHost seeds the per-host content-class registry from the
 	// heuristics root probe (host → modkit.ContentClass string). It is the
 	// fallback consulted by the content-class gate when a record's own
@@ -775,6 +779,7 @@ func NewExecutor(
 		e.scanCtx.FollowSubdomains = true
 	}
 	e.scanCtx.DeepScan = cfg.DeepScan
+	e.scanCtx.AllowRiskyPayloads = cfg.AllowRiskyPayloads
 	e.scanCtx.ParamFindings = &modkit.ParameterFindingRegistry{}
 	e.scanCtx.TechStack = modkit.NewTechRegistry()
 	e.scanCtx.TechStack.OnDetect = cfg.OnTechDetected

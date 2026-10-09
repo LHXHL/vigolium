@@ -1429,6 +1429,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--advanced-options` | `-a` | stringToString | - | Module-specific options as key=value (e.g. -a xss.dom=true) |
+| `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
 | `--auth` | - | stringArray | - | Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas). |
 | `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |
 | `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
@@ -1519,6 +1520,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--advanced-options` | `-a` | stringToString | - | Module-specific options as key=value (e.g. -a xss.dom=true) |
+| `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
 | `--auth` | - | stringArray | - | Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas). |
 | `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |
 | `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
@@ -1610,6 +1612,7 @@ Scan a raw HTTP request for vulnerabilities
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--discover` | - | bool | `false` | Run content discovery before scanning |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
@@ -1649,6 +1652,7 @@ Scan a single URL for vulnerabilities
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
 | `--body` | - | string | - | Request body |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--discover` | - | bool | `false` | Run content discovery before scanning |

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -78,7 +79,45 @@ func registerScanPipelineFlags(flags *pflag.FlagSet) {
 	flags.DurationVar(&globalScanningMaxDuration, "scanning-max-duration", 0, "Maximum total scan duration (overrides config, e.g. 1h, 30m)")
 	flags.StringVar(&globalHeuristicsCheck, "heuristics-check", "", `Pre-scan heuristics level: none, basic, advanced (default: basic)`)
 	flags.BoolVar(&globalSkipHeuristics, "skip-heuristics", false, "Disable pre-scan heuristics (equivalent to --heuristics-check=none)")
+	registerAllowRiskyPayloadsFlag(flags)
 }
+
+// registerAllowRiskyPayloadsFlag declares --allow-risky-payloads for the scan
+// commands (scan, run via registerScanPipelineFlags; scan-url, scan-request via
+// registerLightweightScanIOFlags). It binds straight into
+// scanOpts.AllowRiskyPayloads, left nil when the flag is absent so config
+// dynamic-assessment.allow_risky_payloads decides; an explicit value (including
+// =false) overrides config.
+func registerAllowRiskyPayloadsFlag(flags *pflag.FlagSet) {
+	f := flags.VarPF(optionalBoolFlag{target: &scanOpts.AllowRiskyPayloads}, "allow-risky-payloads", "",
+		"Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads")
+	f.NoOptDefVal = "true"
+}
+
+// optionalBoolFlag is a bool flag that also records whether it was passed: the
+// target stays nil until Set, so an absent flag defers to config while an
+// explicit --flag=false still wins over a config true.
+type optionalBoolFlag struct{ target **bool }
+
+func (f optionalBoolFlag) String() string {
+	if f.target == nil || *f.target == nil {
+		return "false"
+	}
+	return strconv.FormatBool(**f.target)
+}
+
+func (f optionalBoolFlag) Set(s string) error {
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return err
+	}
+	*f.target = &v
+	return nil
+}
+
+func (f optionalBoolFlag) Type() string { return "bool" }
+
+func (f optionalBoolFlag) IsBoolFlag() bool { return true }
 
 // registerSpecFlags registers OpenAPI/Swagger spec options shared by scan
 // (when -i is an OpenAPI file) and ingest.
@@ -109,6 +148,7 @@ func registerLightweightScanIOFlags(flags *pflag.FlagSet) {
 	flags.StringVarP(&scanOpts.Output, "output", "o", "", "Write findings to this file (use with --format jsonl|html; pairs with -S/--stateless)")
 	flags.BoolVarP(&globalStateless, "stateless", "S", false, "Use a temporary database that is discarded after the scan (pass --output/--format to persist results)")
 	registerKeepDBOnErrorFlag(flags)
+	registerAllowRiskyPayloadsFlag(flags)
 	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see 'vigolium run --help')")
 	flags.StringVar(&scanFailOn, "fail-on", "", failOnUsage("for CI/agent gating; --soft-fail overrides."))
 	flags.BoolVar(&scanPrintFinding, "print-finding", false, "After the scan, print each finding to stdout as Markdown (description + matched evidence + request/response), like 'vigolium finding --markdown'. Pairs well with -S and --silent for a quick single-target scan.")

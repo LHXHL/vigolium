@@ -270,9 +270,79 @@ func TestPrioritizeByDBMS(t *testing.T) {
 	}
 }
 
-// TestGetPayloadsForValue confirms numeric vs string payload selection.
+// TestGetPayloadsForValue confirms numeric vs string payload selection and the
+// risk gate: with risky payloads allowed (deep / --allow-risky-payloads) every
+// template is returned; otherwise no OR-per-row or stacked template survives.
 func TestGetPayloadsForValue(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, numericPayloads, getPayloadsForValue("42"))
-	assert.Equal(t, stringPayloads, getPayloadsForValue("hello"))
+	assert.Equal(t, numericPayloads, getPayloadsForValue("42", true))
+	assert.Equal(t, stringPayloads, getPayloadsForValue("hello", true))
+
+	cases := []struct {
+		name      string
+		value     string
+		wantSafe  []string
+		allCount  int
+		dbmsGated []string // backends with no time payload left at balanced
+	}{
+		{
+			name:      "string",
+			value:     "hello",
+			wantSafe:  []string{"' AND SLEEP(%d)--", "' OR (SELECT pg_sleep(%d))::text='1'--"},
+			allCount:  len(stringPayloads),
+			dbmsGated: []string{"mssql", "oracle"},
+		},
+		{
+			name:      "numeric",
+			value:     "42",
+			wantSafe:  []string{" AND SLEEP(%d)--"},
+			allCount:  len(numericPayloads),
+			dbmsGated: []string{"postgres", "mssql", "oracle"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			safe := getPayloadsForValue(tc.value, false)
+			var got []string
+			dbms := map[string]bool{}
+			for _, p := range safe {
+				got = append(got, p.template)
+				dbms[p.dbType] = true
+				assert.NotRegexp(t, `(?i)\bOR (SLEEP|1=)|;`, p.template,
+					"balanced must not send OR-per-row or stacked template %q", p.template)
+			}
+			assert.Equal(t, tc.wantSafe, got)
+			assert.Len(t, getPayloadsForValue(tc.value, true), tc.allCount)
+			for _, d := range tc.dbmsGated {
+				assert.False(t, dbms[d], "%s time-blind must be deep/--allow-risky-payloads only", d)
+			}
+		})
+	}
+}
+
+// TestRiskHighTemplatesExcludedBelowDeep is the contract: every riskHigh template
+// is withheld unless the ScanContext allows risky payloads, and every OR-per-row
+// or stacked template is marked riskHigh (so a new one can't slip in unmarked).
+func TestRiskHighTemplatesExcludedBelowDeep(t *testing.T) {
+	t.Parallel()
+	perRowOrStacked := regexp.MustCompile(`(?i)(^|')\s*OR (SLEEP|1=)|;`)
+	for _, set := range [][]timePair{stringPayloads, numericPayloads} {
+		for _, p := range set {
+			if perRowOrStacked.MatchString(p.template) {
+				assert.Equal(t, riskHigh, p.risk, "OR-per-row/stacked template %q must be riskHigh", p.template)
+			}
+		}
+	}
+
+	for _, sc := range []*modkit.ScanContext{nil, {}, {DeepScan: false}} {
+		for _, v := range []string{"hello", "42"} {
+			for _, p := range getPayloadsForValue(v, sc.RiskyPayloadsAllowed()) {
+				assert.NotEqual(t, riskHigh, p.risk, "riskHigh template %q sent with DeepScan=false", p.template)
+			}
+		}
+	}
+	for _, sc := range []*modkit.ScanContext{{DeepScan: true}, {AllowRiskyPayloads: true}} {
+		assert.True(t, sc.RiskyPayloadsAllowed())
+		assert.Equal(t, stringPayloads, getPayloadsForValue("hello", sc.RiskyPayloadsAllowed()))
+	}
 }

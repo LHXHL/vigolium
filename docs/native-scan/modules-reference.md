@@ -40,6 +40,22 @@ Full list: `security-headers-missing`, `permissions-policy-detect`, `cross-origi
 
 The Info-tier fingerprints, endpoint/param observers, and `surface-scoring` are not in this set — their output feeds tech tags, scoring, and active-module targeting, so they run at every intensity.
 
+## Risky Payloads (`risk:high`)
+
+Some probes can do more than measure: an `OR`-guarded delay runs once per scanned row (multiplying the sleep and holding row locks), and a stacked statement (`'; WAITFOR …`) runs after whatever query it lands in, including an `UPDATE` or `DELETE`. These are **off below `--intensity deep`**:
+
+- `sqli-time-blind` keeps running at quick/balanced with its AND-guarded MySQL payload and the PostgreSQL scalar `::text` form; the `OR`-per-row (MySQL `OR SLEEP`, Oracle `OR 1=DBMS_PIPE…`) and stacked (`; SELECT pg_sleep`, `; WAITFOR DELAY`) templates are withheld. MSSQL has no non-stacked `WAITFOR`, so **MSSQL time-blind is deep-only**, and so are Oracle and numeric-context PostgreSQL.
+- A whole module tagged `risk:high` (state-changing or target-degrading checks) is dropped from a broad selection. Naming it with `-m` / `--module-id` / `--module-tag` still runs it.
+
+To allow them without the rest of deep:
+
+```bash
+vigolium scan -t https://example.com --allow-risky-payloads
+vigolium config set dynamic-assessment.allow_risky_payloads true   # every scan
+```
+
+An explicit `--allow-risky-payloads=false` overrides a config `true`; deep always allows them.
+
 ---
 
 ## Selected Active Modules
@@ -188,6 +204,8 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
 | `sqli-time-blind` | Blind SQL Injection (Time-Based) | Detects time-based blind SQL injection vulnerabilities | Suspect | Tentative | `injection`, `sqli`, `heavy` |
+
+`OR`-per-row and stacked payloads (and so all MSSQL time-blind) need `--intensity deep` or `--allow-risky-payloads`; see [Risky Payloads](#risky-payloads-riskhigh).
 
 ### SSRF & SSTI (Blind)
 

@@ -34,6 +34,13 @@ type DynamicAssessmentConfig struct {
 	// explicitly (--module-tag hygiene, --module-id <id>) always wins, the same
 	// way an explicit selection already bypasses the intensity tier ceiling.
 	HygieneModules *bool `yaml:"hygiene_modules,omitempty"`
+
+	// AllowRiskyPayloads unlocks risk:high probes below --intensity deep: the
+	// OR-per-row and stacked time-blind SQLi payloads (which can multiply the
+	// delay per row or append a statement to an UPDATE/DELETE) and whole modules
+	// tagged risk:high. Deep scans always allow them. The --allow-risky-payloads
+	// flag overrides this value in either direction.
+	AllowRiskyPayloads bool `yaml:"allow_risky_payloads,omitempty"`
 }
 
 func DefaultDynamicAssessmentConfig() *DynamicAssessmentConfig {
