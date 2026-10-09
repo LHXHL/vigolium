@@ -410,6 +410,22 @@ type Executor struct {
 	// success. An HTTP error status is an answer; a connection failure is not.
 	responded atomic.Int64
 
+	// scopeRejected counts input items the scope matcher dropped: before the
+	// request was sent (sendItem's pre-send check) or after the baseline came
+	// back (persistAndCheckScope). One per item. Without it a scan whose every
+	// input was out of scope looked exactly like one whose inputs were all
+	// scanned clean.
+	scopeRejected atomic.Int64
+
+	// baselineFailures keeps the most recent baseline-fetch transport failures,
+	// classified, so "nothing answered" can say why. Bounded; see
+	// recordBaselineFailure.
+	baselineFailures baselineFailureRing
+
+	// reportBase holds the cumulative counters' values at the start of the
+	// current Execute, so Report() describes this run only (see Execute).
+	reportBase struct{ responded, scopeRejected int64 }
+
 	// Database storage (optional)
 	repo          *database.Repository
 	recordWriter  *database.RecordWriter  // batched record writer (preferred over repo.SaveRecord)
@@ -471,6 +487,13 @@ type ExecutionReport struct {
 	// Not acknowledging is what keeps the durable cursor behind them so a later
 	// run re-serves them; this number is how many that was.
 	Unacked int64
+	// ScopeRejected counts input items this run dropped as out of scope, before
+	// or after the baseline fetch. Not a coverage gap (scope is the operator's
+	// choice), so Clean ignores it; a consumer compares it with Responded to
+	// spot a run whose every input was rejected.
+	ScopeRejected int64
+	// Responded counts input items this run got an HTTP response for.
+	Responded int64
 }
 
 // Clean reports whether the run covered its whole input with nothing abandoned.
@@ -489,6 +512,8 @@ func (r ExecutionReport) Clean() bool {
 func (e *Executor) Report() ExecutionReport {
 	rep := e.report
 	rep.Unacked = e.unacked.Load()
+	rep.ScopeRejected = e.scopeRejected.Load() - e.reportBase.scopeRejected
+	rep.Responded = e.responded.Load() - e.reportBase.responded
 	return rep
 }
 
@@ -816,10 +841,6 @@ func (e *Executor) SuppressedFindings() int64 {
 	return e.suppressedFindings.Load()
 }
 
-// Responded returns how many input items produced an HTTP response, which is
-// always <= Processed(). Use this, not Processed(), to report how many targets
-// answered: Processed() counts attempts, including the ones that never reached
-// a server. See the responded field for why the two differ.
 // Stored returns the number of input items whose primary record is in the
 // database when this executor finished with them. Use this, not Processed(),
 // to report how many records a run PERSISTED: Processed() counts attempts, and
@@ -836,8 +857,19 @@ func (e *Executor) StoreFailed() int64 {
 	return e.storeFailed.Load()
 }
 
+// Responded returns how many input items produced an HTTP response, which is
+// always <= Processed(). Use this, not Processed(), to report how many targets
+// answered: Processed() counts attempts, including the ones that never reached
+// a server. See the responded field for why the two differ.
 func (e *Executor) Responded() int64 {
 	return e.responded.Load()
+}
+
+// ScopeRejected returns how many input items the scope matcher dropped, before
+// the request was sent or after its baseline came back. Cumulative over the
+// executor's lifetime; Report().ScopeRejected is the last run's share.
+func (e *Executor) ScopeRejected() int64 {
+	return e.scopeRejected.Load()
 }
 
 // InFlight returns the number of worker goroutines currently processing items.
@@ -873,6 +905,10 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 	// inherit a previous run's abandonment.
 	e.report = ExecutionReport{}
 	e.unacked.Store(0)
+	// Responded()/ScopeRejected() stay cumulative for the executor's lifetime;
+	// the report's copies are this run's share.
+	e.reportBase.responded = e.responded.Load()
+	e.reportBase.scopeRejected = e.scopeRejected.Load()
 
 	// Observe server-error probe responses so a leaked database error surfaced by
 	// ANY module's probe is corroborated even when the sending module didn't check
@@ -1294,6 +1330,7 @@ func (e *Executor) sendItem(ctx context.Context, item *work.WorkItem, itemCh cha
 		if !e.cfg.ScopeMatcher.InScopeRequest(
 			item.Request.Service().Host(),
 			item.Request.Request().Path(), "", "") {
+			e.scopeRejected.Add(1)
 			item.Complete()
 			return true
 		}
@@ -1689,6 +1726,11 @@ func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestRe
 		zap.L().Debug("Failed to fetch baseline response, skipping item",
 			zap.String("url", req.Target()),
 			zap.Error(err))
+		// A cancelled phase fails every in-flight fetch; that says nothing
+		// about the target, so it is not recorded as the target's failure.
+		if ctx.Err() == nil {
+			e.recordBaselineFailure(req.Target(), err)
+		}
 		return baselineFetch{}, false
 	}
 
@@ -1807,6 +1849,9 @@ func (e *Executor) persistAndCheckScope(ctx context.Context, item *work.WorkItem
 			return false
 		}
 
+		if !inScope {
+			e.scopeRejected.Add(1)
+		}
 		if !inScope && e.cfg.ScopeOnIngest {
 			return false
 		}

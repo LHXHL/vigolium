@@ -164,6 +164,9 @@ type PhaseOutcome struct {
 	Unprocessed int64               `json:"unprocessed,omitempty"`
 	DurationMS  int64               `json:"duration_ms"`
 	Persistence *PersistenceOutcome `json:"persistence,omitempty"`
+	// Targets is the CLI-target tally (scope admission, reachability); set only
+	// on the "preflight" pseudo-phase. See TargetTally.
+	Targets *TargetTally `json:"targets,omitempty"`
 }
 
 // BenignSkip reports whether this phase was skipped for having nothing to do,
@@ -233,6 +236,12 @@ func (o *PhaseOutcome) Merge(b PhaseOutcome) {
 		o.Persistence = &p
 	default:
 		o.Persistence.Merge(*b.Persistence)
+	}
+	if b.Targets != nil {
+		if o.Targets == nil {
+			o.Targets = &TargetTally{}
+		}
+		o.Targets.Merge(*b.Targets)
 	}
 }
 

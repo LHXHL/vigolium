@@ -182,12 +182,8 @@ func (m *ScopeMatcher) AllowHost(host string) {
 func (m *ScopeMatcher) hostInScope(host string) bool {
 	// Runtime allow-set wins over the configured rule and any cached negative —
 	// checked first so a host that was rejected before AllowHost still passes.
-	// Gated on hasDynamic so the default scan (no AllowHost) skips the ToLower
-	// + map lookup on this hot path entirely.
-	if m.hasDynamic.Load() {
-		if _, ok := m.dynamicHosts.Load(strings.ToLower(host)); ok {
-			return true
-		}
+	if m.dynamicallyAllowed(host) {
+		return true
 	}
 	if v, ok := m.hostCache.Load(host); ok {
 		return v.(bool)
@@ -195,6 +191,67 @@ func (m *ScopeMatcher) hostInScope(host string) bool {
 	result := matchGlob(host, m.cfg.Host) && m.hostMatchesOrigin(host)
 	m.hostCache.Store(host, result)
 	return result
+}
+
+// dynamicallyAllowed reports whether host was added through AllowHost. Gated on
+// hasDynamic so the default scan (no AllowHost) skips the ToLower + map lookup
+// on the hot path entirely.
+func (m *ScopeMatcher) dynamicallyAllowed(host string) bool {
+	if !m.hasDynamic.Load() {
+		return false
+	}
+	_, ok := m.dynamicHosts.Load(strings.ToLower(host))
+	return ok
+}
+
+// Scope rejection rules returned by RejectReason. They name the configuration
+// key (or filter) that refused the target, so an operator can fix the right one.
+const (
+	ScopeRuleHostExclude   = "scope.host.exclude"
+	ScopeRuleHostInclude   = "scope.host.include"
+	ScopeRuleCLIOriginMode = "scope.cli_origin_mode"
+	ScopeRulePathExclude   = "scope.path.exclude"
+	ScopeRulePathInclude   = "scope.path.include"
+	ScopeRuleStaticFile    = "static_file"
+)
+
+// RejectReason explains InScopeRequest(host, path, "", ""): it returns "" when
+// the pair is in scope, else the first rule that refused it, one of the
+// ScopeRule* constants.
+//
+// It walks the same checks in the same order as InScopeRequest — the runtime
+// allow-set, the host rule (exclude before include), the CLI origin mode, the
+// path rule, the static-file filter — through the same helpers, so the verdict
+// and its explanation cannot disagree. It bypasses the host cache (which stores
+// only the boolean) and is meant for per-target explanations, not the per-item
+// hot path.
+//
+// Nil-safe: a scan with no matcher rejects nothing.
+func (m *ScopeMatcher) RejectReason(host, path string) string {
+	if m == nil {
+		return ""
+	}
+	if !m.dynamicallyAllowed(host) {
+		switch evalGlob(host, m.cfg.Host) {
+		case globExcluded:
+			return ScopeRuleHostExclude
+		case globNotIncluded:
+			return ScopeRuleHostInclude
+		}
+		if !m.hostMatchesOrigin(host) {
+			return ScopeRuleCLIOriginMode
+		}
+	}
+	switch evalGlob(path, m.cfg.Path) {
+	case globExcluded:
+		return ScopeRulePathExclude
+	case globNotIncluded:
+		return ScopeRulePathInclude
+	}
+	if m.IsStaticFile(path) {
+		return ScopeRuleStaticFile
+	}
+	return ""
 }
 
 // HostInScope reports whether host is within the configured scope (host rule +
@@ -397,34 +454,50 @@ func (m *ScopeMatcher) IsPassAll() bool {
 		isDefaultPassAll(m.cfg.ResponseString)
 }
 
+// globVerdict is evalGlob's answer: pass, or which side of the rule refused.
+type globVerdict uint8
+
+const (
+	globPass        globVerdict = iota
+	globExcluded                // matched an exclude pattern
+	globNotIncluded             // matched no include pattern
+)
+
 // matchGlob checks if value matches the glob patterns in the rule.
 // Exclude takes priority over include. Empty include = match all.
 func matchGlob(value string, rule ScopeRule) bool {
+	return evalGlob(value, rule) == globPass
+}
+
+// evalGlob is matchGlob with the reason kept: RejectReason needs to know which
+// side of the rule refused, and deriving both from one function is what keeps
+// the explanation and the verdict from drifting.
+func evalGlob(value string, rule ScopeRule) globVerdict {
 	if isDefaultPassAll(rule) {
-		return true
+		return globPass
 	}
 
 	// Check excludes first (higher priority). Through the same helper
 	// ExplicitlyExcluded uses, so the pre-send exclusion check and the full scope
 	// decision cannot disagree about what an exclude pattern matches.
 	if matchesExcludeRule(value, rule) {
-		return false
+		return globExcluded
 	}
 
 	// If include is empty or only contains "*", match everything
 	if len(rule.Include) == 0 || (len(rule.Include) == 1 && rule.Include[0] == "*") {
-		return true
+		return globPass
 	}
 
 	// Check includes
 	valueLower := strings.ToLower(value)
 	for _, pattern := range rule.Include {
 		if globMatch(valueLower, strings.ToLower(pattern)) {
-			return true
+			return globPass
 		}
 	}
 
-	return false
+	return globNotIncluded
 }
 
 // matchStatusCode checks if the status code matches the rule patterns.
