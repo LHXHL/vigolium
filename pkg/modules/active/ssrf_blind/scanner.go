@@ -92,7 +92,7 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	// Only test parameters that look like they might accept URLs
-	if !looksLikeURLParam(ip.Name(), ip.BaseValue()) {
+	if !looksLikeURLParam(ip.Type(), ip.Name(), ip.BaseValue()) {
 		return nil, nil
 	}
 
@@ -131,6 +131,6 @@ func (m *Module) ScanPerInsertionPoint(
 // Origin / Upgrade-Insecure-Requests / … are never fetch sinks) stays consistent
 // across the SSRF family — this local copy previously mis-scoped OAST probes onto
 // those standard headers.
-func looksLikeURLParam(name, value string) bool {
-	return infra.LooksLikeURLParam(name, value)
+func looksLikeURLParam(typ httpmsg.InsertionPointType, name, value string) bool {
+	return infra.LooksLikeURLParamAt(typ, name, value)
 }

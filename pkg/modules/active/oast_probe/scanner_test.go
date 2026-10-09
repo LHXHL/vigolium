@@ -3,6 +3,7 @@ package oast_probe
 import (
 	"testing"
 
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 )
 
@@ -50,9 +51,9 @@ func TestLooksLikeURLParam(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := looksLikeURLParam(tt.name, tt.value)
+		got := looksLikeURLParam(httpmsg.INS_PARAM_URL, tt.name, tt.value)
 		if got != tt.want {
-			t.Errorf("looksLikeURLParam(%q, %q) = %v, want %v", tt.name, tt.value, got, tt.want)
+			t.Errorf("looksLikeURLParam(URL_PARAM, %q, %q) = %v, want %v", tt.name, tt.value, got, tt.want)
 		}
 	}
 }

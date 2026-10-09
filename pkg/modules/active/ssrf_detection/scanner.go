@@ -147,7 +147,7 @@ func (m *Module) ScanPerInsertionPoint(
 
 	// Only test parameters that look like they might accept URLs
 	baseVal := ip.BaseValue()
-	if !looksLikeURLParam(ip.Name(), baseVal) {
+	if !looksLikeURLParam(ip.Type(), ip.Name(), baseVal) {
 		return nil, nil
 	}
 
@@ -436,8 +436,8 @@ func isBlockedResponse(resp *httputil.ResponseChain) bool {
 // Origin / Upgrade-Insecure-Requests / … are never fetch sinks, whatever their
 // URL-like name or value — the fcworkflow.acme.com false positives) stays
 // consistent across the SSRF family.
-func looksLikeURLParam(name, value string) bool {
-	return infra.LooksLikeURLParam(name, value)
+func looksLikeURLParam(typ httpmsg.InsertionPointType, name, value string) bool {
+	return infra.LooksLikeURLParamAt(typ, name, value)
 }
 
 // benignSiblingURL is a structurally-identical absolute URL (RFC 5737 TEST-NET-1

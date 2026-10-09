@@ -89,7 +89,7 @@ func (m *Module) ScanPerInsertionPoint(
 		return nil, errors.Wrap(err, "failed to get URL")
 	}
 
-	if !infra.LooksLikeURLParam(ip.Name(), ip.BaseValue()) {
+	if !infra.LooksLikeURLParamAt(ip.Type(), ip.Name(), ip.BaseValue()) {
 		return nil, nil
 	}
 

@@ -72,7 +72,7 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	// Only test parameters that look like they accept URLs.
-	if !infra.LooksLikeURLParam(ip.Name(), ip.BaseValue()) {
+	if !infra.LooksLikeURLParamAt(ip.Type(), ip.Name(), ip.BaseValue()) {
 		return nil, nil
 	}
 

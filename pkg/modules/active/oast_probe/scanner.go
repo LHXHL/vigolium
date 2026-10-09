@@ -202,7 +202,7 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	// Only test parameters that look like they might accept URLs
-	if !looksLikeURLParam(ip.Name(), ip.BaseValue()) {
+	if !looksLikeURLParam(ip.Type(), ip.Name(), ip.BaseValue()) {
 		return nil, nil
 	}
 
@@ -236,6 +236,6 @@ func (m *Module) ScanPerInsertionPoint(
 // looksLikeURLParam reports whether a parameter looks like a URL sink. It delegates
 // to the shared infra helper so the standard-request-header exclusion stays
 // consistent across the SSRF/OAST family.
-func looksLikeURLParam(name, value string) bool {
-	return infra.LooksLikeURLParam(name, value)
+func looksLikeURLParam(typ httpmsg.InsertionPointType, name, value string) bool {
+	return infra.LooksLikeURLParamAt(typ, name, value)
 }

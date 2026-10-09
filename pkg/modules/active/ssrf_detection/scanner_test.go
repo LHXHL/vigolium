@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -24,27 +25,33 @@ func TestLooksLikeURLParam(t *testing.T) {
 		paramName string
 		value     string
 		want      bool
+		typ       httpmsg.InsertionPointType
 	}{
-		{"url name", "url", "anything", true},
-		{"uri name", "imageUri", "anything", true},
-		{"redirect name", "redirect_to", "/home", true},
-		{"callback name", "callback", "x", true},
-		{"proxy name", "proxyHost", "x", true},
-		{"http value", "q", "http://example.com", true},
-		{"https value", "q", "https://example.com", true},
-		{"scheme-relative value", "q", "//example.com/x", true},
-		{"plain name and value", "id", "12345", false},
-		{"name substring not url-ish", "username", "bob", false},
-		{"empty", "", "", false},
+		{"url name", "url", "anything", true, httpmsg.INS_PARAM_URL},
+		{"uri name", "imageUri", "anything", true, httpmsg.INS_PARAM_URL},
+		{"redirect name", "redirect_to", "/home", true, httpmsg.INS_PARAM_URL},
+		{"callback name", "callback", "x", true, httpmsg.INS_PARAM_URL},
+		{"proxy name", "proxyHost", "x", true, httpmsg.INS_PARAM_URL},
+		{"http value", "q", "http://example.com", true, httpmsg.INS_PARAM_URL},
+		{"https value", "q", "https://example.com", true, httpmsg.INS_PARAM_URL},
+		{"scheme-relative value", "q", "//example.com/x", true, httpmsg.INS_PARAM_URL},
+		{"plain name and value", "id", "12345", false, httpmsg.INS_PARAM_URL},
+		{"name substring not url-ish", "username", "bob", false, httpmsg.INS_PARAM_URL},
+		{"empty", "", "", false, httpmsg.INS_PARAM_URL},
+		// Short names match only as whole tokens; a query param may share a header name.
+		{"host query param", "host", "internal.example", true, httpmsg.INS_PARAM_URL},
+		{"ghost is not host", "ghost", "boo", false, httpmsg.INS_PARAM_URL},
+		{"context is not next", "context", "x", false, httpmsg.INS_PARAM_URL},
 		// Standard request headers are never fetch sinks, however URL-like they look.
-		{"referer header with url value", "Referer", "https://site.example/login", false},
-		{"origin header with url value", "Origin", "https://site.example", false},
-		{"upgrade-insecure-requests substring-matches request", "Upgrade-Insecure-Requests", "1", false},
-		{"user-agent header", "User-Agent", "Mozilla/5.0", false},
+		{"host header", "Host", "internal.example", false, httpmsg.INS_HEADER},
+		{"referer header with url value", "Referer", "https://site.example/login", false, httpmsg.INS_HEADER},
+		{"origin header with url value", "Origin", "https://site.example", false, httpmsg.INS_HEADER},
+		{"upgrade-insecure-requests substring-matches request", "Upgrade-Insecure-Requests", "1", false, httpmsg.INS_HEADER},
+		{"user-agent header", "User-Agent", "Mozilla/5.0", false, httpmsg.INS_HEADER},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, looksLikeURLParam(tt.paramName, tt.value))
+			assert.Equal(t, tt.want, looksLikeURLParam(tt.typ, tt.paramName, tt.value))
 		})
 	}
 }
