@@ -254,27 +254,8 @@ func expandBearerTokenPath(tokenPath string) []ExtractRule {
 
 // ValidateExpect checks if an HTTP response satisfies the expect constraints.
 func ValidateExpect(expect *ExpectResponse, statusCode int, body []byte) error {
-	if expect == nil {
-		return nil
-	}
-	if len(expect.Status) > 0 {
-		found := false
-		for _, s := range expect.Status {
-			if s == statusCode {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("unexpected status %d (expected one of %v)", statusCode, expect.Status)
-		}
-	}
-	if expect.BodyContains != "" {
-		if !strings.Contains(string(body), expect.BodyContains) {
-			return fmt.Errorf("response body does not contain %q", expect.BodyContains)
-		}
-	}
-	return nil
+	_, err := checkExpect(expect, statusCode, body)
+	return err
 }
 
 // LoginURL returns the login URL for the session. For multi-step flows, returns
@@ -288,9 +269,14 @@ func (lf *LoginFlow) LoginURL() string {
 
 // LintIssue represents a single validation issue found during linting.
 type LintIssue struct {
-	Field    string // dot-notation path, e.g. "sessions[0].login.url"
-	Severity string // "error" or "warning"
-	Message  string
+	Field    string `json:"field"`    // dot-notation path, e.g. "sessions[0].login.url"
+	Severity string `json:"severity"` // "error" or "warning"
+	Message  string `json:"message"`
+	// Line and Column locate the field in the source file (1-based); 0 when
+	// the issue has no position (a missing field with no present parent, or a
+	// document parsed without one).
+	Line   int `json:"line,omitempty"`
+	Column int `json:"column,omitempty"`
 }
 
 // LintSessionConfig performs detailed validation of a SessionConfig and returns
@@ -353,7 +339,7 @@ func lintSession(s *Session, prefix string) []LintIssue {
 
 	if s.Name == "" {
 		issues = append(issues, LintIssue{
-			Field: prefix + ".name", Severity: "error",
+			Field: joinField(prefix, "name"), Severity: "error",
 			Message: "session name is required",
 		})
 	}
@@ -363,7 +349,7 @@ func lintSession(s *Session, prefix string) []LintIssue {
 		// ok
 	default:
 		issues = append(issues, LintIssue{
-			Field: prefix + ".role", Severity: "error",
+			Field: joinField(prefix, "role"), Severity: "error",
 			Message: fmt.Sprintf("invalid role %q (must be \"primary\" or \"compare\")", s.Role),
 		})
 	}
@@ -395,7 +381,7 @@ func lintSession(s *Session, prefix string) []LintIssue {
 	}
 
 	if hasLogin {
-		issues = append(issues, lintLoginFlow(s.Login, prefix+".login")...)
+		issues = append(issues, lintLoginFlow(s.Login, joinField(prefix, "login"))...)
 	}
 
 	return issues

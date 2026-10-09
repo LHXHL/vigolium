@@ -209,8 +209,9 @@ finished session; it is not part of the token exchange itself.
 
 Each step may use `expect.status` and `expect.body_contains` to fail early when
 the remote service changes behavior. `vigolium auth lint` checks the file's
-structure only; the remote requests and extraction rules are exercised when a
-scan hydrates the session.
+structure only (including unknown fields, reported with their line); `vigolium
+auth load` runs the whole flow, every step and `expect`, before saving the
+session, and exits 1 (`login_failed`) without saving it when the login fails.
 
 ```bash
 vigolium auth lint ./multi-step-token-exchange.yaml
@@ -523,6 +524,7 @@ target is crawled unauthenticated unless `spidering.require_auth` /
 | Symptom | Meaning and next step |
 |---------|-----------------------|
 | `auth lint` succeeds but scan hydration fails | Lint validates structure without contacting the login services. Check the failing step's status, response shape, and extraction path. |
+| `auth load` reports `unverified` | The login ran but had no `expect` block, and the response could not confirm it (for example the password form came back). Add `expect.status` / `expect.body_contains` so a wrong password fails. |
 | `cookie "token" not found in login response` | The response did not include a matching `Set-Cookie` header. If it returned JSON, use `source: json`; if browser JavaScript creates the cookie, build the `Cookie` header with `apply_as`. |
 | A later request still contains `{name}` | The earlier rule did not use `apply_as: "var:name"`, or its extraction path did not match. Variable names are case-sensitive. |
 | `last step must have at least one extract rule` | Add a final extraction that produces an application header or cookie. Intermediate variables alone are not scan credentials. |

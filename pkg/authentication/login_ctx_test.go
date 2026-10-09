@@ -367,35 +367,23 @@ func TestLoginJarIsPerFlow(t *testing.T) {
 	}
 }
 
-// ProbeLoginContext honours its context too, so an interactive probe is
+// CheckLogin honours its context too, so an interactive check (auth load) is
 // interruptible.
-func TestProbeLoginContext_Cancelled(t *testing.T) {
+func TestCheckLogin_Cancelled(t *testing.T) {
 	srv := stalledServer(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	start := time.Now()
-	if _, err := ProbeLoginContext(ctx, bearerSession("admin", srv.URL), nil); err == nil {
-		t.Fatal("expected an error for a cancelled context")
+	res := CheckLogin(ctx, bearerSession("admin", srv.URL), nil)
+	if res.OK || res.Err == nil {
+		t.Fatalf("expected a failure for a cancelled context, got %+v", res)
+	}
+	if res.Reason != LoginReasonNetworkError {
+		t.Errorf("reason = %q, want %q", res.Reason, LoginReasonNetworkError)
 	}
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Errorf("took %v to notice a cancelled context", elapsed)
-	}
-}
-
-// ProbeLogin (no context) keeps its old shape: status back, no error.
-func TestProbeLoginStillReturnsStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	status, err := ProbeLogin(bearerSession("admin", srv.URL))
-	if err != nil {
-		t.Fatalf("ProbeLogin: %v", err)
-	}
-	if status != http.StatusForbidden {
-		t.Errorf("status = %d, want 403", status)
 	}
 }

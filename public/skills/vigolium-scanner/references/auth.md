@@ -98,10 +98,13 @@ sessions:
 
 ## Managing Sessions with `vigolium auth`
 
-The `vigolium auth` command manages session configs in the database:
+The `vigolium auth` command manages session configs in the database. `auth load`,
+`auth lint` and `--auth-file` share one parser, so they accept the same three
+forms: a `sessions:` bundle, a single session at the top level, and an agent
+`session-config.json`.
 
 ```bash
-# Load session config from a file
+# Load session config from a file (logs in first; see below)
 vigolium auth load auth-config.yaml --host example.com
 
 # Load from stdin
@@ -113,32 +116,77 @@ vigolium auth load ~/.vigolium/agent-sessions/<uuid>/session-config.json
 # Load a raw HTTP login request (auto-discovers tokens from response)
 cat login-req.txt | vigolium auth load --name admin --host example.com
 
-# Skip login flow validation
+# Skip the login check
 vigolium auth load sessions.json --no-validate
 
-# Validate session config syntax before use
-vigolium auth lint auth-config.yaml
+# Validate one or more session configs before use
+vigolium auth lint auth-config.yaml admin.yaml
 cat session-config.json | vigolium auth lint --stdin
+vigolium auth lint -j auth-config.yaml
 
 # List loaded sessions
 vigolium auth list
 vigolium auth ls --host example.com
 
-# Generate TOTP code for 2FA login flows
-vigolium auth totp --secret JBSWY3DPEHPK3PXP
+# Generate a TOTP code for 2FA login flows (secret from $VIGOLIUM_TOTP_SECRET)
+VIGOLIUM_TOTP_SECRET=JBSWY3DPEHPK3PXP vigolium auth totp
 ```
 
-`auth lint` validates the configuration structure without executing remote
-login requests. Pass multi-step configurations directly to scans with
-`--auth-file`; `auth load` currently validates and persists only single-step
-login fields, so a stored multi-step flow will not round-trip correctly.
+### `auth load`: the login check
+
+Unless `--no-validate` is passed, `auth load` runs each session's login exactly
+as a scan does: every step of a multi-step `steps` flow, every `expect` block,
+over the scan's transport (`--proxy` or the environment proxy, the scan's TLS
+stance, `--timeout` per request). Static-header sessions are not contacted.
+
+| Outcome | Saved | Exit |
+|---------|-------|------|
+| Login passed its `expect`, or (no `expect`) extracted a credential or redirected away from the login URL | yes | 0 |
+| No `expect`, and the response cannot confirm the login (for example the password form came back): `reason: unverified` warning | yes | 0 |
+| `expect` failed (`expect_status_mismatch`, `expect_body_missing`), status outside 2xx/3xx without `expect` (`unexpected_status`), `extract_failed`, `network_error`, `invalid_flow` | no (yes with `--force`) | 1, error code `login_failed` |
+
+Add an `expect` block to every login whose failure page also answers 200: it is
+the only way a wrong password becomes an error rather than a warning.
+
+The database row has no columns for `steps`: `auth load` checks a multi-step
+flow but a stored multi-step session does not round-trip. Pass multi-step
+configurations to scans with `--auth-file`.
+
+`-j` prints one mutation document. `items` holds one result per session
+(`session`, `ok`, `verified`, `status`, `url`, `final_url`, `redirects`, `step`,
+`extracted_headers` (names only), `reason`, `message`), plus `persisted`,
+`failed` and `host`. When a login failed the document also has `ok: false` and
+`error: {code: "login_failed", message, exit_code: 1}`. Human output goes to
+stderr under `-j`. An unknown field in the file is a warning for `auth load`
+and `--auth-file`.
+
+### `auth lint`
+
+Lints one or more files (or `--stdin`) without contacting any login service.
+An unknown field (a typo such as `extarct:`) is an error with its line and
+column, alongside the structural checks. Exits 1 with error code `lint_failed`
+when any file has an error; warnings alone exit 0. `-j` items are
+`{file, field, line, column, severity, message}`, with `files`, `errors` and
+`warnings` counts; on failure the document carries `ok: false` and
+`error.code: "lint_failed"`.
+
+### `auth totp`
+
+Reads the base32 secret from one source: `--secret-env NAME` (default
+`VIGOLIUM_TOTP_SECRET`), `--secret-file PATH`, or `--secret -` (stdin).
+`--secret VALUE` still works but warns that the secret is visible in the
+process list. Naming two sources, or none with the variable unset, is a usage
+error (exit 2). Prints the code alone; `-j` gives
+`items: [{code, expires_in, period, secret_source}]`.
 
 ### `vigolium auth load` Flags
 
 | Flag | Description |
 |------|-------------|
-| `--host` | Hostname to associate sessions with (derived from login URL if omitted) |
-| `--no-validate` | Skip executing login flows for validation |
+| `--host` | Hostname to associate sessions with (derived from the login URL, first step URL or `login_request` if omitted) |
+| `--no-validate` | Skip the login check |
+| `--force` | Save sessions whose login check failed (still exits 1) |
+| `--timeout` | Timeout for each login request (default `30s`) |
 | `--source` | Source label for the session rows (default: `"cli"`) |
 | `--agent-format` | Force parsing as agent session-config.json format |
 | `--name` | Session name (used with raw HTTP request input) |

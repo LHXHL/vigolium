@@ -2,7 +2,6 @@ package authentication
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"gopkg.in/yaml.v3"
 )
 
 // DefaultLoginBudget bounds the time ALL login flows together may take. It is a
@@ -203,10 +201,14 @@ func (m *Manager) PrimaryHeaders() []string {
 }
 
 // LoadFromAuthFiles loads sessions from one or more --auth-file values. Each
-// value is either a file path (YAML/JSON, single session or sessions: bundle)
-// or a bare name resolved against sessionDir (default ~/.vigolium/sessions/),
-// trying .yaml, .yml, .json in order. Files support ${ENV} expansion before
-// parsing.
+// value is either a file path (YAML/JSON: a sessions: bundle, a single session,
+// or an agent session-config.json) or a bare name resolved against sessionDir
+// (default ~/.vigolium/sessions/), trying .yaml, .yml, .json in order. Files
+// support ${ENV} expansion before parsing.
+//
+// An unknown field is logged as a warning, not refused: a file that loaded
+// before the parser learned to notice extra keys keeps loading. `auth lint`
+// reports the same field as an error, with its line.
 func LoadFromAuthFiles(paths []string, sessionDir string) ([]*Session, error) {
 	var sessions []*Session
 	for _, p := range paths {
@@ -215,10 +217,14 @@ func LoadFromAuthFiles(paths []string, sessionDir string) ([]*Session, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read auth file %s: %w", resolved, err)
 		}
-		content := os.ExpandEnv(string(data))
-		loaded, err := parseSessionContent(resolved, content)
+		loaded, issues, err := ParseSessionBytes(data, resolved, ParseOptions{})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("auth file: %w", err)
+		}
+		for _, is := range issues {
+			zap.L().Warn("Auth file has an unknown field (ignored); run `vigolium auth lint` to check it",
+				zap.String("file", resolved), zap.String("field", is.Field),
+				zap.Int("line", is.Line), zap.String("issue", is.Message))
 		}
 		sessions = append(sessions, loaded...)
 	}
@@ -236,44 +242,6 @@ func LoadFromAuthInline(values []string) ([]*Session, error) {
 		sessions = append(sessions, s)
 	}
 	return sessions, nil
-}
-
-// parseSessionContent parses YAML or JSON content as either a sessions: bundle
-// (SessionConfig) or a single top-level Session.
-func parseSessionContent(path string, content string) ([]*Session, error) {
-	asJSON := isJSON(path, content)
-
-	// Try bundle (sessions: ...) first.
-	var cfg SessionConfig
-	var bundleErr error
-	if asJSON {
-		bundleErr = json.Unmarshal([]byte(content), &cfg)
-	} else {
-		bundleErr = yaml.Unmarshal([]byte(content), &cfg)
-	}
-	if bundleErr == nil && len(cfg.Sessions) > 0 {
-		result := make([]*Session, len(cfg.Sessions))
-		for i := range cfg.Sessions {
-			result[i] = &cfg.Sessions[i]
-		}
-		return result, nil
-	}
-
-	// Fall back to single session at top level.
-	var s Session
-	var singleErr error
-	if asJSON {
-		singleErr = json.Unmarshal([]byte(content), &s)
-	} else {
-		singleErr = yaml.Unmarshal([]byte(content), &s)
-	}
-	if singleErr != nil {
-		return nil, fmt.Errorf("failed to parse auth file %s: %w", path, singleErr)
-	}
-	if s.Name == "" {
-		return nil, fmt.Errorf("auth file %s: no sessions defined", path)
-	}
-	return []*Session{&s}, nil
 }
 
 // resolveSessionPath resolves a session file path.

@@ -12,7 +12,6 @@ ingest.go reportRemoteIngest 1
 kit_wordlist.go runKitWordlist 1
 module.go printModuleJSON 1
 scan_url.go outputScanResult 2
-session_totp.go runSessionTotp 1
 storage_ls.go runStorageLs 1
 storage_presign.go runStoragePresign 1
 update.go runUpdateCmd 1

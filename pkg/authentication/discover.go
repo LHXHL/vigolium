@@ -2,6 +2,7 @@ package authentication
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
-	"time"
 
 	"golang.org/x/net/publicsuffix"
 )
@@ -57,8 +57,19 @@ type DiscoverResult struct {
 // auth response headers. Returns a Session with a LoginFlow populated with
 // auto-generated ExtractRules.
 func DiscoverLogin(loginReq *LoginRequest) (*DiscoverResult, error) {
+	return DiscoverLoginContext(context.Background(), loginReq, nil)
+}
+
+// DiscoverLoginContext is DiscoverLogin bounded by ctx and sent over client's
+// transport (pkg/http.LoginTransport: the scan's proxy and TLS stance). client
+// is copied, never mutated; nil keeps the old direct, certificate-ignoring
+// transport.
+func DiscoverLoginContext(ctx context.Context, loginReq *LoginRequest, client *http.Client) (*DiscoverResult, error) {
 	if loginReq == nil {
 		return nil, fmt.Errorf("nil login request")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
@@ -66,18 +77,19 @@ func DiscoverLogin(loginReq *LoginRequest) (*DiscoverResult, error) {
 		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
 	}
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-		Jar:     jar,
-		Transport: &http.Transport{
+	if client == nil {
+		client = &http.Client{Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		}}
+	}
+	client = withLoginJar(client, jar)
+	if client.CheckRedirect == nil {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
 			}
 			return nil
-		},
+		}
 	}
 
 	var body io.Reader
@@ -85,7 +97,7 @@ func DiscoverLogin(loginReq *LoginRequest) (*DiscoverResult, error) {
 		body = strings.NewReader(loginReq.Body)
 	}
 
-	req, err := http.NewRequest(strings.ToUpper(loginReq.Method), loginReq.URL, body)
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(loginReq.Method), loginReq.URL, body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
