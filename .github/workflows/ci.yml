@@ -1,48 +1,55 @@
 name: CI
 
-# Manual-only: CI runs when you start it from the Actions tab or via
-# `gh workflow run ci.yml`, not automatically on push or pull_request.
+# Runs on every push to main, every pull request, nightly (which is also the
+# only time macOS runs besides main pushes), and on demand from the Actions tab
+# or `gh workflow run ci.yml`.
 on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
-# Cancel superseded runs on the same ref to save CI minutes.
+# Cancel superseded PR runs to save CI minutes. Runs on main are never
+# cancelled, so every main commit gets a complete result.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 env:
-  # The rod browser-automation package is vendored and excluded from vet/test
-  # the same way the Makefile does it.
   GOFLAGS: -mod=readonly
 
+# Package selection used by every vet/test step mirrors GOLIST_EXCLUDE in the
+# Makefile: drop vendored rod browser tests and external tooling under
+# platform/ (incl. node_modules trees that can hold stray buildable Go
+# packages).
+#
+# Shared setup lives in .github/actions/setup-vigolium (Go, Bun, and the
+# embedded jstangle helper restored from cache).
+
 jobs:
-  build-and-test:
-    name: Lint, vet & unit tests
+  lint:
+    name: Lint & vet
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Set up toolchain and jstangle
+        id: setup
+        uses: ./.github/actions/setup-vigolium
 
-      # jstangle is compiled with bun and embedded via //go:embed
-      # (internal/resources/deparos/jstangle/jstangle-linux-amd64). That file is
-      # generated, not committed, so the tree won't build until it exists.
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Build embedded jstangle binaries
-        run: make ensure-jstangle
-
+      # The helper may have come from cache, so install deps before the suite.
+      # verify-jstangle-fresh then re-checks the staged helper's sourceHash
+      # against the tree, which keeps the cache honest.
       - name: Verify jstangle contracts and mandatory bundle corpus
+        if: steps.setup.outputs.jstangle == 'true'
         run: |
           cd platform/jstangle
+          bun install --linker isolated --ignore-scripts
           bun run test:ci
           cd ../..
           make verify-jstangle-fresh
@@ -50,9 +57,6 @@ jobs:
       - name: Verify generated/managed sources (gofmt + go.mod tidy)
         run: make verify-generated
 
-      # Filter mirrors GOLIST_EXCLUDE in the Makefile: drop vendored rod browser
-      # tests and external tooling under platform/ (incl. node_modules trees that
-      # can hold stray buildable Go packages).
       - name: go vet
         run: go vet $(go list ./... | grep -Ev '/pkg/spitolas/rod|/platform/|/node_modules/')
 
@@ -60,6 +64,15 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
+
+  unit:
+    name: Unit tests & coverage floor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up toolchain and jstangle
+        uses: ./.github/actions/setup-vigolium
 
       - name: Unit tests
         run: go test -short -coverprofile=coverage.out $(go list ./... | grep -Ev '/pkg/spitolas/rod|/platform/|/node_modules/')
@@ -69,14 +82,115 @@ jobs:
       - name: Enforce coverage floor
         run: make coverage-gate
 
+  race:
+    name: Unit tests (race detector)
+    runs-on: ubuntu-latest
+    # Non-blocking while existing races are burned down (plan H2: two weeks).
+    # To make it gate merges, delete this line and move `race` from ADVISORY to
+    # the required set in the ci-ok job below.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up toolchain and jstangle
+        uses: ./.github/actions/setup-vigolium
+
+      - name: Unit tests with -race
+        env:
+          GORACE: halt_on_error=1
+        run: go test -short -race -p 4 $(go list ./... | grep -Ev '/pkg/spitolas/rod|/platform/|/node_modules/')
+
+  postgres:
+    name: PostgreSQL e2e
+    runs-on: ubuntu-latest
+    # Best-effort for two weeks (decision D22), then required: delete this line
+    # and move `postgres` from ADVISORY to the required set in ci-ok.
+    continue-on-error: true
+    services:
+      # Mirrors test/testdata/postgres/docker-compose.yaml (what
+      # `make postgres-up` starts locally).
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vigolium_test
+          POSTGRES_PASSWORD: vigolium_test_pass
+          POSTGRES_DB: vigolium_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U vigolium_test -d vigolium_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up toolchain and jstangle
+        uses: ./.github/actions/setup-vigolium
+
+      # pgTestConfigFromEnv (test/e2e/pg_helpers_test.go) reads these; the
+      # values match its defaults but are spelled out so the job documents its
+      # own contract. The tests t.Skip when the DB is unreachable, so the step
+      # fails on any skipped or missing TestPg_ result instead of passing green.
+      - name: TestPg_ suite
+        env:
+          VIGOLIUM_PG_HOST: localhost
+          VIGOLIUM_PG_PORT: "5433"
+          VIGOLIUM_PG_USER: vigolium_test
+          VIGOLIUM_PG_PASSWORD: vigolium_test_pass
+          VIGOLIUM_PG_DATABASE: vigolium_test
+        run: |
+          set -o pipefail
+          tags="e2e${VIGOLIUM_CI_TAGS:+,$VIGOLIUM_CI_TAGS}"
+          go test -tags="$tags" -count=1 -v -timeout 10m -run 'TestPg_' ./test/e2e/... 2>&1 | tee pg-test.log
+          if grep -q -- '--- SKIP: TestPg_' pg-test.log; then
+            echo "::error::TestPg_ tests were skipped; the postgres service was not reachable"
+            exit 1
+          fi
+          if ! grep -q -- '--- PASS: TestPg_' pg-test.log; then
+            echo "::error::no TestPg_ test ran"
+            exit 1
+          fi
+
+  macos:
+    name: macOS (arm64)
+    runs-on: macos-14
+    # macOS minutes cost 10x, so this runs on main pushes and nightly only.
+    if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up toolchain and jstangle
+        uses: ./.github/actions/setup-vigolium
+
+      - name: go vet
+        run: go vet $(go list ./... | grep -Ev '/pkg/spitolas/rod|/platform/|/node_modules/')
+
+      # The darwin-sensitive half of the tree: OS build tags, update re-exec,
+      # cache/config dir resolution, transport.
+      - name: Unit tests (darwin-sensitive packages)
+        run: go test -short ./pkg/cli/... ./pkg/database/... ./internal/... ./pkg/http/... ./pkg/deparos/...
+
+      - name: make build
+        run: make build
+
+      # Smoke the real binary in an isolated HOME so it never touches a shared
+      # config or database.
+      - name: Binary smoke
+        run: |
+          export HOME="$RUNNER_TEMP/vigolium-home"
+          mkdir -p "$HOME"
+          bin/vigolium version
+          bin/vigolium doctor -j || true
+
   cross-compile:
     name: Cross-compile ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     # The shipped matrix includes windows/amd64, but every other job here runs
-    # natively on linux — so nothing else would notice a unix-only import (a
-    # bare syscall call, an os/exec of `bash`) until release day. This job is
-    # the guard: it compiles and vets the whole tree for the target GOOS.
-    # windows/arm64 is deliberately absent — the Bun-compiled helper binaries
+    # natively on linux or darwin, so nothing else would notice a unix-only
+    # import (a bare syscall call, an os/exec of `bash`) until release day. This
+    # job is the guard: it compiles and vets the whole tree for the target GOOS.
+    # windows/arm64 is deliberately absent: the Bun-compiled helper binaries
     # have no such target, so it is not shipped (see .goreleaser.yaml).
     strategy:
       fail-fast: false
@@ -87,22 +201,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-
       # The target platform's jstangle binary must exist for its go:embed to
-      # resolve. Only that one is built — the other four are irrelevant here.
-      - name: Stage jstangle for ${{ matrix.goos }}/${{ matrix.goarch }}
-        run: make build-jstangle-target JSTANGLE_TARGET=${{ matrix.goos }}-${{ matrix.goarch }}
+      # resolve. Only that one is staged; the other four are irrelevant here.
+      - name: Set up toolchain and jstangle for ${{ matrix.goos }}/${{ matrix.goarch }}
+        uses: ./.github/actions/setup-vigolium
+        with:
+          jstangle-target: ${{ matrix.goos }}-${{ matrix.goarch }}
 
       # vet type-checks every package including tests; the build additionally
-      # proves the main binary links. The audit blob is not needed — `all:_bin`
+      # proves the main binary links. The audit blob is not needed: `all:_bin`
       # matches the empty embed dir and surfaces as a runtime error instead.
       - name: Vet and build for ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
@@ -126,8 +233,8 @@ jobs:
     runs-on: windows-latest
     # Cross-compiling proves the tree builds for Windows; it proves nothing
     # about whether the binary RUNS there. This job exercises the artifact the
-    # release actually ships — process start, config load, DB open, command
-    # dispatch — none of which a linux-hosted `go build` can reach. It
+    # release actually ships (process start, config load, DB open, command
+    # dispatch), none of which a linux-hosted `go build` can reach. It
     # deliberately downloads the cross-built exe rather than rebuilding, so the
     # runner needs neither Go nor Bun.
     steps:
@@ -144,7 +251,7 @@ jobs:
           & $exe --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "--help exited $LASTEXITCODE" }
 
-      # Opens the SQLite store and writes to %USERPROFILE% — the paths most
+      # Opens the SQLite store and writes to %USERPROFILE%: the paths most
       # likely to break on Windows and invisible to a compile-only check.
       - name: Database and project initialization
         shell: pwsh
@@ -159,25 +266,16 @@ jobs:
     name: Combined coverage (report only)
     runs-on: ubuntu-latest
     # Report-only: this never gates a merge. The enforced floor lives in the
-    # build-and-test job above (coverage-gate over the -short unit profile).
-    # This job folds in the no-Docker e2e tier so the headline number reflects
-    # code exercised end-to-end (REST handlers, scan-runner orchestration) that
+    # unit job above (coverage-gate over the -short unit profile). This job
+    # folds in the no-Docker e2e tier so the headline number reflects code
+    # exercised end-to-end (REST handlers, scan-runner orchestration) that
     # per-package unit coverage can't credit. No Docker required.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Build embedded jstangle binaries
-        run: make ensure-jstangle
+      - name: Set up toolchain and jstangle
+        uses: ./.github/actions/setup-vigolium
 
       - name: Combined coverage report
         run: make coverage-combined
@@ -201,17 +299,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Build embedded jstangle binaries
-        run: make ensure-jstangle
+      - name: Set up toolchain and jstangle
+        uses: ./.github/actions/setup-vigolium
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -251,3 +340,39 @@ jobs:
         uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
+
+  # The single required status check for branch protection. It waits for every
+  # gating job and fails if any of them failed or was cancelled. A job that did
+  # not run for this event (macos on a PR) counts as skipped, not failed.
+  # Advisory jobs are listed in `needs` so their result shows up here, but a
+  # failure only warns. Informational jobs (coverage-report, govulncheck, sbom,
+  # dependency-review) are deliberately left out.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [lint, unit, race, postgres, macos, cross-compile, windows-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          # Jobs whose failure warns instead of failing ci-ok. Remove an entry
+          # (and the job's continue-on-error) to make it required.
+          ADVISORY: race postgres
+        run: |
+          set -euo pipefail
+          failed=0
+          for job in $(jq -r 'keys[]' <<<"$NEEDS"); do
+            result=$(jq -r --arg j "$job" '.[$j].result' <<<"$NEEDS")
+            echo "$job: $result"
+            case "$result" in
+              success|skipped) continue ;;
+            esac
+            if [[ " $ADVISORY " == *" $job "* ]]; then
+              echo "::warning::$job (advisory) finished with $result"
+            else
+              echo "::error::$job finished with $result"
+              failed=1
+            fi
+          done
+          exit "$failed"
