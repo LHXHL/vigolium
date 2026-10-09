@@ -1536,3 +1536,75 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 	}
 	return nil
 }
+
+// cleanupDeparosRecords runs the post-discovery record-dedup passes over the full
+// stored set (the in-engine hard dedup only sees one target at a time):
+//
+//  1. status-retention policy — drop 4xx discovery rejections (a fuzzed path the
+//     server answers with a client error is not a discovered resource), keeping a
+//     single representative per host for "auth wall exists" statuses;
+//  2. reflected-URL-robust dedup — collapse records that differ only by an echoed
+//     request URL/path or per-request dynamic tokens (the error-page-mirrors-the-URI
+//     case that defeats exact-hash dedup);
+//  3. shape-based soft-dedup backstop.
+//
+// (1) and (2) are config-gated (Discovery.DeparosDedup); (3) always runs,
+// preserving prior behavior. Each pass emits one feedback line when it removes
+// anything.
+func (r *Runner) cleanupDeparosRecords(ctx context.Context) {
+	report := func(label string, res database.RecordCleanupResult) {
+		if res.Deleted <= 0 && res.KeptReferenced <= 0 {
+			return
+		}
+		detail := fmt.Sprintf("%s %s records", label, terminal.Orange(fmt.Sprintf("%d", res.Deleted)))
+		if len(res.ByStatus) > 0 {
+			detail += " — " + formatStatusCodeMap(res.ByStatus)
+		}
+		// Say when a pass spared evidence, so a smaller-than-expected deletion
+		// count does not read as the pass having failed.
+		if res.KeptReferenced > 0 {
+			detail += fmt.Sprintf(" (kept %d referenced by findings)", res.KeptReferenced)
+		}
+		r.printPhaseFeedback("Discovery", detail)
+		r.scanLogger.Info("discovery", fmt.Sprintf("%s %d records (kept %d referenced)", label, res.Deleted, res.KeptReferenced))
+	}
+
+	// Refresh query-planner statistics before the dedup window queries run:
+	// discovery just bulk-inserted thousands of records, and without fresh stats
+	// SQLite plans the PARTITION-BY dedup scans against default row guesses.
+	if r.repository != nil && r.repository.DB() != nil {
+		r.repository.DB().Optimize(ctx)
+	}
+
+	if r.settings != nil && r.settings.Discovery.DeparosDedup.IsEnabled() {
+		dedupCfg := &r.settings.Discovery.DeparosDedup
+		if dedupCfg.DropClientErrorsEnabled() {
+			statusPolicy := database.DeparosStatusPolicy{
+				KeepOnePerHost: dedupCfg.KeepOneStatuses(),
+				KeepPerPath:    dedupCfg.KeepPerPathStatuses(),
+				PerPathCap:     dedupCfg.PerPathCapValue(),
+			}
+			res, err := r.repository.ApplyDeparosStatusPolicy(ctx, r.options.ProjectUUID, statusPolicy)
+			if err != nil {
+				zap.L().Warn("Deparos status-policy cleanup failed", zap.Error(err))
+			} else {
+				report("dropped client-error", res)
+			}
+		}
+		if dedupCfg.NormalizeReflectedEnabled() {
+			res, err := r.repository.DeduplicateDeparosByNormHash(ctx, r.options.ProjectUUID)
+			if err != nil {
+				zap.L().Warn("Deparos reflected-URL dedup failed", zap.Error(err))
+			} else {
+				report("collapsed reflected-URL", res)
+			}
+		}
+	}
+
+	softRes, err := r.repository.DeduplicateSoftDeparosRecords(ctx, r.options.ProjectUUID)
+	if err != nil {
+		zap.L().Warn("Deparos soft deduplication failed", zap.Error(err))
+	} else {
+		report("soft-deduplicated", softRes)
+	}
+}
