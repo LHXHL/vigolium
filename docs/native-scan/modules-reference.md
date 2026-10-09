@@ -160,7 +160,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 |---|---|---|---|---|---|
 | `xml-saml-security` | XML SAML Security | SAML XML security checks (XXE + signature verification) | High | Firm | `injection`, `xxe`, `authentication`, `auth-bypass`, `moderate` |
 | `jwt-vulnerability` | JWT Vulnerability | Detects JWT algorithm confusion and weak signing vulnerabilities | Critical | Certain | `jwt`, `auth-bypass`, `moderate` |
-| `http-request-smuggling` | HTTP Request Smuggling | Detects HTTP request smuggling via CL.TE and TE.CL desync | Suspect | Tentative | `request-smuggling`, `heavy` |
+| `http-request-smuggling` | HTTP Request Smuggling | Detects HTTP request smuggling via CL.TE, TE.CL and CL.0 desync | Suspect | Tentative | `request-smuggling`, `heavy` |
 
 ### API & Endpoint Security
 
