@@ -314,7 +314,7 @@ them while they are missing.
 | `targets_reached` / `targets_unreachable` | `scan.finished` | Admitted targets that did / did not give an HTTP answer. | v0.6 |
 | `budgets` | `scan.started` | `{max_requests, max_requests_per_host}`; 0 means unlimited. | not yet scheduled |
 | `egress` | `scan.started` | `{gated: [...], exempt: [{path, reason}]}`: which outbound paths share the rate and host limits. | not yet scheduled |
-| `requests_in_scope` | `phase.progress`, `phase.finished` | The in-scope share of `requests_sent` (the browser crawl also counts third-party requests). | not yet scheduled |
+| `requests_in_scope` | `phase.progress`, `phase.finished` | The in-scope share of `requests_sent` (the browser crawl also counts third-party requests). Only on `spidering` and `targeted-respider`. | next release |
 | `records_basis` | `scan.finished` | Absent: `records_written` counts records stamped with this scan. `time_window`: records created since the scan started (approximate on a shared DB). | v0.6 |
 | `exports` | `scan.finished` | `[{format, path}]` for every file the scan wrote. | v0.6 |
 | `module_errors` / `extensions_failed` | `scan.finished` | Error count per module id; extensions that failed to load. | v0.7 |

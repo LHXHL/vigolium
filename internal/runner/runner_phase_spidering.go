@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
@@ -439,16 +440,44 @@ func (r *Runner) buildSpiderConfig(target string, settingsCfg config.SpideringCo
 	return cfg
 }
 
+// browserRequestCounters are a browser phase's live request counters: every
+// request the crawls' captures see (third-party included, the network cost) and
+// the in-scope share. They back requests_sent and requests_in_scope on the
+// phase's progress and finished events; the shared requester never sees browser
+// traffic, so without them a crawl reported ≈0 requests.
+type browserRequestCounters struct {
+	sent, inScope atomic.Int64
+}
+
+// trackBrowserRequests registers a fresh counter pair with the running phase.
+func (r *Runner) trackBrowserRequests() *browserRequestCounters {
+	bc := &browserRequestCounters{}
+	t := r.currentPhase.Load()
+	t.addCounter(bc.sent.Load)
+	t.addInScopeCounter(bc.inScope.Load)
+	return bc
+}
+
+// wire points cfg's capture counters at bc.
+func (bc *browserRequestCounters) wire(cfg *spitolas.SpiderConfig) {
+	if bc == nil {
+		return
+	}
+	cfg.RequestCounter = &bc.sent
+	cfg.InScopeRequestCounter = &bc.inScope
+}
+
 // openSpiderSession starts one browser context for a host group's targets, or
 // returns nil when a session is not wanted: a single-target group (the shared
 // context buys nothing), the operator's opt-out, or a launch failure — in which
 // case each target falls back to its own fresh browser, which is the path that
 // ran before sessions existed.
-func (r *Runner) openSpiderSession(ctx context.Context, group []string, settingsCfg config.SpideringConfig, maxDuration time.Duration, infra *phaseInfra) (*spitolas.SpiderSession, *database.RecordWriter) {
+func (r *Runner) openSpiderSession(ctx context.Context, group []string, settingsCfg config.SpideringConfig, maxDuration time.Duration, infra *phaseInfra, counters *browserRequestCounters) (*spitolas.SpiderSession, *database.RecordWriter) {
 	if len(group) < 2 || spiderSessionReuseDisabled() {
 		return nil, nil
 	}
 	base := r.buildSpiderConfig(group[0], settingsCfg, maxDuration, infra)
+	counters.wire(&base)
 	rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
 	sess, err := spitolas.NewSpiderSession(ctx, base, rw)
 	if err != nil {
@@ -639,6 +668,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 	// done/total on phase.progress, in targets. processed counts a target when
 	// its crawl starts, so the reading is taken once the crawl has returned.
 	progress := r.currentPhase.Load().trackTargets(len(targets))
+	requests := r.trackBrowserRequests()
 
 	for _, group := range groups {
 		// Overall ceiling exhausted — skip the remaining targets rather than
@@ -655,7 +685,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 
 		// A shared session only pays for itself across several seeds; for a lone
 		// target it is machinery around the proven single-crawl path.
-		sess, sessRW := r.openSpiderSession(phaseCtx, group, settingsCfg, maxDuration, infra)
+		sess, sessRW := r.openSpiderSession(phaseCtx, group, settingsCfg, maxDuration, infra, requests)
 		abandoned := false
 
 		for gi, target := range group {
@@ -675,6 +705,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 				oc = runReSpiderSessionCrawl(timeoutCtx, sess, target, maxDuration)
 			} else {
 				cfg := r.buildSpiderConfig(target, settingsCfg, maxDuration, infra)
+				requests.wire(&cfg)
 				rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
 				oc = runSpiderWatchdog(timeoutCtx, cfg, rw, maxDuration, target)
 				phaseCapture.Merge(oc.capture())

@@ -82,6 +82,10 @@ type Crawler struct {
 	// Writer for network traffic capture output
 	writer network.Writer
 
+	// requestCounters are added to the capture Run creates (see
+	// AddRequestCounters). RunOnBrowser uses the caller's capture instead.
+	requestCounters []network.RequestCounters
+
 	// adoptedHost is an off-host redirect target that the start URL bounced to
 	// and that did NOT look like a login/SSO wall. When set, isInScope treats it
 	// as in-scope (alongside the configured target host) so the crawl can follow
@@ -372,6 +376,13 @@ func (c *Crawler) SetWriter(w network.Writer) {
 	c.writer = w
 }
 
+// AddRequestCounters registers counters the crawl's capture increments for every
+// request the browser sends. Must be called before Run; RunOnBrowser counts
+// through the capture it is handed, so it ignores these.
+func (c *Crawler) AddRequestCounters(rc network.RequestCounters) {
+	c.requestCounters = append(c.requestCounters, rc)
+}
+
 // AddInvariant adds an invariant condition that must always hold.
 func (c *Crawler) AddInvariant(inv *condition.Condition) {
 	c.invariants = append(c.invariants, inv)
@@ -487,6 +498,9 @@ func (c *Crawler) Run(ctx context.Context) (*Result, error) {
 	// filter/tab/search links) instead of collapsing them to one representative.
 	capture.SetMaxParamValueVariants(c.config.MaxParamValueVariants)
 	capture.SetMaxBodyBytes(c.config.MaxCaptureBodyBytes)
+	for _, rc := range c.requestCounters {
+		capture.AddRequestCounters(rc)
+	}
 	// Keep out-of-scope subresources (a login page's CAPTCHA widget, analytics
 	// beacons) out of the live log — they are dropped before storage anyway.
 	capture.ScopeFilter = c.config.ScopeFilter

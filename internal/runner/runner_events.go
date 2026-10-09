@@ -63,6 +63,10 @@ type phaseTracker struct {
 	hasPersist bool
 	unacked    int64
 	counters   []phaseCounter
+	// inScope are the counters behind requests_in_scope, for phases whose
+	// requests_sent includes third-party traffic (the browser crawl). Nil means
+	// the phase does not report the field.
+	inScope []phaseCounter
 
 	// Work-item progress (done/total/unit on phase.progress and phase.finished).
 	// progress is nil for a phase with no count to report; lastTotal is the
@@ -143,6 +147,7 @@ func (t *phaseTracker) heartbeat(ctx context.Context) {
 				RequestsSent: scanevents.Int64(t.sentSoFar()),
 				Findings:     scanevents.Int64(t.findings.Load()),
 			}
+			t.fillInScope(&ev)
 			t.fillProgress(&ev)
 			scanevents.Emit(ev)
 		case <-t.stop:
@@ -150,6 +155,23 @@ func (t *phaseTracker) heartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// inScopeSoFar sums the in-scope counters; ok is false when none is registered.
+func (t *phaseTracker) inScopeSoFar() (n int64, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, c := range t.inScope {
+		n += c.read() - c.base
+	}
+	return n, len(t.inScope) > 0
+}
+
+// fillInScope sets requests_in_scope when the phase registered a counter for it.
+func (t *phaseTracker) fillInScope(ev *scanevents.Event) {
+	if n, ok := t.inScopeSoFar(); ok {
+		ev.RequestsInScope = scanevents.Int64(n)
 	}
 }
 
@@ -185,6 +207,19 @@ func (t *phaseTracker) addCounter(f func() int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.counters = append(t.counters, phaseCounter{read: f, base: base})
+}
+
+// addInScopeCounter registers a counter for requests_in_scope, the in-scope
+// share of the requests a counter given to addCounter reports. Read as a delta
+// from its value now, like addCounter.
+func (t *phaseTracker) addInScopeCounter(f func() int64) {
+	if t == nil || f == nil {
+		return
+	}
+	base := f()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.inScope = append(t.inScope, phaseCounter{read: f, base: base})
 }
 
 // setProgress installs the phase's work-item progress source: f reports how many
@@ -466,6 +501,7 @@ func (t *phaseTracker) finish(ctx context.Context, err error) database.PhaseOutc
 	if out.Message != "" {
 		ev.Message = out.Message
 	}
+	t.fillInScope(&ev)
 	t.fillProgress(&ev)
 	scanevents.Emit(ev)
 	return out

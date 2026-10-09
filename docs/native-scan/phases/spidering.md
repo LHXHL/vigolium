@@ -120,8 +120,31 @@ account creation, credential attempts, dialog answers — is one explicit policy
 Traffic is captured at the **browser level** (not page level) via CDP events, covering all tabs, popups, and iframes:
 
 1. `NetworkRequestWillBeSent` → record request
-2. `NetworkResponseReceived` → record response headers
-3. `NetworkLoadingFinished` → fetch response body
+2. `NetworkRequestWillBeSentExtraInfo` → merge the headers Chrome actually sent
+3. `NetworkResponseReceived` → record response headers
+4. `NetworkLoadingFinished` → fetch response body (and, when needed, the request body)
+
+Crawler records carry the **wire** request headers: `Cookie`, `Host`, `Origin`
+and `Referer` come from `requestWillBeSentExtraInfo`, which is where Chrome
+reports what its network stack added (the page's own cookies included). So
+`http_records` from spidering now hold the session cookies the browser sent, as
+records from `scan` already do. ExtraInfo can arrive before or after its
+request, and a redirect chain reuses one request id; out-of-order ExtraInfo is
+held (up to 4096 requests, 30s) until its request shows up.
+
+A request body Chrome leaves out of `requestWillBeSent` (large or file-backed
+multipart, for example) is fetched with `Network.getRequestPostData` after the
+request finishes, off the event loop, for in-scope non-static requests only. It
+is best-effort: two workers with a short queue, and a fetch that is dropped or
+fails leaves the record with the body Chrome reported. A fetched body over
+`spidering.max_capture_body_bytes` is not stored.
+
+The phase's `requests_sent` on `phase.progress` and `phase.finished` counts
+every request the browser sent, third-party and out-of-scope included (each
+redirect hop separately), which is the crawl's network cost; `requests_in_scope`
+is the share the operator scope admits. Both apply to `spidering` and
+`targeted-respider`. Before, these phases reported the shared requester's
+delta, which a browser never touches, so a crawl read about zero.
 
 Hash-based deduplication prevents duplicate records. A cleanup loop removes stale pending requests (>15s). Captured traffic is converted to `httpmsg.HttpRequestResponse` and saved via the `RecordSaver` interface with source `"spidering"`.
 

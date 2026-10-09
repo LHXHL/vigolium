@@ -138,6 +138,7 @@ func (r *Runner) runTargetedReSpiderPhase(ctx context.Context, infra *phaseInfra
 	baseCfg.MaxDepth = rcfg.Depth()
 	baseCfg.MaxStates = rcfg.PerSeedStates()
 	baseCfg.Source = "respider"
+	r.trackBrowserRequests().wire(&baseCfg)
 
 	var totals reSpiderGroupResult
 	if spiderSessionReuseDisabled() {
