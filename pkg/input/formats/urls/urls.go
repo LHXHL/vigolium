@@ -11,13 +11,20 @@ import (
 	"go.uber.org/zap"
 )
 
-// URLListFormat is a JSON format parser for nuclei
-// input HTTP requests
+// URLListFormat parses a plain URL list: one URL per line, blank lines and
+// `#` comment lines ignored (the same rule as `-T` target lists).
 type URLListFormat struct {
 	opts formats.InputFormatOptions
 }
 
-// New creates a new JSON format parser
+// IsTargetLine reports whether a whitespace-trimmed line of a URL / target list
+// holds a target: blank lines and `#` comments do not. Shared by this parser
+// and the CLI's -T target-list reader so both skip the same lines.
+func IsTargetLine(line string) bool {
+	return line != "" && !strings.HasPrefix(line, "#")
+}
+
+// New creates a URL list parser.
 func New() *URLListFormat {
 	return &URLListFormat{}
 }
@@ -38,7 +45,7 @@ func (j *URLListFormat) SetOptions(options formats.InputFormatOptions) {
 func (j *URLListFormat) Parse(input string, resultsCb formats.ParseReqRespCallback) error {
 	file, err := os.Open(input)
 	if err != nil {
-		return errors.Wrap(err, "could not open json file")
+		return errors.Wrap(err, "could not open URL list")
 	}
 	defer func() { _ = file.Close() }()
 	sc := bufio.NewScanner(file)
@@ -47,7 +54,7 @@ func (j *URLListFormat) Parse(input string, resultsCb formats.ParseReqRespCallba
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if line == "" {
+		if !IsTargetLine(line) {
 			continue
 		}
 		rawRequest, err := httpmsg.GetRawRequestFromURL(line)
@@ -69,7 +76,8 @@ func (j *URLListFormat) Parse(input string, resultsCb formats.ParseReqRespCallba
 	return nil
 }
 
-// Count returns the number of non-empty lines in the file.
+// Count returns the number of target lines (non-blank, non-comment) in the
+// file, the same lines Parse visits.
 func (j *URLListFormat) Count(input string) (int64, error) {
 	file, err := os.Open(input)
 	if err != nil {
@@ -82,7 +90,7 @@ func (j *URLListFormat) Count(input string) (int64, error) {
 	// Match Parse's larger token buffer so Count and Parse agree on long lines.
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
-		if strings.TrimSpace(sc.Text()) != "" {
+		if IsTargetLine(strings.TrimSpace(sc.Text())) {
 			count++
 		}
 	}

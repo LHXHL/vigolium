@@ -32,6 +32,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/input/formats/burpscope"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
 	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
+	"github.com/vigolium/vigolium/pkg/input/formats/urls"
 	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
@@ -1218,7 +1219,7 @@ func readTargetFileLines(path string) ([]string, error) {
 // it streams, and its buffer cap is what keeps a very long URL line from
 // silently truncating.)
 func isTargetLine(line string) bool {
-	return line != "" && !strings.HasPrefix(line, "#")
+	return urls.IsTargetLine(line)
 }
 
 // targetLinesFrom splits target-list content into targets under isTargetLine.
@@ -2592,7 +2593,7 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 			terminal.TipPrefix(), terminal.Gray("view scanning pace via"), terminal.HiCyan("vigolium config ls scanning_pace"))
 		if knownIssueScanEnabled && !settings.KnownIssueScan.EnrichTargets {
 			fmt.Fprintf(os.Stderr, "  %s %s %s\n",
-				terminal.TipPrefix(), terminal.Gray("enrich KnownIssueScan targets with discovered paths via"), terminal.HiCyan("vigolium config known_issue_scan.enrich_targets=true"))
+				terminal.TipPrefix(), terminal.Gray("enrich KnownIssueScan targets with discovered paths via"), terminal.HiCyan("vigolium config set known_issue_scan.enrich_targets true"))
 		}
 	}
 	fmt.Fprintln(os.Stderr)

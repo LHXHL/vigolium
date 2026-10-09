@@ -134,7 +134,7 @@ func NewInputSource(cfg SourceConfig) (InputSource, error) {
 	// Return appropriate source
 	switch len(sources) {
 	case 0:
-		return nil, fmt.Errorf("no input source configured: provide targets (-u), file (-l), or stdin")
+		return nil, fmt.Errorf("no input: pass -t, -T, -i or pipe URLs on stdin")
 	case 1:
 		return sources[0], nil
 	default:
