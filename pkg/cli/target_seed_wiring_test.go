@@ -48,10 +48,10 @@ func cliRepoRoot(t *testing.T) string {
 // so it must stay below them in the same function rather than moving up into
 // runScanCmd.
 func TestExecuteNativeScanSeedsTargetsBeforeBuildingRunner(t *testing.T) {
-	path := filepath.Join(cliRepoRoot(t), "pkg", "cli", "scan.go")
+	path := filepath.Join(cliRepoRoot(t), "pkg", "cli", "scan_execute.go")
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, 0)
-	require.NoError(t, err, "parse scan.go")
+	require.NoError(t, err, "parse scan_execute.go")
 
 	var body *ast.BlockStmt
 	for _, decl := range file.Decls {
@@ -61,7 +61,7 @@ func TestExecuteNativeScanSeedsTargetsBeforeBuildingRunner(t *testing.T) {
 			break
 		}
 	}
-	require.NotNil(t, body, "executeNativeScan not found in scan.go")
+	require.NotNil(t, body, "executeNativeScan not found in scan_execute.go")
 
 	seedPos, runnerPos := token.NoPos, token.NoPos
 	ast.Inspect(body, func(n ast.Node) bool {
