@@ -64,6 +64,7 @@ var machineKinds = map[string]machineKind{
 	"db compact": kindMutation,
 	"db export":  kindStream,
 	"db list":    kindRead,
+	"db migrate": kindMutation,
 	"db reset":   kindMutation,
 	"db seed":    kindMutation,
 	"db stats":   kindRead,

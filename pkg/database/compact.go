@@ -179,7 +179,7 @@ func (db *DB) CompactBodies(ctx context.Context, opts CompactOptions) (*CompactS
 	if db.driver != driverSQLite {
 		return nil, ErrCompactUnsupported
 	}
-	if db.readOnly {
+	if !db.writable() {
 		return nil, fmt.Errorf("db compact needs a writable database")
 	}
 	if err := opts.Validate(); err != nil {

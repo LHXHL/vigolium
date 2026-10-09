@@ -42,12 +42,10 @@ func resolveProjectUUID() (string, error) {
 // OwnerUUID would dangle and resolveProjectUUID's default fallback would point
 // at a project that does not exist.
 func openProjectRepo(ctx context.Context) (*database.Repository, error) {
-	db, err := getDB()
+	// Write intent makes the schema ready as part of the open.
+	db, err := getDBFor(clicommon.IntentWrite)
 	if err != nil {
 		return nil, err
-	}
-	if err := db.CreateSchema(ctx); err != nil {
-		return nil, fmt.Errorf("failed to initialize database schema: %w", err)
 	}
 	if err := db.SeedDefaults(ctx); err != nil {
 		return nil, fmt.Errorf("failed to seed default data: %w", err)

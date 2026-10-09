@@ -6,9 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
-
-	"go.uber.org/zap"
 )
 
 // MergeOptions tunes what a SQLite-to-SQLite merge copies.
@@ -579,47 +576,11 @@ func toInt64(v any) (int64, bool) {
 	}
 }
 
-// retryOnBusy runs fn, retrying with exponential backoff while it returns a
-// SQLite busy/locked error. Gives up after the deadline budget so a genuinely
-// wedged destination surfaces an error rather than hanging forever.
+// retryOnBusy runs fn under the merge's busy-retry budget. A thin wrapper over
+// RetryBusy, kept so the merge call site and its test read as before; a wedged
+// destination surfaces as a *LockedError (database_locked) rather than a hang.
 func retryOnBusy(ctx context.Context, fn func() error) error {
-	const (
-		maxAttempts = 12
-		baseDelay   = 50 * time.Millisecond
-		maxDelay    = 2 * time.Second
-	)
-	delay := baseDelay
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		lastErr = fn()
-		if lastErr == nil || !isBusyErr(lastErr) {
-			return lastErr
-		}
-		zap.L().Debug("merge hit busy destination, retrying",
-			zap.Int("attempt", attempt), zap.Duration("delay", delay), zap.Error(lastErr))
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
-		if delay < maxDelay {
-			delay *= 2
-			if delay > maxDelay {
-				delay = maxDelay
-			}
-		}
-	}
-	return fmt.Errorf("merge gave up after %d attempts on a busy destination: %w", maxAttempts, lastErr)
-}
-
-func isBusyErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "database is locked") ||
-		strings.Contains(msg, "sqlite_busy") ||
-		strings.Contains(msg, "database table is locked") ||
-		strings.Contains(msg, "(5)") || // SQLITE_BUSY
-		strings.Contains(msg, "(6)") // SQLITE_LOCKED
+	policy := DefaultRetryPolicy
+	policy.Op = "merge into a busy destination"
+	return RetryBusy(ctx, fn, policy)
 }

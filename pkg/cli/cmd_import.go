@@ -184,17 +184,13 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	db, err := getDB()
+	// Write intent makes the schema ready before any DB work. `import` is often
+	// the first command run against a brand-new database (e.g. a fresh --db
+	// path); an uninitialized store silently dropped the imported findings and
+	// failed any post-import report with "no such table: findings".
+	db, err := getDBFor(clicommon.IntentWrite)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-	// Ensure the schema exists before any DB work. `import` is often the first
-	// command run against a brand-new database (e.g. a fresh --db path), and
-	// unlike scan/ingest/agent it otherwise never initializes the schema — which
-	// silently drops the imported findings and fails any post-import report with
-	// "no such table: findings".
-	if err := db.CreateSchema(ctx); err != nil {
-		return fmt.Errorf("failed to create database schema: %w", err)
 	}
 	if err := db.SeedDefaults(ctx); err != nil {
 		return fmt.Errorf("failed to seed default data: %w", err)

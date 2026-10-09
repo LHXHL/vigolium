@@ -408,6 +408,10 @@ func prepareCommandTree(root *cobra.Command) {
 	// Stamp each command's declared -j output kind from the central table
 	// (machine_kinds.go); machine_contract_test.go checks the result.
 	applyMachineKinds(root)
+
+	// Stamp each command's declared database intent (db_intent.go): read
+	// commands open the query_only pool, never the write lock.
+	applyDBIntentAnnotations(root)
 }
 
 func Execute() {

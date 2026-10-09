@@ -43,6 +43,9 @@ func init() {
 	// package without an import cycle). Uses the ldflag-injected Version
 	// directly to keep init side-effect-free (no git exec on every run).
 	httpmsg.SetBuildVersion(Version)
+	// schema_meta.written_by names the build that last migrated a store, so a
+	// schema_too_new refusal can say which vigolium to upgrade to.
+	database.SetBinaryVersion(Version)
 }
 
 func getVersion() string {
@@ -138,6 +141,10 @@ func printVersionJSON() {
 		"website":             "https://www.vigolium.com",
 		"docs":                "https://docs.vigolium.com",
 	}
+	// The reader floor this binary stamps on stores it migrates. A store is
+	// readable here when its min_reader_version <= db_schema_version, and
+	// writable only when its version <= db_schema_version (else schema_too_new).
+	info["db_min_reader_version"] = database.MinReaderVersion()
 	if BuildTime != "" {
 		info["build_time"] = BuildTime
 	}

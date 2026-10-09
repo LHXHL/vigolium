@@ -99,6 +99,31 @@ Each caller blocks until its row is flushed and gets a `WriteResult{UUID, Err}` 
 
 > **SQLite DSN note:** the modernc driver needs pragmas in `_pragma=name(value)` form; the `mattn`-style `_busy_timeout=` is silently ignored. Relevant when tuning concurrent-writer behavior.
 
+### Open intent: readers never take the write lock
+
+Every CLI command declares what it does with the store (`dbIntents` in `pkg/cli/db_intent.go`, stamped on each cobra command as the `vigolium.io/db-intent` annotation; a test fails on an undeclared command). The shared opener (`clicommon.GetDBFor`) opens the store according to that intent:
+
+| Intent | Commands | How the store is opened |
+|---|---|---|
+| `read` | `traffic`, `finding`, `log`, `db ls/stats/export`, `export`, `auth list`, `agent session`, `doctor` | SQLite read pool: `query_only(1)`, `_txlock=deferred`, no `journal_mode` PRAGMA, no WAL checkpoint, at most 4 connections. Postgres sessions default to read-only transactions. The schema is checked with catalog reads only. |
+| `write` | scans, ingest, import, agent runs, `replay`, `fuzz`, project/auth mutations | Read-write store; the schema is made ready (`EnsureSchemaReady`: DDL only when a read-only check finds a gap). |
+| evidence | any read command with `--read-only` | `mode=ro`; nothing about the file may change. |
+
+A flag that makes a read write (`--save-to-vigolium-db`, `--in-replace`) flips the invocation to `write`. A read command therefore never queues behind a scan that is writing the same file, and no read path calls `CreateSchema` (a lint test in `pkg/database` rejects new call sites outside the package).
+
+When a read meets a store written by an older vigolium, `database.auto_migrate_on_read` (default `true` for this release) migrates it first through a separate, short-lived writer. With it set to `false` the read fails with `error.code: "schema_outdated"`; run `vigolium db migrate [-j]` to upgrade explicitly. The server keeps the same split: list handlers query a read pool (`DB.OpenReader`) while ingestion and scans use the writer.
+
+Transient lock contention is retried by `database.RetryBusy(ctx, fn, policy)` (exponential backoff, used by `log`, the DB input source, merges and the REST list handlers). When the budget runs out the error carries the code `database_locked` (REST: `503` with `Retry-After`).
+
+### Schema versions and the compatibility guard
+
+`schema_meta` (one row) records `version` (schema revision of the newest binary that migrated the store), `min_reader_version` (oldest binary revision that can still read it), `written_by` (that binary's version) and `updated_at`. A binary whose schema revision is C:
+
+- reads a store when `min_reader_version <= C`;
+- writes or migrates it only when `version <= C`; otherwise it refuses with `error.code: "schema_too_new"` ("upgrade vigolium").
+
+Additive migrations leave `min_reader_version` unchanged, so an older binary keeps reading a store a newer one upgraded; a breaking migration raises it. The stored version only ever moves up. `vigolium version --json` reports `db_schema_version` and `db_min_reader_version`; `vigolium doctor` shows the store's version, reader floor and `written_by`. Binaries from before the guard (schema v1) cannot be stopped from opening a newer store; the guard protects stores from v2 on.
+
 ---
 
 ## 4. Deduplication

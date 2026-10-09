@@ -15,10 +15,15 @@ package database
 // schemaTables is every CREATE TABLE this binary expects, in dependency order.
 var schemaTables = []string{
 	// Schema versioning: lets CreateSchema skip one-time O(rows) backfills once
-	// a database is current (see currentSchemaVersion). Single row, id always 1.
+	// a database is current (see currentSchemaVersion), and carries the
+	// compatibility guard's reader floor (see schema_guard.go). Single row, id
+	// always 1.
 	`CREATE TABLE IF NOT EXISTS schema_meta (
 		id INTEGER PRIMARY KEY,
-		version INTEGER NOT NULL DEFAULT 0
+		version INTEGER NOT NULL DEFAULT 0,
+		min_reader_version INTEGER NOT NULL DEFAULT 1,
+		written_by TEXT,
+		updated_at TIMESTAMP
 	)`,
 	// Multi-tenancy: users and projects
 	`CREATE TABLE IF NOT EXISTS users (

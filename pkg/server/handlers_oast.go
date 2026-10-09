@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/vigolium/vigolium/pkg/database"
 )
 
 // HandleListOASTInteractions handles GET /api/oast-interactions
@@ -40,12 +41,17 @@ func (h *Handlers) HandleListOASTInteractions(c fiber.Ctx) error {
 	}
 
 	projectUUID := getProjectUUID(c)
-	interactions, total, err := h.repo.ListOASTInteractions(c.Context(), projectUUID, scanUUID, protocol, moduleID, search, limit, offset)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "query failed: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+	var (
+		interactions []*database.OASTInteraction
+		total        int64
+	)
+	ctx := c.Context()
+	if err := retryRead(ctx, func() error {
+		var err error
+		interactions, total, err = h.readerRepo().ListOASTInteractions(ctx, projectUUID, scanUUID, protocol, moduleID, search, limit, offset)
+		return err
+	}); err != nil {
+		return respondQueryError(c, err)
 	}
 
 	return c.JSON(PaginatedResponse{

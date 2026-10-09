@@ -15,8 +15,18 @@ import (
 // the full Handlers god-struct. It is composed into Handlers (see the findings
 // field) and wired in NewHandlers.
 type findingsHandlers struct {
-	db   *database.DB
-	repo *database.Repository
+	db *database.DB
+	// readDB is the read-intent pool (nil: db serves reads too).
+	readDB *database.DB
+	repo   *database.Repository
+}
+
+// reader is the pool the list/get queries use.
+func (h *findingsHandlers) reader() *database.DB {
+	if h.readDB != nil {
+		return h.readDB
+	}
+	return h.db
 }
 
 // findingsHandler returns the findings sub-handler, lazily constructing it from
@@ -26,7 +36,7 @@ type findingsHandlers struct {
 // rather than nil-derefing on the first request.
 func (h *Handlers) findingsHandler() *findingsHandlers {
 	if h.findings == nil {
-		h.findings = &findingsHandlers{db: h.db, repo: h.repo}
+		h.findings = &findingsHandlers{db: h.db, readDB: h.readDB, repo: h.repo}
 	}
 	return h.findings
 }
@@ -145,16 +155,20 @@ func (h *findingsHandlers) HandleListFindings(c fiber.Ctx) error {
 		}
 	}
 
-	fqb := database.NewFindingsQueryBuilder(h.db, filters)
+	fqb := database.NewFindingsQueryBuilder(h.reader(), filters)
 	ctx := c.Context()
 
 	// One round-trip for the page and its total, rather than Execute + Count.
-	findings, total, err := fqb.ExecuteWithCount(ctx)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "query failed: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+	var (
+		findings []*database.Finding
+		total    int64
+	)
+	if err := retryRead(ctx, func() error {
+		var err error
+		findings, total, err = fqb.ExecuteWithCount(ctx)
+		return err
+	}); err != nil {
+		return respondQueryError(c, err)
 	}
 
 	return c.JSON(PaginatedResponse{

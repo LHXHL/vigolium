@@ -113,9 +113,13 @@ type queuedScan struct {
 
 // Handlers holds the HTTP handlers and their dependencies.
 type Handlers struct {
-	queue         queue.Queue
-	db            *database.DB
-	repo          *database.Repository
+	queue queue.Queue
+	db    *database.DB
+	repo  *database.Repository
+	// readDB/readRepo are the read-intent pool list/get handlers use (see
+	// db_read.go); nil when db serves reads itself.
+	readDB        *database.DB
+	readRepo      *database.Repository
 	recordWriter  *database.RecordWriter
 	config        ServerConfig
 	settings      *config.Settings
@@ -261,7 +265,10 @@ func NewHandlers(q queue.Queue, db *database.DB, repo *database.Repository, rw *
 		runCancels:         make(map[string]context.CancelFunc),
 		nativeScanSem:      make(chan struct{}, maxConcurrentNativeScans),
 	}
-	h.findings = &findingsHandlers{db: db, repo: repo}
+	if h.readDB = openReadPool(db); h.readDB != nil {
+		h.readRepo = database.NewRepository(h.readDB)
+	}
+	h.findings = &findingsHandlers{db: db, readDB: h.readDB, repo: repo}
 	if !cfg.NoAgent {
 		h.agentEngine = agent.NewEngine(settings, repo)
 		go h.agentDBCleanupLoop()
@@ -570,6 +577,12 @@ func (h *Handlers) Close() {
 		h.runCancel()
 	}
 	close(h.agentCleanupStop)
+	// The read pool is the handlers' own; the writer belongs to the caller.
+	defer func() {
+		if h.readDB != nil {
+			_ = h.readDB.Close()
+		}
+	}()
 
 	h.scanMu.Lock()
 	for _, ch := range h.scanQueues {

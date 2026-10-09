@@ -11,19 +11,20 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
 	"go.uber.org/zap"
 )
 
-// dbConn is the process-wide cached database connection shared by every command.
-var dbConn *database.DB
+// dbConn is the process-wide cached database connection shared by every command,
+// and dbConnIntent the intent it was opened for.
+var (
+	dbConn       *database.DB
+	dbConnIntent OpenIntent
+)
 
-// GetDB returns the cached database connection, opening it on first use.
-// configPath is the --config path (may be empty) and dbPath is the --db SQLite
-// override (may be empty). When the database is not explicitly enabled it
-// defaults to SQLite at the standard location.
 // ReadOnlyRequested is set by the CLI before the first GetDB call when the
 // command must not modify its source (--read-only). It is a package var rather
 // than a GetDB parameter because GetDB is called from ~30 sites that would all
@@ -77,9 +78,27 @@ func (e *SourceIncompatibleError) Error() string {
 		"or run a scan/ingest against it to initialize it", e.Path)
 }
 
+// GetDB returns the cached database connection, opening it on first use with
+// the running command's declared intent (CommandIntent; --read-only forces
+// IntentEvidence). configPath is the --config path (may be empty) and dbPath is
+// the --db SQLite override (may be empty). When the database is not explicitly
+// enabled it defaults to SQLite at the standard location. See GetDBFor.
 func GetDB(configPath, dbPath string) (*database.DB, error) {
+	return GetDBFor(CommandIntent, configPath, dbPath)
+}
+
+// GetDBFor returns the cached database connection, opening it on first use for
+// the given intent. A cached handle is reused whenever it can serve the intent:
+// a writer serves reads, and a --read-only evidence handle serves everything
+// (the flag forces evidence intent process-wide). A cached read pool asked for
+// a write is retired, not closed — something earlier in the command may still
+// hold it — and a writer takes its place; both close at exit.
+func GetDBFor(intent OpenIntent, configPath, dbPath string) (*database.DB, error) {
+	intent = effectiveIntent(intent)
 	if dbConn != nil {
-		return dbConn, nil
+		if dbConnIntent.serves(intent) {
+			return dbConn, nil
+		}
 	}
 
 	// Before any open, because opening is what creates the file.
@@ -87,6 +106,41 @@ func GetDB(configPath, dbPath string) (*database.DB, error) {
 		return nil, err
 	}
 
+	cfg, err := ResolveDatabaseConfig(configPath, dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var db *database.DB
+	switch intent {
+	case IntentRead:
+		db, err = openForRead(cfg)
+	case IntentEvidence:
+		db, err = openForEvidence(cfg)
+	default:
+		db, err = openForWrite(cfg)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if dbConn != nil {
+		retiredConns = append(retiredConns, dbConn)
+	}
+	dbConn = db
+	dbConnIntent = intent
+	openedDBDriver = cfg.Driver
+	openedDBPath = config.ExpandPath(cfg.SQLite.Path)
+	if cfg.Driver != "sqlite" {
+		openedDBPath = cfg.Driver
+	}
+	return db, nil
+}
+
+// ResolveDatabaseConfig applies the CLI's store-selection rules to the loaded
+// settings: --db → $VIGOLIUM_DB_PATH (already folded into dbPath by the CLI) →
+// config → the built-in default SQLite file.
+func ResolveDatabaseConfig(configPath, dbPath string) (*config.DatabaseConfig, error) {
 	// LoadSettings, not config.LoadSettings: a broken --config decides which
 	// DATABASE this opens, so falling back to defaults here silently pointed the
 	// command at ~/.vigolium/database-vgnm.sqlite — creating it if absent — while
@@ -97,76 +151,177 @@ func GetDB(configPath, dbPath string) (*database.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg := settings.Database
 
 	// If database is not explicitly enabled, default to SQLite
-	if !settings.Database.Enabled && settings.Database.Driver == "" {
-		settings.Database.Enabled = true
-		settings.Database.Driver = "sqlite"
-		settings.Database.SQLite.Path = "~/.vigolium/database-vgnm.sqlite"
+	if !cfg.Enabled && cfg.Driver == "" {
+		cfg.Enabled = true
+		cfg.Driver = "sqlite"
+		cfg.SQLite.Path = "~/.vigolium/database-vgnm.sqlite"
 	}
 
 	// Override SQLite path if --db flag is set
 	if dbPath != "" {
-		settings.Database.Driver = "sqlite"
-		settings.Database.SQLite.Path = dbPath
+		cfg.Driver = "sqlite"
+		cfg.SQLite.Path = dbPath
 	}
+	return &cfg, nil
+}
 
-	// Only meaningful for SQLite; Postgres read-only is a server-side grant.
-	if ReadOnlyRequested && settings.Database.Driver == "sqlite" {
-		settings.Database.SQLite.ReadOnly = true
-	}
-
-	db, err := database.NewDB(&settings.Database)
+// openForWrite opens the read-write store and makes its schema ready, running
+// DDL only when a read-only check finds something missing.
+//
+// A schema that cannot be made ready is fatal here. Write commands used to call
+// CreateSchema themselves and fail on its error; folding that into the opener
+// keeps the failure and drops the per-command copy. A store a newer binary
+// stamped is refused (schema_too_new) rather than written into.
+func openForWrite(cfg *config.DatabaseConfig) (*database.DB, error) {
+	db, err := database.NewDB(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-
-	// A pure read against a pinned source must not bring vigolium's tables into
-	// being inside a file that never had them. Checked before the migration
-	// below, which is exactly what would create them.
-	if RequireExistingSource != "" && !db.HasVigoliumSchema(context.Background()) {
-		_ = db.Close()
-		return nil, &SourceIncompatibleError{Path: RequireExistingSource}
+	if err := refuseForeignStore(db); err != nil {
+		return nil, err
 	}
+	if err := db.EnsureSchemaReady(context.Background()); err != nil {
+		_ = db.Close()
+		var tooNew *database.SchemaTooNewError
+		if errors.As(err, &tooNew) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("failed to bring database schema up to date: %w", err)
+	}
+	return db, nil
+}
 
-	// Bring the schema up to date on EVERY open, not only on the write commands
-	// that used to call CreateSchema themselves.
-	//
-	// Without this, a database written by an older vigolium fails its first read
-	// with a raw `no such column: r.surface_score` — the read commands
-	// (traffic/finding/db ls/export) never migrated, so any column added since
-	// that file was last written simply was not there. Opening is exactly when a
-	// store should be made current, and the read path is the one most likely to
-	// meet an old file.
-	//
-	// EnsureSchemaCurrent, not CreateSchema: it checks for staleness with
-	// READ-only queries and issues DDL only when something is actually missing.
-	// CreateSchema unconditionally would take SQLite's write lock on every open,
-	// making any read command queue behind a concurrent scan for up to
-	// busy_timeout (measured: 22s for a `traffic` listing).
+// openForEvidence is the --read-only open: mode=ro, nothing about the file may
+// change, so an outdated schema is reported rather than migrated.
+func openForEvidence(cfg *config.DatabaseConfig) (*database.DB, error) {
+	// Only meaningful for SQLite; Postgres read-only is a server-side grant.
+	if cfg.Driver == "sqlite" {
+		cfg.SQLite.ReadOnly = true
+	}
+	db, err := database.NewDB(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	if err := refuseForeignStore(db); err != nil {
+		return nil, err
+	}
+	// EnsureSchemaCurrent on a read-only handle is a check: an outdated or
+	// too-new schema is fatal — it cannot be migrated, and every query that
+	// follows would fail on a missing column with an error that names no
+	// remedy. Any other failure is best-effort, so it only warns.
 	if schemaErr := db.EnsureSchemaCurrent(context.Background()); schemaErr != nil {
-		// An outdated schema on a read-only handle is fatal: it cannot be
-		// migrated, and every query that follows would fail on a missing column
-		// with an error that names no remedy. Any other migration failure is
-		// best-effort — the schema may already be usable — so it only warns.
-		if errors.Is(schemaErr, database.ErrSchemaOutdated) {
+		if errors.Is(schemaErr, database.ErrSchemaOutdated) || errors.Is(schemaErr, database.ErrSchemaTooNew) {
 			// Close before returning: the handle never reaches dbConn on this
-			// path, so nothing downstream can close it, and a long-lived process
-			// that retries the open would leak a connection pool (and, on a
-			// writable handle, a WAL checkpointer goroutine) per attempt.
+			// path, so nothing downstream can close it.
 			_ = db.Close()
 			return nil, schemaErr
 		}
-		zap.L().Warn("Failed to bring database schema up to date", zap.Error(schemaErr))
-	}
-
-	dbConn = db
-	openedDBDriver = settings.Database.Driver
-	openedDBPath = config.ExpandPath(settings.Database.SQLite.Path)
-	if settings.Database.Driver != "sqlite" {
-		openedDBPath = settings.Database.Driver
+		zap.L().Warn("Failed to check database schema", zap.Error(schemaErr))
 	}
 	return db, nil
+}
+
+// openForRead opens the read pool: query_only, deferred transactions, no
+// journal-mode PRAGMA, no checkpointing (see database.openSQLiteReader). A read
+// command therefore never takes the write lock and never waits on a scan
+// writing the same store.
+//
+// Its schema is checked with catalog reads only. A store that is behind is
+// migrated through a SEPARATE, short-lived writer when
+// database.auto_migrate_on_read is on (the default for one release, D23), and
+// refused with schema_outdated and the `vigolium db migrate` remedy when it is
+// off. A missing or table-less default store is initialized the same way: that
+// is creating an empty store, not migrating anyone's data. A pinned source that
+// is missing or foreign never gets here (checkSourceExists / refuseForeignStore).
+func openForRead(cfg *config.DatabaseConfig) (*database.DB, error) {
+	if cfg.Driver == "sqlite" {
+		path := database.ExpandPath(cfg.SQLite.Path)
+		if path == ":memory:" || strings.Contains(path, ":memory:") {
+			// Every connection to :memory: is its own database; a read pool on it
+			// would see nothing the writer made.
+			return openForWrite(cfg)
+		}
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			if err := migrateThroughWriter(cfg); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	open := func() (*database.DB, error) {
+		rcfg := *cfg
+		rcfg.ReadIntent = true
+		db, err := database.NewDB(&rcfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to database: %w", err)
+		}
+		return db, nil
+	}
+
+	db, err := open()
+	if err != nil {
+		return nil, err
+	}
+	if err := refuseForeignStore(db); err != nil {
+		return nil, err
+	}
+
+	schemaErr := db.CheckSchema(context.Background())
+	migrate := errors.Is(schemaErr, database.ErrSchemaNotInitialized) ||
+		(errors.Is(schemaErr, database.ErrSchemaOutdated) && cfg.AutoMigrateOnRead)
+	if !migrate {
+		if schemaErr != nil {
+			_ = db.Close()
+			return nil, schemaErr
+		}
+		return db, nil
+	}
+
+	// Close the reader first so the migration's DDL is not racing a pool this
+	// process holds; reopen once the schema is current.
+	_ = db.Close()
+	zap.L().Debug("database schema is behind; migrating before the read", zap.NamedError("schema", schemaErr))
+	if err := migrateThroughWriter(cfg); err != nil {
+		return nil, err
+	}
+	if db, err = open(); err != nil {
+		return nil, err
+	}
+	if err := db.CheckSchema(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// migrateThroughWriter opens a short-lived read-write handle, makes the schema
+// ready, and closes it. It is how a read-intent open initializes or upgrades a
+// store without its own pool ever holding the write lock.
+func migrateThroughWriter(cfg *config.DatabaseConfig) error {
+	wcfg := *cfg
+	wcfg.ReadIntent = false
+	w, err := openForWrite(&wcfg)
+	if err != nil {
+		return err
+	}
+	return w.Close()
+}
+
+// refuseForeignStore closes db and returns SourceIncompatibleError when a pure
+// read against a pinned source finds a file that is not a vigolium store.
+//
+// A pure read against a pinned source must not bring vigolium's tables into
+// being inside a file that never had them. Checked before any migration, which
+// is exactly what would create them.
+func refuseForeignStore(db *database.DB) error {
+	if RequireExistingSource != "" && !db.HasVigoliumSchema(context.Background()) {
+		_ = db.Close()
+		return &SourceIncompatibleError{Path: RequireExistingSource}
+	}
+	return nil
 }
 
 // checkSourceExists refuses to open a pinned source that is absent, or that is a
@@ -226,6 +381,7 @@ func SetOpenedDBDriver(driver string) { openedDBDriver = driver }
 
 // CloseDatabaseOnExit closes the cached connection if open. Safe to defer.
 func CloseDatabaseOnExit() {
+	closeRetired()
 	if dbConn != nil {
 		_ = dbConn.Close()
 	}
@@ -234,6 +390,7 @@ func CloseDatabaseOnExit() {
 // ResetDBCache closes and clears the cached connection. Used by `db clean`
 // before deleting the underlying SQLite file.
 func ResetDBCache() {
+	closeRetired()
 	if dbConn != nil {
 		_ = dbConn.Close()
 		dbConn = nil
@@ -244,4 +401,16 @@ func ResetDBCache() {
 // recreates the database with a fresh schema.
 func SetDBCache(db *database.DB) {
 	dbConn = db
+	dbConnIntent = IntentWrite
+}
+
+// retiredConns are read pools a later write-intent open superseded. Kept open
+// until exit because a repository built on one may still be in use.
+var retiredConns []*database.DB
+
+func closeRetired() {
+	for _, c := range retiredConns {
+		_ = c.Close()
+	}
+	retiredConns = nil
 }

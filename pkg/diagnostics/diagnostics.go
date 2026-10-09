@@ -315,6 +315,22 @@ func checkConfig(configPath string, cfgErr error) *CheckResult {
 
 func checkDatabase(db *database.DB, dbErr error) *CheckResult {
 	if db == nil {
+		if errors.Is(dbErr, database.ErrSchemaTooNew) {
+			return &CheckResult{
+				Status:  StatusError,
+				Message: "schema_too_new",
+				Details: []string{dbErr.Error(), fmt.Sprintf("this binary: schema v%d", database.CurrentSchemaVersion())},
+				Tip:     "A newer vigolium migrated this database. Upgrade vigolium (`vigolium update`) to read or write it.",
+			}
+		}
+		if errors.Is(dbErr, database.ErrSchemaOutdated) {
+			return &CheckResult{
+				Status:  StatusError,
+				Message: "schema_outdated",
+				Details: []string{dbErr.Error()},
+				Tip:     "Run `vigolium db migrate`, or set database.auto_migrate_on_read: true.",
+			}
+		}
 		if dbErr != nil {
 			return &CheckResult{
 				Status:  StatusError,
@@ -379,6 +395,35 @@ func checkDatabase(db *database.DB, dbErr error) *CheckResult {
 		}
 	}
 	details = append(details, fmt.Sprintf("schema: %d tables present", len(tables)))
+
+	// Schema compatibility (schema_meta): which revision the store is at, the
+	// oldest reader it admits, and which build last migrated it.
+	metaCtx, metaCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer metaCancel()
+	if info, err := db.SchemaInfo(metaCtx); err == nil {
+		line := fmt.Sprintf("schema version: v%d (min reader v%d; this binary v%d)",
+			info.Version, info.MinReaderVersion, database.CurrentSchemaVersion())
+		if info.WrittenBy != "" {
+			line += ", written by " + info.WrittenBy
+		}
+		details = append(details, line)
+		if info.Version > database.CurrentSchemaVersion() {
+			return &CheckResult{
+				Status:  StatusWarning,
+				Message: fmt.Sprintf("driver=%s, schema=newer (v%d > v%d)", driver, info.Version, database.CurrentSchemaVersion()),
+				Details: append(details, "reads work; writes (scans, ingest, imports) are refused with schema_too_new"),
+				Tip:     "A newer vigolium migrated this database. Upgrade vigolium (`vigolium update`) before scanning into it.",
+			}
+		}
+		if info.Version < database.CurrentSchemaVersion() {
+			return &CheckResult{
+				Status:  StatusWarning,
+				Message: fmt.Sprintf("driver=%s, schema=outdated (v%d < v%d)", driver, info.Version, database.CurrentSchemaVersion()),
+				Details: details,
+				Tip:     "Run `vigolium db migrate` to upgrade it.",
+			}
+		}
+	}
 
 	return &CheckResult{
 		Status:  StatusOK,

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
+	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 )
 
@@ -149,6 +150,17 @@ func classifyErrorCode(err error, exitCode int) apicontract.ErrorCode {
 	var incompatible *clicommon.SourceIncompatibleError
 	if errors.As(err, &incompatible) {
 		return errCodeSourceIncompatible
+	}
+	// The database layer codes its own conditions (database_locked from an
+	// exhausted busy retry, schema_too_new, schema_outdated) by implementing
+	// Code(); pkg/database cannot return a clicommon type.
+	var dbCoded interface{ Code() apicontract.ErrorCode }
+	if errors.As(err, &dbCoded) {
+		return dbCoded.Code()
+	}
+	// The --read-only evidence open wraps the bare sentinel with its own remedy.
+	if errors.Is(err, database.ErrSchemaOutdated) {
+		return apicontract.CodeSchemaOutdated
 	}
 	// exitCode already came from classifyExitCode, which owns the usageError
 	// classification — re-deriving it here would be a second copy of that rule.

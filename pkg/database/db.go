@@ -56,6 +56,16 @@ type DB struct {
 	// read commands call CreateSchema unconditionally on open.
 	readOnly bool
 
+	// reader is set when the handle was opened with DatabaseConfig.ReadIntent: a query_only pool for read commands. Like
+	// readOnly it never migrates, optimizes or checkpoints; unlike readOnly it is
+	// the ordinary read path for a live working store, not evidence mode. See
+	// openSQLiteReader.
+	reader bool
+
+	// cfg is the configuration this handle was opened from, kept so OpenReader
+	// can open a second, read-intent pool on the same store.
+	cfg config.DatabaseConfig
+
 	// ownedSidecars names the database whose -wal/-shm files this read-only open
 	// brought into existence; Close removes them again. Empty when there is
 	// nothing to reclaim. See reclaimSidecars.
@@ -109,7 +119,7 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 	switch cfg.Driver {
 	case "sqlite":
 		var err error
-		sqldb, err = openSQLite(&cfg.SQLite)
+		sqldb, err = openSQLite(&cfg.SQLite, cfg.ReadIntent)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open SQLite: %w", err)
 		}
@@ -118,7 +128,7 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 
 	case "postgres":
 		var err error
-		sqldb, err = openPostgres(&cfg.Postgres)
+		sqldb, err = openPostgres(&cfg.Postgres, cfg.ReadIntent)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open PostgreSQL: %w", err)
 		}
@@ -133,7 +143,9 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 		DB:            bunDB,
 		driver:        driver,
 		readOnly:      driver == "sqlite" && cfg.SQLite.ReadOnly,
+		reader:        cfg.ReadIntent && !(driver == "sqlite" && cfg.SQLite.ReadOnly),
 		ownedSidecars: ownedSidecarPath,
+		cfg:           *cfg,
 	}
 	if driver == "sqlite" {
 		db.path = expandPath(cfg.SQLite.Path)
@@ -153,7 +165,9 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 	// in-memory SQLite (no WAL file). Stopped by Close().
 	// Never on a read-only handle: the checkpointer's whole job is to rewrite the
 	// WAL, which is exactly the mutation read-only mode exists to prevent.
-	if driver == "sqlite" && !strings.Contains(cfg.SQLite.Path, ":memory:") && !cfg.SQLite.ReadOnly {
+	// Nor on a read-intent handle: rewriting the WAL is the writer's job, and a
+	// reader that checkpoints competes with the very writer it is reading past.
+	if driver == "sqlite" && !strings.Contains(cfg.SQLite.Path, ":memory:") && !cfg.SQLite.ReadOnly && !cfg.ReadIntent {
 		db.startWALCheckpointer()
 	}
 
@@ -351,6 +365,93 @@ func openSQLiteReadOnly(path string, cfg *config.SQLiteConfig) (*sql.DB, error) 
 	return sqldb, nil
 }
 
+// readerMaxOpenConns caps a read-intent pool. Reads in WAL mode run in
+// parallel with the writer, but a CLI read issues a handful of queries at most,
+// and a server's list/get traffic should not be able to hold more of the file's
+// shared-memory slots than this.
+const readerMaxOpenConns = 4
+
+// openSQLiteReader opens the read-intent pool on a live store: the ordinary
+// path for read commands and the server's list/get handlers.
+//
+// It differs from the read-write open in exactly the ways that made a read
+// contend with a writer:
+//
+//   - query_only(1): a write through this pool is a driver error, not a lock
+//     acquisition that queues behind a scan for busy_timeout;
+//   - _txlock=deferred: an explicit BEGIN takes no lock until it reads, where
+//     the writer's immediate would take the write lock up front;
+//   - no journal_mode PRAGMA: setting it rewrites the header, and a reader has
+//     no business deciding the store's journal mode;
+//   - no startup checkpoint and no checkpointer goroutine (see NewDB).
+//
+// It is NOT mode=ro, which stays reserved for --read-only evidence mode:
+// mode=ro cannot create a missing -shm on a live WAL database, so it fails
+// exactly when a scan is writing — the case this pool exists for.
+//
+// The file must already exist: a reader that created it would be the "read
+// silently becomes a new empty database" bug the source-must-exist guard
+// fixed. The CLI initializes a missing default store through a writer first.
+func openSQLiteReader(path string, cfg *config.SQLiteConfig) (*sql.DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("database file not readable: %w", err)
+	}
+	dsnPath, err := sqliteDSNFilename(path)
+	if err != nil {
+		return nil, err
+	}
+	dsn := fmt.Sprintf(
+		"%s?_pragma=busy_timeout(%d)&_pragma=query_only(1)&_pragma=cache_size(%d)&_pragma=temp_store(memory)&_pragma=mmap_size(%d)&_txlock=deferred",
+		dsnPath, cfg.BusyTimeout, cfg.CacheSize, sqliteMmapSize,
+	)
+	sqldb, err := sql.Open(sqliteshim.ShimName, dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := sqldb.Ping(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("failed to open database for reading: %w", err)
+	}
+	maxConns := readerMaxOpenConns
+	if cfg.MaxOpenConns > 0 && cfg.MaxOpenConns < maxConns {
+		maxConns = cfg.MaxOpenConns
+	}
+	sqldb.SetMaxOpenConns(maxConns)
+	sqldb.SetMaxIdleConns(maxConns)
+	return sqldb, nil
+}
+
+// writable reports whether this handle may write: false for --read-only
+// evidence handles and read-intent pools alike.
+func (db *DB) writable() bool { return !db.readOnly && !db.reader }
+
+// IsReader reports whether this handle is a read-intent pool.
+func (db *DB) IsReader() bool { return db.reader }
+
+// OpenReader opens a second, read-intent pool on the store this handle opened,
+// for a long-running process that wants its list/get traffic off the writer's
+// pool. The caller owns closing it.
+//
+// It returns (db, false) — the handle itself, nothing new to close — where a
+// separate pool would add nothing: in-memory SQLite (each connection is its own
+// database), a handle that is already read-only or a reader, or a handle that
+// was not opened by NewDB.
+func (db *DB) OpenReader() (*DB, bool, error) {
+	if !db.writable() || db.cfg.Driver == "" {
+		return db, false, nil
+	}
+	if db.driver == driverSQLite && (db.path == "" || db.path == ":memory:" || strings.Contains(db.path, ":memory:")) {
+		return db, false, nil
+	}
+	cfg := db.cfg
+	cfg.ReadIntent = true
+	r, err := NewDB(&cfg)
+	if err != nil {
+		return nil, false, err
+	}
+	return r, true, nil
+}
+
 // sidecarSuffixes are the files SQLite keeps beside a WAL-mode database.
 var sidecarSuffixes = []string{"-wal", "-shm"}
 
@@ -388,8 +489,9 @@ func reclaimSidecars(path string) {
 	}
 }
 
-// openSQLite creates SQLite connection with optimized settings
-func openSQLite(cfg *config.SQLiteConfig) (*sql.DB, error) {
+// openSQLite creates SQLite connection with optimized settings. readIntent
+// selects the read pool (openSQLiteReader) for a file-backed store.
+func openSQLite(cfg *config.SQLiteConfig, readIntent bool) (*sql.DB, error) {
 	// Expand path (handle ~ and environment variables)
 	path := expandPath(cfg.Path)
 
@@ -398,6 +500,9 @@ func openSQLite(cfg *config.SQLiteConfig) (*sql.DB, error) {
 	// becomes a new empty database instead of an error.
 	if cfg.ReadOnly {
 		return openSQLiteReadOnly(path, cfg)
+	}
+	if readIntent && path != ":memory:" {
+		return openSQLiteReader(path, cfg)
 	}
 
 	// Ensure parent directory exists (skip for in-memory databases)
@@ -507,8 +612,10 @@ func openSQLite(cfg *config.SQLiteConfig) (*sql.DB, error) {
 	return sqldb, nil
 }
 
-// openPostgres creates PostgreSQL connection with connection pooling
-func openPostgres(cfg *config.PostgresConfig) (*sql.DB, error) {
+// openPostgres creates PostgreSQL connection with connection pooling. A
+// read-intent pool sets default_transaction_read_only on every session, the
+// server-side equivalent of SQLite's query_only.
+func openPostgres(cfg *config.PostgresConfig, readIntent bool) (*sql.DB, error) {
 	// Expand password from environment if needed
 	password := expandEnvVars(cfg.Password)
 
@@ -522,7 +629,13 @@ func openPostgres(cfg *config.PostgresConfig) (*sql.DB, error) {
 		cfg.SSLMode,
 	)
 
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	opts := []pgdriver.Option{pgdriver.WithDSN(dsn)}
+	if readIntent {
+		opts = append(opts, pgdriver.WithConnParams(map[string]any{
+			"default_transaction_read_only": "on",
+		}))
+	}
+	sqldb := sql.OpenDB(pgdriver.NewConnector(opts...))
 
 	// Configure connection pool
 	sqldb.SetMaxOpenConns(cfg.MaxOpenConns)
@@ -564,7 +677,7 @@ func (db *DB) Close() error {
 		// query_only(1) would refuse it anyway, so this only stops an attempt that
 		// was always going to fail — but attempting it at all is the wrong shape
 		// for a mode whose entire contract is "no writes".
-		if !db.readOnly {
+		if db.writable() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			db.Optimize(ctx)
 			cancel()
@@ -591,8 +704,8 @@ func (db *DB) Optimize(ctx context.Context) {
 	// `PRAGMA optimize` writes sqlite_stat1. A read-only handle was opened
 	// precisely so browsing a source cannot alter it, and query_only(1) would
 	// reject the write anyway — leaving a debug-level error on every close of
-	// every source file a glob touched.
-	if db.readOnly {
+	// every source file a glob touched. A read-intent pool is query_only too.
+	if !db.writable() {
 		return
 	}
 	stmt := "PRAGMA optimize"
@@ -789,12 +902,22 @@ func (db *DB) adaptDDL(ddl string) string {
 }
 
 // currentSchemaVersion is the schema revision this binary expects. Bump it when
-// adding a new one-time backfill/migration in CreateSchema so it re-runs once on
-// existing databases. A database already at this version skips the O(rows)
-// backfills and legacy-index reshaping, so a current database opens in roughly
-// constant time regardless of how many records it holds (rather than re-scanning
-// every table and rebuilding the covering index on every process start).
-const currentSchemaVersion = 1
+// the schema changes; gate any new one-time backfill on the version that
+// introduced it (as legacyBackfillsVersion does) so it runs once per store
+// rather than again on every later bump. A database already past a backfill's
+// version skips it, so a current database opens in roughly constant time
+// regardless of how many records it holds.
+//
+// History:
+//
+//	1  schema_meta introduced; legacy index reshaping and backfills gated.
+//	2  schema_meta.min_reader_version / written_by / updated_at (the
+//	   compatibility guard in schema_guard.go). Additive: min reader stays 1.
+const currentSchemaVersion = 2
+
+// legacyBackfillsVersion is the version that gated the pre-versioning backfills
+// and index reshaping in CreateSchema. A store at or past it has had them.
+const legacyBackfillsVersion = 1
 
 // CurrentSchemaVersion exposes the schema revision this binary expects, so a
 // consumer can fail loudly on drift at startup (`vigolium version --json`)
@@ -818,15 +941,24 @@ func (db *DB) schemaVersion(ctx context.Context) int {
 // newer one already migrated used to stamp its own (lower) version over it,
 // which then re-ran every backfill on the next newer open and lied to any
 // version check. MAX is SQLite's scalar form; Postgres spells it GREATEST.
+//
+// The same statement stamps the compatibility columns: min_reader_version also
+// only moves up (a breaking migration raised it, and nothing may lower it
+// again), and written_by names the build that set the version now recorded.
 func (db *DB) setSchemaVersion(ctx context.Context, v int) {
 	maxFn := "MAX"
 	if db.driver == driverPostgres {
 		maxFn = "GREATEST"
 	}
 	db.execBestEffort(ctx, "record schema version",
-		"INSERT INTO schema_meta (id, version) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET version = "+
-			maxFn+"(schema_meta.version, excluded.version)",
-		v)
+		`INSERT INTO schema_meta (id, version, min_reader_version, written_by, updated_at)
+		 VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT (id) DO UPDATE SET
+		   version = `+maxFn+`(schema_meta.version, excluded.version),
+		   min_reader_version = `+maxFn+`(COALESCE(schema_meta.min_reader_version, 0), excluded.min_reader_version),
+		   written_by = CASE WHEN excluded.version >= schema_meta.version THEN excluded.written_by ELSE schema_meta.written_by END,
+		   updated_at = excluded.updated_at`,
+		v, minReaderVersion, currentBinaryVersion())
 }
 
 // CreateSchema creates all database tables and indexes if they don't exist.
@@ -836,13 +968,21 @@ func (db *DB) setSchemaVersion(ctx context.Context, v int) {
 // would be a schema write to someone else's evidence, and a source genuinely
 // missing the tables surfaces as a query error rather than being silently
 // migrated into the current shape.
+//
+// It refuses (SchemaTooNewError) a store a newer binary has stamped: DDL and
+// backfills written for an older schema are not safe to run against one this
+// binary does not know.
 func (db *DB) CreateSchema(ctx context.Context) error {
-	if db.readOnly {
-		// A read-only handle cannot be migrated — `mode=ro` refuses DDL — so the
-		// best it can do is report a schema it will not be able to query. Without
-		// this the caller's first SELECT fails with a bare
-		// "no such column: r.surface_score", which names a symptom and no remedy.
+	if !db.writable() {
+		// A read-only handle cannot be migrated — `mode=ro` refuses DDL, and a
+		// read-intent pool is query_only — so the best it can do is report a
+		// schema it will not be able to query. Without this the caller's first
+		// SELECT fails with a bare "no such column: r.surface_score", which names
+		// a symptom and no remedy.
 		return db.checkSchemaCurrent(ctx)
+	}
+	if err := db.guardWriteDB(ctx); err != nil {
+		return err
 	}
 	zap.L().Debug("Initializing database tables")
 	for _, ddl := range schemaTables {
@@ -856,7 +996,12 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 	// tables and would otherwise run on every open. Cheap idempotent DDL (CREATE
 	// TABLE/INDEX IF NOT EXISTS, ADD COLUMN) still runs unconditionally so the
 	// schema stays self-healing.
-	schemaCurrent := db.schemaVersion(ctx) >= currentSchemaVersion
+	//
+	// Gated on legacyBackfillsVersion, not currentSchemaVersion: these are the
+	// version-1 migrations, and a v1 store opened by a later binary has had them.
+	// Gating on the current version re-ran every one of them — a covering-index
+	// rebuild and whole-table backfills — on each schema bump.
+	schemaCurrent := db.schemaVersion(ctx) >= legacyBackfillsVersion
 
 	// Drop old indexes before creating the correct ones (migration for existing
 	// databases). Gated on schema version: once applied, the indexes already have
@@ -1242,6 +1387,12 @@ var columnMigrations = []columnMigration{
 	// means the stored bodies are the bodies as captured, which is what every
 	// row written before this column existed honestly holds.
 	{"http_records", "body_compaction", "TEXT"},
+	// Schema v2: the compatibility guard (schema_guard.go). min_reader_version
+	// defaults to 1, which backfills every existing row with the floor a v1
+	// store has always had.
+	{"schema_meta", "min_reader_version", "INTEGER NOT NULL DEFAULT 1"},
+	{"schema_meta", "written_by", "TEXT"},
+	{"schema_meta", "updated_at", "TIMESTAMP"},
 }
 
 func init() {
@@ -1265,7 +1416,10 @@ func (db *DB) runColumnMigrations(ctx context.Context) {
 // because it is FATAL to the command — every query that follows would fail on a
 // missing column — whereas a migration failure on a writable handle is
 // best-effort and worth only a warning.
-var ErrSchemaOutdated = errors.New("database schema is older than this vigolium and --read-only cannot migrate it")
+//
+// A read-intent open reports it as *SchemaOutdatedError (remedy: `vigolium db
+// migrate`); a --read-only evidence open wraps it with that mode's remedy.
+var ErrSchemaOutdated = errors.New("database schema is older than this vigolium")
 
 // EnsureSchemaCurrent brings an existing database up to date, doing NOTHING when
 // it already is.
@@ -1291,6 +1445,13 @@ var ErrSchemaOutdated = errors.New("database schema is older than this vigolium 
 // every object CreateSchema creates and is what the scan entry points use now
 // that they no longer run CreateSchema unconditionally.
 func (db *DB) EnsureSchemaCurrent(ctx context.Context) error {
+	if !db.writable() {
+		// Nothing to migrate through this handle: report what it cannot read.
+		return db.checkSchemaCurrent(ctx)
+	}
+	if err := db.guardWriteDB(ctx); err != nil {
+		return err
+	}
 	missing, err := db.missingColumns(ctx)
 	if err == nil && len(missing) == 0 {
 		return nil
@@ -1317,11 +1478,21 @@ func (db *DB) HasVigoliumSchema(ctx context.Context) bool {
 // "outdated": it has no tables at all, and every read of it correctly returns
 // nothing.
 func (db *DB) checkSchemaCurrent(ctx context.Context) error {
+	// A store this binary cannot read at all is refused before anything else:
+	// its columns may well look complete, which is exactly the trap.
+	if info, err := db.SchemaInfo(ctx); err == nil {
+		if err := guardRead(info); err != nil {
+			return err
+		}
+	}
 	missing, err := db.missingColumns(ctx)
 	if err != nil || len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w (missing: %s)\n"+
+	if db.reader {
+		return &SchemaOutdatedError{DBVersion: db.schemaVersion(ctx), Missing: missing}
+	}
+	return fmt.Errorf("%w and --read-only cannot migrate it (missing: %s)\n"+
 		"  drop --read-only to upgrade it in place, or copy the file first if it must not change",
 		ErrSchemaOutdated, strings.Join(missing, ", "))
 }

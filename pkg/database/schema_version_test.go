@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -93,10 +94,11 @@ func TestSetSchemaVersion_NeverLowers(t *testing.T) {
 		t.Fatalf("raise: version = %d, want %d", v, newer)
 	}
 
-	// What an older binary does on open.
+	// What an older binary does on open: the stamp never lowers, and the
+	// guard now refuses the migration outright (schema_too_new).
 	db.setSchemaVersion(ctx, currentSchemaVersion)
-	if err := db.CreateSchema(ctx); err != nil {
-		t.Fatalf("CreateSchema: %v", err)
+	if err := db.CreateSchema(ctx); !errors.Is(err, ErrSchemaTooNew) {
+		t.Fatalf("CreateSchema on a newer store = %v, want ErrSchemaTooNew", err)
 	}
 	if v := db.schemaVersion(ctx); v != newer {
 		t.Fatalf("older binary lowered schema version to %d, want %d", v, newer)

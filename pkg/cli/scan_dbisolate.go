@@ -156,7 +156,7 @@ func finishDBIsolateMerge(destCfg config.DatabaseConfig, scratchPath string, sil
 		}
 		defer func() { _ = dest.Close() }()
 
-		if err := dest.CreateSchema(ctx); err != nil {
+		if err := dest.EnsureSchemaReady(ctx); err != nil {
 			return fmt.Errorf("prepare destination schema: %w", err)
 		}
 		// Best-effort: seed the default project/FTS so a brand-new destination is

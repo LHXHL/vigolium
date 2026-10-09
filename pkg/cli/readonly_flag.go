@@ -49,7 +49,12 @@ func registerReadOnlyFlag(cmd *cobra.Command) {
 
 // applyReadOnlyMode validates --read-only against the running command and, when
 // accepted, arms the shared opener before any database is opened.
+//
+// It also arms the opener with the command's declared database intent
+// (db_intent.go): both decide how the one shared connection is opened, and
+// both must be settled before anything opens it.
 func applyReadOnlyMode(cmd *cobra.Command) error {
+	applyDBIntent(cmd)
 	if !globalReadOnly {
 		return nil
 	}
@@ -66,7 +71,7 @@ func applyReadOnlyMode(cmd *cobra.Command) error {
 	// flagOn, not Changed: `--save-to-vigolium-db=false` writes nothing, so
 	// rejecting it was a conflict that did not exist — and the operator who spells
 	// out the safe value is exactly the one least deserving of a usage error.
-	for _, w := range []string{"save-to-vigolium-db", "in-replace"} {
+	for _, w := range dbWriteFlags {
 		if flagOn(cmd, w) {
 			return usageErrorf("--read-only cannot be combined with --%s: that flag writes to the database", w)
 		}

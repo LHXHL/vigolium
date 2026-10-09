@@ -241,7 +241,7 @@ func openGlobSourceFile(ctx context.Context, path string) (*database.DB, func(),
 		_ = db.Close()
 		_ = os.RemoveAll(dir)
 	}
-	if err := db.CreateSchema(ctx); err != nil {
+	if err := db.EnsureSchemaReady(ctx); err != nil {
 		closeDB()
 		return nil, nil, fmt.Errorf("initialize scratch schema: %w", err)
 	}
@@ -692,7 +692,7 @@ func loadStatelessJSONL(path string) (*database.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.CreateSchema(ctx); err != nil {
+	if err := db.EnsureSchemaReady(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize scratch schema: %w", err)
 	}
@@ -753,7 +753,7 @@ func openGlobDB(pattern string, skip globDBSkipSet) (*database.DB, error) {
 	// query runs until every file is in. They are built below, once, over the
 	// finished table.
 	db.DeferRecordIndexes()
-	if err := db.CreateSchema(ctx); err != nil {
+	if err := db.EnsureSchemaReady(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize scratch schema: %w", err)
 	}

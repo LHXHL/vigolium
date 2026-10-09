@@ -501,13 +501,12 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	}
 
 	var repo *database.Repository
-	db, dbErr := getDB()
+	// Write intent: the opener makes the schema ready, so no CreateSchema here.
+	db, dbErr := getDBFor(clicommon.IntentWrite)
 	if dbErr == nil {
-		ctx := context.Background()
-		if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-			zap.L().Warn("Failed to create schema", zap.Error(schemaErr))
-		}
 		repo = database.NewRepository(db)
+	} else {
+		zap.L().Warn("Database unavailable; continuing without persistence", zap.Error(dbErr))
 	}
 
 	startedAt := time.Now()

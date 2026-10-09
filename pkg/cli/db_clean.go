@@ -347,7 +347,7 @@ func resetDatabase() error {
 	}
 	clicommon.SetDBCache(db)
 
-	if err := db.CreateSchema(context.Background()); err != nil {
+	if err := db.EnsureSchemaReady(context.Background()); err != nil {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
 

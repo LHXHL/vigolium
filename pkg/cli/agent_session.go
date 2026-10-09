@@ -51,16 +51,13 @@ func runAgentSession(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 	defer closeDatabaseOnExit()
 
+	// Read intent (declared in db_intent.go): no schema DDL on the read path.
 	db, err := getDB()
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
 	ctx := context.Background()
-	if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-		return fmt.Errorf("failed to create schema: %w", schemaErr)
-	}
-
 	repo := database.NewRepository(db)
 
 	// Detail view: if a UUID argument is provided, show session details

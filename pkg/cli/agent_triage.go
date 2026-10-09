@@ -78,14 +78,11 @@ func runAgentTriage(cmd *cobra.Command, args []string) error {
 	}
 	applyOliumOverrides(settings, &agentTriageOliumFlags)
 
-	db, err := getDB()
+	db, err := getDBFor(clicommon.IntentWrite)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 	ctx := context.Background()
-	if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-		zap.L().Warn("Failed to ensure schema", zap.Error(schemaErr))
-	}
 	repo := database.NewRepository(db)
 
 	projectUUID, _ := resolveProjectUUID()

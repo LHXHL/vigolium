@@ -135,17 +135,15 @@ func (h *Handlers) HandleListRecords(c fiber.Ctx) error {
 	// derives request_body/response_body/request_headers/response_headers from
 	// raw_request/raw_response, so dropping those columns implicitly drops the
 	// derived fields too. Detail endpoints select raw_* and get the full view.
-	qb := database.NewQueryBuilder(h.db, fetchFilters).OmitBodies()
-
-	query := qb.BuildRecordsQuery()
+	qb := database.NewQueryBuilder(h.readerDB(), fetchFilters).OmitBodies()
 
 	var records []*database.HTTPRecord
 	ctx := c.Context()
-	if err := query.Scan(ctx, &records); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "query failed: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+	if err := retryRead(ctx, func() error {
+		records = nil
+		return qb.BuildRecordsQuery().Scan(ctx, &records)
+	}); err != nil {
+		return respondQueryError(c, err)
 	}
 
 	// A discarded count error reported total=0 while rows were returned, which

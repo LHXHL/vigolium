@@ -794,7 +794,7 @@ func exportUnifiedFromDB(destCfg config.DatabaseConfig, opts *types.Options) err
 		return fmt.Errorf("open destination database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := db.CreateSchema(context.Background()); err != nil {
+	if err := db.EnsureSchemaReady(context.Background()); err != nil {
 		return fmt.Errorf("prepare destination schema: %w", err)
 	}
 	// This is the ONLY place the fan-out's unified output is written — every

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
@@ -27,17 +28,13 @@ func init() {
 func runDBSeed(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 
-	db, err := getDB()
+	// Write intent: the opener creates the schema on a new database.
+	db, err := getDBFor(clicommon.IntentWrite)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	ctx := context.Background()
-
-	// Ensure schema exists (new databases won't have tables yet)
-	if err := db.CreateSchema(ctx); err != nil {
-		return fmt.Errorf("failed to ensure schema: %w", err)
-	}
 
 	rng := rand.New(rand.NewSource(42)) // deterministic for reproducibility
 

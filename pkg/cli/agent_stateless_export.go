@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/storage"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -152,14 +152,10 @@ func beginAgentStateless(prefix string) (string, error) {
 			zap.String("env", dbPathEnvVar), zap.Error(err))
 	}
 
-	db, err := getDB()
-	if err != nil {
+	// Write intent creates the schema in the fresh file as part of the open.
+	if _, err := getDBFor(clicommon.IntentWrite); err != nil {
 		removeAgentStatelessDB(dbPath)
 		return "", fmt.Errorf("open temporary database: %w", err)
-	}
-	if err := db.CreateSchema(context.Background()); err != nil {
-		removeAgentStatelessDB(dbPath)
-		return "", fmt.Errorf("create schema in temporary database: %w", err)
 	}
 	return dbPath, nil
 }

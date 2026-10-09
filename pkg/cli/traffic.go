@@ -323,10 +323,9 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	if trafficSaveToVigoliumDB {
+		// --save-to-vigolium-db flips this invocation to write intent
+		// (dbWriteFlags), so the opener has already made the schema ready.
 		ctx := context.Background()
-		if err := db.CreateSchema(ctx); err != nil {
-			return fmt.Errorf("failed to create database schema: %w", err)
-		}
 		if err := db.SeedDefaults(ctx); err != nil {
 			return fmt.Errorf("failed to seed default data: %w", err)
 		}
@@ -552,7 +551,7 @@ func printActiveTrafficFilters(filters database.QueryFilters, fuzzyTerm string) 
 	if filters.DateTo != nil {
 		s.add("to", clicommon.FormatTimeFilter(*filters.DateTo))
 	}
-	s.print()
+	s.print(trafficMarkdown || trafficBurp || trafficRaw)
 }
 
 // resolveColumns selects columns based on --columns and --exclude-columns flags.

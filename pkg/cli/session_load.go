@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/agent"
 	"github.com/vigolium/vigolium/pkg/authentication"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"gopkg.in/yaml.v3"
@@ -227,16 +228,12 @@ func persistSessionsWithResponse(sessions []*authentication.Session, loginRespon
 		return usageErrorf("--host is required")
 	}
 
-	db, err := getDB()
+	db, err := getDBFor(clicommon.IntentWrite)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
 	ctx := context.Background()
-	if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-		return fmt.Errorf("failed to create schema: %w", schemaErr)
-	}
-
 	repo := database.NewRepository(db)
 	projectUUID, err := resolveProjectUUID()
 	if err != nil {
@@ -292,16 +289,12 @@ func persistSessions(sessions []*authentication.Session) error {
 		return usageErrorf("--host is required")
 	}
 
-	db, err := getDB()
+	db, err := getDBFor(clicommon.IntentWrite)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
 	ctx := context.Background()
-	if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-		return fmt.Errorf("failed to create schema: %w", schemaErr)
-	}
-
 	repo := database.NewRepository(db)
 	projectUUID, err := resolveProjectUUID()
 	if err != nil {

@@ -887,21 +887,13 @@ func (s *RiskPrioritizedDBInputSource) fillNextPageLocked(ctx context.Context) (
 		// blocked. Next() has a single caller, so no other goroutine advances the
 		// lane state meanwhile.
 		var records []*HTTPRecord
-		var ferr error
-		for attempt := 0; attempt < 3; attempt++ {
+		ferr := RetryBusy(ctx, func() error {
 			s.mu.Unlock()
-			records, ferr = s.repo.GetScanRecordsByUUIDs(ctx, surviving)
-			if ferr != nil && ctx.Err() == nil && attempt < 2 {
-				select {
-				case <-ctx.Done():
-				case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
-				}
-			}
-			s.mu.Lock()
-			if ferr == nil {
-				break
-			}
-		}
+			defer s.mu.Lock()
+			var err error
+			records, err = s.repo.GetScanRecordsByUUIDs(ctx, surviving)
+			return err
+		}, s.pageRetryPolicy(ctx, "risk-prioritized page fetch"))
 		if ferr != nil {
 			// The keyset was NOT advanced, so re-pulling this page after the error is
 			// surfaced retries the exact same survivors — a transient failure becomes
@@ -1032,28 +1024,43 @@ func (s *RiskPrioritizedDBInputSource) FlushCursor(ctx context.Context) error {
 		return s.commitErr
 	}
 
-	var err error
-	for attempt := 0; attempt < cursorFlushAttempts; attempt++ {
-		if err = s.writeCursorLocked(ctx); err == nil {
+	var lastErr error
+	err := RetryBusy(ctx, func() error {
+		// A concurrent ack may have succeeded while the lock was released for
+		// the previous wait.
+		if s.committed {
 			return nil
 		}
-		if ctx.Err() != nil {
-			return err
-		}
-		if attempt < cursorFlushAttempts-1 {
-			s.mu.Unlock()
-			select {
-			case <-ctx.Done():
-			case <-time.After(time.Duration(attempt+1) * cursorFlushBackoff):
-			}
-			s.mu.Lock()
-			// A concurrent ack may have succeeded while the lock was released.
-			if s.committed {
-				return nil
-			}
-		}
+		lastErr = s.writeCursorLocked(ctx)
+		return lastErr
+	}, s.pageRetryPolicy(ctx, "scan cursor checkpoint"))
+	if err != nil && ctx.Err() != nil && lastErr != nil {
+		// Cancelled mid-wait: report the write failure that was being retried,
+		// not the bare context error, which says nothing about the checkpoint.
+		return lastErr
 	}
 	return err
+}
+
+// pageRetryPolicy is the bounded retry both DB round-trips of this source share:
+// cursorFlushAttempts tries, backing off from cursorFlushBackoff. Unlike the
+// default policy it retries ANY error while ctx is live — a brief failover is as
+// transient as SQLITE_BUSY here, and the alternative is a silently dropped page
+// or an unacknowledged round. Callers hold s.mu, so the wait releases it: worker
+// ack callbacks must not stall behind a sleeping retry.
+func (s *RiskPrioritizedDBInputSource) pageRetryPolicy(ctx context.Context, op string) RetryPolicy {
+	return RetryPolicy{
+		Op:          op,
+		MaxAttempts: cursorFlushAttempts,
+		BaseDelay:   cursorFlushBackoff,
+		MaxDelay:    time.Duration(cursorFlushAttempts) * cursorFlushBackoff,
+		Retryable:   func(error) bool { return ctx.Err() == nil },
+		Wait: func(ctx context.Context, d time.Duration) error {
+			s.mu.Unlock()
+			defer s.mu.Lock()
+			return sleepCtx(ctx, d)
+		},
+	}
 }
 
 // Unresolved reports how many of this round's items ended neither acknowledged

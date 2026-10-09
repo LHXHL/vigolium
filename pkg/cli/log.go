@@ -105,14 +105,15 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 	// Records:true because `log` reads scans, agentic_scans and scan_logs and
 	// never touches http_records; under --glob-db that skip is the difference
 	// between merging a session listing and copying every file's whole corpus.
+	//
+	// No CreateSchema: `log` opens the read pool (db_intent.go), whose opener
+	// checks the schema with catalog reads and never takes the write lock — a
+	// listing must not queue behind the scan it is listing.
 	db, err := openReadDB(globDBSkipSet{Records: true})
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 	ctx := context.Background()
-	if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-		return fmt.Errorf("failed to create schema: %w", schemaErr)
-	}
 	repo := database.NewRepository(db)
 
 	projectUUID, err := resolveProjectUUID()
@@ -391,9 +392,6 @@ func resolveLogSource(uuid string, settings *config.Settings) (*logSource, error
 	var repo *database.Repository
 	ctx := context.Background()
 	if dbErr == nil {
-		if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-			return nil, fmt.Errorf("failed to create schema: %w", schemaErr)
-		}
 		repo = database.NewRepository(db)
 	}
 
@@ -636,39 +634,23 @@ func tailStartOffset(path string, lines int) int64 {
 	return 0
 }
 
-// isSQLiteBusy reports whether an error is a transient SQLITE_BUSY
-// ("database is locked") from the sqlite driver — expected when a scan is
-// actively writing to scan_logs while we poll it.
-func isSQLiteBusy(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "database is locked") ||
-		strings.Contains(s, "SQLITE_BUSY") ||
-		strings.Contains(s, "(5)")
-}
-
-// fetchScanLogsRetry calls ListScanLogs, retrying on SQLITE_BUSY with a
-// short backoff. Returns the first non-busy error.
+// fetchScanLogsRetry calls ListScanLogs under database.RetryBusy: a scan that
+// is writing scan_logs while we poll it can hold the lock past busy_timeout, and
+// that is worth a short, bounded wait rather than an error. When the budget runs
+// out the error is a *database.LockedError (database_locked).
 func fetchScanLogsRetry(ctx context.Context, repo *database.Repository, scanUUID string, limit, offset int, attempts int) ([]*database.ScanLog, error) {
-	backoff := 50 * time.Millisecond
-	var lastErr error
-	for i := 0; i < attempts; i++ {
-		logs, _, err := repo.ListScanLogs(ctx, scanUUID, "", "", limit, offset)
-		if err == nil {
-			return logs, nil
-		}
-		if !isSQLiteBusy(err) {
-			return nil, err
-		}
-		lastErr = err
-		time.Sleep(backoff)
-		if backoff < 500*time.Millisecond {
-			backoff *= 2
-		}
-	}
-	return nil, lastErr
+	var logs []*database.ScanLog
+	err := database.RetryBusy(ctx, func() error {
+		var err error
+		logs, _, err = repo.ListScanLogs(ctx, scanUUID, "", "", limit, offset)
+		return err
+	}, database.RetryPolicy{
+		Op:          "read scan logs",
+		MaxAttempts: attempts,
+		BaseDelay:   50 * time.Millisecond,
+		MaxDelay:    500 * time.Millisecond,
+	})
+	return logs, err
 }
 
 // streamLogFromDB replays scan_logs entries to stdout in the same raw-text
@@ -697,7 +679,7 @@ func streamLogFromDB(src *logSource, follow bool) error {
 	const pageLimit = 10000
 	logs, err := fetchScanLogsRetry(ctx, repo, src.scanUUID, pageLimit, 0, 10)
 	if err != nil {
-		if follow && isSQLiteBusy(err) {
+		if follow && database.IsBusy(err) {
 			// Proceed with empty snapshot; follow loop will pick up rows later.
 			logs = nil
 		} else {
@@ -741,7 +723,7 @@ func streamLogFromDB(src *logSource, follow bool) error {
 			newLogs, _, fetchErr := repo.ListScanLogs(ctx, src.scanUUID, "", "", pageLimit, totalSoFar)
 			if fetchErr != nil {
 				// Transient lock while the scan writes — wait for next tick.
-				if isSQLiteBusy(fetchErr) {
+				if database.IsBusy(fetchErr) {
 					continue
 				}
 				return fmt.Errorf("failed to fetch scan logs: %w", fetchErr)

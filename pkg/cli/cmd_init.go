@@ -74,7 +74,7 @@ func runInitCmd(cmd *cobra.Command, args []string) error {
 		defer func() { _ = db.Close() }()
 
 		ctx := context.Background()
-		if err := db.CreateSchema(ctx); err != nil {
+		if err := db.EnsureSchemaReady(ctx); err != nil {
 			return fmt.Errorf("failed to create database schema: %w", err)
 		}
 		if err := db.SeedDefaults(ctx); err != nil {

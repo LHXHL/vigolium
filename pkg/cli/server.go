@@ -316,7 +316,7 @@ func initServerDatabase(cfg *config.DatabaseConfig, silent bool) (*database.DB, 
 		zap.L().Warn("Failed to create database, results won't be persisted", zap.Error(err))
 		return nil, nil
 	}
-	if err := db.CreateSchema(context.Background()); err != nil {
+	if err := db.EnsureSchemaReady(context.Background()); err != nil {
 		zap.L().Error("Failed to create database schema; running without persistence", zap.Error(err))
 		if !silent {
 			fmt.Printf("  %s Database schema init failed: %v (running without persistence)\n",
