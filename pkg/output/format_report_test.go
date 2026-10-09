@@ -232,7 +232,7 @@ func TestWriteMarkdownFindings(t *testing.T) {
 		Request:          "GET /q HTTP/1.1",
 		Response:         "HTTP/1.1 200 OK",
 		Tags:             []string{"xss"},
-	}})
+	}}, newMarkdownFindingOptions(HTMLReportMeta{}))
 	got := w.String()
 	assert.Contains(t, got, "## High Findings")
 	assert.Contains(t, got, "### 42. Reflected XSS")
@@ -254,6 +254,6 @@ func TestWriteMarkdownFindings(t *testing.T) {
 
 func TestWriteMarkdownFindingsEmpty(t *testing.T) {
 	w := &strings.Builder{}
-	writeMarkdownFindings(w, "Low", nil)
+	writeMarkdownFindings(w, "Low", nil, newMarkdownFindingOptions(HTMLReportMeta{}))
 	assert.Empty(t, w.String(), "no output when no findings of the severity")
 }

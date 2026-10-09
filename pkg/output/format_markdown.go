@@ -3,6 +3,7 @@ package output
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,11 +25,12 @@ func GenerateMarkdownReport(items []any, outputPath string, meta HTMLReportMeta)
 	writeMarkdownHeader(w, data)
 	writeMarkdownTOC(w, data)
 	writeMarkdownExecutiveSummary(w, data)
-	writeMarkdownFindings(w, "Critical", data.CriticalFindings)
-	writeMarkdownFindings(w, "High", data.HighFindings)
-	writeMarkdownFindings(w, "Medium", data.MediumFindings)
-	writeMarkdownFindings(w, "Low", data.LowFindings)
-	writeMarkdownFindings(w, "Info", data.InfoFindings)
+	opts := newMarkdownFindingOptions(meta)
+	writeMarkdownFindings(w, "Critical", data.CriticalFindings, opts)
+	writeMarkdownFindings(w, "High", data.HighFindings, opts)
+	writeMarkdownFindings(w, "Medium", data.MediumFindings, opts)
+	writeMarkdownFindings(w, "Low", data.LowFindings, opts)
+	writeMarkdownFindings(w, "Info", data.InfoFindings, opts)
 
 	_, err = f.WriteString(w.String())
 	return err
@@ -36,7 +38,11 @@ func GenerateMarkdownReport(items []any, outputPath string, meta HTMLReportMeta)
 
 func writeMarkdownHeader(w *strings.Builder, data ReportData) {
 	fmt.Fprintf(w, "# %s\n\n", data.Title)
-	fmt.Fprintf(w, "**Generated:** %s  \n", time.Now().UTC().Format("2006-01-02 15:04 UTC"))
+	generated := data.GeneratedAt
+	if generated == "" {
+		generated = time.Now().UTC().Format("2006-01-02 15:04 UTC")
+	}
+	fmt.Fprintf(w, "**Generated:** %s  \n", generated)
 	if data.VigoliumVersion != "" {
 		fmt.Fprintf(w, "**Vigolium Version:** %s  \n", data.VigoliumVersion)
 	}
@@ -104,7 +110,25 @@ func writeMarkdownExecutiveSummary(w *strings.Builder, data ReportData) {
 	w.WriteString("\n")
 }
 
-func writeMarkdownFindings(w *strings.Builder, severity string, findings []ReportFinding) {
+// markdownFindingOptions carries the per-report knobs the finding renderer
+// needs: the shared request/response cap and the follow-up command composer.
+type markdownFindingOptions struct {
+	maxBodyBytes int
+	followUp     func(tail ...string) string
+}
+
+func newMarkdownFindingOptions(meta HTMLReportMeta) markdownFindingOptions {
+	o := markdownFindingOptions{maxBodyBytes: meta.MaxBodyBytes, followUp: meta.FollowUp}
+	if o.maxBodyBytes == 0 {
+		o.maxBodyBytes = DefaultMarkdownMaxBodyBytes
+	}
+	if o.followUp == nil {
+		o.followUp = func(tail ...string) string { return "vigolium " + strings.Join(tail, " ") }
+	}
+	return o
+}
+
+func writeMarkdownFindings(w *strings.Builder, severity string, findings []ReportFinding, opts markdownFindingOptions) {
 	if len(findings) == 0 {
 		return
 	}
@@ -117,7 +141,7 @@ func writeMarkdownFindings(w *strings.Builder, severity string, findings []Repor
 		if f.ModuleName != "" {
 			fmt.Fprintf(w, "**Module:** %s", f.ModuleName)
 			if f.ModuleID != "" {
-				fmt.Fprintf(w, " (`%s`)", f.ModuleID)
+				fmt.Fprintf(w, " (%s)", MarkdownCodeSpan(f.ModuleID))
 			}
 			w.WriteString("  \n")
 		}
@@ -132,10 +156,10 @@ func writeMarkdownFindings(w *strings.Builder, severity string, findings []Repor
 			fmt.Fprintf(w, "**CVSS:** %.1f  \n", f.CVSSScore)
 		}
 		if f.URL != "" {
-			fmt.Fprintf(w, "**URL:** `%s`  \n", f.URL)
+			fmt.Fprintf(w, "**URL:** %s  \n", MarkdownCodeSpan(f.URL))
 		}
 		if f.SourceFile != "" {
-			fmt.Fprintf(w, "**Source File:** `%s`  \n", f.SourceFile)
+			fmt.Fprintf(w, "**Source File:** %s  \n", MarkdownCodeSpan(f.SourceFile))
 		}
 		if f.RepoName != "" {
 			fmt.Fprintf(w, "**Repository:** %s  \n", f.RepoName)
@@ -144,6 +168,8 @@ func writeMarkdownFindings(w *strings.Builder, severity string, findings []Repor
 			fmt.Fprintf(w, "**Found At:** %s  \n", f.FoundAt)
 		}
 		w.WriteString("\n")
+
+		writeMarkdownFindingMetadata(w, f, opts)
 
 		if f.Description != "" {
 			fmt.Fprintf(w, "%s\n\n", normalizeFindingBody(f.Description))
@@ -156,7 +182,7 @@ func writeMarkdownFindings(w *strings.Builder, severity string, findings []Repor
 		if len(f.MatchedAt) > 0 {
 			w.WriteString("**Matched At:**\n")
 			for _, m := range f.MatchedAt {
-				fmt.Fprintf(w, "- `%s`\n", m)
+				fmt.Fprintf(w, "- %s\n", MarkdownCodeSpan(m))
 			}
 			w.WriteString("\n")
 		}
@@ -164,7 +190,7 @@ func writeMarkdownFindings(w *strings.Builder, severity string, findings []Repor
 		if len(f.ExtractedResults) > 0 {
 			w.WriteString("**Extracted Results:**\n")
 			for _, r := range f.ExtractedResults {
-				fmt.Fprintf(w, "- `%s`\n", r)
+				fmt.Fprintf(w, "- %s\n", MarkdownCodeSpan(r))
 			}
 			w.WriteString("\n")
 		}
@@ -177,17 +203,11 @@ func writeMarkdownFindings(w *strings.Builder, severity string, findings []Repor
 			w.WriteString("\n")
 		}
 
-		if f.Request != "" {
-			w.WriteString("<details>\n<summary>HTTP Request</summary>\n\n```http\n")
-			w.WriteString(f.Request)
-			w.WriteString("\n```\n\n</details>\n\n")
-		}
-
-		if f.Response != "" {
-			w.WriteString("<details>\n<summary>HTTP Response</summary>\n\n```http\n")
-			w.WriteString(truncateStr(f.Response, 2000))
-			w.WriteString("\n```\n\n</details>\n\n")
-		}
+		// Request and response get the same cap: the request carries the
+		// payload, so it is as much evidence as the response and must not be
+		// the one left unbounded.
+		writeMarkdownHTTPDetails(w, "HTTP Request", f.Request, opts.maxBodyBytes, markdownFullCommand(f, opts, true))
+		writeMarkdownHTTPDetails(w, "HTTP Response", f.Response, opts.maxBodyBytes, markdownFullCommand(f, opts, false))
 
 		if len(f.Tags) > 0 {
 			fmt.Fprintf(w, "**Tags:** %s\n\n", strings.Join(f.Tags, ", "))
@@ -195,6 +215,83 @@ func writeMarkdownFindings(w *strings.Builder, severity string, findings []Repor
 
 		w.WriteString("---\n\n")
 	}
+}
+
+// writeMarkdownFindingMetadata writes the identifiers that tie a finding back
+// to the store — finding_id, finding_hash, scan_uuid, module_id and the linked
+// record UUIDs — as a two-column table keyed by their machine names, followed
+// by a ready-to-run follow-up command. Empty identifiers are omitted.
+func writeMarkdownFindingMetadata(w *strings.Builder, f ReportFinding, opts markdownFindingOptions) {
+	type row struct{ key, val string }
+	var rows []row
+	if f.ID > 0 {
+		rows = append(rows, row{"finding_id", MarkdownCodeSpan(strconv.Itoa(f.ID))})
+	}
+	if f.FindingHash != "" {
+		rows = append(rows, row{"finding_hash", MarkdownCodeSpan(f.FindingHash)})
+	}
+	if f.ScanUUID != "" {
+		rows = append(rows, row{"scan_uuid", MarkdownCodeSpan(f.ScanUUID)})
+	}
+	if f.ModuleID != "" {
+		rows = append(rows, row{"module_id", MarkdownCodeSpan(f.ModuleID)})
+	}
+	if len(f.RecordUUIDs) > 0 {
+		spans := make([]string, 0, len(f.RecordUUIDs))
+		for _, u := range f.RecordUUIDs {
+			spans = append(spans, MarkdownCodeSpan(u))
+		}
+		rows = append(rows, row{"record_uuids", strings.Join(spans, ", ")})
+	}
+	if len(rows) == 0 {
+		return
+	}
+	w.WriteString("| Field | Value |\n|-------|-------|\n")
+	for _, r := range rows {
+		// A pipe inside a cell would split the row; identifiers never carry
+		// one, but escape defensively.
+		fmt.Fprintf(w, "| %s | %s |\n", r.key, strings.ReplaceAll(r.val, "|", "\\|"))
+	}
+	w.WriteString("\n")
+	if f.ID > 0 {
+		if cmd := opts.followUp("finding", "--id", strconv.Itoa(f.ID)); cmd != "" {
+			fmt.Fprintf(w, "**Follow-up:** %s\n\n", MarkdownCodeSpan(cmd))
+		}
+	}
+}
+
+// markdownFullCommand names the command that prints a truncated message whole:
+// the first linked record's body when the finding has one, else the finding
+// itself rendered with --full-body.
+func markdownFullCommand(f ReportFinding, opts markdownFindingOptions, request bool) string {
+	if len(f.RecordUUIDs) > 0 && f.RecordUUIDs[0] != "" {
+		tail := []string{"traffic", "body", "--uuid", f.RecordUUIDs[0]}
+		if request {
+			tail = append(tail, "--request")
+		}
+		return opts.followUp(tail...)
+	}
+	if f.ID > 0 {
+		return opts.followUp("finding", "--id", strconv.Itoa(f.ID), "--markdown", "--full-body")
+	}
+	return ""
+}
+
+// writeMarkdownHTTPDetails writes one raw HTTP message inside a collapsible
+// <details> block, fenced with a backtick run longer than any inside the
+// message and capped at maxBytes with an explicit truncation note.
+func writeMarkdownHTTPDetails(w *strings.Builder, summary, raw string, maxBytes int, fullCmd string) {
+	if raw == "" {
+		return
+	}
+	body, note := truncateMarkdownHTTP(raw, maxBytes, fullCmd)
+	body = strings.TrimRight(body, "\r\n")
+	open, closeFence := MarkdownFence(body, "http")
+	fmt.Fprintf(w, "<details>\n<summary>%s</summary>\n\n%s\n%s\n%s\n\n", summary, open, body, closeFence)
+	if note != "" {
+		fmt.Fprintf(w, "%s\n\n", note)
+	}
+	w.WriteString("</details>\n\n")
 }
 
 // normalizeFindingBody prepares a finding's description for embedding under the

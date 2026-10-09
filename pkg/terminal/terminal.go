@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
 
@@ -117,15 +118,17 @@ func ShortenHome(path string) string {
 	return path
 }
 
-// Truncate truncates a string to maxWidth characters, appending "…" if truncated.
+// Truncate shortens s to at most maxWidth terminal columns, appending "…" when
+// it had to cut. Width is measured in display cells (go-runewidth), so wide
+// CJK/emoji characters count as two and a multibyte rune is never split.
 func Truncate(s string, maxWidth int) string {
-	if len(s) <= maxWidth {
+	if runewidth.StringWidth(s) <= maxWidth {
 		return s
 	}
 	if maxWidth <= 1 {
 		return "…"
 	}
-	return s[:maxWidth-1] + "…"
+	return runewidth.Truncate(s, maxWidth, "…")
 }
 
 // HumanBytes formats a byte count for display, in binary units.

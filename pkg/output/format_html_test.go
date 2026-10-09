@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -257,4 +258,19 @@ func TestGenerateHTMLReportSetsDataExpectedSentinel(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(content), "{{.DataExpected}}", "placeholder must be substituted")
 	assert.Contains(t, string(content), `"true" === "true"`, "sentinel must resolve to true")
+}
+
+func TestTrimReportItemTruncatesOnRuneBoundary(t *testing.T) {
+	budget := int64(htmlReportBodyBudgetBytes)
+	big := "a" + strings.Repeat("é", htmlReportMaxBodyBytes) // 2 bytes per rune, offset by one
+	raw := httpRecordEnvelope(t, map[string]any{
+		"response_content_type": "text/plain; charset=utf-8",
+		"response_body":         []byte(big),
+	})
+
+	data := decodeEnvelopeData(t, trimReportItemJSON(raw, &budget, &reportTrimStats{}))
+	body := decodeBodyField(t, data, "response_body")
+	assert.True(t, utf8.Valid(body), "truncated body split a rune")
+	assert.LessOrEqual(t, len(body), htmlReportMaxBodyBytes)
+	assert.GreaterOrEqual(t, len(body), htmlReportMaxBodyBytes-1)
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/internal/atomicfile"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 	"github.com/vigolium/vigolium/public"
 )
 
@@ -28,6 +29,18 @@ type HTMLReportMeta struct {
 	// a caller fold a short trim summary into its own export listing. Only the
 	// HTML format trims; nil keeps the default inline note.
 	OnTrim func(ReportTrimInfo)
+	// MaxBodyBytes caps each request and response embedded in the Markdown
+	// report. Zero means DefaultMarkdownMaxBodyBytes; negative disables the cap.
+	MaxBodyBytes int
+	// FollowUp composes a ready-to-run vigolium command from its tail
+	// arguments (e.g. "finding", "--id", "5"), so a report can pin follow-ups
+	// to the same --db/--config/project scope as the run that produced it.
+	// Returning "" suppresses the follow-up. Nil renders a bare
+	// "vigolium <tail...>".
+	FollowUp func(tail ...string) string
+	// PDFTimeout bounds the headless Chrome PDF render. Zero means
+	// VIGOLIUM_PDF_TIMEOUT (a Go duration) when set, else DefaultPDFTimeout.
+	PDFTimeout time.Duration
 }
 
 // ReportTrimInfo summarizes the body-capping the HTML report applied, so a
@@ -603,7 +616,9 @@ func trimReportBody(body []byte, contentType string, budget *int64, stats *repor
 	keep := len(body)
 	truncated := false
 	if keep > htmlReportMaxBodyBytes {
-		keep = htmlReportMaxBodyBytes
+		// Cut on a rune boundary so a multibyte body never ends in half a
+		// character; the bytes up to the cut are kept verbatim.
+		keep = textutil.CutIndex(body, htmlReportMaxBodyBytes)
 		truncated = true
 	}
 	if *budget < int64(keep) {

@@ -1,13 +1,18 @@
 package modkit
 
-import "strings"
+import (
+	"strings"
 
-// Truncate shortens a string to maxLen, appending "..." if truncated.
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
+)
+
+// Truncate shortens a string to maxLen bytes, appending "..." if truncated.
+// The cut never splits a UTF-8 sequence.
 func Truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return textutil.TruncateUTF8(s, maxLen) + "..."
 }
 
 // IsJSOrTSContentType returns true if the content type indicates JavaScript or TypeScript.

@@ -69,6 +69,28 @@ vigolium scan https://example.com --format pdf -o report.pdf
 Full native scans can produce HTML reports. When `--only` isolates a phase,
 HTML is supported for discovery and spidering output.
 
+PDF export runs headless Chrome with a throwaway profile directory, bounded by
+a 90-second timeout (set `VIGOLIUM_PDF_TIMEOUT`, e.g. `3m`, to change it). On
+timeout the whole Chrome process group is killed, and a failure carries the
+last 4 KB of Chrome's stderr. Chrome keeps its sandbox unless it cannot have
+one: running as root on Linux, inside a container, or with
+`VIGOLIUM_CHROME_NO_SANDBOX=1`.
+
+### Markdown Report
+
+`--format markdown` renders one section per finding. Each section has a
+`finding_id` / `finding_hash` / `scan_uuid` / `module_id` / `record_uuids`
+table and a follow-up command (`vigolium finding --id N`). The request and
+response share one cap (4 KB each). The cut never splits a UTF-8 character, and
+a cut message ends with a note naming the command that prints it whole:
+
+```text
+… [truncated, 4096 of 22000 bytes; full: vigolium traffic body --uuid <record_uuid>]
+```
+
+Code fences grow longer than any backtick run in the message. A captured
+response that contains three backticks therefore stays inside its block.
+
 ### SARIF (interchange with other tools)
 
 `--format sarif` writes a [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/sarif-v2.1.0-errata01-os-complete.html)

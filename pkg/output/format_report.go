@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 	"github.com/vigolium/vigolium/public"
 	"github.com/yuin/goldmark"
 )
@@ -40,6 +41,11 @@ type ReportFinding struct {
 	FindingHash        string
 	SourceFile         string
 	RepoName           string
+	// ScanUUID and RecordUUIDs tie the finding back to its scan and its stored
+	// HTTP exchanges, so a report reader (human or agent) can fetch the full
+	// evidence with `vigolium traffic body --uuid <record>`.
+	ScanUUID    string
+	RecordUUIDs []string
 }
 
 type ReportModule struct {
@@ -231,6 +237,8 @@ func parseFinding(data json.RawMessage, md goldmark.Markdown) ReportFinding {
 		FindingHash        string   `json:"finding_hash"`
 		SourceFile         string   `json:"source_file"`
 		RepoName           string   `json:"repo_name"`
+		ScanUUID           string   `json:"scan_uuid"`
+		RecordUUIDs        []string `json:"http_record_uuids"`
 	}
 	// best-effort: render whatever fields decode; a malformed finding yields a sparse row.
 	_ = json.Unmarshal(data, &f)
@@ -277,12 +285,16 @@ func parseFinding(data json.RawMessage, md goldmark.Markdown) ReportFinding {
 		FindingHash:        f.FindingHash,
 		SourceFile:         f.SourceFile,
 		RepoName:           f.RepoName,
+		ScanUUID:           f.ScanUUID,
+		RecordUUIDs:        f.RecordUUIDs,
 	}
 }
 
+// truncateStr caps s at maxLen bytes plus a "..." marker, never splitting a
+// UTF-8 sequence (a split rune would make SARIF/JSON output invalid).
 func truncateStr(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return textutil.TruncateUTF8(s, maxLen) + "..."
 }

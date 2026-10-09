@@ -3,6 +3,7 @@ package notify
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSanitizeFilename(t *testing.T) {
@@ -52,6 +53,8 @@ func TestTruncate(t *testing.T) {
 		{"normal truncation", "hello world", 8, "hello..."},
 		{"tiny limit no ellipsis", "hello", 3, "hel"},
 		{"tiny limit 2", "hello", 2, "he"},
+		{"multibyte not split", "日本語テキスト", 10, "日本..."},
+		{"multibyte tiny", "日本", 4, "..."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -87,4 +90,14 @@ func TestTruncateWithIndicator(t *testing.T) {
 			t.Errorf("got %q, want bare indicator", got)
 		}
 	})
+}
+
+func TestTruncateWithIndicatorMultibyte(t *testing.T) {
+	got := TruncateWithIndicator(strings.Repeat("é", 40), 30)
+	if !utf8.ValidString(got) {
+		t.Fatalf("split a rune: %q", got)
+	}
+	if want := strings.Repeat("é", 6) + " [see attachment]"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -450,4 +451,20 @@ func TestSARIFRankDerivedFromCVSS(t *testing.T) {
 func TestCollapseToTextStripsMarkdown(t *testing.T) {
 	in := "## Summary\nA problem.\n\n```http\nGET / HTTP/1.1\n```\n"
 	assert.Equal(t, "Summary\nA problem.\n\nGET / HTTP/1.1", collapseToText(in))
+}
+
+// A multibyte body cut at the cap must stay valid UTF-8: a split rune is
+// re-encoded as U+FFFD by encoding/json and rejected by strict SARIF readers.
+func TestSARIFTruncatedMultibyteBodyStaysValidUTF8(t *testing.T) {
+	huge := "x" + strings.Repeat("日", sarifMaxBodyBytes) // 3 bytes per rune, offset by one
+	log := buildLog(t, []any{findingEnvelope(map[string]any{
+		"module_id": "big", "severity": "low", "url": "https://target.example.com/",
+		"response": "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + huge,
+	})})
+	text := log.Runs[0].Results[0].WebResponse.Body.Text
+	require.NotEmpty(t, text)
+	assert.True(t, utf8.ValidString(text), "truncated SARIF body split a rune")
+	raw, err := json.Marshal(log)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), `�`)
 }
