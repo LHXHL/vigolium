@@ -18,7 +18,7 @@ Returns paginated vulnerability findings.
 | `finding_source` | string |            | Exact source filter, including `dynamic-assessment`, `known-issue-scan`, `agent`, `autopilot`, `oast`, `extension`, `audit`, `import`, or `spidering` |
 | `record_kind` | string | `finding` | Comma-separated `finding`, `candidate`, or `observation` |
 | `repo_name`   | string |            | Filter by repository name or URL (exact match). Populated for audit findings |
-| `status`      | string |            | Filter by lifecycle status (comma-separated): `draft`, `triaged`, `false_positive`, `accepted_risk`, `fixed` |
+| `status`      | string |            | Filter by lifecycle status (comma-separated): `draft`, `triaged`, `confirmed`, `false_positive`, `accepted_risk`, `fixed` |
 | `search`      | string |            | Search across description, module ID, matched_at  |
 | `sort`        | string | `found_at` | Sort field: `found_at`, `created_at`, `severity`, `module_name`, `module_id`, `confidence` |
 | `order`       | string | `desc`     | Sort order: `asc` or `desc`                       |
@@ -158,14 +158,14 @@ curl -s -X PATCH http://localhost:9002/api/findings/42/status \
   -d '{"status":"false_positive"}' | jq .
 ```
 
-Accepted values are `draft`, `triaged`, `false_positive`, `accepted_risk`, and
-`fixed`.
+Accepted values are `draft`, `triaged`, `confirmed`, `false_positive`,
+`accepted_risk`, and `fixed`.
 
 ---
 
 ## DELETE /api/findings/:id — Delete Finding
 
-Deletes a single finding by its numeric ID. Associated `finding_records` junction rows are also removed.
+Deletes a single finding by its numeric ID. Associated `finding_records` junction rows, `finding_observations` and `finding_status_events` rows are also removed.
 
 ```bash
 curl -s -X DELETE http://localhost:9002/api/findings/42 | jq .

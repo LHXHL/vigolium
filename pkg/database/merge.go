@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -35,7 +36,8 @@ type MergeOptions struct {
 	// SkipHTTPRecords is set, which already omits the table.
 	SkipRecordBodies bool
 
-	// SkipFindings omits findings, the finding_records junction, and
+	// SkipFindings omits findings, the finding_records junction, the finding
+	// history tables (finding_observations, finding_status_events) and
 	// oast_interactions from the copy. Safe only for a reader that shows no
 	// finding and filters no record by one.
 	//
@@ -75,6 +77,8 @@ type MergeStats struct {
 	FindingsDeduped      int
 	FindingRecordsMerged int
 	OASTMerged           int
+	ObservationsMerged   int
+	StatusEventsMerged   int
 }
 
 // Add accumulates o's counters into s, for aggregating the stats of several
@@ -91,16 +95,19 @@ func (s *MergeStats) Add(o *MergeStats) {
 	s.FindingsDeduped += o.FindingsDeduped
 	s.FindingRecordsMerged += o.FindingRecordsMerged
 	s.OASTMerged += o.OASTMerged
+	s.ObservationsMerged += o.ObservationsMerged
+	s.StatusEventsMerged += o.StatusEventsMerged
 }
 
 // mergeCopyTables lists the uuid-keyed result tables copied set-based with
-// OR IGNORE. projects/scans/http_records have a TEXT uuid primary key;
-// agentic_scans has an AUTOINCREMENT integer id plus a UNIQUE(uuid) business
-// key. The AUTOINCREMENT "id" column is always dropped from the copy (see the
-// dropColumn call in mergeOnce) so the destination assigns its own and dedup
-// falls on the uuid. findings/finding_records/oast_interactions instead need
-// id remapping (findings.id is AUTOINCREMENT, referenced by the junction and
-// the OAST FK) and are handled row-by-row below.
+// OR IGNORE. projects/scans/http_records have a TEXT uuid primary key and
+// oast_payloads a TEXT nonce one; agentic_scans has an AUTOINCREMENT integer
+// id plus a UNIQUE(uuid) business key. The AUTOINCREMENT "id" column is always
+// dropped from the copy (see the dropColumn call in mergeOnce) so the
+// destination assigns its own and dedup falls on the uuid. findings and the
+// tables keyed by findings.id (finding_records, finding_observations,
+// finding_status_events, oast_interactions) instead need id remapping
+// (findings.id is AUTOINCREMENT) and are handled row-by-row below.
 //
 // Scope boundary: this merges scan *results* only. The other project-scoped
 // tables in db.go CreateSchema (scopes, authentication_hostnames, scan_logs)
@@ -109,7 +116,7 @@ func (s *MergeStats) Add(o *MergeStats) {
 // *result* table must be added here (with a dedup key) to flow through
 // --db-isolate. Kept as an allowlist so table names interpolated into DDL/DML
 // are never attacker-influenced.
-var mergeCopyTables = []string{"projects", "scans", "http_records", "agentic_scans"}
+var mergeCopyTables = []string{"projects", "scans", "http_records", "agentic_scans", "oast_payloads"}
 
 // MergeSQLiteFile merges every native-scan result row from the SQLite database
 // at srcPath into dest (which must be an already-open, schema-current SQLite
@@ -206,8 +213,12 @@ func mergeOnce(ctx context.Context, dest *DB, srcPath string, opts MergeOptions)
 		srcFindings       []bufferedRow
 		srcFindingRecords []bufferedRow
 		srcOAST           []bufferedRow
+		srcObservations   []bufferedRow
+		srcStatusEvents   []bufferedRow
 		findingCols       []string
 		oastCols          []string
+		observationCols   []string
+		statusEventCols   []string
 	)
 	if !opts.SkipFindings {
 		srcFindings, findingCols, err = readRows(ctx, conn, "findings")
@@ -221,6 +232,16 @@ func mergeOnce(ctx context.Context, dest *DB, srcPath string, opts MergeOptions)
 		srcOAST, oastCols, err = readRows(ctx, conn, "oast_interactions")
 		if err != nil {
 			return nil, fmt.Errorf("read source oast_interactions: %w", err)
+		}
+		// A source from before schema v3 has neither table; readRows returns
+		// nothing for a missing table, and the merges below no-op.
+		srcObservations, observationCols, err = readRows(ctx, conn, "finding_observations")
+		if err != nil {
+			return nil, fmt.Errorf("read source finding_observations: %w", err)
+		}
+		srcStatusEvents, statusEventCols, err = readRows(ctx, conn, "finding_status_events")
+		if err != nil {
+			return nil, fmt.Errorf("read source finding_status_events: %w", err)
 		}
 	}
 
@@ -285,6 +306,14 @@ func mergeOnce(ctx context.Context, dest *DB, srcPath string, opts MergeOptions)
 
 	if err := mergeOAST(ctx, tx, srcOAST, oastCols, idMap, stats); err != nil {
 		return nil, fmt.Errorf("merge oast_interactions: %w", err)
+	}
+
+	if err := mergeFindingObservations(ctx, tx, srcObservations, observationCols, idMap, stats); err != nil {
+		return nil, fmt.Errorf("merge finding_observations: %w", err)
+	}
+
+	if err := mergeFindingStatusEvents(ctx, tx, srcStatusEvents, statusEventCols, idMap, stats); err != nil {
+		return nil, fmt.Errorf("merge finding_status_events: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -487,6 +516,104 @@ func mergeOAST(ctx context.Context, tx *sql.Tx, rows []bufferedRow, cols []strin
 			return err
 		}
 		stats.OASTMerged++
+	}
+	return nil
+}
+
+// mergeFindingObservations copies finding observations, remapping finding_id
+// to the destination finding. When the source finding deduped onto an existing
+// destination finding, its observations land on that finding — the merged
+// scan observed it, which is exactly what a re-detection records. Rows whose
+// finding was not mapped are skipped rather than orphaned; OR IGNORE keeps the
+// (finding_id, scan_uuid) key idempotent across re-merges.
+func mergeFindingObservations(ctx context.Context, tx *sql.Tx, rows []bufferedRow, cols []string, idMap map[int64]int64, stats *MergeStats) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	findingIdx := indexOf(cols, "finding_id")
+	if findingIdx < 0 {
+		return fmt.Errorf("finding_observations table missing finding_id column")
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(cols)), ", ")
+	insertQ := fmt.Sprintf("INSERT OR IGNORE INTO main.finding_observations (%s) VALUES (%s)",
+		strings.Join(cols, ", "), placeholders)
+
+	for _, row := range rows {
+		srcFID, ok := toInt64(row[findingIdx])
+		if !ok {
+			continue
+		}
+		dstFID, mapped := idMap[srcFID]
+		if !mapped {
+			continue
+		}
+		args := slices.Clone([]any(row))
+		args[findingIdx] = dstFID
+		res, err := tx.ExecContext(ctx, insertQ, args...)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			stats.ObservationsMerged++
+		}
+	}
+	return nil
+}
+
+// mergeFindingStatusEvents copies the append-only status history, remapping
+// finding_id and letting the destination assign ids. An event already present
+// on the destination finding (same transition at the same instant) is skipped,
+// so re-merging the same source does not duplicate history.
+func mergeFindingStatusEvents(ctx context.Context, tx *sql.Tx, rows []bufferedRow, cols []string, idMap map[int64]int64, stats *MergeStats) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	idIdx := indexOf(cols, "id")
+	findingIdx := indexOf(cols, "finding_id")
+	fromIdx := indexOf(cols, "from_status")
+	toIdx := indexOf(cols, "to_status")
+	createdIdx := indexOf(cols, "created_at")
+	if findingIdx < 0 || fromIdx < 0 || toIdx < 0 || createdIdx < 0 {
+		return fmt.Errorf("finding_status_events table missing finding_id/from_status/to_status/created_at columns")
+	}
+	insertCols := dropColumn(cols, "id")
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(insertCols)), ", ")
+	insertQ := fmt.Sprintf(
+		`INSERT INTO main.finding_status_events (%s) SELECT %s
+		 WHERE NOT EXISTS (
+		     SELECT 1 FROM main.finding_status_events
+		     WHERE finding_id = ? AND to_status = ? AND created_at = ?
+		       AND COALESCE(from_status, '') = COALESCE(?, '')
+		 )`,
+		strings.Join(insertCols, ", "), placeholders)
+
+	for _, row := range rows {
+		srcFID, ok := toInt64(row[findingIdx])
+		if !ok {
+			continue
+		}
+		dstFID, mapped := idMap[srcFID]
+		if !mapped {
+			continue
+		}
+		args := make([]any, 0, len(insertCols)+4)
+		for i, val := range row {
+			if i == idIdx {
+				continue
+			}
+			if i == findingIdx {
+				val = dstFID
+			}
+			args = append(args, val)
+		}
+		args = append(args, dstFID, row[toIdx], row[createdIdx], row[fromIdx])
+		res, err := tx.ExecContext(ctx, insertQ, args...)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			stats.StatusEventsMerged++
+		}
 	}
 	return nil
 }

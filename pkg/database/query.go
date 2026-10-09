@@ -766,8 +766,10 @@ func (db *DeleteBuilder) DeleteOrphans(ctx context.Context, dryRun bool) (int64,
 	// Clean up junction rows whose finding is now gone. This is keyed on the
 	// findings table rather than on the project, so it stays correct whether or
 	// not the delete above was scoped.
-	if _, err := db.db.NewRaw("DELETE FROM finding_records WHERE finding_id NOT IN (SELECT id FROM findings)").Exec(ctx); err != nil {
-		zap.L().Debug("failed to clean up orphaned finding_records", zap.Error(err))
+	for _, table := range findingChildTables {
+		if _, err := db.db.NewRaw("DELETE FROM " + table + " WHERE finding_id NOT IN (SELECT id FROM findings)").Exec(ctx); err != nil {
+			zap.L().Debug("failed to clean up orphaned finding child rows", zap.String("table", table), zap.Error(err))
+		}
 	}
 
 	return rows, nil
@@ -815,8 +817,11 @@ type cleanableTable struct {
 // and any dependent tables that must be cleaned first.
 var AllowedCleanTables = map[string]cleanableTable{
 	"http_records":             {SQLName: "http_records", CascadeFirst: []string{"finding_records"}},
-	"findings":                 {SQLName: "findings", CascadeFirst: []string{"finding_records"}},
+	"findings":                 {SQLName: "findings", CascadeFirst: findingChildTables},
 	"finding_records":          {SQLName: "finding_records"},
+	"finding_observations":     {SQLName: "finding_observations"},
+	"finding_status_events":    {SQLName: "finding_status_events"},
+	"oast_payloads":            {SQLName: "oast_payloads"},
 	"scans":                    {SQLName: "scans"},
 	"agentic_scans":            {SQLName: "agentic_scans", CascadeFirst: []string{"agent_sections", "agent_finding_candidates"}},
 	"agent_sections":           {SQLName: "agent_sections"},
@@ -859,9 +864,12 @@ func (db *DeleteBuilder) DeleteTable(ctx context.Context, tableName string, dryR
 // allTablesDeleteOrder is the deletion order respecting dependencies.
 var allTablesDeleteOrder = []string{
 	"finding_records",
+	"finding_observations",
+	"finding_status_events",
 	"findings",
 	"http_records",
 	"oast_interactions",
+	"oast_payloads",
 	"scan_logs",
 	"authentication_hostnames",
 	// Durable-autopilot child tables are cleared before the parent agentic_scans

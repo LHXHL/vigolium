@@ -30,7 +30,7 @@ Built-in defaults
 
 ### Tables carrying `project_uuid`
 
-`scans` · `http_records` · `findings` · `scopes` · `source_repos` · `oast_interactions` · `scan_logs`
+`scans` · `http_records` · `findings` · `finding_observations` · `finding_status_events` · `scopes` · `oast_interactions` · `oast_payloads` · `scan_logs` · `analysis_artifacts` · `agentic_scans` · `authentication_hostnames` · `host_observations` · `agent_sections` · `agent_finding_candidates`
 
 Existing databases are migrated in place — the column is added with the default-project UUID as its default, so pre-multi-tenancy data lands in the default project.
 
@@ -63,7 +63,13 @@ The schema is intentionally **denormalized** — there are no separate hosts or 
 - *Identity*: `ID` (auto-increment), `FindingHash` (unique constraint → dedup key, set from the `ResultEvent` ID)
 - *Module*: `ModuleID`, `ModuleName`, `Description`, `Severity`, `Confidence`
 - *Evidence*: `MatchedAt` (JSONB), `ExtractedResults`, `Request`, `Response`, `AdditionalEvidence` (merged-duplicate request/response pairs, capped at 10)
-- *Relations*: `HTTPRecordUUIDs` (JSONB), `ScanUUID`; the `finding_records` junction table is the many-to-many link to HTTP records.
+- *Relations*: `HTTPRecordUUIDs` (JSONB), `ScanUUID` (the most recent scan that observed it); the `finding_records` junction table is the many-to-many link to HTTP records.
+- *Lifecycle*: `Status` (`draft`, `triaged`, `confirmed`, `false_positive`, `accepted_risk`, `fixed`) plus the current verdict's `StatusNote`, `StatusActor`, `StatusUpdatedAt`. `Verification` (JSON verdict of the last re-verification) and `VerifiedAt` are kept apart from `Status`.
+- *Replay context*: `OriginRecordUUID` (the baseline record the module scanned), `InsertionPoint` (JSON `{type, name}`), `Payload`.
+
+**Finding history.** `finding_observations` holds one row per (finding, scan that observed it), written in the same transaction as every finding save that carries a scan UUID — first detection and re-detection alike — so `findings.scan_uuid` being overwritten by the latest observer loses nothing. `finding_status_events` is the append-only status history. Both are keyed by `findings.id` and carry `project_uuid`: finding deletes, finding dedup (history folds onto the survivor), project reassign/purge and `--db-isolate`/glob merges (with finding-id remapping) all carry them. Schema v3 backfilled one observation per existing finding from `(scan_uuid, found_at)` and stamped `schema_meta.observation_history_since`; history before that instant is partial.
+
+**`Scan`** (table `scans`) also records run liveness (`heartbeat_at`, `current_phase`, `pid`, `runner_host`), the resolved `plan` (JSON) and per-run `module_errors` / `extensions_failed` (JSON). **`oast_payloads`** maps a minted OAST nonce to its scan, module, target, parameter and payload, so out-of-band callbacks can be attributed later.
 
 Agent-produced findings (autopilot/swarm/audit/piolium) flow into the **same `findings` table**, tagged by source so native and AI results coexist and dedup together.
 
@@ -121,6 +127,8 @@ Transient lock contention is retried by `database.RetryBusy(ctx, fn, policy)` (e
 
 - reads a store when `min_reader_version <= C`;
 - writes or migrates it only when `version <= C`; otherwise it refuses with `error.code: "schema_too_new"` ("upgrade vigolium").
+
+Schema history: v1 introduced `schema_meta`; v2 added the guard columns; v3 added the finding-lifecycle and run-liveness columns and the `finding_observations`, `finding_status_events` and `oast_payloads` tables (all additive, `min_reader_version` stays 1). Every schema statement, column migrations and indexes included, is rendered for Postgres by `adaptDDLFor`.
 
 Additive migrations leave `min_reader_version` unchanged, so an older binary keeps reading a store a newer one upgraded; a breaking migration raises it. The stored version only ever moves up. `vigolium version --json` reports `db_schema_version` and `db_min_reader_version`; `vigolium doctor` shows the store's version, reader floor and `written_by`. Binaries from before the guard (schema v1) cannot be stopped from opening a newer store; the guard protects stores from v2 on.
 

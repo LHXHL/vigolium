@@ -745,7 +745,7 @@ func (db *DB) DeferRecordIndexes() { db.deferRecordIndexes = true }
 // harmless.
 func (db *DB) CreateRecordIndexes(ctx context.Context) error {
 	for _, ddl := range recordSecondaryIndexes {
-		if _, err := db.ExecContext(ctx, ddl); err != nil {
+		if _, err := db.ExecContext(ctx, db.adaptDDL(ddl)); err != nil {
 			return fmt.Errorf("failed to create record index: %w", err)
 		}
 	}
@@ -886,19 +886,11 @@ func (db *DB) ServerVersion(ctx context.Context) (string, error) {
 	return strings.TrimSpace(version), nil
 }
 
-// adaptDDL rewrites SQLite-specific DDL for PostgreSQL when needed.
+// adaptDDL rewrites SQLite-specific DDL for PostgreSQL when needed. Applied to
+// every schema statement CreateSchema issues — tables, column migrations and
+// indexes — through adaptDDLFor (schema_ddl.go).
 func (db *DB) adaptDDL(ddl string) string {
-	if db.driver != "postgres" {
-		return ddl
-	}
-	ddl = strings.ReplaceAll(ddl, "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-	ddl = strings.ReplaceAll(ddl, "BLOB", "BYTEA")
-	// SQLite uses INTEGER for booleans; PostgreSQL needs BOOLEAN
-	ddl = strings.ReplaceAll(ddl, "has_response INTEGER NOT NULL DEFAULT 0", "has_response BOOLEAN NOT NULL DEFAULT FALSE")
-	ddl = strings.ReplaceAll(ddl, "is_authenticated INTEGER NOT NULL DEFAULT 0", "is_authenticated BOOLEAN NOT NULL DEFAULT FALSE")
-	ddl = strings.ReplaceAll(ddl, "enabled INTEGER NOT NULL DEFAULT 1", "enabled BOOLEAN NOT NULL DEFAULT TRUE")
-	ddl = strings.ReplaceAll(ddl, "complete INTEGER NOT NULL DEFAULT 0", "complete BOOLEAN NOT NULL DEFAULT FALSE")
-	return ddl
+	return adaptDDLFor(db.driver, ddl)
 }
 
 // currentSchemaVersion is the schema revision this binary expects. Bump it when
@@ -913,11 +905,24 @@ func (db *DB) adaptDDL(ddl string) string {
 //	1  schema_meta introduced; legacy index reshaping and backfills gated.
 //	2  schema_meta.min_reader_version / written_by / updated_at (the
 //	   compatibility guard in schema_guard.go). Additive: min reader stays 1.
-const currentSchemaVersion = 2
+//	3  Finding lifecycle and run liveness, all additive (min reader stays 1):
+//	   findings status_note/status_actor/status_updated_at, origin_record_uuid,
+//	   insertion_point, payload, verification, verified_at; scans plan,
+//	   heartbeat_at, current_phase, pid, runner_host, module_errors,
+//	   extensions_failed; new tables finding_observations (backfilled once from
+//	   each finding's (scan_uuid, found_at)), finding_status_events and
+//	   oast_payloads; schema_meta.observation_history_since.
+const currentSchemaVersion = 3
 
 // legacyBackfillsVersion is the version that gated the pre-versioning backfills
 // and index reshaping in CreateSchema. A store at or past it has had them.
 const legacyBackfillsVersion = 1
+
+// observationsBackfillVersion is the version that introduced
+// finding_observations. A store below it gets the one-time backfill of one
+// observation per existing finding; a store at or past it was written by a
+// binary that records observations on every save.
+const observationsBackfillVersion = 3
 
 // CurrentSchemaVersion exposes the schema revision this binary expects, so a
 // consumer can fail loudly on drift at startup (`vigolium version --json`)
@@ -1001,7 +1006,8 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 	// version-1 migrations, and a v1 store opened by a later binary has had them.
 	// Gating on the current version re-ran every one of them — a covering-index
 	// rebuild and whole-table backfills — on each schema bump.
-	schemaCurrent := db.schemaVersion(ctx) >= legacyBackfillsVersion
+	storedVersion := db.schemaVersion(ctx)
+	schemaCurrent := storedVersion >= legacyBackfillsVersion
 
 	// Drop old indexes before creating the correct ones (migration for existing
 	// databases). Gated on schema version: once applied, the indexes already have
@@ -1048,7 +1054,7 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 	// Create indexes now that all column migrations above have run — some indexes
 	// reference newly added columns (e.g. idx_records_norm_hash → response_norm_hash).
 	for _, ddl := range schemaIndexes {
-		if _, err := db.ExecContext(ctx, ddl); err != nil {
+		if _, err := db.ExecContext(ctx, db.adaptDDL(ddl)); err != nil {
 			return fmt.Errorf("failed to create index: %w", err)
 		}
 	}
@@ -1093,6 +1099,17 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 				SELECT f.id, je.value
 				FROM findings f, json_each(f.http_record_uuids) AS je
 			`)
+		}
+	}
+
+	// Schema v3: one observation per existing finding, so a scan diff over
+	// pre-v3 history sees at least each finding's most recent observer. Unlike
+	// the best-effort legacy backfills this one fails the migration: a store
+	// stamped v3 without it would answer "never observed" for every old finding,
+	// and the version gate means it would never be retried.
+	if storedVersion < observationsBackfillVersion {
+		if err := db.backfillFindingObservations(ctx); err != nil {
+			return err
 		}
 	}
 
@@ -1253,7 +1270,7 @@ func (db *DB) execBestEffort(ctx context.Context, op, query string, args ...any)
 
 // addColumnIfNotExists attempts to add a column, ignoring errors if it already exists.
 func (db *DB) addColumnIfNotExists(ctx context.Context, table, column, definition string) {
-	ddl := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)
+	ddl := db.adaptDDL(columnMigrationDDL(columnMigration{table, column, definition}))
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		// Ignore "duplicate column" errors (SQLite: "duplicate column name", Postgres: "already exists")
 		errMsg := err.Error()
@@ -1393,6 +1410,31 @@ var columnMigrations = []columnMigration{
 	{"schema_meta", "min_reader_version", "INTEGER NOT NULL DEFAULT 1"},
 	{"schema_meta", "written_by", "TEXT"},
 	{"schema_meta", "updated_at", "TIMESTAMP"},
+	// Schema v3. Every column nullable with no default: NULL honestly means
+	// "not recorded" for every row an older binary wrote.
+	//   - findings: the current verdict's provenance (the full history is
+	//     finding_status_events), what `finding verify` needs to replay a
+	//     finding (the baseline record, insertion point and payload), and the
+	//     last verification result (JSON) kept apart from status.
+	//   - scans: run liveness (heartbeat, phase, pid, host), the resolved plan
+	//     (JSON), and the per-module error / failed-extension tallies (JSON)
+	//     that scan.finished reads back from the row.
+	{"findings", "status_note", "TEXT"},
+	{"findings", "status_actor", "TEXT"},
+	{"findings", "status_updated_at", "TIMESTAMP"},
+	{"findings", "origin_record_uuid", "TEXT"},
+	{"findings", "insertion_point", "TEXT"},
+	{"findings", "payload", "TEXT"},
+	{"findings", "verification", "TEXT"},
+	{"findings", "verified_at", "TIMESTAMP"},
+	{"scans", "plan", "TEXT"},
+	{"scans", "heartbeat_at", "TIMESTAMP"},
+	{"scans", "current_phase", "TEXT"},
+	{"scans", "pid", "INTEGER"},
+	{"scans", "runner_host", "TEXT"},
+	{"scans", "module_errors", "TEXT"},
+	{"scans", "extensions_failed", "TEXT"},
+	{"schema_meta", "observation_history_since", "TIMESTAMP"},
 }
 
 func init() {

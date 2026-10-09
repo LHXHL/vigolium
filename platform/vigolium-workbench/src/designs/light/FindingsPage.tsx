@@ -8,6 +8,7 @@ import { useFindings, useDeleteFinding } from '@/api/hooks';
 import { withDemoKey } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import type { Finding, FindingsQueryParams } from '@/api/types';
+import { FINDING_STATUSES } from '@/api/types';
 
 import { registerAgGrid } from '@/lib/ag-grid-register';
 import { formatDate } from '@/lib/formatters';
@@ -436,11 +437,7 @@ export default function FindingsPage({ initialId }: { initialId?: number | null 
                 value={statusFilter}
                 options={[
                   { value: '', label: 'status:all' },
-                  { value: 'draft', label: 'draft' },
-                  { value: 'triaged', label: 'triaged' },
-                  { value: 'false_positive', label: 'false_positive' },
-                  { value: 'accepted_risk', label: 'accepted_risk' },
-                  { value: 'fixed', label: 'fixed' },
+                  ...FINDING_STATUSES.map((s) => ({ value: s, label: s })),
                 ]}
                 onChange={(v) => { setStatusFilter(v); resetOffset(); }}
               />

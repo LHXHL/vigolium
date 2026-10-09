@@ -9,8 +9,70 @@ package database
 // schema change and turn a missing table into a silently accepted one, which is
 // exactly the failure the readiness check exists to prevent.
 //
-// Entries stay driver-neutral SQLite DDL; adaptDDL rewrites them for Postgres at
-// execution time.
+// Entries stay driver-neutral SQLite DDL; adaptDDLFor rewrites them for Postgres
+// at execution time — every statement CreateSchema issues goes through it:
+// tables, column migrations and indexes alike (see schemaDDLStatements, which a
+// test renders for Postgres without a live server).
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// postgresBoolColumns are the columns stored as SQLite INTEGER 0/1 that the Go
+// models declare as bool. Postgres refuses to write a boolean into an INTEGER
+// column, so their DDL must say BOOLEAN there. A test cross-checks this list
+// against every bool field of every bun model.
+var postgresBoolColumns = []string{"has_response", "is_authenticated", "chain_truncated", "enabled", "complete"}
+
+// postgresBoolColumnPattern matches a bool column's SQLite declaration in a
+// CREATE TABLE body or an ADD COLUMN definition.
+var postgresBoolColumnPattern = regexp.MustCompile(
+	`\b(` + strings.Join(postgresBoolColumns, "|") + `) INTEGER NOT NULL DEFAULT ([01])\b`)
+
+// adaptDDLFor rewrites one SQLite DDL statement for driver. SQLite statements
+// pass through unchanged.
+func adaptDDLFor(driver, ddl string) string {
+	if driver != driverPostgres {
+		return ddl
+	}
+	ddl = strings.ReplaceAll(ddl, "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+	ddl = strings.ReplaceAll(ddl, "BLOB", "BYTEA")
+	return postgresBoolColumnPattern.ReplaceAllStringFunc(ddl, func(m string) string {
+		sub := postgresBoolColumnPattern.FindStringSubmatch(m)
+		def := "FALSE"
+		if sub[2] == "1" {
+			def = "TRUE"
+		}
+		return sub[1] + " BOOLEAN NOT NULL DEFAULT " + def
+	})
+}
+
+// columnMigrationDDL is the (SQLite) statement that adds one migrated column.
+func columnMigrationDDL(m columnMigration) string {
+	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", m.Table, m.Column, m.Def)
+}
+
+// schemaDDLStatements renders, for driver, every DDL statement CreateSchema
+// issues, in the order it issues them: tables, column migrations, indexes, then
+// the deferrable http_records indexes.
+func schemaDDLStatements(driver string) []string {
+	out := make([]string, 0, len(schemaTables)+len(columnMigrations)+len(schemaIndexes)+len(recordSecondaryIndexes))
+	for _, ddl := range schemaTables {
+		out = append(out, adaptDDLFor(driver, ddl))
+	}
+	for _, m := range columnMigrations {
+		out = append(out, adaptDDLFor(driver, columnMigrationDDL(m)))
+	}
+	for _, ddl := range schemaIndexes {
+		out = append(out, adaptDDLFor(driver, ddl))
+	}
+	for _, ddl := range recordSecondaryIndexes {
+		out = append(out, adaptDDLFor(driver, ddl))
+	}
+	return out
+}
 
 // schemaTables is every CREATE TABLE this binary expects, in dependency order.
 var schemaTables = []string{
@@ -23,7 +85,8 @@ var schemaTables = []string{
 		version INTEGER NOT NULL DEFAULT 0,
 		min_reader_version INTEGER NOT NULL DEFAULT 1,
 		written_by TEXT,
-		updated_at TIMESTAMP
+		updated_at TIMESTAMP,
+		observation_history_since TIMESTAMP
 	)`,
 	// Multi-tenancy: users and projects
 	`CREATE TABLE IF NOT EXISTS users (
@@ -85,6 +148,13 @@ var schemaTables = []string{
 		completeness TEXT,
 		stop_reason TEXT,
 		phase_outcomes TEXT,
+		plan TEXT,
+		heartbeat_at TIMESTAMP,
+		current_phase TEXT,
+		pid INTEGER,
+		runner_host TEXT,
+		module_errors TEXT,
+		extensions_failed TEXT,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
@@ -169,6 +239,9 @@ var schemaTables = []string{
 		confidence TEXT NOT NULL DEFAULT 'firm',
 		tags TEXT,
 		status TEXT DEFAULT 'triaged',
+		status_note TEXT,
+		status_actor TEXT,
+		status_updated_at TIMESTAMP,
 		remediation TEXT,
 		cwe_id TEXT,
 		cvss_score REAL DEFAULT 0,
@@ -179,6 +252,11 @@ var schemaTables = []string{
 		additional_evidence TEXT,
 		request TEXT,
 		response TEXT,
+		origin_record_uuid TEXT,
+		insertion_point TEXT,
+		payload TEXT,
+		verification TEXT,
+		verified_at TIMESTAMP,
 		finding_hash TEXT NOT NULL,
 		found_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -187,6 +265,37 @@ var schemaTables = []string{
 		finding_id INTEGER NOT NULL,
 		record_uuid TEXT NOT NULL,
 		PRIMARY KEY (finding_id, record_uuid)
+	)`,
+	// One row per (finding, scan that observed it). findings.scan_uuid only
+	// names the MOST RECENT observer — a re-detection overwrites it — so "was
+	// this finding seen by scan A" and "which findings are new in scan B" are
+	// unanswerable from the findings row alone. Written in the same transaction
+	// as the finding save (insert and re-detection alike); keyed so a repeat
+	// within one scan is idempotent. finding_hash is denormalized so a diff can
+	// compare two scans by hash without joining back through ids that differ
+	// across merged stores. Rows from before schema v3 are a one-time backfill
+	// of (scan_uuid, found_at); schema_meta.observation_history_since marks
+	// where complete history starts.
+	`CREATE TABLE IF NOT EXISTS finding_observations (
+		project_uuid TEXT NOT NULL,
+		finding_id INTEGER NOT NULL,
+		finding_hash TEXT NOT NULL,
+		scan_uuid TEXT NOT NULL,
+		observed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (finding_id, scan_uuid)
+	)`,
+	// Append-only lifecycle history: one row per status change. The findings
+	// row carries the CURRENT verdict (status, status_note, status_actor,
+	// status_updated_at); this table is the provenance behind it.
+	`CREATE TABLE IF NOT EXISTS finding_status_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		finding_id INTEGER NOT NULL,
+		project_uuid TEXT NOT NULL,
+		from_status TEXT,
+		to_status TEXT NOT NULL,
+		note TEXT,
+		actor TEXT,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS scopes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -224,6 +333,22 @@ var schemaTables = []string{
 		injection_type TEXT,
 		module_id TEXT,
 		finding_id INTEGER,
+		payload TEXT,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
+	// OAST payload context, keyed by the locally minted nonce. Lets a callback
+	// that arrives out of band (a fixed OAST URL, `oast ingest`) be attributed
+	// to the scan, module, target and parameter that planted it, after the
+	// in-memory tracker of the planting process is gone.
+	`CREATE TABLE IF NOT EXISTS oast_payloads (
+		nonce TEXT PRIMARY KEY NOT NULL,
+		project_uuid TEXT NOT NULL,
+		scan_uuid TEXT,
+		class TEXT,
+		module_id TEXT,
+		target_url TEXT,
+		param TEXT,
+		request_hash TEXT,
 		payload TEXT,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
@@ -451,6 +576,17 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_finding_records_record_uuid ON finding_records(record_uuid)",
 	"CREATE INDEX IF NOT EXISTS idx_finding_records_finding_id ON finding_records(finding_id)",
 
+	// -- finding_observations --
+	// Lookups by finding_id ride the (finding_id, scan_uuid) primary key.
+	// "Which findings did scan X observe" and "which scans observed hash H"
+	// are the two diff-side reads, both project-scoped.
+	"CREATE INDEX IF NOT EXISTS idx_finding_obs_project_scan ON finding_observations(project_uuid, scan_uuid)",
+	"CREATE INDEX IF NOT EXISTS idx_finding_obs_project_hash ON finding_observations(project_uuid, finding_hash)",
+
+	// -- finding_status_events --
+	"CREATE INDEX IF NOT EXISTS idx_finding_status_events_finding ON finding_status_events(finding_id, id)",
+	"CREATE INDEX IF NOT EXISTS idx_finding_status_events_project_created ON finding_status_events(project_uuid, created_at)",
+
 	// -- scans --
 	"CREATE INDEX IF NOT EXISTS idx_scans_project_status ON scans(project_uuid, status)",
 	"CREATE INDEX IF NOT EXISTS idx_scans_project_created ON scans(project_uuid, created_at)",
@@ -461,6 +597,9 @@ var schemaIndexes = []string{
 	// -- oast_interactions --
 	"CREATE INDEX IF NOT EXISTS idx_oast_project_scan ON oast_interactions(project_uuid, scan_uuid)",
 	"CREATE INDEX IF NOT EXISTS idx_oast_interactions_unique_id ON oast_interactions(unique_id)",
+
+	// -- oast_payloads -- (nonce lookups ride the primary key)
+	"CREATE INDEX IF NOT EXISTS idx_oast_payloads_project_scan ON oast_payloads(project_uuid, scan_uuid)",
 
 	// -- agentic_scans --
 	"CREATE INDEX IF NOT EXISTS idx_agentic_scans_uuid ON agentic_scans(uuid)",

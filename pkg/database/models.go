@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -77,9 +78,13 @@ const (
 //
 // Lifecycle:
 //
-//	draft ──triage──▶ triaged ──fix──▶ fixed
+//	draft ──triage──▶ triaged ──verify──▶ confirmed ──fix──▶ fixed
 //	             ╲──▶ false_positive
 //	             ╲──▶ accepted_risk
+//
+// confirmed means a human or a re-verification reproduced the finding; it is a
+// status, not a verification result (that is Finding.Verification, kept apart
+// so re-running `finding verify` never silently rewrites a triage verdict).
 //
 // Trust model: deterministic engines (native scan, SAST tools) produce
 // findings as `triaged`. LLM/agent-driven and externally imported findings
@@ -87,10 +92,18 @@ const (
 const (
 	StatusDraft         = "draft"
 	StatusTriaged       = "triaged"
+	StatusConfirmed     = "confirmed"
 	StatusFalsePositive = "false_positive"
 	StatusAcceptedRisk  = "accepted_risk"
 	StatusFixed         = "fixed"
 )
+
+// FindingStatuses is the closed finding-status vocabulary, in lifecycle order.
+// IsValidFindingStatus, the REST validation message and any closed-enum
+// consumer read this list rather than keeping their own.
+var FindingStatuses = []string{
+	StatusDraft, StatusTriaged, StatusConfirmed, StatusFalsePositive, StatusAcceptedRisk, StatusFixed,
+}
 
 // Severity constants represent the canonical severity strings stored on a
 // Finding. They match the lowercase keys used by `vigolium finding --severity`
@@ -209,6 +222,25 @@ type Scan struct {
 	Completeness  string         `bun:"completeness,nullzero" json:"completeness,omitempty"`
 	StopReason    string         `bun:"stop_reason,nullzero" json:"stop_reason,omitempty"`
 	PhaseOutcomes []PhaseOutcome `bun:"phase_outcomes,type:jsonb,nullzero" json:"phase_outcomes,omitempty"`
+
+	// Plan is the resolved scan plan (phases, budgets, pacing) as JSON, written
+	// once when the run starts. Opaque here: the plan resolver owns its shape.
+	Plan json.RawMessage `bun:"plan,type:jsonb,nullzero" json:"plan,omitempty"`
+
+	// Run liveness, refreshed by the runner's heartbeat while the scan runs.
+	// A row whose heartbeat stopped advancing while status is still "running"
+	// belongs to a process that died; PID and RunnerHost let a reader on the
+	// same host confirm that without waiting out the staleness window.
+	HeartbeatAt  *time.Time `bun:"heartbeat_at,nullzero" json:"heartbeat_at,omitempty"`
+	CurrentPhase string     `bun:"current_phase,nullzero" json:"current_phase,omitempty"`
+	PID          int        `bun:"pid,nullzero" json:"pid,omitempty"`
+	RunnerHost   string     `bun:"runner_host,nullzero" json:"runner_host,omitempty"`
+
+	// ModuleErrors counts errors per module ID over the run; ExtensionsFailed
+	// lists extensions that failed to load. scan.finished reads both back from
+	// the row.
+	ModuleErrors     map[string]int64 `bun:"module_errors,type:jsonb,nullzero" json:"module_errors,omitempty"`
+	ExtensionsFailed []string         `bun:"extensions_failed,type:jsonb,nullzero" json:"extensions_failed,omitempty"`
 
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
 	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updated_at"`
@@ -452,8 +484,13 @@ type Finding struct {
 	Tags          []string `bun:"tags,type:jsonb,nullzero" json:"tags,omitempty"`
 
 	// Finding lifecycle
-	Status      string `bun:"status,nullzero,default:'triaged'" json:"status,omitempty"` // draft, triaged, false_positive, accepted_risk, fixed
+	Status      string `bun:"status,nullzero,default:'triaged'" json:"status,omitempty"` // one of FindingStatuses
 	Remediation string `bun:"remediation,nullzero" json:"remediation,omitempty"`
+	// Provenance of the current status: why, by whom, when. The full history is
+	// finding_status_events.
+	StatusNote      string     `bun:"status_note,nullzero" json:"status_note,omitempty"`
+	StatusActor     string     `bun:"status_actor,nullzero" json:"status_actor,omitempty"`
+	StatusUpdatedAt *time.Time `bun:"status_updated_at,nullzero" json:"status_updated_at,omitempty"`
 
 	// Classification
 	CWEID     string  `bun:"cwe_id,nullzero" json:"cwe_id,omitempty"`
@@ -467,12 +504,97 @@ type Finding struct {
 	ExtractedResults   []string `bun:"extracted_results,type:jsonb,nullzero" json:"extracted_results,omitempty"`
 	AdditionalEvidence []string `bun:"additional_evidence,type:jsonb,nullzero" json:"additional_evidence,omitempty"`
 
-	Request     string `bun:"request,nullzero" json:"request,omitempty"`
-	Response    string `bun:"response,nullzero" json:"response,omitempty"`
+	Request  string `bun:"request,nullzero" json:"request,omitempty"`
+	Response string `bun:"response,nullzero" json:"response,omitempty"`
+
+	// Replay context, for re-verifying the finding: the baseline record the
+	// module scanned (as opposed to the evidence records in HTTPRecordUUIDs),
+	// the insertion point it mutated and the payload it sent. Empty on findings
+	// written before schema v3 or by producers that do not know them.
+	OriginRecordUUID string                 `bun:"origin_record_uuid,nullzero" json:"origin_record_uuid,omitempty"`
+	InsertionPoint   *FindingInsertionPoint `bun:"insertion_point,type:jsonb,nullzero" json:"insertion_point,omitempty"`
+	Payload          string                 `bun:"payload,nullzero" json:"payload,omitempty"`
+
+	// Verification is the latest re-verification result, separate from Status.
+	// VerifiedAt duplicates its timestamp as a column for sorting and filtering.
+	Verification *FindingVerification `bun:"verification,type:jsonb,nullzero" json:"verification,omitempty"`
+	VerifiedAt   *time.Time           `bun:"verified_at,nullzero" json:"verified_at,omitempty"`
+
 	FindingHash string `bun:"finding_hash,notnull" json:"finding_hash"`
 
 	FoundAt   time.Time `bun:"found_at,notnull,default:current_timestamp" json:"found_at"`
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
+}
+
+// FindingInsertionPoint names the insertion point a module mutated, e.g.
+// {type: "URL_PARAM", name: "id"}. Type uses the httpmsg insertion-point type
+// names.
+type FindingInsertionPoint struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
+}
+
+// Verification verdicts recorded in FindingVerification.Verdict.
+const (
+	VerdictConfirmed     = "confirmed"
+	VerdictNotReproduced = "not_reproduced"
+	VerdictInconclusive  = "inconclusive"
+	VerdictUnsupported   = "unsupported"
+)
+
+// FindingVerification is the result of re-running a finding's module against
+// its target (`finding verify`).
+type FindingVerification struct {
+	Verdict       string    `json:"verdict"`
+	At            time.Time `json:"at"`
+	ModuleVersion string    `json:"module_version,omitempty"`
+	ScanUUID      string    `json:"scan_uuid,omitempty"`
+	Reason        string    `json:"reason,omitempty"`
+}
+
+// FindingObservation records that a scan observed a finding. One row per
+// (finding, scan); see the finding_observations DDL for why findings.scan_uuid
+// alone cannot answer it.
+type FindingObservation struct {
+	bun.BaseModel `bun:"table:finding_observations,alias:fo" json:"-"`
+
+	ProjectUUID string    `bun:"project_uuid,notnull" json:"project_uuid"`
+	FindingID   int64     `bun:"finding_id,pk" json:"finding_id"`
+	FindingHash string    `bun:"finding_hash,notnull" json:"finding_hash"`
+	ScanUUID    string    `bun:"scan_uuid,pk" json:"scan_uuid"`
+	ObservedAt  time.Time `bun:"observed_at,notnull,default:current_timestamp" json:"observed_at"`
+}
+
+// FindingStatusEvent is one entry of a finding's append-only status history.
+type FindingStatusEvent struct {
+	bun.BaseModel `bun:"table:finding_status_events,alias:fse" json:"-"`
+
+	ID          int64     `bun:"id,pk,autoincrement" json:"id"`
+	FindingID   int64     `bun:"finding_id,notnull" json:"finding_id"`
+	ProjectUUID string    `bun:"project_uuid,notnull" json:"project_uuid"`
+	FromStatus  string    `bun:"from_status,nullzero" json:"from_status,omitempty"`
+	ToStatus    string    `bun:"to_status,notnull" json:"to_status"`
+	Note        string    `bun:"note,nullzero" json:"note,omitempty"`
+	Actor       string    `bun:"actor,nullzero" json:"actor,omitempty"`
+	CreatedAt   time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
+}
+
+// OASTPayload is the context of one planted OAST payload, keyed by the nonce
+// embedded in its callback host or path, so an interaction that arrives out of
+// band can be attributed after the planting process is gone.
+type OASTPayload struct {
+	bun.BaseModel `bun:"table:oast_payloads,alias:op" json:"-"`
+
+	Nonce       string    `bun:"nonce,pk" json:"nonce"`
+	ProjectUUID string    `bun:"project_uuid,notnull" json:"project_uuid"`
+	ScanUUID    string    `bun:"scan_uuid,nullzero" json:"scan_uuid,omitempty"`
+	Class       string    `bun:"class,nullzero" json:"class,omitempty"`
+	ModuleID    string    `bun:"module_id,nullzero" json:"module_id,omitempty"`
+	TargetURL   string    `bun:"target_url,nullzero" json:"target_url,omitempty"`
+	Param       string    `bun:"param,nullzero" json:"param,omitempty"`
+	RequestHash string    `bun:"request_hash,nullzero" json:"request_hash,omitempty"`
+	Payload     string    `bun:"payload,nullzero" json:"payload,omitempty"`
+	CreatedAt   time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
 }
 
 // AuthenticationHostname persists per-hostname session auth configs in the DB.

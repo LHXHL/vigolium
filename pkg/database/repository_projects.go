@@ -147,6 +147,11 @@ var projectOwnedTables = []string{
 	// purge with the project instead of orphaning.
 	"agent_sections",
 	"agent_finding_candidates",
+	// Finding history and OAST payload context carry project_uuid of their own
+	// (denormalized from the finding / scan), so they move and purge with it.
+	"finding_observations",
+	"finding_status_events",
+	"oast_payloads",
 }
 
 // ReassignProjectData moves all data owned by sourceUUID to targetUUID.

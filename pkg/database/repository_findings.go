@@ -38,7 +38,7 @@ func (r *Repository) SaveFinding(ctx context.Context, event *output.ResultEvent,
 		return fmt.Errorf("failed to convert finding: %w", err)
 	}
 
-	inserted, err := r.saveFindingIDB(ctx, r.db, finding, httpRecordUUIDs)
+	inserted, err := r.saveFindingTx(ctx, finding, httpRecordUUIDs)
 	if err != nil {
 		return err
 	}
@@ -143,8 +143,27 @@ func (r *Repository) saveFindingIDB(ctx context.Context, idb bun.IDB, finding *F
 	if err := r.insertFindingRecords(ctx, idb, finding.ID, httpRecordUUIDs); err != nil {
 		return false, err
 	}
+	if err := recordFindingObservation(ctx, idb, finding.ProjectUUID, finding.ID, finding.FindingHash, finding.ScanUUID); err != nil {
+		return false, err
+	}
 
 	return true, nil
+}
+
+// saveFindingTx is saveFindingIDB in its own transaction, for the single-finding
+// paths: the finding row, its evidence links and its observation commit
+// together or not at all.
+func (r *Repository) saveFindingTx(ctx context.Context, finding *Finding, httpRecordUUIDs []string) (bool, error) {
+	var inserted bool
+	err := r.db.RunInTx(ctx, &sql.TxOptions{}, func(ctx context.Context, tx bun.Tx) error {
+		var err error
+		inserted, err = r.saveFindingIDB(ctx, tx, finding, httpRecordUUIDs)
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
 
 // SaveFindingDirect inserts a pre-built Finding directly (without ResultEvent conversion).
@@ -165,7 +184,7 @@ func (r *Repository) SaveFindingReported(ctx context.Context, finding *Finding) 
 
 	finding.ProjectUUID = defaultProjectUUID(finding.ProjectUUID)
 
-	inserted, err := r.saveFindingIDB(ctx, r.db, finding, finding.HTTPRecordUUIDs)
+	inserted, err := r.saveFindingTx(ctx, finding, finding.HTTPRecordUUIDs)
 	if err != nil {
 		return false, err
 	}
@@ -240,7 +259,7 @@ func (r *Repository) saveFindingsBatchCore(ctx context.Context, findings []*Find
 		if f == nil {
 			continue
 		}
-		inserted, e := r.saveFindingIDB(ctx, r.db, f, f.HTTPRecordUUIDs)
+		inserted, e := r.saveFindingTx(ctx, f, f.HTTPRecordUUIDs)
 		results[i].Inserted = inserted
 		results[i].Err = e
 		if inserted {
@@ -322,6 +341,11 @@ func (r *Repository) appendRecordsToFinding(ctx context.Context, idb bun.IDB, pr
 	}
 
 	if err := r.insertFindingRecords(ctx, idb, existing.ID, newUUIDs); err != nil {
+		return err
+	}
+	// A re-detection is an observation too: without it a finding first seen by
+	// an earlier scan would look absent from every later scan that found it again.
+	if err := recordFindingObservation(ctx, idb, projectUUID, existing.ID, findingHash, scanUUID); err != nil {
 		return err
 	}
 
@@ -477,11 +501,7 @@ func (r *Repository) GetFindingsBySeverity(ctx context.Context, projectUUID, sev
 
 // IsValidFindingStatus reports whether s is a recognised Finding lifecycle status.
 func IsValidFindingStatus(s string) bool {
-	switch s {
-	case StatusDraft, StatusTriaged, StatusFalsePositive, StatusAcceptedRisk, StatusFixed:
-		return true
-	}
-	return false
+	return slices.Contains(FindingStatuses, s)
 }
 
 // UpdateFindingStatusScoped sets the lifecycle status of a single finding by
@@ -604,7 +624,7 @@ func (r *Repository) UpdateFindingTriage(ctx context.Context, projectUUID string
 }
 
 // DeleteFindingByHash deletes the finding(s) with the given content hash within a
-// project, including their finding_records junction rows. Used by the OAST
+// project, including their findingChildTables rows. Used by the OAST
 // collector to replace a weaker finding (e.g. a DNS-resolution lead) with a
 // stronger one (the HTTP-fetch confirmation) for the same callback payload, so each
 // payload yields exactly one finding reflecting the strongest evidence. No-op when
@@ -617,11 +637,13 @@ func (r *Repository) DeleteFindingByHash(ctx context.Context, projectUUID, findi
 	return r.db.RunInTx(ctx, &sql.TxOptions{}, func(ctx context.Context, tx bun.Tx) error {
 		// Clear the junction rows via a subquery on the same predicate, then drop the
 		// finding(s) — both are no-ops when nothing matches, so no pre-SELECT is needed.
-		if _, err := tx.NewRaw(
-			"DELETE FROM finding_records WHERE finding_id IN (SELECT id FROM findings WHERE project_uuid = ? AND finding_hash = ?)",
-			projectUUID, findingHash,
-		).Exec(ctx); err != nil {
-			return fmt.Errorf("failed to delete finding_records: %w", err)
+		for _, table := range findingChildTables {
+			if _, err := tx.NewRaw(
+				"DELETE FROM "+table+" WHERE finding_id IN (SELECT id FROM findings WHERE project_uuid = ? AND finding_hash = ?)",
+				projectUUID, findingHash,
+			).Exec(ctx); err != nil {
+				return fmt.Errorf("failed to delete %s: %w", table, err)
+			}
 		}
 		if _, err := tx.NewDelete().Model((*Finding)(nil)).
 			Where("project_uuid = ? AND finding_hash = ?", projectUUID, findingHash).Exec(ctx); err != nil {
@@ -631,11 +653,12 @@ func (r *Repository) DeleteFindingByHash(ctx context.Context, projectUUID, findi
 	})
 }
 
-// DeleteFinding deletes a finding by its numeric ID, including any finding_records junction rows.
+// DeleteFinding deletes a finding by its numeric ID, including its
+// findingChildTables rows (evidence junction, observations, status history).
 func (r *Repository) DeleteFinding(ctx context.Context, id int64) error {
 	return r.db.RunInTx(ctx, &sql.TxOptions{}, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewDelete().TableExpr("finding_records").Where("finding_id = ?", id).Exec(ctx); err != nil {
-			return fmt.Errorf("failed to delete finding_records: %w", err)
+		if err := deleteFindingChildrenTx(ctx, tx, []int64{id}); err != nil {
+			return err
 		}
 		if _, err := tx.NewDelete().Model((*Finding)(nil)).Where("id = ?", id).Exec(ctx); err != nil {
 			return fmt.Errorf("failed to delete finding: %w", err)

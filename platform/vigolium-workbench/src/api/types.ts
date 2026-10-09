@@ -182,6 +182,7 @@ export interface FindingsQueryParams {
 export type FindingStatus =
   | 'draft'
   | 'triaged'
+  | 'confirmed'
   | 'false_positive'
   | 'accepted_risk'
   | 'fixed';
@@ -189,6 +190,7 @@ export type FindingStatus =
 export const FINDING_STATUSES: FindingStatus[] = [
   'draft',
   'triaged',
+  'confirmed',
   'false_positive',
   'accepted_risk',
   'fixed',

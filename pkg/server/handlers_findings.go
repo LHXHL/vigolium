@@ -240,7 +240,8 @@ type UpdateFindingStatusRequest struct {
 }
 
 // HandleUpdateFindingStatus handles PATCH /api/findings/:id/status — updates the
-// lifecycle status of a finding (draft → triaged / false_positive / accepted_risk / fixed).
+// lifecycle status of a finding (one of database.FindingStatuses: draft → triaged → confirmed → fixed, or
+// false_positive / accepted_risk).
 func (h *findingsHandlers) HandleUpdateFindingStatus(c fiber.Ctx) error {
 	if h.db == nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
@@ -268,7 +269,7 @@ func (h *findingsHandlers) HandleUpdateFindingStatus(c fiber.Ctx) error {
 	status := strings.ToLower(strings.TrimSpace(req.Status))
 	if !database.IsValidFindingStatus(status) {
 		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid status: must be one of draft, triaged, false_positive, accepted_risk, fixed",
+			Error: "invalid status: must be one of " + strings.Join(database.FindingStatuses, ", "),
 			Code:  fiber.StatusBadRequest,
 		})
 	}

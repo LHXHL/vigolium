@@ -218,10 +218,25 @@ func TestHandleUpdateFindingStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("confirmed is accepted", func(t *testing.T) {
+		status, body := doReq(t, app, http.MethodPatch, "/api/findings/"+strconv.FormatInt(id, 10)+"/status", `{"status":"confirmed"}`, nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body %s", status, body)
+		}
+		var f database.Finding
+		_ = json.Unmarshal(body, &f)
+		if f.Status != database.StatusConfirmed {
+			t.Errorf("status = %q, want confirmed", f.Status)
+		}
+	})
+
 	t.Run("invalid status value → 400", func(t *testing.T) {
-		status, _ := doReq(t, app, http.MethodPatch, "/api/findings/"+strconv.FormatInt(id, 10)+"/status", `{"status":"bogus"}`, nil)
+		status, body := doReq(t, app, http.MethodPatch, "/api/findings/"+strconv.FormatInt(id, 10)+"/status", `{"status":"bogus"}`, nil)
 		if status != http.StatusBadRequest {
 			t.Errorf("status = %d, want 400", status)
+		}
+		if !strings.Contains(string(body), "confirmed") {
+			t.Errorf("400 body does not list the vocabulary: %s", body)
 		}
 	})
 
