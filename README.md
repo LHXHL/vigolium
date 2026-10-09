@@ -110,7 +110,7 @@ Requires **Go 1.27+** and **bun 1.3.11+**. See [HACKING.md](HACKING.md#build-and
 - **Swarm**: master agent selects modules, generates custom JS attack extensions, runs code audit + SAST, executes scans, and triages results; targeted or full-scope (`--discover`), with `--diff`/`--last-commits` for change-focused runs
 - **Source-audit drivers**: `audit`, `piolium`, and the unified `audit` dispatcher run foreground source-code audits sharing one finding schema and DB tagging
 - **Query mode**: single-shot prompts for code review, endpoint discovery, and secret detection
-- **Pluggable providers**: `openai-compatible` (default), `openai-codex-oauth`, `openai-api-key`, `openai-responses`, `anthropic-api-key`, `anthropic-oauth`, `anthropic-cli`, `anthropic-compatible`, `anthropic-vertex`, `google-vertex`. Same modes exposed over the REST API with SSE streaming and an OpenAI-compatible chat endpoint
+- **Pluggable providers** (auto-detected; set `agent.olium.provider` to choose): `openai-compatible`, `openai-codex-oauth`, `openai-api-key`, `openai-responses`, `anthropic-api-key`, `anthropic-oauth`, `anthropic-cli`, `anthropic-compatible`, `anthropic-vertex`, `google-vertex`. Same modes exposed over the REST API with SSE streaming and an OpenAI-compatible chat endpoint
 
 ## Quick Start: Native Scan
 
@@ -142,14 +142,15 @@ See the [architecture overview](https://docs.vigolium.com/architecture/overview)
 ## Server Mode
 
 ```bash
-# Start API server with authentication
-vigolium server -k my-secret-key
+# Start API server with authentication (key from config server.auth_api_key,
+# or override it with VIGOLIUM_API_KEY)
+VIGOLIUM_API_KEY=my-secret-key vigolium server
 
 # Enable transparent HTTP proxy for traffic recording
-vigolium server -k my-key --ingest-proxy-port 9003
+vigolium server --ingest-proxy-port 9003
 
-# Auto-scan ingested traffic
-vigolium server -k my-key --scan-on-receive
+# Auto-scan ingested traffic (what gets scanned is limited by the scope.* rules)
+vigolium server --scan-on-receive
 ```
 
 ```bash
@@ -266,10 +267,10 @@ Run JavaScript/TypeScript code directly or write custom scan modules and hooks w
 
 ```bash
 # Execute inline JavaScript
-vigolium js --code 'let r = vigolium.http.get(TARGET); console.log(r.status)' -t https://example.com
+vigolium js --code 'let r = vigolium.http.get(TARGET); console.log(r.status)' --target https://example.com
 
 # Run a JS file with timeout
-vigolium js --code-file ./my-script.js -t https://example.com --timeout 60s
+vigolium js --code-file ./my-script.js --target https://example.com --timeout 60s
 
 # Manage extensions
 vigolium ext ls                # list loaded extensions
@@ -402,8 +403,8 @@ Authentication:
 
 Performance:
   -c, --concurrency      Concurrent workers (default: 25)
-  -r, --rate-limit       Max requests/sec (default: 0 = unlimited)
-      --max-per-host     Per-host concurrency cap (default: 2)
+  -r, --rate-limit       Max requests/sec (default: 100; 0 = unlimited)
+      --max-per-host     Per-host concurrency cap (default: 50)
       --proxy            HTTP/SOCKS5 proxy URL
       --timeout          HTTP request timeout (default: 15s)
 
@@ -411,7 +412,8 @@ Agentic Scan (vigolium agent autopilot / swarm / query):
       --source             Path to source code for source-aware scanning
       --files              Specific files to include relative to --source
       --source-label       Label for source code ingestion
-      --provider           Olium provider: openai-compatible (default), openai-codex-oauth,
+      --provider           Olium provider (auto-detected; set agent.olium.provider):
+                           openai-compatible, openai-codex-oauth,
                            openai-api-key, openai-responses, anthropic-api-key,
                            anthropic-oauth, anthropic-cli, anthropic-compatible,
                            anthropic-claude-sdk-bridge, anthropic-vertex, google-vertex

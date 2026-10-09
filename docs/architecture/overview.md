@@ -29,17 +29,23 @@ The native scan pipeline is fully deterministic -- pure Go, no AI involvement. R
 
 ```
 Heuristics -> optional Port Sweep -> External Harvesting -> Spidering
--> Discovery / Input Ingestion -> targeted Re-spider -> DynamicAssessment
--> KnownIssueScan
+-> optional Probe -> Discovery / Input Ingestion -> targeted Re-spider
+-> Seed -> DynamicAssessment -> KnownIssueScan
 ```
+
+Only the enabled phases run; the order and each phase's gate live in
+`BuildNativeScanPlan` (`internal/runner/native_plan.go`).
 
 | Phase | Purpose |
 |-------|---------|
-| Heuristics | Lightweight fingerprinting and technology detection |
+| Heuristics | Fetches each target's root page and classifies it (blank vs content, JSON/XML API, SPA) to decide whether spidering it is worthwhile; not technology fingerprinting |
 | Port Sweep | Optional alternate-port HTTP(S) discovery for deep/subdomain-following runs |
 | External Harvesting | Wayback Machine and other passive source enumeration |
 | Spidering | Active crawling, JS analysis, link and form extraction |
+| Probe | Opt-in host sweep (`--only probe`): one request per target, passive modules only, no content discovery |
 | Discovery | Endpoint and content discovery via wordlists |
+| Targeted Re-spider | Re-crawls rich/SPA routes that discovery surfaced after the first browser crawl (needs spidering, discovery and dynamic assessment enabled) |
+| Seed | When ingestion/discovery is skipped (e.g. `--only dynamic-assessment`), stores the CLI targets as records so assessment has input |
 | DynamicAssessment | Core vulnerability testing -- injection, XSS, SSRF, etc. (CLI aliases: `audit`, `dast`, `assessment`) |
 | KnownIssueScan | Checks for known CVEs and common misconfigurations |
 
@@ -62,9 +68,9 @@ exceptions it runs with, is one reported policy; see
 
 | Strategy | Behavior |
 |----------|----------|
-| Lite | Fast surface-level scan; skips heavy crawling and discovery |
-| Balanced | Default. Runs all phases with sensible limits |
-| Deep | Exhaustive scanning with higher limits, broader wordlists, and external harvesting |
+| Lite | Fast surface-level scan: dynamic assessment only (no spidering, discovery, external harvest, or known-issue scan), under a pace ceiling |
+| Balanced | Default. Spidering, discovery, dynamic assessment and known-issue scan; no external harvest, and discovery's `/FUZZ` brute-force is off |
+| Deep | Everything in balanced plus external harvesting. The `--intensity deep` preset (which selects this strategy through a scanning profile) also turns on the alternate-port sweep, subdomain following, discovery fuzzing, and the long wordlists |
 
 ### Agentic Scan
 

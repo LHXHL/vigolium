@@ -24,7 +24,7 @@ Vigolium extensions are JavaScript files that implement scanner modules using th
 
 - **Active modules**: Send modified requests to detect vulnerabilities
 - **Passive modules**: Analyze existing request/response pairs without sending traffic
-- **Pre/post hooks**: Run before or after the scan pipeline
+- **Pre/post hooks**: Filter or rewrite each input item before modules see it (`pre_hook`), or each result before it is stored (`post_hook`); see [Pre-Hook and Post-Hook](#pre-hook-and-post-hook)
 
 Extensions have access to the full `vigolium.*` API for HTTP requests, database queries, parsing, AI-augmented analysis, OAST (out-of-band) testing, and finding creation.
 
@@ -184,6 +184,66 @@ module.exports = {
   }
 };
 ```
+
+### Pre-Hook and Post-Hook
+
+Hooks are not modules: they do not scan, they transform what flows through the
+pipeline. Both export `type: "pre_hook"` or `type: "post_hook"` plus a single
+`execute` function (no `scanPerRequest`/`scanPerHost`), and load the same way as
+modules (`--ext`, `--ext-dir`, or the configured extensions dir).
+`vigolium ext example pre_hook` / `ext example post_hook` prints a starter.
+Runtime contract: `pkg/jsext/hooks.go`.
+
+**`pre_hook`** runs once on every input item **before any module sees it**.
+`execute(request)` receives `{raw, method, url, headers}` (`url` is the full
+target URL; `headers` is a name → value object). What it returns decides the
+item's fate:
+
+| Return | Effect |
+|---|---|
+| `null` / `undefined` | **Skip the item**: no module (active or passive) sees it |
+| `{ raw: "GET / HTTP/1.1\r\n..." }` | Replace the whole raw request (original host/service kept). `raw` wins over `headers` |
+| `{ headers: {...} }` | Add or replace these headers on the original request |
+| anything else (e.g. `request` unchanged) | Pass through as-is |
+
+```javascript
+module.exports = {
+  id: "skip-static-assets",
+  type: "pre_hook",
+  execute: function(request) {
+    var path = (vigolium.parse.url(request.url) || {}).path || request.url;
+    if (/\.(css|png|jpe?g|gif|svg|ico|woff2?|ttf|map)$/i.test(path)) return null;
+    return { headers: { "X-Scan-Source": "vigolium" } };
+  }
+};
+```
+
+**`post_hook`** runs on every result a module emits, **before** dedup and
+storage. `execute(result)` receives `{moduleId, url, host, matched, request,
+response, info: {name, description, severity, confidence}}` (`templateId` is an
+alias of `moduleId`). Return `null`/`undefined` to **drop** the result, or an
+object whose `url`, `matched`, `info.name`, `info.description` and
+`info.severity` are copied back onto the result. Any other field you change
+(`info.confidence`, `request`, `host`, …) is ignored.
+
+```javascript
+module.exports = {
+  id: "escalate-admin-paths",
+  type: "post_hook",
+  execute: function(result) {
+    if (result.url.indexOf("/admin") === -1) return result;
+    result.info.severity = "high";
+    result.info.name = result.info.name + " [admin]";
+    return result;
+  }
+};
+```
+
+Hooks chain in load order: each one gets the previous one's output, and the
+first `null` stops the chain. **A hook that throws (or whose `execute` is not a
+function) is skipped with a warning and the item continues unchanged**, so a
+broken hook never filters anything. Watch the log for `Pre-hook error` /
+`Post-hook error` rather than assuming the hook ran.
 
 ---
 

@@ -54,7 +54,11 @@ section.
   - `--events ndjson` on the scan commands → a **live** event stream on stdout
     while the scan runs. This is how you learn what a 15-minute crawl is doing;
     see "Watching a scan while it runs" below.
-- **One `-j` envelope, every command.** `{schema_version, command, project_uuid,
+- **One `-j` envelope for the read commands** (`traffic`, `finding`, `db ls`,
+  `db stats`, `log`, `ingest`, …). A few commands still print their
+  own JSON shape under `-j` (`module ls`, `doctor`, `skills ls`, every `kit *`,
+  `fuzz`, the agent scan summaries); see `references/agent-loop.md`. The
+  envelope is `{schema_version, command, project_uuid,
   project_scoped, db_path, total, offset, limit, items, query}` — `items` is the
   row array, and now the only one. The old per-command names (`records`,
   `findings`, `scans`, `rows`) duplicated every row **on the wire** and are no
@@ -155,7 +159,7 @@ Full event table and field-by-field notes:
 | Ingest traffic without scanning | `vigolium ingest -t <url> -I openapi -i spec.yaml` |
 | Ingest many files in ONE process | `vigolium ingest -i a.har -i b.har` or `--dir ./captures --dir-glob '*.har'` |
 | Start the API server | `vigolium server` |
-| Start server and auto-scan new traffic | `vigolium server -t <url> --scan-on-receive` |
+| Start server and auto-scan new traffic | `vigolium server --scan-on-receive` (scoped by `scope.*` config; `server` has no target flag) |
 | Mirror ingested traffic to a live file tree | `vigolium server --mirror-fs ./mirror` |
 | Autonomous AI-driven scan | `vigolium agent autopilot -t <url>` |
 | Autopilot from a natural-language prompt | `vigolium agent autopilot "scan VAmPI at ~/src/VAmPI on localhost:3005"` |
@@ -188,6 +192,7 @@ Full event table and field-by-field notes:
 | Harvest known URLs for a domain | `vigolium kit harvest target.example` |
 | Crack a JWT's HMAC secret | `vigolium kit jwt-crack <token>` |
 | List/print built-in wordlists or payloads | `vigolium kit wordlist [name]` / `vigolium kit payload --class sqli` |
+| Remove leftover vigolium temp scratch | `vigolium kit tmp-clean` |
 | Hand a finding to Burp | `vigolium finding --id 42 --push-to-burp -B http://127.0.0.1:9009` |
 | Pull live Burp Proxy history into the DB | `vigolium import -B http://127.0.0.1:9009 --host target.example` |
 | Send exact bytes through Burp's engine | `vigolium replay --raw-request-file req.txt --send-via-burp --http-mode http1 -B …` |
@@ -207,7 +212,7 @@ Full event table and field-by-field notes:
 | View/modify configuration | `vigolium config ls` / `config set <key> <value>` |
 | Manage auth sessions | `vigolium auth lint` / `auth list` / `auth load` / `auth totp` |
 | Manage scope rules | `vigolium scope view` |
-| Manage projects | `vigolium project create\|list\|use <name>` |
+| Manage projects | `vigolium project create\|list` / `eval "$(vigolium project use <uuid>)"` |
 | Cloud storage | `vigolium storage ls\|upload\|download\|presign\|rm` |
 | Import an audit folder or JSONL/SQLite export | `vigolium import <path>` |
 | View runtime logs for a scan/agent run | `vigolium log <uuid>` (`-f` to follow) |
@@ -269,7 +274,7 @@ Load the file that matches the task — don't read them all.
 | **Driving vigolium from an agent** | `references/agent-loop.md` | triage, `-j` contracts, replay, exports, exit codes |
 | Scanning commands | `references/scanning.md` | scan / scan-url / scan-request / run flags, phases, strategies, output formats, replacing nuclei/ffuf/katana/httpx |
 | Fuzzing | `references/fuzzing.md` | `vigolium fuzz` — positions, markers, attack modes, payload classes, anomaly scoring, matchers |
-| Utility toolbox | `references/kit.md` | `vigolium kit` — secret-scan, js-beautify, oast, harvest, jwt-crack, wordlist, payload |
+| Utility toolbox | `references/kit.md` | `vigolium kit` — secret-scan, js-beautify, oast, harvest, jwt-crack, wordlist, payload, tmp-clean |
 | Burp Suite / Caido | `references/burp.md` | Burp **or** Caido bridge setup, live history, Repeater/Organizer/Site map handoff, `--send-via-burp`, proxy channel — one loopback protocol, either vendor |
 | AI agent modes | `references/agent-modes.md` | agent query / autopilot / swarm / audit / olium / triage / session, intensities, providers, templates |
 | Auth & sessions | `references/auth.md` | `--auth-file` / `--auth`, YAML format, extract rules, authenticated scanning |
@@ -311,7 +316,7 @@ shaping-flag table (`--compact`, `--fields`, `--full-body`, `--with-records`,
 `--min-severity`, `--pick`, `--markdown`, `--raw`, `--agentic-scan`) lives in
 `references/agent-loop.md`.
 
-Three things worth knowing about that habit — details in
+Four things worth knowing about that habit — details in
 `references/agent-loop.md`:
 
 - **An unknown `--fields` name is a usage error** (exit 2) that lists the valid
@@ -440,8 +445,9 @@ Things `-h` won't tell you:
   it is safe to run. Re-sending requires asking for `replay`/`fuzz` explicitly.
 - **Errors under `-j` are JSON on stdout** (`{ok:false, error:{code,…}}`) with the
   human line on stderr. Branch on `error.code`; never `2>&1` into a parser.
-- Every `-j` command uses the envelope, `--list-tables`/`--list-columns`
-  and `log ls` included.
+- The read commands use the envelope, `--list-tables`/`--list-columns`
+  and `log ls` included; see `references/agent-loop.md` for the commands that
+  still print their own JSON shape.
 - `db export` validates its flags **before** opening `-o`, so a bad `--format`
   leaves the existing file intact.
 - **`finding --id` takes the findings table's integer**, and rejects a UUID by
@@ -548,8 +554,8 @@ Whitebox/source-aware scanning is **not** a strategy — it is an agent feature
 
 `vigolium kit` is a family of stateless one-shot primitives — no DB, no project
 scope, no scan pipeline. Each reads `-`/stdin, takes `-j/--json`, and persists
-nothing, so pipe the output. The seven commands (`secret-scan`, `js-beautify`,
-`oast`, `harvest`, `jwt-crack`, `wordlist`, `payload`) are in the Command Router
+nothing, so pipe the output. The eight commands (`secret-scan`, `js-beautify`,
+`oast`, `harvest`, `jwt-crack`, `wordlist`, `payload`, `tmp-clean`) are in the Command Router
 above; usage, flags, and JSON shapes: **`references/kit.md`**.
 
 ## Recipes
@@ -644,14 +650,16 @@ vigolium server --ingest-proxy-port 8080 --mirror-fs ./mirror
 vigolium scan --only dynamic-assessment -t https://target.example
 ```
 
-Or auto-scan each request as it arrives: `vigolium server -t <url> --scan-on-receive`.
+Or auto-scan each request as it arrives: `vigolium server --scan-on-receive`.
+`server` takes no target flag; what gets scanned is limited by the project's
+`scope.*` rules (`vigolium scope view`).
 
 ### 8. Custom detection logic in JavaScript
 
 ```bash
 vigolium ext preset                                   # install examples
 vigolium ext docs                                     # API reference
-vigolium ext lint --ext ./custom-check.js             # validate
+vigolium ext lint ./custom-check.js                   # validate
 vigolium run extension -t https://target.example --ext ./custom-check.js
 ```
 
@@ -664,7 +672,7 @@ vigolium <command> -h          # authoritative flags for your installed version
 vigolium --full-example        # worked examples grouped by section
 vigolium doctor --json         # environment readiness (binaries, providers, templates)
 vigolium module ls <keyword>   # find a module by topic
-vigolium skills get --full     # print this skill and every reference
+vigolium skills get vigolium-scanner --full   # print this skill and every reference
 ```
 
 ## Resources

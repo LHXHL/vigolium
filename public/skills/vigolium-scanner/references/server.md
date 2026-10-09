@@ -172,14 +172,15 @@ vigolium server
 # Custom port, no auth (dev only).
 vigolium server --service-port 8443 --no-auth
 
-# Scan every ingested request against a fixed scope.
-vigolium server -t https://example.com --scan-on-receive
+# Scan every ingested request. `server` has no target flag: what gets scanned
+# is limited by the project's scope.* rules (`vigolium scope view`).
+vigolium server --scan-on-receive
 
 # Passive-only scan-on-receive (no active traffic; secret detection still runs).
-vigolium server -t https://example.com --scan-on-receive --passive-only
+vigolium server --scan-on-receive --passive-only
 
 # Full native pipeline (discovery + spidering + assessment) on each record.
-vigolium server -t https://example.com --scan-on-receive --full-native-scan-on-receive
+vigolium server --scan-on-receive --full-native-scan-on-receive
 
 # Transparent recording proxy.
 vigolium server --ingest-proxy-port 8080
@@ -187,8 +188,8 @@ vigolium server --ingest-proxy-port 8080
 # Intercepting HTTPS proxy (records TLS traffic under a generated CA).
 vigolium server --ingest-proxy-port 8080 --proxy-mitm
 
-# High-throughput ingestion server.
-vigolium server -c 200 --mem-buffer 50000
+# High-throughput ingestion server (bigger in-memory queue before spilling to disk).
+vigolium server --mem-buffer 50000
 
 # Mirror ingested traffic + findings to a live browsable file tree.
 vigolium server --ingest-proxy-port 8080 --mirror-fs ./mirror

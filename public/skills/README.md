@@ -13,7 +13,7 @@ matches your CLI version. Prefer this over copying files by hand:
 ```bash
 vigolium skills install --agent claude --scope project   # --agent claude|codex|agents
 vigolium skills                                          # list bundled skills
-vigolium skills get --full                               # print SKILL.md + every reference
+vigolium skills get vigolium-scanner --full              # print SKILL.md + every reference
 ```
 
 | `--agent` | `--scope project` | `--scope global` |

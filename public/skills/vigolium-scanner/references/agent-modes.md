@@ -133,9 +133,6 @@ vigolium agent query --prompt 'analyze the authentication flow'
 # Pipe prompt from stdin
 echo "check for SQL injection in the login handler" | vigolium agent query --stdin
 
-# With specific agent
-vigolium agent query --agent claude 'find XSS vulnerabilities'
-
 # With source code context
 vigolium agent query 'explain the auth flow' --source ./src
 

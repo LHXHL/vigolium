@@ -263,7 +263,7 @@ probe phase warn that they are inert rather than doing nothing silently.
 
 > **Source-aware / SAST scanning is an agent feature**, not a native `scan`/`run` phase.
 > Use `vigolium agent audit --source <path-or-git-url>` (security code audit) or
-> `vigolium agent query --source <path> -t code-review`. See `references/agent-modes.md`.
+> `vigolium agent query --source <path> --prompt-template security-code-review`. See `references/agent-modes.md`.
 
 ### Examples
 
@@ -686,7 +686,7 @@ Combine with commas: `--format jsonl,html -o report.html`.
 
 Static analysis and source-aware scanning are **agent** features, not native `scan`/`run`
 phases. Use `vigolium agent audit --source <path-or-git-url>` (security code audit) or
-`vigolium agent query --source <path> -t code-review`. `--source` accepts a local
+`vigolium agent query --source <path> --prompt-template security-code-review`. `--source` accepts a local
 directory, a git URL (cloned automatically), a `.zip`/`.tar.gz`, or a `gs://` archive.
 
 ---

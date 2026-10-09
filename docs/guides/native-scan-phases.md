@@ -6,14 +6,23 @@ Vigolium's native scan pipeline consists of multiple phases that run sequentiall
 
 ## The Full Pipeline
 
-When you run a standard scan, phases execute in this order:
+When you run a scan, the enabled phases execute in this order (the source of
+truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 
-1. **Heuristics / Port Sweep** - classify target roots and, in deep mode, find alternate web ports
-2. **External Harvest** - gather endpoints from external sources (Wayback Machine, CT logs)
-3. **Spidering** - browser-based crawling to discover dynamic content
-4. **Discovery / Ingestion** - parse inputs and perform content discovery
-5. **DynamicAssessment** - run active, passive, and extension modules
-6. **Known Issue Scan** - run Nuclei plus native in-process secret detection
+1. **Heuristics check** (`heuristics-check`) - fetch each target's root page and classify it (blank vs content, JSON/XML API; with `scanning_strategy.heuristics_check: advanced` also SPA detection and link counting) to decide whether spidering that target is worthwhile. It does not fingerprint technologies. On by default (`basic`); turned off by `--only`
+2. **Port Sweep** (`port-sweep`) - find extra web services on alternate ports of the CLI target hosts and add them to the target set. Only with `--intensity deep` or `--follow-subdomains`
+3. **External Harvest** (`external-harvest`) - gather URLs about the target from third-party archives (Wayback Machine, CT logs); never contacts the target
+4. **Spidering** (`spidering`) - browser-based crawling to discover dynamic content
+5. **Probe** (`probe`) - one request per target, passive modules only, no content discovery (an httpx-style host sweep). Opt-in: runs only with `--only probe` / `vigolium run probe`
+6. **Discovery / Ingestion** (`discovery`) - parse inputs and perform content discovery
+7. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl. Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
+8. **Seed** (`seed`) - when discovery/ingestion is skipped (for example `--only dynamic-assessment`), store the CLI targets as records so the assessment phases have something to scan. Not run under scan-on-receive
+9. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
+10. **Known Issue Scan** (`known-issue-scan`) - run Nuclei plus native in-process secret detection
+
+`heuristics-check`, `port-sweep`, `targeted-respider`, and `seed` are internal
+steps: they are not accepted by `--only`/`--skip` (see [Phase Aliases](#phase-aliases)
+for the names that are).
 
 A full scan with all phases enabled:
 
@@ -148,6 +157,7 @@ Every phase answers to several spellings. They work identically with `--only`, `
 | Phase | Also accepts |
 |-------|--------------|
 | `ingestion` | `ingest`, `ingesting` |
+| `probe` | `probing`, `httpx`, `alive`, `sweep` |
 | `discovery` | `discover`, `discovering`, `deparos` |
 | `external-harvest` | `harvest`, `harvesting`, `external-harvester`, `external_harvester` |
 | `spidering` | `spider`, `spitolas`, `crawl`, `crawling`, `crawler` |

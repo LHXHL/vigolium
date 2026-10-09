@@ -757,9 +757,16 @@ Full flags, intensities, and providers: `references/agent-modes.md`.
 
 ## The `-j` envelope
 
-Every `-j/--json` command emits the **same shape**, so one parser handles them
-all — including `log ls`, `ingest`, and `db ls --list-tables`/`--list-columns`.
-Parse `items`; do not write key fallbacks.
+The read commands emit the **same shape** under `-j/--json`, so one parser
+handles them all — `traffic`, `finding`, `db ls`, `db stats`, `log ls`,
+`ingest`, and `db ls --list-tables`/`--list-columns` included. Parse `items`; do
+not write key fallbacks.
+
+Not every command is on the envelope yet. These still print their own JSON
+shape under `-j`, so check for `schema_version` before reaching for `items`:
+`module ls`, `doctor`, `skills ls`, every `kit *` subcommand, `fuzz` (a
+per-payload stream), and the agent scan summaries (`agent autopilot`/`swarm`/
+`query`).
 
 Two shape notes that are not exceptions to the envelope, just to `items`:
 

@@ -2,7 +2,7 @@
 
 > **Related:** [agent-loop.md](agent-loop.md) for the `-j` triage contracts · [flags.generated.md](flags.generated.md) for any flag
 
-Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `module`, `extensions` (alias `ext`), `js`, `config`, `scope`, `source`, `auth`, `project`, `storage`, `strategy`, `export`, `version`, and `update` commands.
+Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `module`, `extensions` (alias `ext`), `js`, `config`, `scope`, `auth`, `project`, `storage`, `strategy`, `export`, `version`, and `update` commands.
 
 ## Table of Contents
 
@@ -29,7 +29,6 @@ Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `modu
 - [config](#config)
 - [config clean](#config-clean)
 - [scope](#scope)
-- [source](#source)
 - [auth](#auth)
 - [project](#project)
 - [storage](#storage)
@@ -1284,23 +1283,6 @@ vigolium scope set origin.mode strict
 
 ---
 
-## source (provided via `--source`, not a standalone command)
-
-There is no `vigolium source` command. Application source code for whitebox /
-source-aware scanning is supplied per-run with the `--source` flag on the agent
-commands (`agent autopilot`, `agent swarm`, `agent query`, `agent audit`).
-
-`--source` accepts a local directory, a git URL (cloned automatically), a local
-`.zip`/`.tar.gz` archive, or a `gs://<project>/<key>` archive.
-
-```bash
-vigolium agent autopilot -t https://api.example.com --source ./api-source
-vigolium agent swarm -t https://example.com --source https://github.com/org/repo
-vigolium agent audit --source ./src            # source-only SAST/audit harness
-```
-
----
-
 ## auth
 
 **Usage:** `vigolium auth <subcommand> [flags]`
@@ -1340,7 +1322,7 @@ Manage projects for multi-tenancy scan data scoping.
 | `project config` | — | View or update project configuration |
 | `project create <name>` | — | Create a new project (positional name; `--description` optional) |
 | `project list` | `ls` | List all projects |
-| `project use <name-or-uuid>` | — | Switch to a project (`--name`/`--description` used only when auto-creating) |
+| `project use <uuid>` | — | Print an `export VIGOLIUM_PROJECT_UUID=…` line to `eval`; takes a UUID, not a name (a non-UUID is rejected). Auto-creates the project when the UUID is unknown (`--name`/`--description` used only then) |
 | `project delete <uuid>` | `rm`, `remove` | Delete a project and its data (`--keep-config` retains `~/.vigolium/projects/<uuid>`) |
 
 ### Examples
@@ -1349,7 +1331,7 @@ Manage projects for multi-tenancy scan data scoping.
 vigolium project list
 vigolium project create my-project                 # positional name (no --name flag on create)
 vigolium project create my-project --description "Q4 engagement"
-vigolium project use my-project
+eval "$(vigolium project use <project-uuid>)"   # takes a UUID; get it from `project list`
 vigolium project config
 vigolium project delete <project-uuid>             # aliases: rm, remove
 ```
