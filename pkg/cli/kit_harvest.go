@@ -98,7 +98,7 @@ func runKitHarvest(cmd *cobra.Command, args []string) error {
 			terminal.InfoSymbol(), len(domains), strings.Join(sourceNames, ", "))
 	}
 
-	h := harvester.New(sources, kitHarvestTimeout)
+	h := harvester.New(sources, kitHarvestTimeout).WithOptions(settings.ExternalHarvester.HarvesterOptions())
 	urls := []string{}
 	for u := range h.Harvest(ctx, domains) {
 		urls = append(urls, u)

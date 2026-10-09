@@ -161,8 +161,10 @@ vigolium kit harvest --source wayback,commoncrawl target.example
 ```
 
 Plain mode streams deduped URLs one per line; `-j` yields
-`{domains, sources, count, urls}`. Same source set as the scan's
-`external-harvest` phase.
+`{domains, sources, count, urls}`. Same source set and shaping as the scan's
+`external-harvest` phase: URLs come back normalized (tracking params, fragments
+and static assets dropped; `.js`/`.map` kept) and sampled to
+`external_harvester.per_shape` URLs per path shape and `max_urls` per domain.
 
 ## jwt-crack
 

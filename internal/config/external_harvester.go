@@ -5,12 +5,37 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/vigolium/vigolium/pkg/harvester"
 )
 
 // ExternalHarvesterConfig holds configuration for pre-scan external intelligence harvesting.
 type ExternalHarvesterConfig struct {
 	Sources []string                 `yaml:"sources"`
 	APIKeys ExternalHarvesterAPIKeys `yaml:"api_keys"`
+
+	// PerShape caps how many URLs are kept per path shape (host + templated
+	// path + sorted query names), so /item/1 … /item/90000 collapse to a few
+	// samples. 0 uses the built-in default; a negative value disables the cap.
+	PerShape int `yaml:"per_shape"`
+
+	// MaxURLs caps the URLs kept per harvested domain after shaping. 0 uses the
+	// built-in default; a negative value disables the cap.
+	MaxURLs int `yaml:"max_urls"`
+
+	// CDX bounds the Wayback Machine CDX index query.
+	CDX ExternalHarvesterCDXConfig `yaml:"cdx"`
+}
+
+// ExternalHarvesterCDXConfig bounds the paged Wayback CDX index query.
+type ExternalHarvesterCDXConfig struct {
+	// PageSize is the rows requested per resumeKey page. 0 uses the default.
+	PageSize int `yaml:"page_size"`
+
+	// MaxRows is the hard cap on index rows read per domain; hitting it is
+	// reported as the cdx_max_rows phase limit. 0 uses the default; a negative
+	// value disables the cap.
+	MaxRows int `yaml:"max_rows"`
 }
 
 // ExternalHarvesterAPIKeys holds API keys for external harvester sources that require authentication.
@@ -26,7 +51,13 @@ type ExternalHarvesterAPIKeys struct {
 // only when their key is set.
 func DefaultExternalHarvesterConfig() *ExternalHarvesterConfig {
 	return &ExternalHarvesterConfig{
-		Sources: []string{"wayback", "commoncrawl", "alienvault", "arquivo"},
+		Sources:  []string{"wayback", "commoncrawl", "alienvault", "arquivo"},
+		PerShape: harvester.DefaultPerShape,
+		MaxURLs:  harvester.DefaultMaxURLs,
+		CDX: ExternalHarvesterCDXConfig{
+			PageSize: harvester.DefaultCDXPageSize,
+			MaxRows:  harvester.DefaultCDXMaxRows,
+		},
 	}
 }
 
@@ -67,5 +98,20 @@ func (c *ExternalHarvesterConfig) Validate() error {
 		}
 	}
 
+	if c.CDX.PageSize < 0 {
+		return fmt.Errorf("external_harvester.cdx.page_size: must be >= 0, got %d", c.CDX.PageSize)
+	}
+
 	return nil
+}
+
+// HarvesterOptions converts the shaping and CDX bounds into the harvester's
+// options. The zero/negative convention is shared, so values pass through.
+func (c *ExternalHarvesterConfig) HarvesterOptions() harvester.Options {
+	return harvester.Options{
+		PerShape:    c.PerShape,
+		MaxURLs:     c.MaxURLs,
+		CDXPageSize: c.CDX.PageSize,
+		CDXMaxRows:  c.CDX.MaxRows,
+	}
 }

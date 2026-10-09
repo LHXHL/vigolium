@@ -95,6 +95,13 @@ func (s *ExternalHarvesterInputSource) run() {
 	}
 }
 
+// Stats reports what the harvester received and kept (normalization, dedup and
+// sampling counts, plus any limit a source hit). It is complete once Next has
+// returned io.EOF.
+func (s *ExternalHarvesterInputSource) Stats() harvester.Stats {
+	return s.harvester.Stats()
+}
+
 // Close releases resources and stops external harvesting.
 func (s *ExternalHarvesterInputSource) Close() error {
 	s.mu.Lock()

@@ -708,7 +708,7 @@ func (r *Runner) buildExternalHarvesterSource() *source.ExternalHarvesterInputSo
 		}
 	}
 
-	h := harvester.New(sources, timeout)
+	h := harvester.New(sources, timeout).WithOptions(cfg.HarvesterOptions())
 
 	zap.L().Info("ExternalHarvester initialized",
 		zap.Int("sources", len(sources)),

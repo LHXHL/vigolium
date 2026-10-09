@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/harvester"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
@@ -58,6 +59,7 @@ func (r *Runner) runExternalHarvestPhase(ctx context.Context, infra *phaseInfra)
 	if err != nil {
 		return err
 	}
+	r.reportHarvestShaping(src.Stats())
 
 	// Increment processed_count for external harvest phase
 	if r.repository != nil && stored > 0 {
@@ -120,4 +122,21 @@ func (r *Runner) ingestHarvestStubs(ctx context.Context, infra *phaseInfra, src 
 			zap.Int64("out_of_scope", outOfScope), zap.Int64("store_failed", failed))
 	}
 	return stored, nil
+}
+
+// reportHarvestShaping prints how many harvested URLs survived normalization and
+// sampling, and records any bound a source stopped at (cdx_max_rows) as a phase
+// limit, so a capped archive query is reported rather than looking complete.
+func (r *Runner) reportHarvestShaping(st harvester.Stats) {
+	if st.Raw > 0 {
+		r.printPhaseFeedback("ExternalHarvest", fmt.Sprintf(
+			"kept %s of %s harvested URLs (duplicate %d, static %d, invalid %d, over per_shape %d, over max_urls %d)",
+			terminal.Orange(fmt.Sprintf("%d", st.Kept)), terminal.Orange(fmt.Sprintf("%d", st.Raw)),
+			st.Duplicate, st.Static, st.Invalid, st.OverShape, st.OverDomainCap))
+	}
+	tracker := r.currentPhase.Load()
+	for _, code := range st.Limits {
+		r.printPhaseFeedback("ExternalHarvest", "stopped at limit "+terminal.Orange(code)+" — the archive index was not read to the end")
+		tracker.noteLimit(code)
+	}
 }

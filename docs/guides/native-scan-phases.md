@@ -97,7 +97,11 @@ vigolium run spitolas -t https://example.com
 
 Pulls endpoints from external intelligence sources (Wayback Machine, certificate transparency logs).
 It never contacts the target: each harvested URL is stored as a request-only record
-(`source=harvest`, no response) that later phases fetch with the scan's session, hooks and limiter:
+(`source=harvest`, no response) that later phases fetch with the scan's session, hooks and limiter.
+URLs are normalized (tracking params and static assets dropped, `.js`/`.map` kept) and sampled by
+path shape before they are stored — see `external_harvester.per_shape`, `max_urls` and `cdx` in
+[configuration](../configuration.md#external_harvester). A Wayback index that hits `cdx.max_rows`
+is reported as the `cdx_max_rows` phase limit:
 
 ```bash
 vigolium run external-harvest -t https://example.com

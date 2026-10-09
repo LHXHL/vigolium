@@ -43,6 +43,11 @@ type waybackClient struct {
 	maxRetries int
 	retryDelay time.Duration
 	maxBackoff time.Duration
+
+	// pageSize and maxRows bound the paged index query; zero means the
+	// package default (see cdxBounds).
+	pageSize int
+	maxRows  int
 }
 
 func newWaybackClient(proxyURL ...string) *waybackClient {
@@ -74,68 +79,259 @@ func (c *waybackClient) fetch(ctx context.Context, domain string, results chan<-
 	}
 
 	rows, err := c.fetchIndex(ctx, domain, results, sourceName)
-	if err != nil {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil && len(rows) == 0 {
 		return err
 	}
 
+	// A later index page failing still leaves the rows earlier pages
+	// produced worth mining; the error is reported after.
 	c.mine(ctx, domain, rows, results, sourceName)
-	return nil
+	return err
 }
 
-// fetchIndex streams the CDX index, emitting every URL it reports and returning
-// the rows so the mining pass can choose what to read.
-func (c *waybackClient) fetchIndex(ctx context.Context, domain string, results chan<- Result, sourceName string) ([]cdxRow, error) {
+// cdxMimeExclusion drops index rows whose content cannot carry an endpoint.
+// statuscode is filtered to "not 404" only: 301/302/401/403 rows are real
+// endpoints, and the mining pass reads the status itself.
+const (
+	cdxStatusFilter  = "!statuscode:404"
+	cdxMimeExclusion = "!mimetype:(image|font|video|audio)/.*"
+
+	// cdxMaxEmptyPages stops paging when the server keeps handing out resume
+	// keys for pages with no rows (every row in the block filtered or
+	// collapsed away) — progress that never arrives is a loop.
+	cdxMaxEmptyPages = 3
+)
+
+// cdxBounds resolves the page size and row cap; a zero field (a client built
+// without setCDXBounds) means the package default, and a resolved row cap of 0
+// means unbounded.
+func (c *waybackClient) cdxBounds() (pageSize, maxRows int) {
+	pageSize, maxRows = c.pageSize, c.maxRows
+	if pageSize <= 0 {
+		pageSize = DefaultCDXPageSize
+	}
+	if maxRows == 0 {
+		maxRows = DefaultCDXMaxRows
+	}
+	if maxRows < 0 {
+		maxRows = 0
+	}
+	return pageSize, maxRows
+}
+
+// indexURL renders one page of the domain index query. collapse=urlkey keeps
+// one row per URL; the filters are applied server side so excluded rows never
+// cross the wire. resumeKey is passed verbatim: the server prints it already
+// URL-encoded and expects it back exactly as printed.
+func (c *waybackClient) indexURL(domain string, pageSize int, resumeKey string, paged bool) string {
 	// timestamp, mimetype and statuscode ride along with the URL the index
 	// already returned: they cost nothing extra on the wire and they are what
 	// lets the mining pass replay a capture and skip the ones with no body.
-	apiURL := fmt.Sprintf("%s/cdx/search/cdx?url=*.%s/*&output=txt&fl=original,timestamp,mimetype,statuscode&collapse=urlkey",
-		c.baseURL, domain)
+	apiURL := fmt.Sprintf("%s/cdx/search/cdx?url=*.%s/*&output=txt&fl=original,timestamp,mimetype,statuscode&collapse=urlkey&filter=%s&filter=%s",
+		c.baseURL, domain, url.QueryEscape(cdxStatusFilter), url.QueryEscape(cdxMimeExclusion))
+	if !paged {
+		return apiURL
+	}
+	apiURL += fmt.Sprintf("&showResumeKey=true&limit=%d", pageSize)
+	if resumeKey != "" {
+		apiURL += "&resumeKey=" + resumeKey
+	}
+	return apiURL
+}
 
+// fetchIndex streams the CDX index page by page, emitting every URL it reports
+// and returning the mineable rows so the mining pass can choose what to read.
+//
+// Paging follows the CDX resumption protocol: each page asks for
+// showResumeKey=true&limit=<page_size>, and the server ends a page that has
+// more behind it with a blank line and the key to resume from. Paging stops
+// when no key comes back, at the max_rows cap (reported as a LimitCDXMaxRows
+// Result), or on a repeated key / run of empty pages.
+//
+// Fallback: a server that ignores showResumeKey returns a full first page and
+// no key. That looks exactly like "done", so a first page that came back full
+// without a key is re-read once unpaged — the pre-paging query — skipping the
+// rows already emitted, bounded by the same row cap.
+func (c *waybackClient) fetchIndex(ctx context.Context, domain string, results chan<- Result, sourceName string) ([]cdxRow, error) {
+	pageSize, maxRows := c.cdxBounds()
+
+	var (
+		rows       []cdxRow
+		total      int
+		capHit     bool
+		resumeKey  string
+		emptyPages int
+		firstPage  map[string]struct{} // URLs of page 1, for the unpaged fallback
+	)
+
+	// emit forwards one row, returning false when the caller must stop: the
+	// row cap is reached (the refused row proves there was more) or ctx ended.
+	emit := func(row cdxRow) (bool, error) {
+		if maxRows > 0 && total >= maxRows {
+			capHit = true
+			return false, nil
+		}
+		total++
+		// Only mineable rows are retained. The slice exists solely to choose
+		// what to read afterwards, so holding an image or a 404 in it costs
+		// memory for the length of a network-bound phase and can never earn
+		// it back.
+		if mineWorthy(row) && len(rows) < mineMaxRows {
+			rows = append(rows, row)
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case results <- Result{Source: sourceName, URL: row.URL}:
+		}
+		return true, nil
+	}
+
+	for page := 1; ; page++ {
+		apiURL := c.indexURL(domain, pageSize, resumeKey, true)
+		if page == 1 {
+			firstPage = make(map[string]struct{})
+		}
+		next, n, err := c.readIndexPage(ctx, apiURL, func(row cdxRow) (bool, error) {
+			if page == 1 {
+				firstPage[row.URL] = struct{}{}
+			}
+			return emit(row)
+		})
+		if err != nil {
+			if page == 1 || ctx.Err() != nil {
+				return rows, err
+			}
+			// Later pages failing keeps what earlier pages produced: the
+			// error still reaches the harvester, and mining still runs.
+			return rows, fmt.Errorf("cdx page %d: %w", page, err)
+		}
+		if capHit || ctx.Err() != nil {
+			break
+		}
+
+		if next == "" {
+			if page == 1 && n >= pageSize {
+				zap.L().Debug("Wayback: full first page without a resume key; re-reading unpaged",
+					zap.String("domain", domain), zap.Int("page_size", pageSize))
+				_, _, err := c.readIndexPage(ctx, c.indexURL(domain, 0, "", false), func(row cdxRow) (bool, error) {
+					if _, done := firstPage[row.URL]; done {
+						return true, nil
+					}
+					return emit(row)
+				})
+				if err != nil && (ctx.Err() != nil || total == 0) {
+					return rows, err
+				}
+				if err != nil {
+					return rows, fmt.Errorf("cdx unpaged fallback: %w", err)
+				}
+			}
+			break
+		}
+
+		if maxRows > 0 && total >= maxRows {
+			capHit = true
+			break
+		}
+		if next == resumeKey {
+			zap.L().Debug("Wayback: resume key repeated; stopping", zap.String("domain", domain))
+			break
+		}
+		if n == 0 {
+			emptyPages++
+			if emptyPages >= cdxMaxEmptyPages {
+				zap.L().Debug("Wayback: consecutive empty pages; stopping", zap.String("domain", domain))
+				break
+			}
+		} else {
+			emptyPages = 0
+		}
+		resumeKey = next
+		firstPage = nil
+	}
+
+	if capHit {
+		zap.L().Warn("Wayback: CDX index stopped at max_rows; the harvest for this domain is incomplete",
+			zap.String("domain", domain), zap.Int("max_rows", maxRows))
+		select {
+		case <-ctx.Done():
+			return rows, ctx.Err()
+		case results <- Result{Source: sourceName, Limit: LimitCDXMaxRows}:
+		}
+	}
+	return rows, ctx.Err()
+}
+
+// readIndexPage fetches one index page and hands each row to emit, returning
+// the page's resume key ("" when the server sent none) and how many rows it
+// delivered. emit returning false stops the read early.
+//
+// With showResumeKey=true the key is the last line, after a blank line. A
+// line is only taken as the key when it follows a blank line, holds no
+// whitespace or "://", and nothing but blank lines follows it; otherwise it is
+// emitted as an ordinary row (an older server answering with bare URLs).
+func (c *waybackClient) readIndexPage(ctx context.Context, apiURL string, emit func(cdxRow) (bool, error)) (string, int, error) {
 	resp, err := c.fetchWithRetry(ctx, apiURL)
 	if err != nil {
-		return nil, err
+		return "", 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var rows []cdxRow
+	var (
+		n        int
+		sawBlank bool
+		pending  string // candidate resume key, not yet known to be last
+	)
+	handle := func(line string) (bool, error) {
+		row := parseCDXLine(line)
+		if row.URL == "" {
+			return true, nil
+		}
+		n++
+		return emit(row)
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return rows, ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return "", n, err
 		}
 
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
+			sawBlank = true
 			continue
 		}
-
-		row := parseCDXLine(line)
-		if row.URL == "" {
+		if pending != "" {
+			// More content after the candidate: it was a row after all.
+			cont, err := handle(pending)
+			pending = ""
+			if err != nil || !cont {
+				return "", n, err
+			}
+		}
+		if sawBlank && !strings.ContainsAny(line, " \t") && !strings.Contains(line, "://") {
+			pending = line
+			sawBlank = false
 			continue
 		}
-		// Only mineable rows are retained. The slice exists solely to choose what
-		// to read afterwards, so holding an image or a 404 in it costs memory for
-		// the length of a network-bound phase and can never earn it back.
-		if mineWorthy(row) && len(rows) < mineMaxRows {
-			rows = append(rows, row)
-		}
+		sawBlank = false
 
-		select {
-		case <-ctx.Done():
-			return rows, ctx.Err()
-		case results <- Result{Source: sourceName, URL: row.URL}:
+		cont, err := handle(line)
+		if err != nil || !cont {
+			return "", n, err
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return rows, fmt.Errorf("read response: %w", err)
+		return "", n, fmt.Errorf("read response: %w", err)
 	}
-
-	return rows, nil
+	return pending, n, nil
 }
 
 // parseCDXLine splits a plain-text CDX row of
@@ -420,6 +616,16 @@ type WaybackSource struct {
 func NewWaybackSource(proxyURL ...string) *WaybackSource {
 	return &WaybackSource{
 		client: newWaybackClient(proxyURL...),
+	}
+}
+
+// setCDXBounds applies the harvest's CDX page size and row cap (cdxTunable).
+func (s *WaybackSource) setCDXBounds(pageSize, maxRows int) {
+	s.client.pageSize, s.client.maxRows = pageSize, maxRows
+	if maxRows == 0 {
+		// The harvester resolves "unbounded" to 0; the client reads 0 as
+		// "default", so carry unbounded as a negative value.
+		s.client.maxRows = -1
 	}
 }
 

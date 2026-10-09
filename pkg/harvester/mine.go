@@ -83,17 +83,16 @@ func (row cdxRow) capture() capture {
 // adding attack surface.
 //
 // This is deliberately not `utils.IsMediaURL` or the discovery engine's asset
-// lists: those exclude `js` and `css`, and a JavaScript bundle is the single
-// highest-yield mining target there is. The list is applied to *mined* URLs
-// only — a mined body is raw HTML or JavaScript and is otherwise mostly image
-// and font references, while an index row is left exactly as the source
-// reported it.
+// lists: those exclude `js` and `css`, and a JavaScript bundle (and its source
+// map) is the single highest-yield target there is. The table is applied to
+// mined URLs and, through normalizeURL (together with archiveExtensions), to
+// every harvested URL before dedup.
 var junkExtensions = map[string]bool{
 	"css": true, "jpg": true, "jpeg": true, "png": true, "gif": true, "svg": true,
 	"webp": true, "bmp": true, "ico": true, "tif": true, "tiff": true, "avif": true,
 	"woff": true, "woff2": true, "ttf": true, "otf": true, "eot": true,
 	"mp3": true, "mp4": true, "m4a": true, "wav": true, "avi": true, "flv": true,
-	"mov": true, "webm": true, "ogv": true, "wmv": true, "pdf": true,
+	"mov": true, "webm": true, "ogv": true, "wmv": true, "ogg": true, "pdf": true,
 }
 
 // archiveHosts are the archives' own hostnames. A replayed page routinely

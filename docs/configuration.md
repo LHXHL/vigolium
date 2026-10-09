@@ -826,7 +826,30 @@ external_harvester:
   api_keys:
     urlscan: ""
     virustotal: ""
+
+  per_shape: 3          # URLs kept per shape (host + path template + query names); -1 = no cap
+  max_urls: 5000        # URLs kept per harvested domain after shaping; -1 = no cap
+  cdx:
+    page_size: 10000    # Wayback CDX rows per resumeKey page
+    max_rows: 200000    # CDX rows read per domain; hitting it reports limit cdx_max_rows; -1 = no cap
 ```
+
+Every harvested URL is normalized before dedup: scheme and host lowercased,
+default port and fragment dropped, query pairs sorted by key, and tracking
+parameters (`utm_*`, `fbclid`, `gclid`, `_ga`, `mc_*`, …) removed. Static assets
+(images, fonts, CSS, audio/video, PDFs, archives) are dropped; `.js` and `.map`
+are kept because JS analysis reads them. The survivors are grouped by shape —
+host, `pathshape` template (`/users/42` → `/users/{int}`) and sorted query
+parameter names — and at most `per_shape` URLs per shape and `max_urls` per
+domain are stored. The phase prints raw versus kept counts with the reason for
+each drop.
+
+The Wayback index query keeps `collapse=urlkey`, filters out 404 rows and
+image/font/video/audio MIME types on the server (301/302/401/403 rows are kept:
+they are real endpoints), and pages with `showResumeKey`/`resumeKey`. A server
+that returns a full first page without a resume key is re-read once unpaged.
+Reaching `cdx.max_rows` stops the query and is reported as the `cdx_max_rows`
+limit on the `external-harvest` phase outcome.
 
 `wayback` and `commoncrawl` do more than read their index. Both also mine the
 archived response bodies the index points at — the robots.txt history of the

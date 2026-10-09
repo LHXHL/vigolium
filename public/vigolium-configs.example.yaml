@@ -1240,6 +1240,27 @@ external_harvester:
     urlscan: ${URLSCAN_API_KEY}
     virustotal: ${VIRUSTOTAL_API_KEY}
 
+  # Shaping, applied before dedup. Every harvested URL is normalized (lowercase
+  # host, default port and fragment dropped, query keys sorted, utm_*/fbclid/
+  # gclid/_ga/mc_* tracking params removed) and static assets (images, fonts,
+  # css, media, archives) are dropped; .js and .map are kept for JS analysis.
+  # URLs are then grouped by shape — host + templated path (/users/{int}) +
+  # sorted query names — and sampled. 0 uses the default; -1 disables a cap.
+  # Default: 3
+  per_shape: 3
+  # URLs kept per harvested domain after shaping.
+  # Default: 5000
+  max_urls: 5000
+
+  # Wayback Machine CDX index paging (collapse=urlkey, 404s and image/font/
+  # video/audio rows filtered server side, resumeKey paging).
+  cdx:
+    # Rows per resumeKey page. Default: 10000
+    page_size: 10000
+    # Hard cap on index rows read per domain; hitting it is reported as the
+    # cdx_max_rows phase limit. -1 disables the cap. Default: 200000
+    max_rows: 200000
+
 # ============================================================================
 # AI Agent Integration
 # ============================================================================

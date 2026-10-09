@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -105,5 +106,19 @@ func TestExternalHarvest_NeverContactsTarget(t *testing.T) {
 			t.Errorf("record %s has a response (status=%d hasResp=%v); a harvest stub must be request-only",
 				rec.URL, rec.StatusCode, rec.HasResponse)
 		}
+	}
+}
+
+// A capped archive index must surface as a phase limit, not look complete.
+func TestExternalHarvest_ReportsCDXLimit(t *testing.T) {
+	r := &Runner{options: &types.Options{}}
+	tr := newLedger("external-harvest")
+	r.currentPhase.Store(tr)
+
+	r.reportHarvestShaping(harvester.Stats{Raw: 10, Kept: 4, OverShape: 6, Limits: []string{harvester.LimitCDXMaxRows}})
+
+	out := tr.finish(context.Background(), nil)
+	if !slices.Equal(out.Limits, []string{database.LimitCDXMaxRows}) {
+		t.Errorf("Limits = %v, want [%s]", out.Limits, database.LimitCDXMaxRows)
 	}
 }
