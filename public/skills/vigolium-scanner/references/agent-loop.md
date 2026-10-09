@@ -799,8 +799,9 @@ per-payload stream), and the agent scan summaries (`agent autopilot`/`swarm`/
 
 Two shape notes that are not exceptions to the envelope, just to `items`:
 
-- `db stats -j` puts a summary **object** in `items`, not a row array — don't run
-  a universal `.items[]` over it.
+- `items` is **always an array**, never `null` and never an object. A command
+  whose answer is one object (`db stats`, `db compact`, `traffic body`/`headers`
+  receipts) wraps it as `items: [obj]` with `total: 1`, so `.items[0]` reads it.
 - `ingest -j` has an empty `items` (`[]`); its payload is the sibling fields
   `records_ingested`, `records_failed`, `records_skipped`, `input_format`,
   `record_source`, `duration_ms`. `records_ingested` is rows the database
@@ -861,6 +862,8 @@ captured, and the two no longer share an answer.
 {
   "schema_version": 1,
   "command": "traffic",
+  "kind": "read",
+  "ok": true,
   "project_uuid": "…",
   "project_scoped": true,
   "db_path": "/home/me/.vigolium/database-vgnm.sqlite",
@@ -878,7 +881,10 @@ captured, and the two no longer share an answer.
 | Field | Why it is there |
 |---|---|
 | `schema_version` | Gate on it. Bumped on any breaking field change. |
-| `items` | **The** row array, and the only one. The pre-envelope names (`records`, `findings`, `scans`, `rows`, `stats`) are gone from the default output: they duplicated every row on the wire, which on a 20-record compact read was 19,983 bytes against 7,884 of actual rows. `--json-legacy-keys` (or `VIGOLIUM_JSON_LEGACY_KEYS=1`) brings the alias back for a caller still migrating, at that cost. |
+| `ok` | `true` on every result document; the error object carries `"ok": false`, so `.ok` is a valid branch on anything `-j` prints. |
+| `kind` | The document's shape: `read` (rows, or one object as `items: [obj]`), `mutation` (adds `changed`, `action`, and `dry_run` on a dry run) or `scan`. `changed` is always present on a mutation and is `false` on a dry run. |
+| `finding_hash` | (on finding rows) The finding's stable identity — the dedup key and what SARIF fingerprints use. Selectable with `--fields`. |
+| `items` | **The** row array, and the only one — always an array, `[]` when empty. The pre-envelope names (`records`, `findings`, `scans`, `rows`, `stats`) are gone from the default output: they duplicated every row on the wire, which on a 20-record compact read was 19,983 bytes against 7,884 of actual rows. `--json-legacy-keys` (or `VIGOLIUM_JSON_LEGACY_KEYS=1`) brings the alias back for a caller still migrating, at that cost; for a one-object result the alias renders the object itself (`stats: {…}`). |
 | `db_path` | The database this command actually opened. Assert it; the open order ends at one shared default file, so a fall-through silently mixes engagements. |
 | `project_uuid` | The project filter that was **actually applied**, or absent when none was. It used to be filled from the active project regardless of the read mode, so a `-S` read spanning every project still named one. |
 | `project_scoped` | Whether a project filter was applied at all, so "unscoped" is explicit rather than inferred from a missing `project_uuid`. `false` on a plain `-S` read; `true` once you pass `--project-uuid`. |

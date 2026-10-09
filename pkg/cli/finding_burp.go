@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/burpbridge"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -26,7 +27,7 @@ const findingRepeaterWarnThreshold = 20
 // there — the same conceptual operation with two different rules, which is one
 // rule too many for a consumer to remember. --to-repeater alone still means
 // "Repeater only", so no existing command line changes meaning.
-func pushFindingsToBurp(ctx context.Context, db *database.DB, findings []*database.Finding) error {
+func pushFindingsToBurp(ctx context.Context, cmd *cobra.Command, db *database.DB, findings []*database.Finding) error {
 	if strings.TrimSpace(findingBurpBridgeURL) == "" {
 		return usageErrorf("--push-to-burp/--to-repeater require --burp-bridge-url")
 	}
@@ -69,6 +70,7 @@ func pushFindingsToBurp(ctx context.Context, db *database.DB, findings []*databa
 
 	byUUID := loadFindingRecordsOrWarn(ctx, db, findings)
 	pushed, skipped, failed := 0, 0, 0
+	pushedIDs := make([]int64, 0, len(findings))
 	for _, f := range findings {
 		req, resp, url := findingPushEvidence(f, byUUID)
 		if len(req) == 0 || url == "" {
@@ -83,16 +85,25 @@ func pushFindingsToBurp(ctx context.Context, db *database.DB, findings []*databa
 			continue
 		}
 		pushed++
+		pushedIDs = append(pushedIDs, f.ID)
 	}
 
 	if globalJSON {
-		env := newAgentEnvelope("finding --push-to-burp", "", nil, int64(pushed), 0, len(findings))
-		env.With("destinations", destinations).
-			With("pushed_to_burp", pushed).
-			With("skipped", skipped).
-			With("failed", failed).
-			With("via_burp", findingSendViaBurp)
-		return writeAgentJSON(env)
+		// A mutation of Burp's state, not of the store: items are the finding ids
+		// that reached Burp (this used to be "items": null).
+		return emitMutation(cmd, "", mutationResult{
+			Changed: pushed > 0,
+			Action:  "push_to_burp",
+			Items:   pushedIDs,
+			Extra: map[string]any{
+				"destinations":   destinations,
+				"pushed_to_burp": pushed,
+				"selected":       len(findings),
+				"skipped":        skipped,
+				"failed":         failed,
+				"via_burp":       findingSendViaBurp,
+			},
+		})
 	}
 	fmt.Printf("%s pushed %d finding(s) to Burp %s", terminal.SuccessSymbol(), pushed, destination)
 	if skipped > 0 {

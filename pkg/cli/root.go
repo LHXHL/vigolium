@@ -404,6 +404,10 @@ func prepareCommandTree(root *cobra.Command) {
 	// kit's subcommands register from their own files' init(), after kit.go's,
 	// so its summary can only be derived once the tree is complete.
 	deriveKitShort()
+
+	// Stamp each command's declared -j output kind from the central table
+	// (machine_kinds.go); machine_contract_test.go checks the result.
+	applyMachineKinds(root)
 }
 
 func Execute() {

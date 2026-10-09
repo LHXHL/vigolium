@@ -354,7 +354,7 @@ List database records with filtering, sorting, and display options. The target t
 
 ### Agent JSON output flags
 
-With `-j`/`--json`, `db ls` emits the same compact, token-aware object as `finding`/`traffic` and accepts the shared shaping flags: `--compact` (metadata only), `--fields a,b,c` (project top-level keys), `--full-body` (complete bodies), `--max-output-bytes N` (cap the whole document at N bytes, dropping whole trailing items). `--with-records` is finding-only. Most `-j` commands (including `db stats`) use the **same envelope** — `{schema_version, command, project_uuid, project_scoped, db_path, total, offset, limit, items, query, query_argv, generated_at, generated_at_ms}`, with `items` canonical. The old row key (`records`/`findings`/`scans`/`rows`) is no longer emitted by default — it shipped a **second full copy of the array** on the wire; `--json-legacy-keys` (or `VIGOLIUM_JSON_LEGACY_KEYS=1`) restores it at that cost. See [agent-loop.md → The `-j` envelope](agent-loop.md#the--j-envelope).
+With `-j`/`--json`, `db ls` emits the same compact, token-aware object as `finding`/`traffic` and accepts the shared shaping flags: `--compact` (metadata only), `--fields a,b,c` (project top-level keys), `--full-body` (complete bodies), `--max-output-bytes N` (cap the whole document at N bytes, dropping whole trailing items). `--with-records` is finding-only. Most `-j` commands (including `db stats`) use the **same envelope** — `{schema_version, command, kind, ok, project_uuid, project_scoped, db_path, total, offset, limit, items, query, query_argv, generated_at, generated_at_ms}`, with `items` canonical and always an array. The old row key (`records`/`findings`/`scans`/`rows`) is no longer emitted by default — it shipped a **second full copy of the array** on the wire; `--json-legacy-keys` (or `VIGOLIUM_JSON_LEGACY_KEYS=1`) restores it at that cost. See [agent-loop.md → The `-j` envelope](agent-loop.md#the--j-envelope).
 
 Notes on this command:
 
@@ -413,9 +413,9 @@ vigolium db ls --raw --limit 5
 
 Show database statistics including record counts, finding breakdowns, and host summaries.
 
-Under `-j/--json` it emits the **standard envelope** like every other read command (stats under `items`, aliased as `stats`). It used to be a documented exception that dumped its raw struct — a contract with a hole in it is one consumers special-case forever. Note `items` here is an **object**, not a row array, so `total`/`offset`/`limit` describe the one report.
+Under `-j/--json` it emits the **standard envelope** like every other read command: the stats report is the one element of `items` (`items[0]`, `total: 1`), and `--json-legacy-keys` adds it back bare as `stats`. It used to be a documented exception that dumped its raw struct — a contract with a hole in it is one consumers special-case forever.
 
-`items.database` names the source: `path` is the file actually opened and `size` is its bytes **including the `-wal`/`-shm` siblings** — on a WAL store the main file alone can be a fraction of what the store occupies. Both used to be declared and never filled, so every `db stats -j` reported `"path": "", "size": 0` for a database it had open. The human view carries the same as a `Source:` line under `Driver:`.
+`items[0].database` names the source: `path` is the file actually opened and `size` is its bytes **including the `-wal`/`-shm` siblings** — on a WAL store the main file alone can be a fraction of what the store occupies. Both used to be declared and never filled, so every `db stats -j` reported `"path": "", "size": 0` for a database it had open. The human view carries the same as a `Source:` line under `Driver:`.
 
 ### stats-specific flags
 
@@ -573,7 +573,7 @@ Only the compacted parts appear. A compacted part is never compacted again, so r
 - A real pass asks for confirmation on a terminal and needs `--force` otherwise; `--dry-run` never asks.
 - With `--max-db-size` the command exits 0 whether or not the budget was reached; `budget_met: false` means everything selected was compacted and the file is still over budget, and `remaining` counts selected records a met budget left whole.
 - VACUUM runs after a pass that compacted something, or when the file is over `--max-db-size` and has free pages to return; an idle pass skips it.
-- `-j` emits one envelope (`command: "db compact"`) whose `items` is the summary: `dry_run`, `records_compacted`, `response_bodies_compacted`, `request_bodies_compacted`, `body_bytes_before`, `body_bytes_after`, `db_bytes_before`, `db_bytes_after` (file + WAL; estimated on a dry run), `max_db_size`, `budget_met`, `remaining`, `vacuumed`.
+- `-j` emits one mutation envelope (`command: "db compact"`, `kind: "mutation"`, `action: "compact"`, `changed`, plus `dry_run: true` on a dry run) whose `items[0]` is the summary: `dry_run`, `records_compacted`, `response_bodies_compacted`, `request_bodies_compacted`, `body_bytes_before`, `body_bytes_after`, `db_bytes_before`, `db_bytes_after` (file + WAL; estimated on a dry run), `max_db_size`, `budget_met`, `remaining`, `vacuumed`.
 - A build without this command answers `vigolium db compact --help` with the `db` help and exit 0, so probe for the flag (`--max-db-size` in the help text), not the exit code.
 
 ### Examples

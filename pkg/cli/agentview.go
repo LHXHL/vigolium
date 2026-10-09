@@ -545,7 +545,7 @@ var (
 		"body_compaction", "request", "response",
 	}, database.HostFactsFieldNames...)
 	findingViewFields = []string{
-		"id", "severity", "confidence", "module_id", "module_name", "module_type",
+		"id", "finding_hash", "severity", "confidence", "module_id", "module_name", "module_type",
 		"finding_source", "record_kind", "evidence_grade", "short", "description",
 		"url", "hostname", "matched_at", "extracted_results", "additional_evidence",
 		"tags", "cwe_id", "cvss_score", "remediation", "status", "scan_uuid",
@@ -692,6 +692,12 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 		"finding_source": f.FindingSource,
 		"record_kind":    f.RecordKind,
 		"evidence_grade": f.EvidenceGrade,
+	}
+	// finding_hash is the finding's stable identity: the dedup key, what SARIF
+	// fingerprints are built from, and the only identity an unpersisted finding
+	// (no id) has.
+	if f.FindingHash != "" {
+		m["finding_hash"] = f.FindingHash
 	}
 	if f.ModuleShort != "" {
 		m["short"] = f.ModuleShort

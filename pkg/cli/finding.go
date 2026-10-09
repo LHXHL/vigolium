@@ -307,7 +307,7 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		// Burp push is an action, not a display — hand the selected findings'
 		// evidence to Burp and return before any table/TUI/JSON render.
 		if findingPushToBurp || findingToRepeater {
-			return pushFindingsToBurp(ctx, db, findings)
+			return pushFindingsToBurp(ctx, cmd, db, findings)
 		}
 
 		if active, tuiErr := tui.Active(findingTUIFlag, findingNoTUIFlag, globalJSON); tuiErr != nil {
