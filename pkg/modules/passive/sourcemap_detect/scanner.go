@@ -210,9 +210,12 @@ func (m *Module) mapResult(ctx *httpmsg.HttpRequestResponse, urlStr, host string
 		sources = sources[:maxSourcesOutput]
 	}
 
-	desc := fmt.Sprintf("A structurally valid source map with %d source entries was delivered to this client", len(document.SourcePaths))
+	desc := fmt.Sprintf("A structurally valid source map with %d source entries was delivered to this client", document.SourcesTotal)
 	if hasSourceContent {
 		desc += " and includes embedded source text"
+	}
+	if document.Truncated {
+		desc += fmt.Sprintf(" (parsing was truncated at a budget: %d of the sources were recovered)", len(document.Sources))
 	}
 	desc += ". This is a source-exposure candidate; production intent, anonymous access, and sensitive content were not established."
 	name := "Sourcemap File Accessible"
@@ -240,7 +243,11 @@ func (m *Module) mapResult(ctx *httpmsg.HttpRequestResponse, urlStr, host string
 			ExtractedResults: sources,
 			Metadata: map[string]any{
 				"version":                    3,
-				"source_count":               len(document.SourcePaths),
+				"source_count":               document.SourcesTotal,
+				"sources_total":              document.SourcesTotal,
+				"sources_recovered":          len(document.Sources),
+				"truncated":                  document.Truncated,
+				"truncation_reason":          document.TruncationReason,
 				"has_source_content":         hasSourceContent,
 				"inline":                     inline,
 				"anonymous_access_tested":    false,

@@ -261,7 +261,7 @@ a long-running scan is safe even at `--max-age 0`.
   only half-analyzed still exits 0; `status` and `diagnostics` are the only
   signal. Check them, not the exit code.
 - **`js-beautify --max-input-mb` cannot raise the ceiling.** The service takes
-  the lower of this and its own limit (10 MiB by default), so a larger value is
+  the lower of this and its own limit (16 MiB by default), so a larger value is
   silently ignored. Raise `jstangle.hard_input_mb` in config instead.
 - **Exit 3 gates.** `secret-scan --fail-on-match` and `jwt-crack --fail-on-crack`
   exit 3 on a hit. Otherwise 0 success, 1 error, 2 usage error — see

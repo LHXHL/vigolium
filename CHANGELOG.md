@@ -9,6 +9,15 @@ All notable changes to this project will be documented in this file.
 - `vigolium db compact` — shrinks stored request/response bodies over `--body-over` (default 64k) to their first `--keep-head` bytes (default 4k) without deleting any record; `--older-than`, `--skip-content-type`/`--only-content-type`, `--skip-path`/`--only-path`, `--all-projects`, `--dry-run`, `--no-vacuum`, and `--max-db-size` (compact oldest first until the file fits). `-j` reports a summary under `items`.
 - `http_records.body_compaction` (nullable JSON) records each compacted body's original length and SHA-256; `traffic -j` shows it as `body_compaction`.
 
+### Changed
+
+- jstangle sizing: `worker_count: 0` now runs clamp(CPUs/2, 2, budget/384 MiB) workers (max 8) instead of 1; `memory_budget_mb: 0` (the new default) derives the budget from RAM as min(2048, max(768, RAM/8)) MiB; `hard_input_mb` defaults to 16 (was 10). `max_unpack_input_mb` above `hard_input_mb` is now a config error (0 follows the hard limit). Scripts skipped for exceeding the hard limit are counted as `js_input_over_hard_limit`.
+- deparos `engine.jstangle_concurrency` is a deprecated alias of `jstangle.worker_count` and logs a warning. A jstangle configuration that arrives after the shared service started logs one warning naming the keys it could not apply.
+
+### Fixed
+
+- Source maps with more than 512 sources or 8 MiB of embedded source produced no `sourcemap-detect`/`sourcemap-ingest` finding: the parser rejected them whole. They are now truncated (application sources before vendor ones, every path listed) and the finding carries `truncated`, `sources_total` and `sources_recovered`. The map size cap rises from 8 to 32 MiB, and `nextjs-chunk-audit` uses the same cap.
+
 ## [v0.5.2] - 2026-10-03
 
 ### Added

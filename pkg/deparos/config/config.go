@@ -2,8 +2,11 @@ package config
 
 import (
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Config represents all content discovery configuration.
@@ -190,7 +193,7 @@ type EngineConfig struct {
 	DisableSecretScan       bool                `json:"disable_secret_scan"`                              // Disable native secret scanning during discovery
 	EnableCookieJar         bool                `json:"enable_cookie_jar"`                                // Enable cookie jar for session persistence
 	ProxyURL                string              `json:"proxy_url"`                                        // HTTP proxy URL for discovery requests
-	JSTangleConcurrency     int                 `yaml:"jstangle_concurrency" json:"jstangle_concurrency"` // Max concurrent jstangle analyses (0 = conservative default of 1)
+	JSTangleConcurrency     int                 `yaml:"jstangle_concurrency" json:"jstangle_concurrency"` // Deprecated: alias of jstangle.worker_count, used only when that is 0; see Config.JSTangleWorkerCount
 	PrefixBreaker           PrefixBreakerConfig `json:"prefix_breaker"`                                   // Per-prefix circuit breaker for soft-404 / trap directories
 
 	// RequestFilter is consulted before every request leaves the engine's HTTP
@@ -257,3 +260,21 @@ const (
 	CaseInsensitive CaseSensitivityMode = "insensitive"
 	CaseAutoDetect  CaseSensitivityMode = "auto_detect"
 )
+
+// warnJSTangleConcurrencyOnce keeps the deprecation warning to one line per
+// process: discovery builds an engine per target from the same config.
+var warnJSTangleConcurrencyOnce sync.Once
+
+// JSTangleWorkerCount resolves the jstangle worker count: jstangle.worker_count,
+// or the deprecated engine.jstangle_concurrency alias when worker_count is 0
+// (logging a deprecation warning once). 0 lets the service derive the count.
+func (c *Config) JSTangleWorkerCount() int {
+	if c.JSTangle.WorkerCount > 0 || c.Engine.JSTangleConcurrency <= 0 {
+		return c.JSTangle.WorkerCount
+	}
+	warnJSTangleConcurrencyOnce.Do(func() {
+		zap.L().Warn("deparos engine.jstangle_concurrency is deprecated; set jstangle.worker_count instead",
+			zap.Int("jstangle_concurrency", c.Engine.JSTangleConcurrency))
+	})
+	return c.Engine.JSTangleConcurrency
+}

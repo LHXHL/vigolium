@@ -347,15 +347,16 @@ discovery:
     source_maps: true
     asset_graph: true
     protocol_handshake: false    # bounded WebSocket/SSE GET handshake
-    worker_count: 0              # 0 = derive a conservative count from memory
-    memory_budget_mb: 768
+    worker_count: 0              # 0 = clamp(CPUs/2, 2, memory_budget_mb/384), max 8
+    memory_budget_mb: 0          # 0 = min(2048, max(768, RAM/8)) MiB
     cache_mb: 128
     worker_max_jobs: 100
     worker_max_rss_mb: 1024
     job_timeout: 60s
     normal_input_mb: 1           # above this, discovery drops costly stages
     max_ast_input_mb: 4          # above this, use bounded lexical fallback
-    hard_input_mb: 10
+    max_unpack_input_mb: 16      # beautify/unpack without an AST up to here; <= hard_input_mb (0 = hard)
+    hard_input_mb: 16            # larger scripts are skipped and counted (js_input_over_hard_limit)
     max_requests_per_file: 500
     max_ast_nodes: 500000
     max_asset_depth: 4

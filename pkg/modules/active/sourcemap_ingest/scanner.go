@@ -360,7 +360,7 @@ func (m *Module) buildEvent(
 	description := fmt.Sprintf(
 		"A source map for %s is readable anonymously. It embeds no original source text, "+
 			"but names %d source files, disclosing the project's internal layout.",
-		assetURL, len(document.SourcePaths))
+		assetURL, document.SourcesTotal)
 	if document.HasEmbeddedContent() {
 		sev = severity.Medium
 		name = "Source Map Exposes Original Source"
@@ -369,6 +369,12 @@ func (m *Module) buildEvent(
 				"%d files. The recovered code retains identifier names, comments and any hardcoded "+
 				"values that minification would have obscured.",
 			assetURL, len(document.Sources))
+	}
+	if document.Truncated {
+		description += fmt.Sprintf(
+			" The map names %d sources; parsing stopped at a budget (%s) after recovering %d, "+
+				"application code before vendor code.",
+			document.SourcesTotal, document.TruncationReason, len(document.Sources))
 	}
 	if candidate.Origin == sourcemap.OriginGuessed {
 		description += " The bundle carries no sourceMappingURL reference — the map was found at its " +
@@ -411,7 +417,11 @@ func (m *Module) buildEvent(
 			"asset_url":           assetURL,
 			"map_url":             mapLocation(assetURL, candidate),
 			"reference_origin":    string(candidate.Origin),
-			"source_count":        len(document.SourcePaths),
+			"source_count":        document.SourcesTotal,
+			"sources_total":       document.SourcesTotal,
+			"sources_recovered":   len(document.Sources),
+			"truncated":           document.Truncated,
+			"truncation_reason":   document.TruncationReason,
 			"has_source_content":  document.HasEmbeddedContent(),
 			"recovered_sources":   len(document.Sources),
 			"routes_ingested":     fed,

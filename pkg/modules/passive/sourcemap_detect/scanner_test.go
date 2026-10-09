@@ -2,6 +2,7 @@ package sourcemap_detect
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -266,4 +267,30 @@ func TestIsJSOrCSSContentType(t *testing.T) {
 	assert.False(t, isJSOrCSSContentType("text/html"))
 	assert.False(t, isJSOrCSSContentType("application/json"))
 	assert.False(t, isJSOrCSSContentType(""))
+}
+
+// TestScanPerRequest_LargeMapFileIsReported pins the false-negative fix: a map
+// over the parser's source budget (common once node_modules is bundled) used
+// to be rejected whole, so no finding was produced.
+func TestScanPerRequest_LargeMapFileIsReported(t *testing.T) {
+	sources := []string{"src/app.ts"}
+	contents := []string{"const x = 1;"}
+	for i := range 1200 {
+		sources = append(sources, fmt.Sprintf("node_modules/pkg%04d/index.js", i))
+		contents = append(contents, fmt.Sprintf("module.exports = %d;", i))
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"version": 3, "sources": sources, "sourcesContent": contents, "mappings": "AAAA",
+	})
+	require.NoError(t, err)
+
+	results, err := New().ScanPerRequest(makeHTTPCtx("/app.js.map", "application/json", string(encoded)), &modkit.ScanContext{})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	r := results[0]
+	assert.Equal(t, severity.Medium, r.Info.Severity)
+	assert.Equal(t, true, r.Metadata["truncated"])
+	assert.Equal(t, 1201, r.Metadata["sources_total"])
+	assert.Equal(t, 512, r.Metadata["sources_recovered"])
+	assert.Contains(t, r.Info.Description, "truncated")
 }

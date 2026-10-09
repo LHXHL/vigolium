@@ -310,9 +310,12 @@ func DefaultDiscoveryConfig() *DiscoveryConfig {
 			ObservedMaxItems: 4000,
 		},
 		JSTangle: DiscoveryJSTangleConfig{
-			ReplayMode: "exact", ReplaySafety: "read-only", WorkerCount: 0, MemoryBudgetMB: 768, CacheMB: 128,
+			// WorkerCount/MemoryBudgetMB 0 = derived from CPUs and RAM. MaxUnpackInputMB
+			// 0 follows HardInputMB, so a config written before the unpack tier existed
+			// (hard_input_mb: 10, no max_unpack_input_mb) still validates.
+			ReplayMode: "exact", ReplaySafety: "read-only", WorkerCount: 0, MemoryBudgetMB: 0, CacheMB: 128,
 			WorkerMaxJobs: 100, WorkerMaxRSSMB: 1024, JobTimeout: "60s",
-			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 16, HardInputMB: 10, MaxRequestsPerFile: 500,
+			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 0, HardInputMB: 16, MaxRequestsPerFile: 500,
 			MaxASTNodes:   500_000,
 			MaxAssetDepth: 4, MaxAssetsPerParent: 64, MaxAssetsPerHost: 512, MaxAssetsTotal: 2048,
 		},
@@ -391,9 +394,17 @@ func (c *DiscoveryConfig) Validate() error {
 	// Discovery phase. Mirror deparos's own floor here (shared constant) so an
 	// invalid budget surfaces as a clear config error at scan start instead. Gated
 	// on IsEnabled to match deparos, which skips all checks when jstangle is off.
-	if c.JSTangle.IsEnabled() && c.JSTangle.MemoryBudgetMB < deparosconfig.MinJSTangleMemoryBudgetMB {
-		return fmt.Errorf("discovery.jstangle.memory_budget_mb must be >= %d when jstangle is enabled, got %d",
+	if c.JSTangle.IsEnabled() && !deparosconfig.ValidJSTangleMemoryBudgetMB(c.JSTangle.MemoryBudgetMB) {
+		return fmt.Errorf("discovery.jstangle.memory_budget_mb must be 0 (auto) or >= %d when jstangle is enabled, got %d",
 			deparosconfig.MinJSTangleMemoryBudgetMB, c.JSTangle.MemoryBudgetMB)
+	}
+	// Same tier rule deparos enforces at engine construction, checked here so an
+	// unpack ceiling above the hard limit is a config error, not a silent clamp.
+	if c.JSTangle.IsEnabled() {
+		if err := deparosconfig.ValidateJSTangleInputTiers(c.JSTangle.NormalInputMB, c.JSTangle.MaxASTInputMB,
+			c.JSTangle.MaxUnpackInputMB, c.JSTangle.HardInputMB); err != nil {
+			return fmt.Errorf("discovery.jstangle: %w", err)
+		}
 	}
 	if c.JSTangle.MaxASTNodes != 0 && (c.JSTangle.MaxASTNodes < 1_000 || c.JSTangle.MaxASTNodes > 5_000_000) {
 		return fmt.Errorf("discovery.jstangle.max_ast_nodes must be 1000-5000000")

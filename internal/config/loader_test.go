@@ -221,8 +221,8 @@ func TestApplyProfile_PreservesDiscoveryJSTangleBudget(t *testing.T) {
 			}
 
 			js := settings.Discovery.JSTangle
-			if js.MemoryBudgetMB < deparosconfig.MinJSTangleMemoryBudgetMB {
-				t.Errorf("MemoryBudgetMB = %d, want >= %d (deparos would reject and skip all discovery)",
+			if !deparosconfig.ValidJSTangleMemoryBudgetMB(js.MemoryBudgetMB) {
+				t.Errorf("MemoryBudgetMB = %d, want 0 (auto) or >= %d (deparos would reject and skip all discovery)",
 					js.MemoryBudgetMB, deparosconfig.MinJSTangleMemoryBudgetMB)
 			}
 			if js.MemoryBudgetMB != defaults.JSTangle.MemoryBudgetMB {

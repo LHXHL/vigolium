@@ -55,6 +55,31 @@ func (c *Config) Validate() error {
 // clear config error at scan start rather than a silent engine-construction failure.
 const MinJSTangleMemoryBudgetMB = 128
 
+// ValidJSTangleMemoryBudgetMB reports whether memory_budget_mb is usable: 0
+// selects the RAM-derived default (min(2048, max(768, RAM/8)) MiB), and an
+// explicit budget must reach MinJSTangleMemoryBudgetMB.
+func ValidJSTangleMemoryBudgetMB(budgetMB int) bool {
+	return budgetMB == 0 || budgetMB >= MinJSTangleMemoryBudgetMB
+}
+
+// ValidateJSTangleInputTiers checks the jstangle input size tiers, in MiB:
+// 1 <= normal <= max_ast <= max_unpack <= hard. Unpacking reads source and can
+// run above the AST ceiling, but never above the hard limit: an unpack ceiling
+// over it used to be clamped silently. A max_unpack of 0 follows the hard
+// limit. Shared with the vigolium config layer so a bad tier fails `config
+// validate` and scan start instead of disabling discovery.
+func ValidateJSTangleInputTiers(normalMB, maxASTMB, maxUnpackMB, hardMB int) error {
+	if normalMB < 1 || maxASTMB < normalMB || hardMB < maxASTMB {
+		return fmt.Errorf("input limits must satisfy 1 <= normal_input_mb (%d) <= max_ast_input_mb (%d) <= hard_input_mb (%d)",
+			normalMB, maxASTMB, hardMB)
+	}
+	if maxUnpackMB != 0 && (maxUnpackMB < maxASTMB || maxUnpackMB > hardMB) {
+		return fmt.Errorf("max_unpack_input_mb (%d) must be between max_ast_input_mb (%d) and hard_input_mb (%d); 0 follows hard_input_mb",
+			maxUnpackMB, maxASTMB, hardMB)
+	}
+	return nil
+}
+
 func (c *JSTangleConfig) Validate() error {
 	if !c.Enabled {
 		return nil
@@ -69,17 +94,14 @@ func (c *JSTangleConfig) Validate() error {
 	default:
 		return fmt.Errorf("replay_safety must be metadata-only, read-only, safe-baseline, or state-changing")
 	}
-	if c.WorkerCount < 0 || c.WorkerCount > 16 || c.MemoryBudgetMB < MinJSTangleMemoryBudgetMB || c.CacheMB < 0 {
+	if c.WorkerCount < 0 || c.WorkerCount > 16 || !ValidJSTangleMemoryBudgetMB(c.MemoryBudgetMB) || c.CacheMB < 0 {
 		return fmt.Errorf("invalid worker_count/memory_budget_mb/cache_mb")
 	}
 	if c.JobTimeout < time.Second || c.JobTimeout > 5*time.Minute {
 		return fmt.Errorf("job_timeout must be 1s-5m")
 	}
-	// Unpacking reads source and can run above the AST ceiling, so it sits
-	// between max_ast_input_mb and the hard limit.
-	if c.NormalInputMB < 1 || c.MaxASTInputMB < c.NormalInputMB ||
-		c.MaxUnpackInputMB < c.MaxASTInputMB || c.HardInputMB < c.MaxASTInputMB {
-		return fmt.Errorf("input limits must satisfy 1 <= normal_input_mb <= max_ast_input_mb <= max_unpack_input_mb and max_ast_input_mb <= hard_input_mb")
+	if err := ValidateJSTangleInputTiers(c.NormalInputMB, c.MaxASTInputMB, c.MaxUnpackInputMB, c.HardInputMB); err != nil {
+		return err
 	}
 	if c.MaxRequestsPerFile < 1 || c.MaxASTNodes < 1_000 || c.MaxASTNodes > 5_000_000 ||
 		c.MaxAssetDepth < 1 || c.MaxAssetsPerParent < 1 || c.MaxAssetsPerHost < 1 || c.MaxAssetsTotal < 1 {

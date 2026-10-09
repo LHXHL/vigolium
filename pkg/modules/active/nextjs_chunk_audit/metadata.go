@@ -1,6 +1,9 @@
 package nextjs_chunk_audit
 
-import "github.com/vigolium/vigolium/pkg/types/severity"
+import (
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/sourcemap"
+	"github.com/vigolium/vigolium/pkg/types/severity"
+)
 
 const (
 	ModuleID    = "nextjs-chunk-audit"
@@ -24,7 +27,7 @@ var (
 const (
 	MaxChunksPerHost       = 50
 	MaxChunkBytes          = int64(5 * 1024 * 1024)
-	MaxMapBytes            = int64(10 * 1024 * 1024)
+	MaxMapBytes            = int64(sourcemap.MaxMapBytes) // the shared source-map parser's cap
 	MaxRoutesPerHost       = 5000
 	MaxDomainsPerHost      = 500
 	MaxCrossOriginPerChunk = 10

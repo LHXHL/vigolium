@@ -23,16 +23,23 @@ import (
 )
 
 const (
-	// MaxMapBytes caps a single source-map document. Above it the map is almost
-	// certainly a build artifact dump rather than a page's own map, and parsing
-	// dominates cost.
-	MaxMapBytes = 8 * 1024 * 1024
+	// MaxMapBytes caps a single source-map document. Real maps that bundle
+	// node_modules routinely pass 8 MiB; the parser walks the document in place
+	// and only materializes the sources it admits, so a map this size costs its
+	// own bytes plus the recovered-source budget, not a second full copy.
+	MaxMapBytes = 32 * 1024 * 1024
 	// MaxSources caps how many entries of one map are turned into originals.
+	// Further sources are skipped (application code first, vendor last) and the
+	// document is marked Truncated; the map itself is never rejected for it.
 	MaxSources = 512
 	// MaxSourceContentBytes caps a single recovered original source.
 	MaxSourceContentBytes = 2 * 1024 * 1024
 	// MaxAggregateSourceBytes caps the total recovered content of one map.
 	MaxAggregateSourceBytes = 8 * 1024 * 1024
+	// MaxSourcePaths caps how many source paths one document lists. Paths are
+	// cheap strings, so this is far above MaxSources: every named file is layout
+	// disclosure even when its content is not recovered.
+	MaxSourcePaths = 20000
 	// MaxIndexedDepth bounds nesting of indexed ("sections") source maps.
 	MaxIndexedDepth = 4
 	// MaxExternalSections caps how many external section maps one document may
@@ -129,32 +136,36 @@ type Document struct {
 	// string. A well-formed map always does; its absence, together with no named
 	// sources, is how a passing-resemblance JSON blob is told from a real map.
 	HasMappings bool
+	// SourcesTotal counts every `sources` entry the map named, across sections,
+	// including entries beyond MaxSourcePaths.
+	SourcesTotal int
+	// Truncated reports that the map carried more than the parser recovered:
+	// embedded sources skipped for a budget, or paths beyond MaxSourcePaths.
+	Truncated bool
+	// SkippedSources counts embedded sources (and unlisted paths) that were not
+	// recovered because a budget ran out.
+	SkippedSources int
+	// SkippedVendor is the part of SkippedSources classified as vendor code
+	// (node_modules, bundler runtime). Application sources are admitted first,
+	// so a truncated map loses vendor code before it loses the application's.
+	SkippedVendor int
+	// TruncationReason names the first budget that ran out: one of the
+	// Truncation* constants, empty when Truncated is false.
+	TruncationReason string
 }
+
+// Truncation reasons, recorded in Document.TruncationReason.
+const (
+	TruncationSourceCount   = "source_count_limit"
+	TruncationAggregateSize = "aggregate_bytes_limit"
+	TruncationSourceSize    = "source_size_limit"
+	TruncationSourcePaths   = "source_paths_limit"
+)
 
 // HasEmbeddedContent reports whether the map carried any original source text,
 // the difference between full source disclosure and mere path disclosure.
 func (d *Document) HasEmbeddedContent() bool {
 	return len(d.Sources) > 0
-}
-
-type mapDocument struct {
-	Version        int       `json:"version"`
-	SourceRoot     string    `json:"sourceRoot"`
-	Sources        []string  `json:"sources"`
-	SourcesContent []*string `json:"sourcesContent"`
-	Mappings       string    `json:"mappings"`
-	Sections       []section `json:"sections"`
-}
-
-type section struct {
-	Map json.RawMessage `json:"map"`
-	URL string          `json:"url"`
-}
-
-type budget struct {
-	sources  int
-	bytes    int
-	sections int
 }
 
 // ExtractReferences returns every source-map pointer in a bundle body.
@@ -323,48 +334,153 @@ func DecodeDataURL(value string) ([]byte, error) {
 }
 
 // Parse decodes a source-map document and recovers everything it discloses.
+//
+// Budgets truncate rather than reject: a map over MaxSources or
+// MaxAggregateSourceBytes still yields its application sources (admitted
+// before vendor ones), every path up to MaxSourcePaths, and a Document marked
+// Truncated. Rejecting such maps whole made every large real-world map, which
+// bundles node_modules, invisible to the modules that report exposure.
+//
+// The document is walked in place: `sourcesContent` entries are located by
+// offset, and only the ones admitted are decoded, so an oversized vendor
+// payload is never copied out of the body.
 func Parse(content []byte, generatedSourceURL string) (*Document, error) {
 	if len(content) == 0 || len(content) > MaxMapBytes {
 		return nil, fmt.Errorf("source map size %d outside allowed range", len(content))
 	}
 	document := &Document{}
-	b := &budget{}
-	seen := make(map[string]struct{})
-	if err := parseDocument(content, generatedSourceURL, 0, b, seen, document); err != nil {
+	var entries []sourceEntry
+	sections := 0
+	if err := parseDocument(content, generatedSourceURL, 0, &sections, &entries, document); err != nil {
 		return nil, err
 	}
+	admitSources(entries, generatedSourceURL, document)
 	sort.Slice(document.Sources, func(i, j int) bool { return document.Sources[i].Path < document.Sources[j].Path })
 	sort.Strings(document.SourcePaths)
 	return document, nil
+}
+
+// sourceEntry is one listed `sources` entry awaiting admission. content
+// aliases the raw JSON string token inside the parsed body (quotes included),
+// or is nil when the map embeds no content for it.
+type sourceEntry struct {
+	rawPath    string
+	sourceRoot string
+	path       string
+	vendor     bool
+	content    []byte
 }
 
 func parseDocument(
 	content []byte,
 	generatedURL string,
 	depth int,
-	b *budget,
-	seen map[string]struct{},
+	sections *int,
+	entries *[]sourceEntry,
 	out *Document,
 ) error {
 	if depth > MaxIndexedDepth {
 		return fmt.Errorf("indexed source map nesting exceeds %d", MaxIndexedDepth)
 	}
-	var document mapDocument
-	if err := json.Unmarshal(content, &document); err != nil {
+	var (
+		version        int
+		sourceRoot     string
+		sources        []string
+		sourcesContent [][]byte
+		sectionValues  [][]byte
+		hasMappings    bool
+	)
+	err := walkObject(content, func(key string, value []byte) error {
+		switch key {
+		case "version":
+			if err := json.Unmarshal(value, &version); err != nil {
+				return fmt.Errorf("version: %w", err)
+			}
+		case "sourceRoot":
+			if value[0] == '"' {
+				if err := json.Unmarshal(value, &sourceRoot); err != nil {
+					return fmt.Errorf("sourceRoot: %w", err)
+				}
+			}
+		case "sources":
+			sources = nil // a repeated key replaces, as in encoding/json
+			if value[0] != '[' {
+				return nil
+			}
+			return walkArray(value, func(_ int, item []byte) error {
+				var source string
+				if item[0] == '"' {
+					if err := json.Unmarshal(item, &source); err != nil {
+						return fmt.Errorf("sources: %w", err)
+					}
+				}
+				sources = append(sources, source)
+				return nil
+			})
+		case "sourcesContent":
+			sourcesContent = nil
+			if value[0] != '[' {
+				return nil
+			}
+			return walkArray(value, func(_ int, item []byte) error {
+				if item[0] == '"' {
+					sourcesContent = append(sourcesContent, item)
+				} else {
+					sourcesContent = append(sourcesContent, nil)
+				}
+				return nil
+			})
+		case "mappings":
+			// Only presence matters. The string itself is never decoded: it is
+			// routinely the largest field and nothing here reads it.
+			if len(value) > 2 && value[0] == '"' {
+				hasMappings = true
+			}
+		case "sections":
+			sectionValues = nil
+			if value[0] != '[' {
+				return nil
+			}
+			return walkArray(value, func(_ int, item []byte) error {
+				sectionValues = append(sectionValues, item)
+				return nil
+			})
+		}
+		return nil
+	})
+	if err != nil {
 		return fmt.Errorf("decode source map: %w", err)
 	}
-	if document.Version != 3 {
-		return fmt.Errorf("unsupported source map version %d", document.Version)
+	if version != 3 {
+		return fmt.Errorf("unsupported source map version %d", version)
 	}
-	if len(document.Mappings) > MaxMapBytes {
-		return fmt.Errorf("source map mappings exceed limit")
-	}
-	if document.Mappings != "" {
+	if hasMappings {
 		out.HasMappings = true
 	}
-	for _, sec := range document.Sections {
-		if len(sec.Map) > 0 {
-			if err := parseDocument(sec.Map, generatedURL, depth+1, b, seen, out); err != nil {
+
+	for _, sec := range sectionValues {
+		if sec[0] != '{' {
+			continue
+		}
+		var mapValue []byte
+		var sectionURL string
+		if err := walkObject(sec, func(key string, value []byte) error {
+			switch key {
+			case "map":
+				if value[0] == '{' {
+					mapValue = value
+				}
+			case "url":
+				if value[0] == '"' {
+					return json.Unmarshal(value, &sectionURL)
+				}
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("decode source map section: %w", err)
+		}
+		if mapValue != nil {
+			if err := parseDocument(mapValue, generatedURL, depth+1, sections, entries, out); err != nil {
 				return err
 			}
 			continue
@@ -372,50 +488,144 @@ func parseDocument(
 		// The spec's other section form points at a map hosted elsewhere. Callers
 		// fetch these; recording them here is what makes a split-chunk build's
 		// per-section maps reachable at all.
-		if sec.URL == "" || b.sections >= MaxExternalSections {
+		if sectionURL == "" || *sections >= MaxExternalSections {
 			continue
 		}
-		b.sections++
-		out.ExternalSections = append(out.ExternalSections, sec.URL)
+		*sections++
+		out.ExternalSections = append(out.ExternalSections, sectionURL)
 	}
 
-	for index, rawPath := range document.Sources {
-		b.sources++
-		if b.sources > MaxSources {
-			return fmt.Errorf("source map source count exceeds %d", MaxSources)
+	for index, rawPath := range sources {
+		out.SourcesTotal++
+		if len(*entries) >= MaxSourcePaths {
+			// Past the path cap nothing is listed or recovered.
+			out.SourcesTotal += len(sources) - index - 1
+			skipped := len(sources) - index
+			out.SkippedSources += skipped
+			markTruncated(out, TruncationSourcePaths)
+			break
 		}
-		safePath := NormalizePath(document.SourceRoot, rawPath)
-		out.SourcePaths = append(out.SourcePaths, safePath)
+		entry := sourceEntry{
+			rawPath: rawPath, sourceRoot: sourceRoot,
+			path: NormalizePath(sourceRoot, rawPath),
+		}
+		entry.vendor = IsVendorPath(entry.path) || IsVendorPath(rawPath)
+		if index < len(sourcesContent) {
+			entry.content = sourcesContent[index]
+		}
+		*entries = append(*entries, entry)
+	}
+	return nil
+}
 
-		if index >= len(document.SourcesContent) || document.SourcesContent[index] == nil {
+// admitSources lists every entry's path and recovers embedded content within
+// the budgets: application sources in index order first, vendor sources after,
+// so a budget that runs out costs vendor code before application code.
+func admitSources(entries []sourceEntry, generatedURL string, out *Document) {
+	order := make([]int, 0, len(entries))
+	for i := range entries {
+		out.SourcePaths = append(out.SourcePaths, entries[i].path)
+		if !entries[i].vendor {
+			order = append(order, i)
+		}
+	}
+	for i := range entries {
+		if entries[i].vendor {
+			order = append(order, i)
+		}
+	}
+
+	seen := make(map[string]struct{})
+	recovered, aggregate := 0, 0
+	skip := func(entry *sourceEntry, reason string) {
+		out.SkippedSources++
+		if entry.vendor {
+			out.SkippedVendor++
+		}
+		markTruncated(out, reason)
+	}
+	for _, i := range order {
+		entry := &entries[i]
+		if entry.content == nil {
 			// No embedded content. If the path still resolves to a real URL the file
 			// itself is often deployed, so hand the caller something to fetch.
-			if resolved, ok := resolveSourceURL(generatedURL, document.SourceRoot, rawPath); ok &&
+			if resolved, ok := resolveSourceURL(generatedURL, entry.sourceRoot, entry.rawPath); ok &&
 				len(out.FetchableSources) < MaxFetchableSources {
 				out.FetchableSources = append(out.FetchableSources, resolved)
 			}
 			continue
 		}
-		sourceContent := []byte(*document.SourcesContent[index])
-		if len(sourceContent) == 0 || len(sourceContent) > MaxSourceContentBytes {
+		// Budgets are checked against a cheap lower bound on the decoded size
+		// first, so a source that cannot fit is skipped without being decoded.
+		if len(entry.content) <= 2 {
 			continue
 		}
-		b.bytes += len(sourceContent)
-		if b.bytes > MaxAggregateSourceBytes {
-			return fmt.Errorf("source map aggregate sourcesContent exceeds %d", MaxAggregateSourceBytes)
+		if recovered >= MaxSources {
+			skip(entry, TruncationSourceCount)
+			continue
+		}
+		lowerBound := decodedLowerBound(entry.content)
+		if lowerBound > MaxSourceContentBytes {
+			skip(entry, TruncationSourceSize)
+			continue
+		}
+		if lowerBound > MaxAggregateSourceBytes-aggregate {
+			skip(entry, TruncationAggregateSize)
+			continue
+		}
+		sourceContent, err := unquoteString(entry.content)
+		if err != nil || len(sourceContent) == 0 {
+			continue
+		}
+		if len(sourceContent) > MaxSourceContentBytes {
+			skip(entry, TruncationSourceSize)
+			continue
+		}
+		if aggregate+len(sourceContent) > MaxAggregateSourceBytes {
+			skip(entry, TruncationAggregateSize)
+			continue
 		}
 		digest := fmt.Sprintf("%x", sha256.Sum256(sourceContent))
-		key := safePath + "\x00" + digest
+		key := entry.path + "\x00" + digest
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
+		aggregate += len(sourceContent)
+		recovered++
 		out.Sources = append(out.Sources, OriginalSource{
-			Path: safePath, Content: sourceContent, ContentSHA256: digest,
-			Language: Language(safePath), GeneratedSourceURL: generatedURL,
+			Path: entry.path, Content: sourceContent, ContentSHA256: digest,
+			Language: Language(entry.path), GeneratedSourceURL: generatedURL,
 		})
 	}
-	return nil
+}
+
+func markTruncated(out *Document, reason string) {
+	out.Truncated = true
+	if out.TruncationReason == "" {
+		out.TruncationReason = reason
+	}
+}
+
+// vendorMarkers are path segments that identify third-party or bundler-runtime
+// code in a source map: package directories, webpack's runtime and its legacy
+// `~/` node_modules alias, and Vite's helpers.
+var vendorMarkers = []string{
+	"node_modules/", "bower_components/", ".pnpm/", "webpack/bootstrap",
+	"webpack/runtime/", "(webpack)/", "vite/", "~/",
+}
+
+// IsVendorPath reports whether a source-map path names vendor code rather than
+// the application's own source. A marker matches at the start of the path or
+// at any segment boundary.
+func IsVendorPath(sourcePath string) bool {
+	lowered := strings.ToLower(strings.ReplaceAll(sourcePath, "\\", "/"))
+	for _, marker := range vendorMarkers {
+		if strings.HasPrefix(lowered, marker) || strings.Contains(lowered, "/"+marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // bundlerSchemes are the virtual URL schemes bundlers stamp on source paths.

@@ -597,10 +597,7 @@ func NewEngineWithContext(parentCtx context.Context, cfg *config.Config, st stor
 		if cfg.JSTangle.CacheMB > 0 {
 			serviceConfig.CacheBytes = int64(cfg.JSTangle.CacheMB) * 1024 * 1024
 		}
-		serviceConfig.WorkerCount = cfg.JSTangle.WorkerCount
-		if serviceConfig.WorkerCount <= 0 && cfg.Engine.JSTangleConcurrency > 0 {
-			serviceConfig.WorkerCount = cfg.Engine.JSTangleConcurrency
-		}
+		serviceConfig.WorkerCount = cfg.JSTangleWorkerCount()
 		serviceConfig.WorkerMaxJobs = cfg.JSTangle.WorkerMaxJobs
 		if cfg.JSTangle.WorkerMaxRSSMB > 0 {
 			serviceConfig.WorkerMaxRSSBytes = int64(cfg.JSTangle.WorkerMaxRSSMB) * 1024 * 1024

@@ -969,18 +969,24 @@ discovery:
     # Attempt controlled WebSocket/SSE GET handshakes. Off by default.
     protocol_handshake: false
 
-    # 0 derives a conservative process count from the memory budget (capped small).
+    # 0 derives the worker count: clamp(CPUs/2, 2, memory_budget_mb/384), max 8.
     worker_count: 0
-    memory_budget_mb: 768
+    # 0 derives the budget from usable RAM: min(2048, max(768, RAM/8)) MiB.
+    memory_budget_mb: 0
     cache_mb: 128
     worker_max_jobs: 100
     worker_max_rss_mb: 1024
     job_timeout: 60s
 
     # Tiered input policy: normal -> discovery-lite -> lexical fallback -> reject.
+    # Must satisfy normal <= max_ast <= max_unpack <= hard.
     normal_input_mb: 1
     max_ast_input_mb: 4
-    hard_input_mb: 10
+    # Above max_ast, beautify/inspect still unminify and unpack (no AST) up to
+    # this ceiling. 0 follows hard_input_mb.
+    max_unpack_input_mb: 16
+    # Larger scripts are skipped and counted as js_input_over_hard_limit.
+    hard_input_mb: 16
     max_requests_per_file: 500
     max_ast_nodes: 500000
 

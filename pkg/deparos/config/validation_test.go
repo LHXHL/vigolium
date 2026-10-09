@@ -615,3 +615,56 @@ func TestValidateFilePath(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateJSTangleInputTiers(t *testing.T) {
+	tests := []struct {
+		name                      string
+		normal, ast, unpack, hard int
+		wantErr                   bool
+	}{
+		{"defaults", 1, 4, 16, 16, false},
+		{"unpack follows hard when 0", 1, 4, 0, 10, false},
+		{"unpack between ast and hard", 1, 4, 8, 10, false},
+		{"unpack above hard", 1, 4, 16, 10, true},
+		{"unpack below ast", 1, 4, 2, 10, true},
+		{"normal zero", 0, 4, 16, 16, true},
+		{"ast below normal", 4, 2, 16, 16, true},
+		{"hard below ast", 1, 4, 0, 3, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateJSTangleInputTiers(tt.normal, tt.ast, tt.unpack, tt.hard)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestJSTangleConfig_MemoryBudgetZeroIsAuto(t *testing.T) {
+	cfg := NewDefaultConfig().JSTangle
+	assert.Equal(t, 0, cfg.MemoryBudgetMB, "the default budget is RAM-derived")
+	require.NoError(t, cfg.Validate())
+
+	cfg.MemoryBudgetMB = 64
+	assert.Error(t, cfg.Validate(), "an explicit budget below the floor")
+	cfg.MemoryBudgetMB = -1
+	assert.Error(t, cfg.Validate())
+
+	cfg = NewDefaultConfig().JSTangle
+	cfg.MaxUnpackInputMB, cfg.HardInputMB = 16, 10
+	assert.Error(t, cfg.Validate(), "unpack above hard must fail, not clamp silently")
+}
+
+func TestConfig_JSTangleWorkerCountAlias(t *testing.T) {
+	cfg := NewDefaultConfig()
+	assert.Equal(t, 0, cfg.JSTangleWorkerCount())
+
+	cfg.Engine.JSTangleConcurrency = 3
+	assert.Equal(t, 3, cfg.JSTangleWorkerCount(), "deprecated alias applies when worker_count is unset")
+
+	cfg.JSTangle.WorkerCount = 2
+	assert.Equal(t, 2, cfg.JSTangleWorkerCount(), "worker_count wins over the alias")
+}

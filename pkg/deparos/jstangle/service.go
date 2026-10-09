@@ -7,26 +7,79 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
+
+	"github.com/vigolium/vigolium/internal/memlimit"
 )
 
 const (
-	defaultServiceMemoryBudget = int64(768 * 1024 * 1024)
-	defaultServiceCacheBytes   = int64(128 * 1024 * 1024)
-	serviceWeightBytes         = int64(128 * 1024 * 1024)
-	defaultNormalInputBytes    = int64(1 * 1024 * 1024)
-	defaultMaxASTInputBytes    = int64(4 * 1024 * 1024)
+	// minServiceMemoryBudget and maxServiceMemoryBudget bound the RAM-derived
+	// default budget: an eighth of usable RAM, never below what two Bun workers
+	// need and never above what five-ish workers can use.
+	minServiceMemoryBudget   = int64(768 * 1024 * 1024)
+	maxServiceMemoryBudget   = int64(2 * 1024 * 1024 * 1024)
+	defaultServiceCacheBytes = int64(128 * 1024 * 1024)
+	serviceWeightBytes       = int64(128 * 1024 * 1024)
+	// serviceWorkerBytes is the budget share one Bun worker is sized against.
+	serviceWorkerBytes      = int64(384 * 1024 * 1024)
+	minDefaultWorkers       = 2
+	maxDefaultWorkers       = 8
+	defaultNormalInputBytes = int64(1 * 1024 * 1024)
+	defaultMaxASTInputBytes = int64(4 * 1024 * 1024)
 	// Unminifying and unpacking is a source-level pass, so it is bounded by the
-	// hard input limit rather than by the AST ceiling. Set above the current hard
-	// limit on purpose: raising HardInputMB should widen unpacking automatically.
+	// hard input limit rather than by the AST ceiling. Equal to the default hard
+	// limit; the service clamps it to whatever hard limit is configured.
 	defaultMaxUnpackInputBytes = int64(16 * 1024 * 1024)
 	defaultHardInputBytes      = int64(DefaultMaxInputBytes)
+	// limitCodeInputOverHard counts inputs rejected for exceeding the hard input
+	// limit. Discovery hands bodies up to its own 50 MiB JS ceiling to the
+	// service, so without this counter the 16-50 MiB band was skipped silently.
+	limitCodeInputOverHard = "js_input_over_hard_limit"
 )
+
+// Seams for tests: the default budget and worker count depend on the host.
+var (
+	numCPU         = runtime.NumCPU
+	detectTotalRAM = func() uint64 {
+		total, _ := memlimit.DetectRAM()
+		return total
+	}
+	defaultBudgetOnce  sync.Once
+	defaultBudgetBytes int64
+)
+
+// serviceMemoryBudgetFor is min(2 GiB, max(768 MiB, totalRAM/8)). Unknown RAM
+// (0) yields the floor.
+func serviceMemoryBudgetFor(totalRAM uint64) int64 {
+	share := int64(min(totalRAM/8, uint64(maxServiceMemoryBudget)))
+	return min(maxServiceMemoryBudget, max(minServiceMemoryBudget, share))
+}
+
+// defaultServiceMemoryBudget derives the default budget from usable RAM once
+// per process (cgroup limits included, via internal/memlimit).
+func defaultServiceMemoryBudget() int64 {
+	defaultBudgetOnce.Do(func() {
+		defaultBudgetBytes = serviceMemoryBudgetFor(detectTotalRAM())
+	})
+	return defaultBudgetBytes
+}
+
+// defaultWorkerCount is clamp(cpus/2, 2, budget/384MiB) with a hard cap of 8.
+// The budget wins over the floor: under 768 MiB there is room for one worker
+// only, and a second Bun process would blow the budget the user asked for.
+func defaultWorkerCount(budgetBytes int64, cpus int) int {
+	byBudget := int(budgetBytes / serviceWorkerBytes)
+	count := max(minDefaultWorkers, min(cpus/2, maxDefaultWorkers))
+	count = min(count, byBudget)
+	return max(1, count)
+}
 
 var ErrServiceClosed = errors.New("jstangle service is closed")
 
@@ -51,7 +104,7 @@ type ServiceConfig struct {
 
 func DefaultServiceConfig() *ServiceConfig {
 	return &ServiceConfig{
-		MemoryBudgetBytes:   defaultServiceMemoryBudget,
+		MemoryBudgetBytes:   defaultServiceMemoryBudget(),
 		CacheBytes:          defaultServiceCacheBytes,
 		NormalInputBytes:    defaultNormalInputBytes,
 		MaxASTInputBytes:    defaultMaxASTInputBytes,
@@ -178,40 +231,84 @@ type ServiceStats struct {
 	ConfidenceCounts map[string]int64
 }
 
-func NewService(config *ServiceConfig) (*Service, error) {
+// resolveServiceConfig fills every defaulted field of a caller's config with
+// the value the service will actually run with. Apply it exactly once to a raw
+// config: CacheBytes < 0 means "disabled" and resolves to 0, which a second pass
+// would read as "unset".
+func resolveServiceConfig(config *ServiceConfig) ServiceConfig {
 	if config == nil {
 		config = DefaultServiceConfig()
 	}
-	copyConfig := *config
-	if copyConfig.MemoryBudgetBytes <= 0 {
-		copyConfig.MemoryBudgetBytes = defaultServiceMemoryBudget
+	resolved := *config
+	if resolved.MemoryBudgetBytes <= 0 {
+		resolved.MemoryBudgetBytes = defaultServiceMemoryBudget()
 	}
-	if copyConfig.MaxWeight <= 0 {
-		copyConfig.MaxWeight = max(1, copyConfig.MemoryBudgetBytes/serviceWeightBytes)
+	if resolved.MaxWeight <= 0 {
+		resolved.MaxWeight = max(1, resolved.MemoryBudgetBytes/serviceWeightBytes)
 	}
-	if copyConfig.CacheBytes < 0 {
-		copyConfig.CacheBytes = 0
-	} else if copyConfig.CacheBytes == 0 {
-		copyConfig.CacheBytes = defaultServiceCacheBytes
+	if resolved.CacheBytes < 0 {
+		resolved.CacheBytes = 0
+	} else if resolved.CacheBytes == 0 {
+		resolved.CacheBytes = defaultServiceCacheBytes
 	}
-	if copyConfig.ScannerConfig == nil {
-		copyConfig.ScannerConfig = DefaultConfig()
+	if resolved.WorkerCount <= 0 {
+		resolved.WorkerCount = defaultWorkerCount(resolved.MemoryBudgetBytes, numCPU())
 	}
-	scanner, err := NewScanner(copyConfig.ScannerConfig)
+	if resolved.WorkerMaxJobs <= 0 {
+		resolved.WorkerMaxJobs = defaultWorkerMaxJobs
+	}
+	if resolved.WorkerMaxRSSBytes <= 0 {
+		resolved.WorkerMaxRSSBytes = defaultWorkerMaxRSS
+	}
+	resolved.NormalInputBytes, resolved.MaxASTInputBytes, resolved.MaxUnpackInputBytes, resolved.HardInputBytes =
+		resolveInputTiers(resolved.NormalInputBytes, resolved.MaxASTInputBytes, resolved.MaxUnpackInputBytes, resolved.HardInputBytes)
+	if config.ScannerConfig != nil {
+		scannerConfig := *config.ScannerConfig
+		resolved.ScannerConfig = &scannerConfig
+	}
+	return resolved
+}
+
+// resolveInputTiers defaults unset tiers and enforces their ordering.
+// Ordering is load-bearing: unpacking can reach the hard limit, parsing stops
+// below it, and the "large profile" band sits below that.
+func resolveInputTiers(normal, maxAST, maxUnpack, hard int64) (int64, int64, int64, int64) {
+	if normal <= 0 {
+		normal = defaultNormalInputBytes
+	}
+	if maxAST <= 0 {
+		maxAST = defaultMaxASTInputBytes
+	}
+	if maxUnpack <= 0 {
+		maxUnpack = defaultMaxUnpackInputBytes
+	}
+	if hard <= 0 {
+		hard = defaultHardInputBytes
+	}
+	maxUnpack = min(maxUnpack, hard)
+	maxAST = min(maxAST, maxUnpack)
+	normal = min(normal, maxAST)
+	return normal, maxAST, maxUnpack, hard
+}
+
+func NewService(config *ServiceConfig) (*Service, error) {
+	resolved := resolveServiceConfig(config)
+	return newServiceFromResolved(&resolved)
+}
+
+func newServiceFromResolved(resolved *ServiceConfig) (*Service, error) {
+	if resolved.ScannerConfig == nil {
+		resolved.ScannerConfig = DefaultConfig()
+	}
+	scanner, err := NewScanner(resolved.ScannerConfig)
 	if err != nil {
 		return nil, err
 	}
-	workerCount := copyConfig.WorkerCount
-	if workerCount <= 0 {
-		// Start conservatively: one process per ~512 MiB of service budget,
-		// capped at two until field RSS data justifies a wider default.
-		workerCount = int(min(int64(2), max(int64(1), copyConfig.MemoryBudgetBytes/(512*1024*1024))))
-	}
 	pool := newWorkerPool(scanner, workerPoolConfig{
-		Count: workerCount, MaxJobs: copyConfig.WorkerMaxJobs,
-		MaxRSSBytes: copyConfig.WorkerMaxRSSBytes,
+		Count: resolved.WorkerCount, MaxJobs: resolved.WorkerMaxJobs,
+		MaxRSSBytes: resolved.WorkerMaxRSSBytes,
 	})
-	return newServiceWithBackend(&copyConfig, pool), nil
+	return newServiceWithBackend(resolved, pool), nil
 }
 
 func newServiceWithBackend(config *ServiceConfig, backend serviceBackend) *Service {
@@ -220,27 +317,8 @@ func newServiceWithBackend(config *ServiceConfig, backend serviceBackend) *Servi
 		maxWeight = 1
 	}
 	cacheBytes := max(int64(0), config.CacheBytes)
-	normalInputBytes := config.NormalInputBytes
-	if normalInputBytes <= 0 {
-		normalInputBytes = defaultNormalInputBytes
-	}
-	maxASTInputBytes := config.MaxASTInputBytes
-	if maxASTInputBytes <= 0 {
-		maxASTInputBytes = defaultMaxASTInputBytes
-	}
-	maxUnpackInputBytes := config.MaxUnpackInputBytes
-	if maxUnpackInputBytes <= 0 {
-		maxUnpackInputBytes = defaultMaxUnpackInputBytes
-	}
-	hardInputBytes := config.HardInputBytes
-	if hardInputBytes <= 0 {
-		hardInputBytes = defaultHardInputBytes
-	}
-	// Ordering is load-bearing: unpacking can reach the hard limit, parsing stops
-	// below it, and the "large profile" band sits below that.
-	maxUnpackInputBytes = min(maxUnpackInputBytes, hardInputBytes)
-	maxASTInputBytes = min(maxASTInputBytes, maxUnpackInputBytes)
-	normalInputBytes = min(normalInputBytes, maxASTInputBytes)
+	normalInputBytes, maxASTInputBytes, maxUnpackInputBytes, hardInputBytes := resolveInputTiers(
+		config.NormalInputBytes, config.MaxASTInputBytes, config.MaxUnpackInputBytes, config.HardInputBytes)
 	// Endpoint/flow metadata is comparatively small and more reusable; large
 	// transformed/beautified documents live in an independently evictable cache.
 	metadataBytes := cacheBytes / 3
@@ -268,15 +346,34 @@ func newServiceWithBackend(config *ServiceConfig, backend serviceBackend) *Servi
 }
 
 var (
-	defaultServiceMu     sync.Mutex
-	defaultService       *Service
-	defaultServiceErr    error
-	defaultServiceConfig = DefaultServiceConfig()
+	defaultServiceMu sync.Mutex
+	defaultService   *Service
+	// defaultServiceErr is the error the first initialization returned. It is
+	// sticky: every later DefaultService call answers with it.
+	defaultServiceErr error
+	// defaultServiceConfig is the raw config ConfigureDefaultService stored;
+	// nil means DefaultServiceConfig. Resolved lazily so importing the package
+	// never probes system RAM.
+	defaultServiceConfig *ServiceConfig
+	// activeServiceConfig is the resolved config the default service was built
+	// from, valid once defaultService or defaultServiceErr is set.
+	activeServiceConfig ServiceConfig
+	// configMismatchWarned dedupes the mismatch warning per distinct key set.
+	configMismatchWarned = map[string]bool{}
 )
+
+// ErrDefaultServiceConfigured reports a ConfigureDefaultService call that
+// arrived after the shared service started with different settings. The
+// running service keeps its settings; the error names the keys that differ.
+var ErrDefaultServiceConfigured = errors.New("jstangle default service already running with a different configuration")
 
 // ConfigureDefaultService sets process-wide budgets before the first caller
 // resolves DefaultService. Once initialized, changing worker/cache semantics
-// would split callers across incompatible brokers and is rejected.
+// would split callers across incompatible brokers, so the running service is
+// kept. A later call is compared against it: an identical request is a no-op,
+// and a different one logs one warning per distinct set of differing keys and
+// returns ErrDefaultServiceConfigured naming them, so a `kit` or passive-module
+// initialization that won the race is never silently in charge of discovery.
 func ConfigureDefaultService(config *ServiceConfig) error {
 	if config == nil {
 		return nil
@@ -284,7 +381,24 @@ func ConfigureDefaultService(config *ServiceConfig) error {
 	defaultServiceMu.Lock()
 	defer defaultServiceMu.Unlock()
 	if defaultService != nil || defaultServiceErr != nil {
-		return fmt.Errorf("jstangle default service already initialized")
+		requested := resolveServiceConfig(config)
+		diffs := serviceConfigDiff(activeServiceConfig, requested)
+		if len(diffs) == 0 {
+			return nil
+		}
+		keys := make([]string, len(diffs))
+		details := make([]string, len(diffs))
+		for i, diff := range diffs {
+			keys[i] = diff.Key
+			details[i] = fmt.Sprintf("%s=%s (requested %s)", diff.Key, diff.Active, diff.Requested)
+		}
+		signature := strings.Join(keys, ",")
+		if !configMismatchWarned[signature] {
+			configMismatchWarned[signature] = true
+			zap.L().Warn("jstangle: shared service already running; a later configuration was not applied",
+				zap.Strings("keys", keys), zap.String("detail", strings.Join(details, "; ")))
+		}
+		return fmt.Errorf("%w: %s", ErrDefaultServiceConfigured, strings.Join(details, "; "))
 	}
 	copyConfig := *config
 	if config.ScannerConfig != nil {
@@ -295,6 +409,25 @@ func ConfigureDefaultService(config *ServiceConfig) error {
 	return nil
 }
 
+// ActiveServiceConfig returns the resolved configuration of the process-wide
+// service: worker count, budgets and input tiers as the service runs them,
+// defaults filled in. initialized is false when the service has not started
+// yet; the config is then what DefaultService would start with now.
+func ActiveServiceConfig() (config ServiceConfig, initialized bool) {
+	defaultServiceMu.Lock()
+	defer defaultServiceMu.Unlock()
+	if defaultService != nil || defaultServiceErr != nil {
+		config, initialized = activeServiceConfig, true
+	} else {
+		config = resolveServiceConfig(defaultServiceConfig)
+	}
+	if config.ScannerConfig != nil {
+		scannerConfig := *config.ScannerConfig
+		config.ScannerConfig = &scannerConfig
+	}
+	return config, initialized
+}
+
 // DefaultService returns the one process-wide broker used by discovery and
 // passive modules. It runs all analysis through the length-prefixed worker
 // pool; Scanner is only the binary/capability helper the pool builds on.
@@ -302,9 +435,51 @@ func DefaultService() (*Service, error) {
 	defaultServiceMu.Lock()
 	defer defaultServiceMu.Unlock()
 	if defaultService == nil && defaultServiceErr == nil {
-		defaultService, defaultServiceErr = NewService(defaultServiceConfig)
+		activeServiceConfig = resolveServiceConfig(defaultServiceConfig)
+		resolved := activeServiceConfig
+		defaultService, defaultServiceErr = newServiceFromResolved(&resolved)
 	}
 	return defaultService, defaultServiceErr
+}
+
+// serviceConfigFieldDiff is one setting that differs between the running
+// service and a later request, rendered in config-file units.
+type serviceConfigFieldDiff struct {
+	Key       string
+	Active    string
+	Requested string
+}
+
+// serviceConfigDiff compares two resolved configs on the settings a caller can
+// choose, keyed by their discovery.jstangle config names.
+func serviceConfigDiff(active, requested ServiceConfig) []serviceConfigFieldDiff {
+	mib := func(value int64) string {
+		if value%(1024*1024) == 0 {
+			return fmt.Sprintf("%d", value/(1024*1024))
+		}
+		return fmt.Sprintf("%.2f", float64(value)/(1024*1024))
+	}
+	var diffs []serviceConfigFieldDiff
+	addInt := func(key string, a, r int) {
+		if a != r {
+			diffs = append(diffs, serviceConfigFieldDiff{key, fmt.Sprint(a), fmt.Sprint(r)})
+		}
+	}
+	addMiB := func(key string, a, r int64) {
+		if a != r {
+			diffs = append(diffs, serviceConfigFieldDiff{key, mib(a), mib(r)})
+		}
+	}
+	addInt("worker_count", active.WorkerCount, requested.WorkerCount)
+	addMiB("memory_budget_mb", active.MemoryBudgetBytes, requested.MemoryBudgetBytes)
+	addMiB("cache_mb", active.CacheBytes, requested.CacheBytes)
+	addInt("worker_max_jobs", active.WorkerMaxJobs, requested.WorkerMaxJobs)
+	addMiB("worker_max_rss_mb", active.WorkerMaxRSSBytes, requested.WorkerMaxRSSBytes)
+	addMiB("normal_input_mb", active.NormalInputBytes, requested.NormalInputBytes)
+	addMiB("max_ast_input_mb", active.MaxASTInputBytes, requested.MaxASTInputBytes)
+	addMiB("max_unpack_input_mb", active.MaxUnpackInputBytes, requested.MaxUnpackInputBytes)
+	addMiB("hard_input_mb", active.HardInputBytes, requested.HardInputBytes)
+	return diffs
 }
 
 func (s *Service) Scan(ctx context.Context, content []byte) (*ScanResult, error) {
@@ -330,6 +505,9 @@ func (s *Service) Analyze(ctx context.Context, request AnalysisRequest) (*ScanRe
 	hardLimit := min(s.hardInputBytes, int64(options.MaxInputBytes))
 	if int64(len(request.Content)) > hardLimit {
 		s.rejectedJobs.Add(1)
+		s.metricsMu.Lock()
+		s.limitHits[limitCodeInputOverHard]++
+		s.metricsMu.Unlock()
 		return nil, fmt.Errorf("%w: input=%d limit=%d", ErrInputTooLarge, len(request.Content), hardLimit)
 	}
 	originalProfile := options.Profile

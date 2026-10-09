@@ -46,7 +46,7 @@ const (
 	// ProtocolVersion is the framed/JSONL contract required by this Go client.
 	ProtocolVersion = 2
 	// DefaultMaxInputBytes prevents unexpectedly large AST jobs by default.
-	DefaultMaxInputBytes = 10 * 1024 * 1024
+	DefaultMaxInputBytes = 16 * 1024 * 1024
 	// DefaultMaxOutputBytes bounds helper transport amplification.
 	DefaultMaxOutputBytes = 16 * 1024 * 1024
 	// DefaultMaxArtifactBytes bounds each worker-produced derived file.
