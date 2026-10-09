@@ -80,6 +80,7 @@ func registerScanPipelineFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&globalHeuristicsCheck, "heuristics-check", "", `Pre-scan heuristics level: none, basic, advanced (default: basic)`)
 	flags.BoolVar(&globalSkipHeuristics, "skip-heuristics", false, "Disable pre-scan heuristics (equivalent to --heuristics-check=none)")
 	registerAllowRiskyPayloadsFlag(flags)
+	registerNoParamDedupFlag(flags)
 }
 
 // registerAllowRiskyPayloadsFlag declares --allow-risky-payloads for the scan
@@ -92,6 +93,15 @@ func registerAllowRiskyPayloadsFlag(flags *pflag.FlagSet) {
 	f := flags.VarPF(optionalBoolFlag{target: &scanOpts.AllowRiskyPayloads}, "allow-risky-payloads", "",
 		"Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads")
 	f.NoOptDefVal = "true"
+}
+
+// registerNoParamDedupFlag declares --no-param-dedup for the same scan commands
+// as --allow-risky-payloads (scan, run, scan-url, scan-request). It binds into
+// scanOpts.NoParamDedup, which the executor mirrors into
+// ScanContext.NoParamDedup.
+func registerNoParamDedupFlag(flags *pflag.FlagSet) {
+	flags.BoolVar(&scanOpts.NoParamDedup, "no-param-dedup", false,
+		"Keep testing a parameter with every module of a vuln class after one already reported it (default: one finding per param and class, e.g. sqli-time-blind skips a param sqli-error-based confirmed). For audit runs")
 }
 
 // optionalBoolFlag is a bool flag that also records whether it was passed: the
@@ -149,6 +159,7 @@ func registerLightweightScanIOFlags(flags *pflag.FlagSet) {
 	flags.BoolVarP(&globalStateless, "stateless", "S", false, "Use a temporary database that is discarded after the scan (pass --output/--format to persist results)")
 	registerKeepDBOnErrorFlag(flags)
 	registerAllowRiskyPayloadsFlag(flags)
+	registerNoParamDedupFlag(flags)
 	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see 'vigolium run --help')")
 	flags.StringVar(&scanFailOn, "fail-on", "", failOnUsage("for CI/agent gating; --soft-fail overrides."))
 	flags.BoolVar(&scanPrintFinding, "print-finding", false, "After the scan, print each finding to stdout as Markdown (description + matched evidence + request/response), like 'vigolium finding --markdown'. Pairs well with -S and --silent for a quick single-target scan.")

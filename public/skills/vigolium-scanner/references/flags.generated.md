@@ -1478,6 +1478,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--no-clustering` | - | bool | `false` | Disable deduplication of identical concurrent HTTP requests |
 | `--no-discovery-fuzz` | - | bool | `false` | Disable discovery's /FUZZ brute-force (alias --no-fuzz). Overrides every reason it would auto-enable — --intensity deep, a discovery-only run such as 'vigolium run discover', and the low-yield auto-enable. Link extraction, JS parsing, response-word harvesting and the short dir/file wordlists still run. |
 | `--no-forms` | - | bool | `false` | Disable form filling and submission during spidering (sets spidering.interaction edit_fields and submit_forms off; an explicit interaction key wins) |
+| `--no-param-dedup` | - | bool | `false` | Keep testing a parameter with every module of a vuln class after one already reported it (default: one finding per param and class, e.g. sqli-time-blind skips a param sqli-error-based confirmed). For audit runs |
 | `--no-prefix-breaker` | - | bool | `false` | Disable per-prefix circuit breaker that stops discovery from recursing into trap directories |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
@@ -1571,6 +1572,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--no-clustering` | - | bool | `false` | Disable deduplication of identical concurrent HTTP requests |
 | `--no-discovery-fuzz` | - | bool | `false` | Disable discovery's /FUZZ brute-force (alias --no-fuzz). Overrides every reason it would auto-enable — --intensity deep, a discovery-only run such as 'vigolium run discover', and the low-yield auto-enable. Link extraction, JS parsing, response-word harvesting and the short dir/file wordlists still run. |
 | `--no-forms` | - | bool | `false` | Disable form filling and submission during spidering (sets spidering.interaction edit_fields and submit_forms off; an explicit interaction key wins) |
+| `--no-param-dedup` | - | bool | `false` | Keep testing a parameter with every module of a vuln class after one already reported it (default: one finding per param and class, e.g. sqli-time-blind skips a param sqli-error-based confirmed). For audit runs |
 | `--no-prefix-breaker` | - | bool | `false` | Disable per-prefix circuit breaker that stops discovery from recursing into trap directories |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
@@ -1639,6 +1641,7 @@ Scan a raw HTTP request for vulnerabilities
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
 | `--no-clustering` | - | bool | `false` | Disable deduplication of identical concurrent HTTP requests |
+| `--no-param-dedup` | - | bool | `false` | Keep testing a parameter with every module of a vuln class after one already reported it (default: one finding per param and class, e.g. sqli-time-blind skips a param sqli-error-based confirmed). For audit runs |
 | `--no-passive` | - | bool | `false` | Skip passive modules |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
@@ -1681,6 +1684,7 @@ Scan a single URL for vulnerabilities
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
 | `--no-clustering` | - | bool | `false` | Disable deduplication of identical concurrent HTTP requests |
+| `--no-param-dedup` | - | bool | `false` | Keep testing a parameter with every module of a vuln class after one already reported it (default: one finding per param and class, e.g. sqli-time-blind skips a param sqli-error-based confirmed). For audit runs |
 | `--no-passive` | - | bool | `false` | Skip passive modules |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |

@@ -404,6 +404,11 @@ type Options struct {
 	// otherwise the explicit CLI value, which wins over config. When the resolved
 	// value is true (or Intensity == "deep"), risk:high payloads and modules run.
 	AllowRiskyPayloads *bool
+
+	// NoParamDedup is --no-param-dedup: turn off the cross-module (param,
+	// vuln-class) skip so every module of a class tests a parameter even after
+	// another one reported it. For audit runs that want every technique's hit.
+	NoParamDedup bool
 }
 
 // DefaultConcurrency is the built-in scan worker count, used wherever nobody

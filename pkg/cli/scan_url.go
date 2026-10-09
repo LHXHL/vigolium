@@ -802,6 +802,7 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 	}
 
 	scanExecutor = core.NewExecutor(executorCfg, src, active, passive)
+	scanExecutor.SetNoParamDedup(scanOpts.NoParamDedup)
 	executor := scanExecutor
 
 	// The invocation's cancellation context arrives from the RunE, which installs
@@ -862,6 +863,7 @@ func buildPhaseOptions(target string) (*types.Options, error) {
 	opts.Modules, opts.PassiveModules = resolveModuleSelection(scanURLNoPassive)
 	opts.NoTechFilter = globalNoTechFilter
 	opts.AllowRiskyPayloads = scanOpts.AllowRiskyPayloads
+	opts.NoParamDedup = scanOpts.NoParamDedup
 
 	// Global CLI flags
 	opts.ScanUUID = globalScanUUID
