@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/vigolium/vigolium/internal/atomicfile"
+	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -193,6 +194,12 @@ func classifyExitCode(err error) int {
 	// add --force. Exit 2 puts it in the same bucket as a missing required flag,
 	// which is what it is.
 	if errors.Is(err, errConfirmationRequired) {
+		return ExitUsageError
+	}
+	// --module-id ext-<id> naming no loaded extension: the runner can only tell
+	// once the extension engine has loaded, but it is still a mistyped flag value
+	// and fails before any phase sends traffic.
+	if errors.Is(err, runner.ErrUnknownExtensionModule) {
 		return ExitUsageError
 	}
 	return ExitError

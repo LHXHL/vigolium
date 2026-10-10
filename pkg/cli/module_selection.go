@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/pflag"
 	"go.uber.org/zap"
@@ -41,6 +42,16 @@ func resolveModuleSelection(noPassive bool) (active, passive []string) {
 	passive = []string{"all"}
 	applyModuleSelectionOverrides(&active, &passive, noPassive)
 	return active, passive
+}
+
+// applyModuleSelection fills opts' module selection for the pipeline path:
+// Modules/PassiveModules from resolveModuleSelection, plus the raw -m and
+// --module-tag values the runner re-applies to the JS/YAML extensions it loads
+// (the CLI never sees those, so it cannot resolve them itself).
+func applyModuleSelection(opts *types.Options, noPassive bool) {
+	opts.Modules, opts.PassiveModules = resolveModuleSelection(noPassive)
+	opts.ModulePatterns = append([]string(nil), globalModules...)
+	opts.ModuleTags = append([]string(nil), globalModuleTags...)
 }
 
 // applyModuleSelectionOverrides layers --module-id / --passive-only / --no-passive
@@ -123,6 +134,11 @@ func selectModulesByIDs(activeIDs, passiveIDs []string) ([]modules.ActiveModule,
 // validateModuleSelectionFlags rejects contradictory combinations and warns about
 // --module-id values that match no known module. noPassive is the command's
 // --no-passive value.
+//
+// IDs starting with "ext-" name JS/YAML extension modules, which are only known
+// once the runner loads the extension engine, so they are not checked against
+// the built-in registry here: the runner fails the scan with a usage error
+// (exit 2) when one matches no loaded extension (runner.ErrUnknownExtensionModule).
 func validateModuleSelectionFlags(noPassive bool) error {
 	if globalPassiveOnly && noPassive {
 		return usageErrorf("--passive-only and --no-passive are mutually exclusive (nothing would run)")
@@ -139,6 +155,9 @@ func validateModuleSelectionFlags(noPassive bool) error {
 		known[id] = struct{}{}
 	}
 	for _, id := range globalModuleIDs {
+		if strings.HasPrefix(id, runner.ExtensionModulePrefix) {
+			continue
+		}
 		if _, ok := known[id]; !ok {
 			zap.L().Warn("--module-id does not match any known module (exact match required; use -m for fuzzy matching)",
 				zap.String("id", id))

@@ -116,6 +116,12 @@ type Options struct {
 
 	Modules        []string
 	PassiveModules []string
+	// ModulePatterns and ModuleTags are the raw -m and --module-tag values.
+	// Modules already holds what they resolved to among the built-in modules;
+	// the runner re-applies them to the JS/YAML extensions it loads, which the
+	// CLI cannot see (so `-m csp` also selects ext-csp-check).
+	ModulePatterns []string
+	ModuleTags     []string
 
 	ProxyURL string
 

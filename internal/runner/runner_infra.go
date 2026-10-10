@@ -166,6 +166,14 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 		}
 	}
 
+	// A module selection naming an ext- ID no extension carries is a usage
+	// error; fail here, after the engine loaded and before the session login
+	// below sends the first request.
+	if err := r.validateExtensionSelection(plan, infra.jsEngine); err != nil {
+		infra.Close()
+		return nil, err
+	}
+
 	// Initialize multi-session support for IDOR/BOLA testing. Skipped when no
 	// enabled phase will reach the target: see reachesTarget above.
 	if reachesTarget {

@@ -897,7 +897,7 @@ func buildPhaseOptions(target string) (*types.Options, error) {
 
 	// Modules — active from -m/--module-tag, passive = all, then --module-id /
 	// --passive-only / --no-passive overrides.
-	opts.Modules, opts.PassiveModules = resolveModuleSelection(scanURLNoPassive)
+	applyModuleSelection(opts, scanURLNoPassive)
 	opts.NoTechFilter = globalNoTechFilter
 	opts.AllowRiskyPayloads = scanOpts.AllowRiskyPayloads
 	opts.NoParamDedup = scanOpts.NoParamDedup

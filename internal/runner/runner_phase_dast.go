@@ -57,13 +57,11 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	modulesLine := fmt.Sprintf("Modules: %s active, %s passive",
 		terminal.Orange(fmt.Sprintf("%d", len(activeModules))),
 		terminal.Orange(fmt.Sprintf("%d", len(passiveModules))))
-	if infra.jsEngine != nil {
-		jsActive := len(infra.jsEngine.ActiveModules())
-		jsPassive := len(infra.jsEngine.PassiveModules())
-		if jsActive+jsPassive > 0 {
-			modulesLine += fmt.Sprintf(" (incl. %s extensions)",
-				terminal.HiTeal(fmt.Sprintf("%d", jsActive+jsPassive)))
-		}
+	// Count the extensions that were selected, not every one the engine loaded:
+	// the module selection may have narrowed them (see filterExtensionModules).
+	if n := countExtensionModules(activeModules, passiveModules); n > 0 {
+		modulesLine += fmt.Sprintf(" (incl. %s extensions)",
+			terminal.HiTeal(fmt.Sprintf("%d", n)))
 	}
 	r.printPhaseDetail(modulesLine)
 

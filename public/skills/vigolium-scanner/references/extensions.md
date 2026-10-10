@@ -118,6 +118,26 @@ vigolium ext docs -j     # API catalog as JSON
 vigolium ext types -o ./my-extensions/
 ```
 
+### Module selection applies to extensions
+
+Extension modules have IDs `ext-<id>` and follow the same selection flags as built-in modules:
+
+| Flag | Effect on extensions |
+| --- | --- |
+| `--passive-only` | Active extensions do not run. Pre/post hooks still do. |
+| `--no-passive` | Passive extensions do not run. |
+| `--module-id ext-a` | Only the named extensions run. An `ext-` ID that matches no loaded extension exits `2` (`usage_error`) before any request. |
+| `-m csp`, `-m ext-csp` | Fuzzy match on extension ID and name, like built-ins. |
+| `--module-tag headers` | Selects extensions whose `tags` include it. |
+| `--module-id`/`-m`/`--module-tag` naming only built-ins | Extensions from `--ext` (or `custom_dir`) still run; extensions auto-loaded from the extension directory do not. |
+
+`-m` and `--module-tag` narrow only active modules on `scan`, so passive extensions keep running there. The dynamic-assessment log line reports the selection, for example `extensions: 1 active, 2 passive selected; 1 skipped (1 directory-loaded, narrowed selection)`.
+
+```bash
+# Run one extension and nothing else
+vigolium scan -t https://example.com --ext-dir ./my-extensions/ --module-id ext-my-check
+```
+
 ---
 
 ## Module Types

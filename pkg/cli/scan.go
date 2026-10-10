@@ -140,7 +140,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	if err := validateModuleSelectionFlags(false); err != nil {
 		return err
 	}
-	scanOpts.Modules, scanOpts.PassiveModules = resolveModuleSelection(false)
+	applyModuleSelection(scanOpts, false)
 	// Positional URLs combine with repeated -t/--target (positional first),
 	// de-duplicated. `run` passes nil here since its positional arg is a phase.
 	var schemeAssumed map[string]struct{}
