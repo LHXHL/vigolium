@@ -59,6 +59,10 @@ type directScanSession struct {
 	reach        directReach
 	schemeSource string
 
+	// doc is the invocation's scan document under -j (nil otherwise): every
+	// input, on either path, is folded into it and it is written once.
+	doc *scanDocBuilder
+
 	// Shared-row state (pinned only): created once, and the raw inputs of the
 	// verdict, folded across inputs so the verdict is recomputed over all of
 	// them rather than merged from per-input verdicts.
@@ -237,6 +241,8 @@ func (s *directScanSession) rejectInput(ctx context.Context, scanUUID, target, m
 		Persisted:       repo != nil,
 		StopReason:      database.ReasonNoTargetsInScope,
 		TargetsRejected: []types.TargetVerdict{v},
+		projectUUID:     projectUUID,
+		repo:            repo,
 	}, nil
 }
 

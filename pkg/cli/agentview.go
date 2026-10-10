@@ -19,6 +19,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -164,12 +165,12 @@ func writeAgentJSON(env *agentEnvelope) error {
 // writeLegacyResultJSON writes a result document that is not an envelope yet.
 //
 // Deprecated: transitional, for the commands whose machine shape is still being
-// designed — the scan-url result (B6, the single scan document) and the agent
-// commands' maps (B7, the agent contract). It exists so those writers share the
+// designed — the agent commands' maps (B7, the agent contract). The scan
+// commands emit the scan document (scan_document.go). It exists so those writers share the
 // encoder (--pretty, compact by default), -o, the output budget and the
 // one-document latch instead of each hand-rolling json.NewEncoder(os.Stdout).
 // Do not add callers: a new command emits through emitRead/emitObject/
-// emitMutation. Deleted when B6/B7 land.
+// emitMutation. Deleted when B7 lands.
 func writeLegacyResultJSON(v any) error {
 	return writeResultDocument(v)
 }
@@ -729,7 +730,6 @@ func compactRecordView(rec *database.HTTPRecord, opts agentViewOptions) map[stri
 // any inline response keep the proof small by default.
 func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opts agentViewOptions) map[string]any {
 	m := map[string]any{
-		"id":             f.ID,
 		"severity":       f.Severity,
 		"confidence":     f.Confidence,
 		"module_id":      f.ModuleID,
@@ -738,6 +738,12 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 		"finding_source": f.FindingSource,
 		"record_kind":    f.RecordKind,
 		"evidence_grade": f.EvidenceGrade,
+	}
+	// id is the store's row id, absent on a finding that was never persisted
+	// (a direct scan with no store, see findingViewFromEvent) — a 0 would read
+	// as a real id and resolve to nothing, or to another row.
+	if f.ID != 0 {
+		m["id"] = f.ID
 	}
 	// finding_hash is the finding's stable identity: the dedup key, what SARIF
 	// fingerprints are built from, and the only identity an unpersisted finding
@@ -872,6 +878,26 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 		}
 	}
 	return projectFields(m, opts.fields, pinned...)
+}
+
+// findingViewFromEvent renders an in-memory scan result in the same shape
+// `finding -j` gives the stored row: the event goes through the converter the
+// finding writer uses (database.Finding.FromResultEvent), then through
+// compactFindingView. It is the one way a result that never reached a store is
+// rendered for a machine, so the scan document's items cannot drift from the
+// read path — the nuclei-shaped output.ResultEvent keys (template-id,
+// matched-at, info{}) are an import and legacy format, never a -j shape.
+//
+// Such a finding has no id; finding_hash is its identity. scanUUID and
+// projectUUID are the run's, as the writer would stamp them.
+func findingViewFromEvent(ev *output.ResultEvent, scanUUID, projectUUID string, opts agentViewOptions) map[string]any {
+	var f database.Finding
+	if err := f.FromResultEvent(ev); err != nil {
+		return nil
+	}
+	f.ScanUUID = scanUUID
+	f.ProjectUUID = projectUUID
+	return compactFindingView(&f, nil, opts)
 }
 
 // findingViews renders a slice of findings, optionally resolving + embedding the

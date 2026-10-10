@@ -713,6 +713,11 @@ Module authors embed `BaseActiveModule` or `BasePassiveModule` to get default im
 
 ### ResultEvent — `pkg/output/output.go`
 
+The JSON tags below are the nuclei-compatible **import and legacy** format
+(`finding load` accepts it; `--ci-output-format` still prints it this release).
+No `-j` document uses them: the scan document's `items` and `finding -j` render
+findings through the finding view (`findingViewFromEvent` for in-memory results).
+
 ```go
 type ResultEvent struct {
     ModuleID          string                 `json:"template-id"`

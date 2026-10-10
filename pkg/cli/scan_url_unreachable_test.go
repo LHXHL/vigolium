@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"path/filepath"
@@ -21,19 +20,6 @@ import (
 // answered exits 1 with error.code no_targets_reachable instead of "Native scan
 // completed ... No findings." and exit 0. Re-exec'd like the scope tests
 // (runA3), against local listeners only.
-
-// a4Result is the part of a direct-path result document these tests read.
-type a4Result struct {
-	Target         string                `json:"target"`
-	ScanUUID       string                `json:"scan_uuid"`
-	ResolvedTarget string                `json:"resolved_target"`
-	Reachable      bool                  `json:"reachable"`
-	Unreachable    *database.TargetIssue `json:"unreachable"`
-	ModulesLoaded  int                   `json:"modules_loaded"`
-	ModulesRun     int                   `json:"modules_run"`
-	StopReason     string                `json:"stop_reason"`
-	Errors         []string              `json:"errors"`
-}
 
 // a4ClosedURL is an http URL on a 127.0.0.1 port nothing listens on.
 func a4ClosedURL(t *testing.T) string {
@@ -56,17 +42,21 @@ func TestScanURLDirectUnreachable(t *testing.T) {
 	code, stdout, stderr := runA3(t, home, "scan-url", dead, "-j", "--db", dbPath, "-m", "security-headers-missing")
 	require.Equal(t, 1, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 
-	var doc a4Result
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc), "one result document:\n%s", stdout)
-	assert.False(t, doc.Reachable)
+	doc := decodeOneScanDoc(t, stdout)
+	assert.Equal(t, "failed", doc.Status)
 	assert.Equal(t, database.ReasonNoTargetsReachable, doc.StopReason)
-	assert.Zero(t, doc.ModulesRun, "nothing executes against a dead target")
-	assert.Positive(t, doc.ModulesLoaded)
-	require.NotNil(t, doc.Unreachable)
-	assert.Equal(t, "refused", doc.Unreachable.Code)
+	assert.Zero(t, doc.Modules.Executed, "nothing executes against a dead target")
+	assert.Positive(t, doc.Modules.Selected)
+	require.Len(t, doc.Targets, 1)
+	tgt := doc.Targets[0]
+	require.NotNil(t, tgt.Reached)
+	assert.False(t, *tgt.Reached)
+	assert.Equal(t, scanDocReasonUnreachable, tgt.Reason)
+	assert.Equal(t, "refused", tgt.Code)
 	require.NotEmpty(t, doc.Errors)
-	assert.Contains(t, doc.Errors[len(doc.Errors)-1], "refused")
-	assert.True(t, strings.HasPrefix(doc.ResolvedTarget, "http://127.0.0.1:"), doc.ResolvedTarget)
+	assert.Equal(t, apicontract.CodeNoTargetsReachable, doc.Errors[0].Code)
+	assert.Contains(t, doc.Errors[0].Message, "refused")
+	assert.True(t, strings.HasPrefix(tgt.ResolvedTarget, "http://127.0.0.1:"), tgt.ResolvedTarget)
 
 	row, err := a3Repo(t, dbPath).GetScanByUUID(context.Background(), doc.ScanUUID)
 	require.NoError(t, err)
@@ -89,16 +79,17 @@ func TestScanURLDirectReachableCountsExecutedModules(t *testing.T) {
 		"-m", "security-headers-missing")
 	require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 
-	var doc a4Result
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc), stdout)
-	assert.True(t, doc.Reachable)
-	assert.Nil(t, doc.Unreachable)
-	assert.Positive(t, doc.ModulesRun)
-	assert.LessOrEqual(t, doc.ModulesRun, doc.ModulesLoaded)
+	doc := decodeOneScanDoc(t, stdout)
+	require.Len(t, doc.Targets, 1)
+	require.NotNil(t, doc.Targets[0].Reached)
+	assert.True(t, *doc.Targets[0].Reached)
+	assert.Empty(t, doc.Targets[0].Reason)
+	assert.Positive(t, doc.Modules.Executed)
+	assert.LessOrEqual(t, doc.Modules.Executed, doc.Modules.Selected)
 }
 
-// A batch with one live and one dead input exits 0 and names the dead one in
-// targets_unreachable; only a batch where nothing answered fails.
+// A batch with one live and one dead input exits 0 and marks the dead one
+// unreachable in targets[]; only a batch where nothing answered fails.
 func TestScanURLDirectBatchUnreachable(t *testing.T) {
 	srv, _ := countingServer(t)
 	home := a3Home(t, "127.0.0.1")
@@ -108,15 +99,15 @@ func TestScanURLDirectBatchUnreachable(t *testing.T) {
 	code, stdout, stderr := runA3(t, home, "scan-url", "-t", srv.URL+"/", "-t", dead, "-j",
 		"--db", dbPath, "-m", "security-headers-missing")
 	require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
-	var env struct {
-		Items              []a4Result `json:"items"`
-		TargetsUnreachable []string   `json:"targets_unreachable"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &env), stdout)
-	require.Len(t, env.Items, 2)
-	assert.True(t, env.Items[0].Reachable)
-	assert.False(t, env.Items[1].Reachable)
-	assert.Equal(t, []string{dead}, env.TargetsUnreachable)
+	doc := decodeOneScanDoc(t, stdout)
+	require.Len(t, doc.Targets, 2)
+	require.NotNil(t, doc.Targets[0].Reached)
+	assert.True(t, *doc.Targets[0].Reached)
+	require.NotNil(t, doc.Targets[1].Reached)
+	assert.False(t, *doc.Targets[1].Reached)
+	assert.Equal(t, dead, doc.Targets[1].Target)
+	assert.Equal(t, "curtailed", doc.Status, "one input of two answered")
+	assert.Contains(t, doc.Reasons, database.ReasonTargetsUnreachable)
 
 	code, stdout, stderr = runA3(t, home, "scan-url", "-t", dead, "-t", a4ClosedURL(t), "-j",
 		"--db", dbPath, "-m", "security-headers-missing")
@@ -124,7 +115,7 @@ func TestScanURLDirectBatchUnreachable(t *testing.T) {
 }
 
 // The runner path (scan -S, scan-url -S) preflights its targets: none answered
-// is exit 1 with error.code no_targets_reachable.
+// is exit 1, the scan document's errors[0].code no_targets_reachable.
 func TestRunnerScanUnreachableFails(t *testing.T) {
 	dead := a4ClosedURL(t)
 	cases := map[string][]string{

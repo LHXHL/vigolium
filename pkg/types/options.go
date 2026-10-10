@@ -104,6 +104,11 @@ type Options struct {
 	// progress ticker is suppressed (it's repetitive noise in a file). Set by the
 	// parent on each child via the hidden --captured-console flag; never user-set.
 	CapturedConsole bool
+	// StdoutDocument reserves stdout for the single -j scan document, written
+	// once the scan is over (pkg/cli scan_document.go). The live finding stream
+	// stays off stdout, as under --events: findings are echoed to stderr
+	// instead, and the document carries them.
+	StdoutDocument bool
 	// Events selects the machine event stream written to stdout ("ndjson", or ""
 	// for none). It is orthogonal to OutputFormats: formats decide what a scan
 	// LEAVES BEHIND, Events decides what it REPORTS WHILE RUNNING. The human

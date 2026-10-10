@@ -1620,6 +1620,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
 | `--browser-insecure` | - | bool | `false` | Spider with every browser security exception on: no sandbox, TLS errors ignored, mixed content allowed, same-origin policy off. For local test apps only |
 | `--browsers` | `-b` | int | `1` | Browser instances to launch for spidering (currently clamped to 1 — the crawler is single-threaded) |
+| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
 | `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
@@ -1631,7 +1632,9 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
+| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
+| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--headed` | - | bool | `false` | Show the browser window during spidering (sugar for --headless=false; wins when both are set) |
 | `--header` | `-H` | stringArray | - | Add custom HTTP header (repeatable, e.g. -H 'Auth: Bearer token'). Commas are literal — repeat -H for multiple headers. |
 | `--headless` | - | bool | `true` | Run browser in headless mode |
@@ -1647,9 +1650,11 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--known-issue-scan-tags` | - | stringSlice | - | Nuclei template tags to include (comma-separated) |
 | `--known-issue-scan-templates` | - | stringArray | - | Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too. |
 | `--known-issue-scan-templates-dir` | - | stringArray | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded. |
+| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
 | `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
 | `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
@@ -1721,6 +1726,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
 | `--browser-insecure` | - | bool | `false` | Spider with every browser security exception on: no sandbox, TLS errors ignored, mixed content allowed, same-origin policy off. For local test apps only |
 | `--browsers` | `-b` | int | `1` | Browser instances to launch for spidering (currently clamped to 1 — the crawler is single-threaded) |
+| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
 | `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
@@ -1732,7 +1738,9 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
+| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
+| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--headed` | - | bool | `false` | Show the browser window during spidering (sugar for --headless=false; wins when both are set) |
 | `--header` | `-H` | stringArray | - | Add custom HTTP header (repeatable, e.g. -H 'Auth: Bearer token'). Commas are literal — repeat -H for multiple headers. |
 | `--headless` | - | bool | `true` | Run browser in headless mode |
@@ -1748,9 +1756,11 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--known-issue-scan-tags` | - | stringSlice | - | Nuclei template tags to include (comma-separated) |
 | `--known-issue-scan-templates` | - | stringArray | - | Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too. |
 | `--known-issue-scan-templates-dir` | - | stringArray | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded. |
+| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
 | `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
 | `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
@@ -1863,19 +1873,24 @@ Scan a raw HTTP request for vulnerabilities
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
+| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--discover` | - | bool | `false` | Run content discovery before scanning |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
 | `--external-harvest` | - | bool | `false` | Run external intelligence harvesting before scanning |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating; --soft-fail overrides. |
+| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
+| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--ignore-scope` | - | bool | `false` | Scan the target even when the configured scope rejects it (relaxes scope.host/scope.path for this run) |
 | `--input` | `-i` | string | `-` | Input file or - for stdin |
 | `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
 | `--keep-db-on-error` | - | bool | `false` | On a failed -S/--stateless scan, move the throwaway working database to ~/.vigolium/recovered instead of deleting it, so the partial results survive the failure (requires -S) |
 | `--known-issue-scan` | - | bool | `false` | Run known issue scan (Nuclei + native secret scanning) |
+| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
 | `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
 | `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
@@ -1911,19 +1926,24 @@ Scan a single URL for vulnerabilities
 |------|-------|------|---------|-------------|
 | `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
 | `--body` | - | string | - | Request body |
+| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--discover` | - | bool | `false` | Run content discovery before scanning |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
 | `--external-harvest` | - | bool | `false` | Run external intelligence harvesting before scanning |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating; --soft-fail overrides. |
+| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
+| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--header` | `-H` | stringArray | - | Custom header (repeatable, e.g. -H 'Cookie: x=1'). Commas are literal — repeat -H for multiple headers. |
 | `--ignore-scope` | - | bool | `false` | Scan the target even when the configured scope rejects it (relaxes scope.host/scope.path for this run) |
 | `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
 | `--keep-db-on-error` | - | bool | `false` | On a failed -S/--stateless scan, move the throwaway working database to ~/.vigolium/recovered instead of deleting it, so the partial results survive the failure (requires -S) |
 | `--known-issue-scan` | - | bool | `false` | Run known issue scan (Nuclei + native secret scanning) |
+| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
 | `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
 | `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |

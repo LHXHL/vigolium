@@ -941,6 +941,7 @@ func buildTargetPrompt(cfg AutopilotPipelineConfig, ac *auditContextStruct, audi
 		}
 		b.WriteString("   - Use `printf '<raw-request>' | vigolium scan-request --json` for targeted scanning\n")
 		b.WriteString("   - Use `vigolium scan-url <url> --json --module-tag <tag>` for route-level scanning\n")
+		b.WriteString("   - `--json` on scan/scan-url/scan-request prints ONE scan document: read `status`, `counts_by_severity`, `targets[]` (`reached`, `reason`) and `items` (finding rows: `id`, `finding_hash`, `severity`, `module_id`, `url`, `matched_at`, `response_evidence`; capped at 200, `total` is exact, run `query` for the rest)\n")
 		stepN := 3
 		if cfg.BrowserEnabled {
 			stepN = 4
@@ -986,6 +987,7 @@ func buildTargetPrompt(cfg AutopilotPipelineConfig, ac *auditContextStruct, audi
 		b.WriteString("   - Scan high-value endpoints: `vigolium scan-url <url> --json`\n")
 		b.WriteString("   - Use targeted module tags: `--module-tag injection,xss,auth,ssrf,ssti`\n")
 		b.WriteString("   - Pipe raw requests: `printf '...' | vigolium scan-request --json`\n")
+		b.WriteString("   - `--json` on scan/scan-url/scan-request prints ONE scan document: read `status`, `counts_by_severity`, `targets[]` (`reached`, `reason`) and `items` (finding rows: `id`, `finding_hash`, `severity`, `module_id`, `url`, `matched_at`, `response_evidence`; capped at 200, `total` is exact, run `query` for the rest)\n")
 		b.WriteString("   - Write custom JS extensions for edge cases: `vigolium ext eval --ext-file script.js`\n\n")
 
 		fmt.Fprintf(&b, "%d. **Verification & Iteration** — Confirm and expand:\n", stepN+2)

@@ -119,11 +119,22 @@ func TestDirectScanCreatesScanRow(t *testing.T) {
 	require.NoError(t, db.NewSelect().Model(&logs).Where("scan_uuid = ?", result.ScanUUID).Scan(ctx))
 	assert.GreaterOrEqual(t, len(logs), 2, "`log <uuid>` shows at least the start and finish lines")
 
-	doc, err := encodeAgentJSON(result)
+	builder := newScanDocBuilder("scan-url")
+	builder.AddDirect(result, nil)
+	doc, err := encodeAgentJSON(builder.envelope())
 	require.NoError(t, err)
-	var decoded map[string]any
+	var decoded struct {
+		ScanUUID  string           `json:"scan_uuid"`
+		Persisted bool             `json:"persisted"`
+		Items     []map[string]any `json:"items"`
+		Total     int              `json:"total"`
+	}
 	require.NoError(t, json.Unmarshal(doc, &decoded))
-	assert.Equal(t, result.ScanUUID, decoded["scan_uuid"], "the -j document names the row")
+	assert.Equal(t, result.ScanUUID, decoded.ScanUUID, "the -j document names the row")
+	assert.True(t, decoded.Persisted)
+	assert.Positive(t, decoded.Total, "items are the stored rows of this scan")
+	require.NotEmpty(t, decoded.Items)
+	assert.NotNil(t, decoded.Items[0]["id"], "a persisted finding is read back with its store id")
 	sess.close()
 
 	// Once the session closes, status.json records the row's terminal status.

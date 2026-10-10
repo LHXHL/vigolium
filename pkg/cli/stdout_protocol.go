@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
+	"sync"
 
-	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
 )
 
@@ -31,19 +34,31 @@ import (
 // for --events alongside another stdout writer is a usage error (exit 2) naming
 // the conflict and the fix, rather than a corrupt stream.
 
-// validateStdoutProtocol rejects a flag set in which --events would share stdout
-// with another writer. It is a no-op when --events was not asked for.
+//
+// -j is the other owner. On the scan commands it prints ONE scan document once
+// the run is over (scan_document.go), and every other stdout writer — the
+// event stream included — would put a second protocol in front of it. So -j
+// with any of them is a usage error too; their file forms (-o for --format
+// jsonl) stay available.
+
+// validateStdoutProtocol rejects a flag set in which -j's scan document or
+// --events would share stdout with another writer. It is a no-op when neither
+// was asked for.
 func validateStdoutProtocol(opts *types.Options) error {
-	if opts == nil || strings.TrimSpace(opts.Events) == "" {
+	if opts == nil {
+		return nil
+	}
+	if err := validateScanDocumentProtocol(opts); err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.Events) == "" {
 		return nil
 	}
 	const fix = "Add -o <file> or drop --events"
 	switch {
 	case opts.CIOutput:
 		return usageErrorf("--events owns stdout; --ci-output-format writes one finding per line there too. %s", fix)
-	// jsonl WITH -o goes to the file, so only the stdout case conflicts. This
-	// also covers --json on the scan path, which reconcileOutputFormats maps to
-	// jsonl.
+	// jsonl WITH -o goes to the file, so only the stdout case conflicts.
 	case opts.HasFormat("jsonl") && strings.TrimSpace(opts.Output) == "":
 		return usageErrorf("--events owns stdout; --format jsonl without -o would also write there. %s", fix)
 	case scanPrintFinding:
@@ -54,6 +69,66 @@ func validateStdoutProtocol(opts *types.Options) error {
 		return usageErrorf("--events owns stdout; --print-traffic-tree writes a tree there too. %s", fix)
 	}
 	return nil
+}
+
+// validateScanDocumentProtocol rejects -j together with another stdout writer
+// on a scan command. -j alone is the scan document; with --format jsonl the
+// stream goes to the -o file and the document to stdout.
+func validateScanDocumentProtocol(opts *types.Options) error {
+	if !globalJSON {
+		return nil
+	}
+	const owns = "-j prints one scan document on stdout when the scan ends"
+	switch {
+	case opts.CIOutput || globalCIOutput:
+		return usageErrorf("%s; --ci-output-format writes one finding per line there too. Drop one of them", owns)
+	case strings.TrimSpace(opts.Events) != "":
+		// Decision D11: no final scan.result event; the two stay separate until
+		// --events can write to a file.
+		return usageErrorf("%s; --events streams NDJSON there while it runs. Drop one of them (read the result afterwards with `vigolium finding --scan-uuid <uuid> -j`)", owns)
+	case opts.HasFormat("jsonl") && strings.TrimSpace(opts.Output) == "":
+		return usageErrorf("%s; --format jsonl without -o would stream the export there too. Add -o <file> for the jsonl stream, or drop --format jsonl", owns)
+	case scanPrintFinding:
+		return usageErrorf("%s; --print-finding writes Markdown there too. Drop one of them", owns)
+	case scanPrintTraffic:
+		return usageErrorf("%s; --print-traffic writes Markdown there too. Drop one of them", owns)
+	case scanPrintTrafficTree:
+		return usageErrorf("%s; --print-traffic-tree writes a tree there too. Drop one of them", owns)
+	}
+	return nil
+}
+
+// rejectFanOutJSON refuses -j on a fan-out that scans its targets as child
+// processes (-P/--parallel over -T, -S -T --split-by-host): the parent has no
+// scan of its own to describe, and each child's stdout is its console log, so
+// -j printed nothing at all. Aggregating the children's documents into one is
+// a follow-up; until then the combination is a usage error, never an empty
+// stdout.
+func rejectFanOutJSON() error {
+	if !globalJSON {
+		return nil
+	}
+	return usageErrorf("-j is not supported with a per-target fan-out (-P/--parallel over -T, or -S -T --split-by-host): each target scans in its own process and no single scan document reaches your stdout.\n" +
+		"Scan without the fan-out (drop -P/--split-by-host), or drop -j and read each scan afterwards with `vigolium finding --scan-uuid <uuid> -j`")
+}
+
+// ciOutputDeprecationOnce keeps the --ci-output-format notice to one line per
+// invocation.
+var ciOutputDeprecationOnce sync.Once
+
+// noteCIOutputDeprecated prints a one-time stderr notice when
+// --ci-output-format is in use: its lines are still the nuclei-shaped
+// output.ResultEvent this release, and become finding-view lines
+// ({"type":"finding","data":…}) in the next one.
+func noteCIOutputDeprecated() {
+	if !globalCIOutput || globalSilent {
+		return
+	}
+	ciOutputDeprecationOnce.Do(func() {
+		fmt.Fprintf(os.Stderr, "%s --ci-output-format: the nuclei-shaped finding lines (template-id, matched-at, info{}) are deprecated "+
+			"and become {\"type\":\"finding\",\"data\":<finding view>} lines next release. Use -j for one scan document, or --format jsonl -o <file>\n",
+			terminal.WarnPrefix())
+	})
 }
 
 // scanInput is one parsed request the lightweight commands were asked to scan,
@@ -95,33 +170,4 @@ func scanInputs(
 		}
 	}
 	return results, notScanned, err
-}
-
-// writeDirectScanBatch publishes several direct-path results as ONE -j document.
-//
-// Each result used to be encoded separately, so `scan-url -j -t a -t b` wrote
-// two top-level objects to stdout — a stream that `json.Unmarshal` rejects and
-// that the documented "exactly one document per invocation" contract does not
-// allow. They now travel as the `items` array of the standard envelope, with
-// `targets_not_scanned` naming anything an interrupt cut off and
-// `targets_unreachable` naming every input that got no HTTP answer (each item's
-// `unreachable` says why). The command exits 1 only when no input answered.
-func writeDirectScanBatch(command string, results []*scanResult, notScanned []string) error {
-	items := make([]any, 0, len(results))
-	unreachable := []string{}
-	for _, r := range results {
-		items = append(items, r)
-		if r.StopReason == database.ReasonNoTargetsReachable {
-			unreachable = append(unreachable, r.Target)
-		}
-	}
-	// Always an array, never null: a consumer that reads this field to decide
-	// whether to re-run the remainder should not have to special-case a nil.
-	if notScanned == nil {
-		notScanned = []string{}
-	}
-	env := newAgentEnvelope(command, "", items, int64(len(results)), 0, len(results)).
-		With("targets_not_scanned", notScanned).
-		With("targets_unreachable", unreachable)
-	return writeAgentJSON(env)
 }

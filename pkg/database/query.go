@@ -1193,7 +1193,11 @@ func (fqb *FindingsQueryBuilder) applyFindingSorting(query *bun.SelectQuery) {
 	if fqb.filters.SortAsc {
 		order = "ASC"
 	}
-	query.Order(fmt.Sprintf("%s %s", sortColumn, order))
+	// OrderExpr, not Order: Order parses "<column> <direction>" and rejects the
+	// severity rank (a CASE expression) as an unsupported direction, logging an
+	// error and dropping the ordering — `--sort severity` came back unsorted.
+	// The column is one of mapFindingSortColumn's fixed values, never input.
+	query.OrderExpr(sortColumn + " " + order)
 	// Secondary key on the unique id makes the row order total (and therefore
 	// list positions reproducible across runs) when the primary sort column has
 	// ties — e.g. several findings sharing a found_at, common under --glob-db

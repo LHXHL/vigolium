@@ -48,6 +48,11 @@ const (
 
 // ResultEvent is a wrapped result event for a single scan output.
 // The format is designed to be compatible with Nuclei's JSONL output.
+//
+// Its JSON tags (template-id, matched-at, info{}) are an IMPORT and LEGACY
+// format: `finding load` accepts them, and --ci-output-format still prints them
+// this release. No -j document carries them — a machine reads findings in the
+// finding-view shape (pkg/cli findingViewFromEvent / compactFindingView).
 type ResultEvent struct {
 	// Module identification (JSON tag kept as "template-id" for Nuclei output compatibility)
 	ModuleID string `json:"template-id"`
@@ -314,7 +319,9 @@ func NewStandardWriter(options *types.Options) (*StandardWriter, error) {
 	// finding. The render is not lost: with stdout suppressed, ShowsFindingsOnStdout
 	// goes false and the runner's echoLiveFinding puts the same line on stderr,
 	// where the rest of the console already lives.
-	if options.Events != "" {
+	// -j reserves stdout for the scan document written after the run, under the
+	// same rule: one protocol on stdout, the live render on stderr.
+	if options.Events != "" || options.StdoutDocument {
 		disableStdout = true
 	}
 	// --format github without -o writes its workflow commands to stdout after

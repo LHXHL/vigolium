@@ -83,6 +83,7 @@ func registerScanPipelineFlags(flags *pflag.FlagSet) {
 	registerNoParamDedupFlag(flags)
 	registerParamMiningFlag(flags)
 	registerRequestBudgetFlags(flags)
+	registerScanDocumentFlags(flags)
 }
 
 // registerParamMiningFlag declares --param-mining for the full pipeline (scan,
@@ -172,6 +173,7 @@ func registerLightweightScanIOFlags(flags *pflag.FlagSet) {
 	registerAllowRiskyPayloadsFlag(flags)
 	registerNoParamDedupFlag(flags)
 	registerRequestBudgetFlags(flags)
+	registerScanDocumentFlags(flags)
 	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see 'vigolium run --help')")
 	flags.StringVar(&scanFailOn, "fail-on", "", failOnUsage("for CI/agent gating; --soft-fail overrides."))
 	flags.BoolVar(&scanPrintFinding, "print-finding", false, "After the scan, print each finding to stdout as Markdown (description + matched evidence + request/response), like 'vigolium finding --markdown'. Pairs well with -S and --silent for a quick single-target scan.")

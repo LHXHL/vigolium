@@ -70,6 +70,7 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	if err := validateKeepDBOnError(globalStateless); err != nil {
 		return err
 	}
+	noteCIOutputDeprecated()
 
 	// Read raw HTTP request
 	var raw []byte
@@ -172,6 +173,10 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	// Route through the Runner when output/persistence/phase flags are in play;
 	// otherwise take the fast in-memory direct path. An input that got no answer
 	// fails the command (no_targets_reachable) after its result was written.
+	// Under -j either path is folded into the one scan document.
+	if globalJSON {
+		return withFailOnGate(admission.settle(sess.reach.settle(runScanDocumentBatch(ctx, cmd, sess, inputs))))
+	}
 	return withFailOnGate(admission.settle(sess.reach.settle(dispatchSingleScan(ctx, sess, rr, target, method))))
 }
 

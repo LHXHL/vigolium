@@ -120,7 +120,17 @@ func hasFileOutputFormat() bool {
 func validateGlobalFormats() error {
 	probe := types.DefaultOptions()
 	probe.OutputFormats = parseFormats(globalFormat)
-	return reconcileOutputFormats(probe)
+	if err := reconcileOutputFormats(probe); err != nil {
+		return err
+	}
+	// Who owns stdout, decided before any request on either path: -j's scan
+	// document and --events each claim it whole.
+	probe.Output = scanOpts.Output
+	probe.Events = scanOpts.Events
+	if err := validateStdoutProtocol(probe); err != nil {
+		return err
+	}
+	return validateScanDocumentFlags()
 }
 
 // needsRunnerScan reports whether the request must run through the full
@@ -156,7 +166,7 @@ func needsRunnerScan() bool {
 // batch on both paths.
 func dispatchSingleScan(ctx context.Context, sess *directScanSession, rr *httpmsg.HttpRequestResponse, target, method string) error {
 	if needsRunnerScan() {
-		err := runRunnerScan(rr, target)
+		err := runRunnerScan(sess, rr, target)
 		// A refused input in a batch that also has admitted ones is recorded on
 		// its own row and named on stderr; the admitted inputs decide the exit,
 		// as on the direct path (directAdmission.settle).
@@ -186,20 +196,40 @@ func lightweightScanContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), scanShutdownSignals...)
 }
 
-// runDirectScanBatch scans every input on the direct path.
+// runScanDocumentBatch scans every input under -j and prints ONE scan
+// document for the whole invocation (scan_document.go), whichever path each
+// input takes: a direct-path result is folded in as it returns, a Runner pass
+// folds itself in before its database closes (runRunnerScan). One target or
+// many, persisted or not, the shape is the same; an interrupt stops the batch
+// and the rest are listed in targets_not_scanned.
 //
-// Under -j with more than one input the results become the `items` of one
-// envelope, because two top-level objects on stdout are not a document the
-// --json contract describes. Every other mode keeps per-input dispatch (the
-// human renderer and --ci-output-format are line protocols where that is
-// correct), and all of them stop early on an interrupt.
-func runDirectScanBatch(ctx context.Context, cmd *cobra.Command, sess *directScanSession, inputs []scanInput) error {
-	results, notScanned, err := scanInputs(ctx, inputs,
+// The human renderer and --ci-output-format keep per-input dispatch
+// (dispatchScanInputs): they are line protocols where that is correct.
+func runScanDocumentBatch(ctx context.Context, cmd *cobra.Command, sess *directScanSession, inputs []scanInput) error {
+	doc := newScanDocBuilder(commandPathWithoutRoot(cmd))
+	sess.doc = doc
+	_, notScanned, err := scanInputs(ctx, inputs,
 		func(ctx context.Context, in scanInput) (*scanResult, error) {
-			return executeDirectScan(ctx, sess, in.rr, in.target, in.method)
+			if needsRunnerScan() {
+				before := len(doc.scans)
+				runErr := dispatchSingleScan(ctx, sess, in.rr, in.target, in.method)
+				if len(doc.scans) == before {
+					// It failed before it had a database to describe.
+					doc.AddError(runErr, in.target)
+				}
+				return nil, runErr
+			}
+			res, execErr := executeDirectScan(ctx, sess, in.rr, in.target, in.method)
+			if res == nil {
+				doc.AddError(execErr, in.target)
+				return nil, execErr
+			}
+			doc.AddDirect(res, execErr)
+			return res, execErr
 		})
-	if writeErr := writeDirectScanBatch(commandPathWithoutRoot(cmd), results, notScanned); writeErr != nil {
-		return writeErr
+	doc.NoteNotScanned(notScanned)
+	if emitErr := doc.Emit(); emitErr != nil {
+		return emitErr
 	}
 	return err
 }
@@ -217,13 +247,6 @@ func dispatchScanInputs(ctx context.Context, sess *directScanSession, inputs []s
 			return nil, dispatchSingleScan(ctx, sess, in.rr, in.target, in.method)
 		})
 	return err
-}
-
-// directBatchJSON reports whether several direct-path results must be folded
-// into one envelope. The Runner path writes its own output and --ci-output-format
-// is a line protocol, so neither qualifies.
-func directBatchJSON(inputs []scanInput) bool {
-	return len(inputs) > 1 && globalJSON && !globalCIOutput && !needsRunnerScan()
 }
 
 func runScanURLCmd(cmd *cobra.Command, args []string) error {
@@ -250,6 +273,7 @@ func runScanURLCmd(cmd *cobra.Command, args []string) error {
 	if err := validateKeepDBOnError(globalStateless); err != nil {
 		return err
 	}
+	noteCIOutputDeprecated()
 
 	inputs, err := scanURLInputs(args)
 	if err != nil {
@@ -272,8 +296,8 @@ func runScanURLCmd(cmd *cobra.Command, args []string) error {
 
 	// An input that got no answer fails the command (no_targets_reachable) only
 	// when no other input answered, after every result was written.
-	if directBatchJSON(inputs) {
-		return withFailOnGate(admission.settle(sess.reach.settle(runDirectScanBatch(ctx, cmd, sess, inputs))))
+	if globalJSON {
+		return withFailOnGate(admission.settle(sess.reach.settle(runScanDocumentBatch(ctx, cmd, sess, inputs))))
 	}
 	return withFailOnGate(admission.settle(sess.reach.settle(dispatchScanInputs(ctx, sess, inputs))))
 }
@@ -338,7 +362,10 @@ func scanURLInputs(args []string) ([]scanInput, error) {
 
 // --- Shared helpers used by both scan-url and scan-request ---
 
-// scanResult is the JSON output struct for scan-url and scan-request.
+// scanResult is one direct-path run of scan-url or scan-request, as the human
+// renderer and the scan document read it. Internal: under -j it is folded into
+// the scan document (scanDocBuilder.AddDirect), never serialized itself. The
+// JSON tags survive only as field documentation.
 type scanResult struct {
 	Target string `json:"target"`
 	Method string `json:"method"`
@@ -388,6 +415,12 @@ type scanResult struct {
 	// TargetsRejected names the target scope refused and the rule that refused
 	// it (scope.host.include, scope.path.exclude, ...).
 	TargetsRejected []types.TargetVerdict `json:"targets_rejected,omitempty"`
+
+	// projectUUID and repo are where the run persisted (a nil repo: nowhere).
+	// The scan document reads the stored rows back through them, which is
+	// what gives its items an id, a status and http_record_uuids.
+	projectUUID string
+	repo        *database.Repository
 }
 
 // buildRequestFromFlags constructs an HttpRequestResponse from CLI flags.
@@ -910,6 +943,8 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		Errors:         scanErrors,
 		Persisted:      repo != nil,
 		Interrupted:    interrupted,
+		projectUUID:    scanProjectUUID,
+		repo:           repo,
 	}
 	if result.Findings == nil {
 		result.Findings = make([]*output.ResultEvent, 0)
@@ -1043,7 +1078,10 @@ func validateRunnerScanOutput(opts *types.Options) error {
 // the executor via a SingleSource, so scan-request's raw POST bodies survive. A
 // phase flag (discover/spider/...) instead routes through runner.New, which
 // crawls from the target URL like the full pipeline.
-func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
+//
+// sess carries the invocation's scan document under -j (sess.doc): the pass
+// folds itself in while its database — a -S temp store included — is open.
+func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, target string) (err error) {
 	scanStart := time.Now()
 	opts, err := buildPhaseOptions(target)
 	if err != nil {
@@ -1170,6 +1208,22 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 	// terminal scan.finished is the last line written — a consumer treats it as
 	// end-of-stream.
 	opts.ScanUUID = pinnedOrNewUUID(opts.ScanUUID)
+	// -j: fold this pass into the invocation's scan document. Registered here,
+	// before the export defers, so LIFO runs it after them (err carries an
+	// export failure) and after the runner closed, while db is still open.
+	if sess != nil && sess.doc != nil {
+		docDBPath := ""
+		if !opts.Stateless && settings.Database.Driver == "sqlite" {
+			docDBPath = settings.Database.SQLite.Path
+		}
+		method := ""
+		if rr != nil && rr.Request() != nil {
+			method = rr.Request().Method()
+		}
+		defer func() {
+			sess.doc.AddRunner(runnerDocInput{db: db, opts: opts, runErr: err, dbPath: docDBPath, method: method})
+		}()
+	}
 	prepareTerminalEvent, emitTerminalEvent, evErr := beginScanEventStream(db, opts, settings, opts.ScanningStrategy, scanStart)
 	if evErr != nil {
 		return evErr
@@ -1234,7 +1288,8 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 
 // outputScanResult writes the scan result as JSON or human-readable table.
 func outputScanResult(result *scanResult) error {
-	// CI output: one JSONL line per finding, nothing else
+	// CI output: one JSONL line per finding, nothing else. Still the
+	// nuclei-shaped output.ResultEvent this release (noteCIOutputDeprecated).
 	if globalCIOutput {
 		for _, f := range result.Findings {
 			data, err := json.Marshal(f)
@@ -1245,10 +1300,6 @@ func outputScanResult(result *scanResult) error {
 			_, _ = os.Stdout.Write([]byte("\n"))
 		}
 		return nil
-	}
-
-	if globalJSON {
-		return writeLegacyResultJSON(result) // B6: becomes the single scan document
 	}
 
 	if result.StopReason == database.ReasonNoTargetsReachable {

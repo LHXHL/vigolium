@@ -258,6 +258,9 @@ func readChildStatsSQLite(output string) (childStats, bool) {
 // when every target failed (a partial success is still a success); --soft-fail
 // overrides that to exit 0 for CI wrappers, just as it does for a single scan.
 func runStatelessTargetsParallel(cmd *cobra.Command, settings *config.Settings, strategyName string, targets []string) error {
+	if err := rejectFanOutJSON(); err != nil {
+		return err
+	}
 	// --events cannot cross the fan-out: each child's stdout is redirected to its
 	// own per-target console log, so the parent's stdout — the one a driver is
 	// reading — would receive nothing at all, and the NDJSON would instead
@@ -678,6 +681,9 @@ func runIsolatedTargetsParallel(cmd *cobra.Command, settings *config.Settings, s
 	// subprocess overhead.
 	if scanOpts.Parallel <= 1 || len(targets) == 1 {
 		return executeNativeScan(cmd, settings, strategyName)
+	}
+	if err := rejectFanOutJSON(); err != nil {
+		return err
 	}
 
 	// Resolve and validate the merge destination up front (must be SQLite) so the

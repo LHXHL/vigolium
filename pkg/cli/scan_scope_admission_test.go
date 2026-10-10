@@ -95,19 +95,29 @@ func countingServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 	return srv, &hits
 }
 
-// errorCode extracts error.code from the -j error document, the last line of
-// stdout. (Under -S the runner path still streams the scan row ahead of it;
-// one-document `scan -j` is plan B6.)
+// errorCode extracts the failure code of a -j run's ONE stdout document: the
+// scan document's errors[0].code when the scan got far enough to have one,
+// else the error envelope's error.code.
 func errorCode(t *testing.T, stdout string) string {
 	t.Helper()
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	docs := decodeStdoutDocuments(t, stdout)
+	require.Len(t, docs, 1, "exactly one document on stdout:\n%s", stdout)
 	var doc struct {
 		Error struct {
 			Code string `json:"code"`
 		} `json:"error"`
+		Errors []struct {
+			Code string `json:"code"`
+		} `json:"errors"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &doc), "stdout must end with a JSON error document:\n%s", stdout)
-	return doc.Error.Code
+	raw, err := json.Marshal(docs[0])
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	if doc.Error.Code != "" {
+		return doc.Error.Code
+	}
+	require.NotEmpty(t, doc.Errors, "a failed scan document carries errors[]:\n%s", stdout)
+	return doc.Errors[0].Code
 }
 
 // a3Repo opens the sqlite store a child run wrote.
@@ -120,15 +130,6 @@ func a3Repo(t *testing.T, path string) *database.Repository {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	return database.NewRepository(db)
-}
-
-// a3Result is the part of a direct-path result document these tests read.
-type a3Result struct {
-	Target          string                `json:"target"`
-	ScanUUID        string                `json:"scan_uuid"`
-	Findings        []json.RawMessage     `json:"findings"`
-	StopReason      string                `json:"stop_reason"`
-	TargetsRejected []types.TargetVerdict `json:"targets_rejected"`
 }
 
 func TestScanAllTargetsOutOfScopeFailsAndSendsNothing(t *testing.T) {
@@ -166,13 +167,17 @@ func TestScanURLDirectOutOfScope(t *testing.T) {
 	require.Equal(t, 1, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 	assert.Zero(t, hits.Load(), "a refused target must not be contacted")
 
-	var doc a3Result
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc), "one result document:\n%s", stdout)
+	doc := decodeOneScanDoc(t, stdout)
+	assert.Equal(t, "failed", doc.Status)
 	assert.Equal(t, database.ReasonNoTargetsInScope, doc.StopReason)
-	require.Len(t, doc.TargetsRejected, 1)
-	assert.Equal(t, config.ScopeRuleHostInclude, doc.TargetsRejected[0].Rule)
+	require.Len(t, doc.Targets, 1)
+	assert.False(t, doc.Targets[0].Admitted)
+	assert.Equal(t, scanDocReasonOutOfScope, doc.Targets[0].Reason)
+	assert.Equal(t, config.ScopeRuleHostInclude, doc.Targets[0].Code)
 	require.NotEmpty(t, doc.ScanUUID)
-	assert.Empty(t, doc.Findings)
+	assert.Empty(t, doc.Items)
+	require.NotEmpty(t, doc.Errors)
+	assert.Equal(t, apicontract.CodeNoTargetsInScope, doc.Errors[0].Code)
 
 	row, err := a3Repo(t, dbPath).GetScanByUUID(context.Background(), doc.ScanUUID)
 	require.NoError(t, err)
@@ -184,8 +189,8 @@ func TestScanURLDirectOutOfScope(t *testing.T) {
 	require.NoError(t, os.WriteFile(reqFile, []byte("GET /x HTTP/1.1\r\nHost: example.invalid\r\n\r\n"), 0o600))
 	code, stdout, stderr = runA3(t, home, "scan-request", "-i", reqFile, "-t", srv.URL, "-j", "--db", dbPath, "-m", "security-headers-missing")
 	require.Equal(t, 1, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
-	var reqDoc a3Result
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &reqDoc), stdout)
+	reqDoc := decodeOneScanDoc(t, stdout)
+	assert.Equal(t, "scan-request", reqDoc.Command)
 	assert.Equal(t, database.ReasonNoTargetsInScope, reqDoc.StopReason)
 	assert.Zero(t, hits.Load(), "a refused request must not be sent")
 
@@ -196,7 +201,7 @@ func TestScanURLDirectOutOfScope(t *testing.T) {
 }
 
 // A batch where scope refuses some inputs scans the rest and exits 0; the
-// refused input is reported in the envelope, not sent.
+// refused input is reported in the scan document's targets[], not sent.
 func TestScanURLDirectPartialBatch(t *testing.T) {
 	srv, hits := countingServer(t)
 	home := a3Home(t, "127.0.0.1")
@@ -207,14 +212,15 @@ func TestScanURLDirectPartialBatch(t *testing.T) {
 	require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 	assert.Positive(t, hits.Load(), "the admitted input is scanned")
 
-	var env struct {
-		Items []a3Result `json:"items"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &env), stdout)
-	require.Len(t, env.Items, 2)
-	assert.Empty(t, env.Items[0].StopReason)
-	assert.Equal(t, database.ReasonNoTargetsInScope, env.Items[1].StopReason)
-	assert.Equal(t, refused, env.Items[1].Target)
+	doc := decodeOneScanDoc(t, stdout)
+	require.Len(t, doc.Targets, 2)
+	assert.True(t, doc.Targets[0].Admitted)
+	assert.Empty(t, doc.Targets[0].Reason)
+	assert.False(t, doc.Targets[1].Admitted)
+	assert.Equal(t, scanDocReasonOutOfScope, doc.Targets[1].Reason)
+	assert.Equal(t, refused, doc.Targets[1].Target)
+	assert.Len(t, doc.ScanUUIDs, 2, "one row per unpinned input")
+	assert.Contains(t, doc.Reasons, database.ReasonTargetsOutOfScope)
 }
 
 // --events: scan.started carries the admission counts before the run fails,

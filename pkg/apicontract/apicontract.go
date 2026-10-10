@@ -11,7 +11,12 @@ package apicontract
 
 // SchemaVersion is the contract version of every -j/--json envelope. A consumer
 // gates on it; it is bumped on any breaking field change.
-const SchemaVersion = 1
+//
+// 2 (v0.6): every -j output is an envelope (ok, kind); scan, run, scan-url and
+// scan-request print one scan document whose items are finding views (no
+// nuclei keys); `db stats`/`db compact` items are an array. --json-legacy-keys
+// (VIGOLIUM_JSON_LEGACY_KEYS=1) renders the old row names for one release.
+const SchemaVersion = 2
 
 // Process exit codes. They are the CLI's half of the contract; REST reports an
 // HTTP status instead and shares only the ErrorCode vocabulary.

@@ -33,11 +33,7 @@ var interactiveAllowed = map[string]string{
 // command regressed (or a new one shipped off-contract), which is what
 // knownNonConformingCeiling stops.
 var knownNonConforming = map[string]string{
-	// Scans (B6: the single scan document).
-	"scan":            "JSONL stream under -j",
-	"run":             "JSONL stream under -j",
-	"scan-url":        "bare scanResult (one target), envelope of scanResults (several), JSONL on the Runner path",
-	"scan-request":    "same three shapes as scan-url",
+	// Agentic scans (B7).
 	"agent autopilot": "raw summary map; nothing when repo is nil",
 	"agent swarm":     "raw summary map; status hard-coded",
 	"agent audit":     "raw summary map",
@@ -69,7 +65,7 @@ var knownNonConforming = map[string]string{
 
 // knownNonConformingCeiling pins the ratchet's size. Lower it when an entry is
 // removed; never raise it.
-const knownNonConformingCeiling = 23
+const knownNonConformingCeiling = 19
 
 // shadowCheckedFlags are the local flag names that must not shadow a persistent
 // one: a local --json silently replaces the global -j on that command.

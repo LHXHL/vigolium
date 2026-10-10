@@ -96,6 +96,22 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	}
 	defer func() { _ = db.Close() }()
 
+	// -j: the single scan document, read from this pass's scan row and
+	// findings. Registered right after the database opened, so LIFO runs it
+	// after the runner closed and after every export defer (err then carries
+	// an export failure), while db — a -S temp store included — is still open.
+	// It writes on every exit that got this far: success, curtailment,
+	// interrupt and failure (status "failed" with errors[]), and latches, so
+	// the root does not append an error envelope after it.
+	if globalJSON {
+		doc := newScanDocBuilder(scanCommandName(cmd))
+		docDBPath := nativeScanDocDBPath(settings)
+		defer func() {
+			doc.AddRunner(runnerDocInput{db: db, opts: scanOpts, runErr: err, dbPath: docDBPath})
+			recordExportFailure(&err, doc.Emit())
+		}()
+	}
+
 	ctx, cancelSetup := setupContext(settings)
 	defer cancelSetup()
 	if err := db.EnsureSchemaReady(ctx); err != nil {
@@ -292,6 +308,30 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 
 	recordExportFailure(&err, reportNativeScanSuccess(db, settings, repo, scanStart))
 	return err
+}
+
+// scanCommandName is the scan document's `command` for a native pass.
+func scanCommandName(cmd *cobra.Command) string {
+	if name := commandPathWithoutRoot(cmd); name != "" {
+		return name
+	}
+	return "scan"
+}
+
+// nativeScanDocDBPath is the store the scan document's follow-up reads: the
+// --db-isolate destination the scratch merges into, else the configured
+// SQLite file. "" when it cannot be named (a -S temp store, a non-SQLite
+// driver).
+func nativeScanDocDBPath(settings *config.Settings) string {
+	switch {
+	case scanOpts.Stateless:
+		return ""
+	case scanOpts.DBIsolate && dbIsolateDestPath != "":
+		return dbIsolateDestPath
+	case settings.Database.Driver == "sqlite":
+		return settings.Database.SQLite.Path
+	}
+	return ""
 }
 
 // reportNativeScanSuccess runs the post-scan tail shared by every native-scan

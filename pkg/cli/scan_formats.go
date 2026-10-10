@@ -108,6 +108,10 @@ func githubToStdout(formats []string, outputPath string) bool {
 
 // reconcileOutputFormats applies --json and --ci-output-format overrides to
 // OutputFormats and validates the result. Shared by scan and scan-url commands.
+//
+// -j no longer becomes --format jsonl: it is the scan document, written once
+// after the run (scan_document.go), so it only reserves stdout for that
+// document. The jsonl export runs when --format jsonl is given, and only then.
 func reconcileOutputFormats(opts *types.Options) error {
 	if err := validateReportFlags(); err != nil {
 		return err
@@ -123,9 +127,7 @@ func reconcileOutputFormats(opts *types.Options) error {
 			return usageErrorf("--format github cannot be combined with --ci-output-format, which replaces --format with a jsonl stream on stdout")
 		}
 	}
-	if globalJSON && len(opts.OutputFormats) == 1 && opts.OutputFormats[0] == "console" {
-		opts.OutputFormats = []string{"jsonl"}
-	}
+	opts.StdoutDocument = globalJSON && !globalCIOutput
 	if opts.HasFormat("jsonl") {
 		opts.JSONOutput = true
 	}

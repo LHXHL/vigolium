@@ -230,16 +230,26 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
   | vigolium scan-request --json
 ```
 
-`scan-url` / `scan-request` under `--json` emit:
-`{"target","method","scan_uuid","scan_duration_ms","resolved_target","reachable","modules_loaded","modules_run","findings":[…],"errors":[]}`.
-`modules_run` counts modules that actually executed (`modules_loaded` is the
-selection). A target that never answered still gets its document —
-`"reachable": false`, `"stop_reason": "no_targets_reachable"`,
-`"unreachable": {"target","code","detail"}` — and the command exits `1` with
-`error.code: no_targets_reachable` (a batch: only when no input answered).
-`scan-request` adds `scheme_source`: with no `-t`, absolute-form line, `:80`/`:443`
-or same-origin `Origin`/`Referer`, it probes the target (connect + TLS handshake)
-instead of assuming `https://`; `--no-scheme-probe` keeps the old default.
+`scan`, `run`, `scan-url` and `scan-request` under `--json` print **one scan
+document** when the scan ends (`kind: "scan"`, `schema_version: 2`), on every
+path — direct, `-S`, `-o`, one target or many, success or failure:
+`{"scan_uuid","scan_uuids","persisted","status","completeness","stop_reason","reasons","targets":[{"target","method","scan_uuid","admitted","reached","reason","code","detail","resolved_target","scheme_source","findings","duration_ms"}],"targets_not_scanned","phase_outcomes","modules":{"selected","executed"},"counts_by_severity","candidates","observations","errors":[{"code","message"}],"total","items":[…],"items_truncated","query","query_argv"}`.
+`items` are finding rows in the `finding -j` shape (plus `request` /
+`response_evidence`), highest severity first, capped at `-n/--limit` (default
+200); `total`/`counts_by_severity` are exact and `query` (`finding --scan-uuid
+<uuid> -j`) lists the rest. An unpersisted finding (`-S`) has no `id` — use
+`finding_hash`. `status` is `completed`, `curtailed`, `failed` or
+`interrupted`; a failed scan still prints its document with `errors[]` and the
+exit code carries the failure. A target that never answered: `reached: false`,
+`reason: "unreachable"`, `code` (`refused`, `dns`, …), `stop_reason:
+"no_targets_reachable"`, exit `1` (a batch: only when no input answered).
+`modules.executed` counts modules that actually ran (`selected` is the
+selection). `scan-request` fills `scheme_source`: with no `-t`, absolute-form
+line, `:80`/`:443` or same-origin `Origin`/`Referer`, it probes the target
+(connect + TLS handshake) instead of assuming `https://`; `--no-scheme-probe`
+keeps the old default. `--fields`, `--compact`, `--full-body` and
+`--max-output-bytes` shape `items` as on `finding`. `-j` no longer means
+`--format jsonl`; use `--format jsonl -o <file>` for the bulk stream.
 
 **Which command?** Use `scan-url` / `scan-request` only when you're confirming
 **one specific request** — full params, a deep path, or custom headers you need
@@ -268,9 +278,10 @@ lines. Available on `scan`, `run`, `scan-url`, `scan-request`.
 
 **`--events` owns stdout.** Anything else that would write there is refused with
 exit `2` rather than interleaved into a stream that is neither contract:
-`--ci-output-format`, `--format jsonl` without `-o` (including `-j`, which maps
-to jsonl on the scan path), `--print-finding`, `--print-traffic` and
-`--print-traffic-tree`. The error names the conflicting flag; give the other
+`-j` (the scan document — read it afterwards with `finding --scan-uuid`),
+`--ci-output-format`, `--format jsonl` without `-o`, `--print-finding`,
+`--print-traffic` and `--print-traffic-tree`. `-j` owns stdout the same way:
+it refuses those writers too, and a `-P`/`--split-by-host` fan-out. The error names the conflicting flag; give the other
 writer an `-o <file>` and both work. `--events` is also refused under a
 `-P/--parallel` fan-out, where each child's stdout is captured to its own log.
 
@@ -975,7 +986,7 @@ Two shape notes that are not exceptions to the envelope, just to `items`:
 scrape prose:
 
 ```jsonc
-{ "schema_version": 1, "command": "traffic", "ok": false,
+{ "schema_version": 2, "command": "traffic", "ok": false,
   "error": { "code": "source_missing", "message": "…", "exit_code": 1 } }
 ```
 
@@ -1022,7 +1033,7 @@ captured, and the two no longer share an answer.
 
 ```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "traffic",
   "kind": "read",
   "ok": true,
@@ -1042,7 +1053,7 @@ captured, and the two no longer share an answer.
 
 | Field | Why it is there |
 |---|---|
-| `schema_version` | Gate on it. Bumped on any breaking field change. |
+| `schema_version` | Gate on it. Bumped on any breaking field change; `2` since v0.6 (scan document, every `-j` an envelope; `--json-legacy-keys` renders old row names for one release). |
 | `ok` | `true` on every result document; the error object carries `"ok": false`, so `.ok` is a valid branch on anything `-j` prints. |
 | `kind` | The document's shape: `read` (rows, or one object as `items: [obj]`), `mutation` (adds `changed`, `action`, and `dry_run` on a dry run) or `scan`. `changed` is always present on a mutation and is `false` on a dry run. |
 | `finding_hash` | (on finding rows) The finding's stable identity — the dedup key and what SARIF fingerprints use. Selectable with `--fields`. |

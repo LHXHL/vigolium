@@ -104,12 +104,13 @@ func TestReconcileOutputFormatsDeferredJSONL(t *testing.T) {
 		assert.False(t, opts.DeferredJSONLExport, "CI output must not route through the envelope export")
 	})
 
-	t.Run("--json maps to jsonl and defers", func(t *testing.T) {
+	t.Run("--json is the scan document, not jsonl", func(t *testing.T) {
 		globalJSON, globalCIOutput = true, false
 		opts := &types.Options{OutputFormats: []string{"console"}}
 		require.NoError(t, reconcileOutputFormats(opts))
-		assert.Equal(t, []string{"jsonl"}, opts.OutputFormats)
-		assert.True(t, opts.DeferredJSONLExport)
+		assert.Equal(t, []string{"console"}, opts.OutputFormats, "--format jsonl only when explicit")
+		assert.False(t, opts.DeferredJSONLExport)
+		assert.True(t, opts.StdoutDocument)
 	})
 }
 

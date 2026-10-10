@@ -18,6 +18,8 @@ default human output is unchanged; you opt into machine output with `-j/--json`.
 - Two JSON contracts:
   - **`-j/--json`** on read/query commands (`finding`, `traffic`, `db`) → a single
     structured object with **compact, token-aware** bodies. This is what you parse.
+    On the scan commands (`scan`, `run`, `scan-url`, `scan-request`) `-j` is the
+    one [scan document](#the-scan-document), printed when the scan ends.
     It is printed compact (one line); the global `--pretty` (or
     `VIGOLIUM_JSON_PRETTY=1`) indents it for reading.
   - **`--format jsonl`** / `export` → the bulk `{"type":...,"data":{...}}` stream
@@ -118,53 +120,112 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
 - **`scan-url` and `scan-request` persist by default.** Their findings and
   traffic go into the project database like any other scan; `-S/--stateless`
   is what makes a run throwaway (pair it with `-o`/`--format` to keep anything).
-- `scan-url`/`scan-request` direct JSON shape, for a **single** target:
-
-  ```json
-  { "target": "https://target.example/", "method": "GET",
-    "scan_uuid": "9551f38a-…", "scan_duration_ms": 1840,
-    "resolved_target": "https://target.example:443", "reachable": true,
-    "modules_loaded": 325, "modules_run": 41,
-    "persisted": true, "findings": [ … ] }
-  ```
-
-  `scan_uuid` is always present: every finding of the run carries it, and when
-  the run persisted it names a `scans` row (`name: scan-url|scan-request`,
-  `scan_mode: single`) with a completeness verdict, so `log <uuid>`,
-  `scan status <uuid>` and `finding --scan-uuid <uuid>` work. Each input mints
-  its own UUID; `--scan-uuid` pins one shared row for every input. The human
-  completion line prints it as `Scan ID: <uuid>`.
-  `persisted` says whether the results also reached a database — `false` for a
-  `-S` run, or when no store was named and the scan ran in memory. `errors` is
-  omitted when there were none, so test for its presence rather than for an
-  empty array. `interrupted: true` appears when a signal cut the scan short.
-  `modules_loaded` is the selected module count; `modules_run` counts the
-  modules that executed at least once (it used to repeat the loaded count).
+- **Every scan command prints ONE scan document under `-j`** — `scan`, `run`,
+  `scan-url` and `scan-request`, on every path (direct, `-S`, `-o`, `--only`,
+  `--skip`, one target or many, success or failure). See
+  [The scan document](#the-scan-document). `-j` is not `--format jsonl`: the bulk
+  stream runs only when `--format jsonl` is given, and goes to the `-o` file.
 - **A target that never answered fails the command** (see
-  [Reachability](#reachability)). Its document is still written, with
-  `"reachable": false`, `"stop_reason": "no_targets_reachable"`,
-  `"unreachable": {"target", "code", "detail"}` (`code`: `dns`, `refused`,
-  `timeout`, `tls`, `reset`, `other`), `modules_run: 0` and the transport error
-  in `errors`; the exit is `1` with `error.code: "no_targets_reachable"` unless
+  [Reachability](#reachability)). The document is still written:
+  `status: "failed"`, `stop_reason: "no_targets_reachable"`, the target's
+  `reached: false`, `reason: "unreachable"`, `code` (`dns`, `refused`,
+  `timeout`, `tls`, `reset`, `other`) and `detail`, `modules.executed: 0`, and an
+  `errors[]` entry with `code: "no_targets_reachable"`. The exit is `1` unless
   another input of the same invocation answered.
-- **`scan-request` reports how it chose the scheme** in `scheme_source`:
-  `explicit` (`-t`, an absolute-form request line, a curl URL), `port` (Host
-  `:80`/`:443`), `origin`/`referer` (a same-origin header), `probe` or
-  `default`. With none of the first four, it probes the target — a TCP connect,
-  plus a TLS handshake on an explicit non-standard port — and scans over the
-  scheme that answered; `resolved_target` is the result. Nothing answered keeps
-  `https://` (`default`), and the unreachable error suggests
+- **`scan-request` reports how it chose the scheme** in the target's
+  `scheme_source`: `explicit` (`-t`, an absolute-form request line, a curl URL),
+  `port` (Host `:80`/`:443`), `origin`/`referer` (a same-origin header), `probe`
+  or `default`. With none of the first four, it probes the target — a TCP
+  connect, plus a TLS handshake on an explicit non-standard port — and scans over
+  the scheme that answered; `resolved_target` is the result. Nothing answered
+  keeps `https://` (`default`), and the unreachable error suggests
   `-t http://host:port`. `--no-scheme-probe` skips the probe.
 - **Both commands enforce the config scope**, with or without `-S` (see
-  [Scope admission](#scope-admission)). A refused input is not sent; its
-  document carries `"stop_reason": "no_targets_in_scope"` and
-  `"targets_rejected": [{"target", "host", "rule"}]`, and when every input was
-  refused the command exits `1`. `--ignore-scope` scans it anyway.
-- **Several targets produce one envelope, not one document each.** `scan-url -j`
-  with more than one `-t` emits a single `agentEnvelope` whose `items` are the
-  per-target objects above, plus `targets_not_scanned` listing anything an
-  interrupt never reached and `targets_unreachable` listing every input that
-  got no HTTP answer. A single target keeps the bare shape, unchanged.
+  [Scope admission](#scope-admission)). A refused input is not sent; its target
+  entry says `admitted: false`, `reason: "out_of_scope"`, `code: <rule>`, and
+  when every input was refused the command exits `1` with
+  `stop_reason: "no_targets_in_scope"`. `--ignore-scope` scans it anyway.
+
+### The scan document
+
+```json
+{
+  "schema_version": 2, "command": "scan-url", "kind": "scan", "ok": true,
+  "scan_uuid": "9551f38a-…", "scan_uuids": ["9551f38a-…"],
+  "project_uuid": "00000000-0000-0000-defa-c01001000001", "project_scoped": true,
+  "db_path": "/home/you/.vigolium/database-vgnm.sqlite",
+  "persisted": true, "stateless": false,
+  "status": "completed", "completeness": "complete", "reasons": [],
+  "targets": [
+    { "target": "https://target.example/login", "method": "GET",
+      "scan_uuid": "9551f38a-…", "admitted": true, "reached": true,
+      "resolved_target": "https://target.example:443",
+      "findings": 2, "duration_ms": 1840 }
+  ],
+  "targets_not_scanned": [],
+  "phase_outcomes": [],
+  "modules": { "selected": 325, "executed": 41 },
+  "counts_by_severity": { "critical": 0, "high": 1, "medium": 1, "low": 0, "suspect": 0, "info": 0 },
+  "candidates": 3, "observations": 7,
+  "errors": [],
+  "total": 2, "offset": 0, "limit": 200,
+  "items": [
+    { "id": 12, "finding_hash": "6a803b51…", "severity": "high",
+      "module_id": "sqli-error-based", "url": "https://target.example/login",
+      "matched_at": ["…"], "scan_uuid": "9551f38a-…" }
+  ],
+  "items_truncated": false,
+  "query": "vigolium --db /home/you/.vigolium/database-vgnm.sqlite --project-uuid 00000000-0000-0000-defa-c01001000001 finding --scan-uuid 9551f38a-… -j",
+  "query_argv": ["vigolium", "--db", "/home/you/.vigolium/database-vgnm.sqlite",
+                 "--project-uuid", "00000000-0000-0000-defa-c01001000001",
+                 "finding", "--scan-uuid", "9551f38a-…", "-j"],
+  "duration_ms": 1840, "started_at": "2026-10-10T08:14:20.641Z",
+  "finished_at": "2026-10-10T08:14:22.481Z",
+  "generated_at": "2026-10-10T08:14:22.481Z", "generated_at_ms": 1791620062481
+}
+```
+
+- **`items` are finding rows in the `finding -j` shape** (`compactFindingView`)
+  plus the evidence (`request`, `response_evidence`), highest severity first,
+  capped at `-n/--limit` (default 200; `0` = no cap). `total` and
+  `counts_by_severity` are exact; `items_truncated` says the cap bit, and
+  `query`/`query_argv` list every finding of the scan. `--fields`, `--compact`,
+  `--full-body` and `--max-output-bytes` shape `items` as they do on `finding`.
+  Candidates and observations are counts only (`finding --scan-uuid <uuid>
+  --record-kind candidate`). No nuclei-shaped keys (`template-id`, `matched-at`,
+  `info{}`) appear anywhere.
+- **Identity.** A persisted finding has its store `id`; an unpersisted one (`-S`,
+  or a direct run with no store) has none — `finding_hash` is its identity.
+- **`status`**: `completed`, `curtailed` (finished but partial: see `reasons`),
+  `failed` or `interrupted`. A scan that fails still prints its document, with
+  `status: "failed"` and `errors: [{code, message, target?}]`; `ok` stays `true`
+  (it is a result document) and the exit code carries the failure. Only a
+  failure before any scan existed (bad config, an unopenable `--db`) prints the
+  error envelope instead.
+- **`targets[]`**: `admitted`, `reached` (`null` when reachability was not
+  checked), `reason` (`out_of_scope` / `unreachable`) with `code` and `detail`;
+  direct-path inputs also carry `resolved_target`, `scheme_source`, `findings`
+  and `duration_ms`. `targets_not_scanned` lists inputs an interrupt never
+  reached (always an array).
+- **Several scans, one document.** `scan-url -t a -t b -j` (one row per input
+  unless `--scan-uuid` pins one) has `scan_uuids` with both, no top-level
+  `scan_uuid`/`query`, and a `query` on each target entry instead. `status` is
+  `failed` only when every input failed; a failed input among answered ones
+  makes the run `curtailed` with `targets_out_of_scope`/`targets_unreachable`
+  in `reasons`.
+- **`persisted: false`** for `-S` (the temp store is gone when the process
+  exits, so `db_path` and `query` are omitted) and for a direct run that had no
+  store. `modules.selected` is what the scan was handed, `modules.executed` how
+  many ran at least once (scan-url used to report `modules_run`, which counted
+  the loaded modules).
+- **`-j` owns stdout.** `-j` with `--events`, `--ci-output-format`,
+  `--format jsonl` without `-o`, `--print-finding`, `--print-traffic` or
+  `--print-traffic-tree` is a usage error (exit 2); so is `-j` with a
+  per-target fan-out (`-P` over `-T`, `-S -T --split-by-host`). `--format jsonl
+  -o run.jsonl -j` writes the stream to the file and the document to stdout.
+- **`--ci-output-format`** still prints nuclei-shaped finding lines this release,
+  with a one-time deprecation notice on stderr; next release they become
+  `{"type":"finding","data":<finding view>}` lines.
 
 ## Query findings
 
@@ -220,7 +281,7 @@ duplicates the rows on the wire and exists only for consumers still migrating.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "finding",
   "kind": "read",
   "ok": true,
@@ -244,7 +305,8 @@ duplicates the rows on the wire and exists only for consumers still migrating.
 ```
 
 - `schema_version` is the contract version — gate on it. It is bumped on any
-  breaking field change.
+  breaking field change; it is `2` since v0.6 (see
+  [Schema version 2](#schema-version-2-v1--v2)).
 - `ok` is `true` on every result document. The error object carries
   `"ok": false`, so `.ok` is a valid branch on anything `-j` prints.
 - `kind` names the document's shape: `read` (a row list, or a one-object answer
@@ -273,6 +335,27 @@ duplicates the rows on the wire and exists only for consumers still migrating.
   envelope's own is dropped rather than shadowing it.
 - Finding rows carry the lifecycle verdict as `status`, with `status_note` and
   `status_actor` when one was recorded.
+
+### Schema version 2 (v1 → v2)
+
+v0.6 moved every `-j` output onto the envelope and bumped `schema_version` to
+`2` once. `--json-legacy-keys` (or `VIGOLIUM_JSON_LEGACY_KEYS=1`) renders the
+old row names (and flattens a single-object answer) for one release; there is
+no v1 emulation mode.
+
+| v1 | v2 |
+|---|---|
+| `scan-url`/`scan-request -j`, one target: a bare object `{target, method, scan_duration_ms, modules_loaded, modules_run, findings: [nuclei events], errors: [strings]}` | the [scan document](#the-scan-document): `targets[0]`, `modules{selected, executed}`, `items` (finding rows), `errors: [{code, message}]` |
+| several targets: an envelope whose `items` were the bare objects above, plus `targets_unreachable` | one scan document; `items` are findings across every target, per-target state in `targets[]` (`reason: "unreachable"`) |
+| `scan -j` / `run -j` / the `scan-url -S`/`-o` path: the `--format jsonl` stream on stdout | the scan document; pass `--format jsonl -o <file>` for the stream |
+| finding keys `template-id`, `matched-at`, `extracted-results`, `info.{name,severity}`, `type` | `module_id`, `matched_at`, `extracted_results`, `module_name`, `severity`, `module_type` (the `finding -j` row) |
+| `modules_run` (counted loaded modules) | `modules.executed` (ran at least once); `modules.selected` |
+| `reachable`, `unreachable{}`, `stop_reason`, `targets_rejected[]` on the result | `targets[].reached`, `.reason`, `.code`, `.detail`; top-level `stop_reason` |
+| a failed scan: the error envelope (`ok: false`) | the scan document, `status: "failed"`, `errors[]`; still exit 1 |
+| `--events` + `-j`: `-j` meant jsonl, a usage error naming jsonl | a usage error naming `-j` (D11: no `scan.result` event) |
+| read commands' raw objects/arrays, row arrays named `findings`/`records`/… | the envelope, rows in `items` (tables below) |
+| `db stats` / `db compact` `items` was an object | `items: [obj]` |
+| no `ok`/`kind` | `ok` on every document, `kind` (`read`, `mutation`, `scan`) |
 
 ### Commands that moved onto the envelope
 
@@ -1058,6 +1141,8 @@ path.
 
 - `-S` means `--stateless` on `scan` but `--scan-on-receive` on `ingest`.
 - `--json` (compact, single object) ≠ `--format jsonl` (bulk, one line per row).
+  On the scan commands `-j` is the scan document and no longer implies
+  `--format jsonl`.
 - `replay` and `fuzz` print a **human** view by default. `-j` gives one envelope
   (`replay`: the result in `items[0]`, or one row per record in bulk mode;
   `fuzz`: the ranked top results in `items`, the run summary beside them).
@@ -1083,12 +1168,10 @@ path.
   roll-up — it scanned and wrote its output — and is listed separately from
   failures; `--resume` will not re-scan it.
 - `scan-url`/`scan-request` with `--events` route through the full Runner, so
-  the stream is real. Several targets under `-j` emit **one** envelope whose
-  `items` are the per-target results, with `targets_not_scanned` naming anything
-  an interrupt cut off and `targets_unreachable` every input that did not
-  answer; a single target keeps its existing object shape. Each
-  result carries `persisted` (whether it also reached a database) and, when
-  interrupted, `interrupted: true`.
+  the stream is real. Several targets under `-j` emit **one** scan document:
+  per-target state in `targets[]`, `targets_not_scanned` naming anything an
+  interrupt cut off, `persisted` saying whether the findings also reached a
+  database, and `status: "interrupted"` when a signal cut the run short.
 - `traffic body`/`traffic headers --uuid` are project-scoped like every other
   read: a record in a project the invocation did not select reports
   `record_not_found`, the same code as a UUID that does not exist. That is

@@ -10,6 +10,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/core"
+	"github.com/vigolium/vigolium/pkg/core/stats"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/modules"
@@ -43,6 +44,30 @@ func freshenPerScanModules(mods []modules.ActiveModule) []modules.ActiveModule {
 		}
 	}
 	return out
+}
+
+// The module counts the dynamic-assessment phase records on its PhaseOutcome
+// (Counts): how many modules it was handed, and how many distinct ones ran at
+// least once across every round. The CLI's scan document reports them as
+// modules{selected, executed}; a module whose CanProcess rejected every item,
+// or a run whose baseline never answered, executes nothing.
+const (
+	CountModulesSelected = "modules_selected"
+	CountModulesExecuted = "modules_executed"
+)
+
+// executedModules is the union, across a phase's executors, of the modules that
+// ran at least once.
+type executedModules map[string]struct{}
+
+// note folds one executor's metrics in and records the running total on t.
+func (s executedModules) note(t *phaseTracker, metrics map[string]stats.ModuleStatsSnapshot) {
+	for id, m := range metrics {
+		if m.Invocations > 0 {
+			s[id] = struct{}{}
+		}
+	}
+	t.setCount(CountModulesExecuted, int64(len(s)))
 }
 
 // runDynamicAssessmentPhase runs all modules on DB records with a feedback loop for newly discovered URLs.
@@ -107,6 +132,12 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	// clobber each other's state (authz_compare's compare clients below, and
 	// nextjs_chunk_audit's per-host discovery map).
 	activeModules = freshenPerScanModules(activeModules)
+
+	// modules{selected, executed} of the scan document; executed starts at 0 so
+	// "nothing ran" is a stated zero rather than an absent count.
+	executed := executedModules{}
+	r.currentPhase.Load().setCount(CountModulesSelected, int64(len(activeModules)+len(passiveModules)))
+	executed.note(r.currentPhase.Load(), nil)
 
 	// The requester every module in this phase sends through. Under
 	// session.use_in_discovery: false the primary session's credentials are
@@ -554,6 +585,7 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 		_, err := executor.Execute(ctx)
 		r.currentPhase.Load().noteExecution(executor.Report())
 		if metrics := executor.ModuleMetrics(); len(metrics) > 0 {
+			executed.note(r.currentPhase.Load(), metrics)
 			logModuleMetrics(metrics)
 		}
 		if err != nil && ctx.Err() == nil {
@@ -599,6 +631,7 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	for round := 0; round < feedbackRounds; round++ {
 		res, err := r.runDynamicAssessmentRound(ctx, infra, round, inScopeHosts, activeModules, passiveModules, baseExecutorCfg, oastService)
 		roundsRun = round + 1
+		executed.note(r.currentPhase.Load(), res.moduleMetrics)
 		if err != nil {
 			zap.L().Error("DynamicAssessment: executor error", zap.Error(err), zap.Int("round", round))
 			roundErr = err
@@ -710,6 +743,7 @@ func (r *Runner) runDynamicAssessmentRound(
 	_, err := executor.Execute(ctx)
 	tracker := r.currentPhase.Load()
 	tracker.noteExecution(executor.Report())
+	res.moduleMetrics = executor.ModuleMetrics()
 
 	// Checkpoint the round's cursor, with a reported result.
 	//
@@ -790,6 +824,9 @@ func (r *Runner) runDynamicAssessmentRound(
 type daRoundResult struct {
 	processed        int64
 	checkpointFailed bool
+	// moduleMetrics is the round executor's per-module tally, folded into the
+	// phase's modules_executed count whether or not the round succeeded.
+	moduleMetrics map[string]stats.ModuleStatsSnapshot
 }
 
 func (r *Runner) countRemainingDynamicAssessmentRecords(ctx context.Context, scanUUID string, hosts []database.HostTarget) (int64, error) {
