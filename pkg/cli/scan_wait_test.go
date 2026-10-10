@@ -330,3 +330,32 @@ func TestScanWaitCommandEndToEnd(t *testing.T) {
 		t.Errorf("--poll 0 exit = %d, want 2", code)
 	}
 }
+
+// The stderr progress line is repeated only when something other than the
+// ETA changed, or after the quiet interval.
+func TestScanWaitStderrProgressDedupe(t *testing.T) {
+	clock := &fakeWaitClock{now: time.Unix(0, 0)}
+	var buf bytes.Buffer
+	progress := newWaitStderrProgress(&buf, clock)
+	upper := func(ms int64) scanETAView { return scanETAView{UpperBoundMS: &ms, Basis: "scan_budget"} }
+	v := &scanStatusView{ScanUUID: "abcdef0123", EffectiveStatus: effStatusRunning, Phase: "discovery", RequestsSent: 5}
+
+	v.ETA = upper(60000)
+	progress(v)
+	clock.now = clock.now.Add(2 * time.Second)
+	v.ETA = upper(58000) // only the ETA moved
+	progress(v)
+	if n := strings.Count(buf.String(), "\n"); n != 1 {
+		t.Fatalf("lines = %d, want 1 (ETA-only change is not news):\n%s", n, buf.String())
+	}
+	v.RequestsSent = 9
+	progress(v)
+	clock.now = clock.now.Add(scanWaitQuietReprint)
+	progress(v)
+	if n := strings.Count(buf.String(), "\n"); n != 3 {
+		t.Fatalf("lines = %d, want 3:\n%s", n, buf.String())
+	}
+	if !strings.Contains(buf.String(), "eta at most") {
+		t.Errorf("printed line should still carry the ETA:\n%s", buf.String())
+	}
+}

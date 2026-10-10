@@ -328,6 +328,16 @@ func failOnGateFromCounts(bySev map[string]int, silent bool) {
 
 // waitProgressLine renders one stderr progress line for a running scan.
 func waitProgressLine(v *scanStatusView) string {
+	line := waitProgressKey(v)
+	if eta := formatETA(v.ETA); eta != "unknown" {
+		line += " · eta " + eta
+	}
+	return line
+}
+
+// waitProgressKey is the progress line without the ETA, which moves on every
+// poll: what decides whether anything worth repeating changed.
+func waitProgressKey(v *scanStatusView) string {
 	short := v.ScanUUID
 	if len(short) > 8 {
 		short = short[:8]
@@ -344,25 +354,22 @@ func waitProgressLine(v *scanStatusView) string {
 		parts = append(parts, fmt.Sprintf("%d/%s %s", p.Done, total, p.Unit))
 	}
 	parts = append(parts, fmt.Sprintf("%d req", v.RequestsSent), fmt.Sprintf("%d findings", v.Findings))
-	if eta := formatETA(v.ETA); eta != "unknown" {
-		parts = append(parts, "eta "+eta)
-	}
 	return strings.Join(parts, " · ")
 }
 
 // newWaitStderrProgress prints a progress line when it changes, and repeats an
 // unchanged one every scanWaitQuietReprint so a quiet phase still shows life.
 func newWaitStderrProgress(out io.Writer, clock waitClock) func(*scanStatusView) {
-	var lastLine string
+	var lastKey string
 	var lastAt time.Time
 	return func(v *scanStatusView) {
-		line := waitProgressLine(v)
+		key := waitProgressKey(v)
 		now := clock.Now()
-		if line == lastLine && now.Sub(lastAt) < scanWaitQuietReprint {
+		if key == lastKey && now.Sub(lastAt) < scanWaitQuietReprint {
 			return
 		}
-		lastLine, lastAt = line, now
-		fmt.Fprintf(out, "%s %s\n", terminal.InfoSymbol(), terminal.Gray(line))
+		lastKey, lastAt = key, now
+		fmt.Fprintf(out, "%s %s\n", terminal.InfoSymbol(), terminal.Gray(waitProgressLine(v)))
 	}
 }
 
@@ -382,7 +389,7 @@ func newWaitEventProgress() func(*scanStatusView) {
 			ev.Total = p.Total
 			ev.Unit = p.Unit
 		}
-		key := waitProgressLine(v)
+		key := waitProgressKey(v)
 		if key == last {
 			return
 		}
