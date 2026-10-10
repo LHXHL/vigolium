@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"mime/multipart"
 	"net/textproto"
@@ -58,47 +59,66 @@ func (f *Format) SetPostmanOptions(opts Options) {
 	f.postmanOpts = opts
 }
 
-// Parse reads a Postman Collection v2.1 JSON file and calls callback for each request.
+// Parse streams a Postman Collection v2.1 JSON file and calls callback for
+// each request. The file is read twice — a prescan for the variables and auth
+// blocks Postman writes after the items, then the request pass — and only one
+// request is decoded at a time (see stream.go).
 func (f *Format) Parse(input string, callback formats.ParseReqRespCallback) error {
-	data, err := os.ReadFile(input)
+	fh, err := os.Open(input)
 	if err != nil {
 		return fmt.Errorf("failed to read postman collection: %w", err)
 	}
-	return f.ParseFromData(data, callback)
+	defer func() { _ = fh.Close() }()
+	return f.ParseReadSeeker(fh, callback)
 }
 
 // ParseFromData parses a Postman Collection from raw bytes (no file I/O).
 func (f *Format) ParseFromData(data []byte, callback formats.ParseReqRespCallback) error {
-	col, err := f.unmarshalCollection(data)
+	return f.ParseReadSeeker(bytes.NewReader(data), callback)
+}
+
+// ParseReadSeeker streams a Postman Collection from rs, which is read twice.
+// The prescan validates the whole document, so a malformed collection fails
+// before any request reaches the callback.
+func (f *Format) ParseReadSeeker(rs io.ReadSeeker, callback formats.ParseReqRespCallback) error {
+	plan, err := prescan(rs)
 	if err != nil {
 		return fmt.Errorf("failed to parse postman collection: %w", err)
 	}
+	if _, err := rs.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to rewind postman collection: %w", err)
+	}
 
 	w := &walker{
-		f:        f,
-		vars:     f.buildVariableMap(col.variables),
-		callback: callback,
-		stats:    Stats{UnresolvedVariables: map[string]VariableStats{}},
+		f:          f,
+		vars:       f.buildVariableMap(plan.variables),
+		folderAuth: plan.folderAuth,
+		callback:   callback,
+		stats:      Stats{UnresolvedVariables: map[string]VariableStats{}},
 	}
-	w.walkItems(col.items, col.auth)
+	err = w.stream(rs, plan)
 	w.report()
 	f.stats = w.stats
+	if err != nil {
+		return fmt.Errorf("failed to parse postman collection: %w", err)
+	}
 	return nil
 }
 
-// Count returns the number of requests in the collection.
+// Count returns the number of requests in the collection. It is the parse's
+// prescan alone: a token walk that decodes no request.
 func (f *Format) Count(input string) (int64, error) {
-	data, err := os.ReadFile(input)
+	fh, err := os.Open(input)
 	if err != nil {
 		return 0, err
 	}
+	defer func() { _ = fh.Close() }()
 
-	col, err := f.unmarshalCollection(data)
+	plan, err := prescan(fh)
 	if err != nil {
 		return 0, err
 	}
-
-	return countItems(col.items), nil
+	return plan.requests, nil
 }
 
 // Stats describes what the last Parse/ParseFromData call could not import.
@@ -127,34 +147,6 @@ func (f *Format) Stats() Stats {
 }
 
 // --- Postman JSON structures ---
-
-type collection struct {
-	Info       json.RawMessage `json:"info"`
-	Item       []item          `json:"item"`
-	Variable   []variable      `json:"variable"`
-	Auth       *auth           `json:"auth"`
-	Collection *collectionWrap `json:"collection"`
-}
-
-type collectionWrap struct {
-	Item     []item     `json:"item"`
-	Variable []variable `json:"variable"`
-	Auth     *auth      `json:"auth"`
-}
-
-// parsedCollection is the part of either collection shape the walker needs.
-type parsedCollection struct {
-	items     []item
-	variables []variable
-	auth      *auth
-}
-
-type item struct {
-	Name    string   `json:"name"`
-	Item    []item   `json:"item"` // nested folder
-	Auth    *auth    `json:"auth"` // folder-level auth
-	Request *request `json:"request"`
-}
 
 type request struct {
 	Method string   `json:"method"`
@@ -312,23 +304,6 @@ func rawScalar(raw json.RawMessage) string {
 
 // --- Internal methods ---
 
-// unmarshalCollection handles both wrapped ({collection: {item: [...]}}) and
-// unwrapped ({item: [...]}) Postman collection formats.
-func (f *Format) unmarshalCollection(data []byte) (parsedCollection, error) {
-	var col collection
-	if err := json.Unmarshal(data, &col); err != nil {
-		return parsedCollection{}, err
-	}
-
-	// Wrapped format: {collection: {item: [...]}}
-	if col.Collection != nil && len(col.Collection.Item) > 0 {
-		return parsedCollection{col.Collection.Item, col.Collection.Variable, col.Collection.Auth}, nil
-	}
-
-	// Unwrapped format: {item: [...]}
-	return parsedCollection{col.Item, col.Variable, col.Auth}, nil
-}
-
 // buildVariableMap merges collection variables, user-provided variables, and BaseURL.
 func (f *Format) buildVariableMap(collectionVars []variable) map[string]string {
 	vars := make(map[string]string)
@@ -396,6 +371,8 @@ type walker struct {
 	vars     map[string]string
 	callback formats.ParseReqRespCallback
 	stats    Stats
+	// folderAuth is the prescan's folder auth by item path.
+	folderAuth map[string]*auth
 	// skippedForVars counts requests dropped for an unresolved URL variable;
 	// the rest of stats.Skipped failed for some other reason.
 	skippedForVars int
@@ -403,71 +380,37 @@ type walker struct {
 	firstErr error
 }
 
-// walkItems recursively processes items, calling callback for each request found.
-// inherited is the auth in effect for this level (collection or parent folder).
-//
-// It returns false once the callback declines an item, and every level propagates
-// that so the WHOLE traversal stops. Returning void meant a `false` callback only
-// unwound the current recursion frame while the parent folder carried on with its
-// siblings — so ParseFileRecords(..., max) overshot its limit on any nested
-// collection, and a consumer stopping early kept being fed.
-func (w *walker) walkItems(items []item, inherited *auth) bool {
-	for i := range items {
-		it := &items[i]
-
-		// A folder's own auth (including noauth) replaces what it inherited.
-		levelAuth := inherited
-		if it.Auth != nil {
-			levelAuth = it.Auth
+// emit builds one request with the auth in effect for it, records the
+// outcome in stats and hands it to the callback. It returns the callback's
+// verdict (true when the request was skipped).
+func (w *walker) emit(name string, req *request, reqAuth *auth) bool {
+	sub := &substitutor{vars: w.vars, unresolved: map[string]struct{}{}}
+	rr, urlUnresolved, err := w.f.buildRequest(req, reqAuth, sub)
+	if err != nil {
+		w.stats.Skipped++
+		for v := range urlUnresolved {
+			vs := w.stats.UnresolvedVariables[v]
+			vs.Skipped++
+			w.stats.UnresolvedVariables[v] = vs
 		}
-
-		// Recurse into folders
-		if len(it.Item) > 0 {
-			if !w.walkItems(it.Item, levelAuth) {
-				return false
-			}
+		if len(urlUnresolved) > 0 {
+			w.skippedForVars++
+		} else if w.firstErr == nil {
+			w.firstErr = fmt.Errorf("%q: %w", name, err)
 		}
-
-		if it.Request == nil {
-			continue
-		}
-
-		reqAuth := levelAuth
-		if it.Request.Auth != nil {
-			reqAuth = it.Request.Auth
-		}
-
-		sub := &substitutor{vars: w.vars, unresolved: map[string]struct{}{}}
-		rr, urlUnresolved, err := w.f.buildRequest(it.Request, reqAuth, sub)
-		if err != nil {
-			w.stats.Skipped++
-			for name := range urlUnresolved {
-				vs := w.stats.UnresolvedVariables[name]
-				vs.Skipped++
-				w.stats.UnresolvedVariables[name] = vs
-			}
-			if len(urlUnresolved) > 0 {
-				w.skippedForVars++
-			} else if w.firstErr == nil {
-				w.firstErr = fmt.Errorf("%q: %w", it.Name, err)
-			}
-			zap.L().Debug("postman: skipping request",
-				zap.String("name", it.Name),
-				zap.Error(err))
-			continue
-		}
-		for name := range sub.unresolved {
-			vs := w.stats.UnresolvedVariables[name]
-			vs.Kept++
-			w.stats.UnresolvedVariables[name] = vs
-		}
-
-		w.stats.Emitted++
-		if !w.callback(rr) {
-			return false
-		}
+		zap.L().Debug("postman: skipping request",
+			zap.String("name", name),
+			zap.Error(err))
+		return true
 	}
-	return true
+	for v := range sub.unresolved {
+		vs := w.stats.UnresolvedVariables[v]
+		vs.Kept++
+		w.stats.UnresolvedVariables[v] = vs
+	}
+
+	w.stats.Emitted++
+	return w.callback(rr)
 }
 
 // report warns once per unresolved variable and once for any other skipped
@@ -919,17 +862,3 @@ func firstSrc(raw json.RawMessage) string {
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
 
 func escapeQuotes(s string) string { return quoteEscaper.Replace(s) }
-
-// countItems recursively counts the number of requests.
-func countItems(items []item) int64 {
-	var count int64
-	for i := range items {
-		if items[i].Request != nil {
-			count++
-		}
-		if len(items[i].Item) > 0 {
-			count += countItems(items[i].Item)
-		}
-	}
-	return count
-}

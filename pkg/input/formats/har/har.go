@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -40,48 +41,66 @@ func (f *Format) SetOptions(options formats.InputFormatOptions) {
 	f.formatOpts = options
 }
 
-// Parse reads a HAR file and calls callback for each parsed entry.
+// Parse streams a HAR file and calls callback for each parsed entry. Only one
+// entry is decoded at a time, so memory stays bounded however large the
+// archive is (see stream.go).
 func (f *Format) Parse(input string, callback formats.ParseReqRespCallback) error {
-	data, err := os.ReadFile(input)
+	fh, err := os.Open(input)
 	if err != nil {
 		return fmt.Errorf("failed to read HAR file: %w", err)
 	}
-	return f.ParseFromData(data, callback)
+	defer func() { _ = fh.Close() }()
+	return f.ParseReader(fh, callback)
 }
 
 // ParseFromData parses HAR JSON data and calls callback for each entry.
 func (f *Format) ParseFromData(data []byte, callback formats.ParseReqRespCallback) error {
-	var harFile harArchive
-	if err := json.Unmarshal(data, &harFile); err != nil {
-		return fmt.Errorf("failed to parse HAR JSON: %w", err)
-	}
+	return f.ParseReader(bytes.NewReader(data), callback)
+}
 
-	for _, entry := range harFile.Log.Entries {
+// ParseReader streams HAR JSON from r and calls callback for each entry.
+//
+// Entries are emitted as they are decoded, so a document that turns out to be
+// malformed further on returns an error after the entries before the damage
+// were delivered. A callback returning false stops the parse; the rest of the
+// input is not read.
+func (f *Format) ParseReader(r io.Reader, callback formats.ParseReqRespCallback) error {
+	err := walkEntries(r, func(dec *json.Decoder, i int) (bool, error) {
+		var entry harEntry
+		if err := dec.Decode(&entry); err != nil {
+			return false, fmt.Errorf("log.entries[%d]: %w", i, err)
+		}
 		rr := f.processEntry(&entry)
 		if rr == nil {
-			continue
+			return true, nil
 		}
-		if !callback(rr) {
-			return nil
-		}
+		return callback(rr), nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to parse HAR JSON: %w", err)
 	}
-
 	return nil
 }
 
-// Count returns the number of entries in the HAR file.
+// Count returns the number of entries in the HAR file. It walks the document
+// with the same token stream as Parse but skips each entry without decoding
+// it, so it allocates next to nothing beyond the decoder's buffer.
 func (f *Format) Count(input string) (int64, error) {
-	data, err := os.ReadFile(input)
+	fh, err := os.Open(input)
 	if err != nil {
 		return 0, err
 	}
+	defer func() { _ = fh.Close() }()
 
-	var harFile harArchive
-	if err := json.Unmarshal(data, &harFile); err != nil {
+	var n int64
+	err = walkEntries(fh, func(dec *json.Decoder, _ int) (bool, error) {
+		n++
+		return true, skipValue(dec)
+	})
+	if err != nil {
 		return 0, err
 	}
-
-	return int64(len(harFile.Log.Entries)), nil
+	return n, nil
 }
 
 // processEntry converts a HAR entry into an HttpRequestResponse.
@@ -410,14 +429,6 @@ func headerValue(headers []harHeader, name string) string {
 }
 
 // HAR format types
-
-type harArchive struct {
-	Log harLog `json:"log"`
-}
-
-type harLog struct {
-	Entries []harEntry `json:"entries"`
-}
 
 type harEntry struct {
 	Request  harRequest  `json:"request"`
