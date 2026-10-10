@@ -21,9 +21,9 @@ import (
 const CountResponsesWhileLoggedOut = database.LimitResponsesWhileLoggedOut
 
 // liveSessions is the scan's in-flight authentication: the Manager (kept for
-// re-logins) and one LiveSession per session that has a `check` block. Built
-// by initSessions, closed by phaseInfra.Close. A nil *liveSessions is a scan
-// with no live session; every method is nil-safe.
+// re-logins) and one LiveSession per session that has a `check` block or an
+// expiring credential. Built by initSessions, closed by phaseInfra.Close. A
+// nil *liveSessions is a scan with no live session; every method is nil-safe.
 type liveSessions struct {
 	manager *authentication.Manager
 	// primary is the primary session's live owner, nil when it has no check.
@@ -88,13 +88,14 @@ func (l *liveSessions) trackPhase(t *phaseTracker) {
 	})
 }
 
-// newLiveSession wraps a hydrated session that has a check block. pinned are
-// the header names the operator set with -H, which the session never
-// overrides. A session whose check cannot be armed (a relative check.url with
-// nothing to resolve it against) is logged and scanned with frozen
-// credentials, as before.
+// newLiveSession wraps a hydrated session that has a check block, or whose
+// login reported when its credentials expire (an OAuth2 token, refreshed
+// shortly before expires_at). pinned are the header names the operator set
+// with -H, which the session never overrides. A session whose check cannot be
+// armed (a relative check.url with nothing to resolve it against) is logged
+// and scanned with frozen credentials, as before.
 func (r *Runner) newLiveSession(ctx context.Context, mgr *authentication.Manager, sess *authentication.Session, pinned []string) *authentication.LiveSession {
-	if sess == nil || sess.Check == nil {
+	if sess == nil || (sess.Check == nil && sess.ExpiresAt().IsZero()) {
 		return nil
 	}
 	base := ""

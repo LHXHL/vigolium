@@ -43,6 +43,9 @@ var (
 	autopilotMaxCommands   int
 	autopilotInstruction   string // internal: populated by --plan-file and the NL intent parser (no --instruction flag)
 	autopilotPlanFile      string
+	// autopilotAuthFiles are native session files (--auth-file), logged in
+	// before the run (agent_auth_file.go).
+	autopilotAuthFiles []string
 	// Auth/browser signals below have no CLI flags — the browser is always
 	// available for autopilot, and credentials/auth intent are extracted from
 	// the prompt (NL path via applyIntentToAutopilotFlags, explicit path via
@@ -170,6 +173,8 @@ func init() {
 	f.StringVar(&autopilotOliumOAuthToken, "oauth-token", "", "Olium Anthropic OAuth bearer token (anthropic-oauth provider; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY)")
 	f.StringVar(&autopilotOliumLLMAPIKey, "llm-api-key", "", "Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var)")
 	f.StringVar(&autopilotSource, "source", "", "Path to application source code for source-aware scanning")
+	f.StringArrayVar(&autopilotAuthFiles, "auth-file", nil, authFileFlagUsage+" The sessions log in before the run, the pre-scan uses them, and they are stored for the target so the operator's list_auth_sessions/replay_request can use them.")
+	addFlagAliases(agentAutopilotCmd, authFileAliases)
 	f.StringSliceVar(&autopilotFiles, "files", nil, "Specific files to include (relative to --source)")
 	f.StringVar(&autopilotPrompt, "prompt", "", "Free-text task guidance for the agent (same as the positional [prompt]; use --plan-file for a whole plan with seed HTTP requests)")
 	f.StringVar(&autopilotPromptFile, "prompt-file", "", "Read task guidance from a file (same channel as --prompt — its contents flow through credential extraction, so role-tagged accounts become primary/compare sessions). Convenient for long/complex prompts; mutually exclusive with --prompt, the positional [prompt], and --plan-file")

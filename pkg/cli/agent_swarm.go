@@ -76,6 +76,7 @@ var (
 	swarmAuthHeaders         []string
 	swarmLoginCurl           string
 	swarmAuthConfigPath      string
+	swarmAuthFiles           []string
 	swarmCredentials         string
 	swarmCredentialSets      []agent.IntentCredentialSet
 	swarmBrowserAuthRequired bool
@@ -200,7 +201,9 @@ func init() {
 	f.StringArrayVar(&swarmAuthCookies, "cookie", nil, "Session cookie name=value pair (repeatable; e.g. --cookie 'session=abc123'). Injected into recon, discovery, and scan as Cookie: header. Commas are literal.")
 	f.StringArrayVarP(&swarmAuthHeaders, "header", "H", nil, "Inject HTTP header into recon, discovery, and scan (repeatable; e.g. -H 'Authorization: Bearer xxx'). Commas are literal.")
 	f.StringVar(&swarmLoginCurl, "login-curl", "", "Curl command for login flow; replayed by the auth runtime to capture a fresh session. Cookies/headers from a successful response are reused for the scan.")
-	f.StringVar(&swarmAuthConfigPath, "auth-config", "", "Path to an existing auth-config.yaml. Skips both browser auth and --cookie/--header/--login-curl synthesis.")
+	f.StringVar(&swarmAuthConfigPath, "auth-config", "", "Path to an existing agent-format auth-config.yaml (a native session file is detected and loaded as --auth-file). Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-file.")
+	f.StringArrayVar(&swarmAuthFiles, "auth-file", nil, authFileFlagUsage+" Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-config.")
+	addFlagAliases(agentSwarmCmd, authFileAliases)
 
 	// Background vigolium-audit
 	f.StringVar(&swarmAudit, "audit", "", "Run background vigolium-audit for parallel security auditing: 'lite' (3-phase, default), 'balanced' (9-phase), or 'deep' (12-phase). Requires --source")
@@ -288,6 +291,9 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	// --source-analysis-only requires --source
 	if swarmSourceAnalysisOnly && swarmSource == "" {
 		return usageErrorf("--source-analysis-only requires --source")
+	}
+	if len(swarmAuthFiles) > 0 && swarmAuthConfigPath != "" {
+		return usageErrorf("--auth-file and --auth-config are mutually exclusive (--auth-file takes native session files, --auth-config an agent auth-config)")
 	}
 
 	// Resolve intensity preset — apply before other flag processing
@@ -501,14 +507,23 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	var generatedAuthConfig string
 	var reconExtraHeaders map[string]string
 
-	// Inline auth injection (--auth-config / --cookie / --header / --login-curl).
-	// Resolved before any phase so recon, discovery, and scan all see the
-	// session. When --auth-config is given, we use it verbatim; otherwise we
+	// Inline auth injection (--auth-file / --auth-config / --cookie / --header /
+	// --login-curl). Resolved before any phase so recon, discovery, and scan
+	// all see the session. --auth-file (native, validated like scan's) and
+	// --auth-config are used as given (resolveSwarmAuth); otherwise we
 	// synthesize an AgentSessionConfig from the inline flags.
+	authSrc, authErr := resolveSwarmAuth(settings, swarmAuthFiles, swarmAuthConfigPath, sessionDir)
+	if authErr != nil {
+		return authErr
+	}
 	switch {
-	case swarmAuthConfigPath != "":
-		generatedAuthConfig = swarmAuthConfigPath
-		zap.L().Info("Using operator-supplied auth-config", zap.String("path", generatedAuthConfig))
+	case authSrc != nil:
+		generatedAuthConfig = authSrc.Path
+		reconExtraHeaders = agent.ExtraHeadersFromAuth(authSrc.Config)
+		if swarmBrowserAuth {
+			zap.L().Info("Disabling --browser-auth because --auth-file/--auth-config was provided")
+			swarmBrowserAuth = false
+		}
 	case len(swarmAuthCookies) > 0 || len(swarmAuthHeaders) > 0 || swarmLoginCurl != "":
 		cfg, synthErr := agent.SynthesizeAuthConfig(swarmAuthCookies, swarmAuthHeaders, swarmLoginCurl)
 		if synthErr != nil {

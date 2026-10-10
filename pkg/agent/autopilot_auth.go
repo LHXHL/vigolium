@@ -198,7 +198,7 @@ func (r *AutopilotPipelineRunner) prepareBrowserAuth(ctx context.Context, cfg Au
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("failed to load browser auth config: %w", err)
 	}
-	cfgOut := sessionsToAgentSessionConfig(sessions)
+	cfgOut := SessionsToAgentSessionConfig(sessions)
 	if cfgOut == nil {
 		return nil, nil, "", fmt.Errorf("browser auth config did not contain usable sessions")
 	}
@@ -207,7 +207,12 @@ func (r *AutopilotPipelineRunner) prepareBrowserAuth(ctx context.Context, cfg Au
 	return cfgOut, headers, "captured auth state with browser-assisted login", nil
 }
 
-func sessionsToAgentSessionConfig(sessions []*authentication.Session) *AgentSessionConfig {
+// SessionsToAgentSessionConfig converts native sessions (an --auth-file) to
+// the agent's session config, for the agent-side consumers (recon headers,
+// prompt artifacts, hydration). The agent format carries a single-request
+// login only: steps, OAuth2 fields, login.headers, check and reauth do not
+// survive, so a native scan phase should load the native file itself.
+func SessionsToAgentSessionConfig(sessions []*authentication.Session) *AgentSessionConfig {
 	if len(sessions) == 0 {
 		return nil
 	}
@@ -218,7 +223,9 @@ func sessionsToAgentSessionConfig(sessions []*authentication.Session) *AgentSess
 			Role:    string(s.Role),
 			Headers: cloneStringMap(s.Headers),
 		}
-		if s.Login != nil {
+		// A multi-step or OAuth2 login has no agent-format equivalent: keep
+		// the headers it produced (if hydrated) rather than a broken flow.
+		if s.Login != nil && len(s.Login.Steps) == 0 && !s.Login.Type.IsOAuth2() {
 			entry.Login = &AgentLoginFlow{
 				URL:         s.Login.URL,
 				Method:      s.Login.Method,

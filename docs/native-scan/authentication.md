@@ -222,12 +222,126 @@ vigolium scan \
   --scope-origin strict
 ```
 
-> **Per-step header limitation:** a multi-step login step currently supports
-> `url`, `method`, `content_type`, `body`, `extract`, and `expect`, but not
-> arbitrary request headers. Browser SDK endpoints that require Basic auth,
-> `Origin`, or SDK-specific headers cannot always be reproduced directly. Use
-> an authorized server-side test endpoint or a pre-acquired static token rather
-> than putting secrets in the URL.
+### Login Request Headers
+
+`login.headers` adds request headers to every request the login sends (the
+single request, each step, or the OAuth2 token request). A step's own
+`headers` are added after the flow's, so a step header wins on a clash. Header
+values take `{name}` step variables and the templates below, like `url` and
+`body`. A `Host` header sets the request's Host.
+
+```yaml
+login:
+  headers:
+    Origin: https://app.example.com
+    X-Client-Version: "4.2"
+  steps:
+    - url: https://identity.example.com/sdk/authenticate
+      method: POST
+      headers:
+        Authorization: "Basic {{env:SDK_BASIC_AUTH}}"
+      body: '{"email":"${TEST_EMAIL}","password":"${TEST_PASSWORD}"}'
+      extract:
+        - source: json
+          path: .intermediate_token
+          apply_as: "var:intermediate"
+    - url: https://api.example.com/auth/exchange
+      method: POST
+      headers:
+        X-Intermediate-Token: "{intermediate}"
+      extract:
+        - source: json
+          path: .token
+          apply_as: "Authorization: Bearer {value}"
+```
+
+### Templates: Environment and TOTP
+
+Login `url`, `body`, header values and the OAuth2 fields accept function
+templates. They are evaluated every time the login runs (including an in-scan
+re-login), so a TOTP code is always current and a secret never has to be
+written into the file:
+
+| Template | Value |
+|----------|-------|
+| `{{env:NAME}}` | Environment variable `NAME`, read when the login runs |
+| `{{totp:NAME}}` | Current 6-digit TOTP code (RFC 6238, SHA-1, 30 s) for the base32 secret in `$NAME` |
+| `{{totp_secret_file:PATH}}` | The same, for the base32 secret stored in file `PATH` (`~/` expands) |
+
+```yaml
+login:
+  steps:
+    - url: https://app.example.com/login
+      method: POST
+      body: '{"user":"{{env:APP_USER}}","password":"{{env:APP_PASS}}"}'
+      extract:
+        - source: json
+          path: .mfa_ticket
+          apply_as: "var:ticket"
+    - url: https://app.example.com/login/mfa
+      method: POST
+      body: '{"ticket":"{ticket}","code":"{{totp:APP_TOTP_SECRET}}"}'
+      extract:
+        - source: cookie
+```
+
+A variable that is not set, an unreadable secret file or an invalid secret
+fails the login and names the template; nothing is sent with an empty value.
+Templates are expanded before `{name}` step variables, so a value the server
+returned is never itself treated as a template. `vigolium auth lint` reports
+an unknown template function or a malformed name as an error, and warns when
+`{{totp:...}}` holds what looks like a literal base32 secret instead of the
+name of a variable. `${NAME}` keeps working; it is expanded once, when the file
+is loaded. `vigolium auth totp` prints the code a template would produce.
+
+### OAuth2 Token Endpoints
+
+`type: oauth2_client_credentials` and `type: oauth2_refresh_token` log in
+against an OAuth2 token endpoint instead of a login form:
+
+```yaml
+sessions:
+  - name: service
+    role: primary
+    login:
+      type: oauth2_client_credentials
+      token_url: https://idp.example.com/oauth/token
+      client_id: vigolium-scanner
+      client_secret: "{{env:SCANNER_CLIENT_SECRET}}"
+      scope: "read:orders write:orders"
+      audience: https://api.example.com
+      auth_style: header        # or body; omit to try header, then body
+
+  - name: user
+    role: compare
+    login:
+      type: oauth2_refresh_token
+      token_url: https://idp.example.com/oauth/token
+      client_id: vigolium-scanner
+      client_secret: "{{env:SCANNER_CLIENT_SECRET}}"
+      refresh_token: "{{env:USER_REFRESH_TOKEN}}"
+```
+
+| Field | Meaning |
+|-------|---------|
+| `token_url` | Token endpoint (required) |
+| `client_id`, `client_secret` | Client credentials (both required for `oauth2_client_credentials`) |
+| `scope` | Space- or comma-separated scopes (client credentials only) |
+| `audience` | Sent as the `audience` parameter (client credentials only) |
+| `refresh_token` | Required for `oauth2_refresh_token` |
+| `auth_style` | `header` (HTTP Basic) or `body` (form fields); empty tries header, then body |
+
+The access token is sent as `Authorization: <token_type> <access_token>`
+(`Bearer` for a bearer token). The response's `expires_in` is kept as the
+session's expiry: during a native scan the token is refreshed shortly before
+it expires (a tenth of its lifetime, between 5 s and 60 s ahead, at most half
+of it), without waiting for a 401 and without holding scan traffic, even when
+the session has no `check` block. A refresh token the server rotates replaces
+the configured one for the next refresh. `auth load -j` reports the expiry as
+`expires_at`. A token endpoint error (`invalid_client`, `invalid_grant`, ...)
+fails the login with that error. `auth lint` checks the required fields, the
+`token_url` scheme and `auth_style`, and warns about request-flow fields
+(`url`, `method`, `body`, `extract`, ...) that an OAuth2 login ignores.
 
 ### Extraction Sources
 
@@ -383,9 +497,17 @@ SessionConfig
 │   │   ├── method          # (string) Single-step HTTP method
 │   │   ├── content_type    # (string) Request Content-Type
 │   │   ├── body            # (string) Request body
-│   │   ├── type            # (string) "bearer" or "cookie" shorthand
+│   │   ├── type            # (string) "bearer", "cookie", "oauth2_client_credentials", "oauth2_refresh_token"
 │   │   ├── token_path      # (string) Token path used by bearer shorthand
+│   │   ├── headers         # (map) Extra headers on every login request; templates allowed
 │   │   ├── expect          # (object) status[] and/or body_contains
+│   │   ├── token_url       # (string) OAuth2 token endpoint (oauth2_* types)
+│   │   ├── client_id       # (string) OAuth2 client id
+│   │   ├── client_secret   # (string) OAuth2 client secret
+│   │   ├── scope           # (string) OAuth2 scopes, space/comma separated
+│   │   ├── audience        # (string) OAuth2 audience parameter
+│   │   ├── refresh_token   # (string) OAuth2 refresh token (oauth2_refresh_token)
+│   │   ├── auth_style      # (string) "header" or "body"; empty tries both
 │   │   ├── extract[]       # (array) Credential extraction rules
 │   │   │   ├── source      # (string) "json", "cookie", "header", or "regex"
 │   │   │   ├── name        # (string) Cookie/header name to extract
@@ -397,6 +519,7 @@ SessionConfig
 │   │       ├── url         # (string, required) Step endpoint URL
 │   │       ├── method      # (string, required) Step HTTP method
 │   │       ├── content_type # (string) Step request Content-Type
+│   │       ├── headers     # (map) Step headers (win over login.headers); {name} and templates
 │   │       ├── body        # (string) Supports {name} variables
 │   │       ├── expect      # (object) status[] and/or body_contains
 │   │       └── extract[]   # (array; required on the final step)
@@ -512,6 +635,12 @@ defaults give it) is kept live for the whole scan:
    old ones.
 6. **Proactive probe.** `check.interval` re-runs the `check.url` probe at most
    that often even when no response looked logged out.
+7. **Expiry.** When the login reported when its credentials expire (an OAuth2
+   token's `expires_in`), the session is kept live even without a `check`
+   block, and the re-login runs shortly before that time (a tenth of the
+   token's lifetime ahead, between 5 s and 60 s, at most half of it). It emits
+   `auth.session_suspect` with detail `expiry`, skips the confirm probe and
+   does not pause traffic, since the old token is still valid.
 
 When every attempt fails (or `reauth.enabled` is false, or the session has
 static headers and nothing to re-run) the session is *lost*: `auth.relogin`
@@ -589,6 +718,9 @@ vigolium scan https://app.com --auth-file ./auth-config.json
 ```
 
 All `${VAR}` references are expanded from the environment at load time, before format parsing.
+Login fields also take `{{env:NAME}}`, `{{totp:NAME}}` and
+`{{totp_secret_file:PATH}}`, evaluated each time the login runs (see
+[Templates: Environment and TOTP](#templates-environment-and-totp)).
 
 ## IDOR/BOLA Testing
 
@@ -730,9 +862,15 @@ cause. See [Scan completeness](../api-references/scan.md#scan-completeness).
 
 ## Current Authentication Limitations
 
-- Only sessions with a `check` block are re-logged in mid-scan (see
+- Only sessions with a `check` block, or an OAuth2 login whose token reports
+  `expires_in`, are re-logged in mid-scan (see
   [In-scan re-login](#in-scan-re-login)); others log in once during scan
   initialization, so a token's lifetime must cover the scan.
+- There is no browser-driven login type in the session schema. For a login
+  that only works in a browser (JavaScript SDKs, CAPTCHA-free SSO redirects),
+  use the agent swarm's browser auth phase (`vigolium agent swarm --browser
+  --browser-auth`), which writes an `auth-config.yaml` the scan phases then
+  use, or capture a session and pass it as static headers.
 - Re-login does not reach the spidering browser, which keeps the credentials it
   launched with, nor a known-issue scan already running: nuclei takes a
   snapshot of the headers when its phase starts (it gets the newest generation
@@ -741,11 +879,10 @@ cause. See [Scan completeness](../api-references/scan.md#scan-completeness).
   (`responses_while_logged_out`), not re-queued.
 - Sessions loaded from the database have no `check`/`reauth` columns, so they
   are never re-logged in.
-- Pass multi-step configurations directly with `--auth-file`. `vigolium auth
-  load` currently validates and persists only single-step login fields, so a
-  stored multi-step flow will not round-trip correctly.
-- Multi-step variables are substituted only in subsequent step URLs and bodies.
-  Arbitrary per-step headers are not part of the current schema.
+- Pass multi-step and OAuth2 configurations directly with `--auth-file`.
+  `vigolium auth load` currently persists only single-step login fields, so a
+  stored multi-step or OAuth2 session comes back as the static headers its
+  last login produced, and is not re-logged in.
 
 ## Session Strategy Configuration
 
@@ -865,10 +1002,36 @@ configuration as `auth-config.yaml` in its session directory.
 With `--source`, Swarm can discover login flows and feed the generated config
 into recon, discovery, and native scanning automatically.
 
-Swarm's equivalent of native `--auth-file` is `--auth-config`:
+`agent swarm` and `agent autopilot` take the native `--auth-file` (repeatable,
+`--session-file` alias, bare names resolved against
+`scanning_strategy.session.session_dir`), with the same loader and validation
+as `vigolium scan`, so a file that works for a scan works here and a broken one
+fails before the run starts:
 
 ```bash
-# Swarm with pre-configured auth
+# Swarm with native session files (multi-step, OAuth2, check/reauth all kept)
+vigolium agent swarm \
+  --target https://app.com \
+  --auth-file ./admin.yaml --auth-file ./user.yaml
+
+# Autopilot: the sessions log in before the run, the pre-scan uses them, and
+# they are stored for the target so the operator's list_auth_sessions and
+# replay_request tools can use them
+vigolium agent autopilot --target https://app.com --auth-file ./admin.yaml
+```
+
+Swarm hands one file to its native phases as is and merges several into
+`auth-config.yaml` in its session directory (native format, mode 0600,
+`${ENV}` left for the loader to expand). Static headers of the primary session
+also go to recon. `--auth-file` and `--auth-config` are mutually exclusive;
+either one skips `--browser-auth` and the `--cookie`/`--header`/`--login-curl`
+synthesis.
+
+Swarm's older `--auth-config` takes an agent-format `auth-config.yaml` as is.
+A native session file given to `--auth-config` is detected and loaded as
+`--auth-file`:
+
+```bash
 vigolium agent swarm \
   --target https://app.com \
   --auth-config ./auth-config.yaml

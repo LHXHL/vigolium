@@ -114,6 +114,9 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 
 	projectUUID, _ := resolveProjectUUID()
 	outcome.ProjectUUID = projectUUID
+	if err := prepareAutopilotAuthFiles(ctx, settings, repo, projectUUID, autopilotTarget, autopilotAuthFiles, !autopilotDryRun); err != nil {
+		return err
+	}
 
 	// Resolve olium provider. CLI --provider overrides agent.olium.provider in
 	// the config file; if both are empty, olium auto-detects one.
@@ -576,6 +579,7 @@ func buildPrescanInstruction(ctx context.Context, repo *database.Repository, pro
 		EnableDiscovery:  true,
 		EnableSpidering:  false,
 		ScanMaxDuration:  preScanBudget,
+		AuthFiles:        autopilotAuthFiles,
 	}
 	res, err := runner.LaunchScan(ctx, params)
 	if err != nil {

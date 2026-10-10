@@ -258,10 +258,10 @@ func loginFlowFromRequest(lr *LoginRequest) *LoginFlow {
 		case strings.EqualFold(k, "Host"), strings.EqualFold(k, "Content-Length"):
 			// Set by the client from the URL and the body.
 		default:
-			if lf.headers == nil {
-				lf.headers = make(map[string]string)
+			if lf.rawHeaders == nil {
+				lf.rawHeaders = make(map[string]string)
 			}
-			lf.headers[k] = v
+			lf.rawHeaders[k] = v
 		}
 	}
 	return lf

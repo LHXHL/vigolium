@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -34,6 +35,9 @@ type Manager struct {
 	// loginBudget caps the total hydration time across every session and step.
 	// <= 0 means DefaultLoginBudget.
 	loginBudget time.Duration
+	// flowMu guards the login flows Rehydrate copies and writes back (a
+	// rotated OAuth2 refresh_token).
+	flowMu sync.Mutex
 }
 
 // ManagerOption configures optional Manager behavior.
@@ -166,6 +170,15 @@ func (m *Manager) HydrateSessionsContext(ctx context.Context) error {
 // priority lane under GatedLoginTransport), bounded by ctx and by the
 // manager's login budget.
 func (m *Manager) Rehydrate(ctx context.Context, name string) (map[string]string, error) {
+	headers, _, err := m.rehydrate(ctx, name)
+	return headers, err
+}
+
+// rehydrate is Rehydrate that also returns when the fresh credentials expire
+// (zero when the login did not say). An OAuth2 refresh token the server
+// rotated is written back to the managed session's flow, so the next
+// re-login presents the new one.
+func (m *Manager) rehydrate(ctx context.Context, name string) (map[string]string, time.Time, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -177,10 +190,10 @@ func (m *Manager) Rehydrate(ctx context.Context, name string) (map[string]string
 		}
 	}
 	if src == nil {
-		return nil, fmt.Errorf("session %q: not managed", name)
+		return nil, time.Time{}, fmt.Errorf("session %q: not managed", name)
 	}
 	if src.Login == nil {
-		return nil, fmt.Errorf("session %q: no login flow to re-run (static headers cannot be refreshed)", name)
+		return nil, time.Time{}, fmt.Errorf("session %q: no login flow to re-run (static headers cannot be refreshed)", name)
 	}
 	budget := m.loginBudget
 	if budget <= 0 {
@@ -189,15 +202,26 @@ func (m *Manager) Rehydrate(ctx context.Context, name string) (map[string]string
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
+	m.flowMu.Lock()
 	clone := *src
 	flow := *src.Login // runLogin normalizes the flow in place: give it its own copy
+	m.flowMu.Unlock()
+	usedRefresh := flow.RefreshToken
 	clone.Login = &flow
 	clone.Headers = make(map[string]string)
 	clone.hydrated = false
+	clone.expiresAt = time.Time{}
 	if err := executeLogin(ctx, &clone, m.loginClient()); err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
-	return clone.Headers, nil
+	if flow.RefreshToken != usedRefresh {
+		m.flowMu.Lock()
+		if src.Login.RefreshToken == usedRefresh {
+			src.Login.RefreshToken = flow.RefreshToken
+		}
+		m.flowMu.Unlock()
+	}
+	return clone.Headers, clone.expiresAt, nil
 }
 
 // probeClient is the client a LiveSession's logged-in probe uses: the login

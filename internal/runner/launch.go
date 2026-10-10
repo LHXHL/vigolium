@@ -89,6 +89,11 @@ type LaunchParams struct {
 	// against them, set this true and the runner will scan existing records
 	// instead of crawling new ones.
 	SkipIngestion bool
+
+	// AuthFiles are native session files, as `vigolium scan --auth-file`
+	// takes: the scan logs them in and sends the primary session's
+	// credentials (and persists the sessions for the project's targets).
+	AuthFiles []string
 }
 
 // LaunchResult summarizes a completed scan. Populated from the Scan DB row
@@ -298,6 +303,7 @@ func buildLaunchOptions(params LaunchParams) *types.Options {
 		opts.ScanMaxDuration = params.ScanMaxDuration
 	}
 	opts.OnlyPhase = params.OnlyPhase
+	opts.AuthFiles = append([]string(nil), params.AuthFiles...)
 	if len(params.SkipPhases) > 0 {
 		opts.SkipPhases = append(opts.SkipPhases, params.SkipPhases...)
 	}

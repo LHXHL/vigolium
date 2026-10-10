@@ -256,6 +256,7 @@ var agentQueryFlagGroups = []flagGroup{
 var agentAutopilotFlagGroups = []flagGroup{
 	{"Target & Input", []string{"prompt", "prompt-file", "target", "input", "record-uuid", "burp-bridge-url", "prior-context", "knowledge-base", "knowledge-base-raw", "knowledge-base-no-traffic", "plan-file"}},
 	{"Source & Audit", []string{"source", "files", "audit", "piolium", "diff", "last-commits"}},
+	{"Authentication", []string{"auth-file"}},
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key"}},
 	{"Scan Behavior", []string{"intensity", "skill", "skill-tag", "no-skill-filter", "no-prescan", "no-preflight-discovery", "no-post-halt-verify", "post-halt-gap-threshold", "triage", "disable-guardrail"}},
 	{"Budgets & Preflight", []string{"max-duration", "max-commands", "token-budget", "max-cost-usd", "preflight-timeout", "no-preflight"}},
@@ -271,7 +272,7 @@ var agentSwarmFlagGroups = []flagGroup{
 	{"Module & Phase Selection", []string{"modules", "vuln-type", "skill", "skill-tag", "no-skill-filter", "only", "skip", "start-from", "profile", "discover", "with-extensions"}},
 	{"Scan Behavior", []string{"intensity", "triage", "max-iterations", "disable-guardrail"}},
 	{"Budgets & Preflight", []string{"max-duration", "max-commands", "token-budget", "max-cost-usd", "preflight-timeout", "no-preflight"}},
-	{"Authentication", []string{"browser-auth", "cookie", "header", "login-curl", "auth-config"}},
+	{"Authentication", []string{"browser-auth", "cookie", "header", "login-curl", "auth-config", "auth-file"}},
 	{"Concurrency & Probing", []string{"batch-concurrency", "max-master-retries", "sub-agent-concurrency", "max-plan-records", "master-batch-size", "probe-concurrency", "probe-timeout", "max-probe-body"}},
 	{"Execution", []string{"agent-label", "dry-run", "show-prompt", "headed"}},
 	{"Output", []string{"verbose", "upload-results", "db-isolate"}},

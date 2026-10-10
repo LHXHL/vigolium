@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Reasons a login check reports. Stable strings: `auth load -j` prints them and
@@ -64,7 +65,10 @@ type LoginResult struct {
 	Step *int `json:"step,omitempty"`
 	// ExtractedHeaders names (never values) the headers the login produced.
 	ExtractedHeaders []string `json:"extracted_headers,omitempty"`
-	Reason           string   `json:"reason,omitempty"`
+	// ExpiresAt is when the credentials expire, when the login said so (an
+	// OAuth2 token's expires_in).
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
 	// Message explains a failure or a warning in prose.
 	Message string `json:"message,omitempty"`
 	// Err is the failure, for Go callers.
@@ -101,7 +105,7 @@ func CheckLogin(ctx context.Context, sess *Session, client *http.Client) LoginRe
 			return res.fail(LoginReasonInvalidFlow, err)
 		}
 		res = CheckLogin(ctx, &conv, client)
-		sess.Headers, sess.hydrated = conv.Headers, conv.hydrated
+		sess.Headers, sess.hydrated, sess.expiresAt = conv.Headers, conv.hydrated, conv.expiresAt
 		return res
 	}
 	if sess.Login == nil {
@@ -135,6 +139,9 @@ func CheckLogin(ctx context.Context, sess *Session, client *http.Client) LoginRe
 		res.Step = &step
 	}
 	res.ExtractedHeaders = headerNames(sess.Headers)
+	if exp := sess.expiresAt; err == nil && !exp.IsZero() {
+		res.ExpiresAt = &exp
+	}
 	if err != nil {
 		reason := LoginReasonNetworkError
 		var le *loginError

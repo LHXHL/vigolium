@@ -73,6 +73,10 @@ type Credentials struct {
 	Gen uint64
 	// At is when this generation was minted.
 	At time.Time
+	// ExpiresAt is when this generation expires, when the login said so (an
+	// OAuth2 token's expires_in); zero when unknown. The session refreshes
+	// shortly before it (see expiryLead).
+	ExpiresAt time.Time
 
 	// all is every header the login produced, pinned or not: the confirm
 	// probe sends the session's credentials, not the scan's mix.
@@ -102,7 +106,8 @@ type LiveEvent struct {
 	Gen uint64
 	OK  bool
 	// Reason says what triggered a suspect: "status", "redirect", "body"
-	// (a logged_out match), "interval" (the proactive probe) or "invalidate".
+	// (a logged_out match), "interval" (the proactive probe), "expiry" (the
+	// credentials are about to expire) or "invalidate".
 	Reason string
 	// Attempts is how many logins a relogin cycle ran.
 	Attempts  int
@@ -150,7 +155,32 @@ const (
 	liveConfirmCooldown = 2 * time.Second
 	// liveBodyCap is the most of a response body the sampled regex reads.
 	liveBodyCap = 64 << 10
+	// Credentials with a known expiry are refreshed a lead time before it:
+	// a tenth of their lifetime, clamped to [liveExpiryLeadMin,
+	// liveExpiryLeadMax], and never more than half the lifetime.
+	liveExpiryLeadMin = 5 * time.Second
+	liveExpiryLeadMax = 60 * time.Second
 )
+
+// expiryLead is how long before expiresAt credentials minted at mintedAt are
+// refreshed.
+func expiryLead(mintedAt, expiresAt time.Time) time.Duration {
+	life := expiresAt.Sub(mintedAt)
+	lead := life / 10
+	if lead < liveExpiryLeadMin {
+		lead = liveExpiryLeadMin
+	}
+	if lead > liveExpiryLeadMax {
+		lead = liveExpiryLeadMax
+	}
+	if half := life / 2; lead > half {
+		lead = half
+	}
+	if lead < 0 {
+		lead = 0
+	}
+	return lead
+}
 
 // LiveSession is the scan-time owner of one session's credentials. All
 // methods are safe for concurrent use; a nil *LiveSession is inert.
@@ -191,6 +221,9 @@ type LiveSession struct {
 	// mu serializes refresh; never taken on the request path.
 	mu    sync.Mutex
 	fails int
+	// proactive is set while an expiry refresh runs: the old credentials
+	// are still valid, so Wait does not park requests.
+	proactive atomic.Bool
 
 	// hits are the recent logged_out matches for hitGen (K-of-N rule, used
 	// when there is no probe). Only matched responses take hitMu.
@@ -200,25 +233,33 @@ type LiveSession struct {
 
 	timerMu sync.Mutex
 	timer   *time.Timer
-	closed  bool
-	wg      sync.WaitGroup
+	// expTimer fires the refresh ahead of the current credentials' expiry.
+	expTimer *time.Timer
+	closed   bool
+	wg       sync.WaitGroup
 }
 
 // NewLiveSession builds the live owner of sess, which must be hydrated and
-// carry a check block (call Session.ApplyDefaults first). It starts the
-// proactive probe timer when check.interval is set; Close stops it.
+// carry a check block (call Session.ApplyDefaults first) or credentials with
+// a known expiry (an OAuth2 login). It starts the proactive probe timer when
+// check.interval is set and the expiry timer when the credentials expire;
+// Close stops both.
 func NewLiveSession(sess *Session, opt LiveOptions) (*LiveSession, error) {
-	if sess == nil || sess.Check == nil {
-		return nil, errors.New("live session: no check block")
+	if sess == nil || (sess.Check == nil && sess.expiresAt.IsZero()) {
+		return nil, errors.New("live session: no check block and no credential expiry")
 	}
-	m, err := sess.Check.Compile()
+	check := sess.Check
+	if check == nil {
+		check = &SessionCheck{}
+	}
+	m, err := check.Compile()
 	if err != nil {
 		return nil, fmt.Errorf("session %q: %w", sess.Name, err)
 	}
 	s := &LiveSession{
 		name:        sess.Name,
 		matcher:     m,
-		method:      sess.Check.EffectiveMethod(),
+		method:      check.EffectiveMethod(),
 		pinned:      make(map[string]struct{}, len(opt.Pinned)),
 		manager:     opt.Manager,
 		probeCl:     opt.ProbeClient,
@@ -226,8 +267,8 @@ func NewLiveSession(sess *Session, opt LiveOptions) (*LiveSession, error) {
 		now:         opt.Now,
 		sleep:       opt.Sleep,
 		waitLimit:   opt.WaitBudget,
-		sampleEvery: uint64(sess.Check.EffectiveSampleEvery()),
-		interval:    sess.Check.Interval.D(),
+		sampleEvery: uint64(check.EffectiveSampleEvery()),
+		interval:    check.Interval.D(),
 		reauth:      sess.ReauthEnabled() && opt.Manager != nil,
 		maxAttempts: sess.Reauth.EffectiveMaxAttempts(),
 		backoff:     sess.Reauth.EffectiveBackoff(),
@@ -246,12 +287,12 @@ func NewLiveSession(sess *Session, opt LiveOptions) (*LiveSession, error) {
 	if s.waitLimit <= 0 {
 		s.waitLimit = opt.Manager.LoginBudget()
 	}
-	if strings.TrimSpace(sess.Check.URL) != "" {
+	if strings.TrimSpace(check.URL) != "" {
 		base := opt.ProbeBase
 		if base == "" && sess.Login != nil {
 			base = sess.Login.LoginURL()
 		}
-		u, err := ResolveCheckURL(sess.Check.URL, base)
+		u, err := ResolveCheckURL(check.URL, base)
 		if err != nil {
 			return nil, fmt.Errorf("session %q: check.url: %w", sess.Name, err)
 		}
@@ -273,12 +314,14 @@ func NewLiveSession(sess *Session, opt LiveOptions) (*LiveSession, error) {
 	}
 	s.ctx, s.cancel = context.WithCancel(parent)
 
-	s.creds.Store(s.mint(sess.Headers, 1))
+	first := s.mint(sess.Headers, 1, sess.expiresAt)
+	s.creds.Store(first)
 	s.state.Store(int32(LiveValid))
 
 	if s.interval > 0 && s.probeURL != "" {
 		s.timer = time.AfterFunc(s.interval, s.tick)
 	}
+	s.armExpiry(first)
 	return s, nil
 }
 
@@ -293,13 +336,15 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// mint builds generation gen from the headers a login produced.
-func (s *LiveSession) mint(headers map[string]string, gen uint64) *Credentials {
+// mint builds generation gen from the headers a login produced, which
+// expire at expiresAt (zero: unknown).
+func (s *LiveSession) mint(headers map[string]string, gen uint64, expiresAt time.Time) *Credentials {
 	c := &Credentials{
-		Headers: make(map[string]string, len(headers)),
-		all:     make(map[string]string, len(headers)),
-		Gen:     gen,
-		At:      s.now(),
+		Headers:   make(map[string]string, len(headers)),
+		all:       make(map[string]string, len(headers)),
+		Gen:       gen,
+		At:        s.now(),
+		ExpiresAt: expiresAt,
 	}
 	for k, v := range headers {
 		c.all[k] = v
@@ -423,7 +468,7 @@ func (s *LiveSession) Invalidate(gen uint64) bool {
 // ends first. Call it BEFORE taking an egress host slot: a parked request must
 // not hold a slot the re-login needs.
 func (s *LiveSession) Wait(ctx context.Context) error {
-	if s == nil || !s.pause || LiveState(s.state.Load()) != LiveRefreshing {
+	if s == nil || !s.pause || LiveState(s.state.Load()) != LiveRefreshing || s.proactive.Load() {
 		return nil
 	}
 	chp := s.ready.Load()
@@ -452,6 +497,9 @@ func (s *LiveSession) Close() {
 	s.closed = true
 	if s.timer != nil {
 		s.timer.Stop()
+	}
+	if s.expTimer != nil {
+		s.expTimer.Stop()
 	}
 	s.timerMu.Unlock()
 	s.cancel()
@@ -558,15 +606,16 @@ func (s *LiveSession) refresh(gen uint64) {
 	attempts := 0
 	for attempt := 1; attempt <= s.maxAttempts; attempt++ {
 		attempts = attempt
-		headers, err := s.manager.Rehydrate(s.ctx, s.name)
+		headers, expiresAt, err := s.manager.rehydrate(s.ctx, s.name)
 		if err == nil {
-			next := s.mint(headers, gen+1)
+			next := s.mint(headers, gen+1, expiresAt)
 			s.creds.Store(next)
 			s.fails = 0
 			s.confirmedAt.Store(0)
 			s.state.Store(int32(LiveValid))
 			close(ready)
 			s.emit(LiveEvent{Kind: LiveEventRelogin, Gen: next.Gen, OK: true, Attempts: attempts})
+			s.armExpiry(next)
 			return
 		}
 		lastErr = err
@@ -645,6 +694,50 @@ func (s *LiveSession) tick() {
 		return
 	}
 	s.emit(LiveEvent{Kind: LiveEventSuspect, Gen: gen, Reason: "interval"})
+	s.refresh(gen)
+}
+
+// armExpiry schedules the refresh of c a lead time before it expires. A
+// session that cannot re-login (no login flow, reauth disabled) is left to
+// the logged-out detection.
+func (s *LiveSession) armExpiry(c *Credentials) {
+	if c == nil || c.ExpiresAt.IsZero() || !s.reauth {
+		return
+	}
+	delay := c.ExpiresAt.Sub(s.now()) - expiryLead(c.At, c.ExpiresAt)
+	if delay < 0 {
+		delay = 0
+	}
+	gen := c.Gen
+	s.timerMu.Lock()
+	defer s.timerMu.Unlock()
+	if s.closed {
+		return
+	}
+	if s.expTimer != nil {
+		s.expTimer.Stop()
+	}
+	s.expTimer = time.AfterFunc(delay, func() { s.expire(gen) })
+}
+
+// expire refreshes generation gen ahead of its expiry, without a confirm
+// probe (the token is known to be about to lapse) and without parking
+// traffic (it is still valid while the refresh runs).
+func (s *LiveSession) expire(gen uint64) {
+	if !s.track() {
+		return
+	}
+	defer s.wg.Done()
+	if !s.state.CompareAndSwap(int32(LiveValid), int32(LiveSuspect)) {
+		return // a reactive refresh is already running
+	}
+	if s.creds.Load().Gen != gen {
+		s.state.CompareAndSwap(int32(LiveSuspect), int32(LiveValid))
+		return
+	}
+	s.emit(LiveEvent{Kind: LiveEventSuspect, Gen: gen, Reason: "expiry"})
+	s.proactive.Store(true)
+	defer s.proactive.Store(false)
 	s.refresh(gen)
 }
 

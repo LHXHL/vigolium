@@ -230,6 +230,7 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--audit` | - | string | `off` | Nested vigolium-audit harness (runs a claude/codex CLI before the operator; needs --source): lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off. Default off: the intensity preset never turns it on |
+| `--auth-file` | - | stringArray | - | Native session file, as 'vigolium scan --auth-file' takes (YAML/JSON, single session or sessions: bundle; login flows, steps, OAuth2, check/reauth), or a bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. The sessions log in before the run, the pre-scan uses them, and they are stored for the target so the operator's list_auth_sessions/replay_request can use them. |
 | `--burp-bridge-url` | `-B` | string | - | Pull live Burp/Caido proxy history into the project DB before the run (e.g. http://127.0.0.1:9009), so the pre-scan and operator can mine it alongside prior traffic. Also honors $VIGOLIUM_BURP_BRIDGE_URL (alias: --caido-bridge-url) |
 | `--db-isolate` | - | bool | `false` | Run into a private temporary database, then merge results into --db (or the default DB) at the end — lets parallel runs share one --db without write contention (SQLite only) |
 | `--diff` | - | string | - | Focus on changed code: PR URL (github.com/.../pull/123), git ref range (main...branch), or HEAD~N |
@@ -367,7 +368,8 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--agent-label` | - | string | - | Label recorded on the AgenticScan DB row; agent dispatch always uses olium |
 | `--all-records` | - | bool | `false` | Use every HTTP record in the active project as input |
 | `--audit` | - | string | - | Run background vigolium-audit for parallel security auditing: 'lite' (3-phase, default), 'balanced' (9-phase), or 'deep' (12-phase). Requires --source |
-| `--auth-config` | - | string | - | Path to an existing auth-config.yaml. Skips both browser auth and --cookie/--header/--login-curl synthesis. |
+| `--auth-config` | - | string | - | Path to an existing agent-format auth-config.yaml (a native session file is detected and loaded as --auth-file). Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-file. |
+| `--auth-file` | - | stringArray | - | Native session file, as 'vigolium scan --auth-file' takes (YAML/JSON, single session or sessions: bundle; login flows, steps, OAuth2, check/reauth), or a bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-config. |
 | `--base-url` | - | string | - | Endpoint URL for openai-compatible / anthropic-compatible provider (e.g. http://localhost:11434/v1); falls back to agent.olium.custom_provider.base_url |
 | `--batch-concurrency` | - | int | `0` | Max parallel master agent batches (0 = auto, scales with CPU count) |
 | `--browser-auth` | - | bool | `false` | Run the browser-based auth phase before discovery |

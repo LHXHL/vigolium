@@ -61,6 +61,11 @@ func runLogin(ctx context.Context, sess *Session, client *http.Client, tr *login
 	// Expand shorthand type/token_path into extract rules.
 	NormalizeLoginFlow(sess.Login)
 
+	// OAuth2 token endpoints (oauth.go).
+	if sess.Login.Type.IsOAuth2() {
+		return executeOAuth2Login(ctx, sess, client, tr)
+	}
+
 	// Multi-step login flows.
 	if len(sess.Login.Steps) > 0 {
 		return executeMultiStepLogin(ctx, sess, client, tr)
@@ -72,33 +77,39 @@ func runLogin(ctx context.Context, sess *Session, client *http.Client, tr *login
 	if err != nil {
 		return loginFailf(LoginReasonInvalidFlow, "session %q: failed to create cookie jar: %w", sess.Name, err)
 	}
-	tr.begin(-1, login.URL)
+	// Templates ({{env:…}}, {{totp:…}}) are evaluated per login, so a
+	// re-login gets a fresh TOTP code.
+	loginURL, err := substituteVars(login.URL, nil)
+	if err != nil {
+		return loginFailf(LoginReasonInvalidFlow, "session %q: login.url: %w", sess.Name, err)
+	}
+	loginBody, err := substituteVars(login.Body, nil)
+	if err != nil {
+		return loginFailf(LoginReasonInvalidFlow, "session %q: login.body: %w", sess.Name, err)
+	}
+	extraHeaders, err := substituteHeaders(login.Headers, nil)
+	if err != nil {
+		return loginFailf(LoginReasonInvalidFlow, "session %q: login.headers: %w", sess.Name, err)
+	}
+	tr.begin(-1, loginURL)
 
 	client = withLoginJar(client, jar)
 
 	var body io.Reader
-	if login.Body != "" {
-		body = strings.NewReader(login.Body)
+	if loginBody != "" {
+		body = strings.NewReader(loginBody)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(login.Method), login.URL, body)
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(login.Method), loginURL, body)
 	if err != nil {
 		return loginFailf(LoginReasonInvalidFlow, "session %q: failed to create login request: %w", sess.Name, err)
 	}
 
-	for k, v := range login.headers {
+	for k, v := range login.rawHeaders {
 		req.Header.Set(k, v)
 	}
-	if login.ContentType != "" {
-		req.Header.Set("Content-Type", login.ContentType)
-	} else if login.Body != "" {
-		// Auto-detect content type
-		if strings.HasPrefix(strings.TrimSpace(login.Body), "{") {
-			req.Header.Set("Content-Type", "application/json")
-		} else {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-	}
+	setContentType(req, login.ContentType, loginBody)
+	applyRequestHeaders(req, extraHeaders)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -178,9 +189,23 @@ func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Clie
 			return loginFailf(LoginReasonNetworkError, "session %q: step[%d] not attempted: %w", sess.Name, i, err)
 		}
 
-		// Substitute variables in URL and body.
-		stepURL := substituteVars(step.URL, vars)
-		stepBody := substituteVars(step.Body, vars)
+		// Substitute templates and variables in URL, body and headers.
+		stepURL, err := substituteVars(step.URL, vars)
+		if err != nil {
+			return loginFailf(LoginReasonInvalidFlow, "session %q: step[%d].url: %w", sess.Name, i, err)
+		}
+		stepBody, err := substituteVars(step.Body, vars)
+		if err != nil {
+			return loginFailf(LoginReasonInvalidFlow, "session %q: step[%d].body: %w", sess.Name, i, err)
+		}
+		flowHeaders, err := substituteHeaders(sess.Login.Headers, vars)
+		if err != nil {
+			return loginFailf(LoginReasonInvalidFlow, "session %q: login.headers: %w", sess.Name, err)
+		}
+		stepHeaders, err := substituteHeaders(step.Headers, vars)
+		if err != nil {
+			return loginFailf(LoginReasonInvalidFlow, "session %q: step[%d].headers: %w", sess.Name, i, err)
+		}
 		tr.begin(i, stepURL)
 
 		var body io.Reader
@@ -193,15 +218,9 @@ func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Clie
 			return loginFailf(LoginReasonInvalidFlow, "session %q: step[%d] failed to create request: %w", sess.Name, i, err)
 		}
 
-		if step.ContentType != "" {
-			req.Header.Set("Content-Type", step.ContentType)
-		} else if stepBody != "" {
-			if strings.HasPrefix(strings.TrimSpace(stepBody), "{") {
-				req.Header.Set("Content-Type", "application/json")
-			} else {
-				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			}
-		}
+		setContentType(req, step.ContentType, stepBody)
+		applyRequestHeaders(req, flowHeaders)
+		applyRequestHeaders(req, stepHeaders)
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -247,12 +266,30 @@ func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Clie
 	return nil
 }
 
-// substituteVars replaces {varname} placeholders in a string with values from vars.
-func substituteVars(s string, vars map[string]string) string {
-	for k, v := range vars {
-		s = strings.ReplaceAll(s, "{"+k+"}", v)
+// setContentType sets the request's Content-Type: the configured one, else
+// JSON for a body that starts with "{", else a form for any other body.
+func setContentType(req *http.Request, contentType, body string) {
+	switch {
+	case contentType != "":
+		req.Header.Set("Content-Type", contentType)
+	case body == "":
+	case strings.HasPrefix(strings.TrimSpace(body), "{"):
+		req.Header.Set("Content-Type", "application/json")
+	default:
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-	return s
+}
+
+// applyRequestHeaders sets the configured login headers on req, last so they
+// win over the derived ones (Content-Type). Host sets the request's Host.
+func applyRequestHeaders(req *http.Request, h map[string]string) {
+	for k, v := range h {
+		if strings.EqualFold(k, "Host") {
+			req.Host = v
+			continue
+		}
+		req.Header.Set(k, v)
+	}
 }
 
 // extractValue extracts a raw string value from the response without applying it as a header.

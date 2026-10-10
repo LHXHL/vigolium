@@ -78,11 +78,13 @@ sessions:
 | `login.method` | string | HTTP method for login |
 | `login.content_type` | string | Request content type |
 | `login.body` | string | Login request body |
-| `login.type` | string | Shorthand preset: `"bearer"` (JSON body → Authorization header) or `"cookie"` (capture all Set-Cookie headers). Auto-expands into extract rules |
+| `login.type` | string | Shorthand preset: `"bearer"` (JSON body → Authorization header) or `"cookie"` (capture all Set-Cookie headers), auto-expanded into extract rules; or an OAuth2 grant, `"oauth2_client_credentials"` / `"oauth2_refresh_token"` (see below) |
 | `login.token_path` | string | JSONPath for token extraction (used with `type` shorthand) |
 | `login.extract` | []object | How to extract auth token from login response |
 | `login.expect` | object | Response validation: `status` ([]int) and/or `body_contains` (string) |
 | `login.steps` | []object | Multi-step login flow. When set, parent URL/Method/Body/Extract are ignored |
+| `login.headers` / `login.steps[].headers` | map | Extra request headers: the flow's on every login request (single request, each step, OAuth2 token request), a step's after them (step wins). Values take `{var}` and templates |
+| `login.token_url`, `client_id`, `client_secret`, `scope`, `audience`, `refresh_token`, `auth_style` | string | OAuth2 token endpoint fields (`auth_style`: `header` = Basic, `body` = form fields, empty tries both; `scope`/`audience` are sent with client credentials only) |
 | `login_request` | string | Raw HTTP request string for the login flow (alternative to structured login). Logs in at scan start; the token is auto-discovered from the response (JSON token field, cookies, auth headers) |
 | `check.url` | string | Protected URL that tells logged-in from anonymous. A `/path` resolves against the target origin. Required unless `logged_out` has `status` or `redirect_regex` |
 | `check.method` | string | Method for the check request (default `GET`) |
@@ -106,7 +108,49 @@ in 10s without one), then the login re-runs once for all workers (events
 failing marks phases partial with `auth_lost` (or exits 1 `login_failed` under
 `on_failure: abort`); responses received while logged out are reported as the
 `responses_while_logged_out` limit and count, not re-queued. An explicit `-H`
-of the same header always wins over the session.
+of the same header always wins over the session. An OAuth2 session whose token
+reports `expires_in` is refreshed shortly before it expires (no `check` needed,
+traffic not paused; `auth.session_suspect` detail `expiry`).
+
+### Templates and OAuth2
+
+Login `url`, `body`, header values and OAuth2 fields accept templates evaluated
+at every login (so re-logins get a fresh TOTP code):
+`{{env:NAME}}` (env var at login time), `{{totp:NAME}}` (TOTP code for the
+base32 secret in `$NAME`), `{{totp_secret_file:PATH}}`. Unset variables or bad
+secrets fail the login (`invalid_flow`); `auth lint` warns on a literal base32
+secret inside `{{totp:...}}`. Templates expand before `{var}` step variables.
+
+```yaml
+sessions:
+  - name: svc
+    role: primary
+    login:
+      type: oauth2_client_credentials      # or oauth2_refresh_token (+ refresh_token)
+      token_url: https://idp.example.com/oauth/token
+      client_id: scanner
+      client_secret: "{{env:SCANNER_SECRET}}"
+      scope: "read write"
+      audience: https://api.example.com
+      auth_style: header
+  - name: mfa_user
+    role: compare
+    login:
+      headers: { Origin: "https://app.example.com" }
+      steps:
+        - url: https://app.example.com/login
+          method: POST
+          body: '{"u":"{{env:APP_USER}}","p":"{{env:APP_PASS}}"}'
+          extract: [{source: json, path: .ticket, apply_as: "var:ticket"}]
+        - url: https://app.example.com/login/mfa
+          method: POST
+          headers: { X-OTP: "{{totp:APP_TOTP_SECRET}}" }
+          body: '{"ticket":"{ticket}"}'
+          extract: [{source: cookie}]
+```
+
+The token is sent as `Authorization: Bearer <access_token>`; `auth load -j`
+reports `expires_at`. A rotated refresh token replaces the configured one.
 
 ## Extract Rule Fields
 
@@ -260,6 +304,14 @@ vigolium agent swarm --discover -t http://localhost:3000 --source ~/projects/my-
 ```bash
 # Pass a YAML auth file to any scan command
 vigolium scan -t https://example.com --auth-file auth.yaml
+
+# Agent modes take the same native files (repeatable; validated before the run).
+# Swarm: --auth-file and --auth-config (agent format; a native file is detected)
+# are mutually exclusive, and either skips --browser-auth.
+vigolium agent swarm -t https://example.com --auth-file admin.yaml --auth-file user.yaml
+# Autopilot: logs the sessions in, the pre-scan uses them, and they are stored for
+# the target so the operator's list_auth_sessions / replay_request can use them
+vigolium agent autopilot -t https://example.com --auth-file admin.yaml
 
 # Works with scan-url too
 vigolium scan-url https://example.com/api/admin --auth-file auth.yaml
@@ -448,14 +500,15 @@ frontend JavaScript.
 ### Current Limitations
 
 - Only sessions with a `check` block (own or from the
-  `scanning_strategy.session` defaults) re-login mid-scan; the others, and
-  sessions loaded from the DB, hydrate once at scan start. The spidering
-  browser and a running nuclei phase keep the credentials they started with.
-- Multi-step requests cannot define arbitrary per-step headers. Provider
-  endpoints requiring Basic auth, `Origin`, or SDK-specific headers may need an
-  authorized server-side test endpoint or a pre-acquired static token. Do not
-  put provider secrets in the URL.
-- Variable substitution applies to subsequent step URLs and bodies only.
+  `scanning_strategy.session` defaults), or an OAuth2 login with `expires_in`,
+  re-login mid-scan; the others, and sessions loaded from the DB, hydrate once
+  at scan start. The spidering browser and a running nuclei phase keep the
+  credentials they started with.
+- `auth load` stores multi-step and OAuth2 sessions as the headers their last
+  login produced; pass those files with `--auth-file` to keep them re-loggable.
+- No browser-driven login type: for a login that needs a real browser, use
+  `agent swarm --browser --browser-auth` (writes an `auth-config.yaml` the scan
+  phases use) or pass captured static headers.
 
 ### Multiple Extract Rules
 

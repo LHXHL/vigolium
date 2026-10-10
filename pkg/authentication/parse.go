@@ -47,6 +47,10 @@ type ParseOptions struct {
 	// Agent forces the lenient agent session-config.json decoder (auth load
 	// --agent-format, or a path that names an agent session file).
 	Agent bool
+	// KeepEnvRefs leaves ${ENV} references unexpanded, for a caller that
+	// writes the sessions back to a file another loader expands (expanding
+	// twice would mangle a value containing '$').
+	KeepEnvRefs bool
 }
 
 // SessionDocument is a parsed session file.
@@ -110,7 +114,10 @@ func ParseSessionBytes(content []byte, name string, opt ParseOptions) ([]*Sessio
 // ParseSessionDocument is ParseSessionBytes without the "at least one session"
 // rule, and with the form and source positions kept for Lint.
 func ParseSessionDocument(content []byte, name string, opt ParseOptions) (*SessionDocument, error) {
-	text := os.ExpandEnv(string(content))
+	text := string(content)
+	if !opt.KeepEnvRefs {
+		text = os.ExpandEnv(text)
+	}
 	if strings.TrimSpace(text) == "" {
 		return nil, &ParseError{File: name, Err: errors.New("file is empty")}
 	}

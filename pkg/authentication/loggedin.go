@@ -192,10 +192,11 @@ type SessionReauth struct {
 }
 
 // ReauthEnabled reports whether a scan should re-login s when its check says
-// it is logged out: it needs a check to notice and a login flow to re-run, and
-// `reauth.enabled: false` turns it off.
+// it is logged out, or ahead of its credentials' known expiry: it needs a
+// check to notice (or an expiry to refresh ahead of) and a login flow to
+// re-run, and `reauth.enabled: false` turns it off.
 func (s *Session) ReauthEnabled() bool {
-	if s.Check == nil || (s.Login == nil && s.LoginRequest == "") {
+	if (s.Check == nil && s.expiresAt.IsZero()) || (s.Login == nil && s.LoginRequest == "") {
 		return false
 	}
 	if s.Reauth != nil && s.Reauth.Enabled != nil {
@@ -788,7 +789,7 @@ func lintReauth(s *Session, prefix string) []LintIssue {
 		errorf("on_failure", "invalid on_failure %q (must be \"continue\" or \"abort\")", r.OnFailure)
 	}
 	enabled := r.Enabled == nil || *r.Enabled
-	if enabled && s.Check == nil {
+	if enabled && s.Check == nil && (s.Login == nil || !s.Login.Type.IsOAuth2()) {
 		issues = append(issues, LintIssue{Field: prefix, Severity: "warning",
 			Message: "reauth has no effect without a check block (or scanning_strategy.session defaults) to detect a logged-out session"})
 	}
