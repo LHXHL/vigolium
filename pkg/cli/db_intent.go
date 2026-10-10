@@ -48,6 +48,7 @@ var dbIntents = map[string]string{
 
 	// Scans and agent runs write findings, records and scan rows.
 	"scan":            "write",
+	"scan diff":       "read",
 	"run":             "write",
 	"scan-url":        "write",
 	"scan-request":    "write",
@@ -111,6 +112,7 @@ var dbIntents = map[string]string{
 	// commands whose DB touch is incidental, so the read pool buys nothing.
 	"finding":         "read",
 	"finding load":    "write",
+	"finding mark":    "write",
 	"traffic":         "read",
 	"traffic body":    "read",
 	"traffic headers": "read",

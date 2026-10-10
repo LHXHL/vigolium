@@ -553,7 +553,7 @@ var (
 		"id", "finding_hash", "severity", "confidence", "module_id", "module_name", "module_type",
 		"finding_source", "record_kind", "evidence_grade", "short", "description",
 		"url", "hostname", "matched_at", "extracted_results", "additional_evidence",
-		"tags", "cwe_id", "cvss_score", "remediation", "status", "scan_uuid",
+		"tags", "cwe_id", "cvss_score", "remediation", "status", "status_note", "status_actor", "scan_uuid",
 		"agentic_scan_uuid", "repo_name", "source_file", "found_at",
 		"http_record_uuids", "response_evidence", "request", "response",
 		"records", "records_total", "records_truncated", "records_error",
@@ -739,6 +739,13 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 	}
 	if f.Status != "" {
 		m["status"] = f.Status
+	}
+	// The verdict's provenance (`finding mark --note/--by`): why and by whom.
+	if f.StatusNote != "" {
+		m["status_note"] = f.StatusNote
+	}
+	if f.StatusActor != "" {
+		m["status_actor"] = f.StatusActor
 	}
 	if f.ScanUUID != "" {
 		m["scan_uuid"] = f.ScanUUID

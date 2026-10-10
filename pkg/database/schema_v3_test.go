@@ -348,7 +348,7 @@ func TestFindingStatusVocabulary_Confirmed(t *testing.T) {
 	if err := repo.SaveFindingDirect(ctx, f); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.UpdateFindingStatusScoped(ctx, DefaultProjectUUID, f.ID, StatusConfirmed); err != nil {
+	if err := repo.SetFindingStatus(ctx, DefaultProjectUUID, f.ID, StatusConfirmed, "", ""); err != nil {
 		t.Fatalf("UpdateFindingStatusScoped(confirmed): %v", err)
 	}
 }

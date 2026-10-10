@@ -879,8 +879,9 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 
 	// In-memory --fail-on gate: the direct path holds findings in memory rather
 	// than a database, so check severities here. The RunE converts the flag into
-	// an exit code after output is written.
-	failOnGateFromEvents(result.Findings, globalSilent)
+	// an exit code after output is written. Findings already dismissed in the
+	// store do not count, as on the DB gate.
+	failOnGateFromEvents(withoutDismissed(ctx, repo, scanProjectUUID, result.Findings), globalSilent)
 
 	return result, execErr
 }

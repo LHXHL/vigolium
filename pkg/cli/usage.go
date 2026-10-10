@@ -321,6 +321,7 @@ var agentSessionFlagGroups = []flagGroup{
 // flags only for db ls).
 var listQueryFlagGroups = []flagGroup{
 	{"Filter", []string{"uuid", "url", "host", "method", "status", "path", "source", "scan-uuid", "module-type", "finding-source", "record-kind", "severity", "min-severity", "confidence", "agentic-scan", "id", "min-risk", "min-surface", "remark"}},
+	{"Lifecycle", []string{"verdict", "new-since", "include-dismissed"}},
 	{"Search", []string{"search", "header", "body", "exclude-search", "exclude-header", "exclude-body"}},
 	{"Date Range", []string{"from", "to"}},
 	{"Display", []string{"tree", "raw", "burp", "markdown", "group-by", "group-limit", "columns", "exclude-columns", "tui", "no-tui"}},

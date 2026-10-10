@@ -34,6 +34,7 @@ var machineKinds = map[string]machineKind{
 
 	// Scans: the single scan document.
 	"scan":            kindScan,
+	"scan diff":       kindRead,
 	"run":             kindScan,
 	"scan-url":        kindScan,
 	"scan-request":    kindScan,
@@ -86,6 +87,7 @@ var machineKinds = map[string]machineKind{
 	// Findings and traffic.
 	"finding":         kindRead,
 	"finding load":    kindMutation,
+	"finding mark":    kindMutation,
 	"traffic":         kindRead,
 	"traffic body":    kindRead,
 	"traffic headers": kindRead,

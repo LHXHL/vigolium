@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/olium/tool"
@@ -13,14 +14,18 @@ import (
 
 // NewUpdateFindingTool returns the update_finding tool — the agent's
 // write-side handle for triaging existing findings. Wraps
-// repo.UpdateFindingStatusScoped so verdicts produced by the autopilot loop
-// (after validating an existing finding with replay_request / inspect_record)
-// land in the project DB instead of evaporating in the transcript.
+// repo.UpdateFindingStatusScoped (via SetFindingStatus) so verdicts produced by
+// the autopilot loop (after validating an existing finding with replay_request /
+// inspect_record) land in the project DB, with their reasoning and a
+// finding_status_events row, instead of evaporating in the transcript.
 func NewUpdateFindingTool(ctx *SessionsContext) tool.Tool {
 	return &updateFindingTool{ctx: ctx}
 }
 
 type updateFindingTool struct{ ctx *SessionsContext }
+
+// updateFindingActor is the actor recorded on status changes the agent makes.
+const updateFindingActor = "olium"
 
 func (*updateFindingTool) Name() string     { return "update_finding" }
 func (*updateFindingTool) Label() string    { return "Update finding status" }
@@ -29,10 +34,12 @@ func (*updateFindingTool) IsReadOnly() bool { return false }
 func (*updateFindingTool) Description() string {
 	return "Update the lifecycle status of an existing finding after triaging it. Use this when " +
 		"you've verified an existing finding (via inspect_record + replay_request, or by reading " +
-		"the relevant code), and have a verdict: 'triaged' (confirmed real), 'false_positive' " +
-		"(not exploitable / scanner noise), 'accepted_risk' (real but the operator is keeping it), " +
-		"or 'fixed' (resolved). Triage is the primary value-add for the autopilot when a pre-scan " +
-		"has already produced findings — confirm or refute them rather than re-discovering."
+		"the relevant code), and have a verdict: 'confirmed' (you reproduced it), 'triaged' (looks " +
+		"real but not reproduced), 'false_positive' (not exploitable / scanner noise), " +
+		"'accepted_risk' (real but the operator is keeping it), or 'fixed' (resolved). Put the " +
+		"evidence behind the verdict in 'note'. Triage is the primary value-add for the autopilot " +
+		"when a pre-scan has already produced findings — confirm or refute them rather than " +
+		"re-discovering."
 }
 
 func (*updateFindingTool) Schema() map[string]any {
@@ -45,8 +52,12 @@ func (*updateFindingTool) Schema() map[string]any {
 			},
 			"status": map[string]any{
 				"type":        "string",
-				"enum":        []string{database.StatusTriaged, database.StatusFalsePositive, database.StatusAcceptedRisk, database.StatusFixed, database.StatusDraft},
-				"description": "New lifecycle status. 'triaged' confirms a real bug; 'false_positive' rejects it; 'accepted_risk' keeps it but acknowledges; 'fixed' marks it resolved.",
+				"enum":        database.FindingStatuses,
+				"description": "New lifecycle status. 'confirmed' means you reproduced it; 'triaged' looks real but is not reproduced; 'false_positive' rejects it; 'accepted_risk' keeps it but acknowledges; 'fixed' marks it resolved; 'draft' returns it to untriaged.",
+			},
+			"note": map[string]any{
+				"type":        "string",
+				"description": "Why: the evidence behind the verdict (stored with the status and in its history).",
 			},
 		},
 		"required": []string{"id", "status"},
@@ -65,16 +76,17 @@ func (u *updateFindingTool) Execute(ctx context.Context, args map[string]any, _ 
 	status := argsString(args, "status")
 	if !database.IsValidFindingStatus(status) {
 		return tool.Result{
-			Content: fmt.Sprintf("update_finding: invalid status %q (allowed: triaged, false_positive, accepted_risk, fixed, draft)", status),
+			Content: fmt.Sprintf("update_finding: invalid status %q (allowed: %s)", status, strings.Join(database.FindingStatuses, ", ")),
 			IsError: true,
 		}, nil
 	}
+	note := argsString(args, "note")
 
 	// Scope guard: the tool's SessionsContext is the authorization boundary, and
 	// the project predicate rides on the UPDATE itself, so an agent that supplies
 	// a finding ID from another project matches nothing. An unscoped context
 	// (ProjectUUID == "") writes by id alone.
-	if err := u.ctx.Repo.UpdateFindingStatusScoped(ctx, u.ctx.ProjectUUID, id, status); err != nil {
+	if err := u.ctx.Repo.SetFindingStatus(ctx, u.ctx.ProjectUUID, id, status, note, updateFindingActor); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			where := ""
 			if u.ctx.ProjectUUID != "" {

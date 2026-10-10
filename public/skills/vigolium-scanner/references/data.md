@@ -21,6 +21,7 @@ Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `modu
 - [db seed](#db-seed)
 - [finding](#finding)
 - [finding load](#finding-load)
+- [finding mark](#finding-mark)
 - [traffic](#traffic)
 - [traffic --replay](#traffic---replay)
 - [export (top-level)](#export)
@@ -646,6 +647,9 @@ Browse vulnerability findings with fuzzy search, filtering, raw display, and col
 | `--id` | — | int | — | Filter by finding ID — the **integer** from the ID column. A UUID is rejected with the flag that reads that namespace instead (`traffic --uuid` for a record, `--agentic-scan`/`--scan-uuid` for a run); it is never coerced |
 | `--min-severity` | — | string | — | Show findings at/above this severity (`info`,`suspect`,`low`,`medium`,`high`,`critical`); ignored when `--severity` is set |
 | `--agentic-scan` | — | string | — | Findings from an agent run; one root UUID expands to the whole run tree (audit driver legs / swarm sub-runs) |
+| `--verdict` | — | string | — | Filter by lifecycle status: `draft,triaged,confirmed,false_positive,accepted_risk,fixed` (comma-separated; set with [`finding mark`](#finding-mark)). Not `--status`, which is the HTTP status code |
+| `--new-since` | — | string | — | Only findings new since a scan — a UUID, an 8+ char prefix, `latest` or `previous`: first observed by a later scan and **not** observed by it — or since a time (`24h`, `2d`, a date: stored after it). Leaves out `false_positive`/`accepted_risk` unless `--include-dismissed` or `--verdict`. An unknown scan is an error (`scan_not_found`), never an empty list |
+| `--include-dismissed` | — | bool | `false` | With `--new-since`: keep findings marked `false_positive`/`accepted_risk` |
 
 ### Display flags
 
@@ -733,7 +737,12 @@ vigolium finding --sort severity --asc
 vigolium db ls findings --watch 5s   # --watch is on the db command, not finding
 vigolium finding -j --min-severity high --with-records
 vigolium finding -j --agentic-scan 550e8400-e29b-41d4-a716-446655440000
+vigolium finding -j --new-since previous --min-severity high   # what the latest scans added
+vigolium finding --verdict confirmed,triaged                    # the still-open, believed-real set
 ```
+
+The `-j` item carries the lifecycle verdict as `status`, plus `status_note` and
+`status_actor` when one was recorded (`--fields status,status_note` selects them).
 
 ---
 
@@ -761,6 +770,55 @@ merge - the first one present wins, so passing both a positional path and
 vigolium finding load findings.jsonl
 vigolium finding load --finding-file findings.json --scan-uuid <uuid>
 cat findings.jsonl | vigolium finding load
+vigolium finding load findings.json -j
+```
+
+`-j` is a mutation envelope: `items` = the ids of the findings stored (so
+`total` counts them), `changed`, `action: "import"`, and top-level `format`,
+`parsed`, `saved`, `skipped`. The pre-envelope `total` (the parsed count) is
+now `parsed`.
+
+---
+
+## finding mark
+
+**Usage:** `vigolium finding mark <id|hash>... --as <verdict> [--note "…"] [--by <actor>]`
+
+Record a lifecycle verdict on one or more findings. Name each finding by its
+numeric id or its `finding_hash` (full, or a prefix of at least 12 characters —
+the hash is stable across merges and exports, the id is not). A prefix matching
+more than one finding is refused (exit 2) with the candidates listed; nothing is
+written.
+
+| `--as` | Meaning |
+|--------|---------|
+| `false_positive` | not a bug (noise, not exploitable) — **dismissed** |
+| `accepted_risk` | real, the owner keeps it — **dismissed** |
+| `confirmed` | reproduced (by a human or a re-verification) |
+| `triaged` | looks real, not yet reproduced |
+| `fixed` | resolved |
+
+Lifecycle: `draft → triaged → confirmed → fixed`, with `false_positive` /
+`accepted_risk` as exits. Dismissed findings are left out of the `--fail-on`
+gate, `scan diff` and `finding --new-since` by default; reports keep them.
+
+Each change sets the finding's `status_note` / `status_actor` (a new verdict
+without `--note` clears the old note) and appends one row to its status history.
+A finding already at the verdict is reported `unchanged` and left alone.
+
+`-j` is a mutation envelope: `changed` (bool), `action: "update"`, `items` = the
+changes `[{id, finding_hash, from, to}]`, plus `status`, `unchanged`, and
+`not_found` (the selectors that matched nothing). **Any `not_found` exits 1**
+after the document is written, so a typo is never mistaken for success; ids
+from another project are `not_found` too.
+
+Writes to the project DB, or a standalone `.sqlite` with `-S --db <file>`
+(project scoping off). Refused (exit 2) under `--glob-db` and for a `.jsonl`
+`--db` (both read a temporary copy) and under `--read-only`.
+
+```bash
+vigolium finding mark 42 --as false_positive --note "static asset, no user input"
+vigolium finding mark 3f9a0c2b71de 43 --as confirmed --by alice -j
 ```
 
 ---

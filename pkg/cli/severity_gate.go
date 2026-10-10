@@ -22,7 +22,7 @@ var severityOrder = []string{"info", "suspect", "low", "medium", "high", "critic
 // "suspect"). suffix carries the per-command tail after the choices.
 func failOnUsage(suffix string) string {
 	return "Exit non-zero if a finding at or above this severity is present (" +
-		strings.Join(severityOrder, "|") + ") — " + suffix
+		strings.Join(severityOrder, "|") + "); findings marked false_positive/accepted_risk do not count — " + suffix
 }
 
 // severityAliases maps single-letter shorthands to canonical severity names so

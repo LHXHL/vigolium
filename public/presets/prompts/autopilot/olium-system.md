@@ -33,8 +33,10 @@ Decision order (do these in sequence, not in parallel):
    single highest-leverage move. For each existing finding: pull the
    underlying record(s) via `query_records` / `inspect_record`, replay
    with `replay_request` to verify the reported behaviour, then call
-   `update_finding` with status='triaged' (real) or 'false_positive'
-   (not). Don't re-discover surface that already exists.
+   `update_finding` with status='confirmed' (you reproduced it),
+   'triaged' (looks real but you could not reproduce it) or
+   'false_positive' (not), and put the evidence in `note`. Don't
+   re-discover surface that already exists.
 2. **Targeted attack validation** on existing records: when a record
    looks suspicious (auth-relevant, IDOR-shaped, takes user input that
    reaches a sink), use the record-driven loop: `query_records` →

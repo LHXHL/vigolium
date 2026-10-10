@@ -111,8 +111,10 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
 ```
 
 - `--fail-on <info|low|medium|high|critical>`: exit non-zero when a finding at or
-  above that severity is present. `--soft-fail` forces exit 0 (still prints the
-  reason). Output is always written first — the gate only changes the exit code.
+  above that severity is present. Findings marked `false_positive` or
+  `accepted_risk` ([Finding lifecycle](#finding-lifecycle)) do not count.
+  `--soft-fail` forces exit 0 (still prints the reason). Output is always
+  written first — the gate only changes the exit code.
 - **`scan-url` and `scan-request` persist by default.** Their findings and
   traffic go into the project database like any other scan; `-S/--stateless`
   is what makes a run throwaway (pair it with `-o`/`--format` to keep anything).
@@ -242,6 +244,88 @@ duplicates the rows on the wire and exists only for consumers still migrating.
 - Commands attach their own keys alongside these (`glob_sources`,
   `output_budget`, `targets_not_scanned`, …). A key colliding with one of the
   envelope's own is dropped rather than shadowing it.
+- Finding rows carry the lifecycle verdict as `status`, with `status_note` and
+  `status_actor` when one was recorded.
+
+### Commands that moved onto the envelope
+
+These used to print a bare object or array of their own. They now print the
+envelope above; the rule is "wrap, don't reshape": the rows move to `items`,
+and every other top-level key stays where it was under the same name. A
+single-object answer becomes `items: [obj]` (read `.items[0]`).
+`--json-legacy-keys` (or `VIGOLIUM_JSON_LEGACY_KEYS=1`) brings back the old
+row name, or flattens a single object back to the top level, for one release.
+
+| Command | `kind` | `items` | Kept at the top level | Legacy alias |
+|---|---|---|---|---|
+| `module ls` (`module`, `-M`) | read | modules | `active_count`, `passive_count` | `modules` |
+| `doctor` | read | `[report]` | `status` (copied up; the re-checked verdict under `--fix`), `fixes`, `updated` | `.` (`report` under `--fix`) |
+| `version` | read | `[{version, commit, db_schema_version, …}]` | — | `.` |
+| `skills list` | read | skills | — | `skills` |
+| `skills get` | read | `[{name, description, embed_path, content, references?}]` | — | — (was raw markdown; still is without `-j`) |
+| `kit secret-scan` | read | matches | `files_scanned`, `count` | `matches` |
+| `kit harvest` | read | urls | `domains`, `sources`, `count`, `stats`, `limits` | `urls` |
+| `kit oast new` / `poll` | read | urls / interactions | `server`, `session`, `count` | `urls` / `interactions` |
+| `kit wordlist` | read | wordlists, or entries with a name | `name`, `count` | `wordlists` / `entries` |
+| `kit payload` | read | payloads (class names with `--list`) | `classes`, `count` | `payloads` / `classes` |
+| `kit js-beautify`, `kit jwt-crack` | read | `[result]` | — | `.` |
+| `kit tmp-clean` | mutation | `[result]` | — | `.` |
+| `js` | read | `[{value}]`, the return value as JSON | — | — (was the raw value; still is without `-j`) |
+| `project list`, `storage ls` | read | projects / objects | `prefix` (storage) | — (was a bare array) |
+| `storage presign` | read | `[{url, key, method, expiry_seconds}]` | — | `.` |
+| `traffic --glob-db … --burp` | read | `[aggregate]` | `pattern`, `files`, `files_read`, `unreadable`, `duration_ms` | `result` |
+| `import` | mutation | `[]` | every import counter, `report_path`, `uploaded_to` | — |
+| `finding load` | mutation | stored finding ids | `format`, `parsed`, `saved`, `skipped` (the old `total` is `parsed`) | — |
+| `ingest` (local and `-s` remote) | mutation | `[]` | `records_ingested`/… or `records_submitted`, `errors`, `duration_ms` | — |
+| `update` | mutation | steps | — | `steps` |
+
+`project list`, `storage ls` and `storage presign` had a local `--json` flag
+that shadowed the global one (so `-j` failed). It is gone: `--json` and `-j`
+are now the global flag on every command. Every one of these documents goes
+through the shared writer, so `--pretty`, `-o` and `--max-output-bytes` apply.
+
+## Finding lifecycle
+
+Statuses: `draft → triaged → confirmed → fixed`, with `false_positive` and
+`accepted_risk` as **dismissed** exits. Dismissed findings are left out of the
+`--fail-on` gate, `scan diff` and `finding --new-since` by default
+(`--include-dismissed` keeps them); reports keep them, labelled.
+
+```bash
+# Record a verdict. Name findings by id or finding_hash (>= 12-char prefix).
+vigolium finding mark 42 3f9a0c2b71de --as false_positive --note "static asset" --by agent -j
+
+# Filter on the verdict (--status is the HTTP status code).
+vigolium finding --verdict confirmed,triaged -j
+
+# What did later scans find that this one did not? (UUID, 8+ prefix, latest, previous, or a time)
+vigolium finding --new-since <scan-uuid> -j
+vigolium finding --new-since 24h -j
+
+# Compare two runs; exit 4 when something new is high or above.
+vigolium scan diff previous latest -j --fail-on-new high
+vigolium scan diff --target https://app.example --last 2 -j
+```
+
+- `finding mark` emits a `mutation` envelope: `changed`, `action: "update"`,
+  `items` = `[{id, finding_hash, from, to}]`, plus `status`, `unchanged` and
+  `not_found`. Any `not_found` selector exits `1` (code `not_found`) after the
+  document is written. An ambiguous hash prefix is a usage error listing the
+  candidates; nothing is written. Refused under `--glob-db`, a `.jsonl` `--db`
+  and `--read-only`; `-S --db <file.sqlite>` writes that file with project
+  scoping off.
+- `scan diff` items are finding rows plus `change` (`new`, `unchanged`, `fixed`,
+  `not_reobserved`) and `first_seen_scan`. A base-only finding is `fixed` only
+  when the head is `comparable` — completed, completeness `complete`, a superset
+  of the base's targets, and every phase that ran in the base completed in the
+  head — and `not_reobserved` otherwise; `comparability_reasons` says why.
+  `history: "partial"` means a scan predates the store's per-scan observation
+  history (schema v3), so an older re-detection may be missing. The envelope
+  also carries `base`, `head` and `counts`.
+- An unknown scan in `scan diff` or `--new-since` exits `1` with
+  `scan_not_found`, never an empty result.
+- `scan <uuid>` exits `2`: a UUID in the target position is a mistyped
+  subcommand, and the error names the `scan` subcommands.
 
 ## Query stored HTTP traffic
 
@@ -516,7 +600,7 @@ Exit codes:
 | `1` | the work failed; `error.code` says how (`source_missing`, `export_failed`, `no_targets_in_scope`, …) |
 | `2` | usage error — bad flag, bad value, rejected combination, a search that matched nothing (`module enable`), or a mutation that needed `--force` and had no terminal to ask. Always `error.code: "usage_error"` |
 | `3` | `--fail-on-match` / `--fail-on-crack` matched (`fuzz`, `kit secret-scan`, `kit jwt-crack`) |
-| `4` | the `--fail-on <severity>` gate tripped |
+| `4` | the `--fail-on <severity>` (or `scan diff --fail-on-new <severity>`) gate tripped |
 | `5` | incomplete — the work ran but did not finish. `error.code` is `timed_out`, `budget_exhausted` or `partial`. Used by agent runs; a native scan that is merely partial still exits `0` (see [Partial scans](#partial-scans)), with an opt-in `--fail-on-partial` planned for a later release |
 
 `error.code` is a closed set shared with the REST API (`pkg/apicontract`):

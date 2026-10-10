@@ -239,6 +239,10 @@ type UpdateFindingStatusRequest struct {
 	Status string `json:"status"`
 }
 
+// findingStatusActorAPI is the actor recorded on status changes made through
+// the REST API.
+const findingStatusActorAPI = "api"
+
 // HandleUpdateFindingStatus handles PATCH /api/findings/:id/status — updates the
 // lifecycle status of a finding (one of database.FindingStatuses: draft → triaged → confirmed → fixed, or
 // false_positive / accepted_risk).
@@ -278,8 +282,10 @@ func (h *findingsHandlers) HandleUpdateFindingStatus(c fiber.Ctx) error {
 	// of the UPDATE, so an operator scoped to one engagement can't flip another
 	// project's finding via a raw id. A finding outside the project is reported
 	// as not found, exactly like a missing one. The updated finding is re-loaded
-	// in full below, after the write, for the response body.
-	if err := h.repo.UpdateFindingStatusScoped(c.Context(), getProjectUUID(c), id, status); err != nil {
+	// in full below, after the write, for the response body. Like every status
+	// writer it goes through the scoped writer, so the change is stamped with
+	// its actor and lands in finding_status_events.
+	if err := h.repo.SetFindingStatus(c.Context(), getProjectUUID(c), id, status, "", findingStatusActorAPI); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
 				Error: ErrFindingNotFound.Error(),

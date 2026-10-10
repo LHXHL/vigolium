@@ -51,7 +51,7 @@ emitted as a FINDING block:
 The JSON body matches the report_finding schema. Required: `title`,
 `severity` (one of: critical, high, medium, low, info), `description`.
 Optional: `url`, `source_file`, `confidence` (certain/firm/tentative,
-default firm), `status` (triaged/draft/false_positive/accepted_risk/fixed,
+default firm), `status` (triaged/confirmed/draft/false_positive/accepted_risk/fixed,
 default triaged), `cwe_id`, `remediation`, `tags`, `request`, `response`,
 `dedup_key`.
 

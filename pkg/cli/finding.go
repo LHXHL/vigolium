@@ -42,6 +42,11 @@ var (
 	findingFindingSource string
 	findingRecordKind    string
 
+	// Lifecycle filters (see finding_lifecycle.go)
+	findingNewSince         string
+	findingVerdict          string
+	findingIncludeDismissed bool
+
 	// Display-only flags
 	findingRaw         bool
 	findingBurp        bool
@@ -168,6 +173,9 @@ func init() {
 	f.StringSliceVar(&findingColumns, "columns", nil, "Columns to show (comma-separated, e.g. ID,SEVERITY,MODULE)")
 	f.StringSliceVar(&findingExclude, "exclude-columns", nil, "Columns to hide (comma-separated)")
 	f.StringVar(&findingPick, "pick", "", "Select finding(s) by 1-based position in the result list (e.g. 2, 1,3, 2-4); applied after --search/filters and sort")
+	f.StringVar(&findingNewSince, "new-since", "", "Only findings new since a scan (UUID, 8+ char prefix, latest, previous: first observed by a later scan and not by it) or a time ("+clicommon.TimeFilterSyntax+": stored after it). Leaves out false_positive/accepted_risk unless --include-dismissed or --verdict")
+	f.StringVar(&findingVerdict, "verdict", "", "Filter by lifecycle status: "+strings.Join(database.FindingStatuses, ",")+" (comma-separated; set with 'finding mark')")
+	f.BoolVar(&findingIncludeDismissed, "include-dismissed", false, "With --new-since: keep findings marked false_positive or accepted_risk")
 
 	// Burp bridge push — hand a finding's evidence request to Burp for manual
 	// confirmation. Requires the extension's loopback listener.
@@ -281,6 +289,9 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		// driver legs / swarm sub-runs) so one UUID returns every linked finding.
 		if findingAgenticScan != "" {
 			filters.AgenticScanUUIDs = resolveAgenticScanTree(ctx, db, findingAgenticScan)
+		}
+		if err := resolveNewSinceScan(ctx, db, &filters); err != nil {
+			return err
 		}
 		fqb := database.NewFindingsQueryBuilder(db, filters)
 		findings, total, err := fqb.ExecuteWithCount(ctx)
@@ -531,6 +542,11 @@ func buildFindingFilters(fuzzyTerm string) (database.QueryFilters, error) {
 		return database.QueryFilters{}, err
 	}
 
+	verdicts, err := parseVerdictList(findingVerdict)
+	if err != nil {
+		return database.QueryFilters{}, err
+	}
+
 	return database.QueryFilters{
 		ProjectUUID:         projectUUID,
 		FindingID:           findingID,
@@ -545,6 +561,9 @@ func buildFindingFilters(fuzzyTerm string) (database.QueryFilters, error) {
 		ModuleType:          findingModuleType,
 		FindingSource:       findingFindingSource,
 		RecordKinds:         recordKinds,
+		Status:              verdicts,
+		ExcludeStatuses:     newSinceExcludedStatuses(verdicts),
+		CreatedAfter:        newSinceCreatedAfter(),
 		DateFrom:            dateFrom,
 		DateTo:              dateTo,
 		FuzzyTerm:           fuzzyTerm,
@@ -614,6 +633,8 @@ func printActiveFindingFilters(filters database.QueryFilters, fuzzyTerm string) 
 	s.add("agentic-scan", findingAgenticScan)
 	s.add("module-type", filters.ModuleType)
 	s.add("finding-source", filters.FindingSource)
+	s.add("verdict", strings.Join(filters.Status, ","))
+	s.add("new-since", findingNewSince)
 	if filters.FindingID != 0 {
 		s.add("id", strconv.Itoa(filters.FindingID))
 	}

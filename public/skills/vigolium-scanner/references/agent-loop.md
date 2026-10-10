@@ -22,6 +22,8 @@ scope → scan → read → confirm → hand off
 - [Watching a scan while it runs](#watching-a-scan-while-it-runs)
 - [Step 3 — Read the results](#step-3--read-the-results)
 - [Step 4 — Confirm a finding](#step-4--confirm-a-finding)
+- [Recording a verdict](#recording-a-verdict)
+- [What changed since the last scan](#what-changed-since-the-last-scan)
 - [Step 5 — Hand off](#step-5--hand-off)
 - [Bulk replay](#bulk-replay)
 - [Payload fuzzing](#payload-fuzzing)
@@ -464,6 +466,57 @@ stored HTTPRecord):
 ```bash
 vigolium replay --record-uuid <uuid> --in-replace
 ```
+
+## Recording a verdict
+
+Once a finding is confirmed or refuted, write the verdict back so later gates
+and diffs stop re-asking:
+
+```bash
+vigolium finding mark 42 --as confirmed --note "replayed: 500 + SQL error on id=1'"
+vigolium finding mark 3f9a0c2b71de --as false_positive --note "static asset" -j
+```
+
+Verdicts: `false_positive`, `accepted_risk` (both **dismissed**), `confirmed`
+(reproduced), `triaged` (believed real, not reproduced), `fixed`. Name findings
+by id or by `finding_hash` (≥12-char prefix) — the hash survives merges and
+exports, the id does not. Dismissed findings drop out of `--fail-on`, `scan diff`
+and `finding --new-since`; `finding --verdict <list>` filters on the status and
+the `-j` item carries `status`, `status_note`, `status_actor`. An id or hash that
+matches nothing **exits 1** (listed in the envelope's `not_found`). Refused under
+`--glob-db`, a `.jsonl` `--db`, and `--read-only`. Full reference:
+[data.md → finding mark](data.md#finding-mark).
+
+## What changed since the last scan
+
+A re-run overwrites `findings.scan_uuid` with the newest observer, so
+`--scan-uuid` cannot answer "what is new". Use the per-scan observation history:
+
+```bash
+vigolium scan diff previous latest -j            # keywords, UUIDs or 8+ char prefixes
+vigolium scan diff --target https://app.example --last 2 --fail-on-new high
+vigolium finding --new-since <base-scan> -j      # composes with every finding filter
+vigolium finding --new-since 24h -j              # or a time: stored after it
+```
+
+Each `scan diff` item is the finding view plus `change` and `first_seen_scan`:
+
+| `change` | Meaning |
+|---|---|
+| `new` | head saw it, base did not |
+| `unchanged` | both saw it |
+| `fixed` | base saw it, a **comparable** head did not |
+| `not_reobserved` | base saw it, a head that cannot vouch for its absence did not — **not** evidence of a fix |
+
+The envelope adds `base`/`head` (uuid, status, completeness, target),
+`comparable` + `comparability_reasons` (`head_partial`, `head_not_finished`,
+`head_targets_not_superset`, `head_phases_not_superset`, `*_unknown`), `counts`,
+and `history`: `"partial"` when a scan predates the store's observation history,
+so an older re-detection may be missing. Dismissed findings are left out unless
+`--include-dismissed`. `--fail-on-new <sev>` exits `4` after the result is written.
+
+`scan <uuid>` is refused (exit 2) — a UUID in the target position is a mistyped
+subcommand (`scan staus <uuid>`), and the error points at the `scan` subcommands.
 
 ## Step 5 — Hand off
 
@@ -926,7 +979,7 @@ vigolium version --json   # {version, commit, schema_version, db_schema_version}
 | `1` | error — the command failed to do its job |
 | `2` | usage error — bad flag, bad value, rejected combination |
 | `3` | `fuzz --fail-on-match` matched |
-| `4` | `--fail-on <sev>` gate tripped |
+| `4` | `--fail-on <sev>` / `scan diff --fail-on-new <sev>` gate tripped |
 | `5` | incomplete — ran but did not finish; `error.code` is `timed_out`, `budget_exhausted` or `partial` (agent runs; native partial scans still exit 0) |
 
 **`4` is not a failure.** The scan ran to completion, wrote its output, and found
@@ -954,6 +1007,8 @@ On the read commands:
 | `finding --id <a UUID>` | `2` | `usage_error` (names the flag that reads that namespace) |
 | `traffic --group-by <unknown field>` | `2` | `usage_error` (lists the groupable fields) |
 | `traffic body --uuid <no such record>` | `1` | `record_not_found` |
+| `finding mark <id/hash that matches nothing>` | `1` | `not_found` — after the mutation envelope, which lists it in `not_found` |
+| `scan diff <unknown scan>` / `finding --new-since <unknown scan>` | `1` | `scan_not_found` |
 | `traffic body --uuid <request with no response>` | `1` | `body_unavailable` |
 | `scan -S -o <unwritable path>` | `1` | `export_failed` — the scan ran; the artifact did not land |
 | `--id 999999` (no such finding) | `0` | —, `{"total":0,"items":[]}` |
@@ -985,7 +1040,8 @@ corrupts the stream.
 
 `--fail-on <info\|suspect\|low\|medium\|high\|critical>` on `scan`/`run`/
 `scan-url`/`scan-request` exits `4` when a finding at or above that severity is
-present. **Output is always written first** — the gate only changes the exit
+present. Findings marked `false_positive` or `accepted_risk` ([`finding mark`](#recording-a-verdict))
+do not count. **Output is always written first** — the gate only changes the exit
 code. `--soft-fail` (global) forces exit 0 even on error and overrides
 `--fail-on`. Under `-P/--parallel` the gate is evaluated **per child**; the
 parent batch fails only when every target fails.

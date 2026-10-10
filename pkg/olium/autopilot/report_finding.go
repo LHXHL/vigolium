@@ -100,7 +100,7 @@ func (*reportFindingTool) Schema() map[string]any {
 			},
 			"status": map[string]any{
 				"type":        "string",
-				"enum":        []string{"triaged", "draft", "false_positive", "accepted_risk", "fixed"},
+				"enum":        []string{"triaged", "confirmed", "draft", "false_positive", "accepted_risk", "fixed"},
 				"description": "Finding lifecycle state. Default 'triaged'.",
 				"default":     "triaged",
 			},

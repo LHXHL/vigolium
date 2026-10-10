@@ -73,7 +73,21 @@ type QueryFilters struct {
 	FindingSource  string   // Filter findings by source (audit, spa, agent, etc.)
 	RecordKinds    []string // finding (default), candidate, observation
 	RepoName       string   // Filter findings by repo name
-	Status         []string // Filter findings by lifecycle status (draft, triaged, false_positive, accepted_risk, fixed)
+	Status         []string // Filter findings by lifecycle status (one of FindingStatuses)
+	// ExcludeStatuses drops findings whose lifecycle status is listed (a NULL
+	// status reads as triaged, the column default). The --fail-on gate, scan
+	// diff and --new-since pass DismissedFindingStatuses here.
+	ExcludeStatuses []string
+	// ObservedInScans keeps findings that any of these scans observed
+	// (finding_observations), not merely the scan a finding was last
+	// attributed to (findings.scan_uuid).
+	ObservedInScans []string
+	// NewSince keeps findings first observed after a baseline scan; see
+	// NewSinceBaseline. Built by Repository.ResolveNewSince.
+	NewSince *NewSinceBaseline
+	// CreatedAfter keeps findings first stored after this instant
+	// (`finding --new-since <duration>`).
+	CreatedAfter *time.Time
 
 	// Date range filtering
 	DateFrom *time.Time
@@ -1048,6 +1062,23 @@ func (fqb *FindingsQueryBuilder) applyFindingFilters(query *bun.SelectQuery) {
 	// Status filtering
 	if len(fqb.filters.Status) > 0 {
 		query.Where("f.status IN (?)", bun.List(fqb.filters.Status))
+	}
+	if len(fqb.filters.ExcludeStatuses) > 0 {
+		query.Where("COALESCE(f.status, ?) NOT IN (?)", StatusTriaged, bun.List(fqb.filters.ExcludeStatuses))
+	}
+
+	// Lifecycle predicates over finding_observations. EXISTS/NOT EXISTS rather
+	// than a JOIN, so a finding observed by several scans is still one row and
+	// pagination and the total stay exact.
+	if len(fqb.filters.ObservedInScans) > 0 {
+		query.Where("EXISTS (SELECT 1 FROM finding_observations o WHERE o.finding_id = f.id AND o.scan_uuid IN (?))",
+			bun.List(fqb.filters.ObservedInScans))
+	}
+	if ns := fqb.filters.NewSince; ns != nil {
+		ns.apply(query)
+	}
+	if fqb.filters.CreatedAfter != nil {
+		query.Where("f.created_at > ?", *fqb.filters.CreatedAfter)
 	}
 
 	// Domain filtering via associated HTTP records. Uses EXISTS (not a JOIN) so a

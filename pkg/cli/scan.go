@@ -31,7 +31,8 @@ Use --only / --skip to limit phases, --strategy or --scanning-profile for tuned 
 Targets may be passed as positional URLs (vigolium scan https://a https://b), via
 repeated -t/--target, or from -T/--target-file; the three combine and duplicates
 are removed. A positional value is always treated as a target URL, never a file —
-use -T or -i for files.`,
+use -T or -i for files. A UUID-shaped positional is rejected as a mistyped
+subcommand (see 'vigolium scan diff').`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runScanCmd,
 }
@@ -127,6 +128,12 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		return gateErr
 	}
 	defer func() { err = withFailOnGate(err) }()
+
+	// A UUID where a target goes is a mistyped subcommand (`scan staus <uuid>`),
+	// not a host; see rejectUUIDScanTargets.
+	if err := rejectUUIDScanTargets(cmd, args); err != nil {
+		return err
+	}
 
 	// Copy global flags into scan options
 	scanOpts.ScanUUID = globalScanUUID

@@ -296,20 +296,44 @@ func writeArtifactBlock(b *strings.Builder, body []byte) {
 // "" only when scoping is off), so the write itself carries the project
 // predicate rather than relying on the earlier lookup check.
 func applyTriageVerdict(ctx context.Context, repo *database.Repository, projectUUID string, finding *database.Finding, verdict *agent.TriageConfirmResult) error {
+	// The status write goes through the scoped writer like every other status
+	// change, so the verdict carries its actor and reasoning and lands in
+	// finding_status_events.
+	note := triageStatusNote(verdict)
 	switch verdict.Verdict {
 	case agent.TriageVerdictFalsePositive:
 		newDesc := appendTriageReasoning(finding.Description, verdict)
 		if err := repo.UpdateFindingTriage(ctx, projectUUID, finding.ID, database.SeverityInfo, newDesc); err != nil {
 			return fmt.Errorf("update triage: %w", err)
 		}
+		if err := repo.SetFindingStatus(ctx, projectUUID, finding.ID, database.StatusFalsePositive, note, triageStatusActor); err != nil {
+			return fmt.Errorf("update status: %w", err)
+		}
 	case agent.TriageVerdictConfirmed:
-		if err := repo.UpdateFindingStatusScoped(ctx, projectUUID, finding.ID, database.StatusTriaged); err != nil {
+		if err := repo.SetFindingStatus(ctx, projectUUID, finding.ID, database.StatusTriaged, note, triageStatusActor); err != nil {
 			return fmt.Errorf("update status: %w", err)
 		}
 	default:
 		return fmt.Errorf("unexpected verdict %q", verdict.Verdict)
 	}
 	return nil
+}
+
+// triageStatusActor is the actor recorded on status changes `agent triage`
+// makes.
+const triageStatusActor = "agent-triage"
+
+// triageStatusNoteMax bounds the reasoning copied into findings.status_note;
+// the full text stays in the description (false positives) and the transcript.
+const triageStatusNoteMax = 500
+
+// triageStatusNote is the one-paragraph note stored with a triage verdict.
+func triageStatusNote(verdict *agent.TriageConfirmResult) string {
+	note := strings.TrimSpace(verdict.Reasoning)
+	if note == "" {
+		note = strings.TrimSpace(verdict.Notes)
+	}
+	return clicommon.Truncate(note, triageStatusNoteMax)
 }
 
 func appendTriageReasoning(existing string, verdict *agent.TriageConfirmResult) string {

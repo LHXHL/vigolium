@@ -120,7 +120,7 @@ func TestFindingStatusValidationAndUpdates(t *testing.T) {
 	id := saveFindingFull(t, repo, &Finding{Status: StatusDraft, Severity: SeverityLow})
 
 	// UpdateFindingStatusScoped (unscoped form: scoping off).
-	if err := repo.UpdateFindingStatusScoped(ctx, "", id, StatusTriaged); err != nil {
+	if err := repo.SetFindingStatus(ctx, "", id, StatusTriaged, "", ""); err != nil {
 		t.Fatalf("UpdateFindingStatusScoped: %v", err)
 	}
 	got, _ := repo.GetFindingByID(ctx, id)
@@ -129,10 +129,10 @@ func TestFindingStatusValidationAndUpdates(t *testing.T) {
 	}
 
 	// Invalid status rejected; missing row → ErrNoRows.
-	if err := repo.UpdateFindingStatusScoped(ctx, "", id, "bogus"); err == nil {
+	if err := repo.SetFindingStatus(ctx, "", id, "bogus", "", ""); err == nil {
 		t.Error("UpdateFindingStatusScoped(bogus) should error")
 	}
-	if err := repo.UpdateFindingStatusScoped(ctx, "", 999999, StatusFixed); !errors.Is(err, sql.ErrNoRows) {
+	if err := repo.SetFindingStatus(ctx, "", 999999, StatusFixed, "", ""); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("UpdateFindingStatusScoped on missing row = %v, want sql.ErrNoRows", err)
 	}
 
@@ -201,7 +201,7 @@ func TestFindingStatusWritesAreProjectScoped(t *testing.T) {
 	idB := saveFindingFull(t, repo, &Finding{ProjectUUID: projB, FindingHash: sharedHash, Status: StatusDraft, Severity: SeverityHigh})
 
 	// By id: B's finding is invisible to an A-scoped write.
-	if err := repo.UpdateFindingStatusScoped(ctx, projA, idB, StatusFalsePositive); !errors.Is(err, sql.ErrNoRows) {
+	if err := repo.SetFindingStatus(ctx, projA, idB, StatusFalsePositive, "", ""); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("cross-project status write = %v, want sql.ErrNoRows", err)
 	}
 	if err := repo.UpdateFindingTriage(ctx, projA, idB, SeverityInfo, "fp"); !errors.Is(err, sql.ErrNoRows) {
@@ -211,7 +211,7 @@ func TestFindingStatusWritesAreProjectScoped(t *testing.T) {
 		t.Fatalf("project B finding changed: status=%q severity=%q", got.Status, got.Severity)
 	}
 	// In-project write lands.
-	if err := repo.UpdateFindingStatusScoped(ctx, projA, idA, StatusTriaged); err != nil {
+	if err := repo.SetFindingStatus(ctx, projA, idA, StatusTriaged, "", ""); err != nil {
 		t.Fatalf("in-project status write: %v", err)
 	}
 	if got, _ := repo.GetFindingByID(ctx, idA); got.Status != StatusTriaged {
