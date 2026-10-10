@@ -180,6 +180,10 @@ type Requester struct {
 	// it re-logs in. CloneWithoutCredentials drops it: a credential-stripped
 	// view must never sample, or trigger a re-login from, its own 401s.
 	live *authentication.LiveSession
+	// offline, when non-nil, is returned by every Execute before anything is
+	// admitted or dialed, and counted in refused. See NewOfflineRequester.
+	offline error
+	refused *atomic.Int64
 }
 
 // WithLiveSession returns a shallow clone that sends live's credentials and
@@ -1116,6 +1120,10 @@ func (r *Requester) ExecuteContext(ctx context.Context, input *httpmsg.HttpReque
 	// joins a singleflight group it would only abandon again.
 	if r.abandoned() {
 		return nil, 0, ErrRequestAbandoned
+	}
+	if r.offline != nil {
+		r.refused.Add(1)
+		return nil, 0, r.offline
 	}
 	// Verbatim bytes bypass the parsed request entirely, so the cluster key --
 	// computed from that request -- no longer describes what goes on the wire.

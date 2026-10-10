@@ -134,6 +134,60 @@ cat check.vgm.yaml | vigolium ext lint --stdin   # sniffed; --stdin-kind js|ts|y
 - Every load failure emits `extension.failed` (`module_id`, `path`, `stage`, `explicit`, `message`) on `--events` and appears in `scan.finished.extensions_failed`.
 - YAML unknown keys only warn at load time unless `extensions.yaml_strict: true` (the default flips to true next minor).
 
+### Write an extension, then `ext test` it
+
+The loop: write the file, `ext lint` it, run it against one stored record with `ext run`, then pin what it should and should not report with fixtures and `ext test`. None of these scan anything.
+
+```bash
+# Run it against a stored record (offline: its requests are refused and counted)
+vigolium traffic --compact --fields uuid,url -j
+vigolium ext run --ext check.js --record-uuid 3f2a9c1e -j
+vigolium ext eval --ext check.js --record-uuid 3f2a9c1e -j     # same command, same document
+vigolium ext run --ext probe.js --record-uuid 3f2a9c1e --handler scanPerInsertionPoint --insertion URL_PARAM:id
+vigolium ext run --ext probe.js --record-uuid 3f2a9c1e --allow-network   # really send its requests
+
+# Fixtures next to the extension, then run them
+vigolium ext test ./my-extensions/              # TAP-like; exit 1 if any case fails
+vigolium ext test ./my-extensions/check.js -j   # items = cases; passed / failed / skipped
+```
+
+- `ext run -j`: `items` are the results (`module_id, name, severity, confidence, url, matched, description, param, payload, request, response`), with the module's defaults filled in as a scan fills them. Top level: `module_id, record_uuid, handler, handlers, calls, errors[{handler, insertion, message}], network_allowed, network_calls_blocked, duration_ms`. A handler that threw makes `ok` false and exits `1`; each error message ends with the script position (`check.js:12:9`). An unknown record exits `2` with `record_not_found`, and an extension that does not load exits `2` with `extension_load_failed`.
+- Offline is the default. Every `vigolium.http.*` call throws `network disabled in ext eval; pass --allow-network`, and every refused request counts in `network_calls_blocked`. The database is opened read-only: `vigolium.db.*` reads work, while `ctx.record.annotate`/`addRemarks` and `vigolium.ingest.*` return false. `vigolium.oast` and `vigolium.agent` are not available.
+- Without `--handler`, every handler the `scanTypes` declare runs. `scanPerInsertionPoint` runs on every point the module accepts, unless `--insertion TYPE:name` picks one. An unknown point exits `2` and lists the available ones.
+
+Fixture layout:
+
+```text
+my-extensions/
+  check.js
+  check.fixtures/
+    weak.http                # a raw request, a blank line, a raw response
+    weak.expect.json         # {"findings": [{"name~": "weak csp", "severity": "medium"}]}
+    clean.http               # or put the expectation in the file: // expect: {"findings": 0}
+  probe.js
+  probe.fixtures/
+    reflected.http           # // insertion: URL_PARAM:q
+    reflected.responses/     # canned answers to the extension's own requests
+      search.http            # // match: VGNM, then "GET /search", a blank line, the response
+```
+
+```http
+// expect: {"findings": [{"name~": "weak content-security-policy", "severity": "medium", "confidence": "firm"}]}
+GET / HTTP/1.1
+Host: app.example.com
+
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Security-Policy: default-src *; script-src 'unsafe-inline'
+
+<html></html>
+```
+
+- **Expectation.** `findings` is either a count or a list of matchers. A list is matched in any order and the counts must agree. Matcher keys are `name~` (substring), `name` (exact), `severity` and `confidence`, all case-insensitive. `errors` defaults to `0`. `network_calls_blocked`, `mock_requests`, `handler` and `insertion` are optional. An unknown key is an error, so a typo cannot silently expect nothing.
+- **Directives** (leading `//` lines of a case): `expect`, `handler`, `insertion`, and `url` (the request's origin; default `http://<Host>`). LF line endings are fine, and a declared `Content-Length` is corrected to the body.
+- **Mock responses.** A case with `<case>.responses/` runs against an in-process mock on 127.0.0.1, and the case's `Host` points at it. Each response file holds `METHOD /path` (add `?query` to match the full target), an optional `// match: <text>` that the target or body must contain, a blank line, and then the response. Unmatched requests get a 404 and are listed in `unmatched_requests`. A case without that directory runs offline. `ext test` opens no database.
+- Extensions with no fixtures, and hooks, are reported as `skipped`. A `<name>.fixtures` directory with no extension fails. The bundled presets ship fixtures (`public/presets/extensions/*.fixtures`), and `make test-unit` runs them.
+
 ### Module selection applies to extensions
 
 Extension modules have IDs `ext-<id>` and follow the same selection flags as built-in modules:

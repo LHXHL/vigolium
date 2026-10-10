@@ -1,0 +1,3 @@
+// expect: {"findings": [{"name": "Interesting Parameters In Request", "severity": "suspect"}]}
+GET /item?id=1&redirect=https://other.example.net/ HTTP/1.1
+Host: shop.example.com

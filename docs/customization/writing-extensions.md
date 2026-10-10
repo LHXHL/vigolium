@@ -1100,6 +1100,59 @@ With `-j` the result is one document: `items` holds one entry per file
 (`{path, kind: js|ts|yaml, issues: [{severity, line, col, message, rule}]}`),
 `summary` holds `{files, errors, warnings}`, and `ok` is `false` exactly when there are errors.
 
+### Run it against one stored record
+
+`vigolium ext run` loads one extension the way a scan does and calls its handlers against a stored HTTP record. It sends nothing unless you allow it, and it never writes to the database. `ext eval --ext <file> --record-uuid <uuid>` is the same command.
+
+```bash
+vigolium traffic --compact --fields uuid,url -j                  # find a record
+vigolium ext run --ext my_scanner.js --record-uuid 3f2a9c1e      # a UUID or a unique prefix
+vigolium ext run --ext my_scanner.js --record-uuid 3f2a9c1e --handler scanPerInsertionPoint --insertion URL_PARAM:id
+vigolium ext run --ext my_scanner.js --record-uuid 3f2a9c1e --allow-network -j
+```
+
+- Without `--handler`, every handler the module's `scanTypes` select is called. `scanPerInsertionPoint` runs once per insertion point the module accepts, or only on `--insertion TYPE:name` (`URL_PARAM:id`, `BODY_PARAM:user`, `HEADER:X-Api-Key`). An unknown point exits `2` and lists the available ones.
+- **Offline by default.** Every request fails with `network disabled in ext eval; pass --allow-network`, and `vigolium.http.*` throws it, so the handler stops at the first call and you see where. Each refused request counts in `network_calls_blocked`. `--allow-network` sends them through the normal HTTP stack (`--proxy` applies).
+- **Read-only database.** `vigolium.db.*` reads work. `ctx.record.uuid` is the record, but `annotate`, `addRiskScore`, `addRemarks` and `vigolium.ingest.*` return `false`. `vigolium.oast` and `vigolium.agent` are not available.
+- **Exit codes.** A handler that threw exits `1`. An unknown record exits `2` (`record_not_found`), and an extension that does not load exits `2` (`extension_load_failed`).
+- **`-j` document.** `items` are the results, with the module's severity, confidence, name and tags filled in as a scan fills them. The top level carries `module_id`, `record_uuid`, `handler`, `handlers`, `calls`, `errors` (`[{handler, insertion, message}]`, where the message ends with the script position), `network_allowed`, `network_calls_blocked` and `duration_ms`.
+
+### Pin its behaviour with fixtures: `ext test`
+
+Fixture cases live next to the extension in `<name>.fixtures/`. `vigolium ext test <dir|file>` runs every case and reports TAP-like output. It exits `1` when any case fails, and `-j` prints one document whose items are the cases, with `passed`, `failed` and `skipped` counts.
+
+```text
+my-extensions/
+  my_scanner.js
+  my_scanner.fixtures/
+    weak.http                 # a raw request, a blank line, a raw response
+    weak.expect.json          # what the case must produce
+    clean.http                # the expectation can also be a leading "// expect:" line
+    reflected.http            # an active case
+    reflected.responses/      # canned responses for the extension's own requests
+      search.http
+```
+
+```http
+// expect: {"findings": [{"name~": "weak content-security-policy", "severity": "medium", "confidence": "firm"}]}
+GET / HTTP/1.1
+Host: app.example.com
+
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Security-Policy: default-src *; script-src 'unsafe-inline'
+
+<html></html>
+```
+
+- **Expectation** (`<case>.expect.json` or `// expect: {...}`). `findings` is a count, or a list of matchers that must all match distinct results, in any order, with equal counts. Matcher keys are `name~` (substring), `name` (whole name), `severity` and `confidence`, all case-insensitive. `errors` (handler calls allowed to fail) defaults to `0`. `network_calls_blocked`, `mock_requests`, `handler` and `insertion` are optional. An unknown key fails the case.
+- **Directives** go on leading `//` lines: `expect`, `handler`, `insertion` and `url` (the request's origin, default `http://<Host>`). LF line endings are accepted, and a declared `Content-Length` is corrected to the body in the file.
+- **Offline cases.** A case without a `.responses` directory runs offline, exactly like `ext run`: requests are refused and counted.
+- **Mock-backed cases.** A case with `<case>.responses/` is served by an in-process mock bound to 127.0.0.1, and the case's `Host` is pointed at it, so the full HTTP stack runs without leaving the machine. Each response file is a request line (`GET /search`, or `GET /search?q=x` to match the full target, `*` for any method), an optional `// match: <text>` line that the request target or body must contain (such routes are tried first), a blank line, and the raw response. A request no file matches gets a 404 and is listed in `unmatched_requests`.
+- `ext test` opens no database, so `vigolium.db` is undefined there. An extension with no fixtures, and a hook, is reported as skipped. A `.fixtures` directory with no matching extension fails.
+
+The bundled presets ship their fixtures in `public/presets/extensions/*.fixtures`, and `make test-unit` runs them. Read those fixtures for working examples.
+
 ### When an extension fails to load
 
 - **Named with `--ext` (or listed in `custom_dir`)**: the scan stops before it sends any request, exits `2` with `error.code` `extension_load_failed`, and names the file and the stage that failed (`read`, `transpile`, `compile`, `metadata`, `schema`, `unknown_type`, `module`). Pass `--ext-allow-failures` (or set `allow_load_failures: true`) to scan without it.

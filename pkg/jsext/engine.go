@@ -43,6 +43,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 		opts.ScopeMatcher = engineOpts.ScopeMatcher
 		opts.ScopeConfig = engineOpts.ScopeConfig
 		opts.ScanUUID = engineOpts.ScanUUID
+		opts.ProjectUUID = engineOpts.ProjectUUID
 		opts.Repository = engineOpts.Repository
 		opts.LLMClient = engineOpts.LLMClient
 		opts.OASTService = engineOpts.OASTService

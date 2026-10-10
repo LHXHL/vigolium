@@ -108,6 +108,8 @@ var dbIntents = map[string]string{
 	"extensions lint":    dbIntentNone,
 	"extensions ls":      dbIntentNone,
 	"extensions preset":  dbIntentNone,
+	"extensions run":     "read", // also `extensions eval --record-uuid`, which opens the read pool itself
+	"extensions test":    dbIntentNone,
 	"extensions types":   dbIntentNone,
 	"js":                 "write",
 

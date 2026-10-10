@@ -1,0 +1,10 @@
+// expect: {"findings": [{"name": "Error pattern: Python traceback", "severity": "low", "confidence": "firm"}]}
+GET /api/export HTTP/1.1
+Host: api.example.com
+
+HTTP/1.1 500 Internal Server Error
+Content-Type: text/plain
+
+Traceback (most recent call last):
+  File "/srv/app/views.py", line 42, in export
+ValueError: bad input

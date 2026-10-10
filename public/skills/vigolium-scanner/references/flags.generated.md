@@ -56,6 +56,8 @@ run `vigolium <command> -h`.
 - [vigolium extensions lint](#vigolium-extensions-lint)
 - [vigolium extensions ls](#vigolium-extensions-ls)
 - [vigolium extensions preset](#vigolium-extensions-preset)
+- [vigolium extensions run](#vigolium-extensions-run)
+- [vigolium extensions test](#vigolium-extensions-test)
 - [vigolium extensions types](#vigolium-extensions-types)
 - [vigolium ffuf](#vigolium-ffuf)
 - [vigolium finding](#vigolium-finding)
@@ -861,7 +863,11 @@ Evaluate JavaScript code with vigolium.* APIs available
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--allow-network` | - | bool | `false` | Let the extension send requests (default: every request fails and is counted) |
 | `--ext-file` | - | string | - | Path to JS file to evaluate |
+| `--handler` | - | string | - | Handler to call: scanPerRequest, scanPerHost or scanPerInsertionPoint (default: every handler the module declares) |
+| `--insertion` | - | string | - | Insertion point for scanPerInsertionPoint as TYPE:name, e.g. URL_PARAM:id (default: every point) |
+| `--record-uuid` | - | string | - | Stored HTTP record to run the extension against (UUID or unique prefix; see vigolium traffic) |
 | `--stdin` | - | bool | `false` | Read JS code from stdin |
 | `--timeout` | - | duration | `30s` | Execution timeout |
 
@@ -910,6 +916,27 @@ Usage: `vigolium extensions preset [name]`
 Aliases: `presets`, `init`
 
 Install example extension presets into extensions directory
+
+_No command-specific flags._
+
+## vigolium extensions run
+
+Usage: `vigolium extensions run [file]`
+
+Run one extension against a stored record (offline unless --allow-network)
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--allow-network` | - | bool | `false` | Let the extension send requests (default: every request fails and is counted) |
+| `--handler` | - | string | - | Handler to call: scanPerRequest, scanPerHost or scanPerInsertionPoint (default: every handler the module declares) |
+| `--insertion` | - | string | - | Insertion point for scanPerInsertionPoint as TYPE:name, e.g. URL_PARAM:id (default: every point) |
+| `--record-uuid` | - | string | - | Stored HTTP record to run the extension against (UUID or unique prefix; see vigolium traffic) |
+
+## vigolium extensions test
+
+Usage: `vigolium extensions test <dir|file>`
+
+Run extensions against their fixture cases (offline; active ones against a local mock)
 
 _No command-specific flags._
 

@@ -12,6 +12,18 @@
     "description": "One item per linted file with its issues (severity, line, col, message, rule); summary counts them. ok is false exactly when there are errors (exit 1, lint_failed)."
   },
   {
+    "name": "extensions run",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "What one extension reported for one stored record (ext run, ext eval --record-uuid): items are its results; errors are the handler calls that threw; network_calls_blocked counts the requests an offline run refused. ok is false when a handler threw (exit 1)."
+  },
+  {
+    "name": "extensions test",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One item per fixture case (or per extension that ran none: skipped with a reason, or failed to load); passed/failed/skipped count them. ok is false when any case failed (exit 1)."
+  },
+  {
     "name": "finding",
     "kind": "command",
     "envelope_kind": "read",

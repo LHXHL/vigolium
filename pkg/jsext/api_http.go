@@ -1,6 +1,7 @@
 package jsext
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -177,6 +178,12 @@ func doRawRequest(vm *sobek.Runtime, httpClient *http.Requester, rawReq string) 
 	elapsedMs := elapsed.Milliseconds()
 
 	if err != nil {
+		// An offline requester (ext eval without --allow-network) throws, so
+		// the extension and its author see why there is no response instead
+		// of a silent undefined.
+		if errors.Is(err, http.ErrNetworkDisabled) {
+			panic(vm.NewGoError(err))
+		}
 		zap.L().Debug("JS HTTP request failed", zap.Error(err))
 		return sobek.Undefined()
 	}

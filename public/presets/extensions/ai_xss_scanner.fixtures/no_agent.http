@@ -1,0 +1,10 @@
+// Without an LLM (vigolium.agent unset) the scanner skips before any request.
+// insertion: URL_PARAM:q
+// expect: {"findings": 0, "errors": 0, "network_calls_blocked": 0}
+GET /search?q=shoes HTTP/1.1
+Host: shop.example.com
+
+HTTP/1.1 200 OK
+Content-Type: text/html
+
+<p>Results for shoes</p>
