@@ -18,23 +18,34 @@ import (
 	"go.uber.org/zap"
 )
 
-// Streaming one target's referenced class while its crawl runs.
+// Streaming one target's records while its crawl runs.
 //
 // The siteMap is read through a cursor (StreamResultsSince), so the records a
 // target collects can be handed on in batches instead of only once the engine
-// stops. Two classes are treated differently:
+// stops. A flusher persists and emits what landed every flush interval or every
+// flushNodes new nodes, which bounds what a kill or abort loses to one interval
+// and lets assessment start while the crawl goes on. The two classes get there
+// differently:
 //
 //   - The referenced class (JSTangle, form and API-spec records; see
 //     classifyDiscoverySource) is exempt from every fuzz-noise pass, so nothing
-//     later in the crawl can change whether one of them is kept. A flusher
-//     persists and emits it every flush interval or every flushNodes new nodes,
-//     which bounds what a kill or abort loses to one interval and lets
-//     assessment start on the most valuable records while the crawl goes on.
-//   - The fuzz class (crawlRecordSource) stays end-of-target. Hard dedup keeps
-//     the shorter path and can evict a record already read, and the cluster cap
-//     ranks records shortest-path-first, so neither decision is final until
-//     every node is in. The same cursor reads it, so the in-memory dedup state is
-//     carried across reads rather than rebuilt.
+//     later in the crawl can change whether one of them is kept.
+//   - The fuzz class (crawlRecordSource) is streamed under decisions that are
+//     final the moment a record is read (discovery.stream_fuzz, the default):
+//     exact dedup keeps the FIRST record of a duplicate set rather than evicting
+//     an earlier one for a shorter path, and the near-identical cluster cap
+//     counts each cluster across flushes so the first N of a cluster win. Both
+//     are order-stable, so a target streamed in any number of flushes keeps
+//     exactly what one read of the finished siteMap keeps. Every streamed fuzz
+//     record still carries the crawlRecordSource label, so the post-discovery
+//     DB passes (4xx status policy, reflected-URL and soft dedup) see all of
+//     them once the phase ends, as before.
+//
+// With stream_fuzz off (FuzzAtEnd) the fuzz class waits for the end of the
+// target under the original rules: hard dedup keeps the shorter path and can
+// evict a record already read, and the cluster cap ranks shortest-path-first,
+// so neither decision is final until every node is in. The same cursor reads it
+// either way, so the in-memory dedup state is carried across reads.
 
 const (
 	// defaultDiscoveryFlushInterval is how often a running target's referenced
@@ -67,6 +78,13 @@ func (c DeparosDiscoveryConfig) flushSettings() (interval time.Duration, nodes i
 	return interval, nodes, true
 }
 
+// streamsFuzz reports whether the fuzz class is streamed during the crawl: it
+// needs in-crawl flushing on and discovery.stream_fuzz not turned off.
+func (c DeparosDiscoveryConfig) streamsFuzz() bool {
+	_, _, enabled := c.flushSettings()
+	return enabled && !c.FuzzAtEnd
+}
+
 // targetEngineFacts is what the end of a target reads from its engine.
 type targetEngineFacts interface {
 	RequestTemplateOutcomes() []discovery.TemplateOutcome
@@ -75,9 +93,10 @@ type targetEngineFacts interface {
 }
 
 // targetCollector is one target's read state across flushes: the siteMap
-// cursor, the fuzz class with its exact-dedup map, the node index the JS
-// template plan needs, and the import accumulator every flush and the final
-// import share (so uuidByURL and the emit latch span the whole target).
+// cursor, the fuzz class with its exact-dedup map and cluster counts, the node
+// index the JS template plan needs, and the import accumulator every flush and
+// the final import share (so uuidByURL and the emit latch span the whole
+// target).
 type targetCollector struct {
 	d       *DeparosDiscoverySource
 	target  string
@@ -89,10 +108,22 @@ type targetCollector struct {
 	// compare it with LatestNodeID without waiting for a flush in progress.
 	cursor atomic.Int64
 
-	stats    DiscoveryStats // TotalDiscovered, AllCodes, DedupedCodes
-	fuzz     []collectedRecord
-	dedupMap map[hardDedupKey]int // key -> index in fuzz
-	nodes    *nodeIndex
+	stats DiscoveryStats // TotalDiscovered, AllCodes, DedupedCodes
+	nodes *nodeIndex
+
+	// streamFuzz selects the fuzz-class rules (see the file comment). Streaming:
+	// fuzz holds the kept records not yet imported, dedupMap is only a seen-set
+	// (keep-first never looks back), capper carries the cluster counts across
+	// flushes, fuzzKept counts every record exact dedup let through (capped or
+	// not) and fuzzStreamed how many an in-crawl flush imported. End of target:
+	// fuzz holds every record read, with tombstones for those exact dedup
+	// evicted, and dedupMap the index of each key's survivor in fuzz.
+	streamFuzz   bool
+	fuzz         []collectedRecord
+	dedupMap     map[hardDedupKey]int
+	capper       *clusterCapper
+	fuzzKept     int
+	fuzzStreamed int
 
 	// referenced records read but not yet imported, and how many there were in
 	// total and how many an in-crawl flush already imported.
@@ -111,15 +142,21 @@ type targetCollector struct {
 }
 
 func newTargetCollector(d *DeparosDiscoverySource, target string, siteMap *deparosstorage.SiteMap) *targetCollector {
-	return &targetCollector{
-		d:        d,
-		target:   target,
-		siteMap:  siteMap,
-		dedupMap: make(map[hardDedupKey]int),
-		nodes:    newNodeIndex(64),
-		specSeen: make(map[string]struct{}),
-		acc:      newImportAccum(64),
+	streamFuzz := d.cfg.streamsFuzz()
+	c := &targetCollector{
+		d:          d,
+		target:     target,
+		siteMap:    siteMap,
+		streamFuzz: streamFuzz,
+		dedupMap:   make(map[hardDedupKey]int),
+		nodes:      newNodeIndex(64),
+		specSeen:   make(map[string]struct{}),
+		acc:        newImportAccum(64),
 	}
+	if streamFuzz {
+		c.capper = newClusterCapper(d.cfg.resolveClusterCap())
+	}
+	return c
 }
 
 // collect reads every node stored since the cursor. Callers hold c.mu.
@@ -131,7 +168,7 @@ func (c *targetCollector) collect() error {
 }
 
 // addNode classifies one siteMap node into the referenced or fuzz class,
-// applying the fuzz class's exact dedup.
+// applying the fuzz class's exact dedup (and, when streaming, its cluster cap).
 func (c *targetCollector) addNode(node *deparosstorage.DiscoveredNode) error {
 	// abort, not done: this reads the local temp SQLite file the requests
 	// already paid for. The consumer going away is no reason to throw it out —
@@ -142,10 +179,83 @@ func (c *targetCollector) addNode(node *deparosstorage.DiscoveredNode) error {
 	default:
 	}
 
-	nodeURL := node.URL()
-	if nodeURL == nil {
+	rec, nodeURL, body, ok := readDiscoveredNode(node)
+	if !ok {
 		return nil
 	}
+	c.nodes.add(rec.method, nodeURL, rec.rr.Target())
+	hasResp := rec.status > 0
+	if hasResp {
+		c.batch = append(c.batch, rec.rr)
+	}
+
+	c.stats.TotalDiscovered++
+	if hasResp {
+		c.stats.AllCodes[statusCodeBucket(rec.status)]++
+	}
+
+	// Code-referenced records (JSTangle/form) skip the fuzz-noise hard dedup:
+	// they are high-precision application endpoints that must all survive, even
+	// when two distinct routes return byte-identical bodies (two APIs both
+	// answering `{}`). They are final as soon as they are read, which is what
+	// lets a flush hand them on mid-crawl.
+	if rec.source != crawlRecordSource {
+		c.pendingRefs = append(c.pendingRefs, rec)
+		c.refTotal++
+		return nil
+	}
+	// No response, no body to hash: always kept.
+	if !hasResp {
+		c.keepFuzz(rec)
+		return nil
+	}
+
+	key := fuzzDedupKey(rec, body)
+	existingIdx, exists := c.dedupMap[key]
+	if !exists {
+		c.dedupMap[key] = len(c.fuzz)
+		c.keepFuzz(rec)
+		return nil
+	}
+	c.stats.DedupedCodes[statusCodeBucket(rec.status)]++
+	// Streaming keeps the first: the earlier record may already be persisted
+	// and emitted, and evicting it would make the result depend on where the
+	// flushes fell.
+	if c.streamFuzz {
+		return nil
+	}
+	// End of target: keep the shorter path.
+	if len(rec.path) < len(c.fuzz[existingIdx].path) {
+		c.fuzz[existingIdx] = collectedRecord{} // tombstone
+		c.dedupMap[key] = len(c.fuzz)
+		c.fuzz = append(c.fuzz, rec)
+	}
+	return nil
+}
+
+// keepFuzz holds a fuzz record exact dedup let through. Streaming, it first
+// passes the incremental cluster cap, so a record held here is final.
+func (c *targetCollector) keepFuzz(rec collectedRecord) {
+	if c.streamFuzz {
+		c.fuzzKept++
+		if !c.capper.admit(rec) {
+			return
+		}
+	}
+	c.fuzz = append(c.fuzz, rec)
+}
+
+// readDiscoveredNode converts one siteMap node into a collected record: the
+// request as discovered (method, headers, body), its response when one was
+// captured (status stays 0 otherwise), and its provenance class. It also returns
+// the node URL and the response body exact dedup hashes. ok is false for a node
+// that cannot be turned into a request.
+func readDiscoveredNode(node *deparosstorage.DiscoveredNode) (rec collectedRecord, nodeURL string, body []byte, ok bool) {
+	u := node.URL()
+	if u == nil {
+		return rec, "", nil, false
+	}
+	nodeURL = u.String()
 
 	// Preserve the discovered method/headers/body. Deparos storage persists
 	// these (req_method/req_headers/req_body) for form POSTs and JS-derived
@@ -162,11 +272,10 @@ func (c *targetCollector) addNode(node *deparosstorage.DiscoveredNode) error {
 		reqBody = req.Body
 	}
 
-	rr, err := httpmsg.GetRawRequestFromURLWithMethod(nodeURL.String(), method, reqHeaders, reqBody)
+	rr, err := httpmsg.GetRawRequestFromURLWithMethod(nodeURL, method, reqHeaders, reqBody)
 	if err != nil {
-		return nil // skip URLs we can't parse
+		return rec, "", nil, false // skip URLs we can't parse
 	}
-	c.nodes.add(method, nodeURL.String(), rr.Target())
 
 	// Classify provenance: code-referenced classes (JSTangle/form) carry a
 	// distinct source label and bypass the fuzz-noise cleanup entirely.
@@ -174,81 +283,44 @@ func (c *targetCollector) addNode(node *deparosstorage.DiscoveredNode) error {
 	if meta := node.Metadata(); meta != nil {
 		recSource = classifyDiscoverySource(meta.FoundBy)
 	}
-	referenced := recSource != crawlRecordSource
+	rec = collectedRecord{rr: rr, path: u.Path, host: u.Hostname(), method: method, source: recSource}
 
 	resp := node.Response()
-	hasResp := resp != nil && resp.StatusCode > 0
-
-	rec := collectedRecord{rr: rr, path: nodeURL.Path, host: nodeURL.Hostname(), method: method, source: recSource}
-
-	if hasResp {
-		rawResp := httpmsg.BuildRawResponse(resp.StatusCode, resp.Headers, string(resp.Body))
-		// DurationMs survives the round trip through the deparos store, so a
-		// discovery record carries the real round-trip time rather than the
-		// zero every native-scan record used to have. Zero here still means
-		// "not measured" and is passed through as such.
-		httpResp := httpmsg.NewHttpResponseWithDuration(rawResp,
-			time.Duration(resp.DurationMs)*time.Millisecond)
-		rr = rr.WithResponse(httpResp)
-		rec.rr = rr
-		rec.status = resp.StatusCode
-		rec.ctype = resp.MIMEType
-		rec.size = int64(len(resp.Body))
-		rec.words = resp.Words
-		if rec.words == 0 && len(resp.Body) > 0 {
-			rec.words = int64(len(strings.Fields(string(resp.Body))))
-		}
-		c.batch = append(c.batch, rr)
+	if resp == nil || resp.StatusCode <= 0 {
+		return rec, nodeURL, nil, true
 	}
-
-	c.stats.TotalDiscovered++
-	if hasResp {
-		c.stats.AllCodes[statusCodeBucket(resp.StatusCode)]++
+	rawResp := httpmsg.BuildRawResponse(resp.StatusCode, resp.Headers, string(resp.Body))
+	// DurationMs survives the round trip through the deparos store, so a
+	// discovery record carries the real round-trip time rather than the
+	// zero every native-scan record used to have. Zero here still means
+	// "not measured" and is passed through as such.
+	httpResp := httpmsg.NewHttpResponseWithDuration(rawResp,
+		time.Duration(resp.DurationMs)*time.Millisecond)
+	rec.rr = rr.WithResponse(httpResp)
+	rec.status = resp.StatusCode
+	rec.ctype = resp.MIMEType
+	rec.size = int64(len(resp.Body))
+	rec.words = resp.Words
+	if rec.words == 0 && len(resp.Body) > 0 {
+		rec.words = int64(len(strings.Fields(string(resp.Body))))
 	}
+	return rec, nodeURL, resp.Body, true
+}
 
-	// Code-referenced records (JSTangle/form) skip the fuzz-noise hard dedup:
-	// they are high-precision application endpoints that must all survive, even
-	// when two distinct routes return byte-identical bodies (two APIs both
-	// answering `{}`). They are final as soon as they are read, which is what
-	// lets a flush hand them on mid-crawl.
-	if referenced {
-		c.pendingRefs = append(c.pendingRefs, rec)
-		c.refTotal++
-		return nil
-	}
-	// No response, no body to hash: always kept.
-	if !hasResp {
-		c.fuzz = append(c.fuzz, rec)
-		return nil
-	}
-
-	// Exact dedup keyed on the response BODY hash (not the full raw
-	// response): volatile headers like Date/Set-Cookie and Go's randomized
-	// header-map ordering otherwise make every raw response hash unique,
-	// defeating the dedup. Body-only collapses byte-identical bodies served
-	// across different paths regardless of header noise.
-	h := sha256.Sum256(resp.Body)
-	key := hardDedupKey{
+// fuzzDedupKey is a fuzz record's exact-dedup key, built on the response BODY
+// hash (not the full raw response): volatile headers like Date/Set-Cookie and
+// Go's randomized header-map ordering otherwise make every raw response hash
+// unique, defeating the dedup. Body-only collapses byte-identical bodies served
+// across different paths regardless of header noise.
+func fuzzDedupKey(rec collectedRecord, body []byte) hardDedupKey {
+	h := sha256.Sum256(body)
+	return hardDedupKey{
 		hostname: rec.host,
 		method:   rec.method,
-		status:   resp.StatusCode,
+		status:   rec.status,
 		length:   rec.size,
 		respHash: hex.EncodeToString(h[:]),
 	}
-
-	if existingIdx, exists := c.dedupMap[key]; exists {
-		c.stats.DedupedCodes[statusCodeBucket(resp.StatusCode)]++
-		// Keep the shorter path.
-		if len(rec.path) < len(c.fuzz[existingIdx].path) {
-			c.fuzz[existingIdx] = collectedRecord{} // tombstone
-			c.dedupMap[key] = len(c.fuzz)
-			c.fuzz = append(c.fuzz, rec)
-		}
-		return nil
-	}
-	c.dedupMap[key] = len(c.fuzz)
-	c.fuzz = append(c.fuzz, rec)
-	return nil
 }
 
 // batchSpecEndpoints extracts API-spec endpoints from the current batch,
@@ -258,8 +330,9 @@ func (c *targetCollector) batchSpecEndpoints() []*httpmsg.HttpRequestResponse {
 }
 
 // flush reads what landed since the last read and persists + emits its
-// referenced class and API-spec endpoints. The fuzz class stays in memory for
-// finish. A flush that finds nothing referenced writes nothing.
+// referenced class, its API-spec endpoints and, when the fuzz class streams,
+// the fuzz records kept so far. With stream_fuzz off the fuzz class stays in
+// memory for finish. A flush that finds nothing to hand on writes nothing.
 func (c *targetCollector) flush(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -267,17 +340,26 @@ func (c *targetCollector) flush(ctx context.Context) error {
 	if err := c.collect(); err != nil {
 		return err
 	}
+	var fuzz []collectedRecord
+	if c.streamFuzz {
+		fuzz = c.fuzz
+		c.fuzz = nil
+	}
 	refs := c.pendingRefs
 	c.pendingRefs = nil
 	specs := c.batchSpecEndpoints()
-	if len(refs) == 0 && len(specs) == 0 {
+	if len(fuzz) == 0 && len(refs) == 0 && len(specs) == 0 {
 		return nil
 	}
 
 	importCtx, release := importContext(ctx, c.d.cfg.DrainTimeout)
 	defer release()
 
-	order, bySource, _ := groupCollectedBySource(refs)
+	// The fuzz class first, as at the end of a target.
+	batch := make([]collectedRecord, 0, len(fuzz)+len(refs))
+	batch = append(batch, fuzz...)
+	batch = append(batch, refs...)
+	order, bySource, _ := groupCollectedBySource(batch)
 	for _, label := range order {
 		if err := c.d.importGroup(importCtx, c.acc, bySource[label], label); err != nil {
 			return err
@@ -286,11 +368,13 @@ func (c *targetCollector) flush(ctx context.Context) error {
 	if err := c.d.importGroup(importCtx, c.acc, specs, specRecordSource); err != nil {
 		return err
 	}
+	c.fuzzStreamed += len(fuzz)
 	c.refStreamed += len(refs)
 	c.specStreamed += len(specs)
 	c.flushes++
-	zap.L().Debug("Streamed referenced discovery records",
+	zap.L().Debug("Streamed discovery records",
 		zap.String("target", c.target),
+		zap.Int("fuzz", len(fuzz)),
 		zap.Int("referenced", len(refs)),
 		zap.Int("spec_endpoints", len(specs)),
 		zap.Int64("cursor", c.cursor.Load()))
@@ -348,7 +432,8 @@ func (c *targetCollector) runFlusher(ctx context.Context, quit <-chan struct{}, 
 }
 
 // finish is the end of the target: read the rest of the siteMap, cap the fuzz
-// class, plan the JS templates, and import everything not already streamed.
+// class (end-of-target mode; a streamed fuzz class is capped as it is read),
+// plan the JS templates, and import everything not already streamed.
 func (c *targetCollector) finish(ctx context.Context, engine targetEngineFacts, timedOut bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -383,29 +468,37 @@ func (c *targetCollector) finish(ctx context.Context, engine targetEngineFacts, 
 	jsPlan := planJSTemplates(engine.RequestTemplateOutcomes(), c.nodes, fallbackURL, d.cfg.JSTemplatePersist)
 	jsPlan.bundles = engine.JSFactBundles()
 
-	// Drop exact-dedup tombstones: only the fuzz/crawl class is subject to the
-	// flood-control cap below — code-referenced records must all survive.
-	fuzz := make([]collectedRecord, 0, len(c.fuzz))
-	for _, rec := range c.fuzz {
-		if rec.rr != nil {
-			fuzz = append(fuzz, rec)
-		}
-	}
-	localStats.HardDedupRemoved = localStats.TotalDiscovered - (len(fuzz) + c.refTotal)
-
 	// Near-identical cluster cap: backstop for catch-all/SPA targets that the
 	// exact hash and the engine's soft-404 detection can't collapse because each
 	// response differs by a few bytes/words. Keeps at most clusterCap records per
-	// (host, status, content-type, ~size, ~words) cluster.
+	// (host, status, content-type, ~size, ~words) cluster. Only the fuzz/crawl
+	// class is subject to it — code-referenced records must all survive.
 	clusterCap := d.cfg.resolveClusterCap()
 	localStats.ClusterCap = clusterCap
-	if clusterCap > 0 {
-		var capped int
-		var cappedCodes [5]int
-		fuzz, capped, cappedCodes = capNearIdenticalClusters(fuzz, clusterCap)
-		localStats.FuzzyCappedRemoved = capped
-		localStats.CappedCodes = cappedCodes
+	var fuzz []collectedRecord
+	if c.streamFuzz {
+		// Already deduped and capped record by record; what is left is the
+		// tail no flush has imported yet.
+		fuzz = c.fuzz
+		localStats.HardDedupRemoved = localStats.TotalDiscovered - (c.fuzzKept + c.refTotal)
+		localStats.FuzzyCappedRemoved = c.capper.capped
+		localStats.CappedCodes = c.capper.cappedCodes
+	} else {
+		// Drop exact-dedup tombstones, then cap shortest-path-first so the
+		// kept representatives are the shallowest (most likely real) paths.
+		fuzz = make([]collectedRecord, 0, len(c.fuzz))
+		for _, rec := range c.fuzz {
+			if rec.rr != nil {
+				fuzz = append(fuzz, rec)
+			}
+		}
+		localStats.HardDedupRemoved = localStats.TotalDiscovered - (len(fuzz) + c.refTotal)
+		if clusterCap > 0 {
+			sortShortestPathFirst(fuzz)
+			fuzz, localStats.FuzzyCappedRemoved, localStats.CappedCodes = capNearIdenticalClusters(fuzz, clusterCap)
+		}
 	}
+	c.fuzz = nil
 
 	// Regroup the survivors by source label. The fuzz class keeps the
 	// crawlRecordSource ("deparos") label so the post-discovery dedup/status
@@ -478,6 +571,7 @@ func (c *targetCollector) finish(ctx context.Context, engine targetEngineFacts, 
 			zap.Int("cluster_cap", localStats.ClusterCap),
 			zap.Int("referenced_preserved", c.refTotal),
 			zap.Int("referenced_streamed", c.refStreamed),
+			zap.Int("fuzz_streamed", c.fuzzStreamed),
 			zap.Int("flushes", c.flushes),
 			zap.Int("imported", c.acc.imported),
 			zap.Int("import_failed", c.acc.failed))

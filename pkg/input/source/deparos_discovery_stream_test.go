@@ -64,12 +64,13 @@ func consumeItems(t *testing.T, d *DeparosDiscoverySource) (stop func()) {
 
 // TestTargetCollector_FlushPersistsReferencedBeforeKill: a flush persists the
 // referenced class while the crawl runs, so killing the target right after it
-// loses none of those rows; the fuzz class waits for the end, and the end of the
-// target does not write a streamed row twice.
+// loses none of those rows; with discovery.stream_fuzz off the fuzz class waits
+// for the end, and the end of the target does not write a streamed row twice.
 func TestTargetCollector_FlushPersistsReferencedBeforeKill(t *testing.T) {
 	saver := newCaptureSaver()
 	d := newTestDiscoverySource(saver)
 	d.cfg.FlushInterval = 20 * time.Millisecond
+	d.cfg.FuzzAtEnd = true
 	d.cfg.DrainTimeout = time.Second
 	defer consumeItems(t, d)()
 
@@ -168,9 +169,11 @@ func TestTargetCollector_SpecEndpointsStreamedOnce(t *testing.T) {
 	assert.Equal(t, 1, saver.bySource[crawlRecordSource], "the spec document itself is a fuzz-class record")
 }
 
-// TestTargetCollector_SplitReadMatchesSingleRead: reading a siteMap in batches
-// (dedup state carried across reads) keeps exactly the fuzz records one read of
-// the finished siteMap keeps, cluster cap included.
+// TestTargetCollector_SplitReadMatchesSingleRead: in end-of-target mode
+// (discovery.stream_fuzz off), reading a siteMap in batches (dedup state
+// carried across reads) keeps exactly the fuzz records one read of the finished
+// siteMap keeps, cluster cap included, and exact dedup still keeps the shorter
+// path. Streaming mode's equivalent is TestTargetCollector_StreamedFuzzMatchesBatch.
 func TestTargetCollector_SplitReadMatchesSingleRead(t *testing.T) {
 	type node struct{ path, body string }
 	var nodes []node
@@ -195,6 +198,7 @@ func TestTargetCollector_SplitReadMatchesSingleRead(t *testing.T) {
 				fuzz = append(fuzz, rec)
 			}
 		}
+		sortShortestPathFirst(fuzz)
 		fuzz, _, _ = capNearIdenticalClusters(fuzz, defaultDedupClusterCap)
 		paths := make([]string, 0, len(fuzz))
 		for _, rec := range fuzz {
@@ -210,6 +214,7 @@ func TestTargetCollector_SplitReadMatchesSingleRead(t *testing.T) {
 	}
 
 	d := newTestDiscoverySource(newCaptureSaver())
+	d.cfg.FuzzAtEnd = true
 
 	whole := newStreamSiteMap(t)
 	store(whole, 0, len(nodes))

@@ -48,3 +48,16 @@ func TestDiscoveryValidateStreamingAndConcurrency(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoveryStreamsFuzz(t *testing.T) {
+	if !DefaultDiscoveryConfig().StreamsFuzz() {
+		t.Error("stream_fuzz must default to true")
+	}
+	on, off := true, false
+	if !(&DiscoveryConfig{StreamFuzz: &on}).StreamsFuzz() {
+		t.Error("stream_fuzz: true")
+	}
+	if (&DiscoveryConfig{StreamFuzz: &off}).StreamsFuzz() {
+		t.Error("stream_fuzz: false must keep the fuzz class to the end of the target")
+	}
+}

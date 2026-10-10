@@ -716,6 +716,7 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 		}
 		cfg.TargetConcurrency = dc.TargetConcurrency
 		cfg.FlushInterval = dc.FlushIntervalValue()
+		cfg.FuzzAtEnd = !dc.StreamsFuzz()
 
 		// Prefix breaker
 		cfg.PrefixBreakerEnabled = dc.Engine.PrefixBreaker.Enabled

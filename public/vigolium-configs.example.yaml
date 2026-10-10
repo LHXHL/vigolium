@@ -894,12 +894,19 @@ discovery:
   # 0 = default (min(number of targets, 3)); 1 = one target at a time.
   target_concurrency: 0
 
-  # How often a running target's JS-, form- and API-spec-derived requests are
-  # saved and handed to the scan, instead of waiting for the target to finish
-  # (also after every 500 new discoveries). Wordlist/fuzz results are still
-  # deduplicated and saved when the target finishes.
+  # How often a running target's results are saved and handed to the scan,
+  # instead of waiting for the target to finish (also after every 500 new
+  # discoveries). Covers JS-, form- and API-spec-derived requests and, with
+  # stream_fuzz, the wordlist/fuzz results.
   # "0" = only when the target finishes. Default: 15s
   flush_interval: 15s
+
+  # Stream wordlist/fuzz results with every flush too. Duplicates keep the
+  # first record seen and the near-identical cap (dedup_cluster_cap) keeps the
+  # first N of each cluster, so a killed scan keeps what was flushed. false =
+  # save them when the target finishes (duplicates keep the shorter path, the
+  # cap keeps the shortest paths). Default: true
+  stream_fuzz: true
 
   # Recursion settings for directory traversal.
   recursion:

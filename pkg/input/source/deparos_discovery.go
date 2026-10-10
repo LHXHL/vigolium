@@ -98,12 +98,21 @@ type DeparosDiscoveryConfig struct {
 	// request concurrency stays about where it was.
 	TargetConcurrency int
 
-	// FlushInterval is how often a running target's referenced class (JSTangle,
-	// form and API-spec records) is persisted and emitted. 0 = default (15s);
-	// negative = only at the end of the target. FlushNodes also flushes once
-	// that many nodes landed since the last flush (0 = default, 500).
+	// FlushInterval is how often a running target's records (the referenced
+	// class, plus the fuzz class unless FuzzAtEnd) are persisted and emitted.
+	// 0 = default (15s); negative = only at the end of the target. FlushNodes
+	// also flushes once that many nodes landed since the last flush
+	// (0 = default, 500).
 	FlushInterval time.Duration
 	FlushNodes    int
+
+	// FuzzAtEnd keeps the fuzz class (wordlist, spider and observed records)
+	// in memory until the target finishes, as before fuzz streaming: exact dedup
+	// keeps the shorter of two identical paths and the cluster cap ranks
+	// shortest-path-first (discovery.stream_fuzz: false). The default streams it
+	// with the referenced class: exact dedup keeps the first record and the
+	// cluster cap counts per cluster across flushes, first N wins.
+	FuzzAtEnd bool
 
 	EnableModules []string // Module selection for WorkItems
 
@@ -409,88 +418,97 @@ type collectedRecord struct {
 }
 
 // respCluster is a running representative for a group of near-identical
-// responses during greedy clustering.
+// responses: the first record's body size and word count, and how many records
+// the cluster kept so far.
 type respCluster struct {
-	host    string
-	method  string
-	status  int
-	ctype   string
 	repSize int64
 	repWord int64
 	count   int
 }
 
+// clusterKey is the exact part of a near-identical cluster's identity; size and
+// words are matched within dedupClusterTolerance inside one key.
+type clusterKey struct {
+	host   string
+	method string
+	status int
+	ctype  string
+}
+
+// clusterCapper is the near-identical cluster cap applied one record at a time,
+// so a target streamed across flushes keeps its per-cluster counts between them.
+// The first capN records of a cluster in arrival order win; nothing it admitted
+// is ever revoked, which is what lets an admitted record be persisted at once.
+type clusterCapper struct {
+	capN        int
+	clusters    map[clusterKey][]*respCluster
+	capped      int
+	cappedCodes [5]int
+}
+
+func newClusterCapper(capN int) *clusterCapper {
+	return &clusterCapper{capN: capN, clusters: make(map[clusterKey][]*respCluster)}
+}
+
+// admit reports whether rec is kept. Two records share a cluster when they have
+// the same host, method, status and content-type, and their body size and word
+// count are each within dedupClusterTolerance (0.5%) of the cluster's first
+// record. Records without a response (status 0) bypass clustering and are
+// always kept. A capN <= 0 keeps everything.
+func (c *clusterCapper) admit(rec collectedRecord) bool {
+	if c.capN <= 0 || rec.status == 0 {
+		return true
+	}
+	key := clusterKey{host: rec.host, method: rec.method, status: rec.status, ctype: rec.ctype}
+	for _, cl := range c.clusters[key] {
+		if !withinDedupTolerance(cl.repSize, rec.size) || !withinDedupTolerance(cl.repWord, rec.words) {
+			continue
+		}
+		if cl.count < c.capN {
+			cl.count++
+			return true
+		}
+		c.capped++
+		c.cappedCodes[statusCodeBucket(rec.status)]++
+		return false
+	}
+	c.clusters[key] = append(c.clusters[key], &respCluster{repSize: rec.size, repWord: rec.words, count: 1})
+	return true
+}
+
 // capNearIdenticalClusters keeps at most capN records per near-identical
-// cluster. Two records share a cluster when they have the same host, status,
-// and content-type, and their body size and word count are each within
-// dedupClusterTolerance (0.5%) of the cluster's representative. Records are
-// processed shortest-path-first so the kept representatives are the shallowest
-// (most likely real) paths. Records without a response (status 0) bypass
-// clustering and are always kept.
+// cluster (see clusterCapper.admit). It is order-stable: the first capN records
+// of each cluster in input order win, and the kept records keep their input
+// order, so capping a target in one batch keeps exactly what capping it one
+// streamed record at a time keeps. A caller wanting the shallowest paths as
+// representatives sorts first (sortShortestPathFirst).
 //
-// Returns the kept records (re-ordered shortest-path-first), the number of
-// records capped (dropped), and per-status-bucket counts of the capped records.
+// Returns the kept records, the number of records capped (dropped), and
+// per-status-bucket counts of the capped records.
 func capNearIdenticalClusters(records []collectedRecord, capN int) ([]collectedRecord, int, [5]int) {
-	var cappedCodes [5]int
 	if capN <= 0 {
-		return records, 0, cappedCodes
+		return records, 0, [5]int{}
 	}
-
-	sorted := make([]collectedRecord, len(records))
-	copy(sorted, records)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if len(sorted[i].path) != len(sorted[j].path) {
-			return len(sorted[i].path) < len(sorted[j].path)
+	capper := newClusterCapper(capN)
+	kept := make([]collectedRecord, 0, len(records))
+	for _, rec := range records {
+		if capper.admit(rec) {
+			kept = append(kept, rec)
 		}
-		return sorted[i].path < sorted[j].path
+	}
+	return kept, capper.capped, capper.cappedCodes
+}
+
+// sortShortestPathFirst orders records shortest path first (then by path), the
+// order the end-of-target cluster cap ranks in so the kept representatives are
+// the shallowest (most likely real) paths.
+func sortShortestPathFirst(records []collectedRecord) {
+	sort.SliceStable(records, func(i, j int) bool {
+		if len(records[i].path) != len(records[j].path) {
+			return len(records[i].path) < len(records[j].path)
+		}
+		return records[i].path < records[j].path
 	})
-
-	var clusters []*respCluster
-	kept := make([]collectedRecord, 0, len(sorted))
-	capped := 0
-
-	for _, rec := range sorted {
-		// No-response records can't be clustered by body shape — always keep.
-		if rec.status == 0 {
-			kept = append(kept, rec)
-			continue
-		}
-
-		var match *respCluster
-		for _, cl := range clusters {
-			if cl.status != rec.status || cl.host != rec.host || cl.method != rec.method || cl.ctype != rec.ctype {
-				continue
-			}
-			if withinDedupTolerance(cl.repSize, rec.size) && withinDedupTolerance(cl.repWord, rec.words) {
-				match = cl
-				break
-			}
-		}
-
-		if match == nil {
-			clusters = append(clusters, &respCluster{
-				host:    rec.host,
-				method:  rec.method,
-				status:  rec.status,
-				ctype:   rec.ctype,
-				repSize: rec.size,
-				repWord: rec.words,
-				count:   1,
-			})
-			kept = append(kept, rec)
-			continue
-		}
-
-		if match.count < capN {
-			match.count++
-			kept = append(kept, rec)
-		} else {
-			capped++
-			cappedCodes[statusCodeBucket(rec.status)]++
-		}
-	}
-
-	return kept, capped, cappedCodes
 }
 
 // withinDedupTolerance reports whether a and b are within dedupClusterTolerance
@@ -962,9 +980,11 @@ func loadEmbeddedFuzzWordlist() [][]byte {
 // discoverTarget runs discovery against a single target URL.
 //
 // The engine crawls into a per-target ephemeral siteMap. While it runs, a
-// flusher streams the referenced class (JSTangle/form/API-spec records) out of
-// the siteMap every flush interval; the fuzz class, the JS template plan and the
-// artifacts are imported once the engine stops (see deparos_discovery_stream.go).
+// flusher streams the records out of the siteMap every flush interval: the
+// referenced class (JSTangle/form/API-spec records) and, unless
+// discovery.stream_fuzz is off, the deduped and cluster-capped fuzz class. The
+// rest, the JS template plan and the artifacts are imported once the engine
+// stops (see deparos_discovery_stream.go).
 // The engine's thread count is the share runDiscovery gave this target.
 func (d *DeparosDiscoverySource) discoverTarget(parentCtx context.Context, target string) error {
 	threads := targetThreads(parentCtx, d.cfg.Concurrency)

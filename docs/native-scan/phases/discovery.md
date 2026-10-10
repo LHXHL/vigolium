@@ -337,10 +337,11 @@ DeparosDiscoverySource.Next()
                 or the target's budget to expire
       every flush_interval (default 15s) or 500 new nodes while it runs:
         read the temporary sitemap from a cursor
-        → persist + emit the referenced class (JSTangle, form, API-spec)
+        → dedup (keep-first) + cluster-cap (first N) the fuzz class as read
+        → persist + emit the kept fuzz records and the referenced class
+          (JSTangle, form, API-spec)
   → at the end of the target: read the rest of the sitemap
-  → dedup + cluster-cap the fuzz class in memory
-  → persist the batch, JS template stubs and artifacts
+  → persist the remaining batch, JS template stubs and artifacts
   → emit as WorkItems → Executor → Scanner Modules
 ```
 
@@ -350,10 +351,22 @@ API spec) is exempt from the fuzz-noise dedup, so nothing later in the crawl can
 change whether one is kept: it is persisted and emitted while the target is
 still running, every `discovery.flush_interval` (default `15s`; `"0"` waits for
 the end of the target) or every 500 new nodes. A cancelled or killed scan loses
-at most one interval of them, and assessment starts on them early. The **fuzz
-class** (wordlist, spider and observed paths) is still collected **per target and
-emitted as a batch**: hard dedup keeps the shorter of two identical paths and the
-cluster cap ranks by path length, so neither is final until the engine finishes.
+at most one interval of them, and assessment starts on them early.
+
+The **fuzz class** (wordlist, spider and observed paths) streams with the same
+flushes (`discovery.stream_fuzz`, default `true`), under rules that make each
+decision final the moment a record is read: exact dedup (same host, method,
+status, length and body hash) keeps the **first** record of a duplicate set, and
+the near-identical cluster cap (`dedup_cluster_cap`) keeps the **first N** of each
+cluster in arrival order, with its per-cluster counts carried across flushes.
+Both are order-stable, so a target streamed in any number of flushes keeps
+exactly what one pass over its finished sitemap keeps, and a killed scan keeps
+every fuzz record flushed before the kill. Streamed fuzz records are stored under
+`source='deparos'` like before, so the post-discovery passes (the 4xx status
+policy, reflected-URL and soft dedup) still run over all of them when the phase
+ends. `stream_fuzz: false` restores the end-of-target batch: hard dedup keeps the
+shorter of two identical paths and the cluster cap ranks by path length, so
+neither is final until the engine finishes.
 Each target gets its own wall-clock budget
 (`--discover-max-time`, else `scanning_pace.discovery.max_duration`, else 1h);
 exhausting it ends that target and starts the next pending one, and whatever

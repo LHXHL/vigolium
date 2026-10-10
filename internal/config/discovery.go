@@ -36,6 +36,16 @@ type DiscoveryConfig struct {
 	// persisted and handed to the scan (also every 500 new nodes). "" = default
 	// (15s); "0" = only when the target finishes.
 	FlushInterval string `yaml:"flush_interval"`
+	// StreamFuzz streams the wordlist/spider (fuzz) class with every flush too,
+	// deduplicated keep-first and cluster-capped first-N-wins as it is read.
+	// nil = default (true); false keeps it until the target finishes (keep the
+	// shorter path, cap shortest-path-first). No effect with flush_interval "0".
+	StreamFuzz *bool `yaml:"stream_fuzz"`
+}
+
+// StreamsFuzz resolves discovery.stream_fuzz (default true).
+func (c *DiscoveryConfig) StreamsFuzz() bool {
+	return c.StreamFuzz == nil || *c.StreamFuzz
 }
 
 // maxDiscoveryTargetConcurrency bounds discovery.target_concurrency: each

@@ -81,7 +81,10 @@ func TestCapNearIdenticalClusters_SPAFlood(t *testing.T) {
 	assert.Equal(t, 40, codes[1], "all capped records are 2xx")
 }
 
-func TestCapNearIdenticalClusters_KeepsShortestPaths(t *testing.T) {
+// TestCapNearIdenticalClusters_FirstNWins: the cap is order-stable — the first
+// capN records of a cluster in input order are kept, in that order — so a
+// target capped in one batch keeps what capping it record by record keeps.
+func TestCapNearIdenticalClusters_FirstNWins(t *testing.T) {
 	const host = "h"
 	records := []collectedRecord{
 		rec("/a/b/c/d/e", host, 200, "text/html", 74100, 1236),
@@ -94,8 +97,38 @@ func TestCapNearIdenticalClusters_KeepsShortestPaths(t *testing.T) {
 	kept, capped, _ := capNearIdenticalClusters(records, 2)
 
 	assert.Equal(t, 3, capped)
-	// Shortest two paths survive.
-	assert.ElementsMatch(t, []string{"/a", "/a/b"}, keptPaths(kept))
+	assert.Equal(t, []string{"/a/b/c/d/e", "/a/b/c/d"}, keptPaths(kept))
+
+	// Fed one record at a time, the capper keeps the same.
+	capper := newClusterCapper(2)
+	var streamed []collectedRecord
+	for _, r := range records {
+		if capper.admit(r) {
+			streamed = append(streamed, r)
+		}
+	}
+	assert.Equal(t, keptPaths(kept), keptPaths(streamed))
+	assert.Equal(t, 3, capper.capped)
+}
+
+// TestCapNearIdenticalClusters_KeepsShortestPathsWhenSorted: the end-of-target
+// mode (discovery.stream_fuzz: false) sorts shortest-path-first before capping,
+// so the shallowest paths are the representatives, as before streaming.
+func TestCapNearIdenticalClusters_KeepsShortestPathsWhenSorted(t *testing.T) {
+	const host = "h"
+	records := []collectedRecord{
+		rec("/a/b/c/d/e", host, 200, "text/html", 74100, 1236),
+		rec("/a/b/c/d", host, 200, "text/html", 74100, 1236),
+		rec("/a/b/c", host, 200, "text/html", 74100, 1236),
+		rec("/a/b", host, 200, "text/html", 74100, 1236),
+		rec("/a", host, 200, "text/html", 74100, 1236),
+	}
+
+	sortShortestPathFirst(records)
+	kept, capped, _ := capNearIdenticalClusters(records, 2)
+
+	assert.Equal(t, 3, capped)
+	assert.Equal(t, []string{"/a", "/a/b"}, keptPaths(kept))
 }
 
 func TestCapNearIdenticalClusters_DistinctSizesAllKept(t *testing.T) {
