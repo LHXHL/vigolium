@@ -35,7 +35,7 @@ func pickAgentSessionTUI(ctx context.Context, repo *database.Repository, runs []
 	if res.SelectedID == "" {
 		return nil
 	}
-	return showAgentSessionDetail(ctx, repo, res.SelectedID)
+	return showAgentSessionDetail(nil, ctx, repo, res.SelectedID)
 }
 
 func agentSessionItem(r *database.AgenticScan) tui.Item {

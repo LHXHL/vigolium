@@ -33,18 +33,6 @@ var interactiveAllowed = map[string]string{
 // command regressed (or a new one shipped off-contract), which is what
 // knownNonConformingCeiling stops.
 var knownNonConforming = map[string]string{
-	// Agentic scans (B7).
-	"agent autopilot": "raw summary map; nothing when repo is nil",
-	"agent swarm":     "raw summary map; status hard-coded",
-	"agent audit":     "raw summary map",
-	"audit":           "raw summary map",
-
-	// Agent (B7).
-	"agent":         "--list-agents/--list-templates raw maps; --list-modes NDJSON passthrough",
-	"agent query":   "raw agent.Result after streamed text",
-	"agent session": "raw {sessions} or raw scan",
-	"agent triage":  "text verdict",
-
 	// Reads still RAW or NONE (the group that next changes them).
 	"extensions eval":    "text",
 	"extensions example": "text",
@@ -65,7 +53,7 @@ var knownNonConforming = map[string]string{
 
 // knownNonConformingCeiling pins the ratchet's size. Lower it when an entry is
 // removed; never raise it.
-const knownNonConformingCeiling = 19
+const knownNonConformingCeiling = 11
 
 // shadowCheckedFlags are the local flag names that must not shadow a persistent
 // one: a local --json silently replaces the global -j on that command.

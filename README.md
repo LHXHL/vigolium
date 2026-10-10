@@ -433,18 +433,24 @@ Agentic Scan (vigolium agent autopilot / swarm / query):
       --last-commits       Shorthand for --diff HEAD~N
       --code-audit         Enable AI code audit (default: on with --source)
       --discover           Run discovery+spidering before planning (swarm)
-      --audit              vigolium-audit mode: lite, balanced, deep, mock, off
-      --piolium            Piolium audit mode (empty = auto-pick)
+      --audit              Nested vigolium-audit harness: lite, balanced, deep, mock, off
+                           (default off; needs --source)
+      --piolium            Nested piolium harness mode (default off; needs --source)
       --resume             Resume a durable-autopilot run by agentic-scan UUID
       --session-dir        Pin the session dir for this run's debug artifacts
       --transcript         Copy transcript.jsonl out after the run
       --max-iterations     Max triage-rescan iterations
-      --max-commands       Cap on agent tool calls
-      --token-budget       Cap on aggregate tokens
+      --max-commands       Cap on agent tool calls (autopilot / swarm)
+      --token-budget       Cap on input+output tokens (autopilot / swarm)
+      --max-cost-usd       Cap on estimated spend in USD (autopilot / swarm)
       --max-duration       Max agent wall-clock time (0 = no limit)
+                           (a run stopped by any budget exits 5)
+      --preflight-timeout  Provider preflight deadline (default 15s; 60s local)
+      --no-preflight       Skip the provider preflight ping
       --only / --skip / --start-from   Phase control (swarm)
 
 Source audit (vigolium agent audit / vigolium audit):
+      --source             Required: dir (--source . for cwd), git URL, gs://, archive
       --driver             auto (default), both, audit, piolium
       --intensity          Preset: quick, balanced, deep (deep = modes deep,confirm)
       --mode               Mode override: lite, balanced, deep, revisit, confirm, merge, ...

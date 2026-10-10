@@ -59,6 +59,13 @@ type AutopilotPipelineConfig struct {
 
 	AgentName   string
 	MaxCommands int
+	// TokenBudget / MaxCostUSD cap the operator loop's input+output tokens
+	// and estimated USD cost (autopilot.Options.TokenBudget / MaxCostUSD).
+	// Zero = no cap.
+	TokenBudget int64
+	MaxCostUSD  float64
+	// SkipPreflight skips the provider ping (--no-preflight).
+	SkipPreflight bool
 
 	DryRun     bool
 	ShowPrompt bool
@@ -172,7 +179,11 @@ type auditContextStruct struct {
 func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg AutopilotPipelineConfig) (*AutopilotPipelineResult, error) {
 	start := time.Now()
 
-	if err := r.engine.Preflight(cfg.AgentName); err != nil {
+	var preflightErr error
+	if !cfg.SkipPreflight {
+		preflightErr = r.engine.Preflight(ctx, cfg.AgentName)
+	}
+	if err := preflightErr; err != nil {
 		// The olium provider drives both the audit operator and the
 		// autonomous operator. When its preflight fails (offline local
 		// model, bad creds, network black hole) the AI loop can't run —
@@ -436,6 +447,8 @@ func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg Autopil
 		SessionDir:           cfg.SessionDir,
 		MaxToolCalls:         cfg.MaxCommands,
 		MaxTurns:             cfg.MaxCommands,
+		TokenBudget:          cfg.TokenBudget,
+		MaxCostUSD:           cfg.MaxCostUSD,
 		Out:                  streamWriter,
 		ToolLog:              streamWriter,
 		SystemPrompt:         firstNonEmpty(cfg.SystemPrompt, oliumCfg.SystemPrompt),
@@ -462,6 +475,10 @@ func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg Autopil
 	if autopilotResult != nil {
 		result.OperatorFindingsCount = int(autopilotResult.FindingCount)
 		result.Reentries = autopilotResult.Reentries
+		result.BudgetStop = autopilotResult.BudgetStop
+		result.InputTokens = autopilotResult.InputTokens
+		result.OutputTokens = autopilotResult.OutputTokens
+		result.CostUSD = autopilotResult.CostUSD
 		// Surfaced as a warning so the server marks the run degraded and the
 		// workbench shows why a fast zero-finding run tested nothing.
 		if d := autopilotResult.Diagnosis(); d != "" {

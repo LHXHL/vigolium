@@ -1727,3 +1727,20 @@ func TestSessionConfigNeedsRepair(t *testing.T) {
 		})
 	}
 }
+
+// TestTriageParsesInconclusive: "inconclusive" is a first-class verdict, and
+// its common spellings normalize to it.
+func TestTriageParsesInconclusive(t *testing.T) {
+	for _, v := range []string{"inconclusive", "Unknown", "needs_more_info", "needs-more-info"} {
+		res, err := ParseTriageConfirmResult(`{"verdict":"` + v + `","reasoning":"target unreachable"}`)
+		if err != nil {
+			t.Fatalf("verdict %q: %v", v, err)
+		}
+		if res.Verdict != agenttypes.TriageVerdictInconclusive {
+			t.Errorf("verdict %q parsed as %q, want inconclusive", v, res.Verdict)
+		}
+	}
+	if _, err := ParseTriageConfirmResult(`{"verdict":"maybe","reasoning":"x"}`); err == nil {
+		t.Error("an unknown verdict must still be rejected")
+	}
+}

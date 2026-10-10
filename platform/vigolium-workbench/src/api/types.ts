@@ -647,13 +647,17 @@ export interface AgentRunListResponse {
 // that run alive forever; TestWorkbenchTerminalStatusesMatchServer in
 // pkg/server fails when the two lists drift.
 export const TERMINAL_AGENT_STATUSES: ReadonlySet<string> = new Set([
-  'completed', 'completed_with_errors', 'completed_with_warnings', 'failed', 'cancelled', 'timeout', 'error',
+  'completed', 'completed_with_errors', 'completed_with_warnings', 'failed', 'cancelled', 'timeout',
+  'budget_exhausted', 'error',
 ]);
 
 /** A run that finished but was degraded (a driver failed, the model never
- *  called a tool...). Shown amber with its warnings, not as a clean pass. */
+ *  called a tool...) or stopped at a limit (--max-duration: 'timeout'; a
+ *  command/token/cost budget: 'budget_exhausted'). Shown amber with its
+ *  warnings, not as a clean pass. */
 export function isWarningAgentStatus(status?: string): boolean {
-  return status === 'completed_with_errors' || status === 'completed_with_warnings';
+  return status === 'completed_with_errors' || status === 'completed_with_warnings'
+    || status === 'timeout' || status === 'budget_exhausted';
 }
 
 /** How an agent run status should read at a glance; each theme maps a tone

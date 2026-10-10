@@ -198,9 +198,11 @@ vigolium config ls olium
 vigolium doctor --json
 ```
 
-2. **Check the provider endpoint and credentials.** The shipped default is an
-`openai-compatible` endpoint at local Ollama. Start that endpoint and choose a
-tool-capable model, or select another provider:
+2. **Check the provider endpoint and credentials.** The provider is
+auto-detected unless `agent.olium.provider` is set; the generated config sets
+`openai-compatible` pointing at a local Ollama. `vigolium agent --list-agents`
+shows which one a run would use. Start that endpoint and choose a tool-capable
+model, or select another provider:
 
 ```bash
 vigolium config set agent.olium.provider openai-codex-oauth
@@ -209,6 +211,13 @@ vigolium config set agent.olium.oauth_cred_path ~/.codex/auth.json
 
 For key providers, set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; the
 `anthropic-cli` provider is the one that requires a local `claude` binary.
+
+Before working, query, triage, swarm and autopilot ping the provider.
+`error.code: "provider_missing"` means no provider could be built from the
+configuration (unknown name, missing credentials); `preflight_failed` means it
+was built but did not answer. A local model that loads slowly may need a longer
+deadline: `--preflight-timeout 2m` or `agent.olium.preflight_timeout` (default
+`15s`, `60s` for a loopback endpoint). `--no-preflight` skips the ping.
 
 3. **Verify session directory permissions.** Agent sessions are stored under
 `~/.vigolium/agent-sessions/` by default. Ensure it is writable, then inspect a

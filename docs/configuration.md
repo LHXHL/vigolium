@@ -80,7 +80,10 @@ Higher-precedence sources override lower ones. Within the config file, environme
 | Variable | Purpose |
 |---|---|
 | `VIGOLIUM_API_KEY` | API key for the REST server and ingestor client authentication |
+| `VIGOLIUM_DB` | `--db` from the environment: the database path when `--db` is not set, with project scoping kept (wins over `VIGOLIUM_DB_PATH`). An agent run exports it to the `vigolium` commands its bash tool runs |
 | `VIGOLIUM_DB_PATH` | Default SQLite database path when `--db` is not set — pins a shell to one session database (see [Session database](#session-database)) |
+| `VIGOLIUM_CONFIG` | `--config` from the environment: the config file when `--config` is not set (an agent run exports it to its bash tool's commands) |
+| `VIGOLIUM_BIN` | Set (not read) by an agent run for its bash tool: the absolute path of the running `vigolium`, which is also first on that shell's `PATH` |
 | `VIGOLIUM_PROJECT_UUID` | Active project UUID when no project flag is supplied |
 | `VIGOLIUM_PROJECT_NAME` | Active project name when no project flag is supplied (looked up in the database; `VIGOLIUM_PROJECT_UUID` wins if both are set) |
 | `VIGOLIUM_PROXY` | HTTP/SOCKS proxy URL, used when `--proxy` is not set |
@@ -872,6 +875,7 @@ agent:
     cache_size: 1024
     max_concurrent: 4              # 0 = default 4; negative = unbounded
     call_timeout_sec: 600          # negative = no added provider deadline
+    preflight_timeout: ""          # preflight ping deadline; "" = 15s (60s for a loopback endpoint)
     autopilot_mode: legacy         # legacy | shadow | enforced
     custom_provider:
       base_url: http://localhost:11434/v1

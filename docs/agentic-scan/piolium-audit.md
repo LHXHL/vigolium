@@ -49,7 +49,7 @@ Reach for [vigolium-audit](vigolium-audit.md) instead when:
 - You have Claude Opus access and want the best-possible audit fidelity.
 - You want to lock the swarm/autopilot audit to Claude/Codex regardless of what's installed locally — pass `--audit=<mode>` to opt out of the auto-pick.
 
-Both harnesses can run as the in-pipeline audit during `vigolium agent autopilot` and `vigolium agent swarm`. When you don't pass `--audit` or `--piolium`, the CLI auto-picks: piolium runs if `pi`+the piolium extension are installed locally, otherwise it falls back to audit. The two are interoperable: findings from either land in the same `findings` table tagged with their source and can be reported together.
+Both harnesses can run as the in-pipeline audit during `vigolium agent autopilot` and `vigolium agent swarm`. Autopilot runs one only when `--audit` or `--piolium` is passed. For swarm, when you don't pass either, the CLI auto-picks: piolium runs if `pi`+the piolium extension are installed locally, otherwise it falls back to audit. The two are interoperable: findings from either land in the same `findings` table tagged with their source and can be reported together.
 
 ---
 
@@ -466,9 +466,11 @@ curl -N -s -X POST http://localhost:9002/api/agent/run/audit \
 
 ## In-Pipeline Audit (autopilot / swarm)
 
-`vigolium agent autopilot` and `vigolium agent swarm` can drive piolium as the in-pipeline audit that runs alongside (and feeds findings into) the operator agent. The same CLI that historically defaulted to audit now auto-picks piolium when it's locally available.
+`vigolium agent autopilot` and `vigolium agent swarm` can drive piolium as the in-pipeline audit that runs alongside (and feeds findings into) the operator agent.
 
-### Auto-pick
+**`agent autopilot` runs no nested harness unless asked**: `--audit` defaults to `off` and the intensity preset never turns one on, so pass `--audit <mode>` or `--piolium <mode>` explicitly. The auto-pick below applies to `agent swarm` and to the REST endpoints.
+
+### Auto-pick (swarm, REST)
 
 When `--source` is set and **neither** `--audit` nor `--piolium` is passed:
 
@@ -511,7 +513,7 @@ curl -s -X POST http://localhost:9002/api/agent/run/swarm \
     "piolium": "lite"
   }' | jq .
 
-# Autopilot — let auto-pick decide; pi+piolium on this host means piolium wins
+# Autopilot over REST — let auto-pick decide; pi+piolium on the server means piolium wins
 curl -s -X POST http://localhost:9002/api/agent/run/autopilot \
   -H "Content-Type: application/json" \
   -d '{

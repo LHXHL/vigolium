@@ -388,6 +388,12 @@ row name, or flattens a single object back to the top level, for one release.
 | `finding load` | mutation | stored finding ids | `format`, `parsed`, `saved`, `skipped` (the old `total` is `parsed`) | — |
 | `ingest` (local and `-s` remote) | mutation | `[]` | `records_ingested`/… or `records_submitted`, `errors`, `duration_ms` | — |
 | `update` | mutation | steps | — | `steps` |
+| `agent --list-agents` | read | providers `{name, model, auth, description, is_active}` | `active`, `active_source` (`config` or `auto-detect`), `setup_hint` | `providers` |
+| `agent --list-templates` | read | templates | — | `templates` |
+| `agent audit --list-modes` | read | audit's modes (its `list --json` lines) | `piolium_modes` | `modes` |
+| `agent session` | read | sessions (agentic_scans rows) | — | `sessions` |
+| `agent session <uuid>` | read | `[run]` | — | `.` |
+| `agent query` | read | `[result]` (`raw_output`, `findings`, `saved_count`, …) | `agentic_scan_uuid`, `session_dir` | `.` |
 
 Mutating commands that used to print only prose now print one mutation
 document under `-j` (prose moves to stderr). `changed: false` with
@@ -410,6 +416,7 @@ with `aborted: true`.
 | `storage rm` | `[{key, deleted, error?}]` | any key deleted | `deleted`, `failed`; a partial failure also sets `ok: false` and `error`, and exits 1 |
 | `init` | `[{kind, path}]` written | not already initialized (or `--force`) | `already_initialized` on a noop |
 | `skills install` | `[{name, path, installed, status, reason?, previous_version?, backup?, pruned?}]`; `status` is the state found before the run (`missing`, `current`, `stale`, `modified`) | any bundle written | `installed`, `skipped`, `dir` |
+| `agent triage <id>` | `[{finding_id, verdict, reasoning, notes?, old_severity, new_severity, old_status, new_status, written, agentic_scan_uuid}]` | the verdict was written (not `--no-write`, not `inconclusive`) | `agentic_scan_uuid`, `session_dir`; `dry_run: true` and `items: [{finding_id, prompt}]` under `--dry-run` |
 
 `storage download -j` needs `-o <file>` (exit 2 otherwise: without it the
 object's bytes are stdout) and prints a read receipt `[{key, path, size}]`.
@@ -657,7 +664,7 @@ vigolium traffic -S --db ./scan-target.jsonl search-term -n 1 --markdown
 ## AI / agentic scans
 
 These run an LLM-driven scan into the DB. With `--json`, the live agent stream
-goes to **stderr** and a single JSON summary is printed to **stdout** at the end:
+goes to **stderr** and **one run document** is printed to **stdout** at the end:
 
 ```bash
 vigolium agent audit --source . --intensity balanced --json
@@ -665,22 +672,89 @@ vigolium agent autopilot -t https://target.example --json
 vigolium agent swarm -t https://target.example --json
 ```
 
-Summary shape (stdout):
+The run document is an envelope of `kind: "scan"` with the scan document's
+spine, so an agent run reads like a scan:
+
 ```json
-{ "agentic_scan_uuid": "...", "status": "completed", "session_dir": "...",
-  "total_findings": 7, "counts_by_severity": {"critical":1,"high":3},
-  "top_findings": [ ... ],
-  "query": "vigolium finding --agentic-scan <uuid> --json --with-records" }
+{ "schema_version": 2, "command": "agent autopilot", "kind": "scan", "ok": true,
+  "agentic_scan_uuid": "…", "mode": "autopilot", "session_dir": "…",
+  "status": "timed_out", "completeness": "partial", "stop_reason": "timed_out",
+  "persisted": true, "provider": "openai-compatible", "model": "…",
+  "usage": {"input_tokens": 81234, "output_tokens": 9120, "cost_usd": 0.38},
+  "budget": {"max_commands": 750, "token_budget": 0, "max_cost_usd": 0,
+             "max_duration_ms": 21600000, "exhausted": true, "stop": "wall_time"},
+  "total": 7, "counts_by_severity": {"critical":1,"high":3,"medium":3,"low":0,"info":0,"suspect":0},
+  "items": [ /* the 20 most severe, finding views */ ], "items_truncated": false,
+  "errors": [], "warnings": [], "halt_reason": "…",
+  "audit_harness": {"mode": "off"},
+  "query": "vigolium --db … finding --agentic-scan <uuid> -j" }
 ```
+
+It is always printed once the run started: with no database it says
+`persisted: false` and reports the finding count the run itself kept; a session dir that
+could not be created is listed in `errors[]`. A run that failed outright still
+gets its document (`status: "failed"`, `errors[]`) and exits `1`. A provider
+that cannot be built or does not answer fails *before* the run with the error
+envelope instead: `error.code` `provider_missing` or `preflight_failed` (exit 1).
+
+| `status` (document) | `agentic_scans.status` | `completeness` | `stop_reason` | exit |
+|---|---|---|---|---|
+| `completed` | `completed` | complete | — | 0 |
+| `completed_with_warnings` | `completed_with_warnings` | complete | — | 0 |
+| `completed_with_errors` (some audit drivers failed) | `completed_with_errors` | partial | `partial` | 5 |
+| `timed_out` (`--max-duration`) | `timeout` | partial | `timed_out` | 5 |
+| `budget_exhausted` (`--max-commands` / `--token-budget` / `--max-cost-usd`) | `budget_exhausted` | partial | `budget_exhausted` | 5 |
+| `cancelled` (Ctrl-C / SIGTERM) | `cancelled` | partial | `interrupted` | 1 |
+| `failed` | `failed` | partial | — | 1 |
+
+Exit `5` comes after the document, like the `--fail-on` gate; `--soft-fail`
+forces `0`.
 
 Then pull the full results with the `query` line. The `--agentic-scan` filter
 expands to the whole run tree (audit driver legs / swarm sub-runs), so one UUID
 returns every finding the run produced.
 
-For a one-shot code review without a full scan:
+**Budgets** (autopilot and swarm): `--max-commands` (tool calls; autopilot's
+default comes from `--intensity`), `--token-budget` (input+output tokens) and
+`--max-cost-usd` (estimated spend, priced per turn from the provider's usage).
+`0` is no cap. Autopilot checks them after every operator turn; swarm after
+every agent call.
+
+**Preflight**: query, triage, swarm and autopilot ping the provider before
+working. The deadline is `agent.olium.preflight_timeout` (default `15s`, `60s`
+for a loopback Ollama / LM Studio endpoint) or `--preflight-timeout`; skip the
+ping with `--no-preflight`. The provider is auto-detected unless
+`agent.olium.provider` is set.
+
+**Nested harness**: `agent autopilot --source` no longer starts an audit
+harness (a claude/codex CLI) on its own; pass `--audit lite|balanced|deep` or
+`--piolium <mode>`. `agent audit` needs an explicit `--source` (`--source .`
+for the working directory); without one it exits `2`.
+
+**The agent's own `vigolium` calls.** The operator agent shells out to
+`vigolium`. Its bash tool runs `bash -c` (not a login shell) with `PATH`
+starting at a directory whose `vigolium` is the running binary (also exported
+as `$VIGOLIUM_BIN`), plus the parent's database and project:
+`$VIGOLIUM_DB` (`--db` from the environment, project scoping kept) and
+`$VIGOLIUM_PROJECT_UUID`, or `$VIGOLIUM_DB_PATH` alone when the parent itself
+reads unscoped (`-S`, or a shell pinned with `VIGOLIUM_DB_PATH`); and
+`$VIGOLIUM_CONFIG` when `--config` was given.
+
+For a one-shot prompt or a code review without a full scan, `agent query`
+records its own run (`mode: query`), prints `agentic_scan_uuid=… session_dir=…`
+to stderr, and under `-j` prints a read envelope with the result in `items[0]`:
 ```bash
 vigolium agent query --prompt-template security-code-review --source . --json
 ```
+
+`agent triage <finding-id>` asks the agent to confirm one finding. The verdict
+is `confirmed` (status → `confirmed`), `false_positive` (status →
+`false_positive`; the severity is **kept**, the status alone takes it out of
+gates and diffs) or `inconclusive` (nothing written). `--no-write`
+(`--report-only`) reports without writing, `--no-probe` gives the agent no
+HTTP/browser/shell tools, and `--dry-run` only renders the prompt. Under `-j`
+it needs the finding id (the picker is a TUI) and prints the mutation document
+in the table above.
 
 ## Counts, export, housekeeping
 
@@ -779,7 +853,7 @@ Exit codes:
 | `2` | usage error — bad flag, bad value, rejected combination, a search that matched nothing (`module enable`), or a mutation that needed `--force` and had no terminal to ask. `error.code: "usage_error"`, except a scan whose `--ext` extension failed to load before any request: `extension_load_failed` (`--ext-allow-failures` to scan without it) |
 | `3` | `--fail-on-match` / `--fail-on-crack` matched (`fuzz`, `kit secret-scan`, `kit jwt-crack`) |
 | `4` | the `--fail-on <severity>` (or `scan diff --fail-on-new <severity>`) gate tripped |
-| `5` | incomplete — the work ran but did not finish. `error.code` is `timed_out`, `budget_exhausted` or `partial`. Used by agent runs; a native scan that is merely partial still exits `0` (see [Partial scans](#partial-scans)), with an opt-in `--fail-on-partial` planned for a later release |
+| `5` | incomplete — the work ran but did not finish. `error.code` is `timed_out`, `budget_exhausted` or `partial`. The default for agent runs (`agent autopilot`/`swarm`/`audit`: a `--max-duration` stop, a `--max-commands`/`--token-budget`/`--max-cost-usd` stop, an audit in which some drivers failed; `agent query`/`triage` past `--max-duration`) — see [AI / agentic scans](#ai--agentic-scans); a native scan that is merely partial still exits `0` (see [Partial scans](#partial-scans)), with an opt-in `--fail-on-partial` planned for a later release |
 
 `error.code` is a closed set shared with the REST API (`pkg/apicontract`):
 values are added, never re-worded, so branch on the code rather than the message.

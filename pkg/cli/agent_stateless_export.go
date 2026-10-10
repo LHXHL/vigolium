@@ -145,6 +145,9 @@ func beginAgentStateless(prefix string) (string, error) {
 	_ = tmpFile.Close()
 
 	globalDB = dbPath
+	// Children of the operator's bash tool read this throwaway database
+	// unscoped (VIGOLIUM_DB_PATH), as the run itself does (agent_child_env.go).
+	agentChildDBUnscoped = true
 	if err := os.Setenv(dbPathEnvVar, dbPath); err != nil {
 		// Non-fatal: the in-process run still uses the temp DB via globalDB. Only
 		// `vigolium` subprocesses the agent shells out to would miss it.

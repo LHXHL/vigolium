@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/agent"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/olium"
@@ -21,7 +21,7 @@ import (
 // oliumProviderFlagUsage is the shared --provider help text for every agent
 // subcommand, generated from olium.ProviderNames so the advertised provider set
 // always matches exactly what the runtime accepts (no per-command drift).
-var oliumProviderFlagUsage = "Olium provider override: " + olium.ProviderNamesString(" | ") + " (falls back to agent.olium.provider config)"
+var oliumProviderFlagUsage = "Olium provider override: " + olium.ProviderNamesString(" | ") + " (default: agent.olium.provider; auto-detected when unset)"
 
 // Agent command flags
 var (
@@ -56,6 +56,7 @@ var (
 	agentQueryOliumGCPProject  string
 	agentQueryOliumGCPLocation string
 	agentQueryOliumBaseURL     string
+	agentQueryPreflight        agentPreflightFlags
 )
 
 var agentCmd = &cobra.Command{
@@ -82,12 +83,12 @@ Docs: https://docs.vigolium.com`,
 
 		// Handle --list-agents
 		if agentListAgents {
-			return printAgentList(settings)
+			return printAgentList(cmd, settings)
 		}
 
 		// Handle --list-templates
 		if agentListTemplates {
-			return printTemplateList(settings)
+			return printTemplateList(cmd, settings)
 		}
 
 		return cmd.Help()
@@ -145,10 +146,14 @@ func init() {
 	rf.StringVar(&agentQueryOliumLLMAPIKey, "llm-api-key", "", "Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var)")
 	rf.StringVar(&agentQueryOliumGCPProject, "gcp-project", "", "GCP project for Vertex providers (else $GOOGLE_CLOUD_PROJECT, then YAML, then SA file's project_id)")
 	rf.StringVar(&agentQueryOliumGCPLocation, "gcp-location", "", "GCP region for Vertex providers (else $GOOGLE_CLOUD_LOCATION, then YAML, then us-central1)")
+	registerAgentPreflightFlags(agentQueryCmd, &agentQueryPreflight)
 	rf.StringVar(&agentQueryOliumBaseURL, "base-url", "", "Endpoint URL for openai-compatible provider (e.g. http://localhost:11434/v1); falls back to agent.olium.custom_provider.base_url")
 }
 
 func runAgentQuery(cmd *cobra.Command, args []string) error {
+	// The bash tool's children run against this process's binary, database,
+	// project and config (agent_child_env.go).
+	installAgentChildEnv()
 	defer syncLogger()
 	defer closeDatabaseOnExit()
 
@@ -198,6 +203,7 @@ func runAgentQuery(cmd *cobra.Command, args []string) error {
 	if agentQueryOliumBaseURL != "" {
 		settings.Agent.Olium.CustomProvider.BaseURL = agentQueryOliumBaseURL
 	}
+	agentQueryPreflight.apply(settings)
 
 	// Open DB for ingestion (optional)
 	var repo *database.Repository
@@ -216,9 +222,17 @@ func runAgentQuery(cmd *cobra.Command, args []string) error {
 
 	engine := agent.NewEngine(settings, repo)
 
-	// Preflight: validate agent backend is available before building prompts
-	if err := engine.Preflight(agentLabel); err != nil {
-		return fmt.Errorf("agent preflight failed: %w", err)
+	ctx := context.Background()
+	if cmd != nil && cmd.Context() != nil {
+		ctx = cmd.Context()
+	}
+
+	// Preflight: validate the provider before building prompts. A dry run
+	// renders the prompt only and never calls the provider.
+	if !agentDryRun && !agentQueryPreflight.skip {
+		if err := engine.Preflight(ctx, agentLabel); err != nil {
+			return err
+		}
 	}
 
 	opts := agent.Options{
@@ -240,10 +254,9 @@ func runAgentQuery(cmd *cobra.Command, args []string) error {
 		Verbose:        agentVerbose,
 	}
 	if settings.Agent.StreamEnabled() {
-		opts.StreamWriter = os.Stdout
+		opts.StreamWriter = agentStreamSink()
 	}
 
-	ctx := context.Background()
 	if agentMaxDuration > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, agentMaxDuration)
@@ -252,20 +265,68 @@ func runAgentQuery(cmd *cobra.Command, args []string) error {
 
 	// Create session directory for agent artifacts. Created before engine.Run
 	// so we can tee the stream into {sessionDir}/runtime.log for `vigolium log`.
-	queryAgenticScanUUID := uuid.New().String()
-	sessionDir, sdErr := agent.EnsureSessionDir(settings.Agent.EffectiveSessionsDir(), queryAgenticScanUUID)
-	if sdErr != nil {
-		zap.L().Warn("Failed to create session dir", zap.Error(sdErr))
+	queryAgenticScanUUID := pinnedOrNewUUID(globalScanUUID)
+	var sessionDir string
+	if !agentDryRun {
+		var sdErr error
+		sessionDir, sdErr = agent.EnsureSessionDir(settings.Agent.EffectiveSessionsDir(), queryAgenticScanUUID)
+		if sdErr != nil {
+			zap.L().Warn("Failed to create session dir", zap.Error(sdErr))
+		}
+		opts.SessionDir = sessionDir
 	}
 	if tee, closer := teeToRuntimeLog(opts.StreamWriter, sessionDir); closer != nil {
 		opts.StreamWriter = tee
 		defer func() { _ = closer.Close() }()
 	}
 
+	// The query's own agentic_scans row, so `agent session`, `log ls` and
+	// `finding --agentic-scan` find it like any other agent run. A dry run
+	// renders a prompt only and records nothing.
+	projectUUID, _ := resolveProjectUUID()
+	startedAt := time.Now()
+	if !agentDryRun {
+		_, model := settings.Agent.BackendMeta()
+		startAgenticScanRow(ctx, repo, &database.AgenticScan{
+			UUID:        queryAgenticScanUUID,
+			ProjectUUID: projectUUID,
+			ScanUUID:    globalScanUUID,
+			Mode:        "query",
+			AgentName:   firstNonEmptyString(agentLabel, "olium"),
+			Protocol:    config.AgentProtocolLabel,
+			Model:       model,
+			TemplateID:  agentPromptTemplate,
+			SourcePath:  agentSourcePath,
+			SessionDir:  sessionDir,
+			StartedAt:   startedAt,
+		})
+		printAgentRunHandle(queryAgenticScanUUID, sessionDir)
+	}
+
 	result, err := engine.Run(ctx, opts)
+	if !agentDryRun {
+		end := database.AgenticRunEnd{
+			Err:      err,
+			TimedOut: err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded),
+		}
+		if end.TimedOut {
+			end.Err = nil
+		}
+		dbStatus, _ := agentRunStatus(end)
+		fin := agenticScanRowFinish{Status: dbStatus}
+		if err != nil {
+			fin.ErrorMessage = err.Error()
+		}
+		if result != nil {
+			fin.FindingCount = len(result.Findings)
+			fin.SavedCount = result.SavedCount
+			fin.Usage = agentRunUsage{InputTokens: int64(result.TokenUsage.InputTokens), OutputTokens: int64(result.TokenUsage.OutputTokens)}
+		}
+		finishAgenticScanRow(repo, queryAgenticScanUUID, startedAt, fin)
+	}
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("agent timed out after %s (use --max-duration to adjust or set to 0 to disable)", agentMaxDuration)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return incompleteErrorf(apicontract.CodeTimedOut, "agent timed out after %s (use --max-duration to adjust or set to 0 to disable)", agentMaxDuration)
 		}
 		return fmt.Errorf("agent run failed: %w", err)
 	}
@@ -277,29 +338,38 @@ func runAgentQuery(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if agentUploadResults && sessionDir != "" {
+		uploadAgenticScanResults(settings, projectUUID, queryAgenticScanUUID, sessionDir, repo)
+	}
+
+	// -j: one read envelope carrying the result (items[0]) and the run's
+	// handle. The streamed text went to stderr (or nowhere), never stdout.
+	if globalJSON {
+		var runUUID string
+		if !agentDryRun {
+			runUUID = queryAgenticScanUUID
+		}
+		return emitObject(cmd, ".", result,
+			withExtra("agentic_scan_uuid", runUUID),
+			withExtra("session_dir", sessionDir),
+			withProjectScope(projectUUID))
+	}
+
 	// For inline runs without a template, print raw output (skip if already streamed)
 	if !hasTemplate && opts.StreamWriter == nil {
 		fmt.Print(result.RawOutput)
-		if agentUploadResults && sessionDir != "" {
-			projectUUID, _ := resolveProjectUUID()
-			uploadAgenticScanResults(settings, projectUUID, queryAgenticScanUUID, sessionDir, repo)
-		}
 		return nil
 	}
 
 	printAgentResult(result)
-
-	if agentUploadResults && sessionDir != "" {
-		projectUUID, _ := resolveProjectUUID()
-		uploadAgenticScanResults(settings, projectUUID, queryAgenticScanUUID, sessionDir, repo)
-	}
 	return nil
 }
 
-// printAgentList prints the olium providers configured for this install.
-// With the subprocess backend system removed, the "list" now reflects the
-// four olium providers plus the active default from agent.olium.provider.
-func printAgentList(settings *config.Settings) error {
+// printAgentList prints the olium providers the runtime accepts and which one
+// a run would use: agent.olium.provider when set, else the auto-detected one
+// (decision D25: "auto-detect; set agent.olium.provider", the same words the
+// README and the preflight error use).
+func printAgentList(cmd *cobra.Command, settings *config.Settings) error {
 	type providerEntry struct {
 		Name        string
 		Model       string
@@ -311,7 +381,7 @@ func printAgentList(settings *config.Settings) error {
 	// provider always appears — a provider added to the runtime without metadata
 	// here still shows up with a generic row rather than silently disappearing.
 	meta := map[string]providerEntry{
-		"openai-codex-oauth":          {Model: olium.DefaultOpenAIModel, Auth: "~/.codex/auth.json", Description: "OpenAI Codex via ChatGPT OAuth (default)"},
+		"openai-codex-oauth":          {Model: olium.DefaultOpenAIModel, Auth: "~/.codex/auth.json", Description: "OpenAI Codex via ChatGPT OAuth (the auto-detect fallback)"},
 		"openai-api-key":              {Model: olium.DefaultOpenAIModel, Auth: "$OPENAI_API_KEY", Description: "OpenAI chat API via API key"},
 		"openai-responses":            {Model: olium.DefaultOpenAIModel, Auth: "$OPENAI_API_KEY", Description: "OpenAI Responses API (/v1/responses) via API key"},
 		"anthropic-api-key":           {Model: olium.DefaultAnthropicModel, Auth: "$ANTHROPIC_API_KEY", Description: "Anthropic Claude via API key"},
@@ -330,10 +400,7 @@ func printAgentList(settings *config.Settings) error {
 		defaults = append(defaults, e)
 	}
 
-	activeProvider := olium.CanonicalProviderName(settings.Agent.Olium.Provider)
-	if activeProvider == "" {
-		activeProvider = "openai-codex-oauth"
-	}
+	activeProvider, activeSource := activeOliumProvider(settings)
 
 	if globalJSON {
 		type apiEntry struct {
@@ -353,11 +420,10 @@ func printAgentList(settings *config.Settings) error {
 				IsActive:    p.Name == activeProvider,
 			})
 		}
-		return writeLegacyResultJSON(map[string]interface{}{
-			"providers": entries,
-			"total":     len(entries),
-			"active":    activeProvider,
-		})
+		return emitRead(cmd, "providers", entries, int64(len(entries)), 0, len(entries),
+			withExtra("active", activeProvider),
+			withExtra("active_source", activeSource),
+			withExtra("setup_hint", agent.ProviderSetupHint))
 	}
 
 	tbl := terminal.NewTableWithMaxWidth(globalWidth, "PROVIDER", "MODEL", "AUTH", "DESCRIPTION", "ACTIVE")
@@ -372,21 +438,35 @@ func printAgentList(settings *config.Settings) error {
 	// The AUTH column names *what* each provider needs; the guide explains how
 	// to obtain and wire it. Printed only on the human table (the JSON branch
 	// above returns early) so machine consumers stay unaffected.
-	fmt.Printf("\n%s Setup guide: %s\n", terminal.InfoSymbol(), terminal.Cyan(olium.SetupDocsURL))
+	if activeSource == "auto-detect" {
+		fmt.Printf("\n%s Active: %s (auto-detected; agent.olium.provider is unset)\n", terminal.InfoSymbol(), terminal.Cyan(activeProvider))
+	} else {
+		fmt.Printf("\n%s Active: %s (agent.olium.provider)\n", terminal.InfoSymbol(), terminal.Cyan(activeProvider))
+	}
+	fmt.Printf("%s Provider: auto-detected unless agent.olium.provider is set — %s\n", terminal.InfoSymbol(),
+		terminal.Cyan("vigolium config set agent.olium.provider <name>"))
+	fmt.Printf("%s Setup guide: %s\n", terminal.InfoSymbol(), terminal.Cyan(olium.SetupDocsURL))
 	return nil
 }
 
-func printTemplateList(settings *config.Settings) error {
+// activeOliumProvider is the provider a run would use and where that answer
+// comes from: "config" (agent.olium.provider, or --provider folded into it) or
+// "auto-detect" (unset: the runtime picks, see olium.AutoDetectedProvider).
+func activeOliumProvider(settings *config.Settings) (name, source string) {
+	if p := olium.CanonicalProviderName(settings.Agent.Olium.Provider); p != "" {
+		return p, "config"
+	}
+	return olium.AutoDetectedProvider(), "auto-detect"
+}
+
+func printTemplateList(cmd *cobra.Command, settings *config.Settings) error {
 	templates, err := agent.ListTemplates(settings.Agent.TemplatesDir)
 	if err != nil {
 		return fmt.Errorf("failed to list templates: %w", err)
 	}
 
 	if globalJSON {
-		return writeLegacyResultJSON(map[string]interface{}{
-			"templates": templates,
-			"total":     len(templates),
-		})
+		return emitRead(cmd, "templates", templates, int64(len(templates)), 0, len(templates))
 	}
 
 	if len(templates) == 0 {
@@ -404,11 +484,6 @@ func printTemplateList(settings *config.Settings) error {
 }
 
 func printAgentResult(result *agent.Result) {
-	if globalJSON {
-		_ = writeLegacyResultJSON(result)
-		return
-	}
-
 	if result.DryRun {
 		fmt.Print(result.RawOutput)
 		return

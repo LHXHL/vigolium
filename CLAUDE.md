@@ -40,7 +40,7 @@ Do not read or modify `platform/`. The only exception is `platform/vigolium-work
 - **Native scanning:** ingestion → scope filtering → executor → modules → output/storage. Native scans are deterministic Go code. AI dispatch uses the in-process olium runtime.
 - **Modules:** implement `ActiveModule` or `PassiveModule`, register in `default_registry_active.go` or `default_registry_passive.go`, and reuse `modkit`/`infra` helpers. Passive modules analyze existing traffic without sending requests.
 - **Projects:** scan data is scoped by `project_uuid`. Config precedence is global → project → scanning profile → CLI. Preserve project isolation in queries and writes.
-- **Database selection:** `--db` → `VIGOLIUM_DB_PATH` → config → default. Reuse shared DB openers and scoping helpers; a pinned env path must never silently fall back to another store.
+- **Database selection:** `--db` → `VIGOLIUM_DB` → `VIGOLIUM_DB_PATH` → config → default (`VIGOLIUM_DB` keeps project scoping; `VIGOLIUM_DB_PATH` turns it off for reads). Reuse shared DB openers and scoping helpers; a pinned env path must never silently fall back to another store.
 - **Inputs:** `-T` accepts target lists (URLs or Burp scope); specs and request exports use `-i`. Target lists must populate `Options.Targets` before runner creation.
 - **Shared definitions:** input formats belong in `pkg/input/source/file.go`; phase names/aliases in `internal/runner/native_plan.go`. Extend these tables instead of maintaining parallel lists.
 - **Machine output:** keep human logs off stdout in JSON/event modes. Reuse the shared JSON envelope and event emitter; `-j` query output and `--format jsonl` exports have distinct contracts.

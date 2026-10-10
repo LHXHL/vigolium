@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -72,6 +74,7 @@ type OliumConfig struct {
 	CacheSize           int                  `yaml:"cache_size"`            // LRU entries; default 1024, 0 disables
 	MaxConcurrent       int                  `yaml:"max_concurrent"`        // global cap on simultaneous in-flight provider calls; default 4 (0/unset), negative disables the cap (unbounded)
 	CallTimeoutSec      int                  `yaml:"call_timeout_sec"`      // per-call deadline in seconds (default 600 = 10m). Negative = inherit only the parent ctx (no enforced timeout).
+	PreflightTimeout    string               `yaml:"preflight_timeout"`     // agent preflight ping deadline, a Go duration ("15s", "1m"); empty = auto: 15s, or 60s for a local endpoint (openai-/anthropic-compatible on loopback, e.g. Ollama / LM Studio). --preflight-timeout overrides per run
 	AlwaysOnSkills      []string             `yaml:"always_on_skills"`      // skills always loaded regardless of planner selection (autopilot/swarm); empty = built-in default [triage-finding, write-jsext]
 
 	// AutopilotMode selects the durable-autopilot behavior:
@@ -391,6 +394,56 @@ func (c *OliumConfig) EffectiveCallTimeout() time.Duration {
 		return time.Duration(c.CallTimeoutSec) * time.Second
 	}
 	return 10 * time.Minute
+}
+
+// Default agent preflight deadlines: a hosted provider answers a one-token
+// ping in a few seconds, while a local model (Ollama, LM Studio) may first have
+// to load its weights.
+const (
+	DefaultPreflightTimeout      = 15 * time.Second
+	DefaultLocalPreflightTimeout = 60 * time.Second
+)
+
+// EffectivePreflightTimeout returns the deadline of the agent preflight ping:
+// preflight_timeout when it parses as a positive duration, else the default for
+// the configured provider (DefaultLocalPreflightTimeout for a local endpoint).
+func (c *OliumConfig) EffectivePreflightTimeout() time.Duration {
+	if c == nil {
+		return DefaultPreflightTimeout
+	}
+	if raw := strings.TrimSpace(c.PreflightTimeout); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	if c.IsLocalProvider() {
+		return DefaultLocalPreflightTimeout
+	}
+	return DefaultPreflightTimeout
+}
+
+// IsLocalProvider reports whether the configured provider is a model served on
+// this machine: an openai-/anthropic-compatible endpoint whose base_url host is
+// loopback (Ollama on :11434, LM Studio on :1234, a local vLLM).
+func (c *OliumConfig) IsLocalProvider() bool {
+	if c == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Provider)) {
+	case "openai-compatible", "anthropic-compatible":
+	default:
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(c.CustomProvider.BaseURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // EffectiveMaxConcurrent returns the provider-call concurrency cap. A positive

@@ -54,16 +54,22 @@ type TriagedFinding struct {
 // The agent reasons about one finding's evidence, optionally re-probes the
 // target, and returns a verdict plus reasoning.
 type TriageConfirmResult struct {
-	Verdict   string `json:"verdict"`   // one of TriageVerdictConfirmed, TriageVerdictFalsePositive
+	Verdict   string `json:"verdict"`   // one of TriageVerdictConfirmed, TriageVerdictFalsePositive, TriageVerdictInconclusive
 	Reasoning string `json:"reasoning"` // free-form explanation of how the verdict was reached
 	Notes     string `json:"notes,omitempty"`
 }
 
 // Triage confirm verdict constants. The parser normalises common aliases
 // ("fp", "true-positive", etc.) to these canonical values.
+//
+// Inconclusive is the honest third outcome: the evidence neither confirms nor
+// refutes the finding (target unreachable, response ambiguous, not enough
+// context). It writes nothing to the finding's status, so a guess is never
+// recorded as a verdict.
 const (
 	TriageVerdictConfirmed     = "confirmed"
 	TriageVerdictFalsePositive = "false_positive"
+	TriageVerdictInconclusive  = "inconclusive"
 )
 
 // TriageConfirmTemplateID is the prompt template the triage CLI loads.
@@ -308,6 +314,10 @@ type SwarmResult struct {
 	BatchProvenance *BatchProvenance         `json:"batch_provenance,omitempty"` // only set when plan was merged from multiple batches
 	Degraded        bool                     `json:"degraded,omitempty"`
 	Warnings        []string                 `json:"warnings,omitempty"`
+	// BudgetStop names the run budget that stopped the swarm ("commands",
+	// "tokens", "cost"), "" when none did. TimedOut: --max-duration fired.
+	BudgetStop string `json:"budget_stop,omitempty"`
+	TimedOut   bool   `json:"timed_out,omitempty"`
 }
 
 // SwarmCheckpoint captures swarm pipeline state for checkpoint/resume.

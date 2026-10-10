@@ -62,13 +62,17 @@ Important flags include:
   `-t/--target`, `--burp-bridge-url`;
 - context: `--source`, `--files`, `--knowledge-base`,
   `--knowledge-base-raw`, `--prior-context`, `--diff`, `--last-commits`;
-- audit: `--audit`, `--piolium`;
-- control: `--intensity`, `--max-duration`, `--dry-run`, `--resume`;
+- audit: `--audit`, `--piolium` (both off unless passed);
+- control: `--intensity`, `--max-duration`, `--max-commands`, `--token-budget`,
+  `--max-cost-usd`, `--preflight-timeout`, `--no-preflight`, `--dry-run`,
+  `--resume`;
 - output: `-S/--stateless`, `--format`, `-o/--output`;
 - debugging: `--session-dir`, `--transcript`, `--verbose`.
 
-There is no public `--max-commands` or `--timeout` flag. Intensity selects the
-internal turn budget; use `--max-duration` for the wall-clock cap.
+`--max-commands` caps tool calls (default from `--intensity`), `--token-budget`
+input+output tokens, `--max-cost-usd` the estimated spend, `--max-duration` the
+wall clock. A run stopped by one finishes cleanly and exits 5 (`budget_exhausted`,
+or `timed_out` for the wall clock).
 
 ### Throwaway runs and reports (`-S/--stateless`)
 
@@ -76,7 +80,9 @@ internal turn budget; use `--max-duration` for the wall-clock cap.
 your project DB is left untouched — then materializes `--format` outputs from it,
 mirroring `vigolium scan -S`. The operator's own `vigolium` subprocesses inherit
 the throwaway DB (via `VIGOLIUM_DB_PATH`), so its findings never leak into the
-project database.
+project database. Without `-S` they get the run's database and project instead
+(`VIGOLIUM_DB`, `VIGOLIUM_PROJECT_UUID`), and `PATH` puts the running binary
+first.
 
 ```bash
 vigolium agent autopilot --stateless \
@@ -124,9 +130,12 @@ triage and rescan. Useful flags include `--input`, `--record-uuid`,
 `--audit`, `--piolium`, `--discover`, `--triage`, `--max-iterations`,
 `--max-duration`, `--only`, `--skip`, and `--start-from`.
 
-Authentication can be supplied with `--auth-config`, repeatable `--cookie`,
-repeatable `-H/--header`, or `--login-curl`. `--browser-auth` enables the
-browser-driven authentication phase.
+Authentication can be supplied with repeatable `--auth-file` (native session
+files, as `vigolium scan --auth-file` takes), `--auth-config` (agent format),
+repeatable `--cookie`, repeatable `-H/--header`, or `--login-curl`.
+`--browser-auth` enables the browser-driven authentication phase. Autopilot
+takes `--auth-file` too: the sessions log in before the run and are stored for
+the target. See [Authentication](../native-scan/authentication.md#using-session-config-with-agent-modes).
 
 Swarm has no checkpoint `--resume` flag. `--start-from` starts a newly invoked
 pipeline at a selected phase; it does not restore an old run.

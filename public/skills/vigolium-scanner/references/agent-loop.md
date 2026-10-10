@@ -836,8 +836,12 @@ vigolium finding -S --db ./run.sqlite --json --with-records
 ```
 
 **Pin a session DB with `$VIGOLIUM_DB_PATH`** to avoid repeating `--db` on every
-command. The open order is `--db` → `$VIGOLIUM_DB_PATH` → `database.sqlite.path`
-in config → the built-in default. Setting it also makes **read** commands
+command. The open order is `--db` → `$VIGOLIUM_DB` → `$VIGOLIUM_DB_PATH` →
+`database.sqlite.path` in config → the built-in default. `$VIGOLIUM_DB` is
+exactly `--db` from the environment (project scoping stays on); it is what an
+agent run hands the `vigolium` commands its bash tool runs, alongside
+`$VIGOLIUM_PROJECT_UUID`, `$VIGOLIUM_CONFIG` (`--config` from the environment)
+and `$VIGOLIUM_BIN`. Setting it also makes **read** commands
 (`finding`/`traffic`/`fuzz -u`) treat that file as a stateless source — project
 scoping off, same as `-S --db` above — while writes still go to it. It never
 turns a *scan* stateless (that would collide with `--db`).
@@ -933,8 +937,7 @@ server-ingestion-only — CLI scans are unaffected.
 ## Agentic scans
 
 These run an LLM-driven scan into the DB. With `--json`, the live agent stream
-goes to **stderr** and a single summary object is printed to **stdout** at the
-end:
+goes to **stderr** and one run document is printed to **stdout** at the end:
 
 ```bash
 vigolium agent audit --source . --intensity balanced --json
@@ -943,14 +946,30 @@ vigolium agent swarm -t https://target.example --json
 vigolium agent query --prompt-template security-code-review --source . --json
 ```
 
-Summary shape (stdout):
+Run document (autopilot / swarm / audit; `kind: "scan"`, the scan document's
+spine):
 
 ```json
-{ "agentic_scan_uuid": "…", "status": "completed", "session_dir": "…",
-  "total_findings": 7, "counts_by_severity": {"critical":1,"high":3},
-  "top_findings": [ … ],
-  "query": "vigolium finding --agentic-scan <uuid> --json --with-records" }
+{ "kind": "scan", "ok": true, "agentic_scan_uuid": "…", "mode": "autopilot",
+  "session_dir": "…", "status": "completed", "completeness": "complete",
+  "persisted": true, "usage": {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0},
+  "budget": {"max_commands": 750, "token_budget": 0, "max_cost_usd": 0, "exhausted": false},
+  "total": 7, "counts_by_severity": {"critical":1,"high":3, …},
+  "items": [ … top 20 finding views … ], "errors": [], "warnings": [],
+  "query": "vigolium … finding --agentic-scan <uuid> -j" }
 ```
+
+Branch on `status`: `completed` / `completed_with_warnings` (exit 0);
+`timed_out`, `budget_exhausted`, `completed_with_errors` (exit **5**, the run's
+work is still in the DB); `failed` / `cancelled` (exit 1). The database spells
+`timed_out` as `timeout`. With no DB the document still prints,
+`persisted: false`. `provider_missing` / `preflight_failed` (exit 1, error
+envelope) mean nothing ran. Budgets: `--max-commands`, `--token-budget`,
+`--max-cost-usd`, `--max-duration`. `agent audit` needs `--source` (`.` for
+cwd); `agent autopilot` runs a nested `--audit`/`--piolium` harness only when
+asked. `agent triage <id> -j` is a mutation document (`--no-write` to report
+only; a `false_positive` keeps its severity). `agent query` / `triage` print
+their `agentic_scan_uuid` on stderr.
 
 Run the `query` line to pull full results. `--agentic-scan` expands to the whole
 run tree (audit driver legs, swarm sub-runs), so one UUID returns every finding

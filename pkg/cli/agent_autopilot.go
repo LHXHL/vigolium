@@ -16,7 +16,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/burpbridge"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/piolium"
 	"github.com/vigolium/vigolium/pkg/spitolas"
 	"github.com/vigolium/vigolium/pkg/storage"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -82,6 +81,9 @@ var (
 	autopilotKnowledgeBaseNoTraffic bool
 	autopilotStateless              bool
 	autopilotOutput                 string
+	autopilotTokenBudget            int64
+	autopilotMaxCostUSD             float64
+	autopilotPreflight              agentPreflightFlags
 
 	// autopilotStatelessPlan carries the resolved -S/--format state for this
 	// invocation. It is package-level (not a local) because the natural-language
@@ -129,13 +131,19 @@ produces.
 fenced ` + "```http```" + ` blocks. First request is the live seed; rest fold into
 context. Mutually exclusive with --input or a prompt (--prompt / positional).
 
---source enables whitebox: vigolium-audit prepares a context bundle + plan
-before the operator launches. Disable with --audit=off.
+--source enables whitebox: the operator reads the code. --audit lite|balanced|deep
+(or --piolium <mode>) additionally runs a nested audit harness (a claude/codex
+CLI) that prepares a context bundle + plan before the operator launches; it is
+off unless asked for.
 
 Intensity presets (--intensity), explicit flags override:
-  quick     — 30 cmds, 1h,  lite  audit + pre-scan
-  balanced  — 100 cmds, 6h,  balanced audit + pre-scan  (default)
-  deep      — 300 cmds, 12h, deep  audit + pre-scan
+  quick     — 150 cmds, 1h,  pre-scan
+  balanced  — 750 cmds, 6h,  pre-scan  (default)
+  deep      — 3000 cmds, 12h, pre-scan
+
+Budgets: --max-commands (tool calls), --token-budget (input+output tokens),
+--max-cost-usd (estimated spend) and --max-duration (wall clock). A run stopped
+by one exits 5 with status budget_exhausted (timed_out for --max-duration).
 
 Pre-scan runs a full native scan (discovery + spidering + dynamic-assessment)
 to seed http_records before the operator starts (target-only runs; skip with
@@ -178,8 +186,8 @@ func init() {
 	// prompt — e.g. `autopilot "log in as admin/admin123, focus on /admin"`.
 	f.BoolVar(&autopilotHeaded, "headed", false, "Show the browser window during the run (native pre-scan spidering, in-process probes, and agent-browser subprocesses); sets VIGOLIUM_BROWSER_HEADED=1 for the run. Debugging aid.")
 	_ = f.MarkHidden("headed")
-	f.StringVar(&autopilotAudit, "audit", "lite", "vigolium-audit mode: lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off (disable). Default: lite when --source is set")
-	f.StringVar(&autopilotPiolium, "piolium", "", "Piolium audit mode: lite, balanced, deep, longshot, etc. Default: empty triggers auto-pick (piolium when pi is installed, else audit). Set explicitly to force piolium; set --audit=off alongside to disable audit")
+	f.StringVar(&autopilotAudit, "audit", "off", "Nested vigolium-audit harness (runs a claude/codex CLI before the operator; needs --source): lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off. Default off: the intensity preset never turns it on")
+	f.StringVar(&autopilotPiolium, "piolium", "", "Nested piolium audit harness (needs --source): lite, balanced, deep, longshot, etc. Default empty = off; set explicitly to run piolium instead of --audit")
 	f.StringVar(&autopilotDiff, "diff", "", "Focus on changed code: PR URL (github.com/.../pull/123), git ref range (main...branch), or HEAD~N")
 	f.IntVar(&autopilotLastCommits, "last-commits", 0, "Focus on last N commits (shorthand for --diff HEAD~N)")
 	f.StringVar(&autopilotIntensity, "intensity", "balanced", "Scan intensity preset: quick, balanced, or deep")
@@ -187,6 +195,10 @@ func init() {
 	f.BoolVar(&autopilotTriage, "triage", false, "After the scan completes, run an AI triage pass over the findings (confirm real issues vs false positives, written back to finding status)")
 	f.BoolVar(&autopilotNoPreflight, "no-preflight-discovery", false, "Skip the pre-flight discovery + OpenAPI/Swagger ingestion pass that seeds http_records before the operator agent starts")
 	f.BoolVar(&autopilotNoPostHaltVerify, "no-post-halt-verify", false, "Skip the post-halt coverage verification re-entry (operator halts → coverage probe → re-prompt agent when new routes turn up)")
+	f.IntVar(&autopilotMaxCommands, "max-commands", 0, "Tool-call budget for the operator (0 = the --intensity preset: quick 150, balanced 750, deep 3000). Hitting it stops the run: status budget_exhausted, exit 5")
+	f.Int64Var(&autopilotTokenBudget, "token-budget", 0, "Cap on the operator's cumulative input+output tokens (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	f.Float64Var(&autopilotMaxCostUSD, "max-cost-usd", 0, "Cap on the operator's estimated spend in USD, priced per turn from provider usage (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	registerAgentPreflightFlags(agentAutopilotCmd, &autopilotPreflight)
 	f.IntVar(&autopilotPostHaltGap, "post-halt-gap-threshold", 0, "Minimum new (method, URL) routes the post-halt probe must turn up before the agent is re-entered. 0 = built-in default (5)")
 
 	f.BoolVar(&autopilotUploadResults, "upload-results", false, "Upload scan results to cloud storage after completion (requires storage config)")
@@ -204,6 +216,9 @@ func init() {
 }
 
 func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
+	// The bash tool's children run against this process's binary, database,
+	// project and config (agent_child_env.go).
+	installAgentChildEnv()
 	// -S/--stateless: validate the --format/-o combination and mint the throwaway
 	// database before anything opens a DB handle. Two orderings matter here.
 	// First, the temp-file removal defer is registered BEFORE the
@@ -280,8 +295,11 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 			auditModeLocal = ""
 		}
 		changed := map[string]bool{
-			"timeout":    cmd.Flags().Changed("max-duration"),
-			"audit-mode": auditChanged,
+			"max-commands": cmd.Flags().Changed("max-commands"),
+			"timeout":      cmd.Flags().Changed("max-duration"),
+			// The preset's audit mode is never applied: a nested agent CLI
+			// runs only when --audit/--piolium asks for one.
+			"audit-mode": true,
 			"no-audit":   auditChanged && noAudit,
 			"no-prescan": cmd.Flags().Changed("no-prescan"),
 		}
@@ -300,17 +318,13 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 		}
 		autopilotNoPrescan = intensityResult.NoPrescan
 
-		// Audit-harness auto-pick: when neither flag is explicit, prefer
-		// piolium if pi+piolium are installed; otherwise audit's existing
-		// lite-default applies. Explicit --piolium turns audit off so the
-		// two harnesses don't double-run.
-		pioliumChanged := cmd.Flags().Changed("piolium")
-		switch {
-		case !auditChanged && !pioliumChanged && piolium.IsAvailable():
-			autopilotPiolium = autopilotAudit
+		// Audit harness: off unless asked for. Explicit --piolium alone turns
+		// audit off so the two harnesses don't double-run.
+		if cmd.Flags().Changed("piolium") && !auditChanged {
 			autopilotAudit = "off"
-		case pioliumChanged && !auditChanged:
-			autopilotAudit = "off"
+		}
+		if err := validateAgentBudgets(autopilotMaxCommands, autopilotTokenBudget, autopilotMaxCostUSD); err != nil {
+			return err
 		}
 	}
 
@@ -351,6 +365,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	if autopilotOliumLLMAPIKey != "" {
 		settings.Agent.Olium.LLMAPIKey = autopilotOliumLLMAPIKey
 	}
+	autopilotPreflight.apply(settings)
 
 	// --db-isolate: run into a private temp DB and merge into the real --db (or
 	// default DB) at the end, so parallel autopilot runs can share one --db

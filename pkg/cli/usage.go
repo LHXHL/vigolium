@@ -248,7 +248,7 @@ var agentQueryFlagGroups = []flagGroup{
 	{"Prompt & Input", []string{"prompt", "stdin", "prompt-template", "prompt-file", "append", "instruction", "instruction-file"}},
 	{"Source Code", []string{"source", "files", "source-label"}},
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key", "gcp-project", "gcp-location", "base-url"}},
-	{"Execution", []string{"agent-label", "max-duration", "dry-run", "show-prompt"}},
+	{"Execution", []string{"agent-label", "max-duration", "dry-run", "show-prompt", "preflight-timeout", "no-preflight"}},
 	{"Output", []string{"output", "verbose", "upload-results"}},
 }
 
@@ -257,7 +257,8 @@ var agentAutopilotFlagGroups = []flagGroup{
 	{"Target & Input", []string{"prompt", "prompt-file", "target", "input", "record-uuid", "burp-bridge-url", "prior-context", "knowledge-base", "knowledge-base-raw", "knowledge-base-no-traffic", "plan-file"}},
 	{"Source & Audit", []string{"source", "files", "audit", "piolium", "diff", "last-commits"}},
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key"}},
-	{"Scan Behavior", []string{"intensity", "skill", "skill-tag", "no-skill-filter", "no-prescan", "no-preflight-discovery", "no-post-halt-verify", "post-halt-gap-threshold", "triage", "disable-guardrail", "max-duration"}},
+	{"Scan Behavior", []string{"intensity", "skill", "skill-tag", "no-skill-filter", "no-prescan", "no-preflight-discovery", "no-post-halt-verify", "post-halt-gap-threshold", "triage", "disable-guardrail"}},
+	{"Budgets & Preflight", []string{"max-duration", "max-commands", "token-budget", "max-cost-usd", "preflight-timeout", "no-preflight"}},
 	{"Execution", []string{"dry-run", "show-prompt", "system-prompt", "system-prompt-file", "resume", "headed"}},
 	{"Output", []string{"stateless", "output", "verbose", "upload-results", "session-dir", "transcript", "db-isolate"}},
 }
@@ -268,7 +269,8 @@ var agentSwarmFlagGroups = []flagGroup{
 	{"Source & Audit", []string{"source", "files", "audit", "piolium", "diff", "last-commits", "code-audit", "source-analysis-only"}},
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key", "gcp-project", "gcp-location", "base-url"}},
 	{"Module & Phase Selection", []string{"modules", "vuln-type", "skill", "skill-tag", "no-skill-filter", "only", "skip", "start-from", "profile", "discover", "with-extensions"}},
-	{"Scan Behavior", []string{"intensity", "triage", "max-iterations", "max-duration", "disable-guardrail"}},
+	{"Scan Behavior", []string{"intensity", "triage", "max-iterations", "disable-guardrail"}},
+	{"Budgets & Preflight", []string{"max-duration", "max-commands", "token-budget", "max-cost-usd", "preflight-timeout", "no-preflight"}},
 	{"Authentication", []string{"browser-auth", "cookie", "header", "login-curl", "auth-config"}},
 	{"Concurrency & Probing", []string{"batch-concurrency", "max-master-retries", "sub-agent-concurrency", "max-plan-records", "master-batch-size", "probe-concurrency", "probe-timeout", "max-probe-body"}},
 	{"Execution", []string{"agent-label", "dry-run", "show-prompt", "headed"}},
@@ -298,7 +300,8 @@ var agentAuditFlagGroups = []flagGroup{
 // agentTriageFlagGroups categorizes `vigolium agent triage`.
 var agentTriageFlagGroups = []flagGroup{
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key", "gcp-project", "gcp-location", "base-url"}},
-	{"Execution", []string{"max-duration", "dry-run", "show-prompt", "verbose"}},
+	{"Verdict", []string{"no-write", "report-only", "no-probe"}},
+	{"Execution", []string{"max-duration", "dry-run", "show-prompt", "verbose", "preflight-timeout", "no-preflight"}},
 }
 
 // agentSessionFlagGroups categorizes `vigolium agent session`.

@@ -375,7 +375,8 @@ Things `-h` won't tell you:
   table. The one exception: on `server`/`ingest`, where it used to mean
   `--scan-on-receive`, `-S` is now a usage error (exit 2) — **write the long
   `--scan-on-receive` there**.
-- **Which DB a command opens:** `--db` → `$VIGOLIUM_DB_PATH` →
+- **Which DB a command opens:** `--db` → `$VIGOLIUM_DB` (`--db` from the
+  environment, scoping kept) → `$VIGOLIUM_DB_PATH` →
   `database.sqlite.path` in config → the built-in default. Pinning
   `$VIGOLIUM_DB_PATH` also makes **read** commands (`finding`/`traffic`/`log`/
   `fuzz -u`) treat that file as a stateless source — project scoping off — so an

@@ -144,17 +144,20 @@ vigolium agent swarm -t https://example.com --source ./app --audit
 vigolium agent swarm -t https://example.com --source ./app --audit deep
 ```
 
-Autopilot prepares source-aware context before its operator session. Its
-`--audit` value is `lite`, `balanced`, `deep`, `mock`, or `off`; source-aware
-runs default to an audit unless explicitly disabled.
+Autopilot can prepare source-aware context before its operator session. Its
+`--audit` value is `lite`, `balanced`, `deep`, `mock`, or `off`, and it
+defaults to `off`: the nested harness (a `claude`/`codex` CLI) runs only when
+asked for.
 
 ```bash
 vigolium agent autopilot -t https://example.com --source ./app --audit balanced
 vigolium agent autopilot -t https://example.com --source ./app --audit off
 ```
 
-Both commands also expose `--piolium`. When neither harness is explicitly
-selected, their resolver may choose Piolium when the Pi runtime is available.
+Both commands also expose `--piolium`. For `agent swarm` (and the REST
+endpoints), when neither harness is explicitly selected the resolver may choose
+Piolium when the Pi runtime is available; `agent autopilot` never picks one on
+its own.
 
 ## REST API
 

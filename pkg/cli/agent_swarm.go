@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -47,6 +48,10 @@ var (
 	swarmShowPrompt          bool
 	swarmSourceAnalysisOnly  bool
 	swarmMaxDuration         time.Duration
+	swarmMaxCommands         int
+	swarmTokenBudget         int64
+	swarmMaxCostUSD          float64
+	swarmPreflight           agentPreflightFlags
 	swarmProfile             string
 	swarmOnlyPhase           string
 	swarmSkipPhases          []string
@@ -216,9 +221,19 @@ func init() {
 	f.BoolVar(&swarmUploadResults, "upload-results", false, "Upload scan results to cloud storage after completion (requires storage config)")
 	f.BoolVar(&swarmDisableGuardrail, "disable-guardrail", false, "Skip the prompt-safety classifier on the natural-language prompt (use only when refusing a known-good prompt)")
 	f.BoolVarP(&swarmVerbose, "verbose", "v", false, "Show a per-tool head/tail preview of each tool result alongside the standard one-liner")
+
+	// Run budgets, charged after every agent call of the run. Hitting one
+	// stops the swarm: status budget_exhausted, exit 5.
+	f.IntVar(&swarmMaxCommands, "max-commands", 0, "Tool-call budget across every agent call of the run (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	f.Int64Var(&swarmTokenBudget, "token-budget", 0, "Cap on the run's cumulative input+output tokens across every agent call (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	f.Float64Var(&swarmMaxCostUSD, "max-cost-usd", 0, "Cap on the run's estimated spend in USD across every agent call (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	registerAgentPreflightFlags(agentSwarmCmd, &swarmPreflight)
 }
 
 func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
+	// The bash tool's children run against this process's binary, database,
+	// project and config (agent_child_env.go).
+	installAgentChildEnv()
 	defer syncLogger()
 	defer closeDatabaseOnExit()
 
@@ -356,6 +371,10 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	// Apply the shared olium provider overrides onto settings (the swarm pipeline
 	// reads settings.Agent.Olium directly), same as agent query/triage.
 	applyOliumOverrides(settings, &swarmOliumFlags)
+	swarmPreflight.apply(settings)
+	if err := validateAgentBudgets(swarmMaxCommands, swarmTokenBudget, swarmMaxCostUSD); err != nil {
+		return err
+	}
 
 	forceSwarmBrowserOn(settings)
 
@@ -578,6 +597,10 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		ProbeTimeout:       swarmProbeTimeout,
 		MaxProbeBodySize:   swarmMaxProbeBody,
 		ReconExtraHeaders:  reconExtraHeaders,
+		MaxCommands:        swarmMaxCommands,
+		TokenBudget:        swarmTokenBudget,
+		MaxCostUSD:         swarmMaxCostUSD,
+		SkipPreflight:      swarmPreflight.skip || swarmDryRun,
 	}
 
 	// Wire audit harness. Swarm is opt-in: empty/"off" audit means no
@@ -604,7 +627,7 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		}
 	}
 
-	// Only stream raw agent output to stdout in verbose/debug mode.
+	// Only stream raw agent output in verbose/debug mode.
 	// In normal mode, phase progress lines (❯ phase │ ...) and output file
 	// paths are printed instead — the full LLM response is saved to the
 	// session directory.
@@ -806,26 +829,102 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	}
 
 	// Run swarm
+	startedAt := time.Now()
 	swarmRunner := agent.NewSwarmRunner(engine, repo)
-	result, err := swarmRunner.Run(ctx, cfg)
-	if err != nil {
+	result, runErr := swarmRunner.Run(ctx, cfg)
+
+	// A preflight failure is reported as itself (provider_missing /
+	// preflight_failed in the error envelope): nothing ran, so there is no run
+	// to describe.
+	var preflightErr *agent.PreflightError
+	if errors.As(runErr, &preflightErr) {
 		webhook.FireAgenticScan(settings, repo, swarmAgenticScanUUID)
-		return fmt.Errorf("agent swarm failed: %w", err)
+		return runErr
+	}
+
+	end := swarmRunEnd(ctx, runErr, result)
+	outcome := &agentRunOutcome{
+		Command:         "agent swarm",
+		Mode:            "swarm",
+		AgenticScanUUID: swarmAgenticScanUUID,
+		ProjectUUID:     projectUUID,
+		SessionDir:      sessionDir,
+		Provider:        settings.Agent.Olium.DisplayProvider(),
+		Model:           settings.Agent.Olium.Model,
+		Repo:            repo,
+		End:             end,
+		StartedAt:       startedAt,
+		Budget: agentRunBudget{
+			MaxCommands:   swarmMaxCommands,
+			TokenBudget:   swarmTokenBudget,
+			MaxCostUSD:    swarmMaxCostUSD,
+			MaxDurationMS: swarmMaxDuration.Milliseconds(),
+			Exhausted:     end.BudgetExhausted || end.TimedOut,
+		},
+	}
+	if sdErr != nil {
+		outcome.addError(fmt.Errorf("create session dir: %w", sdErr))
+	}
+	if result != nil {
+		outcome.FindingCount = int64(result.TotalFindings)
+		outcome.Budget.Stop = result.BudgetStop
+		if end.TimedOut && outcome.Budget.Stop == "" {
+			outcome.Budget.Stop = agent.BudgetStopWallTime
+		}
+		outcome.Warnings = append(outcome.Warnings, result.Warnings...)
+		_, cost := engine.RunBudgetUsage()
+		outcome.Usage = agentRunUsage{
+			InputTokens:  int64(result.TokenUsage.InputTokens),
+			OutputTokens: int64(result.TokenUsage.OutputTokens),
+			CostUSD:      cost,
+		}
+	}
+	if end.Err != nil {
+		outcome.addError(fmt.Errorf("agent swarm failed: %w", end.Err))
 	}
 
 	if globalJSON {
-		emitAgentScanJSONSummary(repo, projectUUID, swarmAgenticScanUUID, "completed", sessionDir)
-	} else {
+		if docErr := emitAgentRunDocument(outcome); docErr != nil && end.Err == nil {
+			return docErr
+		}
+	} else if result != nil && end.Err == nil {
 		printSwarmResult(result)
 	}
 
-	if swarmUploadResults {
+	if swarmUploadResults && end.Err == nil {
 		uploadAgenticScanResults(settings, projectUUID, swarmAgenticScanUUID, sessionDir, repo)
 	}
 
 	webhook.FireAgenticScan(settings, repo, swarmAgenticScanUUID)
 
-	return nil
+	if end.Err != nil {
+		return fmt.Errorf("agent swarm failed: %w", end.Err)
+	}
+	_, jsonStatus := agentRunStatus(end)
+	return agentRunExitError(jsonStatus, swarmAgenticScanUUID, outcome.Budget.Stop)
+}
+
+// swarmRunEnd classifies a finished swarm. A --max-duration deadline or a
+// run budget is a designed stop: the swarm's phases had produced their work up
+// to it, so it is reported (exit 5) rather than treated as a failure.
+func swarmRunEnd(ctx context.Context, runErr error, result *agent.SwarmResult) database.AgenticRunEnd {
+	end := database.AgenticRunEnd{}
+	if result != nil {
+		end.Degraded = result.Degraded
+		end.BudgetExhausted = result.BudgetStop != ""
+		end.TimedOut = result.TimedOut
+	}
+	if runErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		end.TimedOut = true
+	}
+	if end.TimedOut {
+		end.BudgetExhausted = false
+	}
+	if runErr != nil && !end.TimedOut && !end.BudgetExhausted {
+		end.Err = runErr
+		end.Cancelled = errors.Is(ctx.Err(), context.Canceled)
+	}
+	return end
 }
 
 func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUID string) ([]string, error) {

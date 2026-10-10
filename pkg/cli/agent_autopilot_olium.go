@@ -83,6 +83,25 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 	if sdErr != nil {
 		zap.L().Warn("Failed to create session dir", zap.Error(sdErr))
 	}
+	// The run document lists a session dir that could not be created in
+	// errors[] (the run continues without its artifacts).
+	outcome := &agentRunOutcome{
+		Command:         "agent autopilot",
+		Mode:            "autopilot",
+		AgenticScanUUID: agenticScanUUID,
+		SessionDir:      sessionDir,
+		Repo:            repo,
+		Budget: agentRunBudget{
+			MaxCommands:   autopilotMaxCommands,
+			TokenBudget:   autopilotTokenBudget,
+			MaxCostUSD:    autopilotMaxCostUSD,
+			MaxDurationMS: autopilotMaxDuration.Milliseconds(),
+		},
+		AuditHarness: &agentAuditHarness{Mode: firstNonEmptyString(autopilotAudit, "off"), Piolium: autopilotPiolium},
+	}
+	if sdErr != nil {
+		outcome.addError(fmt.Errorf("create session dir: %w", sdErr))
+	}
 	if sessionDir != "" {
 		if pidErr := agent.WriteRunPID(sessionDir); pidErr != nil {
 			zap.L().Warn("Failed to write PID file", zap.Error(pidErr))
@@ -94,10 +113,10 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 	}
 
 	projectUUID, _ := resolveProjectUUID()
+	outcome.ProjectUUID = projectUUID
 
 	// Resolve olium provider. CLI --provider overrides agent.olium.provider in
-	// the config file; if both are empty, fall back to olium's auto-detect
-	// (defaults to openai-codex-oauth).
+	// the config file; if both are empty, olium auto-detects one.
 	oliumCfg := settings.Agent.Olium
 	systemPrompt, sysErr := resolveSystemPrompt(autopilotSystemPrompt, autopilotSystemPromptFile)
 	if sysErr != nil {
@@ -124,8 +143,9 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 		CustomExtraBody:     effectiveExtraBody,
 	})
 	if err != nil {
-		return fmt.Errorf("autopilot: resolve provider: %w", err)
+		return agent.NewProviderMissingError(fmt.Errorf("autopilot: resolve provider: %w", err))
 	}
+	outcome.Provider, outcome.Model = providerName, model
 	// Gate provider calls through the shared semaphore so concurrent
 	// autopilot sessions don't bypass the cap that swarm/source-analysis
 	// already respect. Slot is per-Stream, not per-run.
@@ -140,26 +160,21 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 		// --session-dir points artifacts at a custom directory.
 		parentAgenticScanUUID = agenticScanUUID
 	}
-	if repo != nil && parentAgenticScanUUID != "" {
-		parentRun := &database.AgenticScan{
-			UUID:        parentAgenticScanUUID,
-			ProjectUUID: projectUUID,
-			ScanUUID:    globalScanUUID,
-			Mode:        "autopilot",
-			AgentName:   "olium",
-			Protocol:    "olium-engine",
-			Model:       model,
-			TargetURL:   autopilotTarget,
-			SourcePath:  autopilotSource,
-			SourceType:  database.InferSourceType(autopilotSource),
-			SessionDir:  sessionDir,
-			Status:      "running",
-			StartedAt:   startedAt,
-		}
-		if err := repo.CreateAgenticScan(ctx, parentRun); err != nil {
-			zap.L().Debug("Failed to create parent autopilot AgenticScan", zap.Error(err))
-		}
-	}
+	outcome.StartedAt = startedAt
+	outcome.AgenticScanUUID = parentAgenticScanUUID
+	startAgenticScanRow(ctx, repo, &database.AgenticScan{
+		UUID:        parentAgenticScanUUID,
+		ProjectUUID: projectUUID,
+		ScanUUID:    globalScanUUID,
+		Mode:        "autopilot",
+		AgentName:   "olium",
+		Protocol:    "olium-engine",
+		Model:       model,
+		TargetURL:   autopilotTarget,
+		SourcePath:  autopilotSource,
+		SessionDir:  sessionDir,
+		StartedAt:   startedAt,
+	})
 
 	// Tee streamed text into {sessionDir}/runtime.log so `vigolium log <uuid>`
 	// can replay the run later, regardless of whether the operator is watching.
@@ -245,8 +260,21 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 	// Audit (audit or piolium) runs automatically when --source is set
 	// unless --audit=off (and --piolium empty/off).
 	if auditCfg, harness := resolveAutopilotAuditCfg(settings); auditCfg != nil {
+		outcome.AuditHarness.Harness = harness.Name
 		return runAutopilotOliumPipeline(ctx, settings, repo, instruction, auditCfg, harness,
-			sessionDir, projectUUID, parentAgenticScanUUID, model, startedAt, streamWriter)
+			outcome, streamWriter)
+	}
+
+	// Preflight the provider before the pre-scan spends minutes of native
+	// scanning on a run whose first model call would fail. (The pipeline path
+	// above runs its own, degrading to a blackbox scan on failure.)
+	if !autopilotPreflight.skip && !autopilotDryRun {
+		if perr := agent.NewEngine(settings, repo).Preflight(ctx, ""); perr != nil {
+			end := database.AgenticRunEnd{Err: perr}
+			dbStatus, _ := agentRunStatus(end)
+			finishAgenticScanRow(repo, parentAgenticScanUUID, startedAt, agenticScanRowFinish{Status: dbStatus, ErrorMessage: perr.Error()})
+			return perr
+		}
 	}
 
 	// Target-only path: run a native pre-scan (discovery + dynamic-assessment
@@ -286,6 +314,8 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 		MaxToolCalls:      autopilotMaxCommands,
 		MaxTurns:          autopilotMaxCommands,
 		MaxWallTime:       autopilotMaxDuration,
+		TokenBudget:       autopilotTokenBudget,
+		MaxCostUSD:        autopilotMaxCostUSD,
 		Out:               streamWriter,
 		Verbose:           autopilotVerbose,
 		SystemPrompt:      effectiveSystemPrompt,
@@ -323,19 +353,14 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 		}
 	}
 
-	finalizeOliumAutopilotRun(repo, parentAgenticScanUUID, model, startedAt, result, runErr)
-
-	// A wall-deadline timeout is the designed stop condition for a time-boxed
-	// autopilot, not a failure: the operator produced real work (and a valid
-	// transcript) right up to the wall, so we still finalize + emit artifacts.
-	// Any other error is fatal. The extra AI triage step is skipped past the
-	// wall (no budget left).
-	walledOut, fatal := handleAutopilotWallOrError(ctx, runErr, settings, repo, parentAgenticScanUUID, streamWriter)
-	if fatal != nil {
-		return fatal
+	end := autopilotRunEnd(ctx, runErr, autopilotBudgetStop(result), result.Diagnosis() != "")
+	finalizeOliumAutopilotRun(repo, parentAgenticScanUUID, model, startedAt, result, runErr, end)
+	walledOut := end.TimedOut
+	if walledOut {
+		_, _ = fmt.Fprintf(streamWriter, "[autopilot] wall reached after %s — finalizing partial results\n", autopilotMaxDuration)
 	}
 
-	if autopilotTriage && !walledOut {
+	if autopilotTriage && end.Err == nil && !walledOut && !end.BudgetExhausted && !end.Cancelled {
 		triageEngine := agent.NewEngine(settings, repo)
 		if _, terr := agent.RunAutopilotTriage(ctx, triageEngine, repo, agent.AutopilotTriageParams{
 			TargetURL:       autopilotTarget,
@@ -351,23 +376,39 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 		}
 	}
 
-	summaryStatus := autopilotRunStatus(result)
-	if walledOut {
-		summaryStatus = "timed_out"
+	outcome.End = end
+	if result != nil {
+		outcome.HaltReason = result.HaltReason
+		outcome.FindingCount = result.FindingCount
+		outcome.Usage = agentRunUsage{InputTokens: result.InputTokens, OutputTokens: result.OutputTokens, CostUSD: result.CostUSD}
+		outcome.Budget.Stop = result.BudgetStop
+		outcome.Budget.Exhausted = end.BudgetExhausted || end.TimedOut
+		if d := result.Diagnosis(); d != "" {
+			outcome.Warnings = append(outcome.Warnings, d)
+		}
+	}
+	if end.Err != nil {
+		outcome.addError(fmt.Errorf("autopilot session failed: %w", end.Err))
 	}
 	if globalJSON {
-		emitAgentScanJSONSummary(repo, projectUUID, parentAgenticScanUUID, summaryStatus, sessionDir)
+		if docErr := emitAgentRunDocument(outcome); docErr != nil && end.Err == nil {
+			runErr = docErr
+		}
 	} else {
 		printOliumAutopilotSummary(result, sessionDir, repo, parentAgenticScanUUID)
 	}
 
-	if autopilotUploadResults {
+	if autopilotUploadResults && end.Err == nil {
 		uploadAgenticScanResults(settings, projectUUID, parentAgenticScanUUID, sessionDir, repo)
 	}
 
 	webhook.FireAgenticScan(settings, repo, parentAgenticScanUUID)
 	copyTranscriptIfRequested(sessionDir, streamWriter)
-	return nil
+	if end.Err != nil {
+		return fmt.Errorf("autopilot session failed: %w", end.Err)
+	}
+	_, jsonStatus := agentRunStatus(end)
+	return agentRunExitError(jsonStatus, parentAgenticScanUUID, firstNonEmptyString(outcome.HaltReason, outcome.Budget.Stop))
 }
 
 // copyTranscriptIfRequested honors --transcript: after the run, copy the
@@ -392,16 +433,33 @@ func copyTranscriptIfRequested(sessionDir string, w io.Writer) {
 	_, _ = fmt.Fprintf(w, "[transcript] copied to %s\n", autopilotTranscript)
 }
 
-// autopilotRunStatus maps an autopilot result to a short status string for the
-// JSON summary.
-func autopilotRunStatus(result *autopilot.Result) string {
-	if result != nil && result.Halted {
-		return "halted"
+// autopilotBudgetStop is the budget that ended an autopilot run, "" for none.
+func autopilotBudgetStop(result *autopilot.Result) string {
+	if result == nil {
+		return ""
 	}
-	if result != nil && result.Stalled {
-		return "stalled"
+	return result.BudgetStop
+}
+
+// autopilotRunEnd classifies a finished autopilot run (direct or pipeline).
+// A wall-clock stop — the ctx deadline or the loop's own MaxWallTime — and a
+// command/token/cost budget stop are designed terminal states, not failures:
+// the operator produced real work up to the limit, so the run is finalized
+// and reported (exit 5), never turned into an error. An interrupt is
+// "cancelled"; any other error is "failed".
+func autopilotRunEnd(ctx context.Context, runErr error, budgetStop string, degraded bool) database.AgenticRunEnd {
+	timedOut := isWallTimeout(ctx, runErr) || budgetStop == autopilot.BudgetWallTime
+	budget := budgetStop != "" && budgetStop != autopilot.BudgetWallTime
+	end := database.AgenticRunEnd{
+		TimedOut:        timedOut,
+		BudgetExhausted: budget && !timedOut,
+		Degraded:        degraded,
 	}
-	return "completed"
+	if runErr != nil && !timedOut && !budget {
+		end.Err = runErr
+		end.Cancelled = errors.Is(ctx.Err(), context.Canceled)
+	}
+	return end
 }
 
 // prescanBudget bounds the native pre-scan to a fraction of the autopilot wall.
@@ -463,24 +521,6 @@ func prescanBudgetMultiplier(intensity agenttypes.Intensity) int {
 // un-fired) and Ctrl-C/SIGTERM (Canceled, not DeadlineExceeded).
 func isWallTimeout(ctx context.Context, runErr error) bool {
 	return runErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
-}
-
-// handleAutopilotWallOrError classifies a finished autopilot run for the two run
-// paths (direct + pipeline), which share this exact prologue. A wall-deadline
-// timeout is a graceful stop: it returns walledOut=true with fatal=nil so the
-// caller still finalizes and emits artifacts (logging the "finalizing partial
-// results" line). Any other error is fatal: it fires the webhook and returns the
-// wrapped error for the caller to propagate. A clean run returns (false, nil).
-func handleAutopilotWallOrError(ctx context.Context, runErr error, settings *config.Settings, repo *database.Repository, agenticScanUUID string, w io.Writer) (walledOut bool, fatal error) {
-	walledOut = isWallTimeout(ctx, runErr)
-	if runErr != nil && !walledOut {
-		webhook.FireAgenticScan(settings, repo, agenticScanUUID)
-		return false, fmt.Errorf("autopilot session failed: %w", runErr)
-	}
-	if walledOut {
-		_, _ = fmt.Fprintf(w, "[autopilot] wall reached after %s — finalizing partial results\n", autopilotMaxDuration)
-	}
-	return walledOut, nil
 }
 
 // buildPrescanInstruction launches the autopilot native pre-scan (when
@@ -643,10 +683,11 @@ func runAutopilotOliumPipeline(
 	instruction string,
 	auditCfg *config.AuditAgentConfig,
 	harness agent.HarnessSpec,
-	sessionDir, projectUUID, parentAgenticScanUUID, model string,
-	startedAt time.Time,
+	outcome *agentRunOutcome,
 	streamWriter io.Writer,
 ) error {
+	sessionDir, projectUUID, parentAgenticScanUUID := outcome.SessionDir, outcome.ProjectUUID, outcome.AgenticScanUUID
+	startedAt := outcome.StartedAt
 	systemPrompt, sysErr := resolveSystemPrompt(autopilotSystemPrompt, autopilotSystemPromptFile)
 	if sysErr != nil {
 		return sysErr
@@ -664,6 +705,9 @@ func runAutopilotOliumPipeline(
 		SystemPrompt:          systemPrompt,
 		AgentName:             "olium",
 		MaxCommands:           autopilotMaxCommands,
+		TokenBudget:           autopilotTokenBudget,
+		MaxCostUSD:            autopilotMaxCostUSD,
+		SkipPreflight:         autopilotPreflight.skip,
 		DryRun:                autopilotDryRun,
 		ShowPrompt:            autopilotShowPrompt,
 		Triage:                autopilotTriage,
@@ -699,47 +743,59 @@ func runAutopilotOliumPipeline(
 	runner := agent.NewAutopilotPipelineRunner(engine, repo)
 	result, runErr := runner.RunAutonomous(ctx, cfg)
 
-	finalizeOliumAutopilotPipelineRun(repo, parentAgenticScanUUID, startedAt, result, runErr)
-
-	// Same graceful wall-hit handling as the direct path: a max-duration
-	// timeout finalizes (summary + artifacts) instead of erroring.
-	walledOut, fatal := handleAutopilotWallOrError(ctx, runErr, settings, repo, parentAgenticScanUUID, streamWriter)
-	if fatal != nil {
-		return fatal
+	var budgetStop string
+	degraded := false
+	if result != nil {
+		budgetStop = result.BudgetStop
+		degraded = result.Degraded
+	}
+	end := autopilotRunEnd(ctx, runErr, budgetStop, degraded)
+	finalizeOliumAutopilotPipelineRun(repo, parentAgenticScanUUID, startedAt, result, runErr, end)
+	if end.TimedOut {
+		_, _ = fmt.Fprintf(streamWriter, "[autopilot] wall reached after %s — finalizing partial results\n", autopilotMaxDuration)
 	}
 
-	pipelineStatus := "completed"
-	if walledOut {
-		pipelineStatus = "timed_out"
+	outcome.End = end
+	outcome.Budget.Stop = budgetStop
+	outcome.Budget.Exhausted = end.BudgetExhausted || end.TimedOut
+	if result != nil {
+		outcome.FindingCount = int64(max(result.FindingsCount, result.OperatorFindingsCount, result.VerifiedFindingCount))
+		outcome.Usage = agentRunUsage{InputTokens: result.InputTokens, OutputTokens: result.OutputTokens, CostUSD: result.CostUSD}
+		outcome.Warnings = append(outcome.Warnings, result.Warnings...)
+	}
+	if end.Err != nil {
+		outcome.addError(fmt.Errorf("autopilot session failed: %w", end.Err))
 	}
 	if globalJSON {
-		emitAgentScanJSONSummary(repo, projectUUID, parentAgenticScanUUID, pipelineStatus, sessionDir)
+		if docErr := emitAgentRunDocument(outcome); docErr != nil && end.Err == nil {
+			return docErr
+		}
 	} else {
 		printOliumAutopilotPipelineSummary(result, sessionDir, repo, parentAgenticScanUUID)
 	}
-	_ = model // reserved for future use; provider/model already echoed in header
 
-	if autopilotUploadResults {
+	if autopilotUploadResults && end.Err == nil {
 		uploadAgenticScanResults(settings, projectUUID, parentAgenticScanUUID, sessionDir, repo)
 	}
 
 	webhook.FireAgenticScan(settings, repo, parentAgenticScanUUID)
-	return nil
+	if end.Err != nil {
+		return fmt.Errorf("autopilot session failed: %w", end.Err)
+	}
+	_, jsonStatus := agentRunStatus(end)
+	return agentRunExitError(jsonStatus, parentAgenticScanUUID, budgetStop)
 }
 
 // finalizeOliumAutopilotPipelineRun closes out the parent AgenticScan row when
 // the run went through the pipeline runner. The pipeline result exposes
 // audit/operator/verified finding counts but not per-call token usage, so the
 // finding_count column reflects the highest-fidelity available number.
-func finalizeOliumAutopilotPipelineRun(repo *database.Repository, agenticScanUUID string, startedAt time.Time, result *agent.AutopilotPipelineResult, runErr error) {
+func finalizeOliumAutopilotPipelineRun(repo *database.Repository, agenticScanUUID string, startedAt time.Time, result *agent.AutopilotPipelineResult, runErr error, end database.AgenticRunEnd) {
 	if repo == nil || agenticScanUUID == "" {
 		return
 	}
 	completedAt := time.Now()
-	status := database.CompletedAgenticScanStatus(result != nil && result.Degraded)
-	if runErr != nil {
-		status = "failed"
-	}
+	status, _ := agentRunStatus(end)
 
 	q := repo.DB().NewUpdate().Model((*database.AgenticScan)(nil)).
 		Set("status = ?", status).
@@ -824,16 +880,13 @@ func printOliumAutopilotPipelineSummary(result *agent.AutopilotPipelineResult, s
 // finalizeOliumAutopilotRun closes out the parent AgenticScan row with
 // the run's final state. Done as a field-level UPDATE so we don't clobber
 // other columns that were set at CreateAgenticScan time.
-func finalizeOliumAutopilotRun(repo *database.Repository, agenticScanUUID, model string, startedAt time.Time, result *autopilot.Result, runErr error) {
+func finalizeOliumAutopilotRun(repo *database.Repository, agenticScanUUID, model string, startedAt time.Time, result *autopilot.Result, runErr error, end database.AgenticRunEnd) {
 	if repo == nil || agenticScanUUID == "" {
 		return
 	}
 	completedAt := time.Now()
 	diagnosis := result.Diagnosis() // nil-safe
-	status := database.CompletedAgenticScanStatus(diagnosis != "")
-	if runErr != nil {
-		status = "failed"
-	}
+	status, _ := agentRunStatus(end)
 
 	q := repo.DB().NewUpdate().Model((*database.AgenticScan)(nil)).
 		Set("status = ?", status).

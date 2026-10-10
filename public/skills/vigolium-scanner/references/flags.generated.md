@@ -217,7 +217,7 @@ Run audit and/or piolium back-to-back as a unified security audit
 | `--preflight-timeout` | - | duration | `30s` | Per-driver preflight timeout (e.g. 30s, 1m); applies to both pi and claude |
 | `--provider` | - | string | - | [audit] Olium provider hint to drive audit's --agent: anthropic-* → claude, openai-* → codex (also forwards that provider's BYOK auth). Empty inherits agent.olium.provider. For a pure agent switch without changing auth, prefer --agent. |
 | `--show-thinking` | - | bool | `false` | Render the agent's internal thinking blocks (audit NDJSON 'thinking' events) in the live stream. Off by default — thinking is verbose and produces many lines per phase. |
-| `--source` | - | string | `.` | Source: local directory, git URL, gs://<project>/<key> archive, or local .zip/.tar.gz |
+| `--source` | - | string | - | Source to audit (required): local directory (pass --source . for the current directory), git URL, gs://<project>/<key> archive, or local .zip/.tar.gz |
 | `--stateless` | `-S` | bool | `false` | Run the audit into a throwaway temporary database (the main DB is left untouched) and auto-write a self-contained HTML report. Mirrors 'vigolium scan -S'. Not valid with --interactive. |
 | `--upload-results` | - | bool | `false` | Upload session bundle to cloud storage after completion (requires storage config) |
 
@@ -229,7 +229,7 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--audit` | - | string | `lite` | vigolium-audit mode: lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off (disable). Default: lite when --source is set |
+| `--audit` | - | string | `off` | Nested vigolium-audit harness (runs a claude/codex CLI before the operator; needs --source): lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off. Default off: the intensity preset never turns it on |
 | `--burp-bridge-url` | `-B` | string | - | Pull live Burp/Caido proxy history into the project DB before the run (e.g. http://127.0.0.1:9009), so the pre-scan and operator can mine it alongside prior traffic. Also honors $VIGOLIUM_BURP_BRIDGE_URL (alias: --caido-bridge-url) |
 | `--db-isolate` | - | bool | `false` | Run into a private temporary database, then merge results into --db (or the default DB) at the end — lets parallel runs share one --db without write contention (SQLite only) |
 | `--diff` | - | string | - | Focus on changed code: PR URL (github.com/.../pull/123), git ref range (main...branch), or HEAD~N |
@@ -243,22 +243,26 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 | `--knowledge-base-raw` | - | bool | `false` | Skip the LLM distillation of --knowledge-base: front-load a deterministic document index only (offline / reproducible). No-op without --knowledge-base. |
 | `--last-commits` | - | int | `0` | Focus on last N commits (shorthand for --diff HEAD~N) |
 | `--llm-api-key` | - | string | - | Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var) |
+| `--max-commands` | - | int | `0` | Tool-call budget for the operator (0 = the --intensity preset: quick 150, balanced 750, deep 3000). Hitting it stops the run: status budget_exhausted, exit 5 |
+| `--max-cost-usd` | - | float64 | `0` | Cap on the operator's estimated spend in USD, priced per turn from provider usage (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
 | `--max-duration` | - | duration | `6h0m0s` | Maximum wall-clock duration for the autopilot session (e.g. 1h, 6h) |
 | `--model` | - | string | - | Olium model id override (falls back to agent.olium.model) |
 | `--no-post-halt-verify` | - | bool | `false` | Skip the post-halt coverage verification re-entry (operator halts → coverage probe → re-prompt agent when new routes turn up) |
+| `--no-preflight` | - | bool | `false` | Skip the provider preflight ping (a missing or broken provider then fails on the first real call) |
 | `--no-preflight-discovery` | - | bool | `false` | Skip the pre-flight discovery + OpenAPI/Swagger ingestion pass that seeds http_records before the operator agent starts |
 | `--no-prescan` | - | bool | `false` | Skip the native pre-scan that seeds http_records before the operator agent (target-only runs; no-op when --source is set) |
 | `--no-skill-filter` | - | bool | `false` | Load the full skill set; skip the pre-flight skill selection |
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth provider; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--output` | `-o` | string | - | Output base path for the --stateless export; each --format appends its own extension (report.html, report.sqlite). Defaults to vigolium-result/vigolium-autopilot. Only applies with -S/--stateless. |
-| `--piolium` | - | string | - | Piolium audit mode: lite, balanced, deep, longshot, etc. Default: empty triggers auto-pick (piolium when pi is installed, else audit). Set explicitly to force piolium; set --audit=off alongside to disable audit |
+| `--piolium` | - | string | - | Nested piolium audit harness (needs --source): lite, balanced, deep, longshot, etc. Default empty = off; set explicitly to run piolium instead of --audit |
 | `--plan-file` | - | string | - | Path to a plan file mixing free-text guidance and raw HTTP request(s). Owns the instruction + seed input; cannot be combined with --input or a prompt (--prompt / positional) |
 | `--post-halt-gap-threshold` | - | int | `0` | Minimum new (method, URL) routes the post-halt probe must turn up before the agent is re-entered. 0 = built-in default (5) |
+| `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
 | `--prior-context` | - | string | `auto` | Front-load a bounded summary of the traffic + findings already in the project DB so the operator mines them instead of starting from scratch: auto (default; the bounded table when prior data exists), summary (one-line pointer), off |
 | `--prompt` | - | string | - | Free-text task guidance for the agent (same as the positional [prompt]; use --plan-file for a whole plan with seed HTTP requests) |
 | `--prompt-file` | - | string | - | Read task guidance from a file (same channel as --prompt — its contents flow through credential extraction, so role-tagged accounts become primary/compare sessions). Convenient for long/complex prompts; mutually exclusive with --prompt, the positional [prompt], and --plan-file |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config) |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
 | `--record-uuid` | - | string | - | Use an HTTP record from the database as the seed input (looked up by UUID) |
 | `--resume` | - | string | - | Resume a previous durable-autopilot run by its agentic-scan UUID: reuses its session dir, project, target, and durable scratchpad/candidates; skips pre-scan and audit re-prep (requires agent.olium.autopilot_mode != legacy) |
 | `--session-dir` | - | string | - | Explicit session directory for this run's debug artifacts (transcript.jsonl, runtime.log, scratchpad, tool-results). Default: <agent.sessions_dir>/<run-uuid>. Pin it to know exactly where to look when debugging (e.g. alongside -S/--stateless scans). |
@@ -270,6 +274,7 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 | `--system-prompt` | - | string | - | Replace the built-in autopilot system prompt with this value (full replace; browser section is not auto-appended) |
 | `--system-prompt-file` | - | string | - | Path to a file whose contents replace the built-in autopilot system prompt (takes precedence over --system-prompt) |
 | `--target` | `-t` | string | - | Target URL (derived from --input if not set) |
+| `--token-budget` | - | int64 | `0` | Cap on the operator's cumulative input+output tokens (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
 | `--transcript` | - | string | - | After the run, also copy the session's transcript.jsonl to this path. The in-session copy is always kept; this is a convenience for debugging (e.g. keep the transcript when the DB is throwaway). |
 | `--triage` | - | bool | `false` | After the scan completes, run an AI triage pass over the findings (confirm real issues vs false positives, written back to finding status) |
 | `--upload-results` | - | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
@@ -293,7 +298,7 @@ Launch vigolium — interactive TUI agent (olium engine)
 | `--oauth-cred` | - | string | - | Path to OAuth/SA credential file (openai-codex-oauth: ~/.codex/auth.json; anthropic-vertex/google-vertex: SA JSON or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--prompt` | `-p` | string | - | Run one prompt non-interactively and stream to stdout (skips the TUI). Pass '-' to read the prompt from stdin |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config); default openai-compatible |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset); default openai-compatible |
 | `--stdin` | - | bool | `false` | Force reading prompt from stdin |
 | `--system` | - | string | - | Override system prompt |
 
@@ -317,13 +322,15 @@ Send a prompt to an AI agent and get a response
 | `--llm-api-key` | - | string | - | Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var) |
 | `--max-duration` | - | duration | `5m0s` | Maximum wall-clock time for agent execution (0 = no limit) |
 | `--model` | - | string | - | Olium model id override (falls back to agent.olium.model) |
+| `--no-preflight` | - | bool | `false` | Skip the provider preflight ping (a missing or broken provider then fails on the first real call) |
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth provider; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--output` | - | string | - | Write agent output to this file |
+| `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
 | `--prompt` | `-p` | string | - | Prompt text to send to the agent |
 | `--prompt-file` | - | string | - | Path to a prompt template file |
 | `--prompt-template` | - | string | - | Prompt template ID (e.g. security-code-review) |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config) |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
 | `--show-prompt` | - | bool | `false` | Print rendered prompt to stderr before executing |
 | `--source` | - | string | - | Path to source code repository |
 | `--source-label` | - | string | - | Label for records ingested from agent output (e.g. 'agent-review') |
@@ -381,6 +388,8 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--llm-api-key` | - | string | - | Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var) |
 | `--login-curl` | - | string | - | Curl command for login flow; replayed by the auth runtime to capture a fresh session. Cookies/headers from a successful response are reused for the scan. |
 | `--master-batch-size` | - | int | `0` | Max records per master agent batch (0 = default 5) |
+| `--max-commands` | - | int | `0` | Tool-call budget across every agent call of the run (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
+| `--max-cost-usd` | - | float64 | `0` | Cap on the run's estimated spend in USD across every agent call (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
 | `--max-duration` | - | duration | `12h0m0s` | Maximum swarm duration (0 = unlimited; e.g. 6h, 24h) |
 | `--max-iterations` | - | int | `3` | Maximum triage-rescan iterations |
 | `--max-master-retries` | - | int | `3` | Max master agent retries on parse failure |
@@ -388,18 +397,20 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--max-probe-body` | - | int | `0` | Max response body size in bytes during probing (0 = default 2MB) |
 | `--model` | - | string | - | Olium model id override (falls back to agent.olium.model) |
 | `--modules` | `-m` | stringSlice | - | Explicit module names to include |
+| `--no-preflight` | - | bool | `false` | Skip the provider preflight ping (a missing or broken provider then fails on the first real call) |
 | `--no-skill-filter` | - | bool | `false` | Load the full skill set into triage; ignore planner selection |
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--only` | - | string | - | Run only this scanning phase (discovery, spidering, spa, dynamic-assessment, external-harvest) |
 | `--piolium` | - | string | - | Run background piolium audit (Pi runtime): lite, balanced, deep, longshot, etc. Requires --source. Empty triggers auto-pick when --audit is also empty (piolium when pi is installed, else nothing) |
 | `--plan-file` | - | string | - | Path to a plan file mixing free-text guidance and raw HTTP request(s). Every request block becomes a seed input; cannot be combined with --input or a prompt (--prompt / positional) |
+| `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
 | `--probe-concurrency` | - | int | `0` | Max parallel probe requests (0 = default 10) |
 | `--probe-timeout` | - | duration | `0s` | Per-request probe timeout (0 = default 10s) |
 | `--profile` | - | string | - | Scanning profile to use |
 | `--prompt` | - | string | - | Free-text task guidance for the agent (same as the positional [prompt]; use --plan-file for a whole plan with seed HTTP requests) |
 | `--prompt-file` | - | string | - | Read task guidance from a file (same channel as --prompt). Convenient for long/complex prompts; mutually exclusive with --prompt, the positional [prompt], and --plan-file |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config) |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
 | `--record-uuid` | - | stringSlice | - | HTTP record UUID from database (repeatable, or comma-separated) |
 | `--records-from` | - | string | - | Filter ingested HTTP records by spec (e.g. "host=example.com,status=200,method=GET,path=/api,since=2026-04-01") |
 | `--show-prompt` | - | bool | `false` | Print rendered prompts to stderr before executing |
@@ -411,6 +422,7 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--start-from` | - | string | - | Resume from a specific phase (native-normalize, source-analysis, code-audit, native-discover, native-recon, plan, native-extension, native-scan, triage) |
 | `--sub-agent-concurrency` | - | int | `3` | Max parallel source analysis sub-agents (routes, auth, extensions) |
 | `--target` | `-t` | string | - | Target URL (required when --source is used) |
+| `--token-budget` | - | int64 | `0` | Cap on the run's cumulative input+output tokens across every agent call (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
 | `--triage` | - | bool | `false` | Enable AI triage and rescan phases. Intensity preset overrides this: balanced/deep enable triage by default; quick disables it. Use --triage=false to force-disable on balanced/deep. |
 | `--upload-results` | - | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
 | `--verbose` | `-v` | bool | `false` | **(overrides the global `--verbose`)** Show a per-tool head/tail preview of each tool result alongside the standard one-liner |
@@ -421,7 +433,7 @@ Agentic scan: AI-guided targeted vulnerability swarm
 
 Usage: `vigolium agent triage [finding-id]`
 
-Confirm a single finding with an AI triager; downgrade severity to info on false_positive
+Confirm a single finding with an AI triager: confirmed, false_positive or inconclusive
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
@@ -432,9 +444,14 @@ Confirm a single finding with an AI triager; downgrade severity to info on false
 | `--llm-api-key` | - | string | - | Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var) |
 | `--max-duration` | - | duration | `5m0s` | Maximum wall-clock time for the triage run (0 = no limit) |
 | `--model` | - | string | - | Olium model id override (falls back to agent.olium.model) |
+| `--no-preflight` | - | bool | `false` | Skip the provider preflight ping (a missing or broken provider then fails on the first real call) |
+| `--no-probe` | - | bool | `false` | Do not contact the target: the agent gets no HTTP, browser or shell tools and decides from the captured traffic (inconclusive when that cannot settle it) |
+| `--no-write` | - | bool | `false` | Report the verdict without writing it to the finding (no status, description or history change) |
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config) |
+| `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
+| `--report-only` | - | bool | `false` | Alias for --no-write |
 | `--show-prompt` | - | bool | `false` | Print rendered prompt to stderr before executing |
 | `--verbose` | `-v` | bool | `false` | **(overrides the global `--verbose`)** Show a per-tool head/tail preview of each tool result |
 
@@ -484,7 +501,7 @@ Run a unified security audit (alias for `vigolium agent audit`)
 | `--preflight-timeout` | - | duration | `30s` | Per-driver preflight timeout (e.g. 30s, 1m); applies to both pi and claude |
 | `--provider` | - | string | - | [audit] Olium provider hint to drive audit's --agent: anthropic-* → claude, openai-* → codex (also forwards that provider's BYOK auth). Empty inherits agent.olium.provider. For a pure agent switch without changing auth, prefer --agent. |
 | `--show-thinking` | - | bool | `false` | Render the agent's internal thinking blocks (audit NDJSON 'thinking' events) in the live stream. Off by default — thinking is verbose and produces many lines per phase. |
-| `--source` | - | string | `.` | Source: local directory, git URL, gs://<project>/<key> archive, or local .zip/.tar.gz |
+| `--source` | - | string | - | Source to audit (required): local directory (pass --source . for the current directory), git URL, gs://<project>/<key> archive, or local .zip/.tar.gz |
 | `--stateless` | `-S` | bool | `false` | Run the audit into a throwaway temporary database (the main DB is left untouched) and auto-write a self-contained HTML report. Mirrors 'vigolium scan -S'. Not valid with --interactive. |
 | `--upload-results` | - | bool | `false` | Upload session bundle to cloud storage after completion (requires storage config) |
 
@@ -1453,7 +1470,7 @@ Launch vigolium — interactive TUI agent (alias for `vigolium agent olium`)
 | `--oauth-cred` | - | string | - | Path to OAuth/SA credential file (openai-codex-oauth: ~/.codex/auth.json; anthropic-vertex/google-vertex: SA JSON or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--prompt` | `-p` | string | - | Run one prompt non-interactively and stream to stdout (skips the TUI). Pass '-' to read the prompt from stdin |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config); default openai-compatible |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset); default openai-compatible |
 | `--stdin` | - | bool | `false` | Force reading prompt from stdin |
 | `--system` | - | string | - | Override system prompt |
 

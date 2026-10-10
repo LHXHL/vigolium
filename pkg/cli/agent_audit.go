@@ -166,7 +166,7 @@ func registerAuditFlags(cmd *cobra.Command) {
 	f.StringVar(&auditMode, "mode", "", "Audit mode override (overrides --intensity). Shared modes: lite, balanced, deep, revisit, confirm, merge. Driver-specific: piolium=longshot/smoke/diff/status, audit=reinvest/refresh/mock/diff/status")
 	f.StringVar(&auditModes, "modes", "", "Run a chain of modes back-to-back (comma-separated, e.g. deep,refresh,confirm). Overrides --mode/--intensity. Stops on the first non-complete mode. audit runs the chain natively (--modes); piolium chains via sequential runs collapsed into one row; with driver=auto/both, modes a driver can't run are skipped on that driver's leg.")
 	f.BoolVar(&auditListModes, "list-modes", false, "List the available audit modes (audit's mode graph: phases, time estimate, descriptions) and exit")
-	f.StringVar(&auditSource, "source", ".", "Source: local directory, git URL, gs://<project>/<key> archive, or local .zip/.tar.gz")
+	f.StringVar(&auditSource, "source", "", "Source to audit (required): local directory (pass --source . for the current directory), git URL, gs://<project>/<key> archive, or local .zip/.tar.gz")
 	f.BoolVarP(&auditInteractive, "interactive", "i", false, "Drop into the coding agent with the audit harness installed and drive the audit yourself (audit-only; the embedded vigolium-audit binary's -i). Skips NDJSON streaming, the AgenticScan row, and findings auto-import — results land in <source>/vigolium-results/; import them afterward with 'vigolium import'. Not valid with --driver=piolium.")
 	f.BoolVar(&auditNoStream, "no-stream", false, "Don't echo agent output to the console (still written to {session}/<driver>/runtime.log)")
 	f.BoolVar(&auditShowThinking, "show-thinking", false, "Render the agent's internal thinking blocks (audit NDJSON 'thinking' events) in the live stream. Off by default — thinking is verbose and produces many lines per phase.")
@@ -226,7 +226,7 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	// --list-modes is an early-return info flag: print audit's mode
 	// graph and exit before requiring --source / settings / a DB.
 	if auditListModes {
-		return runListModes(false)
+		return runListModes(cmd, globalJSON)
 	}
 
 	// --stateless (-S): run the whole audit against a throwaway temp DB so
@@ -349,8 +349,8 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	}
 	auditDriverModes = auditChain
 	auditPioliumModes = pioliumModes
-	if auditSource == "" {
-		return usageErrorf("--source is required (local path or git URL)")
+	if strings.TrimSpace(auditSource) == "" {
+		return usageErrorf("--source is required: pass --source . to audit the current directory (or a git URL, gs:// archive, or local .zip/.tar.gz)")
 	}
 
 	// Interactive mode always drives audit, so the embedded binary must
@@ -510,24 +510,16 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 	}
 
 	startedAt := time.Now()
-	if repo != nil {
-		parentRow := &database.AgenticScan{
-			UUID:        parentUUID,
-			ProjectUUID: projectUUID,
-			ScanUUID:    globalScanUUID,
-			Mode:        "audit",
-			AgentName:   auditDriver,
-			TargetURL:   "",
-			SourcePath:  absTarget,
-			SourceType:  database.InferSourceType(absTarget),
-			SessionDir:  parentSessionDir,
-			Status:      "running",
-			StartedAt:   startedAt,
-		}
-		if err := repo.CreateAgenticScan(context.Background(), parentRow); err != nil {
-			zap.L().Debug("Failed to create parent audit AgenticScan", zap.Error(err))
-		}
-	}
+	startAgenticScanRow(context.Background(), repo, &database.AgenticScan{
+		UUID:        parentUUID,
+		ProjectUUID: projectUUID,
+		ScanUUID:    globalScanUUID,
+		Mode:        "audit",
+		AgentName:   auditDriver,
+		SourcePath:  absTarget,
+		SessionDir:  parentSessionDir,
+		StartedAt:   startedAt,
+	})
 
 	streamToConsole := !auditNoStream
 	printAuditDispatchBanner(auditDriver, agent.JoinModes(auditModeChain), absTarget, parentSessionDir,
@@ -557,23 +549,25 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 
 	printAuditCombinedSummary(plans, parentSessionDir, dedupDeleted, dedupGroups, repo != nil)
 
+	var errMsg string
+	failed := 0
+	for _, p := range plans {
+		if p.runErr != nil {
+			failed++
+			if errMsg != "" {
+				errMsg += "; "
+			}
+			errMsg += p.name + ": " + p.runErr.Error()
+		}
+	}
+	auditEnd := database.AgenticRunEnd{FailedDrivers: failed, TotalDrivers: len(plans)}
+	auditDBStatus, _ := agentRunStatus(auditEnd)
 	if repo != nil {
 		now := time.Now()
-		var errMsg string
-		failed := 0
-		for _, p := range plans {
-			if p.runErr != nil {
-				failed++
-				if errMsg != "" {
-					errMsg += "; "
-				}
-				errMsg += p.name + ": " + p.runErr.Error()
-			}
-		}
 		totalParsed, totalSaved, _ := driverTotals(plans)
 		parentUpdate := &database.AgenticScan{
 			UUID:         parentUUID,
-			Status:       database.MultiDriverAgenticScanStatus(failed, len(plans)),
+			Status:       auditDBStatus,
 			ErrorMessage: errMsg,
 			CompletedAt:  now,
 			DurationMs:   now.Sub(startedAt).Milliseconds(),
@@ -603,18 +597,41 @@ func runAgentAudit(cmd *cobra.Command, args []string) error {
 
 	webhook.FireAgenticScan(settings, repo, parentUUID)
 
-	if allFailed {
-		return fmt.Errorf("all participating audit drivers failed")
+	_, totalSaved, costUSD := driverTotals(plans)
+	outcome := &agentRunOutcome{
+		Mode:            "audit",
+		AgenticScanUUID: parentUUID,
+		ProjectUUID:     projectUUID,
+		SessionDir:      parentSessionDir,
+		Provider:        settings.Agent.Olium.DisplayProvider(),
+		Model:           settings.Agent.Olium.Model,
+		Repo:            repo,
+		End:             auditEnd,
+		FindingCount:    int64(totalSaved),
+		Usage:           agentRunUsage{CostUSD: costUSD},
+		StartedAt:       startedAt,
 	}
-
-	if globalJSON {
-		status := "completed"
-		if !allOK {
-			status = "completed_with_errors"
+	if cmd != nil {
+		outcome.Command = commandPathWithoutRoot(cmd)
+	}
+	for _, p := range plans {
+		if p.runErr != nil {
+			outcome.addError(fmt.Errorf("%s: %w", p.name, p.runErr))
 		}
-		emitAgentScanJSONSummary(repo, projectUUID, parentUUID, status, parentSessionDir)
 	}
-	return nil
+	var allFailedErr error
+	if allFailed {
+		allFailedErr = fmt.Errorf("all participating audit drivers failed")
+		outcome.End.Err = allFailedErr
+	}
+	// The document (under -j) describes the run whatever its outcome; a run
+	// in which every driver failed still exits 1, one in which some did exits
+	// 5 (partial), after the document.
+	docErr := emitAgentRunDocument(outcome)
+	if allFailedErr != nil {
+		return allFailedErr
+	}
+	return docErr
 }
 
 // keepSourceResults reports whether <source>/vigolium-results/ should be left

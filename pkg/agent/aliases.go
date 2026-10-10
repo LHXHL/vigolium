@@ -143,6 +143,7 @@ const (
 	// Triage confirm verdict + template identifiers
 	TriageVerdictConfirmed     = agenttypes.TriageVerdictConfirmed
 	TriageVerdictFalsePositive = agenttypes.TriageVerdictFalsePositive
+	TriageVerdictInconclusive  = agenttypes.TriageVerdictInconclusive
 	TriageConfirmTemplateID    = agenttypes.TriageConfirmTemplateID
 	TriageConfirmOutputSchema  = agenttypes.TriageConfirmOutputSchema
 

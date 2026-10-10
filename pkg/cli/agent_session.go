@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/agent"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/audit"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/cli/tui"
@@ -62,7 +63,7 @@ func runAgentSession(cmd *cobra.Command, args []string) error {
 
 	// Detail view: if a UUID argument is provided, show session details
 	if len(args) > 0 {
-		return showAgentSessionDetail(ctx, repo, args[0])
+		return showAgentSessionDetail(cmd, ctx, repo, args[0])
 	}
 
 	// List view
@@ -87,13 +88,7 @@ func runAgentSession(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		output := map[string]interface{}{
-			"total":    total,
-			"offset":   sessionOffset,
-			"limit":    sessionLimit,
-			"sessions": runs,
-		}
-		return writeLegacyResultJSON(output)
+		return emitRead(cmd, "sessions", runs, total, sessionOffset, sessionLimit, withProjectScope(projectUUID))
 	}
 
 	if len(runs) == 0 {
@@ -122,7 +117,7 @@ func runAgentSession(cmd *cobra.Command, args []string) error {
 		switch status {
 		case "completed":
 			status = terminal.Green(status)
-		case "completed_with_warnings", "completed_with_errors":
+		case "completed_with_warnings", "completed_with_errors", "timeout", "budget_exhausted":
 			status = terminal.Yellow(status)
 		case "running":
 			status = terminal.Cyan(status)
@@ -189,14 +184,14 @@ func runAgentSession(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func showAgentSessionDetail(ctx context.Context, repo *database.Repository, uuid string) error {
+func showAgentSessionDetail(cmd *cobra.Command, ctx context.Context, repo *database.Repository, uuid string) error {
 	run, err := repo.GetAgenticScan(ctx, uuid)
 	if err != nil {
-		return fmt.Errorf("session not found: %w", err)
+		return codedErrorf(apicontract.CodeNotFound, "session %s not found: %w", uuid, err)
 	}
 
 	if globalJSON {
-		return writeLegacyResultJSON(run)
+		return emitObject(cmd, ".", run)
 	}
 
 	tailLines := sessionTail
@@ -406,7 +401,7 @@ func colorRunStatus(status string) string {
 	switch status {
 	case "completed":
 		return terminal.Green(status)
-	case "completed_with_warnings", "completed_with_errors":
+	case "completed_with_warnings", "completed_with_errors", "timeout", "budget_exhausted":
 		return terminal.Yellow(status)
 	case "running":
 		return terminal.Cyan(status)

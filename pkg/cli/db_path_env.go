@@ -87,6 +87,10 @@ func statelessWriteRequested(cmd *cobra.Command) bool {
 // quietly redirects an engagement's reads and writes into a store holding every
 // other target that ever landed there. Failing is the only safe answer.
 func applyDBPathEnv(cmd *cobra.Command) error {
+	applyConfigEnv()
+	if handled, err := applyDBEnv(cmd); handled || err != nil {
+		return err
+	}
 	raw := strings.TrimSpace(os.Getenv(dbPathEnvVar))
 	if raw == "" {
 		return nil
@@ -127,6 +131,52 @@ func applyDBPathEnv(cmd *cobra.Command) error {
 	}
 	dbPathEnvNotice(notice)
 	return nil
+}
+
+// applyConfigEnv is the env fallback for --config: VIGOLIUM_CONFIG names the
+// config file when the flag was not given. An agent's bash tool exports it so
+// the `vigolium` commands the agent runs load the parent's config.
+func applyConfigEnv() {
+	if strings.TrimSpace(globalConfig) != "" {
+		return
+	}
+	if v := strings.TrimSpace(os.Getenv(configEnvVar)); v != "" {
+		globalConfig = config.ExpandPath(v)
+	}
+}
+
+// applyDBEnv is the env fallback for --db: VIGOLIUM_DB is exactly "--db from
+// the environment". Unlike VIGOLIUM_DB_PATH it does NOT turn project scoping
+// off for reads, which is why an agent's bash tool exports it for a scoped
+// parent (a child of `--db X --project-uuid P` must read P, not every project
+// in X). Precedence: --db, then VIGOLIUM_DB, then VIGOLIUM_DB_PATH, then the
+// config's database, then the default.
+//
+// handled reports that VIGOLIUM_DB was set (and so VIGOLIUM_DB_PATH is not
+// consulted). Like VIGOLIUM_DB_PATH, a pin that cannot be honored is an
+// error, never a silent fall-through to the shared default database.
+func applyDBEnv(cmd *cobra.Command) (handled bool, err error) {
+	raw := strings.TrimSpace(os.Getenv(dbEnvVar))
+	if raw == "" {
+		return false, nil
+	}
+	if strings.TrimSpace(globalDB) != "" {
+		return true, nil
+	}
+	if statelessWriteRequested(cmd) {
+		dbPathEnvNotice(fmt.Sprintf("%s: ignoring %s (results go to a temporary database)",
+			terminal.BoldCyan("--stateless"), terminal.BoldCyan(dbEnvVar)))
+		return true, nil
+	}
+	path := config.ExpandPath(raw)
+	if err := dbPathEnvUsable(path); err != nil {
+		return true, fmt.Errorf("%s=%s is unusable (%w).\n"+
+			"Refusing to fall back to the default database. Fix the path or unset %s",
+			dbEnvVar, raw, err, dbEnvVar)
+	}
+	globalDB = path
+	dbPathEnvNotice(fmt.Sprintf("%s → %s", terminal.BoldCyan(dbEnvVar), terminal.BoldYellow(terminal.ShortenHome(path))))
+	return true, nil
 }
 
 // dbPathEnvUsable reports why the pinned path cannot back a database, or nil.

@@ -1595,6 +1595,13 @@ agent:
     # Default: 600 (10 minutes)
     call_timeout_sec: 600
 
+    # Deadline of the agent preflight ping (a one-token request sent before
+    # query / triage / swarm / autopilot do any work), as a Go duration.
+    # Empty = auto: 15s, or 60s when the provider is a local endpoint
+    # (openai-/anthropic-compatible on loopback: Ollama, LM Studio).
+    # Per-run override: --preflight-timeout; skip it with --no-preflight.
+    # preflight_timeout: 15s
+
     # Skills always loaded in planner-filtered agentic runs (autopilot/swarm),
     # regardless of what the planner selects. General-purpose playbooks belong
     # here so filtering can never starve them. Empty = built-in default

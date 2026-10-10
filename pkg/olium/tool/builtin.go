@@ -31,3 +31,15 @@ func RegisterReadOnlyBuiltins(r *Registry) {
 	r.Register(NewWebFetchReadOnly())
 	r.Register(NewBrowserProbe())
 }
+
+// RegisterOfflineBuiltins populates r with the builtins that touch neither the
+// network nor a shell: read_file, ls, grep and glob. It is the tool set of a
+// run that must not contact a target at all (`agent triage --no-probe`):
+// RegisterReadOnlyBuiltins still carries web_fetch and browser_probe, and bash
+// can reach anything.
+func RegisterOfflineBuiltins(r *Registry) {
+	r.Register(NewReadFile())
+	r.Register(NewLs())
+	r.Register(NewGrep())
+	r.Register(NewGlob())
+}
