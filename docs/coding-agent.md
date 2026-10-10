@@ -371,7 +371,7 @@ row name, or flattens a single object back to the top level, for one release.
 | `module ls` (`module`, `-M`) | read | modules | `active_count`, `passive_count` | `modules` |
 | `doctor` | read | `[report]` | `status` (copied up; the re-checked verdict under `--fix`), `fixes`, `updated` | `.` (`report` under `--fix`) |
 | `version` | read | `[{version, commit, db_schema_version, …}]` | — | `.` |
-| `skills list` | read | skills | — | `skills` |
+| `skills list` | read | skills | `installed`: `[{name, agent, scope, path, version, status}]` per install location (`./.claude/skills`, `~/.claude/skills`, `./.agents/skills`, `~/.agents/skills`), `status` one of `current`, `stale`, `modified`, `missing` | `skills` |
 | `skills get` | read | `[{name, description, embed_path, content, references?}]` | — | — (was raw markdown; still is without `-j`) |
 | `kit secret-scan` | read | matches | `files_scanned`, `count` | `matches` |
 | `kit harvest` | read | urls | `domains`, `sources`, `count`, `stats`, `limits` | `urls` |
@@ -409,7 +409,7 @@ with `aborted: true`.
 | `storage upload` / `results` | `[{key, size, url / path}]` | always | `scan_uuid` (results) |
 | `storage rm` | `[{key, deleted, error?}]` | any key deleted | `deleted`, `failed`; a partial failure also sets `ok: false` and `error`, and exits 1 |
 | `init` | `[{kind, path}]` written | not already initialized (or `--force`) | `already_initialized` on a noop |
-| `skills install` | `[{name, path, installed, reason?}]` | any bundle written | `installed`, `skipped`, `dir` |
+| `skills install` | `[{name, path, installed, status, reason?, previous_version?, backup?, pruned?}]`; `status` is the state found before the run (`missing`, `current`, `stale`, `modified`) | any bundle written | `installed`, `skipped`, `dir` |
 
 `storage download -j` needs `-o <file>` (exit 2 otherwise: without it the
 object's bytes are stdout) and prints a read receipt `[{key, path, size}]`.

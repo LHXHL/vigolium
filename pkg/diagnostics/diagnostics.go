@@ -99,6 +99,11 @@ type Report struct {
 	Tools            map[string]*ToolCheck   `json:"tools"`
 	TemplatesDir     *CheckResult            `json:"templates_dir"`
 	NucleiTemplates  *CheckResult            `json:"nuclei_templates"`
+	// Skill is the coding-agent skill install check. The CLI fills it in after
+	// Run (it needs the binary's version and embedded bundle), so the server's
+	// /diagnostics leaves it nil. It never moves Status: a stale skill does
+	// not stop a scan.
+	Skill *CheckResult `json:"skill,omitempty"`
 }
 
 // Deps provides the dependencies needed to run diagnostics.

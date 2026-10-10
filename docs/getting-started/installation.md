@@ -147,8 +147,10 @@ vigolium doctor --fix --only chrome,nuclei   # fix only specific items
 
 `--fix` prints the report, installs what's missing, then re-checks and shows
 the updated status. `--only` accepts any of:
-`nuclei`, `chrome`, `bun`, `claude`, `agent-browser`, `pi`, `piolium`
-(it has no effect without `--fix`).
+`nuclei`, `chrome`, `bun`, `claude`, `agent-browser`, `pi`, `piolium`, `skill`
+(it has no effect without `--fix`). `skill` reinstalls the stale
+`vigolium-scanner` coding-agent skill copies that `doctor` found in
+`./.claude/skills`, `~/.claude/skills`, `./.agents/skills` or `~/.agents/skills`.
 
 ## Updating
 

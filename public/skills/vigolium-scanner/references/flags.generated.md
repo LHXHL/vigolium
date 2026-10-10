@@ -741,7 +741,7 @@ Check system readiness and diagnose configuration issues
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--fix` | - | bool | `false` | Auto-install/fix failing checks |
-| `--only` | - | stringSlice | - | Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium) |
+| `--only` | - | stringSlice | - | Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium,skill) |
 | `--strict` | - | bool | `false` | Exit 1 when the verdict is degraded, not only when it is not_ready |
 
 ## vigolium endpoints

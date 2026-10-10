@@ -21,6 +21,32 @@ vigolium skills get vigolium-scanner --full              # print SKILL.md + ever
 | `claude` | `.claude/skills/` | `~/.claude/skills/` |
 | `codex` \| `agents` | `.agents/skills/` | `~/.agents/skills/` |
 
+### Keeping it current
+
+Each install writes `.vigolium-skill.json` beside `SKILL.md`: the skill name,
+the installing binary's `binary_version` and `commit`, the `bundle_sha256`, the
+sha256 of every file, and `installed_at`. Agents ignore the dotfile, and
+`SKILL.md` is copied unchanged. After upgrading vigolium:
+
+```bash
+vigolium skills ls                        # state of every install location
+vigolium skills install --force           # refresh one (same --agent/--scope)
+vigolium doctor --fix --only skill        # refresh every stale copy in place
+```
+
+`skills ls` checks `./.claude/skills`, `~/.claude/skills`, `./.agents/skills`
+and `~/.agents/skills` and reports each copy as `current`, `stale` (from another
+bundle, or an install that has no manifest), `modified` (a listed file was
+edited or removed) or `missing`. `skills ls -j` returns the same data under
+`installed`. A plain `skills install` leaves an existing copy alone and prints
+`stale: run vigolium skills install --force` when it is out of date. `--force`
+deletes the files the old manifest lists that the new bundle no longer ships
+and keeps files you added. An install without a manifest is moved to
+`<dir>.bak-<timestamp>` (its `SKILL.md` renamed to `SKILL.md.bak` so the agent
+does not load it twice) before the fresh copy is written. `doctor` warns about
+stale and modified copies. `doctor --fix` reinstalls only the stale ones, so
+your local edits are never overwritten.
+
 Once installed it auto-triggers on mentions of scanning, vigolium, DAST, or
 vulnerability testing. In Claude Code you can also invoke it explicitly as
 `/vigolium-scanner`.

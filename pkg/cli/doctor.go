@@ -39,7 +39,7 @@ var doctorCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(doctorCmd)
 	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false, "Auto-install/fix failing checks")
-	doctorCmd.Flags().StringSliceVar(&doctorOnly, "only", nil, "Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium)")
+	doctorCmd.Flags().StringSliceVar(&doctorOnly, "only", nil, "Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium,skill)")
 	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "Exit 1 when the verdict is degraded, not only when it is not_ready")
 }
 
@@ -118,6 +118,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	}
 
 	report := doctorRunDiagnostics(deps)
+	attachDoctorSkillCheck(report)
 
 	// Backfill the first-run marker only when the mandatory native-scan deps are
 	// actually present (chromium + nuclei-templates). A read-only doctor on a
@@ -158,6 +159,11 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	fixes := diagnostics.RunFixes(ctx, report, settings, doctorOnly)
+	// The skill reinstall is CLI-side: it needs this binary's embedded bundle
+	// and version, which pkg/diagnostics cannot import.
+	if doctorSkillFixSelected(doctorOnly) {
+		fixes = append(fixes, fixStaleSkills(Version, Commit)...)
+	}
 
 	if !globalJSON && len(fixes) > 0 {
 		fmt.Println()
@@ -166,6 +172,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 
 	// Re-run checks to show updated status.
 	updated := doctorRunDiagnostics(deps)
+	attachDoctorSkillCheck(updated)
 
 	// If --fix just installed chromium + nuclei-templates, backfill the marker
 	// so subsequent scans skip the redundant first-run check.
@@ -284,6 +291,10 @@ func focusedCheck(r *diagnostics.Report, name string) (label string, c *diagnost
 	case "vigolium-audit":
 		if c := r.EmbeddedBinaries["vigolium-audit"]; c != nil {
 			return "vigolium-audit helper", c, true
+		}
+	case doctorSkillFixKey, "skills":
+		if r.Skill != nil {
+			return "Agent skill", r.Skill, true
 		}
 	}
 	return "", nil, false
@@ -435,6 +446,14 @@ func printDoctorReport(r *diagnostics.Report) {
 	printDoctorSubsection("Tools (informational)")
 	printInfoTools(r)
 
+	// ── Coding agent ──
+	if r.Skill != nil {
+		printDoctorSection("Coding agent", "vigolium skills install")
+		printCheck("Agent skill", r.Skill.Status, r.Skill.Message)
+		printDetails(detailsVisible(r.Skill.Status), r.Skill.Details)
+		printTip(r.Skill.Tip)
+	}
+
 	fmt.Println()
 	switch r.Status {
 	case "ready":
@@ -446,7 +465,7 @@ func printDoctorReport(r *diagnostics.Report) {
 		// rules; native and agentic checks degrade rather than block.
 		fmt.Printf("  %s %s\n", terminal.BoldRed(terminal.SymbolError), terminal.BoldRed("System not ready — database unavailable"))
 	}
-	if !doctorFix && diagnostics.HasFixableIssues(r) {
+	if !doctorFix && (diagnostics.HasFixableIssues(r) || doctorSkillStale()) {
 		fmt.Printf("  %s %s%s%s\n",
 			terminal.Yellow(terminal.SymbolTip),
 			terminal.White("re-run with "),
