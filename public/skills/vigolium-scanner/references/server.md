@@ -159,7 +159,8 @@ vigolium server ca print > ca.pem      # PEM to stdout (or --out ca.pem)
 vigolium server ca print -j            # {path, sha256, subject, not_after}
 vigolium server ca install             # print the trust commands for this OS
 vigolium server ca install --yes       # ...and run them (may prompt for sudo)
-vigolium server ca uninstall [--yes]   # remove that trust again
+vigolium server ca uninstall           # print the commands that remove that trust
+vigolium server ca uninstall --yes     # ...and run them
 
 # Then run the intercepting proxy.
 vigolium server --ingest-proxy-port 8080 --proxy-mitm

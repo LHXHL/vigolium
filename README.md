@@ -125,7 +125,7 @@ vigolium scan -t https://example.com --strategy deep
 vigolium scan -t https://example.com -m xss-reflected,sqli-error
 
 # Scan from an OpenAPI spec
-vigolium scan -T openapi.yaml -I openapi
+vigolium scan -i openapi.yaml -I openapi -t https://api.example.com
 
 # Pipe URLs from stdin
 cat urls.txt | vigolium scan

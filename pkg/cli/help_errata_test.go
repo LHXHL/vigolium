@@ -91,35 +91,16 @@ func TestKitShortListsEverySubcommand(t *testing.T) {
 }
 
 // --full-example is a curated tour an operator copies from; every line must
-// name a real command and parse against its flags.
+// name a real command and pass the shared doc-command validator
+// (doc_commands_test.go): parse, unknown subcommands, enums, positionals.
 func TestFullExamplesParse(t *testing.T) {
 	prepareCommandTree(rootCmd)
 
-	sections := fullExampleSections()
-	if len(sections) == 0 {
-		t.Fatal("no full-example sections")
+	cmds := fullExampleDocCommands()
+	if len(cmds) == 0 {
+		t.Fatal("no full-example commands extracted")
 	}
-	for _, sec := range sections {
-		for _, line := range sec.examples {
-			argv, ok := fullExampleArgv(line)
-			if !ok {
-				t.Errorf("[%s] cannot split example: %s", sec.title, line)
-				continue
-			}
-			if err := parseExample(rootCmd, argv); err != nil {
-				t.Errorf("[%s] example does not parse:\n  %s\n  %v", sec.title, line, err)
-				continue
-			}
-			// Find returns the nearest ancestor for an unknown subcommand
-			// with no error, so "vigolium source ls" would "parse" against
-			// root. Reject leftover positionals on a parent command that only
-			// groups subcommands.
-			cmd, rest, _ := rootCmd.Find(argv)
-			if cmd.HasSubCommands() && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") && cmd.Args == nil {
-				t.Errorf("[%s] %q is not a subcommand of %q: %s", sec.title, rest[0], cmd.CommandPath(), line)
-			}
-		}
-	}
+	checkDocCommands(t, cmds)
 }
 
 // The ext eval example must call vigolium.log as a namespace; calling it as a
@@ -132,19 +113,6 @@ func TestFullExamplesUseLogNamespace(t *testing.T) {
 			}
 		}
 	}
-}
-
-// fullExampleArgv strips a leading "cat x | " pipe and the "vigolium" word,
-// returning the argv cobra would see.
-func fullExampleArgv(line string) ([]string, bool) {
-	if i := strings.LastIndex(line, "| "); i >= 0 {
-		line = line[i+2:]
-	}
-	fields, ok := splitExampleArgv(line)
-	if !ok || len(fields) == 0 || fields[0] != "vigolium" {
-		return nil, false
-	}
-	return fields[1:], true
 }
 
 func walkCommandTree(c *cobra.Command, fn func(*cobra.Command)) {

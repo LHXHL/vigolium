@@ -302,7 +302,8 @@ vigolium agent swarm --discover -t http://localhost:3000 --source ~/projects/my-
 ### Manual Auth File
 
 ```bash
-# Pass a YAML auth file to any scan command
+# Pass a YAML auth file to scan or run (scan-url and scan-request have no
+# --auth-file; for one authenticated URL use scan -t <url> --auth-file auth.yaml)
 vigolium scan -t https://example.com --auth-file auth.yaml
 
 # Agent modes take the same native files (repeatable; validated before the run).
@@ -312,9 +313,6 @@ vigolium agent swarm -t https://example.com --auth-file admin.yaml --auth-file u
 # Autopilot: logs the sessions in, the pre-scan uses them, and they are stored for
 # the target so the operator's list_auth_sessions / replay_request can use them
 vigolium agent autopilot -t https://example.com --auth-file admin.yaml
-
-# Works with scan-url too
-vigolium scan-url https://example.com/api/admin --auth-file auth.yaml
 
 # JSON format works the same way
 vigolium scan -t https://example.com --auth-file auth.json
