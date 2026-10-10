@@ -12,22 +12,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// harvestRecordSource is the http_records.source label external-harvest stubs
-// carry. It names where the URL came from (a third-party archive), and it is what
-// tells a later phase — or a reader of `traffic --source harvest` — that the row
-// has never been fetched from the target.
-//
-// TODO(plan D15): move next to the other labels in pkg/database/dbsource.go when
-// the harvest-probe step lands; it is local here only because this hotfix may not
-// touch pkg/database.
-const harvestRecordSource = "harvest"
-
 // runExternalHarvestPhase runs external intelligence harvesting as a standalone phase.
 //
 // The phase never contacts the target. Harvested URLs come from third-party
 // archives and are persisted as request-only stubs (has_response=false,
-// source=harvest); any later phase that reaches the target fetches them with the
-// scan's own session, hooks and limiter. It used to push every archived URL
+// source=harvest). When a later phase reaches the target, the harvest-probe step
+// that follows checks them first (runHarvestProbePhase); whatever survives is
+// fetched by those phases with the scan's own session, hooks and limiter. It used to push every archived URL
 // through an executor, which fetched a baseline for each one: an unbounded,
 // unauthenticated, hook-less GET sweep of the live target from a phase that is
 // documented — and planned (SkipsTarget) — as target-silent.
@@ -37,6 +28,7 @@ func (r *Runner) runExternalHarvestPhase(ctx context.Context, infra *phaseInfra)
 	}
 
 	phaseStart := time.Now()
+	r.harvestStubs = nil
 
 	src := r.buildExternalHarvesterSource()
 	if src == nil {
@@ -82,7 +74,8 @@ func (r *Runner) runExternalHarvestPhase(ctx context.Context, infra *phaseInfra)
 // executor applies before it would have fetched anything.
 //
 // Returns how many records are in the store for this harvest (a URL already
-// recorded counts, since the repository adopts the existing row). A cancelled
+// recorded counts, since the repository adopts the existing row). Each stored
+// row is also queued on r.harvestStubs for the harvest-probe step. A cancelled
 // context ends the phase with what was stored so far and no error, matching the
 // executor-based phase it replaces.
 func (r *Runner) ingestHarvestStubs(ctx context.Context, infra *phaseInfra, src source.InputSource) (int64, error) {
@@ -109,13 +102,15 @@ func (r *Runner) ingestHarvestStubs(ctx context.Context, infra *phaseInfra, src 
 		if r.repository == nil {
 			continue
 		}
-		if _, err := r.repository.SaveRecordWithLineage(ctx, req, harvestRecordSource, r.options.ProjectUUID, database.RecordLineage{ScanUUID: r.options.ScanUUID}); err != nil {
+		id, err := r.repository.SaveRecordWithLineage(ctx, req, database.RecordSourceHarvest, r.options.ProjectUUID, database.RecordLineage{ScanUUID: r.options.ScanUUID})
+		if err != nil {
 			failed++
 			zap.L().Debug("ExternalHarvest: failed to store harvested URL",
 				zap.String("url", req.Target()), zap.Error(err))
 			continue
 		}
 		stored++
+		r.harvestStubs = append(r.harvestStubs, harvestStub{uuid: id, req: req})
 	}
 
 	if outOfScope > 0 || failed > 0 {

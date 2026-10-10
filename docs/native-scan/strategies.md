@@ -102,6 +102,12 @@ vigolium scan -t https://example.com --strategy deep
 
 Sources: Wayback Machine, CommonCrawl, AlienVault OTX, URLScan, VirusTotal. API keys for URLScan and VirusTotal can be configured in `vigolium-configs.yaml` under `external_harvester.sources`.
 
+The harvest itself never contacts the target. When a later phase does, the
+`harvest-probe` step checks the harvested URLs first (one liveness request per
+host, then one GET per URL) and drops dead hosts, `404`/`410` and soft-404 answers
+before anything scans them. `--skip harvest-probe` or `external_harvester.probe:
+false` turns that off; see [native scan phases](../guides/native-scan-phases.md#external-harvest).
+
 ### Content Discovery
 
 Brute-force directory and file discovery using the deparos engine. Enabled by `--strategy balanced`/`deep` or `--discover`.

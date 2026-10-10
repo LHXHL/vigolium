@@ -12,19 +12,20 @@ truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 1. **Heuristics check** (`heuristics-check`) - fetch each target's root page and classify it (blank vs content, JSON/XML API; with `scanning_strategy.heuristics_check: advanced` also SPA detection and link counting) to decide whether spidering that target is worthwhile. It does not fingerprint technologies. On by default (`basic`); turned off by `--skip heuristics-check` and by any `--only` that does not list it
 2. **Port Sweep** (`port-sweep`) - find extra web services on alternate ports of the CLI target hosts and add them to the target set. Only with `--intensity deep`, `--follow-subdomains`, or `--only port-sweep`; turned off by `--skip port-sweep` and by any `--only` that does not list it. Its HTTP confirm requests go through `--proxy`; the TCP connect that finds open ports cannot and always dials the host directly
 3. **External Harvest** (`external-harvest`) - gather URLs about the target from third-party archives (Wayback Machine, CT logs); never contacts the target
-4. **Spidering** (`spidering`) - browser-based crawling to discover dynamic content
-5. **Probe** (`probe`) - one request per target, passive modules only, no content discovery (an httpx-style host sweep). Opt-in: runs only with `--only probe` / `vigolium run probe`
-6. **Discovery / Ingestion** (`discovery`) - parse inputs and perform content discovery
-7. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl. Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
-8. **Seed** (`seed`) - when discovery/ingestion is skipped (for example `--only dynamic-assessment`), store the CLI targets as records so the assessment phases have something to scan. Not run under scan-on-receive
-9. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
-10. **Known Issue Scan** (`known-issue-scan`) - run Nuclei plus native in-process secret detection
+4. **Harvest probe** (`harvest-probe`) - check the harvested URLs against the live target so later phases scan only the ones that still answer (see [External Harvest](#external-harvest)). Runs only when external-harvest ran AND a later enabled phase reaches the target anyway; `vigolium run external-harvest` alone never schedules it
+5. **Spidering** (`spidering`) - browser-based crawling to discover dynamic content
+6. **Probe** (`probe`) - one request per target, passive modules only, no content discovery (an httpx-style host sweep). Opt-in: runs only with `--only probe` / `vigolium run probe`
+7. **Discovery / Ingestion** (`discovery`) - parse inputs and perform content discovery
+8. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl. Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
+9. **Seed** (`seed`) - when discovery/ingestion is skipped (for example `--only dynamic-assessment`), store the CLI targets as records so the assessment phases have something to scan. Not run under scan-on-receive
+10. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
+11. **Known Issue Scan** (`known-issue-scan`) - run Nuclei plus native in-process secret detection
 
 Every step above is a name in the phase vocabulary, so each `phase.started` /
 `phase.finished` id can be looked up in `vigolium strategy -j` (`phases[]`).
-`targeted-respider` and `seed` are **internal**: the plan schedules them on its
-own gates, so `--only` rejects them. `--skip targeted-respider` is accepted
-(spidering still runs); `seed` cannot be skipped. `preflight` is also reserved as
+`harvest-probe`, `targeted-respider` and `seed` are **internal**: the plan schedules them on its
+own gates, so `--only` rejects them. `--skip harvest-probe` and `--skip targeted-respider` are accepted
+(external-harvest and spidering still run); `seed` cannot be skipped. `preflight` is also reserved as
 an internal, skippable name for the target reachability check; `--skip preflight`
 is accepted today and has no effect until that check lands.
 
@@ -97,7 +98,7 @@ vigolium run spitolas -t https://example.com
 
 Pulls endpoints from external intelligence sources (Wayback Machine, certificate transparency logs).
 It never contacts the target: each harvested URL is stored as a request-only record
-(`source=harvest`, no response) that later phases fetch with the scan's session, hooks and limiter.
+(`source=harvest`, no response).
 URLs are normalized (tracking params and static assets dropped, `.js`/`.map` kept) and sampled by
 path shape before they are stored — see `external_harvester.per_shape`, `max_urls` and `cdx` in
 [configuration](../configuration.md#external_harvester). A Wayback index that hits `cdx.max_rows`
@@ -106,6 +107,30 @@ is reported as the `cdx_max_rows` phase limit:
 ```bash
 vigolium run external-harvest -t https://example.com
 ```
+
+When a later phase will reach the target (`--external-harvest` on a normal scan,
+`--only harvest,dast`, …), the **harvest probe** step runs right after the harvest,
+so archive history is not fuzzed:
+
+1. One liveness request per origin (`scheme://host:port`), to a random path. An
+   origin with no HTTP answer has all of its harvested URLs dropped unfetched.
+2. One GET per harvested URL on a live origin, through the shared requester (scan
+   session, rate limit, per-host limiter). Redirects are recorded on the record,
+   not followed.
+3. `404`/`410` answers are dropped, as are soft-404s: on an origin that answers
+   unknown paths with a `2xx` page or a `3xx` redirect, a response with the same
+   status, media type and size (or redirect destination) as the random path's is
+   treated as "not found". Origins that answer unknown paths with `404` are judged
+   by status alone; `401`/`403`/`5xx` are always kept.
+
+Survivors keep `source=harvest` and get their response filled in. Dropped URLs'
+request-only stubs are deleted, so no later phase scans them (a record another
+phase already fetched is never touched). The tallies land on the phase outcome
+(`scan.phase_outcomes[].counts`): `stubs`, `hosts`, `hosts_dead`, `probed`, `kept`,
+`dropped_dead_host`, `dropped_not_found`, `dropped_soft_404`, `dropped_failed`,
+`unprobed`, `deleted`, `write_failed`. Turn the step off with `--skip harvest-probe`
+for one run, or `external_harvester.probe: false` in the config, to let the later
+phases fetch every harvested URL themselves.
 
 ### Known Issue Scan
 
@@ -176,6 +201,7 @@ Every phase answers to several spellings. They work identically with `--only`, `
 | `extension` | `ext`, `extensions` |
 | `heuristics-check` | `heuristics`, `heuristic` |
 | `port-sweep` | `ports`, `portsweep`, `port-scan` |
+| `harvest-probe` (internal: `--skip` only) | `harvest-check` |
 | `targeted-respider` (internal: `--skip` only) | `respider`, `re-spider` |
 | `seed` (internal: neither) | |
 | `preflight` (internal: `--skip` only, reserved) | |

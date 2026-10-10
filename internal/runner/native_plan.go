@@ -14,6 +14,7 @@ const (
 	PhaseHeuristicsCheck   NativePhase = "heuristics-check"
 	PhasePortSweep         NativePhase = "port-sweep"
 	PhaseExternalHarvest   NativePhase = "external-harvest"
+	PhaseHarvestProbe      NativePhase = "harvest-probe"
 	PhaseSpidering         NativePhase = "spidering"
 	PhaseProbe             NativePhase = "probe"
 	PhaseDiscovery         NativePhase = "discovery"
@@ -72,6 +73,11 @@ var nativePhaseVocabulary = []nativePhaseSpelling{
 	// phase.started/phase.finished, so they must be nameable here.
 	{Canonical: "heuristics-check", Aliases: []string{"heuristics", "heuristic"}, Skippable: true},
 	{Canonical: "port-sweep", Aliases: []string{"ports", "portsweep", "port-scan"}, Skippable: true},
+	// harvest-probe checks harvested URLs against the live target before a later
+	// phase scans them. It rides on external-harvest (and on a later phase that
+	// reaches the target), so it cannot run alone; --skip leaves the stubs for
+	// those later phases to fetch unchecked.
+	{Canonical: "harvest-probe", Aliases: []string{"harvest-check"}, Skippable: true, Internal: true},
 	{Canonical: "targeted-respider", Aliases: []string{"respider", "re-spider"}, Skippable: true, Internal: true},
 	{Canonical: "seed", Skippable: false, Internal: true},
 	// preflight is reserved for the target reachability check that runs before
@@ -216,6 +222,11 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 		// ExternalHarvest only queries third-party archives and OSINT sources
 		// ABOUT the target; it never contacts it. See SendsTargetTraffic.
 		{Phase: PhaseExternalHarvest, Enabled: opts.ExternalHarvestEnabled, SkipsTarget: true},
+		// Liveness + one GET per harvested URL, so the phases below scan only the
+		// archive URLs that still answer. Gated after the list is built, because
+		// it runs only when a LATER step reaches the target: a harvest-only run
+		// must stay target-silent. See gateHarvestProbe.
+		{Phase: PhaseHarvestProbe},
 		{Phase: PhaseSpidering, Enabled: opts.SpideringEnabled},
 		// Host sweep: one request per target, passive-only, no content discovery.
 		// Placed before discovery so a full scan's later phases see the probe's
@@ -232,7 +243,41 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 		{Phase: PhaseDynamicAssessment, Enabled: !opts.SkipDynamicAssessment},
 		{Phase: PhaseKnownIssueScan, Enabled: opts.KnownIssueScanEnabled},
 	}
+	gateHarvestProbe(steps, opts)
 	return NativeScanPlan{Steps: steps}
+}
+
+// gateHarvestProbe enables the harvest-probe step when external-harvest runs,
+// --skip did not name it, and some enabled step after it reaches the target.
+//
+// The last condition is the contract: the probe sends requests, and it exists
+// only to spare a later phase from scanning dead archive URLs. With nothing
+// after it that reaches the target (`run external-harvest`), probing would turn
+// the one target-silent phase into a GET sweep of the live host.
+//
+// --skip harvest-probe is read off SkipPhases rather than a dedicated option:
+// the selection is still visible there after ApplyNativePhaseSelection, and
+// --only (which clears SkipPhases) leaves the probe on whenever it lists
+// external-harvest alongside a phase that reaches the target.
+func gateHarvestProbe(steps []NativePhaseStep, opts *types.Options) {
+	for i := range steps {
+		if steps[i].Phase != PhaseHarvestProbe {
+			continue
+		}
+		steps[i].Enabled = opts.ExternalHarvestEnabled &&
+			!skipListNames(opts.SkipPhases, PhaseHarvestProbe) &&
+			NativeScanPlan{Steps: steps[i+1:]}.SendsTargetTraffic()
+	}
+}
+
+// skipListNames reports whether a --skip list names phase under any spelling.
+func skipListNames(skip []string, phase NativePhase) bool {
+	for _, s := range skip {
+		if NormalizeNativePhase(s) == string(phase) {
+			return true
+		}
+	}
+	return false
 }
 
 // SendsTargetTraffic reports whether any enabled step in the plan will send a
@@ -430,6 +475,8 @@ func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled b
 				opts.HeuristicsCheck = "none"
 			case "port-sweep":
 				opts.SkipPortSweep = true
+			case "harvest-probe":
+				// Read off SkipPhases by gateHarvestProbe; nothing to set here.
 			case "targeted-respider":
 				opts.SkipTargetedRespider = true
 			case "preflight":

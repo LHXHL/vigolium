@@ -41,6 +41,7 @@ const teeDrainTimeout = 2 * time.Second
 //
 //	HeuristicsCheck   — optional root-page probe to optimize downstream phase selection
 //	ExternalHarvest   — harvest URLs from external intelligence sources (opt-in)
+//	HarvestProbe      — drop dead/404 harvested URLs before a later phase scans them
 //	Spidering         — browser-based crawling (opt-in)
 //	Discovery         — ingest all input + deparos content discovery into DB (no modules)
 //	Seed              — ingest CLI targets when discovery is skipped but DB-backed phases still need records
@@ -462,6 +463,16 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 			tracker.noteError(err)
 		} else {
 			r.scanLogger.Info("harvest", "phase completed")
+		}
+	case PhaseHarvestProbe:
+		r.setPhaseTag("harvest-probe")
+		r.scanLogger.Info("harvest-probe", "phase started")
+		if err := r.runHarvestProbePhase(ctx, infra); err != nil {
+			zap.L().Error("HarvestProbe phase failed", zap.Error(err))
+			r.scanLogger.Error("harvest-probe", "phase failed: "+err.Error())
+			tracker.noteError(err)
+		} else {
+			r.scanLogger.Info("harvest-probe", "phase completed")
 		}
 	case PhaseSpidering:
 		r.setPhaseTag("spider")

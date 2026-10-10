@@ -63,6 +63,8 @@ type phaseTracker struct {
 	hasPersist bool
 	unacked    int64
 	counters   []phaseCounter
+	// counts are the phase-specific tallies persisted on PhaseOutcome.Counts.
+	counts map[string]int64
 	// inScope are the counters behind requests_in_scope, for phases whose
 	// requests_sent includes third-party traffic (the browser crawl). Nil means
 	// the phase does not report the field.
@@ -459,6 +461,21 @@ func (t *phaseTracker) noteExecution(rep core.ExecutionReport) {
 	}
 }
 
+// setCount records a phase-specific tally for PhaseOutcome.Counts. The last value
+// set for a name wins; zero values are kept, so a consumer can tell "probed 0"
+// from "did not report".
+func (t *phaseTracker) setCount(name string, n int64) {
+	if t == nil || name == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.counts == nil {
+		t.counts = make(map[string]int64)
+	}
+	t.counts[name] = n
+}
+
 // finish closes out the phase: it always computes the phase's outcome, and emits
 // phase.finished only when a stream is attached.
 //
@@ -541,6 +558,12 @@ func (t *phaseTracker) outcome() database.PhaseOutcome {
 	if t.hasPersist {
 		p := t.persist
 		out.Persistence = &p
+	}
+	if len(t.counts) > 0 {
+		out.Counts = make(map[string]int64, len(t.counts))
+		for name, n := range t.counts {
+			out.Counts[name] = n
+		}
 	}
 	return out
 }

@@ -1515,7 +1515,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
 | `--scanning-profile` | - | string | - | Scanning profile name or YAML file path |
 | `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
-| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, targeted-respider, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, preflight; aliases accepted, see 'vigolium run --help') |
 | `--skip-format-validation` | - | bool | `false` | Skip validation of input file format |
 | `--skip-heuristics` | - | bool | `false` | Disable pre-scan heuristics (equivalent to --heuristics-check=none) |
 | `--spec-default` | - | string | `1` | Fallback value for required OpenAPI parameters that lack examples |
@@ -1610,7 +1610,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
 | `--scanning-profile` | - | string | - | Scanning profile name or YAML file path |
 | `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
-| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, targeted-respider, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, preflight; aliases accepted, see 'vigolium run --help') |
 | `--skip-format-validation` | - | bool | `false` | Skip validation of input file format |
 | `--skip-heuristics` | - | bool | `false` | Disable pre-scan heuristics (equivalent to --heuristics-check=none) |
 | `--spec-default` | - | string | `1` | Fallback value for required OpenAPI parameters that lack examples |
@@ -1664,7 +1664,7 @@ Scan a raw HTTP request for vulnerabilities
 | `--print-traffic` | - | bool | `false` | After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent. |
 | `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
-| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, targeted-respider, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, preflight; aliases accepted, see 'vigolium run --help') |
 | `--spider` | - | bool | `false` | Run browser-based spidering before scanning |
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
 | `--target` | `-t` | string | - | Override target URL (scheme://host) |
@@ -1708,7 +1708,7 @@ Scan a single URL for vulnerabilities
 | `--print-traffic` | - | bool | `false` | After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent. |
 | `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
-| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, targeted-respider, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, preflight; aliases accepted, see 'vigolium run --help') |
 | `--spider` | - | bool | `false` | Run browser-based spidering before scanning |
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
 | `--target` | `-t` | stringArray | - | Target URL to scan (repeatable; alternative to the positional URL argument). Commas are literal. |

@@ -68,6 +68,11 @@ type Runner struct {
 	// input (see targetAdmission).
 	targetsAreInput bool
 
+	// harvestStubs are the request-only records external-harvest stored in this
+	// run, handed to the harvest-probe step that follows it. Set and consumed
+	// within one RunNativeScan; see takeHarvestStubs.
+	harvestStubs []harvestStub
+
 	ctx       context.Context       // cancellable context for graceful shutdown
 	cancel    context.CancelFunc    // cancels ctx to signal workers to stop
 	done      chan struct{}         // closed when RunNativeScan finishes

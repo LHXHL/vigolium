@@ -99,8 +99,8 @@ func TestExternalHarvest_NeverContactsTarget(t *testing.T) {
 		t.Fatalf("records = %d, want 3", len(records))
 	}
 	for _, rec := range records {
-		if rec.Source != harvestRecordSource {
-			t.Errorf("record %s source = %q, want %q", rec.URL, rec.Source, harvestRecordSource)
+		if rec.Source != database.RecordSourceHarvest {
+			t.Errorf("record %s source = %q, want %q", rec.URL, rec.Source, database.RecordSourceHarvest)
 		}
 		if rec.HasResponse || rec.StatusCode != 0 {
 			t.Errorf("record %s has a response (status=%d hasResp=%v); a harvest stub must be request-only",

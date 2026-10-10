@@ -454,7 +454,7 @@ func TestNativeScanPlanSendsTargetTraffic(t *testing.T) {
 	// Every other phase reaches the target directly or through the shared
 	// requester, so each one on its own has to keep sessions and hooks.
 	for _, phase := range []NativePhase{
-		PhaseHeuristicsCheck, PhasePortSweep, PhaseSpidering, PhaseProbe,
+		PhaseHeuristicsCheck, PhasePortSweep, PhaseHarvestProbe, PhaseSpidering, PhaseProbe,
 		PhaseDiscovery, PhaseTargetedReSpider, PhaseSeed,
 		PhaseDynamicAssessment, PhaseKnownIssueScan,
 	} {
@@ -520,6 +520,7 @@ func TestPhaseVocabulary_InternalAndOnlyAccepted(t *testing.T) {
 		"seed":              {true, false},
 		"preflight":         {true, true},
 		"extension":         {false, true},
+		"harvest-probe":     {true, true},
 	} {
 		got, ok := byName[name]
 		if !ok {
@@ -534,6 +535,7 @@ func TestPhaseVocabulary_InternalAndOnlyAccepted(t *testing.T) {
 		"heuristics": "heuristics-check", "heuristic": "heuristics-check",
 		"ports": "port-sweep", "portsweep": "port-sweep", "port-scan": "port-sweep",
 		"respider": "targeted-respider", "re-spider": "targeted-respider",
+		"harvest-check": "harvest-probe",
 	} {
 		if got := NormalizeNativePhase(alias); got != canonical {
 			t.Errorf("NormalizeNativePhase(%q) = %q, want %q", alias, got, canonical)
@@ -658,7 +660,7 @@ func TestSkipPreflightAccepted(t *testing.T) {
 }
 
 func TestInternalPhasesRejectedByOnly(t *testing.T) {
-	for _, phase := range []string{"seed", "targeted-respider", "respider", "preflight"} {
+	for _, phase := range []string{"seed", "targeted-respider", "respider", "preflight", "harvest-probe", "harvest-check"} {
 		opts := types.Options{OnlyPhase: phase}
 		if err := ApplyNativePhaseSelection(&opts, nil); err == nil {
 			t.Errorf("--only %s accepted; internal steps cannot run alone", phase)
@@ -687,4 +689,60 @@ func TestPhaseVocabularyJSONShape(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestHarvestProbeGate: the probe rides on external-harvest, and only when a
+// later step reaches the target. A harvest-only run must stay target-silent, so
+// it must not schedule the probe (which sends requests) at all.
+func TestHarvestProbeGate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		only string
+		skip []string
+		opts types.Options
+		want bool
+	}{
+		{name: "harvest only stays silent", only: "external-harvest", want: false},
+		{name: "harvest + dynamic-assessment probes", only: "harvest,dast", want: true},
+		{name: "harvest + discovery probes", only: "harvest,discovery", want: true},
+		{name: "harvest + spidering probes", only: "harvest,spidering", want: true},
+		{name: "full scan with harvest probes", opts: types.Options{ExternalHarvestEnabled: true}, want: true},
+		{name: "--skip harvest-probe", opts: types.Options{ExternalHarvestEnabled: true}, skip: []string{"harvest-probe"}, want: false},
+		{name: "--skip harvest-check alias", opts: types.Options{ExternalHarvestEnabled: true}, skip: []string{"Harvest-Check"}, want: false},
+		{name: "no harvest, no probe", opts: types.Options{}, want: false},
+		// Heuristics and the port sweep run BEFORE the harvest; they reach the
+		// target, but nothing after the harvest does.
+		{name: "only earlier phases reach the target", only: "harvest,heuristics,port-sweep", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			opts.OnlyPhase = tc.only
+			opts.SkipPhases = tc.skip
+			if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
+				t.Fatalf("ApplyNativePhaseSelection: %v", err)
+			}
+			plan := BuildNativeScanPlan(&opts)
+			if got := planStepEnabled(plan, PhaseHarvestProbe); got != tc.want {
+				t.Errorf("harvest-probe enabled = %v, want %v", got, tc.want)
+			}
+			if tc.only == "external-harvest" && plan.SendsTargetTraffic() {
+				t.Error("a harvest-only plan reports target traffic")
+			}
+		})
+	}
+}
+
+// TestHarvestProbeRunsRightAfterHarvest: the probe must precede every phase
+// that would otherwise scan an unchecked harvested URL.
+func TestHarvestProbeRunsRightAfterHarvest(t *testing.T) {
+	steps := BuildNativeScanPlan(&types.Options{}).Steps
+	for i, step := range steps {
+		if step.Phase == PhaseExternalHarvest {
+			if i+1 >= len(steps) || steps[i+1].Phase != PhaseHarvestProbe {
+				t.Fatalf("step after external-harvest is not harvest-probe")
+			}
+			return
+		}
+	}
+	t.Fatal("external-harvest missing from the plan")
 }

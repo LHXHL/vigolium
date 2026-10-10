@@ -288,7 +288,12 @@ RunNativeScan()
 │
 ├─── External Harvest              [guard: ExternalHarvestEnabled]
 │    Queries Wayback, CommonCrawl, AlienVault, URLScan, VirusTotal.
-│    Ingests discovered URLs into DB (no modules, pure ingestion).
+│    Stores harvested URLs as request-only stubs (source=harvest);
+│    never contacts the target.
+│
+├─── Harvest Probe                 [guard: harvest ran + a later phase reaches the target]
+│    One liveness request per origin, then one GET per harvested URL.
+│    Completes live stubs; deletes dead-host / 404 / 410 / soft-404 ones.
 │
 ├─── Spidering                     [guard: SpideringEnabled]
 │    Browser-based crawling (Chromium). Applies heuristics filter.
