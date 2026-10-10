@@ -265,6 +265,7 @@ func ValidateSettings(s *Settings) []Issue {
 		{"spidering", s.Spidering.Validate},
 		{"agent", s.Agent.Validate},
 		{"storage", s.Storage.Validate},
+		{"notify.webhook", s.Notify.Webhook.Validate},
 	}
 	for _, sec := range sections {
 		if err := sec.validate(); err != nil {

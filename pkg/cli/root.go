@@ -441,6 +441,10 @@ func Execute() {
 	// the agent-family setup hint below needs to know which one failed.
 	cmd, err := rootCmd.ExecuteC()
 
+	// Bounded delivery of any scan webhook the command fired (asynchronous
+	// POSTs die with the process otherwise). Before every exit path below.
+	drainScanWebhooks()
+
 	// A failed agent run is nearly always a provider/credential problem, and
 	// the fix always lives on one docs page. Printed before the update notice
 	// so the version banner stays last.

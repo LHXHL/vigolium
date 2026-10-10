@@ -1110,15 +1110,28 @@ notify:
     url: ""
     authorization: ""
     timeout_sec: 10
+    events: [completed, failed, cancelled]   # default: every outcome
 ```
 
 #### Webhook on scan completion
 
 Fires a single `POST` once when a native or agentic scan reaches a terminal
-state (`completed` or `failed`). One request per scan, JSON body, retried up
-to 5 times on 5xx and network errors with exponential backoff (1s, 2s, 4s,
-8s, 16s). 4xx responses are not retried. Delivery is fire-and-forget — the
-scan does not block waiting for the response.
+state: `scan.completed`, `scan.failed` or `scan.cancelled`. One request per
+scan, JSON body, retried up to 5 times on 5xx and network errors with
+exponential backoff (1s, 2s, 4s, 8s, 16s). 4xx responses are not retried.
+
+It fires on every exit of `scan`, `run`, `scan-url`, `scan-request` (the
+direct path included, when results are persisted), `-S`, `--db-isolate`,
+`ingest` and the REST server, after the scan row's terminal status is
+written: a failed run, a scope that refused every target, and a Ctrl-C all
+report. The scan does not wait for the POST, but the CLI process waits up to
+10s for pending deliveries before it exits and prints a warning on stderr
+for any it gives up on. A second Ctrl-C exits at once, so a webhook still in
+flight then is lost. The server is long-lived and delivers in the background.
+
+`events` limits which outcomes POST (`completed`, `failed`, `cancelled`; the
+`scan.` prefix is accepted). Unset means all three. `config validate`
+rejects an unknown value.
 
 The webhook is best configured **per project** so each project can post to
 its own endpoint. Run `vigolium project config [uuid]` to print the overlay
@@ -1158,9 +1171,27 @@ verbatim, so any scheme works (Bearer, Basic, custom).
 }
 ```
 
+Additive fields: `completeness` (`complete`/`partial`, omitted when
+unknown), `stop_reason` (why a partial run stopped short, e.g. `scan_budget`,
+`cancelled`, `no_targets_in_scope`) and `error` (the failure message on
+`scan.failed`).
+
 Field notes:
-- `event` is always `"scan.completed"`. The `status` field distinguishes
-  successful from failed runs.
+
+| Outcome | `event` | `status` |
+|---|---|---|
+| Ran to its end, including a curtailed run (`completeness: "partial"`) | `scan.completed` | `completed` |
+| Failed (an error, no target in scope, no target answered) | `scan.failed` | `failed` |
+| Interrupted (Ctrl-C, SIGTERM, a REST stop) | `scan.cancelled` | `cancelled` |
+| Agentic run stopped at `timeout` / `budget_exhausted` | `scan.completed` | the run status, `completeness: "partial"` |
+
+- A receiver that filters on `event == "scan.completed"` gets exactly the
+  runs it got before; the other two events are new. A cancelled native scan
+  is stored as `failed` with error `cancelled`, and is reported as
+  `scan.cancelled` / `cancelled`.
+- A run that failed before its scan row was created (for example a session
+  login failure) still reports `scan.failed` with the scan UUID it would have
+  used, its target and an empty findings count.
 - `scan_type` is `"native"` for module-driven scans; for agentic scans it is
   the run mode (`autopilot`, `swarm`, `audit`, `piolium`, or `query`).
 - `result_url` is the [storage](storage.md) `gs://` URL for the result

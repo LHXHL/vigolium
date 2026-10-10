@@ -440,12 +440,13 @@ notify:
     # Webhook URL (or set DISCORD_WEBHOOK_URL env)
     webhook_url: ${DISCORD_WEBHOOK_URL}
 
-  # Webhook on scan completion (one POST per scan, retried up to 5 times on
-  # 5xx + network errors with exponential backoff). The body includes
-  # project_uuid, scan_uuid, scan_type, target, status, started_at,
-  # finished_at, severity counts, and the storage URL of the result bundle
-  # (when --upload-results was used). See docs/configuration.md for the full
-  # payload schema.
+  # Webhook on scan completion (one POST per scan when it completes, fails or
+  # is cancelled; retried up to 5 times on 5xx + network errors with
+  # exponential backoff). The body includes event (scan.completed |
+  # scan.failed | scan.cancelled), project_uuid, scan_uuid, scan_type, target,
+  # status, completeness, stop_reason, started_at, finished_at, severity
+  # counts, and the storage URL of the result bundle (when --upload-results
+  # was used). See docs/configuration.md for the full payload schema.
   webhook:
     # Endpoint that receives the POST. Empty disables the webhook.
     url: ""
@@ -454,6 +455,9 @@ notify:
     authorization: ""
     # Per-request HTTP timeout in seconds. Default: 10.
     timeout_sec: 10
+    # Outcomes that POST: completed, failed, cancelled.
+    # Default: all three
+    # events: [completed, failed, cancelled]
 
 # ============================================================================
 # Dynamic Assessment Configuration

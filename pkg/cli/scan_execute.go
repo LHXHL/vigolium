@@ -96,6 +96,19 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	}
 	defer func() { _ = db.Close() }()
 
+	// Scan webhook, on every exit once this pass has a scan identity. Registered
+	// right after the database opened, so LIFO runs it after the runner's
+	// finalizer wrote the terminal row and after the export tail, and before
+	// db.Close, the -S temp store's release and the --db-isolate merge: the row
+	// it reads is the authoritative copy at that moment. See
+	// fireNativeScanWebhook.
+	webhookArmed := false
+	defer func() {
+		if webhookArmed {
+			fireNativeScanWebhook(settings, database.NewRepository(db), scanOpts, err, signals.Interrupted(), scanStart)
+		}
+	}()
+
 	// -j: the single scan document, read from this pass's scan row and
 	// findings. Registered right after the database opened, so LIFO runs it
 	// after the runner closed and after every export defer (err then carries
@@ -149,6 +162,7 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	// Pin the scan UUID before the banner so the config summary can show it and
 	// the runner reuses the same identifier instead of minting its own.
 	scanOpts.ScanUUID = pinnedOrNewUUID(scanOpts.ScanUUID)
+	webhookArmed = true
 
 	// Scope admission over the targets this run is about to seed, for the
 	// banner and scan.started (the runner recomputes it and owns the verdict).
@@ -351,10 +365,11 @@ func nativeScanDocDBPath(settings *config.Settings) string {
 // "Failed to generate html" and exiting 0.
 func reportNativeScanSuccess(db *database.DB, settings *config.Settings, repo *database.Repository, scanStart time.Time) error {
 	// The upload is the one step that is NOT shared with the lightweight
-	// commands: it is opt-in on --upload-results, but it also fires the
-	// configured webhook unconditionally, and scan-url/scan-request have never
-	// done that. Keeping it here rather than in reportScanCompletion is what lets
-	// both callers share the rest without changing what either one emits.
+	// commands: it is opt-in on --upload-results. Keeping it here rather than in
+	// reportScanCompletion is what lets both callers share the rest without
+	// changing what either one emits. The scan webhook is not fired here: a
+	// success-only tail would miss every failed and interrupted run, so each
+	// entry point fires it from one defer instead (fireNativeScanWebhook).
 	return errors.Join(
 		reportScanCompletion(db, settings, repo, scanOpts, scanStart),
 		uploadNativeScanResults(settings, scanOpts, repo),

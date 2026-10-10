@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/notify/webhook"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -79,6 +81,14 @@ type directScanSession struct {
 	// close stops any left. Without them a long scan-url row carried no
 	// heartbeat and `scan wait` would call it abandoned after two minutes.
 	heartbeats map[string]*runner.Heartbeat
+
+	// finished lists the rows this session completed, in order, with the
+	// store they live in and the run's own view of each, so close can fire
+	// one scan webhook per row once its verdict is final (a pinned row is
+	// re-completed after every input and fires once, with the last verdict).
+	finished     []string
+	finishedOut  map[string]webhook.Outcome
+	finishedRepo *database.Repository
 }
 
 // directScanAggregate is the folded input of DirectScanCompletion across the
@@ -142,9 +152,45 @@ func (s *directScanSession) close() {
 	for _, h := range s.heartbeats {
 		h.Stop(context.Background())
 	}
+	// Before the store closes: the payload is read from each row.
+	s.fireWebhooks()
 	if s.storeOpened {
 		closeDatabaseOnExit()
 	}
+}
+
+// noteFinished records that scanUUID's row was completed with out as the
+// run's own view (used only if the row read back is not terminal).
+func (s *directScanSession) noteFinished(repo *database.Repository, scanUUID string, out webhook.Outcome) {
+	if repo == nil || scanUUID == "" {
+		return
+	}
+	if s.finishedOut == nil {
+		s.finishedOut = make(map[string]webhook.Outcome)
+	}
+	if _, seen := s.finishedOut[scanUUID]; !seen {
+		s.finished = append(s.finished, scanUUID)
+	}
+	s.finishedOut[scanUUID] = out
+	s.finishedRepo = repo
+}
+
+// fireWebhooks posts the configured scan webhook once per completed row. It
+// runs from close, after every input finished, so a pinned row reports its
+// final verdict and an interrupted batch still reports the rows it wrote. The
+// project's config overlay applies, as it does on the runner path.
+func (s *directScanSession) fireWebhooks() {
+	if len(s.finished) == 0 {
+		return
+	}
+	settings, err := loadProjectSettings(globalConfig)
+	if err != nil {
+		settings = settingsOrDefaults()
+	}
+	for _, id := range s.finished {
+		webhook.FireNativeScanOutcome(settings, s.finishedRepo, id, s.finishedOut[id])
+	}
+	s.finished = nil
 }
 
 // startHeartbeat starts scanUUID's liveness heartbeat once its row exists.
@@ -282,6 +328,11 @@ func (s *directScanSession) complete(ctx context.Context, repo *database.Reposit
 	if err := repo.CompleteScanWithOutcome(finalCtx, scanUUID, errMsg, completion); err != nil {
 		zap.L().Warn("Failed to complete scan record", zap.String("scan_uuid", scanUUID), zap.Error(err))
 	}
+	var outErr error
+	if errMsg != "" && completion.StopReason != database.ReasonCancelled {
+		outErr = errors.New(errMsg)
+	}
+	s.noteFinished(repo, scanUUID, webhook.Outcome{Err: outErr, Interrupted: completion.StopReason == database.ReasonCancelled, Target: target})
 
 	status := "completed"
 	if errMsg != "" {

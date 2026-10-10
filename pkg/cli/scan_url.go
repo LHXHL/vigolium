@@ -1209,6 +1209,11 @@ func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, tar
 	// terminal scan.finished is the last line written — a consumer treats it as
 	// end-of-stream.
 	opts.ScanUUID = pinnedOrNewUUID(opts.ScanUUID)
+	// Scan webhook on every exit from here on: see the same defer in
+	// executeNativeScan. Registered before the document and export defers, so
+	// LIFO runs it after them and after the runner's finalizer, while db (a -S
+	// temp store included) is still open.
+	defer func() { fireNativeScanWebhook(settings, repo, opts, err, signals.Interrupted(), scanStart) }()
 	// -j: fold this pass into the invocation's scan document. Registered here,
 	// before the export defers, so LIFO runs it after them (err carries an
 	// export failure) and after the runner closed, while db is still open.
