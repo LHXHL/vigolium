@@ -208,6 +208,7 @@ func (m *Module) confirmEvaluation(
 			Confidence:  ModuleConfidence,
 			Tags:        ModuleTags,
 		},
+		Metadata: map[string]any{output.MetaSignal: output.SignalInband},
 	}, true
 }
 

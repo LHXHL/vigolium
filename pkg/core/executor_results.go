@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	goruntime "runtime"
@@ -99,8 +98,11 @@ func (e *Executor) processResults(ctx context.Context, results []*output.ResultE
 
 // reconfirmBodyDifferential re-confirms a candidate finding by replaying its
 // payload-applied request and comparing it against a clean (no-payload)
-// baseline, for modules that opt in via modules.BodyDifferentialConfirmable.
-// Returns true to keep (emit) the finding, false to drop it.
+// baseline, for modules that opt in via modules.BodyDifferentialConfirmable or,
+// per result, modules.ResultDifferentialConfirmable. Returns true to keep (emit)
+// the finding, false to drop it. The comparison itself is
+// modkit.ReconfirmFinding, the same call module tests use to predict this
+// decision.
 //
 // It fails OPEN on anything inconclusive — a module that didn't opt in, missing
 // request data, an identical payload/baseline (nothing to differentiate), or a
@@ -114,35 +116,14 @@ func (e *Executor) reconfirmBodyDifferential(
 	result *output.ResultEvent,
 	item *httpmsg.HttpRequestResponse,
 ) bool {
-	confirmable, ok := m.(modules.BodyDifferentialConfirmable)
-	if !ok || !confirmable.ConfirmsByBodyDifferential() {
-		return true // module did not opt in
+	if !modules.ConfirmsByBodyDifferential(m, result) {
+		return true // module (or this result) did not opt in
 	}
-	if item == nil || item.Request() == nil || result.Request == "" || e.httpClient == nil {
+	if e.httpClient == nil {
 		return true // not enough context to re-confirm
 	}
 
-	payloadRaw := []byte(result.Request)
-	baselineRaw := item.Request().Raw()
-	if bytes.Equal(payloadRaw, baselineRaw) {
-		return true // no payload differential to verify
-	}
-
-	cachedBody := ""
-	cachedStatus := 0
-	if item.HasResponse() && item.Response() != nil {
-		cachedBody = string(item.Response().Raw())
-		cachedStatus = item.Response().StatusCode()
-	}
-
-	res := modkit.ConfirmBodyDifferential(
-		e.httpClient.WithContext(ctx),
-		item.Service(),
-		payloadRaw, baselineRaw,
-		cachedBody, cachedStatus,
-		modkit.ReconfirmConfig{NoRedirects: true},
-	)
-
+	res := modkit.ReconfirmFinding(e.httpClient.WithContext(ctx), item, result.Request)
 	if !res.Ran {
 		zap.L().Debug("body-differential re-confirmation inconclusive; keeping finding",
 			zap.String("module", m.ID()),

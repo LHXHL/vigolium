@@ -211,6 +211,7 @@ func (m *Module) testTiming(
 				len(fastTimes), fastMax.Round(time.Millisecond),
 			),
 		},
+		Metadata: map[string]any{output.MetaSignal: output.SignalTiming},
 	}, nil
 }
 

@@ -375,6 +375,7 @@ func (m *Module) buildResult(url, paramName, payloadName, location, contentType,
 				Severity:    severity.Suspect,
 				Confidence:  severity.Tentative,
 			},
+			Metadata: resultMetadata(payloadName),
 		}
 	}
 
@@ -403,5 +404,6 @@ func (m *Module) buildResult(url, paramName, payloadName, location, contentType,
 		FuzzingParameter: paramName,
 		ExtractedResults: extracted,
 		Info:             info,
+		Metadata:         resultMetadata(payloadName),
 	}
 }

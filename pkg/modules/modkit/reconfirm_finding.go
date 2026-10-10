@@ -11,8 +11,8 @@ import (
 // ConfirmBodyDifferential. item's captured response, when present, is folded
 // into the baseline.
 //
-// It mirrors the executor's reconfirmBodyDifferential policy (pkg/core) so a
-// module test can assert what the executor will do with its findings: Ran is
+// It is the executor's reconfirmBodyDifferential decision (pkg/core calls it),
+// so a module test can assert what the executor will do with its findings: Ran is
 // false — keep the finding — when there is nothing to compare (no client, no
 // item request, an empty finding request, or one byte-identical to the clean
 // request, which is what a module reporting the unmodified request produces).

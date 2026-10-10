@@ -241,6 +241,7 @@ func (m *Module) ScanPerRequest(
 					Name:        fmt.Sprintf("XXE: %s", p.desc),
 					Description: fmt.Sprintf("XXE entity expanded — marker %q found in response", marker),
 				},
+				Metadata: map[string]any{output.MetaSignal: output.SignalInband},
 			})
 			resp.Close()
 			return results, nil
