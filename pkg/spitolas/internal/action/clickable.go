@@ -3,6 +3,8 @@ package action
 import (
 	"fmt"
 
+	"github.com/go-rod/rod/lib/proto"
+
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/browser"
 )
 
@@ -49,8 +51,37 @@ function getEventHandlers(xpath) {
 // cdpComputedStylesheet is the CDP script to check multiple elements.
 const cdpComputedStylesheet = `Array.from(%s).map(element => {return {xpath: element, attributes: getEventHandlers(element)}});`
 
+// DetectClickablesPierced turns a pierced snapshot's click-listener elements into
+// ClickableResults: a light-DOM element carries its XPath, one behind a shadow
+// or frame hop its encoded Locator (as Selector and Locator). Both carry the
+// backend node id, which is how they are resolved. When the snapshot found no
+// click listener at all it tries the jQuery pass, like DetectClickablesCDP:
+// jQuery-bound handlers sit on the document, not the element.
+func DetectClickablesPierced(page *browser.Page, snap *browser.PierceSnapshot) []ClickableResult {
+	results := make([]ClickableResult, 0, len(snap.ClickListeners))
+	for _, el := range snap.ClickListeners {
+		r := ClickableResult{BackendNodeID: el.BackendNodeID, HasListener: true}
+		if el.Locator.IsLight() {
+			r.XPath = el.Locator.InnerXPath
+		} else {
+			loc := el.Locator
+			r.Locator = &loc
+			r.Selector = loc.String()
+		}
+		results = append(results, r)
+	}
+	if len(results) == 0 {
+		if jq, err := detectJQueryClickHandlers(page); err == nil {
+			results = append(results, jq...)
+		}
+	}
+	return results
+}
+
 // DetectClickablesCDP uses Chrome DevTools Protocol to find elements
-// with click event listeners attached via JavaScript.
+// with click event listeners attached via JavaScript. It is the script-based
+// light-DOM pass, kept as the fallback when the pierced snapshot is unavailable
+// (see DetectClickablesPierced).
 func DetectClickablesCDP(page *browser.Page) ([]ClickableResult, error) {
 	// First, get all element XPaths in the body
 	xpaths, err := getAllXPaths(page)
@@ -313,6 +344,13 @@ type ClickableResult struct {
 	HasListener  bool   // Has click event listener
 	ListenerCode string // Event listener code (if available)
 	Reason       string // Why it was flagged (semantic pass): cursor/tabindex/handler/role-button/anchor/button/…
+
+	// BackendNodeID is set by the pierced snapshot pass; the element is
+	// resolved through it (the only route into a closed shadow root).
+	BackendNodeID proto.DOMBackendNodeID
+	// Locator is set for an element behind a shadow or frame hop; it becomes
+	// the candidate's HowLocator identification.
+	Locator *browser.Locator
 }
 
 // parseClickableResults parses the CDP result into clickable results.

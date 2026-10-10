@@ -516,6 +516,7 @@ spidering:
   include_response_body: true
   browser_engine: chromium   # chromium | ungoogled | fingerprint
   no_cdp: false              # disable CDP event listener detection
+  max_listener_probe_nodes: 2000  # click-listener nodes turned into candidates per state; 0 = 2000, -1 = no cap
   no_forms: false            # legacy: interaction.edit_fields + submit_forms = false
   self_register: false       # legacy: interaction.register_account = true
   identity_email_domain: ""  # domain of generated emails; "" = example.com

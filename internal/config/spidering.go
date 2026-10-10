@@ -22,6 +22,11 @@ type SpideringConfig struct {
 	NoCDP               bool   `yaml:"no_cdp"`                // disable CDP event listener detection
 	NoForms             bool   `yaml:"no_forms"`              // disable automatic form filling
 
+	// MaxListenerProbeNodes caps, per crawl state, the listener-bearing nodes
+	// the CDP listener pass turns into click candidates (each costs several CDP
+	// round trips to build). 0 means the default (2000); -1 removes the cap.
+	MaxListenerProbeNodes int `yaml:"max_listener_probe_nodes"`
+
 	// Stealth drops the browser's automation markers (enable-automation,
 	// navigator.webdriver, the HeadlessChrome client-hint brand, an empty plugin
 	// list) so a trivial bot wall does not hand the crawl a challenge page. Not
@@ -169,6 +174,8 @@ func DefaultSpideringConfig() *SpideringConfig {
 		Stealth:             "auto",
 		NoCDP:               false,
 		NoForms:             false,
+
+		MaxListenerProbeNodes: 2000,
 	}
 }
 
@@ -195,6 +202,9 @@ func (c *SpideringConfig) Validate() error {
 	}
 	if c.MaxStates < 0 {
 		return fmt.Errorf("spidering.max_states must be >= 0")
+	}
+	if c.MaxListenerProbeNodes < -1 {
+		return fmt.Errorf("spidering.max_listener_probe_nodes must be >= -1 (-1 = no cap)")
 	}
 	if c.MaxConsecutiveFails < 0 {
 		return fmt.Errorf("spidering.max_consecutive_fails must be >= 0")

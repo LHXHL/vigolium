@@ -68,6 +68,7 @@ spidering:
   browser_engine: chromium # chromium, ungoogled, fingerprint
   headless: true
   no_cdp: false
+  max_listener_probe_nodes: 2000  # 0 = 2000, -1 = no cap
   no_forms: false
 ```
 
@@ -77,6 +78,28 @@ and `--no-forms` override the common runtime controls. `browser_count` /
 `--browsers` above 1 does not add parallelism: the crawler drives one browser
 and clamps the count to 1 (with a warning). To crawl several targets at once,
 run them as separate processes.
+
+### Web components and shadow DOM
+
+The crawler finds clickables inside web components (Lit, Stencil, Angular
+`ShadowDom` encapsulation, design systems) as well as in the light DOM:
+
+- Elements matching the click selectors are found in every open shadow root,
+  every closed shadow root (through CDP; no page script can see inside one),
+  and same-origin iframes that a component renders inside its shadow root.
+- With CDP detection on (the default; `--no-cdp` turns it off), one pierced
+  `DOMDebugger.getEventListeners` call per state finds every element with a
+  `click` listener, closed roots included. `max_listener_probe_nodes` caps how
+  many of those become candidates per state.
+
+An element behind a shadow boundary is identified by a locator: the XPath of
+each shadow host, outermost first, then the element's XPath under the last
+root, e.g.
+`{"hostChain":["/html[1]/body[1]/x-cart[1]"],"innerXPath":"/div[1]/button[1]"}`.
+This is the action's identification in crawl graphs (`how: "locator"`).
+Light-DOM elements keep their plain XPath. Iframes in the light DOM are still
+crawled as frames; an iframe nested inside a frame that a shadow root hosts is
+not crawled.
 
 What the crawl may change (form edits, submissions, uploads, account actions,
 dialog answers) and which browser security exceptions are in force are

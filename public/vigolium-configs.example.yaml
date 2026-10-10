@@ -1162,6 +1162,13 @@ spidering:
   # Default: false
   no_cdp: false
 
+  # Most click-listener elements the CDP listener pass turns into click
+  # candidates per crawl state (document order; the rest are logged and
+  # dropped). Each candidate costs several CDP round trips, so this bounds the
+  # per-state cost on very large DOMs. 0 = default (2000), -1 = no cap.
+  # Default: 2000
+  max_listener_probe_nodes: 2000
+
   # Disable automatic form filling during crawling.
   # When false (default), the crawler automatically fills and submits
   # forms it encounters. Set to true to skip form interactions.

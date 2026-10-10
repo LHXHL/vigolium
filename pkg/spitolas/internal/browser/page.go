@@ -380,10 +380,16 @@ const shadowQueryOneJS = `(selector) => {
 // Element finds an element by CSS selector with safe timeout.
 // Uses config.ElementTimeout to prevent infinite waits. When the selector targets
 // a shadow-tagged element ([data-vgo-uid=...]) and the light-DOM lookup misses, it
-// falls back to a shadow-piercing query so candidates/inputs discovered inside web
-// components can be re-resolved and acted on. The fallback is gated on the tag so
-// every other lookup keeps its fast light-only path.
+// falls back to a shadow-piercing query, and an encoded Locator is resolved with
+// ElementByLocator, so candidates/inputs discovered inside web components can be
+// re-resolved and acted on. Both are gated on the selector's shape so every other
+// lookup keeps its fast light-only path.
 func (p *Page) Element(selector string) (*Element, error) {
+	// An encoded Locator (a candidate behind a shadow or frame boundary) is
+	// resolved hop by hop; a CSS lookup could never match it.
+	if loc, ok := ParseLocator(selector); ok {
+		return p.ElementByLocator(loc)
+	}
 	// A shadow-tagged selector targets an element we tagged inside a shadow root.
 	// Resolve it directly with the shadow-piercing query (which also matches the
 	// light DOM), skipping the light-only lookup that would otherwise burn the

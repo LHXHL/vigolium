@@ -195,6 +195,10 @@ type Config struct {
 	CrawlHiddenAnchors           bool     // Crawl hidden anchor elements
 	RandomizeElements            bool     // Randomize order of extracted elements
 
+	// MaxListenerProbeNodes caps the listener-bearing nodes the CDP listener
+	// pass turns into click candidates per state (0 = 2000, negative = no cap).
+	MaxListenerProbeNodes int
+
 	// Policy is what the crawl is permitted to change. Install it with
 	// ApplyPolicy, which also sets the derived switches below
 	// (FormFillEnabled, SubmitGetForms, SubmitPostForms, SelfRegister,
@@ -550,6 +554,8 @@ func New(targetURL string) (*Config, error) {
 		ExcludeFrames:      []string{},
 		CrawlHiddenAnchors: true,
 		RandomizeElements:  false,
+
+		MaxListenerProbeNodes: 2000, // browser.DefaultMaxListenerProbeNodes
 
 		FormFillEnabled: true,
 		FormFillMode:    FormFillNormal,

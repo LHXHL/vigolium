@@ -48,6 +48,10 @@ type CandidateElementExtractor struct {
 	crawlFrames         bool     // Enable recursive frame extraction
 	frameIgnorePatterns []string // Patterns to ignore frames by name/id
 
+	// maxListenerProbeNodes caps the listener-bearing nodes the CDP pass turns
+	// into candidates per state (0 = default, negative = no cap).
+	maxListenerProbeNodes int
+
 	// crawlScope is the operator's URL boundary, consulted on an anchor's href
 	// BEFORE the element is offered as a click candidate. The crawler applies the
 	// same boundary when it decides whether to visit a state, but by then the
@@ -107,6 +111,8 @@ func NewCandidateElementExtractor(cfg *config.Config) *CandidateElementExtractor
 		clickOnceSeen:       make(map[string]bool),
 		crawlScope:          cfg.CrawlScope,
 		baseURL:             cfg.URL,
+
+		maxListenerProbeNodes: cfg.MaxListenerProbeNodes,
 	}
 }
 
@@ -239,16 +245,34 @@ func (e *CandidateElementExtractor) extractFromPageAndFrames(ctx context.Context
 func (e *CandidateElementExtractor) extractFromPage(page *browser.Page, seen map[string]bool, framePath string) []*CandidateElement {
 	candidates := make([]*CandidateElement, 0)
 
+	// One pierced DOM snapshot per page per extraction: it lists the closed
+	// shadow roots the selector pass must query (script cannot see them) and,
+	// with CDP detection on, every element carrying a click listener — light
+	// DOM, open and closed shadow roots alike — from a single CDP call. A
+	// failure leaves snap nil and both passes fall back to their script-only
+	// paths.
+	snap, err := page.PierceDOM(e.useCDP, e.maxListenerProbeNodes)
+	if err != nil {
+		zap.L().Debug("Pierced DOM snapshot failed; using script-only extraction",
+			zap.String("frame", framePath), zap.Error(err))
+		snap = nil
+	} else if snap.ListenerNodesDropped > 0 {
+		zap.L().Debug("CDP listener pass hit its node cap",
+			zap.String("frame", framePath),
+			zap.Int("kept", len(snap.ClickListeners)),
+			zap.Int("dropped", snap.ListenerNodesDropped))
+	}
+
 	// Method 1: CSS Selector matching
 	// Pass framePath so ClickOnce deduplication works correctly across frames
-	selectorCandidates, err := e.extractBySelectors(page, seen, framePath)
+	selectorCandidates, err := e.extractBySelectors(page, snap, seen, framePath)
 	if err == nil {
 		candidates = append(candidates, selectorCandidates...)
 	}
 
 	// Method 2: CDP Event Listener Detection
 	if e.useCDP {
-		cdpCandidates, err := e.extractByCDP(page, seen, framePath)
+		cdpCandidates, err := e.extractByCDP(page, snap, seen, framePath)
 		if err == nil {
 			candidates = append(candidates, cdpCandidates...)
 		}
@@ -375,7 +399,7 @@ func shuffleCandidates(candidates []*CandidateElement) {
 }
 
 // extractBySelectors extracts candidate elements using CSS selectors.
-func (e *CandidateElementExtractor) extractBySelectors(page *browser.Page, seen map[string]bool, framePath string) ([]*CandidateElement, error) {
+func (e *CandidateElementExtractor) extractBySelectors(page *browser.Page, snap *browser.PierceSnapshot, seen map[string]bool, framePath string) ([]*CandidateElement, error) {
 	candidates := make([]*CandidateElement, 0)
 
 	for _, selector := range e.clickSelectors {
@@ -430,11 +454,13 @@ func (e *CandidateElementExtractor) extractBySelectors(page *browser.Page, seen 
 
 	// Shadow-DOM pass: web-component apps render their clickables inside shadow
 	// roots, which the light-DOM page.Elements above cannot see. Run it ONCE with
-	// all click selectors combined (one shadow-tree walk instead of one per
-	// selector); ShadowElements tags each match with a stable attribute so it is
-	// identified — and later re-resolved — by that selector rather than an XPath
-	// that cannot cross a shadow boundary.
-	shadowElems, err := page.ShadowElements(strings.Join(e.clickSelectors, ","))
+	// all click selectors combined: one script walk over the open shadow trees
+	// (and frames hosted inside them) plus one query per closed root from the
+	// pierced snapshot. Each match is identified by its Locator — the host
+	// chain plus the XPath under the last root — because an XPath cannot cross
+	// a shadow boundary, and a structural locator stays the same across reloads
+	// where a query-order data-vgo-uid tag does not.
+	shadowElems, err := page.PiercingElements(strings.Join(e.clickSelectors, ","), snap)
 	if err != nil {
 		return candidates, nil
 	}
@@ -442,13 +468,13 @@ func (e *CandidateElementExtractor) extractBySelectors(page *browser.Page, seen 
 		if e.isExcluded(elem) {
 			continue
 		}
-		uid, _ := elem.Attribute(browser.ShadowUIDAttr)
-		if uid == "" || uid == "<nil>" {
+		loc, lerr := elem.Locator()
+		if lerr != nil || loc.IsLight() {
 			continue
 		}
-		idSelector := browser.ShadowUIDSelector(uid)
+		idValue := loc.String()
 
-		seenKey := framePath + ":shadow:" + uid
+		seenKey := framePath + ":" + idValue
 		if seen[seenKey] {
 			continue
 		}
@@ -462,8 +488,8 @@ func (e *CandidateElementExtractor) extractBySelectors(page *browser.Page, seen 
 			href = h
 		}
 
-		candidate := e.createCandidateElement(elem, idSelector, framePath, href, EventTypeClick)
-		candidate.Identification = NewIdentification(HowID, idSelector)
+		candidate := e.createCandidateElement(elem, idValue, framePath, href, EventTypeClick)
+		candidate.Identification = NewIdentification(HowLocator, idValue)
 
 		if e.markChecked(candidate) {
 			candidates = append(candidates, candidate)
@@ -477,10 +503,20 @@ func (e *CandidateElementExtractor) extractBySelectors(page *browser.Page, seen 
 }
 
 // extractByCDP extracts candidate elements using Chrome DevTools Protocol.
-func (e *CandidateElementExtractor) extractByCDP(page *browser.Page, seen map[string]bool, framePath string) ([]*CandidateElement, error) {
-	results, err := DetectClickablesCDP(page)
-	if err != nil {
-		return nil, err
+//
+// With a pierced snapshot whose listener probe succeeded, the candidates are the
+// snapshot's click-listener elements (light DOM and every shadow root, closed
+// ones included). Without one it falls back to the script-based light-DOM pass.
+func (e *CandidateElementExtractor) extractByCDP(page *browser.Page, snap *browser.PierceSnapshot, seen map[string]bool, framePath string) ([]*CandidateElement, error) {
+	var results []ClickableResult
+	if snap != nil && snap.ListenersProbed {
+		results = DetectClickablesPierced(page, snap)
+	} else {
+		var err error
+		results, err = DetectClickablesCDP(page)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return e.buildCandidatesFromResults(page, results, seen, framePath, EventTypeClick), nil
 }
@@ -549,11 +585,15 @@ func (e *CandidateElementExtractor) buildCandidatesFromResults(page *browser.Pag
 			continue
 		}
 
-		// Try to get element
+		// Try to get element. A node from the pierced snapshot resolves by its
+		// backend id in one CDP call (and is the only way into a closed root).
 		var elem *browser.Element
-		if result.XPath != "" {
+		switch {
+		case result.BackendNodeID != 0:
+			elem, _ = page.ElementByBackendNodeID(result.BackendNodeID)
+		case result.XPath != "":
 			elem, _ = page.ElementX(result.XPath)
-		} else if result.Selector != "" {
+		case result.Selector != "":
 			elem, _ = page.Element(result.Selector)
 		}
 
@@ -561,10 +601,23 @@ func (e *CandidateElementExtractor) buildCandidatesFromResults(page *browser.Pag
 			continue
 		}
 
-		// Get XPath for identification
-		xpath, err := elem.GetXPath()
-		if err != nil || xpath == "" {
-			xpath = selector
+		// Identification: the snapshot's locator for an element behind a shadow
+		// or frame hop, else the light-DOM XPath (the snapshot computes it with
+		// the same rule as GetXPath, so it skips that round trip).
+		how := HowXPath
+		xpath := ""
+		switch {
+		case result.Locator != nil && !result.Locator.IsLight():
+			how = HowLocator
+			xpath = result.Locator.String()
+		case result.BackendNodeID != 0 && result.XPath != "":
+			xpath = result.XPath
+		default:
+			var err error
+			xpath, err = elem.GetXPath()
+			if err != nil || xpath == "" {
+				xpath = selector
+			}
 		}
 
 		// Deduplicate using shared seen map (per-extraction dedup). Click keeps the
@@ -597,6 +650,9 @@ func (e *CandidateElementExtractor) buildCandidatesFromResults(page *browser.Pag
 
 		// Create CandidateElement
 		candidate := e.createCandidateElement(elem, xpath, framePath, href, eventType)
+		if how != HowXPath {
+			candidate.Identification = NewIdentification(how, xpath)
+		}
 
 		if e.markChecked(candidate) {
 			candidates = append(candidates, candidate)

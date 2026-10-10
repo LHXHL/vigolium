@@ -50,6 +50,11 @@ type SpiderConfig struct {
 	ProjectUUID         string
 	Source              string // http_records source tag; "" defaults to "spidering"
 
+	// MaxListenerProbeNodes caps the listener-bearing nodes the CDP listener
+	// pass turns into click candidates per state (0 = default 2000, negative =
+	// no cap).
+	MaxListenerProbeNodes int
+
 	// Authentication bridged into the browser so the crawl explores authenticated
 	// content instead of only the unauthenticated shell. These mirror the session
 	// (--auth/--auth-file) and custom-header context the HTTP scan phases use.
@@ -344,6 +349,9 @@ func buildCrawlerConfig(cfg SpiderConfig) (*config.Config, error) {
 		crawlerCfg.BrowserPath = cfg.BrowserPath
 	}
 	crawlerCfg.UseCDPDetection = !cfg.NoCDP
+	if cfg.MaxListenerProbeNodes != 0 {
+		crawlerCfg.MaxListenerProbeNodes = cfg.MaxListenerProbeNodes
+	}
 	crawlerCfg.Stealth = cfg.Stealth
 	// The policy sets form filling, GET/POST form submission, self-registration
 	// and credential attempts in one place; see config.ApplyPolicy.

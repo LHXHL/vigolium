@@ -25,6 +25,11 @@ const (
 	HowPartialText How = "partialText"
 	// HowURL identifies element by URL (for navigation)
 	HowURL How = "url"
+	// HowLocator identifies an element behind a shadow-root or shadow-hosted
+	// frame boundary by an encoded browser.Locator ({hostChain, innerXPath}).
+	// Light-DOM elements keep HowXPath; only elements an XPath cannot reach use
+	// this. Page.Element resolves the value, so it re-resolves like a selector.
+	HowLocator How = "locator"
 )
 
 // Identification identifies a specific element using a method and value.

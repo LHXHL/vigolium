@@ -444,6 +444,8 @@ func (r *Runner) buildSpiderConfig(target string, settingsCfg config.SpideringCo
 		Stealth:             settingsCfg.Stealth,
 		ProxyURL:            r.options.ProxyURL,
 		ProjectUUID:         r.options.ProjectUUID,
+
+		MaxListenerProbeNodes: settingsCfg.MaxListenerProbeNodes,
 		// The resolved interaction policy is authoritative; the legacy switches
 		// below mirror it so a reader of either sees the same decision.
 		// Credential attempts default on at balanced (minimal list) and deep
