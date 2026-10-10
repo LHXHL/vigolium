@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
@@ -29,6 +31,9 @@ func directRowFixture(t *testing.T) {
 		resetDBCacheForTest()
 	})
 	resetDBCacheForTest()
+	// A throwaway HOME: each row's liveness heartbeat writes status.json under
+	// the configured sessions dir (~/.vigolium/native-sessions by default).
+	t.Setenv("HOME", t.TempDir())
 	globalDB = filepath.Join(t.TempDir(), "direct.sqlite")
 	globalScanUUID = ""
 	globalSilent = true
@@ -87,6 +92,9 @@ func TestDirectScanCreatesScanRow(t *testing.T) {
 	assert.Equal(t, "completed", row.Status)
 	assert.Equal(t, database.CompletenessComplete, row.Completeness)
 	assert.False(t, row.FinishedAt.IsZero())
+	// The row carried a liveness heartbeat while the input ran.
+	require.NotNil(t, row.HeartbeatAt, "the direct path heartbeats its row")
+	assert.Equal(t, os.Getpid(), row.PID)
 
 	db, err := getDB()
 	require.NoError(t, err)
@@ -117,6 +125,12 @@ func TestDirectScanCreatesScanRow(t *testing.T) {
 	require.NoError(t, json.Unmarshal(doc, &decoded))
 	assert.Equal(t, result.ScanUUID, decoded["scan_uuid"], "the -j document names the row")
 	sess.close()
+
+	// Once the session closes, status.json records the row's terminal status.
+	st, err := runner.ReadSessionStatus(runner.SessionStatusPath(settingsOrDefaults().ScanningStrategy.ScanLogs.EffectiveSessionsDir(), result.ScanUUID))
+	require.NoError(t, err)
+	require.NotNil(t, st, "status.json is written under the (temp) sessions dir")
+	assert.Equal(t, "completed", st.Status)
 }
 
 // A target nothing answers on fails its row with no_targets_reachable.
