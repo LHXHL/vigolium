@@ -536,7 +536,7 @@ SessionConfig
 │       ├── max_attempts    # (int) Consecutive failed re-logins before giving up; default 3
 │       ├── backoff         # (duration) Wait after a failure, doubling each time; default 10s
 │       ├── on_failure      # (string) "continue" (default: unauthenticated, phase partial) or "abort"
-│       └── pause_traffic   # (bool) Hold this session's requests while re-logging in; default true
+│       └── pause_traffic   # (bool) Hold this session's requests while a logout is confirmed and re-logged in; default true
 ```
 
 Only one of `headers`, `login`, or `login_request` can be set per session.
@@ -630,9 +630,13 @@ defaults give it) is kept live for the whole scan:
    generation's credentials (in flight before the re-login) is never evidence
    against the new ones.
 5. **Pausing.** With `pause_traffic: true` (the default) requests for this
-   session wait while the re-login runs, at most the login budget (2 minutes),
-   and leave with the new credentials. With `false` they keep going with the
-   old ones.
+   session wait from the first logged-out match, through the confirm probe and
+   the re-login, at most the login budget (2 minutes), and leave with the new
+   credentials (or the old ones, when the probe found the session still
+   logged in). Only the requests already in flight when the match arrived come
+   back logged out, so the `responses_while_logged_out` count per expiry stays
+   within the scan's concurrency. With `false` they keep going with the old
+   ones.
 6. **Proactive probe.** `check.interval` re-runs the `check.url` probe at most
    that often even when no response looked logged out.
 7. **Expiry.** When the login reported when its credentials expire (an OAuth2

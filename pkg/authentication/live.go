@@ -34,6 +34,13 @@ import (
 // refreshes for a generation, so 50 workers seeing the same 401 cause one probe
 // and one login. A response sent with an older generation's credentials was in
 // flight before the last refresh and is never evidence against the new ones.
+//
+// Under reauth.pause_traffic a reactive cycle (scan traffic or the interval
+// probe looked logged out) holds new requests in Wait from the moment it
+// leaves valid — through the confirm probe as well as the login — until it
+// ends. The responses that come back logged out are then only those already
+// past Wait when the cycle began: bounded by the scan's concurrency, not by
+// how long the probe and the login take.
 
 // LiveState is where a LiveSession is in its cycle.
 type LiveState int32
@@ -209,8 +216,13 @@ type LiveSession struct {
 
 	creds atomic.Pointer[Credentials]
 	state atomic.Int32
-	// ready is closed when a refresh cycle ends (state leaves refreshing).
-	ready atomic.Pointer[chan struct{}]
+	// hold, when set, parks Wait callers until it is closed: the cycle that
+	// raised it (begin) closes it when it ends. Nil while traffic flows.
+	hold atomic.Pointer[chan struct{}]
+	// cycleMu makes each valid→suspect move (begin) one step with raising
+	// the hold, so no request is admitted in between. Never taken on the
+	// request path: only on a logged_out match and by the timers.
+	cycleMu sync.Mutex
 
 	sampled   atomic.Uint64
 	observed  atomic.Int64
@@ -221,9 +233,6 @@ type LiveSession struct {
 	// mu serializes refresh; never taken on the request path.
 	mu    sync.Mutex
 	fails int
-	// proactive is set while an expiry refresh runs: the old credentials
-	// are still valid, so Wait does not park requests.
-	proactive atomic.Bool
 
 	// hits are the recent logged_out matches for hitGen (K-of-N rule, used
 	// when there is no probe). Only matched responses take hitMu.
@@ -461,17 +470,18 @@ func (s *LiveSession) Invalidate(gen uint64) bool {
 	return s.trigger(gen, "invalidate", true)
 }
 
-// Wait parks the caller while the session re-logs in, when reauth
-// pause_traffic is on (the default), so requests are not sent with
-// credentials about to be replaced. It returns at once in every other state,
-// when the re-login ends, after the login budget, or with ctx's error when ctx
-// ends first. Call it BEFORE taking an egress host slot: a parked request must
-// not hold a slot the re-login needs.
+// Wait parks the caller while the session confirms a suspected logout and
+// re-logs in, when reauth pause_traffic is on (the default), so requests are
+// not sent with credentials about to be replaced. An expiry refresh does not
+// park (the credentials are still good while it runs). It returns at once when
+// nothing is held, when the cycle ends, after the login budget, or with ctx's
+// error when ctx ends first. Call it BEFORE taking an egress host slot: a
+// parked request must not hold a slot the re-login needs.
 func (s *LiveSession) Wait(ctx context.Context) error {
-	if s == nil || !s.pause || LiveState(s.state.Load()) != LiveRefreshing || s.proactive.Load() {
+	if s == nil || !s.pause {
 		return nil
 	}
-	chp := s.ready.Load()
+	chp := s.hold.Load()
 	if chp == nil {
 		return nil
 	}
@@ -530,24 +540,47 @@ func (s *LiveSession) kOfN(gen uint64) bool {
 	return len(s.hits) >= liveSuspectK
 }
 
+// begin moves valid→suspect for gen and reports whether this call did; the
+// caller then owns the cycle and calls release when it ends. With hold (and
+// pause_traffic on) Wait parks new requests from before the state changes
+// until release. It fails when another cycle owns the session, or when a
+// refresh has already published a newer generation (the evidence is stale).
+func (s *LiveSession) begin(gen uint64, hold bool) (release func(), ok bool) {
+	s.cycleMu.Lock()
+	defer s.cycleMu.Unlock()
+	if LiveState(s.state.Load()) != LiveValid || s.creds.Load().Gen != gen {
+		return nil, false
+	}
+	release = func() {}
+	if hold && s.pause {
+		ch := make(chan struct{})
+		s.hold.Store(&ch)
+		release = func() {
+			s.hold.CompareAndSwap(&ch, nil)
+			close(ch)
+		}
+	}
+	// Every valid→suspect move happens here under cycleMu, and only the
+	// cycle's owner leaves suspect, so a plain store cannot lose a race.
+	s.state.Store(int32(LiveSuspect))
+	return release, true
+}
+
 // trigger moves valid→suspect for gen; the winner confirms and refreshes on
 // its own goroutine. Returns whether this call won.
 func (s *LiveSession) trigger(gen uint64, reason string, confirmed bool) bool {
-	if !s.state.CompareAndSwap(int32(LiveValid), int32(LiveSuspect)) {
-		return false
-	}
-	// A refresh may have published a newer generation between the caller's
-	// check and the CAS: the evidence is stale, so stand down.
-	if s.creds.Load().Gen != gen {
-		s.state.CompareAndSwap(int32(LiveSuspect), int32(LiveValid))
+	release, ok := s.begin(gen, true)
+	if !ok {
 		return false
 	}
 	if !s.track() {
 		s.state.CompareAndSwap(int32(LiveSuspect), int32(LiveValid))
+		release()
 		return false
 	}
 	go func() {
 		defer s.wg.Done()
+		defer release()
 		s.confirmAndRefresh(gen, reason, confirmed)
 	}()
 	return true
@@ -584,6 +617,9 @@ func (s *LiveSession) confirmAndRefresh(gen uint64, reason string, confirmed boo
 }
 
 // refresh re-runs the login for gen (state is suspect, owned by the caller).
+// The caller releases its traffic hold after refresh returns, so parked
+// requests resume only once the outcome — an on_failure: abort included —
+// has been reported.
 func (s *LiveSession) refresh(gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -598,8 +634,6 @@ func (s *LiveSession) refresh(gen uint64) {
 		return
 	}
 
-	ready := make(chan struct{})
-	s.ready.Store(&ready) // before the state, so Wait never sees refreshing with an old channel
 	s.state.Store(int32(LiveRefreshing))
 
 	var lastErr error
@@ -613,7 +647,6 @@ func (s *LiveSession) refresh(gen uint64) {
 			s.fails = 0
 			s.confirmedAt.Store(0)
 			s.state.Store(int32(LiveValid))
-			close(ready)
 			s.emit(LiveEvent{Kind: LiveEventRelogin, Gen: next.Gen, OK: true, Attempts: attempts})
 			s.armExpiry(next)
 			return
@@ -631,7 +664,6 @@ func (s *LiveSession) refresh(gen uint64) {
 		}
 	}
 	s.state.Store(int32(LiveFailed))
-	close(ready)
 	s.emit(LiveEvent{Kind: LiveEventRelogin, Gen: gen, OK: false, Attempts: attempts, Err: lastErr})
 	s.emit(LiveEvent{Kind: LiveEventLost, Gen: gen, Attempts: attempts, Err: lastErr, OnFailure: s.onFailure})
 }
@@ -686,13 +718,11 @@ func (s *LiveSession) tick() {
 	if err != nil || in {
 		return
 	}
-	if !s.state.CompareAndSwap(int32(LiveValid), int32(LiveSuspect)) {
+	release, ok := s.begin(gen, true)
+	if !ok {
 		return
 	}
-	if s.creds.Load().Gen != gen {
-		s.state.CompareAndSwap(int32(LiveSuspect), int32(LiveValid))
-		return
-	}
+	defer release()
 	s.emit(LiveEvent{Kind: LiveEventSuspect, Gen: gen, Reason: "interval"})
 	s.refresh(gen)
 }
@@ -728,16 +758,13 @@ func (s *LiveSession) expire(gen uint64) {
 		return
 	}
 	defer s.wg.Done()
-	if !s.state.CompareAndSwap(int32(LiveValid), int32(LiveSuspect)) {
-		return // a reactive refresh is already running
+	// No hold: the credentials stay valid while the refresh runs.
+	release, ok := s.begin(gen, false)
+	if !ok {
+		return // a reactive refresh is already running, or gen is stale
 	}
-	if s.creds.Load().Gen != gen {
-		s.state.CompareAndSwap(int32(LiveSuspect), int32(LiveValid))
-		return
-	}
+	defer release()
 	s.emit(LiveEvent{Kind: LiveEventSuspect, Gen: gen, Reason: "expiry"})
-	s.proactive.Store(true)
-	defer s.proactive.Store(false)
 	s.refresh(gen)
 }
 

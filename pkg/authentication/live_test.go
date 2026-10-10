@@ -24,6 +24,7 @@ type fakeApp struct {
 	failLogin  atomic.Bool
 	probeLogIn atomic.Bool // /me answers 200 whatever the cookie
 	gate       atomic.Pointer[chan struct{}]
+	probeGate  atomic.Pointer[chan struct{}] // holds the /me probe until closed
 }
 
 func newFakeApp(t *testing.T) *fakeApp {
@@ -44,6 +45,9 @@ func newFakeApp(t *testing.T) *fakeApp {
 			http.SetCookie(w, &http.Cookie{Name: "sid", Value: fmt.Sprint(n), Path: "/"})
 			_, _ = w.Write([]byte("ok"))
 		case "/me":
+			if g := a.probeGate.Load(); g != nil {
+				<-*g
+			}
 			if a.probeLogIn.Load() || r.Header.Get("Cookie") == fmt.Sprintf("sid=%d", a.current.Load()) {
 				_, _ = w.Write([]byte(`{"email":"a@b.c"}`))
 				return
@@ -265,6 +269,62 @@ func TestLiveSession_PauseTrafficWaiterGetsNewHeader(t *testing.T) {
 		assert.Equal(t, "sid=2", cookie)
 	case <-time.After(5 * time.Second):
 		t.Fatal("waiter not released")
+	}
+}
+
+// pause_traffic holds requests from the first logged_out match, not only once
+// the login starts: while the confirm probe runs, Wait parks. Otherwise a slow
+// probe lets the scan keep sending with credentials already known to be dead.
+func TestLiveSession_PauseTrafficHoldsDuringConfirmProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		loggedOut bool // what the probe finds
+		cookie    string
+	}{
+		{name: "probe confirms logout", loggedOut: true, cookie: "sid=2"},
+		{name: "probe finds session valid", loggedOut: false, cookie: "sid=1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newFakeApp(t)
+			ls, _, log := newLive(t, app.session(defaultCheck(), nil), LiveOptions{})
+			if tc.loggedOut {
+				app.expire()
+			}
+			probe := make(chan struct{})
+			var releaseProbe sync.Once
+			openProbe := func() { releaseProbe.Do(func() { close(probe) }) }
+			// Registered after newFakeApp's server cleanup, so it runs first:
+			// a failed assertion must not leave the server's Close waiting on
+			// the held probe handler.
+			t.Cleanup(openProbe)
+			app.probeGate.Store(&probe)
+			ls.Observe(1, http.StatusUnauthorized, http.Header{}, nil)
+			require.Equal(t, LiveSuspect, ls.State(), "the match moves valid→suspect synchronously")
+
+			got := make(chan string, 1)
+			go func() {
+				_ = ls.Wait(context.Background())
+				got <- ls.Credentials().Headers["Cookie"]
+			}()
+			select {
+			case <-got:
+				t.Fatal("Wait returned while the confirm probe was still running")
+			case <-time.After(30 * time.Millisecond):
+			}
+			openProbe()
+			select {
+			case cookie := <-got:
+				assert.Equal(t, tc.cookie, cookie)
+			case <-time.After(5 * time.Second):
+				t.Fatal("waiter not released")
+			}
+			assert.Equal(t, LiveValid, ls.State())
+			if tc.loggedOut {
+				assert.Equal(t, []string{"suspect", "relogin:true"}, log.kinds(),
+					"the waiter resumes only after the relogin was reported")
+			}
+			assert.NoError(t, ls.Wait(context.Background()), "nothing is held once the cycle ends")
+		})
 	}
 }
 

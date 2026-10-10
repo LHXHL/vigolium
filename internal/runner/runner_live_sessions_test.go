@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"os"
@@ -36,34 +37,44 @@ import (
 
 // expiringApp issues sid=<n> on POST /login and honours each sid for
 // sessionLife requests; after that every request carrying it gets 401, as an
-// app whose session timed out does. GET /api/me is the check probe.
+// app whose session timed out does. A sid replaced by a later login gets 401
+// too. GET /api/me is the check probe and does not use the session up.
 type expiringApp struct {
 	srv    *httptest.Server
 	logins atomic.Int64
 	mu     sync.Mutex
-	uses   map[string]int
+	// Per sid, the scan requests (not probes) that were honoured and that
+	// were refused.
+	ok, refused map[string]int
 }
 
 const sessionLife = 100
 
 func newExpiringApp(t *testing.T) *expiringApp {
 	t.Helper()
-	a := &expiringApp{uses: map[string]int{}}
+	a := &expiringApp{ok: map[string]int{}, refused: map[string]int{}}
 	a.srv = httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if r.URL.Path == "/login" {
+			a.mu.Lock()
 			n := a.logins.Add(1)
+			a.mu.Unlock()
 			stdhttp.SetCookie(w, &stdhttp.Cookie{Name: "sid", Value: fmt.Sprint(n), Path: "/"})
 			_, _ = w.Write([]byte("welcome"))
 			return
 		}
-		c, err := r.Cookie("sid")
+		sid := ""
+		if c, err := r.Cookie("sid"); err == nil {
+			sid = c.Value
+		}
+		probe := r.URL.Path == "/api/me"
 		a.mu.Lock()
-		valid := false
-		if err == nil && c.Value == fmt.Sprint(a.logins.Load()) {
-			if r.URL.Path != "/api/me" {
-				a.uses[c.Value]++
+		valid := sid != "" && sid == fmt.Sprint(a.logins.Load()) && a.ok[sid] < sessionLife
+		if !probe {
+			if valid {
+				a.ok[sid]++
+			} else {
+				a.refused[sid]++
 			}
-			valid = a.uses[c.Value] <= sessionLife
 		}
 		a.mu.Unlock()
 		if !valid {
@@ -74,6 +85,13 @@ func newExpiringApp(t *testing.T) *expiringApp {
 	}))
 	t.Cleanup(a.srv.Close)
 	return a
+}
+
+// books returns copies of the per-sid honoured and refused counts.
+func (a *expiringApp) books() (ok, refused map[string]int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return maps.Clone(a.ok), maps.Clone(a.refused)
 }
 
 func writeAuthFile(t *testing.T, app *expiringApp, onFailure string) string {
@@ -100,8 +118,12 @@ reauth:
 	return p
 }
 
-// burstModule sends perItem requests to the target for every item.
-type burstModule struct{ perItem int }
+// burstModule sends perItem requests to the target for every item, one at a
+// time, and records the most of its requests in flight at once.
+type burstModule struct {
+	perItem             int
+	inFlight, maxFlight atomic.Int64
+}
 
 func (m *burstModule) ID() string                      { return "test-burst" }
 func (m *burstModule) Name() string                    { return "test-burst" }
@@ -129,7 +151,11 @@ func (m *burstModule) ScanPerRequest(item *httpmsg.HttpRequestResponse, client *
 		if err != nil {
 			return nil, err
 		}
+		n := m.inFlight.Add(1)
+		for cur := m.maxFlight.Load(); n > cur && !m.maxFlight.CompareAndSwap(cur, n); cur = m.maxFlight.Load() {
+		}
 		resp, _, err := client.Execute(rr, http.Options{NoClustering: true})
+		m.inFlight.Add(-1)
 		if err != nil {
 			return nil, err
 		}
@@ -151,12 +177,26 @@ func decodeEvents(t *testing.T, buf *bytes.Buffer) []scanevents.Event {
 }
 
 // TestLiveSession_ExecutorReloginsExpiringApp is the end-to-end case: a
-// dynamic-assessment executor drives ~600 requests through the assessment
+// dynamic-assessment executor drives 500 requests through the assessment
 // requester at an app that expires its session cookie every 100 requests. The
-// session logs in again each time (auth.relogin ok:true), pause_traffic keeps
-// the logged-out window to the requests already in flight, and the phase
-// reports what was lost.
+// session logs in again exactly once per expiry (auth.relogin ok:true),
+// pause_traffic holds every request not already in flight from the first 401
+// until the new cookie is in place, and the phase reports what was lost.
+//
+// Nothing here depends on timing. At most activeTasks requests are between
+// the requester's Wait and its Observe at once, so each expiry costs at most
+// that many refused responses; with 500 requests and a 100-request session
+// that fixes the run at exactly four expiries (the fifth cookie serves the
+// last <=96 requests and never expires). The fourth relogin finishes while
+// requests are parked, and parked requests resume only after the relogin is
+// reported, so every event is in buf when Execute returns.
 func TestLiveSession_ExecutorReloginsExpiringApp(t *testing.T) {
+	const (
+		items, perItem = 100, 5
+		total          = items * perItem
+		activeTasks    = 8 // each burst task sends one request at a time
+		wantRelogins   = total/sessionLife - 1
+	)
 	app := newExpiringApp(t)
 	var buf bytes.Buffer
 	prev := scanevents.Default()
@@ -174,6 +214,7 @@ func TestLiveSession_ExecutorReloginsExpiringApp(t *testing.T) {
 	live := infra.sessions.primaryLive()
 	require.NotNil(t, live, "a session with a check block is kept live")
 	require.Same(t, live, infra.httpRequester.LiveSession())
+	require.Equal(t, int64(1), app.logins.Load())
 
 	daRequester, err := r.assessmentRequester(infra)
 	require.NoError(t, err)
@@ -182,46 +223,79 @@ func TestLiveSession_ExecutorReloginsExpiringApp(t *testing.T) {
 	r.currentPhase.Store(tracker)
 	infra.sessions.trackPhase(tracker)
 
-	var items []*httpmsg.HttpRequestResponse
-	for i := 0; i < 100; i++ {
+	var reqs []*httpmsg.HttpRequestResponse
+	for i := 0; i < items; i++ {
 		rr, err := httpmsg.GetRawRequestFromURL(fmt.Sprintf("%s/app/%d", app.srv.URL, i))
 		require.NoError(t, err)
-		items = append(items, rr)
+		// An attached response makes SkipBaseline skip the baseline fetch, so
+		// the only scan traffic is the module's own: total requests, at most
+		// activeTasks at a time.
+		reqs = append(reqs, rr.WithResponse(httpmsg.NewHttpResponse([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))))
 	}
-	exec := core.NewExecutor(core.ExecutorConfig{Workers: 8, HTTPRequester: daRequester},
-		source.NewSliceSource(items, nil), []modules.ActiveModule{&burstModule{perItem: 5}}, nil)
+	burst := &burstModule{perItem: perItem}
+	exec := core.NewExecutor(core.ExecutorConfig{Workers: 8, ActiveTaskLimit: activeTasks, SkipBaseline: true, HTTPRequester: daRequester},
+		source.NewSliceSource(reqs, nil), []modules.ActiveModule{burst}, nil)
 	_, err = exec.Execute(context.Background())
 	require.NoError(t, err)
 	out := tracker.finish(context.Background(), nil)
 	r.currentPhase.Store(nil)
 
-	var relogins, suspects int
+	ok, refused := app.books()
+	t.Logf("logins=%d ok=%v refused=%v logged_out=%d observed=%d max_in_flight=%d",
+		app.logins.Load(), ok, refused, live.LoggedOutResponses(), live.Observed(), burst.maxFlight.Load())
+	require.LessOrEqual(t, burst.maxFlight.Load(), int64(activeTasks), "the executor bounds requests in flight")
+	require.Equal(t, int64(total), live.Observed(), "every scan response reached the session")
+
+	var relogins, suspects []uint64
 	for _, ev := range decodeEvents(t, &buf) {
 		switch ev.Type {
 		case scanevents.TypeAuthRelogin:
 			require.NotNil(t, ev.OK)
 			assert.True(t, *ev.OK, "relogin failed: %s", ev.Message)
 			assert.Equal(t, "admin", ev.Session)
-			assert.Greater(t, ev.Gen, uint64(1))
-			relogins++
+			relogins = append(relogins, ev.Gen)
 		case scanevents.TypeAuthSessionSuspect:
-			suspects++
+			suspects = append(suspects, ev.Gen)
 		}
 	}
-	t.Logf("relogins=%d suspects=%d logins=%d logged_out=%d observed=%d", relogins, suspects, app.logins.Load(), live.LoggedOutResponses(), live.Observed())
-	assert.GreaterOrEqual(t, relogins, 1, "at least one auth.relogin ok:true")
-	assert.GreaterOrEqual(t, suspects, relogins)
-	assert.Equal(t, authentication.LiveValid, live.State())
-	assert.LessOrEqual(t, live.LoggedOutResponses(), int64(authentication.DefaultCheckSampleEvery)*int64(relogins),
-		"pause_traffic bounds the logged-out window to the requests in flight")
-	assert.NotContains(t, out.Reasons, database.ReasonAuthLost)
-	if live.LoggedOutResponses() > 0 {
-		assert.Contains(t, out.Limits, database.LimitResponsesWhileLoggedOut)
-		assert.Equal(t, live.LoggedOutResponses(), out.Counts[CountResponsesWhileLoggedOut])
+
+	// Exactly one confirm and one login per expiry, in generation order.
+	var wantGens, wantSuspects []uint64
+	for g := uint64(1); g <= wantRelogins; g++ {
+		wantSuspects = append(wantSuspects, g)
+		wantGens = append(wantGens, g+1)
 	}
+	assert.Equal(t, wantSuspects, suspects, "one auth.session_suspect per expired generation")
+	assert.Equal(t, wantGens, relogins, "one auth.relogin ok:true per expiry, each minting the next generation")
+	assert.Equal(t, int64(wantRelogins+1), app.logins.Load(), "the app saw one login per expiry, plus the first")
+	assert.Equal(t, authentication.LiveValid, live.State())
+
+	// Each replaced cookie was used for its whole life before it was
+	// replaced, and every request it lost was already in flight when the
+	// session noticed: the rest waited and went out with the next cookie.
+	var lost int
+	for g := 1; g <= wantRelogins; g++ {
+		sid := fmt.Sprint(g)
+		assert.Equal(t, sessionLife, ok[sid], "sid=%s served its whole life", sid)
+		assert.GreaterOrEqual(t, refused[sid], 1, "sid=%s expired", sid)
+		assert.LessOrEqual(t, refused[sid], activeTasks,
+			"pause_traffic bounds sid=%s's logged-out window to the requests in flight", sid)
+		lost += refused[sid]
+	}
+	last := fmt.Sprint(wantRelogins + 1)
+	assert.Zero(t, refused[last], "nothing sent with the current cookie was refused")
+	assert.Equal(t, total-wantRelogins*sessionLife-lost, ok[last], "the rest went out with the current cookie")
+	assert.NotContains(t, refused, "", "no request went out without a cookie")
+
+	// The session counted the same refusals the app made, and the phase reports them.
+	assert.Equal(t, int64(lost), live.LoggedOutResponses())
+	assert.NotContains(t, out.Reasons, database.ReasonAuthLost)
+	assert.Contains(t, out.Limits, database.LimitResponsesWhileLoggedOut)
+	assert.Equal(t, int64(lost), out.Counts[CountResponsesWhileLoggedOut])
 
 	// The nuclei snapshot taken now carries the current generation's cookie.
 	cookie := live.Credentials().Headers["Cookie"]
+	assert.Equal(t, "sid="+last, cookie)
 	var cookies []string
 	for _, h := range r.assessmentHeaderSlice(infra) {
 		if strings.HasPrefix(strings.ToLower(h), "cookie:") {

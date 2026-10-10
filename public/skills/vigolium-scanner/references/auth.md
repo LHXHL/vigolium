@@ -95,7 +95,7 @@ sessions:
 | `reauth.enabled` | bool | Re-login when the check says logged out (default true when `check` is set) |
 | `reauth.max_attempts` / `reauth.backoff` | int / duration | Consecutive failed re-logins before giving up (default 3); first wait, doubling (default `10s`) |
 | `reauth.on_failure` | string | `continue` (default: keep scanning unauthenticated, phase partial) or `abort` |
-| `reauth.pause_traffic` | bool | Hold the session's requests while re-logging in (default true) |
+| `reauth.pause_traffic` | bool | Hold the session's requests from the first logged-out match until the confirm probe and re-login end (default true) |
 
 `scanning_strategy.session.validate_url`, `reauth_on_status` and
 `reauth_interval` fill `check.url`, `check.logged_out.status` and
