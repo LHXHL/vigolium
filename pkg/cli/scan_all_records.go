@@ -82,7 +82,7 @@ func describeScanStore(settings *config.Settings, projectUUID string) string {
 			store = "database " + terminal.ShortenHome(config.ExpandPath(settings.Database.SQLite.Path))
 		}
 	}
-	project := projectUUID
+	var project string
 	switch {
 	case projectUUID == "" || projectUUID == database.DefaultProjectUUID:
 		project = "default project"

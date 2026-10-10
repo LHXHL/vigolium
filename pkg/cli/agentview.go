@@ -163,21 +163,8 @@ func writeAgentJSON(env *agentEnvelope) error {
 	return writeResultDocument(env)
 }
 
-// writeLegacyResultJSON writes a result document that is not an envelope yet.
-//
-// Deprecated: transitional, for the commands whose machine shape is still being
-// designed — the agent commands' maps (B7, the agent contract). The scan
-// commands emit the scan document (scan_document.go). It exists so those writers share the
-// encoder (--pretty, compact by default), -o, the output budget and the
-// one-document latch instead of each hand-rolling json.NewEncoder(os.Stdout).
-// Do not add callers: a new command emits through emitRead/emitObject/
-// emitMutation. Deleted when B7 lands.
-func writeLegacyResultJSON(v any) error {
-	return writeResultDocument(v)
-}
-
-// writeResultDocument is the shared tail of writeAgentJSON and the legacy shim:
-// budget, then stdout or the -o file.
+// writeResultDocument is the tail of writeAgentJSON: budget, then stdout or
+// the -o file.
 func writeResultDocument(v any) error {
 	// Before any destination is chosen: a budgeted document is the same
 	// document whether it goes to stdout or to a file, which is the invariant

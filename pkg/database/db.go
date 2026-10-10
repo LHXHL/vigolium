@@ -143,7 +143,7 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 		DB:            bunDB,
 		driver:        driver,
 		readOnly:      driver == "sqlite" && cfg.SQLite.ReadOnly,
-		reader:        cfg.ReadIntent && !(driver == "sqlite" && cfg.SQLite.ReadOnly),
+		reader:        cfg.ReadIntent && (driver != "sqlite" || !cfg.SQLite.ReadOnly),
 		ownedSidecars: ownedSidecarPath,
 		cfg:           *cfg,
 	}

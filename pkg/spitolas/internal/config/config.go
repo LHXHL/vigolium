@@ -763,7 +763,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Tabs < 0 || c.Tabs > MaxTabs {
-		return fmt.Errorf("Tabs must be 0-%d, got: %d", MaxTabs, c.Tabs)
+		return fmt.Errorf("Tabs must be 0-%d, got: %d", MaxTabs, c.Tabs) //nolint:staticcheck // ST1005: leads with the Config.Tabs field name, like its siblings
 	}
 	if err := ValidateTabIsolation(c.TabIsolation); err != nil {
 		return err
@@ -866,7 +866,7 @@ var StealthModes = []string{StealthAuto, StealthOn, StealthOff}
 // ValidateStealth rejects a stealth mode outside StealthModes ("" is auto).
 func ValidateStealth(mode string) error {
 	if mode != "" && !slices.Contains(StealthModes, mode) {
-		return fmt.Errorf("Stealth must be one of %s, got: %s", strings.Join(StealthModes, ", "), mode)
+		return fmt.Errorf("Stealth must be one of %s, got: %s", strings.Join(StealthModes, ", "), mode) //nolint:staticcheck // ST1005: leads with the Config.Stealth field name, like its siblings
 	}
 	return nil
 }

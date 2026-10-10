@@ -172,7 +172,7 @@ func renderPlan(w io.Writer, p *scanplan.Plan) {
 	if p.DryRun {
 		title += " (dry run — nothing was sent)"
 	}
-	fmt.Fprintf(w, "%s %s\n", terminal.Green(terminal.SymbolStart), terminal.BoldHiBlue(title))
+	_, _ = fmt.Fprintf(w, "%s %s\n", terminal.Green(terminal.SymbolStart), terminal.BoldHiBlue(title))
 	head := fmt.Sprintf("strategy=%s heuristics=%s", p.Strategy, p.Heuristics)
 	if p.Intensity != "" {
 		head += " intensity=" + p.Intensity
@@ -183,10 +183,10 @@ func renderPlan(w io.Writer, p *scanplan.Plan) {
 	if p.ScanUUID != "" {
 		head += " scan=" + p.ScanUUID
 	}
-	fmt.Fprintf(w, "  %s\n\n", head)
+	_, _ = fmt.Fprintf(w, "  %s\n\n", head)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "  PHASE\tRUNS\tBUDGET\tPACE\tESTIMATE\tNOTE")
+	_, _ = fmt.Fprintln(tw, "  PHASE\tRUNS\tBUDGET\tPACE\tESTIMATE\tNOTE")
 	for _, ph := range p.Phases {
 		runs := "yes"
 		note := ""
@@ -203,10 +203,10 @@ func renderPlan(w io.Writer, p *scanplan.Plan) {
 		if pe, ok := p.Estimate.ByPhase[ph.ID]; ok && ph.Enabled {
 			est = formatRange(pe.Low, pe.High)
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", ph.ID, runs, formatPhaseBudget(ph.Budget), formatPace(ph.Pace), est, note)
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", ph.ID, runs, formatPhaseBudget(ph.Budget), formatPace(ph.Pace), est, note)
 	}
 	_ = tw.Flush()
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 
 	t := p.Targets
 	line := fmt.Sprintf("Targets: %d seeded", t.Seeded)
@@ -220,24 +220,24 @@ func renderPlan(w io.Writer, p *scanplan.Plan) {
 	if t.DBRecordsInScope != nil {
 		line += fmt.Sprintf(", %d stored records in scope", *t.DBRecordsInScope)
 	}
-	fmt.Fprintf(w, "  %s\n", line)
+	_, _ = fmt.Fprintf(w, "  %s\n", line)
 	for _, r := range t.RejectedSample {
-		fmt.Fprintf(w, "    rejected %s (%s)\n", r.Target, r.Reason)
+		_, _ = fmt.Fprintf(w, "    rejected %s (%s)\n", r.Target, r.Reason)
 	}
-	fmt.Fprintf(w, "  Scope: origin=%s ignore-static=%v host+=%s host-=%s\n",
+	_, _ = fmt.Fprintf(w, "  Scope: origin=%s ignore-static=%v host+=%s host-=%s\n",
 		p.Scope.OriginMode, p.Scope.IgnoreStatic, joinOrDash(p.Scope.HostInclude), joinOrDash(p.Scope.HostExclude))
 	b := p.Budgets
-	fmt.Fprintf(w, "  Budgets: max-duration=%s max-requests=%s max-requests-per-host=%s rate-limit=%s concurrency=%d max-per-host=%d\n",
+	_, _ = fmt.Fprintf(w, "  Budgets: max-duration=%s max-requests=%s max-requests-per-host=%s rate-limit=%s concurrency=%d max-per-host=%d\n",
 		formatMS(b.ScanMaxDurationMS), zeroUnlimited(b.MaxRequests), zeroUnlimited(b.MaxRequestsPerHost), zeroUnlimited(int64(b.RateLimit)), b.Concurrency, b.MaxPerHost)
 	if len(p.Auth) == 0 {
-		fmt.Fprintln(w, "  Auth: none")
+		_, _ = fmt.Fprintln(w, "  Auth: none")
 	}
 	for _, a := range p.Auth {
 		desc := fmt.Sprintf("%s (%s, %s, from %s)", a.Name, a.Role, a.Kind, a.Source)
 		if a.LoginHost != "" {
 			desc += " login@" + a.LoginHost
 		}
-		fmt.Fprintf(w, "  Auth: %s\n", desc)
+		_, _ = fmt.Fprintf(w, "  Auth: %s\n", desc)
 	}
 	m := p.Modules
 	mods := fmt.Sprintf("Modules: %d active, %d passive, %d extensions (tier ceiling %s", m.Active, m.Passive, m.Extensions, m.TierCeiling)
@@ -250,12 +250,12 @@ func renderPlan(w io.Writer, p *scanplan.Plan) {
 	if m.RiskGated > 0 {
 		mods += fmt.Sprintf("; %d risk:high withheld", m.RiskGated)
 	}
-	fmt.Fprintf(w, "  %s)\n", mods)
+	_, _ = fmt.Fprintf(w, "  %s)\n", mods)
 	for _, g := range m.PayloadsGated {
-		fmt.Fprintf(w, "    %s: %d/%d payloads gated (%s; --allow-risky-payloads or --intensity deep)\n", g.Module, g.Gated, g.Total, g.Reason)
+		_, _ = fmt.Fprintf(w, "    %s: %d/%d payloads gated (%s; --allow-risky-payloads or --intensity deep)\n", g.Module, g.Gated, g.Total, g.Reason)
 	}
 	if m.ExtensionSelection != nil {
-		fmt.Fprintf(w, "    %s\n", m.ExtensionSelection.Summary)
+		_, _ = fmt.Fprintf(w, "    %s\n", m.ExtensionSelection.Summary)
 	}
 	if d := p.Discovery; d != nil {
 		var lists []string
@@ -266,29 +266,29 @@ func renderPlan(w io.Writer, p *scanplan.Plan) {
 			}
 			lists = append(lists, fmt.Sprintf("%s=%s(%s)", wl.Slot, shortName(wl.Name), n))
 		}
-		fmt.Fprintf(w, "  Discovery: tier=%s fuzzing=%v recursion=%v/%d targets-at-once=%d wordlists: %s\n",
+		_, _ = fmt.Fprintf(w, "  Discovery: tier=%s fuzzing=%v recursion=%v/%d targets-at-once=%d wordlists: %s\n",
 			d.WordlistTier, d.Fuzzing, d.RecursionEnabled, d.RecursionMaxDepth, d.TargetConcurrency, strings.Join(lists, " "))
 		if d.JSTangle != nil {
-			fmt.Fprintf(w, "    jstangle: enabled=%v workers=%d memory=%dMB", d.JSTangle.Enabled, d.JSTangle.Workers, d.JSTangle.MemoryBudgetMB)
+			_, _ = fmt.Fprintf(w, "    jstangle: enabled=%v workers=%d memory=%dMB", d.JSTangle.Enabled, d.JSTangle.Workers, d.JSTangle.MemoryBudgetMB)
 			if d.Sitemap != nil {
-				fmt.Fprintf(w, " | sitemap: enabled=%v max-urls=%d per-shape=%d", d.Sitemap.Enabled, d.Sitemap.MaxURLs, d.Sitemap.PerShape)
+				_, _ = fmt.Fprintf(w, " | sitemap: enabled=%v max-urls=%d per-shape=%d", d.Sitemap.Enabled, d.Sitemap.MaxURLs, d.Sitemap.PerShape)
 			}
-			fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w)
 		}
 	}
 	if h := p.Harvest; h != nil {
-		fmt.Fprintf(w, "  Harvest: sources=%s max-urls=%d per-shape=%d cdx-max-rows=%d probe=%v\n",
+		_, _ = fmt.Fprintf(w, "  Harvest: sources=%s max-urls=%d per-shape=%d cdx-max-rows=%d probe=%v\n",
 			strings.Join(h.Sources, ","), h.MaxURLs, h.PerShape, h.CDXMaxRows, h.Probe)
 	}
 	if pm := p.ParamMining; pm != nil {
-		fmt.Fprintf(w, "  Param mining: %d endpoints/host × %d requests, %d workers\n", pm.EndpointsPerHost, pm.RequestsPerEndpoint, pm.Workers)
+		_, _ = fmt.Fprintf(w, "  Param mining: %d endpoints/host × %d requests, %d workers\n", pm.EndpointsPerHost, pm.RequestsPerEndpoint, pm.Workers)
 	}
 	if e := p.Egress; e != nil && len(e.Exempt) > 0 {
 		var ex []string
 		for _, x := range e.Exempt {
 			ex = append(ex, x.Path)
 		}
-		fmt.Fprintf(w, "  Egress: %d gated paths; not gated: %s\n", len(e.Gated), strings.Join(ex, ", "))
+		_, _ = fmt.Fprintf(w, "  Egress: %d gated paths; not gated: %s\n", len(e.Gated), strings.Join(ex, ", "))
 	}
 	est := p.Estimate
 	headline := "Estimate (" + est.Confidence + "): " + formatRange(est.Low, est.High) + " requests"
@@ -298,9 +298,9 @@ func renderPlan(w io.Writer, p *scanplan.Plan) {
 	if est.ClampedTo != nil {
 		headline += fmt.Sprintf(" (clamped to --max-requests %d; hits it in %s)", *est.ClampedTo, strings.Join(est.HitsMaxRequests, ", "))
 	}
-	fmt.Fprintf(w, "  %s\n", headline)
+	_, _ = fmt.Fprintf(w, "  %s\n", headline)
 	for _, wa := range p.Warnings {
-		fmt.Fprintf(w, "  %s %s: %s\n", terminal.Yellow(terminal.SymbolWarning), wa.Code, wa.Message)
+		_, _ = fmt.Fprintf(w, "  %s %s: %s\n", terminal.Yellow(terminal.SymbolWarning), wa.Code, wa.Message)
 	}
 }
 
@@ -314,9 +314,10 @@ func formatPhaseBudget(b *scanplan.PhaseBudget) string {
 	}
 	if b.PhaseCeilingMS > 0 {
 		label := "phase"
-		if b.Semantics == scanplan.SemanticsPerLeg {
+		switch b.Semantics {
+		case scanplan.SemanticsPerLeg:
 			label = "leg"
-		} else if b.Semantics == scanplan.SemanticsPerCall {
+		case scanplan.SemanticsPerCall:
 			label = "call"
 		}
 		parts = append(parts, formatMS(b.PhaseCeilingMS)+"/"+label)

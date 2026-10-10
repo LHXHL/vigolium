@@ -415,7 +415,7 @@ func (c *h2conn) readLoop(streams []*h2stream, maxBody int) {
 				s.sentAt = c.releasedAt()
 				s.header = make(http.Header)
 				for _, hf := range f.RegularFields() {
-					s.header.Add(http.CanonicalHeaderKey(hf.Name), hf.Value)
+					s.header.Add(hf.Name, hf.Value)
 				}
 			}
 			if f.StreamEnded() {

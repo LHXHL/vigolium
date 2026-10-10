@@ -386,12 +386,12 @@ func runVacuum(ctx context.Context, db *database.DB) {
 	if db.Driver() != "sqlite" {
 		return
 	}
-	fmt.Fprintf(humanOut(), "%s Running VACUUM to reclaim disk space...\n", terminal.InfoSymbol())
+	_, _ = fmt.Fprintf(humanOut(), "%s Running VACUUM to reclaim disk space...\n", terminal.InfoSymbol())
 	if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
 		zap.L().Warn("VACUUM failed", zap.Error(err))
 		return
 	}
-	fmt.Fprintf(humanOut(), "%s %s\n", terminal.SuccessSymbol(), terminal.Green("VACUUM completed."))
+	_, _ = fmt.Fprintf(humanOut(), "%s %s\n", terminal.SuccessSymbol(), terminal.Green("VACUUM completed."))
 }
 
 // resetDatabase deletes the SQLite database file and recreates it with a fresh schema.
@@ -441,9 +441,9 @@ func resetDatabase() (dbResetView, error) {
 	}
 
 	if removed == 0 {
-		fmt.Fprintf(humanOut(), "%s No database file found at %s\n", terminal.InfoSymbol(), terminal.Cyan(dbPath))
+		_, _ = fmt.Fprintf(humanOut(), "%s No database file found at %s\n", terminal.InfoSymbol(), terminal.Cyan(dbPath))
 	} else {
-		fmt.Fprintf(humanOut(), "%s Deleted database file: %s\n", terminal.SuccessSymbol(), terminal.Cyan(dbPath))
+		_, _ = fmt.Fprintf(humanOut(), "%s Deleted database file: %s\n", terminal.SuccessSymbol(), terminal.Cyan(dbPath))
 	}
 
 	// Recreate with fresh schema
@@ -457,6 +457,6 @@ func resetDatabase() (dbResetView, error) {
 		return dbResetView{}, fmt.Errorf("failed to create schema: %w", err)
 	}
 
-	fmt.Fprintf(humanOut(), "%s %s %s\n", terminal.SuccessSymbol(), terminal.Green("Database recreated at"), terminal.Cyan(dbPath))
+	_, _ = fmt.Fprintf(humanOut(), "%s %s %s\n", terminal.SuccessSymbol(), terminal.Green("Database recreated at"), terminal.Cyan(dbPath))
 	return dbResetView{Path: dbPath, FilesRemoved: removed}, nil
 }

@@ -487,14 +487,14 @@ func runSkillsInstall(cmd *cobra.Command, names []string) error {
 			continue
 		}
 		if res.Backup != "" {
-			fmt.Fprintf(out, "%s Moved the previous (unstamped) install of %s to %s\n",
+			_, _ = fmt.Fprintf(out, "%s Moved the previous (unstamped) install of %s to %s\n",
 				terminal.InfoSymbol(), terminal.Cyan(b.Name), terminal.Gray(res.Backup))
 		}
 		if len(res.Pruned) > 0 {
-			fmt.Fprintf(out, "%s Removed %d file(s) the bundle no longer ships: %s\n",
+			_, _ = fmt.Fprintf(out, "%s Removed %d file(s) the bundle no longer ships: %s\n",
 				terminal.InfoSymbol(), len(res.Pruned), terminal.Gray(strings.Join(res.Pruned, ", ")))
 		}
-		fmt.Fprintf(out, "%s Installed %s → %s\n",
+		_, _ = fmt.Fprintf(out, "%s Installed %s → %s\n",
 			terminal.SuccessSymbol(), terminal.Cyan(b.Name), terminal.Gray(dest))
 		installed++
 		items = append(items, view)
@@ -556,14 +556,14 @@ func printSkillSkip(out io.Writer, name, dest string, res skillInstallOutcome) {
 		if res.Version != "" {
 			was = "installed by " + res.Version
 		}
-		fmt.Fprintf(out, "%s %s at %s is stale (%s; this binary is %s): run %s\n",
+		_, _ = fmt.Fprintf(out, "%s %s at %s is stale (%s; this binary is %s): run %s\n",
 			terminal.WarningSymbol(), terminal.Cyan(name), terminal.Gray(dest), was, Version,
 			terminal.Gray("vigolium skills install --force"))
 	case skillStatusModified:
-		fmt.Fprintf(out, "%s %s at %s has local edits (use --force to overwrite them)\n",
+		_, _ = fmt.Fprintf(out, "%s %s at %s has local edits (use --force to overwrite them)\n",
 			terminal.WarningSymbol(), terminal.Cyan(name), terminal.Gray(dest))
 	default:
-		fmt.Fprintf(out, "%s %s already installed and current at %s\n",
+		_, _ = fmt.Fprintf(out, "%s %s already installed and current at %s\n",
 			terminal.InfoSymbol(), terminal.Cyan(name), terminal.Gray(dest))
 	}
 }

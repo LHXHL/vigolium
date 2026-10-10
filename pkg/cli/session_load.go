@@ -176,7 +176,7 @@ func runSessionLoad(cmd *cobra.Command, args []string) error {
 	if len(failed) > 0 {
 		failErr = loginFailedError(failed, results)
 		if !sessionLoadForce {
-			fmt.Fprintf(w, "%s %d session(s) failed to log in and were not saved: %s (use --force to save them anyway)\n\n",
+			_, _ = fmt.Fprintf(w, "%s %d session(s) failed to log in and were not saved: %s (use --force to save them anyway)\n\n",
 				terminal.ErrorSymbol(), len(failed), strings.Join(failed, ", "))
 		}
 	}
@@ -201,7 +201,7 @@ func checkSessionLogins(ctx context.Context, sessions []*authentication.Session,
 		return results
 	}
 
-	fmt.Fprintf(w, "%s Validating login flows...\n\n", terminal.InfoSymbol())
+	_, _ = fmt.Fprintf(w, "%s Validating login flows...\n\n", terminal.InfoSymbol())
 	client := sessionLoginClient()
 	for i, sess := range sessions {
 		if sess.Login == nil && sess.LoginRequest == "" {
@@ -209,7 +209,7 @@ func checkSessionLogins(ctx context.Context, sessions []*authentication.Session,
 				Session: sess.Name, OK: true, Reason: authentication.LoginReasonStaticHeaders,
 				ExtractedHeaders: sortedHeaderNames(sess.Headers),
 			}
-			fmt.Fprintf(w, "  %s  %s  %s\n", terminal.Cyan("–"), sess.Name, "static headers")
+			_, _ = fmt.Fprintf(w, "  %s  %s  %s\n", terminal.Cyan("–"), sess.Name, "static headers")
 			continue
 		}
 		res := authentication.CheckLogin(ctx, sess, client)
@@ -227,15 +227,15 @@ func printLoginResult(w io.Writer, res authentication.LoginResult) {
 	}
 	switch {
 	case !res.OK:
-		fmt.Fprintf(w, "  %s  %s%s  %s: %s\n", terminal.Red("✗"), res.Session, status, terminal.Red(res.Reason), res.Message)
+		_, _ = fmt.Fprintf(w, "  %s  %s%s  %s: %s\n", terminal.Red("✗"), res.Session, status, terminal.Red(res.Reason), res.Message)
 	case res.Reason != "":
-		fmt.Fprintf(w, "  %s  %s%s  %s: %s\n", terminal.Yellow("!"), res.Session, status, terminal.Yellow(res.Reason), res.Message)
+		_, _ = fmt.Fprintf(w, "  %s  %s%s  %s: %s\n", terminal.Yellow("!"), res.Session, status, terminal.Yellow(res.Reason), res.Message)
 	default:
 		extra := ""
 		if len(res.ExtractedHeaders) > 0 {
 			extra = fmt.Sprintf("  extracted=[%s]", strings.Join(res.ExtractedHeaders, ", "))
 		}
-		fmt.Fprintf(w, "  %s  %s%s%s\n", terminal.Green("✓"), res.Session, terminal.Green(status), extra)
+		_, _ = fmt.Fprintf(w, "  %s  %s%s%s\n", terminal.Green("✓"), res.Session, terminal.Green(status), extra)
 	}
 }
 
@@ -328,7 +328,7 @@ func runSessionLoadRawRequest(cmd *cobra.Command, data []byte, w io.Writer) erro
 		return fmt.Errorf("failed to parse raw HTTP request: %w", err)
 	}
 
-	fmt.Fprintf(w, "%s Sending login request: %s %s\n\n",
+	_, _ = fmt.Fprintf(w, "%s Sending login request: %s %s\n\n",
 		terminal.InfoSymbol(),
 		terminal.BoldCyan(loginReq.Method),
 		terminal.Cyan(loginReq.URL))
@@ -348,7 +348,7 @@ func runSessionLoadRawRequest(cmd *cobra.Command, data []byte, w io.Writer) erro
 			if result.StatusCode >= 200 && result.StatusCode < 400 {
 				reason = authentication.LoginReasonExtractFailed
 			}
-			fmt.Fprintf(w, "  %s  status=%s  %s\n\n",
+			_, _ = fmt.Fprintf(w, "  %s  status=%s  %s\n\n",
 				terminal.Red("✗"),
 				terminal.Red(fmt.Sprintf("%d", result.StatusCode)),
 				err)
@@ -364,12 +364,12 @@ func runSessionLoadRawRequest(cmd *cobra.Command, data []byte, w io.Writer) erro
 	}
 
 	// Print discovered tokens.
-	fmt.Fprintf(w, "  %s  status=%s\n",
+	_, _ = fmt.Fprintf(w, "  %s  status=%s\n",
 		terminal.Green("✓"),
 		terminal.Green(fmt.Sprintf("%d", result.StatusCode)))
 
 	for _, src := range result.TokenSources {
-		fmt.Fprintf(w, "  %s  %s\n", terminal.Cyan("→"), src)
+		_, _ = fmt.Fprintf(w, "  %s  %s\n", terminal.Cyan("→"), src)
 	}
 	_, _ = fmt.Fprintln(w)
 
@@ -392,7 +392,7 @@ func runSessionLoadRawRequest(cmd *cobra.Command, data []byte, w io.Writer) erro
 	}
 
 	// Show summary of what was discovered.
-	fmt.Fprintf(w, "%s Discovered session %s for %s\n",
+	_, _ = fmt.Fprintf(w, "%s Discovered session %s for %s\n",
 		terminal.InfoSymbol(),
 		terminal.BoldCyan(sess.Name),
 		terminal.Cyan(sessionLoadHost))
@@ -403,7 +403,7 @@ func runSessionLoadRawRequest(cmd *cobra.Command, data []byte, w io.Writer) erro
 			if len(display) > 60 {
 				display = display[:57] + "..."
 			}
-			fmt.Fprintf(w, "  %s %s: %s\n", terminal.Gray("→"), terminal.Cyan(k), terminal.Gray(display))
+			_, _ = fmt.Fprintf(w, "  %s %s: %s\n", terminal.Gray("→"), terminal.Cyan(k), terminal.Gray(display))
 		}
 	}
 	_, _ = fmt.Fprintln(w)
@@ -452,7 +452,7 @@ func persistSessionsWithResponse(sessions []*authentication.Session, loginRespon
 		return fmt.Errorf("failed to save sessions: %w", err)
 	}
 
-	fmt.Fprintf(w, "%s Loaded %d session(s) for host %s\n\n",
+	_, _ = fmt.Fprintf(w, "%s Loaded %d session(s) for host %s\n\n",
 		terminal.InfoSymbol(), len(rows), terminal.Cyan(sessionLoadHost))
 
 	for _, r := range rows {
@@ -468,13 +468,13 @@ func persistSessionsWithResponse(sessions []*authentication.Session, loginRespon
 			if len(token) > 40 {
 				token = token[:37] + "..."
 			}
-			fmt.Fprintf(w, "  %s  role=%s  token=%s\n", r.SessionName, role, terminal.Gray(token))
+			_, _ = fmt.Fprintf(w, "  %s  role=%s  token=%s\n", r.SessionName, role, terminal.Gray(token))
 		} else {
 			hasLogin := "no"
 			if r.LoginURL != "" {
 				hasLogin = terminal.Cyan(r.LoginURL)
 			}
-			fmt.Fprintf(w, "  %s  role=%s  login=%s\n", r.SessionName, role, hasLogin)
+			_, _ = fmt.Fprintf(w, "  %s  role=%s  login=%s\n", r.SessionName, role, hasLogin)
 		}
 	}
 	_, _ = fmt.Fprintln(w)
@@ -515,7 +515,7 @@ func persistSessions(sessions []*authentication.Session, w io.Writer) error {
 	}
 
 	// Print summary.
-	fmt.Fprintf(w, "%s Loaded %d session(s) for host %s\n\n",
+	_, _ = fmt.Fprintf(w, "%s Loaded %d session(s) for host %s\n\n",
 		terminal.InfoSymbol(), len(rows), terminal.Cyan(sessionLoadHost))
 
 	for _, r := range rows {
@@ -535,9 +535,9 @@ func persistSessions(sessions []*authentication.Session, w io.Writer) error {
 			if len(token) > 40 {
 				token = token[:37] + "..."
 			}
-			fmt.Fprintf(w, "  %s  role=%s  token=%s  login=%s\n", r.SessionName, role, terminal.Gray(token), hasLogin)
+			_, _ = fmt.Fprintf(w, "  %s  role=%s  token=%s  login=%s\n", r.SessionName, role, terminal.Gray(token), hasLogin)
 		} else {
-			fmt.Fprintf(w, "  %s  role=%s  login=%s\n", r.SessionName, role, hasLogin)
+			_, _ = fmt.Fprintf(w, "  %s  role=%s  login=%s\n", r.SessionName, role, hasLogin)
 		}
 	}
 	_, _ = fmt.Fprintln(w)

@@ -137,7 +137,7 @@ func runVersionCheck(ctx context.Context, binPath, want string) error {
 		if len(msg) > 300 {
 			msg = msg[:300] + "…"
 		}
-		return fmt.Errorf("downloaded binary failed to run `version --json`: %v %s", err, msg)
+		return fmt.Errorf("downloaded binary failed to run `version --json`: %w %s", err, msg)
 	}
 	got, err := reportedVersion(out)
 	if err != nil {

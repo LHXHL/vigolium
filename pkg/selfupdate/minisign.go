@@ -153,7 +153,7 @@ func verifyMinisign(keys []string, message, sigData []byte) (string, error) {
 	}
 	sig, err := parseSignature(sigData)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrBadSignature, err)
+		return "", fmt.Errorf("%w: %w", ErrBadSignature, err)
 	}
 	for _, pk := range parsed {
 		if sig.verifyWith(pk, message) {

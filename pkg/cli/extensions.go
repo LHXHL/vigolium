@@ -958,7 +958,7 @@ func installPresets(cmd *cobra.Command, filter string) error {
 		view := extPresetView{Name: name, Path: config.ContractPath(destPath)}
 
 		if _, err := os.Stat(destPath); err == nil {
-			fmt.Fprintf(progress, "  %s %s %s\n", terminal.WarningSymbol(), name, terminal.Gray("(already exists, skipped)"))
+			_, _ = fmt.Fprintf(progress, "  %s %s %s\n", terminal.WarningSymbol(), name, terminal.Gray("(already exists, skipped)"))
 			skipped++
 			view.Status = "skipped"
 			views = append(views, view)
@@ -970,14 +970,14 @@ func installPresets(cmd *cobra.Command, filter string) error {
 			err = os.WriteFile(destPath, data, 0644)
 		}
 		if err != nil {
-			fmt.Fprintf(progress, "  %s Failed to install %s: %v\n", terminal.ErrorSymbol(), name, err)
+			_, _ = fmt.Fprintf(progress, "  %s Failed to install %s: %v\n", terminal.ErrorSymbol(), name, err)
 			failed = append(failed, name)
 			view.Status, view.Error = "failed", err.Error()
 			views = append(views, view)
 			continue
 		}
 
-		fmt.Fprintf(progress, "  %s %s\n", terminal.SuccessSymbol(), name)
+		_, _ = fmt.Fprintf(progress, "  %s %s\n", terminal.SuccessSymbol(), name)
 		installed++
 		view.Status = "installed"
 		views = append(views, view)
@@ -995,12 +995,12 @@ func installPresets(cmd *cobra.Command, filter string) error {
 	if prev, readErr := os.ReadFile(typesPath); readErr == nil && bytes.Equal(prev, typesSrc) {
 		typesView.Status = "current"
 	} else if err := os.WriteFile(typesPath, typesSrc, 0644); err != nil {
-		fmt.Fprintf(progress, "  %s Failed to write %s: %v\n", terminal.ErrorSymbol(), jsext.TypeDefinitionsFileName, err)
+		_, _ = fmt.Fprintf(progress, "  %s Failed to write %s: %v\n", terminal.ErrorSymbol(), jsext.TypeDefinitionsFileName, err)
 		failed = append(failed, jsext.TypeDefinitionsFileName)
 		typesView.Status, typesView.Error = "failed", err.Error()
 	}
 	if typesView.Status != "failed" {
-		fmt.Fprintf(progress, "  %s %s %s\n", terminal.SuccessSymbol(), jsext.TypeDefinitionsFileName, terminal.Gray("(API type declarations)"))
+		_, _ = fmt.Fprintf(progress, "  %s %s %s\n", terminal.SuccessSymbol(), jsext.TypeDefinitionsFileName, terminal.Gray("(API type declarations)"))
 	}
 	views = append(views, typesView)
 

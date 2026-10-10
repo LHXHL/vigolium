@@ -463,7 +463,7 @@ func (r *Runner) printFinishedBanner(ctx context.Context, w io.Writer, scanUUID 
 			zap.L().Debug("Scan finished banner: finding count unavailable", zap.Error(err))
 		}
 	}
-	fmt.Fprintf(w, "  %s Scan finished %s %s%s\n",
+	_, _ = fmt.Fprintf(w, "  %s Scan finished %s %s%s\n",
 		terminal.SuccessSymbol(),
 		terminal.BoldCyan(scanUUID),
 		terminal.Gray(fmt.Sprintf("duration: %s%s", fmtDuration(duration), findingSummary)),

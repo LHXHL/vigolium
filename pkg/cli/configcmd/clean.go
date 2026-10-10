@@ -50,14 +50,14 @@ func runConfigClean(deps Deps) error {
 
 	// Check if directory exists
 	if _, err := os.Stat(vigoliumDir); os.IsNotExist(err) {
-		fmt.Fprintf(out, "%s Nothing to clean — %s does not exist.\n", terminal.InfoSymbol(), displayDir)
+		_, _ = fmt.Fprintf(out, "%s Nothing to clean — %s does not exist.\n", terminal.InfoSymbol(), displayDir)
 		if asJSON {
 			return result(false, "noop", map[string]any{"path": displayDir})
 		}
 		return nil
 	}
 
-	fmt.Fprintf(out, "%s This will remove %s (config, database, and all local data)\n", terminal.BoldRed(terminal.SymbolFailed+" Warn:"), terminal.Cyan(displayDir))
+	_, _ = fmt.Fprintf(out, "%s This will remove %s (config, database, and all local data)\n", terminal.BoldRed(terminal.SymbolFailed+" Warn:"), terminal.Cyan(displayDir))
 
 	if done, err := clicommon.HandleConfirmation(
 		fmt.Sprintf("removing %s and every file under it", displayDir), deps.Force()); done {
@@ -71,7 +71,7 @@ func runConfigClean(deps Deps) error {
 		return fmt.Errorf("failed to remove %s: %w", vigoliumDir, err)
 	}
 
-	fmt.Fprintf(out, "%s Removed %s\n", terminal.SuccessSymbol(), displayDir)
+	_, _ = fmt.Fprintf(out, "%s Removed %s\n", terminal.SuccessSymbol(), displayDir)
 
 	// Regenerate fresh defaults
 	if err := deps.Reinitialize(); err != nil {

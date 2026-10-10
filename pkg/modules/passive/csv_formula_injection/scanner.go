@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -220,7 +221,8 @@ func scanCSV(body []byte) []hit {
 			break
 		}
 		if err != nil {
-			if _, ok := err.(*csv.ParseError); ok {
+			var perr *csv.ParseError
+			if errors.As(err, &perr) {
 				continue
 			}
 			break

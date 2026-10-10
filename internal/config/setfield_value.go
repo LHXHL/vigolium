@@ -54,7 +54,7 @@ func parseContainerValue(key, value string, declared reflect.Type, existing any)
 	if looksStructured(value) {
 		v, err := parseStructuredValue(value, declared)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %v", ErrInvalidValue, key, err)
+			return nil, fmt.Errorf("%w: %s: %w", ErrInvalidValue, key, err)
 		}
 		return v, nil
 	}
@@ -71,7 +71,7 @@ func parseContainerValue(key, value string, declared reflect.Type, existing any)
 	for i, p := range parts {
 		elem, err := parseCommaElement(strings.TrimSpace(p), declared.Elem())
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s: element %d: %v", ErrInvalidValue, key, i, err)
+			return nil, fmt.Errorf("%w: %s: element %d: %w", ErrInvalidValue, key, i, err)
 		}
 		out = append(out, elem)
 	}
@@ -87,14 +87,14 @@ func parseListAddition(listPath, value string, declared reflect.Type) ([]any, er
 	if strings.HasPrefix(strings.TrimSpace(value), "[") {
 		v, err := parseStructuredValue(value, declared)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s.add: %v", ErrInvalidValue, listPath, err)
+			return nil, fmt.Errorf("%w: %s.add: %w", ErrInvalidValue, listPath, err)
 		}
 		items, _ := v.([]any)
 		return items, nil
 	}
 	elem, err := parseCommaElement(strings.TrimSpace(value), declared.Elem())
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s.add: %v", ErrInvalidValue, listPath, err)
+		return nil, fmt.Errorf("%w: %s.add: %w", ErrInvalidValue, listPath, err)
 	}
 	return []any{elem}, nil
 }
@@ -218,7 +218,7 @@ func checkShape(v any, t reflect.Type) error {
 		}
 		for i, e := range list {
 			if err := checkShape(e, t.Elem()); err != nil {
-				return fmt.Errorf("expected %s; element %d: %v", describeType(t), i, err)
+				return fmt.Errorf("expected %s; element %d: %w", describeType(t), i, err)
 			}
 		}
 	case reflect.Map:
@@ -228,7 +228,7 @@ func checkShape(v any, t reflect.Type) error {
 		}
 		for k, e := range m {
 			if err := checkShape(e, t.Elem()); err != nil {
-				return fmt.Errorf("expected %s; key %q: %v", describeType(t), k, err)
+				return fmt.Errorf("expected %s; key %q: %w", describeType(t), k, err)
 			}
 		}
 	case reflect.Struct:

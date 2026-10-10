@@ -58,7 +58,7 @@ func TestIsFatalPhaseError(t *testing.T) {
 	if !errors.As(err, &lost) || !strings.HasPrefix(err.Error(), "discovery phase failed: ") {
 		t.Fatalf("fatal wrapper lost the chain or message: %v", err)
 	}
-	if fatal(nil) != nil || fatal(err) != err {
+	if fatal(nil) != nil || fatal(err) != err { //nolint:errorlint // identity check: an already-fatal error must come back as-is
 		t.Fatal("fatal(nil) must be nil and fatal(fatal) unchanged")
 	}
 }

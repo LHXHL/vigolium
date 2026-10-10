@@ -101,7 +101,7 @@ func httpSender(t *testing.T) Sender {
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		raw, err := httputil.DumpResponse(resp, true)
 		if err != nil {
 			return nil, err

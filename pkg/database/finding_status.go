@@ -87,7 +87,7 @@ func ValidateFindingHashPrefix(h string) error {
 		return fmt.Errorf("finding hash %q is too short: use at least %d characters (or the numeric id)", h, MinFindingHashPrefix)
 	}
 	for _, c := range h {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return fmt.Errorf("finding hash %q is not hexadecimal", h)
 		}
 	}

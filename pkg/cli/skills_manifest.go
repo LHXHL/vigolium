@@ -79,7 +79,7 @@ func bundleContents(b bundledSkill) ([]skillManifestFile, string, error) {
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	h := sha256.New()
 	for _, f := range files {
-		fmt.Fprintf(h, "%s\x00%s\n", f.Path, f.SHA256)
+		_, _ = fmt.Fprintf(h, "%s\x00%s\n", f.Path, f.SHA256)
 	}
 	return files, hex.EncodeToString(h.Sum(nil)), nil
 }

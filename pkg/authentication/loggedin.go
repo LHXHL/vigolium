@@ -540,7 +540,7 @@ func AssessAuthenticated(authResp, anonResp *ProbeResponse, check *SessionCheck)
 		return done(VerdictError, "invalid check block: %v", err)
 	}
 	if authResp == nil || authResp.Err != nil {
-		var e error = errors.New("no response")
+		e := errors.New("no response")
 		if authResp != nil {
 			e = authResp.Err
 		}
@@ -548,7 +548,7 @@ func AssessAuthenticated(authResp, anonResp *ProbeResponse, check *SessionCheck)
 		return done(VerdictError, "authenticated request failed: %v", e)
 	}
 	if anonResp == nil || anonResp.Err != nil {
-		var e error = errors.New("no response")
+		e := errors.New("no response")
 		if anonResp != nil {
 			e = anonResp.Err
 		}

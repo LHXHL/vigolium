@@ -249,7 +249,7 @@ func readStdoutBaseline(t *testing.T) map[string]int {
 	if err != nil {
 		t.Fatalf("open %s: %v", machineStdoutBaseline, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	out := map[string]int{}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {

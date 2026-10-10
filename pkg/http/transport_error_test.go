@@ -109,7 +109,7 @@ func TestClassifyTransportErrorRealDial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer plain.Close()
+	defer func() { _ = plain.Close() }()
 	go func() {
 		c, err := plain.Accept()
 		if err != nil {

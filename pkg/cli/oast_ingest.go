@@ -123,7 +123,7 @@ func runOASTIngest(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return usageErrorf("cannot open %s: %v", src, err)
 		}
-		defer fh.Close()
+		defer func() { _ = fh.Close() }()
 		in = fh
 	}
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -416,7 +417,7 @@ func TestCompactOptionsValidate(t *testing.T) {
 
 func TestCompactBodies_RejectsPostgres(t *testing.T) {
 	pg := &DB{driver: driverPostgres}
-	if _, err := pg.CompactBodies(context.Background(), defaultCompactOptions()); err != ErrCompactUnsupported {
+	if _, err := pg.CompactBodies(context.Background(), defaultCompactOptions()); !errors.Is(err, ErrCompactUnsupported) {
 		t.Fatalf("postgres: %v", err)
 	}
 }

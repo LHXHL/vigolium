@@ -149,14 +149,14 @@ func printTargetAdmission(w io.Writer, adm *types.TargetAdmission) {
 		terminal.Orange(fmt.Sprintf("%d", len(adm.Rejected))),
 		strings.Join(ruleList, ", "))
 	if !adm.NoneAdmitted() {
-		fmt.Fprintf(w, "  %s %s\n", terminal.Yellow(terminal.SymbolWarning), line)
+		_, _ = fmt.Fprintf(w, "  %s %s\n", terminal.Yellow(terminal.SymbolWarning), line)
 		return
 	}
-	fmt.Fprintf(w, "  %s %s — nothing will be sent\n", terminal.Red(terminal.SymbolError), line)
+	_, _ = fmt.Fprintf(w, "  %s %s — nothing will be sent\n", terminal.Red(terminal.SymbolError), line)
 	for _, v := range adm.Rejected {
-		fmt.Fprintf(w, "      %s %s\n", terminal.Cyan(v.Target), terminal.Gray("("+v.Rule+")"))
+		_, _ = fmt.Fprintf(w, "      %s %s\n", terminal.Cyan(v.Target), terminal.Gray("("+v.Rule+")"))
 	}
-	fmt.Fprintf(w, "    %s %s\n", terminal.TipPrefix(), terminal.Gray(scopeRemediation(adm.Rejected)))
+	_, _ = fmt.Fprintf(w, "    %s %s\n", terminal.TipPrefix(), terminal.Gray(scopeRemediation(adm.Rejected)))
 }
 
 // directAdmission is the scope verdict for a scan-url / scan-request

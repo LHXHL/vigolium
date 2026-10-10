@@ -140,7 +140,7 @@ func commitRaw(raw map[string]any, settings *Settings, key string) error {
 	}
 	var candidate Settings
 	if err := yaml.Unmarshal(newData, &candidate); err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrInvalidValue, key, err)
+		return fmt.Errorf("%w: %s: %w", ErrInvalidValue, key, err)
 	}
 	if introduced := introducedErrors(ValidateSettings(settings), ValidateSettings(&candidate), key); len(introduced) > 0 {
 		msgs := make([]string, 0, len(introduced))

@@ -478,13 +478,13 @@ func printSessionCheckItem(w io.Writer, it sessionCheckItem) {
 	verdict := string(it.Verdict)
 	switch {
 	case it.Authenticated:
-		fmt.Fprintf(w, "%s %s  %s  %s %s%s\n", terminal.SuccessSymbol(), terminal.BoldCyan(it.Session), terminal.Green(verdict), it.Method, it.URL, statuses)
+		_, _ = fmt.Fprintf(w, "%s %s  %s  %s %s%s\n", terminal.SuccessSymbol(), terminal.BoldCyan(it.Session), terminal.Green(verdict), it.Method, it.URL, statuses)
 	case it.Verdict == authentication.VerdictIndistinguishable:
-		fmt.Fprintf(w, "%s %s  %s  %s %s%s\n", terminal.WarningSymbol(), terminal.BoldCyan(it.Session), terminal.Yellow(verdict), it.Method, it.URL, statuses)
+		_, _ = fmt.Fprintf(w, "%s %s  %s  %s %s%s\n", terminal.WarningSymbol(), terminal.BoldCyan(it.Session), terminal.Yellow(verdict), it.Method, it.URL, statuses)
 	default:
-		fmt.Fprintf(w, "%s %s  %s  %s %s%s\n", terminal.ErrorSymbol(), terminal.BoldCyan(it.Session), terminal.Red(verdict), it.Method, it.URL, statuses)
+		_, _ = fmt.Fprintf(w, "%s %s  %s  %s %s%s\n", terminal.ErrorSymbol(), terminal.BoldCyan(it.Session), terminal.Red(verdict), it.Method, it.URL, statuses)
 	}
-	fmt.Fprintf(w, "    %s\n", it.Reason)
+	_, _ = fmt.Fprintf(w, "    %s\n", it.Reason)
 }
 
 func checkStatusText(p *sessionCheckProbe) string {

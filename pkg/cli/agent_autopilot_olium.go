@@ -394,9 +394,12 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 	if end.Err != nil {
 		outcome.addError(fmt.Errorf("autopilot session failed: %w", end.Err))
 	}
+	// docErr carries a failed -j document write (or the run's exit-5 result)
+	// past the post-run steps below, which still run either way.
+	var docErr error
 	if globalJSON {
-		if docErr := emitAgentRunDocument(outcome); docErr != nil && end.Err == nil {
-			runErr = docErr
+		if err := emitAgentRunDocument(outcome); err != nil && end.Err == nil {
+			docErr = err
 		}
 	} else {
 		printOliumAutopilotSummary(result, sessionDir, repo, parentAgenticScanUUID)
@@ -410,6 +413,9 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 	copyTranscriptIfRequested(sessionDir, streamWriter)
 	if end.Err != nil {
 		return fmt.Errorf("autopilot session failed: %w", end.Err)
+	}
+	if docErr != nil {
+		return docErr
 	}
 	_, jsonStatus := agentRunStatus(end)
 	return agentRunExitError(jsonStatus, parentAgenticScanUUID, firstNonEmptyString(outcome.HaltReason, outcome.Budget.Stop))

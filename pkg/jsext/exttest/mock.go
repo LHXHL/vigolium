@@ -148,7 +148,7 @@ func writeCanned(w http.ResponseWriter, raw []byte) {
 		_, _ = fmt.Fprintf(w, "ext test mock: unparseable fixture response: %v\n", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	for name, values := range resp.Header {
 		if strings.EqualFold(name, "Content-Length") || strings.EqualFold(name, "Transfer-Encoding") {

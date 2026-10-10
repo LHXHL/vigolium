@@ -134,11 +134,11 @@ func TestValidateSettingsOASTAndSections(t *testing.T) {
 func TestValidateConfigFileUnknownKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.yaml")
-	if err := os.WriteFile(path, []byte("scope:\n  host:\n    includ: [a]\nnotify:\n  enabled: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("scope:\n  host:\n    inclde: [a]\nnotify:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	issues := ValidateConfigFile(path, &Settings{})
-	if len(issues) != 1 || issues[0].Code != IssueConfigUnknownKey || issues[0].Key != "includ" || issues[0].Severity != SeverityWarning {
+	if len(issues) != 1 || issues[0].Code != IssueConfigUnknownKey || issues[0].Key != "inclde" || issues[0].Severity != SeverityWarning {
 		t.Fatalf("got %+v", issues)
 	}
 	// A project overlay is checked against the profile shape: server is not an

@@ -253,7 +253,7 @@ func filterExtensionModules(active []modules.ActiveModule, passive []modules.Pas
 		}
 	}
 	if len(opts.ModulePatterns) > 0 {
-		if matched := modules.MatchModulePatterns(opts.ModulePatterns, all); !(len(matched) == 1 && matched[0] == "all") {
+		if matched := modules.MatchModulePatterns(opts.ModulePatterns, all); len(matched) != 1 || matched[0] != "all" {
 			for _, id := range matched {
 				named[id] = true
 			}

@@ -563,13 +563,13 @@ func planRemainingCeiling(v *scanStatusView, later []string, now time.Time) int6
 // printScanStatusHuman renders the view as an aligned key/value block.
 func printScanStatusHuman(w *os.File, v *scanStatusView) {
 	row := func(k, val string) {
-		fmt.Fprintf(w, "  %s %s\n", terminal.Gray(fmt.Sprintf("%-14s", k)), val)
+		_, _ = fmt.Fprintf(w, "  %s %s\n", terminal.Gray(fmt.Sprintf("%-14s", k)), val)
 	}
 	status := colorRunStatus(v.EffectiveStatus)
 	if v.EffectiveStatus != v.Status && v.Status != "" {
 		status += terminal.Gray(" (stored: " + v.Status + ")")
 	}
-	fmt.Fprintf(w, "%s %s\n", terminal.InfoSymbol(), terminal.BoldCyan(v.ScanUUID))
+	_, _ = fmt.Fprintf(w, "%s %s\n", terminal.InfoSymbol(), terminal.BoldCyan(v.ScanUUID))
 	row("status", status)
 	if v.Phase != "" {
 		row("phase", v.Phase)

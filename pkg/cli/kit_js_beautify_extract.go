@@ -613,14 +613,14 @@ func kitPrintBeautifySummary(w io.Writer, result *kitBeautifyResult) {
 			parts = append(parts, fmt.Sprintf("%d %s", n, kind))
 		}
 	}
-	fmt.Fprintf(w, "\n%s extracted: %s\n", terminal.InfoSymbol(), strings.Join(parts, ", "))
+	_, _ = fmt.Fprintf(w, "\n%s extracted: %s\n", terminal.InfoSymbol(), strings.Join(parts, ", "))
 	truncatedKinds := make([]string, 0, len(result.Truncated))
 	for kind := range result.Truncated {
 		truncatedKinds = append(truncatedKinds, kind)
 	}
 	sort.Strings(truncatedKinds)
 	for _, kind := range truncatedKinds {
-		fmt.Fprintf(w, "%s %s capped: %d record(s) dropped by the analyzer\n",
+		_, _ = fmt.Fprintf(w, "%s %s capped: %d record(s) dropped by the analyzer\n",
 			terminal.WarningSymbol(), kind, result.Truncated[kind])
 	}
 
@@ -628,13 +628,13 @@ func kitPrintBeautifySummary(w io.Writer, result *kitBeautifyResult) {
 		if len(lines) == 0 {
 			return
 		}
-		fmt.Fprintf(w, "\n%s (%d):\n", kind, len(lines))
+		_, _ = fmt.Fprintf(w, "\n%s (%d):\n", kind, len(lines))
 		for i, line := range lines {
 			if i == kitBeautifySummaryLimit {
-				fmt.Fprintf(w, "  … %d more (use -j for all)\n", len(lines)-i)
+				_, _ = fmt.Fprintf(w, "  … %d more (use -j for all)\n", len(lines)-i)
 				break
 			}
-			fmt.Fprintln(w, "  "+line)
+			_, _ = fmt.Fprintln(w, "  "+line)
 		}
 	}
 	suffix := func(meta kitFactMeta) string {

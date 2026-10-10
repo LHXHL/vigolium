@@ -343,15 +343,18 @@ func runServerCATrust(cmd *cobra.Command, action string) error {
 	return nil
 }
 
+// shellSafeRune reports whether r needs no quoting in a POSIX shell word.
+func shellSafeRune(r rune) bool {
+	return r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == ',' || r == '=' || r == '@' ||
+		(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
 // shellJoin renders argv for copy-paste into a POSIX shell, single-quoting any
 // argument that is not plainly safe.
 func shellJoin(argv []string) string {
 	parts := make([]string, len(argv))
 	for i, a := range argv {
-		if a != "" && strings.IndexFunc(a, func(r rune) bool {
-			return !(r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == ',' || r == '=' || r == '@' ||
-				(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
-		}) < 0 {
+		if a != "" && strings.IndexFunc(a, func(r rune) bool { return !shellSafeRune(r) }) < 0 {
 			parts[i] = a
 			continue
 		}

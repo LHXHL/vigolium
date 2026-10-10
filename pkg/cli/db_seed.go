@@ -54,7 +54,7 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 	if globalJSON {
 		tally.progress = os.Stderr
 	}
-	fmt.Fprintf(tally.progress, "%s Seeding database with sample data...\n\n", terminal.InfoSymbol())
+	_, _ = fmt.Fprintf(tally.progress, "%s Seeding database with sample data...\n\n", terminal.InfoSymbol())
 
 	projectUUID, err := resolveProjectUUID()
 	if err != nil {
@@ -282,7 +282,7 @@ type seedTally struct {
 func (t *seedTally) add(table, label string, n int) {
 	t.rows = append(t.rows, seedTableView{Table: table, Inserted: n})
 	t.total += n
-	fmt.Fprintf(t.progress, "  %s Inserted %d %s\n", terminal.SuccessSymbol(), n, label)
+	_, _ = fmt.Fprintf(t.progress, "  %s Inserted %d %s\n", terminal.SuccessSymbol(), n, label)
 }
 
 // rowsAffected reads an INSERT … ON CONFLICT DO NOTHING result: 0 when the row

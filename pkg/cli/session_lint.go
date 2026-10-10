@@ -148,10 +148,10 @@ func lintSessionFile(name string, data []byte) []authentication.LintIssue {
 
 func printSessionLintFile(w io.Writer, filePath string, issues []authentication.LintIssue) {
 	if len(issues) == 0 {
-		fmt.Fprintf(w, "%s %s\n", terminal.SuccessSymbol(), terminal.Green(filePath))
+		_, _ = fmt.Fprintf(w, "%s %s\n", terminal.SuccessSymbol(), terminal.Green(filePath))
 		return
 	}
-	fmt.Fprintf(w, "\n%s %s\n", terminal.ErrorSymbol(), terminal.BoldRed(filePath))
+	_, _ = fmt.Fprintf(w, "\n%s %s\n", terminal.ErrorSymbol(), terminal.BoldRed(filePath))
 	for _, issue := range issues {
 		var symbol, sevLabel string
 		switch issue.Severity {
@@ -174,14 +174,14 @@ func printSessionLintFile(w io.Writer, filePath string, issues []authentication.
 		if issue.Field != "" {
 			fieldStr = terminal.Gray(issue.Field) + "  "
 		}
-		fmt.Fprintf(w, "  %s %s%s%s  %s\n", symbol, loc, fieldStr, sevLabel, issue.Message)
+		_, _ = fmt.Fprintf(w, "  %s %s%s%s  %s\n", symbol, loc, fieldStr, sevLabel, issue.Message)
 	}
 }
 
 func printSessionLintSummary(w io.Writer, files, errorsN, warningsN int) {
 	_, _ = fmt.Fprintln(w)
 	if errorsN == 0 && warningsN == 0 {
-		fmt.Fprintf(w, "%s %d file(s) checked, all clean\n", terminal.SuccessSymbol(), files)
+		_, _ = fmt.Fprintf(w, "%s %d file(s) checked, all clean\n", terminal.SuccessSymbol(), files)
 		return
 	}
 	parts := []string{fmt.Sprintf("%d file(s) checked", files)}
@@ -191,5 +191,5 @@ func printSessionLintSummary(w io.Writer, files, errorsN, warningsN int) {
 	if warningsN > 0 {
 		parts = append(parts, terminal.BoldYellow(fmt.Sprintf("%d warning(s)", warningsN)))
 	}
-	fmt.Fprintf(w, "%s %s\n", terminal.InfoSymbol(), strings.Join(parts, ", "))
+	_, _ = fmt.Fprintf(w, "%s %s\n", terminal.InfoSymbol(), strings.Join(parts, ", "))
 }

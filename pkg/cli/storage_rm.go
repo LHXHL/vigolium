@@ -51,12 +51,12 @@ func runStorageRm(cmd *cobra.Command, args []string) error {
 	for _, key := range args {
 		if err := sc.Delete(ctx, projectUUID, key); err != nil {
 			failures++
-			fmt.Fprintf(out, "%s %s: %s\n", terminal.ErrorSymbol(), terminal.Gray(key), err)
+			_, _ = fmt.Fprintf(out, "%s %s: %s\n", terminal.ErrorSymbol(), terminal.Gray(key), err)
 			deleted := false
 			items = append(items, storageObjectView{Key: key, Deleted: &deleted, Error: err.Error()})
 			continue
 		}
-		fmt.Fprintf(out, "%s Deleted %s\n", terminal.SuccessSymbol(), terminal.Gray(key))
+		_, _ = fmt.Fprintf(out, "%s Deleted %s\n", terminal.SuccessSymbol(), terminal.Gray(key))
 		deleted := true
 		items = append(items, storageObjectView{Key: key, Deleted: &deleted})
 	}

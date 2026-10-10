@@ -4,7 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,37 +17,44 @@ import (
 // "closed set" quietly stops being one.
 func TestErrorCodesClosedSet(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	paths, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var files []*ast.File
+	for _, p := range paths {
+		if strings.HasSuffix(p, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, p, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
 	declared := map[ErrorCode]string{}
-	for _, pkg := range pkgs {
-		for _, f := range pkg.Files {
-			for _, decl := range f.Decls {
-				gd, ok := decl.(*ast.GenDecl)
-				if !ok || gd.Tok != token.CONST {
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs := spec.(*ast.ValueSpec)
+				ident, ok := vs.Type.(*ast.Ident)
+				if !ok || ident.Name != "ErrorCode" {
 					continue
 				}
-				for _, spec := range gd.Specs {
-					vs := spec.(*ast.ValueSpec)
-					ident, ok := vs.Type.(*ast.Ident)
-					if !ok || ident.Name != "ErrorCode" {
-						continue
+				for i, name := range vs.Names {
+					lit, ok := vs.Values[i].(*ast.BasicLit)
+					if !ok {
+						t.Fatalf("%s: value is not a string literal", name.Name)
 					}
-					for i, name := range vs.Names {
-						lit, ok := vs.Values[i].(*ast.BasicLit)
-						if !ok {
-							t.Fatalf("%s: value is not a string literal", name.Name)
-						}
-						v, _ := strconv.Unquote(lit.Value)
-						if prev, dup := declared[ErrorCode(v)]; dup {
-							t.Errorf("%q declared twice (%s, %s)", v, prev, name.Name)
-						}
-						declared[ErrorCode(v)] = name.Name
+					v, _ := strconv.Unquote(lit.Value)
+					if prev, dup := declared[ErrorCode(v)]; dup {
+						t.Errorf("%q declared twice (%s, %s)", v, prev, name.Name)
 					}
+					declared[ErrorCode(v)] = name.Name
 				}
 			}
 		}

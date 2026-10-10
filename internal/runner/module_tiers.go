@@ -218,13 +218,6 @@ func HygieneGateActive(opts *types.Options, settings *config.Settings) bool {
 		!selectsHygieneModule(opts.PassiveModules)
 }
 
-func (r *Runner) hygieneGateActive() bool {
-	if r == nil {
-		return false
-	}
-	return HygieneGateActive(r.options, r.settings)
-}
-
 // countHygieneModules returns how many of the given modules carry TagHygiene.
 func countHygieneModules[T modules.Module](mods []T) int {
 	n := 0
@@ -350,13 +343,6 @@ func logRiskWithheld(intensity, kind string, dropped []string) {
 // filterActiveModulesByTier drops active modules whose tier rank exceeds the ceiling.
 func (r *Runner) filterActiveModulesByTier(mods []modules.ActiveModule, ceiling int) []modules.ActiveModule {
 	return filterModulesByTier(r, mods, ceiling, "Active")
-}
-
-// filterPassiveModulesByTier drops passive modules whose tier rank exceeds the
-// ceiling. Passive modules are almost all light/untagged, so this rarely fires,
-// but the gate is applied symmetrically for consistency.
-func (r *Runner) filterPassiveModulesByTier(mods []modules.PassiveModule, ceiling int) []modules.PassiveModule {
-	return filterModulesByTier(r, mods, ceiling, "Passive")
 }
 
 // filterActiveHygieneModules drops active hardening-advisory modules.

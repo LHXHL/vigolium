@@ -15,11 +15,10 @@ import (
 //	gone   — seen by scan 1 only
 //	fresh  — seen by scan 2 only (and scan 3)
 type diffFixture struct {
-	repo                 *Repository
-	db                   *DB
-	s1, s2, s3           *Scan
-	stay, gone, fresh    int64
-	stayH, goneH, fresh_ string
+	repo              *Repository
+	db                *DB
+	s1, s2, s3        *Scan
+	stay, gone, fresh int64
 }
 
 func completedScan(uuid, target string, started time.Time, phases ...string) *Scan {

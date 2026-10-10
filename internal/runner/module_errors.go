@@ -126,7 +126,7 @@ func (r *Runner) printModuleErrorSummary(w io.Writer, scanUUID string) {
 	if line == "" {
 		return
 	}
-	fmt.Fprintf(w, "  %s %s\n", terminal.Yellow(terminal.SymbolWarning), line)
+	_, _ = fmt.Fprintf(w, "  %s %s\n", terminal.Yellow(terminal.SymbolWarning), line)
 }
 
 // extensionsAllFailed reports whether every extension module the given

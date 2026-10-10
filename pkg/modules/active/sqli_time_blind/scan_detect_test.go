@@ -337,7 +337,7 @@ func TestRiskHighTemplatesExcludedBelowDeep(t *testing.T) {
 	for _, sc := range []*modkit.ScanContext{nil, {}, {DeepScan: false}} {
 		for _, v := range []string{"hello", "42"} {
 			for _, p := range getPayloadsForValue(v, sc.RiskyPayloadsAllowed()) {
-				assert.NotEqual(t, riskHigh, p.risk, "riskHigh template %q sent with DeepScan=false", p.template)
+				assert.Equal(t, riskNormal, p.risk, "riskHigh template %q sent with DeepScan=false", p.template)
 			}
 		}
 	}

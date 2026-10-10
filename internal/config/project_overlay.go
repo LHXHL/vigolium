@@ -62,7 +62,7 @@ func SetProjectOverlayValue(projectUUID, key string, settings *Settings) (string
 	}
 	parent, leaf, err := navigateToParent(raw, parts)
 	if err != nil {
-		return "", fmt.Errorf("%w: %q: %v", ErrUnknownKey, key, err)
+		return "", fmt.Errorf("%w: %q: %w", ErrUnknownKey, key, err)
 	}
 	value := parent[leaf]
 

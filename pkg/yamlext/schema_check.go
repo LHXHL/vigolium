@@ -12,7 +12,7 @@ import (
 // SchemaIssue is one key in a .vgm.yaml file that the ExtensionDef schema does
 // not have, with where it is and the closest key the schema does have.
 type SchemaIssue struct {
-	Path       string // dotted field path, e.g. "matchers[0].contians"
+	Path       string // dotted field path, e.g. "matchers[0].contans"
 	Key        string // the unknown key as written
 	Suggestion string // closest known key at that level, "" when none is close
 	Line       int

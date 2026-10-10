@@ -30,14 +30,13 @@ type tokenServer struct {
 }
 
 type tokenRequest struct {
-	at        time.Time
-	style     string // "header" or "body"
-	grant     string
-	scope     string
-	audience  string
-	refresh   string
-	extraHdr  string
-	userAgent string
+	at       time.Time
+	style    string // "header" or "body"
+	grant    string
+	scope    string
+	audience string
+	refresh  string
+	extraHdr string
 }
 
 func newTokenServer(t *testing.T, expiresIn int) *tokenServer {

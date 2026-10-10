@@ -185,6 +185,7 @@ func TestCheckMatcher_LoggedOutSampling(t *testing.T) {
 	require.NoError(t, err)
 	out, how := m.LoggedOut(probe(200, "session expired"), false)
 	assert.False(t, out, "body regex skipped when not sampled")
+	assert.Empty(t, how)
 	out, how = m.LoggedOut(probe(200, "session expired"), true)
 	assert.True(t, out)
 	assert.Equal(t, "body", how)

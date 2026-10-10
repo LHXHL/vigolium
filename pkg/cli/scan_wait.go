@@ -395,7 +395,7 @@ func newWaitStderrProgress(out io.Writer, clock waitClock) func(*scanStatusView)
 			return
 		}
 		lastKey, lastAt = key, now
-		fmt.Fprintf(out, "%s %s\n", terminal.InfoSymbol(), terminal.Gray(waitProgressLine(v)))
+		_, _ = fmt.Fprintf(out, "%s %s\n", terminal.InfoSymbol(), terminal.Gray(waitProgressLine(v)))
 	}
 }
 

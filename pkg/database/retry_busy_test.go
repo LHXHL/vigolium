@@ -69,7 +69,7 @@ func TestRetryBusy_SucceedsAndStopsOnOtherErrors(t *testing.T) {
 
 	calls = 0
 	boom := errors.New("boom")
-	if err := RetryBusy(context.Background(), func() error { calls++; return boom }, noWait); err != boom || calls != 1 {
+	if err := RetryBusy(context.Background(), func() error { calls++; return boom }, noWait); err != boom || calls != 1 { //nolint:errorlint // must be boom itself, not a wrapper
 		t.Fatalf("err=%v calls=%d, want boom after one call", err, calls)
 	}
 
@@ -79,7 +79,7 @@ func TestRetryBusy_SucceedsAndStopsOnOtherErrors(t *testing.T) {
 	retryAll := noWait
 	retryAll.MaxAttempts = 3
 	retryAll.Retryable = func(error) bool { return true }
-	if err := RetryBusy(context.Background(), func() error { calls++; return boom }, retryAll); err != boom || calls != 3 {
+	if err := RetryBusy(context.Background(), func() error { calls++; return boom }, retryAll); err != boom || calls != 3 { //nolint:errorlint // must be boom itself, not a LockedError wrapping it
 		t.Fatalf("err=%v calls=%d, want boom after three calls", err, calls)
 	}
 }

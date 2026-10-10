@@ -19,7 +19,7 @@ payloads:
 matchers_condtion: and
 matchers:
   - type: body
-    contians: "49"
+    contans: "49"
 `
 
 // TestLintYAML_UnknownKeyWithSuggestionAndLine: every unknown key is an error
@@ -38,7 +38,7 @@ func TestLintYAML_UnknownKeyWithSuggestionAndLine(t *testing.T) {
 	assert.Equal(t, 1, unknown[0].Col)
 	assert.Equal(t, `unknown key "matchers_condtion" (did you mean "matchers_condition"?)`, unknown[0].Message)
 	assert.Equal(t, 10, unknown[1].Line)
-	assert.Contains(t, unknown[1].Message, `matchers[0].contians`)
+	assert.Contains(t, unknown[1].Message, `matchers[0].contans`)
 	assert.Contains(t, unknown[1].Message, `did you mean "contains"?`)
 }
 

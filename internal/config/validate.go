@@ -131,7 +131,7 @@ func ValidateScope(s ScopeConfig) []Issue {
 		}
 	}
 
-	if inc := s.Host.Include; len(inc) > 0 && !(len(inc) == 1 && inc[0] == "*") {
+	if inc := s.Host.Include; len(inc) > 0 && (len(inc) != 1 || inc[0] != "*") {
 		wild := false
 		for _, p := range inc {
 			if strings.Contains(p, "*") {

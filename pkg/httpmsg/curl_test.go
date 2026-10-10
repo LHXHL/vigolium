@@ -20,7 +20,6 @@ type curlCase struct {
 	method  string
 	url     string
 	headers map[string]string // must be present after the round trip
-	absent  []string          // must not be present after the round trip
 	body    string
 	hints   func(t *testing.T, h curl.TransportHints)
 }
