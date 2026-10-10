@@ -14,4 +14,3 @@ module.go printModuleJSON 1
 scan_url.go outputScanResult 2
 storage_ls.go runStorageLs 1
 storage_presign.go runStoragePresign 1
-update.go runUpdateCmd 1

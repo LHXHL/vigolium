@@ -1,4 +1,4 @@
-.PHONY: build build-prof build-embedded build-all snapshot release public public-release github-release prepare-public-scripts clean test test-unit test-integration test-spitolas-browser test-browser-conformance test-e2e test-e2e-api test-e2e-agent test-e2e-rest-scan test-e2e-postgres test-canary sanity-check test-e2e-vampi test-e2e-dvwa test-e2e-juiceshop test-e2e-browser-fallback test-e2e-piolium test-benchmark test-benchmark-whitebox test-benchmark-blackbox test-benchmark-all test-benchmark-crapi test-benchmark-vuln-java test-benchmark-vuln-nginx test-benchmark-coverage test-agent-benchmark test-agent-parsing test-agent-quality test-agent-handoff test-agent-benchmark-e2e benchmark-agent-generate test-coverage coverage-gate coverage-combined test-coverage-check test-race test-ci test-xbow test-xbow-ssti test-xbow-xss test-xbow-sqli test-xbow-lfi test-xbow-cmdi test-xbow-ssrf test-xbow-xxe xbow-build lint verify-generated fmt tidy deps deps-chrome deps-chrome-update install install-gotestsum swagger help postgres-up postgres-down postgres-logs postgres-status crapi-up crapi-down crapi-logs crapi-status juiceshop-up juiceshop-down juiceshop-logs juiceshop-status vampi-up vampi-down vampi-logs vampi-status vulnerable-java-up vulnerable-java-down vulnerable-java-logs vulnerable-java-status vulnerable-nginx-up vulnerable-nginx-down vulnerable-nginx-logs vulnerable-nginx-status apps-up apps-down docker docker-build docker-build-prod docker-run docker-push docker-buildx-setup docker-publish update-jstangle ensure-jstangle sync-audit update-audit ensure-audit ensure-audit-dist restage-host-audit build-audit update-ui ssh-testbed-keygen ssh-testbed-up ssh-testbed-down ssh-testbed-status ssh-testbed-logs generate-metadata prepare-release-scripts release-verify release-prune cdn-sync bump-version npm-build npm-pack npm-publish
+.PHONY: build build-prof build-embedded build-all snapshot release public public-release github-release prepare-public-scripts clean test test-unit test-integration test-spitolas-browser test-browser-conformance test-e2e test-e2e-api test-e2e-agent test-e2e-rest-scan test-e2e-postgres test-canary sanity-check test-e2e-vampi test-e2e-dvwa test-e2e-juiceshop test-e2e-browser-fallback test-e2e-piolium test-benchmark test-benchmark-whitebox test-benchmark-blackbox test-benchmark-all test-benchmark-crapi test-benchmark-vuln-java test-benchmark-vuln-nginx test-benchmark-coverage test-agent-benchmark test-agent-parsing test-agent-quality test-agent-handoff test-agent-benchmark-e2e benchmark-agent-generate test-coverage coverage-gate coverage-combined test-coverage-check test-race test-ci test-xbow test-xbow-ssti test-xbow-xss test-xbow-sqli test-xbow-lfi test-xbow-cmdi test-xbow-ssrf test-xbow-xxe xbow-build lint verify-generated fmt tidy deps deps-chrome deps-chrome-update install install-gotestsum swagger help postgres-up postgres-down postgres-logs postgres-status crapi-up crapi-down crapi-logs crapi-status juiceshop-up juiceshop-down juiceshop-logs juiceshop-status vampi-up vampi-down vampi-logs vampi-status vulnerable-java-up vulnerable-java-down vulnerable-java-logs vulnerable-java-status vulnerable-nginx-up vulnerable-nginx-down vulnerable-nginx-logs vulnerable-nginx-status apps-up apps-down docker docker-build docker-build-prod docker-run docker-push docker-buildx-setup docker-publish update-jstangle ensure-jstangle sync-audit update-audit ensure-audit ensure-audit-dist restage-host-audit build-audit update-ui ssh-testbed-keygen ssh-testbed-up ssh-testbed-down ssh-testbed-status ssh-testbed-logs generate-metadata prepare-release-scripts release-verify release-sign release-prune cdn-sync bump-version npm-build npm-pack npm-publish
 # Phony targets defined in their own sections below (declared here so a stray
 # same-named file can never shadow them).
 .PHONY: all build-linux build-darwin build-windows deps-chrome-cft sync-platform sync-skills \
@@ -1227,6 +1227,31 @@ release-verify:
 	@VERSION="$(VERSION)" TARGETS="$(PUBLIC_TARGETS)" REQUIRE="$(RELEASE_REQUIRE)" \
 		bash build/scripts/release-verify.sh "$(or $(DIST),$(RELEASE_DIST))"
 
+# Sign a dist dir's checksums.txt with the offline minisign release key,
+# writing checksums.txt.minisig beside it. One signature covers every archive
+# through its sha256 line. The trusted comment names the version: `vigolium
+# update` refuses a signature whose comment names any other release, so an old
+# signed checksums.txt cannot be replayed under a new metadata.json. The
+# matching public keys live in pkg/selfupdate/keys.go (current + next slot) and
+# in the installers' MINISIGN_PUBKEY. Runs after release-verify, before any
+# upload. When MINISIGN_PUB exists the fresh signature is verified with it.
+# Usage: make release-sign DIST=build/dist [MINISIGN_KEY=…] [MINISIGN_PUB=…]
+MINISIGN_KEY?=$(HOME)/.minisign/vigolium.key
+MINISIGN_PUB?=$(HOME)/.minisign/vigolium.pub
+release-sign:
+	@command -v minisign >/dev/null 2>&1 || { echo "\033[31m[!] release-sign: minisign is required (https://jedisct1.github.io/minisign/)\033[0m" >&2; exit 1; }
+	@set -e; dist="$(or $(DIST),$(RELEASE_DIST))"; \
+		[ -s "$$dist/checksums.txt" ] || { echo "\033[31m[!] release-sign: missing $$dist/checksums.txt\033[0m" >&2; exit 1; }; \
+		[ -f "$(MINISIGN_KEY)" ] || { echo "\033[31m[!] release-sign: secret key not found at $(MINISIGN_KEY) (set MINISIGN_KEY=…)\033[0m" >&2; exit 1; }; \
+		rm -f "$$dist/checksums.txt.minisig"; \
+		echo "$(PREFIX) Signing $$dist/checksums.txt (vigolium $(VERSION))..."; \
+		minisign -S -s "$(MINISIGN_KEY)" -m "$$dist/checksums.txt" -x "$$dist/checksums.txt.minisig" \
+			-t "vigolium $(VERSION)" -c "vigolium $(VERSION) release checksums"; \
+		if [ -f "$(MINISIGN_PUB)" ]; then \
+			minisign -V -q -p "$(MINISIGN_PUB)" -m "$$dist/checksums.txt" -x "$$dist/checksums.txt.minisig"; \
+			echo "$(PREFIX) Signature verified with $(MINISIGN_PUB)"; \
+		fi
+
 # Delete old vigolium_* archives from an R2 prefix, keeping everything in the
 # new checksums.txt plus the last RELEASE_KEEP versions (rollback window).
 # Never touches install.sh/bootstrap.sh/metadata.json/checksums.txt. Runs only
@@ -1249,10 +1274,11 @@ release: prepare-release-scripts ensure-audit-dist ensure-jstangle-dist
 	@$(MAKE) restage-host-audit
 	@$(MAKE) generate-metadata
 	@$(MAKE) release-verify DIST=build/dist RELEASE_REQUIRE="build/scripts/nightly-install.sh build/scripts/bootstrap.sh"
+	@$(MAKE) release-sign DIST=build/dist
 	@echo "$(PREFIX) Uploading to R2 (archives first, version pointer last)..."
 	@set -e; \
 		mc cp build/dist/*.tar.gz build/dist/*.zip r2/vigolium-dist/$(R2_PREFIX)/; \
-		mc cp build/dist/checksums.txt r2/vigolium-dist/$(R2_PREFIX)/; \
+		mc cp build/dist/checksums.txt build/dist/checksums.txt.minisig r2/vigolium-dist/$(R2_PREFIX)/; \
 		mc cp build/scripts/bootstrap.sh r2/vigolium-dist/$(R2_PREFIX)/; \
 		mc cp build/scripts/nightly-install.sh r2/vigolium-dist/$(R2_PREFIX)/install.sh; \
 		mc cp build/dist/metadata.json r2/vigolium-dist/$(R2_PREFIX)/
@@ -1302,11 +1328,12 @@ public-release: prepare-public-scripts ensure-audit-dist ensure-jstangle-dist
 	@printf '{\n  "version": "%s",\n  "commit": "%s",\n  "build_time": "%s"\n}\n' \
 		"$(VERSION)" "$(COMMIT_HASH)" "$(BUILD_TIME)" > $(PUBLIC_DIST_DIR)/metadata.json
 	@$(MAKE) release-verify DIST=$(PUBLIC_DIST_DIR) RELEASE_REQUIRE="build/public-install.sh"
+	@$(MAKE) release-sign DIST=$(PUBLIC_DIST_DIR)
 	# Retain older versioned archives for installed package recipes and rollbacks.
 	# Same ordering as `release`: archives first, version pointer (metadata.json) last.
 	@echo "$(PREFIX) Uploading public artifacts to R2 (archives first, version pointer last)..."
 	mc cp $(PUBLIC_DIST_DIR)/*.tar.gz $(PUBLIC_DIST_DIR)/*.zip r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
-	mc cp $(PUBLIC_DIST_DIR)/checksums.txt r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
+	mc cp $(PUBLIC_DIST_DIR)/checksums.txt $(PUBLIC_DIST_DIR)/checksums.txt.minisig r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
 	mc cp build/public-install.sh r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/install.sh
 	mc cp $(PUBLIC_DIST_DIR)/metadata.json r2/vigolium-dist/$(R2_PUBLIC_PREFIX)/
 	@echo "$(PREFIX) Public release uploaded to $(PUBLIC_INSTALL_BASE_URL)/"

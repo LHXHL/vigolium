@@ -88,7 +88,8 @@ Higher-precedence sources override lower ones. Within the config file, environme
 | `VIGOLIUM_BURP_BRIDGE_URL` | Default loopback Burp bridge URL for bridge-aware commands |
 | `VIGOLIUM_HOME` | Base directory for Vigolium data (used by the installer; defaults to `~/.vigolium`) |
 | `VIGOLIUM_DISABLE_UPDATE_CHECK` | Set truthy to disable the periodic "new version available" check entirely |
-| `VIGOLIUM_AUTO_UPDATE` | Set truthy to silently run `vigolium update` and re-exec the new binary when a newer release is detected |
+| `VIGOLIUM_AUTO_UPDATE` | Set truthy to update the binary in place and re-exec it when a newer release is detected (interactive terminals only; see [Update check](#update-check)) |
+| `VIGOLIUM_UPDATE_BASE_URL` | Release prefix `vigolium update` reads `metadata.json`, `checksums.txt` and its `.minisig` from (default `https://cdn.vigolium.com/vigolium-release`; https only). Signatures are still required |
 
 ### Session database
 
@@ -123,7 +124,9 @@ On startup Vigolium compares the running version against the latest `@vigolium/v
   Run `vigolium update` to upgrade.
 ```
 
-The check is automatically skipped for `--json`, CI (`--ci-output-format`), and non-interactive (piped) output, and for the `version`, `update`, and `init` commands. Set `VIGOLIUM_DISABLE_UPDATE_CHECK=1` to turn it off, or `VIGOLIUM_AUTO_UPDATE=1` to have Vigolium silently update and re-exec the freshly installed binary to continue the current command.
+The check is automatically skipped for `--json`, CI (`--ci-output-format`), and non-interactive (piped) output, and for the `version`, `update`, and `init` commands. Set `VIGOLIUM_DISABLE_UPDATE_CHECK=1` to turn it off, or `VIGOLIUM_AUTO_UPDATE=1` to have Vigolium update the running binary in place (the same signed, verified path as `vigolium update`) and re-exec it to continue the current command.
+
+Auto-update never acts when the caller is not a person at a terminal: it is off under `-j`, `--events` and `--ci-output-format`, when stdout or stderr is not a TTY, for `vigolium server`, when any of `CI`, `CONTINUOUS_INTEGRATION`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `JENKINS_URL`, `VIGOLIUM_AGENT`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_SANDBOX`, `CURSOR_AGENT` or `GEMINI_CLI` is set (to anything but `0`/`false`), and for binaries run by the npm package or Homebrew. In those cases the notice flow applies instead.
 
 Any environment variable can also be interpolated inside `vigolium-configs.yaml`:
 

@@ -44,8 +44,8 @@ The npm install above works on Windows. Alternatively, download
 put `vigolium.exe` somewhere on your `PATH`.
 
 > Windows ships as x64 only; on Windows ARM it runs under emulation. The shell
-> installer above is POSIX-only, so `vigolium update` is not available on
-> Windows — re-run the npm install or download the newer zip to upgrade.
+> installer above is POSIX-only; a zip install upgrades in place with
+> `vigolium update`, and an npm install by re-running the npm install.
 
 <details>
 <summary>Other method like Docker or Build from source</summary>

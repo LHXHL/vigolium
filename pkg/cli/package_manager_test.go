@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,8 +18,9 @@ func TestManagedPackagePreventsSelfUpdate(t *testing.T) {
 			if !updateCheckHardDisabled(&cobra.Command{Use: "doctor"}, "v1.0.0") {
 				t.Fatal("managed installation would contact npm or auto-update")
 			}
-			// Guard must precede invoking curl/bash, even on explicit update.
-			err := runInstallScript(context.Background(), io.Discard)
+			// Guard must precede any download, even on explicit update, and
+			// --install-dir does not lift it.
+			err := binaryUpdateRefusal(true)
 			if err == nil || !strings.Contains(err.Error(), packageManagerUpgrade(manager)) || !strings.Contains(err.Error(), "--skip-binary") {
 				t.Fatalf("expected package upgrade and template-only instructions, got %v", err)
 			}
