@@ -95,6 +95,11 @@ type Runner struct {
 	// See armRequestBudget.
 	requestBudget *egress.Budget
 
+	// authAbort cancels the running scan with an *AuthLostError when a session
+	// configured with reauth.on_failure: abort is lost (see armAuthAbort).
+	// Atomic: the live sessions call it from their own goroutines.
+	authAbort atomic.Pointer[context.CancelCauseFunc]
+
 	// scanOutcome collects the per-phase outcomes this scan produced, which the
 	// finalizer persists on the scan row and the terminal banner reads. Reset at
 	// the top of RunNativeScan; see scanOutcome.
@@ -175,6 +180,11 @@ type phaseInfra struct {
 	// classifies a failure into some code, so a separate bool would only be
 	// another name for this field being set.
 	authFailureReason string
+
+	// sessions keeps the Manager and the live sessions alive for the scan, so
+	// an expired session can be logged in again mid-scan (see
+	// runner_live_sessions.go). Nil when no session has a check block.
+	sessions *liveSessions
 }
 
 // compareSession pairs a named session with its dedicated HTTP requester.
@@ -188,6 +198,8 @@ type compareSession struct {
 func (p *phaseInfra) Close() {
 	// Idempotent: the dynamic-assessment phase usually closed it already.
 	p.oast.Close()
+	// Stop the live sessions' probe timers and any re-login in flight.
+	p.sessions.close()
 	// Return idle sockets before dropping the requester. This phase owns it, so
 	// nothing else is still reading through its transport. Compare-session
 	// requesters are separate owners with their own pools and are released

@@ -315,6 +315,8 @@ What each type is for:
 | `phase.finished` | `status` plus `reasons`/`limits` (below) for that phase. |
 | `scan.interrupting` | **Nonterminal.** A shutdown began (SIGINT/SIGTERM). The terminal event still follows — do not treat this as the end of the stream. |
 | `scan.finished` | Terminal. `status`, `findings_by_severity`, `records_written`, and `stop_reason`/`reasons` when coverage was lost. `--max-requests` running out ends the scan `curtailed` with `stop_reason: request_budget`; hosts that used their `--max-requests-per-host` are listed in `budget_exhausted_hosts` (their phases carry the `host_request_budget` limit). `extensions_failed` lists the paths of extensions that failed to load. |
+| `auth.session_suspect` | A session's responses (or its proactive probe) look logged out: `session`, `gen` (credential generation), `detail` (`status`/`redirect`/`body`/`interval`). The `check.url` probe confirms before any re-login. |
+| `auth.relogin` | A re-login cycle ended: `session`, `gen` (new generation when `ok`), `ok`, `count` (logins tried), `message` on failure. `ok: false` means the session is lost: phases go partial with `auth_lost`. |
 
 ### Reserved types and fields
 
@@ -327,7 +329,6 @@ them while they are missing.
 |---|---|---|
 | `scan.plan` | The resolved plan: phases, budgets, targets, estimate. Second event on every stream. | v0.7 |
 | `scan.setup` | A first-run install step: `component`, `state` (`started`/`finished`/`failed`), `bytes`, `duration_ms`. | v0.7 |
-| `auth.session_suspect` / `auth.relogin` | Responses look logged out; a re-login attempt and its result. | not yet scheduled |
 | `module.error` | Module failures, rate-limited: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`/`load`), `message`, `count`. | v0.7 |
 | `extension.failed` | An extension failed to load or run: `module_id`, `message`. | v0.6 |
 
@@ -360,8 +361,8 @@ not empty.
 
 | Field | On | Means |
 |---|---|---|
-| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), `targets_unreachable` (some admitted targets gave no HTTP answer to the preflight GET, or a quarantined host's items were skipped), the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), and the stop reason `no_targets_reachable` (no admitted target answered; no phase ran, exit 1), … Reserved, not emitted yet: `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`. |
-| `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`, `responses_while_logged_out`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
+| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), `targets_unreachable` (some admitted targets gave no HTTP answer to the preflight GET, or a quarantined host's items were skipped), the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), and the stop reason `no_targets_reachable` (no admitted target answered; no phase ran, exit 1), `auth_lost` (a session expired mid-scan and re-login did not restore it; with `reauth.on_failure: abort` it is also the `stop_reason`), … Reserved, not emitted yet: `request_budget`, `phase_error`, `extensions_all_failed`. |
+| `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`, and `responses_while_logged_out` — responses a phase received while a session was logged out, counted in the phase's `counts`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
 | `stop_reason` | `scan.finished` | The scan-level roll-up of why the run stopped launching work. |
 
 The same facts are persisted on the scan row as `completeness`

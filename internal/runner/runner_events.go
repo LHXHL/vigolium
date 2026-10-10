@@ -85,6 +85,22 @@ type phaseTracker struct {
 	// budgetHosts are the hosts whose --max-requests-per-host ran out during
 	// the phase (see noteHostBudget). Guarded by mu.
 	budgetHosts map[string]struct{}
+
+	// finishers run in finish, before the outcome is read (see onFinish).
+	// Guarded by mu.
+	finishers []func(*phaseTracker)
+}
+
+// onFinish registers fn to run when the phase finishes, before its outcome is
+// snapshotted, so it can still mark reasons, limits and counts — for state
+// that lives outside the phase (a live session's logged-out tally).
+func (t *phaseTracker) onFinish(fn func(*phaseTracker)) {
+	if t == nil || fn == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.finishers = append(t.finishers, fn)
 }
 
 // Units for phase progress. One table so a consumer sees one spelling per kind.
@@ -529,6 +545,12 @@ func (t *phaseTracker) finish(ctx context.Context, err error) database.PhaseOutc
 	// Ctrl-C.
 	if ctx != nil && ctx.Err() != nil {
 		t.markPartial(contextStopReason(ctx))
+	}
+	t.mu.Lock()
+	finishers := t.finishers
+	t.mu.Unlock()
+	for _, fn := range finishers {
+		fn(t)
 	}
 
 	out := t.outcome()

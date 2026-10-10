@@ -476,9 +476,71 @@ Validation (`auth lint`, and every loader before a session is used):
   `check.url` to evaluate it on, `reauth` with no `check`, and `reauth` on a
   static-header session (nothing to re-run).
 
-The `check` block is used today by `vigolium auth check`. In-scan sampling and
-re-login using `check`/`reauth` are not enforced yet: a native scan still logs
-in once at start.
+The `check` block drives `vigolium auth check` and, during a native scan,
+in-scan re-login (below).
+
+### In-scan re-login
+
+A session with a `check` block (its own, or one the `scanning_strategy.session`
+defaults give it) is kept live for the whole scan:
+
+1. **Sampling.** Every response the scan receives with the session's
+   credentials is matched against `logged_out`: `status` and `redirect_regex`
+   (against `Location`) on every response, `body_regex` on one response in
+   `sample_every` (first 64 KiB). Responses served from the request cache are
+   not fresh evidence and are not sampled.
+2. **Confirming.** A match marks the session *suspect* and emits
+   `auth.session_suspect`. With a `check.url`, one probe is sent with the
+   current credentials: if it is still logged in (`logged_in` holds, or with
+   no `logged_in` rule the probe is not refused, redirected to a login page or
+   matched by `logged_out`), the session stays valid, which is the common case
+   of a module that provoked a 401 on purpose. Without a `check.url`, three
+   matches within 10 seconds confirm the logout.
+3. **Re-login.** The login flow runs again on a copy of the session, through
+   the same login transport (proxy, TLS stance, the egress gate's priority
+   lane, so it never waits behind the scan's own requests). Up to
+   `reauth.max_attempts` attempts, waiting `backoff` after the first failure
+   and doubling it after each one. Success publishes the new credentials as
+   the next *generation* and emits `auth.relogin` with `ok: true`.
+4. **One login per expiry.** However many workers see the 401 at once, only
+   the first starts the confirm and the re-login. A response to an older
+   generation's credentials (in flight before the re-login) is never evidence
+   against the new ones.
+5. **Pausing.** With `pause_traffic: true` (the default) requests for this
+   session wait while the re-login runs, at most the login budget (2 minutes),
+   and leave with the new credentials. With `false` they keep going with the
+   old ones.
+6. **Proactive probe.** `check.interval` re-runs the `check.url` probe at most
+   that often even when no response looked logged out.
+
+When every attempt fails (or `reauth.enabled` is false, or the session has
+static headers and nothing to re-run) the session is *lost*: `auth.relogin`
+reports `ok: false` with the error, the running phase and every later phase
+that sends with that session are recorded partial with the reason `auth_lost`,
+and the scan carries on unauthenticated. With `reauth.on_failure: abort` the
+scan stops instead: the remaining phases are skipped with `auth_lost` and the
+command exits 1 with `error.code` `login_failed`.
+
+Responses received while a session was logged out (logged-out matches, plus
+every response once the session is lost) ran their work unauthenticated. The
+phase reports them as the `responses_while_logged_out` limit with the number
+under `counts.responses_while_logged_out`; they are not re-queued.
+
+Credential precedence: the live session's current headers are applied after
+the scan's frozen copies, so a re-login takes effect on every requester that
+carries the session (discovery and spidering's requester when
+`use_in_discovery` is true, the assessment view otherwise, and each compare
+session's own requester). A header you set explicitly with `-H` is never taken
+over by the session: the explicit value is sent.
+
+`check.url`, when relative, resolves against the first scan target (else the
+login URL). Credential-stripped requests (the authorization-differential
+modules' anonymous replays) are never sampled, so their deliberate 401s cannot
+trigger a re-login. Events: `auth.session_suspect` carries `session`, `gen`
+(the suspected credential generation, from 1) and `detail` (`status`,
+`redirect`, `body`, `interval`); `auth.relogin` carries `session`, `gen` (the
+new generation when `ok`), `ok`, `count` (logins tried) and `message` on
+failure.
 
 ### `vigolium auth check`
 
@@ -602,7 +664,7 @@ vigolium scan https://app.com \
 |-------|---------------|
 | Discovery / Spidering | Primary session only (controlled by `use_in_discovery`) |
 | DynamicAssessment | Primary session for main scanning; compare sessions for IDOR/BOLA replay (controlled by `compare_enabled`) |
-| KnownIssueScan | Primary session headers (nuclei runs its own HTTP stack and receives the headers directly) |
+| KnownIssueScan | Primary session headers (nuclei runs its own HTTP stack and receives the headers directly, as of the phase start: a re-login during the phase does not reach it) |
 
 With `use_in_discovery: false`, Discovery and Spidering run unauthenticated and
 DynamicAssessment and KnownIssueScan still authenticate — the setting keeps the
@@ -668,11 +730,17 @@ cause. See [Scan completeness](../api-references/scan.md#scan-completeness).
 
 ## Current Authentication Limitations
 
-- Login flows are hydrated once during scan initialization. The session
-  `check`/`reauth` blocks (and their `scanning_strategy.session` defaults) are
-  validated and drive `vigolium auth check`, but a native scan does not yet
-  sample traffic or re-login with them. Ensure a token's lifetime covers the
-  scan or divide a long scan into shorter runs.
+- Only sessions with a `check` block are re-logged in mid-scan (see
+  [In-scan re-login](#in-scan-re-login)); others log in once during scan
+  initialization, so a token's lifetime must cover the scan.
+- Re-login does not reach the spidering browser, which keeps the credentials it
+  launched with, nor a known-issue scan already running: nuclei takes a
+  snapshot of the headers when its phase starts (it gets the newest generation
+  at that point).
+- Work lost while a session was logged out is counted
+  (`responses_while_logged_out`), not re-queued.
+- Sessions loaded from the database have no `check`/`reauth` columns, so they
+  are never re-logged in.
 - Pass multi-step configurations directly with `--auth-file`. `vigolium auth
   load` currently validates and persists only single-step login fields, so a
   stored multi-step flow will not round-trip correctly.
@@ -729,8 +797,9 @@ scanning_strategy:
 | `reauth_on_status` | []int | `[]` | Default `check.logged_out.status` for sessions that do not set one. |
 | `validate_url` | string | `""` | Default `check.url`: an `http(s)` URL or a `/path`. `vigolium auth check` uses it when `--url` is not given. |
 
-These three are defaults for the [logged-in check](#logged-in-check). In-scan
-sampling and re-login are not enforced yet.
+These three are defaults for the [logged-in check](#logged-in-check), and so
+for [in-scan re-login](#in-scan-re-login): a session that gets a `check` block
+from them is sampled and re-logged in like one that declares it.
 
 ### Session Directory Resolution
 

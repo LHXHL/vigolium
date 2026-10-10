@@ -85,6 +85,8 @@ func contextStopReason(ctx context.Context) string {
 	switch {
 	case egress.BudgetCause(ctx) != nil:
 		return database.ReasonRequestBudget
+	case authLostCause(ctx) != nil:
+		return database.ReasonAuthLost
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return database.ReasonScanBudget
 	default:

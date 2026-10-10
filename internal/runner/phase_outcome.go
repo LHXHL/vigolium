@@ -282,6 +282,9 @@ func scanStopReason(budgetCtx, runCtx context.Context) string {
 		// --max-requests ran out: the request budget cancelled the scan
 		// context with a *egress.BudgetError as its cause.
 		return database.ReasonRequestBudget
+	case authLostCause(budgetCtx) != nil:
+		// A session lost under reauth.on_failure: abort cancelled the scan.
+		return database.ReasonAuthLost
 	case budgetCtx != nil && errors.Is(budgetCtx.Err(), context.DeadlineExceeded):
 		return database.ReasonScanBudget
 	case budgetCtx != nil && budgetCtx.Err() != nil:

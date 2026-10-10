@@ -155,6 +155,68 @@ func (m *Manager) HydrateSessionsContext(ctx context.Context) error {
 	return nil
 }
 
+// Rehydrate runs the named session's login flow again and returns the fresh
+// credential headers, for a scan whose session expired mid-run (LiveSession).
+//
+// It is safe to call from several goroutines and while the scan reads the
+// sessions: the flow runs on a CLONE of the session with an empty header map,
+// so the shared Session (and its Headers map, which the manager handed out at
+// setup) is never mutated. The login goes out over the manager's login
+// transport, so it follows the scan's proxy, TLS stance and egress gate (the
+// priority lane under GatedLoginTransport), bounded by ctx and by the
+// manager's login budget.
+func (m *Manager) Rehydrate(ctx context.Context, name string) (map[string]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var src *Session
+	for _, s := range m.sessions {
+		if s.Name == name {
+			src = s
+			break
+		}
+	}
+	if src == nil {
+		return nil, fmt.Errorf("session %q: not managed", name)
+	}
+	if src.Login == nil {
+		return nil, fmt.Errorf("session %q: no login flow to re-run (static headers cannot be refreshed)", name)
+	}
+	budget := m.loginBudget
+	if budget <= 0 {
+		budget = DefaultLoginBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	clone := *src
+	flow := *src.Login // runLogin normalizes the flow in place: give it its own copy
+	clone.Login = &flow
+	clone.Headers = make(map[string]string)
+	clone.hydrated = false
+	if err := executeLogin(ctx, &clone, m.loginClient()); err != nil {
+		return nil, err
+	}
+	return clone.Headers, nil
+}
+
+// probeClient is the client a LiveSession's logged-in probe uses: the login
+// transport (proxy, target TLS, the egress gate's priority lane) with
+// redirects NOT followed, so a 302 to the login page is seen as such.
+func (m *Manager) probeClient() *http.Client {
+	c := m.loginClient()
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
+}
+
+// LoginBudget is the total time one hydration (or one re-login) may take.
+func (m *Manager) LoginBudget() time.Duration {
+	if m == nil || m.loginBudget <= 0 {
+		return DefaultLoginBudget
+	}
+	return m.loginBudget
+}
+
 // loginClient builds the HTTP client the login flows share: the manager's
 // transport (proxy + target TLS policy), redirects followed so a login that
 // lands its Set-Cookie on a 302 still works, and a per-request timeout that

@@ -22,6 +22,7 @@ import (
 	"github.com/projectdiscovery/rawhttp"
 	"github.com/projectdiscovery/retryablehttp-go"
 	httpUtils "github.com/projectdiscovery/utils/http"
+	"github.com/vigolium/vigolium/pkg/authentication"
 	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/core/network"
 	"github.com/vigolium/vigolium/pkg/core/services"
@@ -171,6 +172,54 @@ type Requester struct {
 	retries int
 	// retryBackoff overrides egress.DefaultBackoff (tests).
 	retryBackoff func(attempt int) time.Duration
+	// live is the scan-time owner of the session credentials this requester
+	// sends (nil: none, or a session without a check block). A pointer, so
+	// WithContext / WithLane / WithAdditionalHeaders views share it, as they
+	// share carried. Its headers are applied after customHeaders, every
+	// response is fed back to it (Observe), and a request waits (Wait) while
+	// it re-logs in. CloneWithoutCredentials drops it: a credential-stripped
+	// view must never sample, or trigger a re-login from, its own 401s.
+	live *authentication.LiveSession
+}
+
+// WithLiveSession returns a shallow clone that sends live's credentials and
+// reports its responses to live (see Requester.live). A nil live returns a
+// clone without one.
+func (r *Requester) WithLiveSession(live *authentication.LiveSession) *Requester {
+	if r == nil {
+		return nil
+	}
+	clone := *r
+	clone.live = live
+	return &clone
+}
+
+// WithSessionCredentials is WithAdditionalHeaders for a live session: a view
+// that adds headers AND sends live's current credentials, in its own cookie
+// jar and response-cache partition even when headers is empty (every header
+// the session owns may have been pinned by an explicit -H). A nil live is
+// exactly WithAdditionalHeaders.
+func (r *Requester) WithSessionCredentials(headers []string, live *authentication.LiveSession) (*Requester, error) {
+	view, err := r.WithAdditionalHeaders(headers)
+	if err != nil || live == nil {
+		return view, err
+	}
+	if view == r {
+		if view, err = r.cloneSharingTransport(); err != nil {
+			return nil, err
+		}
+		view.clusterScope = primarySessionClusterScope
+	}
+	view.live = live
+	return view, nil
+}
+
+// LiveSession is the live session this requester sends, or nil.
+func (r *Requester) LiveSession() *authentication.LiveSession {
+	if r == nil {
+		return nil
+	}
+	return r.live
 }
 
 // edgePacer fingerprints the CDN/WAF edge fronting a host from ordinary (non-block)
@@ -860,6 +909,7 @@ func (r *Requester) CloneWithoutCredentials() (*Requester, error) {
 		return nil, err
 	}
 	view.customHeaders = stripCredentialHeaderMap(r.customHeaders)
+	view.live = nil
 	// A CONSTANT, not a per-clone id: modules call CloneWithoutCredentials inside
 	// ScanPerRequest, i.e. once per record, so a unique-per-clone scope would give
 	// every probe its own partition and silently switch clustering off for that
@@ -1156,9 +1206,16 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 		policy.MaxRetries = r.retries
 	}
 
+	// A session re-login in progress parks the request here, BEFORE the gate:
+	// a parked request must not hold the host slot the re-login needs.
+	if err := r.live.Wait(ctx); err != nil {
+		return nil, 0, err
+	}
+
 	var (
 		resp    *httpUtils.ResponseChain
 		elapsed time.Duration
+		creds   *authentication.Credentials
 	)
 	attempts, err := r.gate.Do(ctx, hostPort, r.lane, policy, func(int) error {
 		// The clock starts HERE — after the rate token and the host slot, right
@@ -1172,8 +1229,11 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 		// that only moves on success reads as a stalled scan against a failing
 		// host — the exact case a consumer most needs to see moving.
 		r.sent.Add(1)
+		// Read per attempt, so a retry after a re-login sends the new
+		// credentials and its response is attributed to their generation.
+		creds = r.live.Credentials()
 		var sendErr error
-		resp, sendErr = r.doRequest(ctx, input, opts)
+		resp, sendErr = r.doRequest(ctx, input, opts, creds)
 		elapsed = time.Since(start)
 		if sendErr != nil {
 			// Feed transport failures (timeout/reset/refused) to the adaptive
@@ -1204,6 +1264,15 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 	// through this shared requester (heuristics/discovery hit each host before the
 	// active phase), so the pre-arm lands ahead of the active-module fan-out.
 	r.maybePaceEdge(host, resp, block != nil)
+	// Feed the session's logged-out detector. Status and Location are O(1);
+	// the body is only read on the sampled responses (inside Observe).
+	if r.live != nil && creds != nil {
+		var hdr http.Header
+		if hr := resp.Response(); hr != nil {
+			hdr = hr.Header
+		}
+		r.live.Observe(creds.Gen, status, hdr, resp.BodyBytes())
+	}
 	// Forward server errors to the corroboration observer. Gate on 5xx here (not
 	// just inside report) so the URL string is materialized only for server errors,
 	// never on the 2xx/3xx/4xx hot path. No-op without an installed sink.
@@ -1434,7 +1503,7 @@ var defaultHeaderTemplate = func() http.Header {
 	return h
 }()
 
-func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, error) {
+func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options, creds *authentication.Credentials) (*httpUtils.ResponseChain, error) {
 	start := time.Now()
 
 	// Attach connection-pool tracing so scan diagnostics can surface reuse ratio /
@@ -1486,6 +1555,15 @@ func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestRes
 	// Apply custom headers (after defaults to allow override)
 	for name, value := range r.customHeaders {
 		req.Header.Set(name, value)
+	}
+	// The live session's current credentials win over the copies frozen into
+	// customHeaders at setup. They never include a header the operator set
+	// explicitly with -H (the LiveSession was built with those names pinned),
+	// so an explicit -H still wins.
+	if creds != nil {
+		for name, value := range creds.Headers {
+			req.Header.Set(name, value)
+		}
 	}
 
 	if r.services.Options.Debug {

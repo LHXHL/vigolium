@@ -97,9 +97,16 @@ sessions:
 
 `scanning_strategy.session.validate_url`, `reauth_on_status` and
 `reauth_interval` fill `check.url`, `check.logged_out.status` and
-`check.interval` for sessions that leave them unset. Today `check` drives
-`auth check`; in-scan sampling and re-login with `check`/`reauth` are not
-enforced yet (a scan logs in once).
+`check.interval` for sessions that leave them unset. `check` drives
+`auth check` and in-scan re-login: during a scan, responses are matched
+against `logged_out` (status/Location on every response, body on 1 in
+`sample_every`); a match is confirmed with the `check.url` probe (or 3 matches
+in 10s without one), then the login re-runs once for all workers (events
+`auth.session_suspect`, `auth.relogin{session,gen,ok}`). Re-login that keeps
+failing marks phases partial with `auth_lost` (or exits 1 `login_failed` under
+`on_failure: abort`); responses received while logged out are reported as the
+`responses_while_logged_out` limit and count, not re-queued. An explicit `-H`
+of the same header always wins over the session.
 
 ## Extract Rule Fields
 
@@ -440,10 +447,10 @@ frontend JavaScript.
 
 ### Current Limitations
 
-- Login flows hydrate once when a native scan starts. The session
-  `check`/`reauth` blocks and the `scanning_strategy.session` defaults
-  (`validate_url`, `reauth_on_status`, `reauth_interval`) are validated and
-  used by `auth check`, but a scan does not yet re-login with them.
+- Only sessions with a `check` block (own or from the
+  `scanning_strategy.session` defaults) re-login mid-scan; the others, and
+  sessions loaded from the DB, hydrate once at scan start. The spidering
+  browser and a running nuclei phase keep the credentials they started with.
 - Multi-step requests cannot define arbitrary per-step headers. Provider
   endpoints requiring Basic auth, `Origin`, or SDK-specific headers may need an
   authorized server-side test endpoint or a pre-acquired static token. Do not
