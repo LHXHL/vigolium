@@ -214,6 +214,7 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 		// infra.Close repeats it harmlessly.
 		defer oastService.Close()
 		r.printPhaseDetail(fmt.Sprintf("OAST: enabled via %s (out-of-band callback detection active)", oastService.ServerURL()))
+		r.reportOASTMode(oastService)
 	}
 
 	// Compute in-scope origins (scheme/host/port) to filter DB records by CLI targets.

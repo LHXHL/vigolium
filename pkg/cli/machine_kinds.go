@@ -15,6 +15,7 @@ var machineKinds = map[string]machineKind{
 	"help":     kindInteractive,
 	"kit":      kindInteractive,
 	"kit oast": kindInteractive,
+	"oast":     kindInteractive,
 
 	"completion bash":       kindInteractive,
 	"completion fish":       kindInteractive,
@@ -105,6 +106,9 @@ var machineKinds = map[string]machineKind{
 	"ingest": kindMutation,
 	"init":   kindMutation,
 	"js":     kindRead,
+
+	// Out-of-band callbacks logged by the operator's endpoint.
+	"oast ingest": kindMutation,
 
 	// Kit.
 	"kit harvest":     kindRead,

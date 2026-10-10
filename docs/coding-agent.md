@@ -458,6 +458,13 @@ vigolium scan diff --target https://app.example --last 2 -j
   candidates; nothing is written. Refused under `--glob-db`, a `.jsonl` `--db`
   and `--read-only`; `-S --db <file.sqlite>` writes that file with project
   scoping off.
+- `oast ingest <file|-> --format interactsh-json|collaborator-json|raw-log`
+  emits a `mutation` envelope (`action: "import"`): `items` = the findings it
+  saved (`nonce`, `project_uuid`, `scan_uuid`, `module_id`, `class`,
+  `target_url`, `param`, `protocol`, `severity`, `confidence`,
+  `finding_hash`), plus `format`, `callbacks`, `matched`, `unmatched` and
+  `duplicates`. It only attributes callbacks for probes planted with a
+  `{nonce}` `--oast-url`; same refusals as `finding mark`.
 - `scan diff` items are finding rows plus `change` (`new`, `unchanged`, `fixed`,
   `not_reobserved`) and `first_seen_scan`. A base-only finding is `fixed` only
   when the head is `comparable` — completed, completeness `complete`, a superset

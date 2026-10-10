@@ -67,7 +67,9 @@ func (e *UnavailableError) Unwrap() error { return e.Err }
 // (nil cfg or enabled: false); the error is always nil and is kept for API
 // stability.
 //
-// In fixed-URL mode (oast_url set) the service is ready immediately. Otherwise
+// In fixed-URL mode (oast_url set) the service is ready immediately; an
+// oast_url carrying {nonce} mints a nonce per probe and persists its context to
+// oast_payloads (see fixed.go). Otherwise
 // registration with the interactsh server starts in the background and New
 // returns without waiting: until registration succeeds Enabled() is false and
 // GenerateURL returns "". Polling starts automatically once registered. Use
@@ -89,6 +91,7 @@ func New(cfg *config.OASTConfig, emitResult func(*output.ResultEvent), repo *dat
 		return &Service{
 			ready:              ready,
 			fixedURL:           cfg.OastURL,
+			template:           parseFixedTemplate(cfg.OastURL),
 			emitResult:         emitResult,
 			resolveRequestUUID: resolveRequestUUID,
 			repo:               repo,
@@ -298,8 +301,15 @@ func (s *Service) Enabled() bool {
 // of a round still arrive while polling runs. It returns at once when no
 // callback URL was minted since the previous Flush: nothing planted, nothing to
 // wait for.
+//
+// It also writes the payload contexts a {nonce} template minted to
+// oast_payloads.
 func (s *Service) Flush() {
-	if s == nil || s.client.Load() == nil {
+	if s == nil {
+		return
+	}
+	s.flushPayloads()
+	if s.client.Load() == nil {
 		return
 	}
 	if s.minted.Swap(0) == 0 {
@@ -319,6 +329,7 @@ func (s *Service) Close() {
 	if s == nil {
 		return
 	}
+	s.flushPayloads()
 	s.lifeMu.Lock()
 	if s.closed {
 		s.lifeMu.Unlock()

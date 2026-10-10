@@ -75,7 +75,16 @@ func checkOAST(settings *config.Settings, probe bool) *CheckResult {
 		}
 	}
 	if fixed := strings.TrimSpace(o.OastURL); fixed != "" {
-		return &CheckResult{Status: StatusOK, Message: "fixed callback URL " + fixed}
+		if strings.Contains(fixed, "{nonce}") {
+			return &CheckResult{Status: StatusOK, Message: "fixed callback URL template " + fixed + " (attribute logged callbacks with `vigolium oast ingest`)"}
+		}
+		// Usable, but every probe plants the same URL, so a callback cannot
+		// be traced to the probe that caused it (oast.mode fixed-uncorrelated).
+		return &CheckResult{
+			Status:  StatusOK,
+			Message: "fixed callback URL " + fixed + " (fixed-uncorrelated: no {nonce}, callbacks cannot be attributed)",
+			Tip:     "use a {nonce} template such as https://{nonce}.cb.example.com, then `vigolium oast ingest` the endpoint's log",
+		}
 	}
 	host, addr := oastServerAddr(o.ServerURL)
 	if host == "" {

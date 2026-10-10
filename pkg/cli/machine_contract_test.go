@@ -16,6 +16,7 @@ var interactiveAllowed = map[string]string{
 	"help":             "cobra help",
 	"kit":              "group: prints help",
 	"kit oast":         "group: prints help",
+	"oast":             "group: prints help",
 	"agent olium":      "TUI",
 	"olium":            "TUI",
 	"server":           "long-running service",

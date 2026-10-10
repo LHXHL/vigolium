@@ -1079,6 +1079,45 @@ emits an `oast.unavailable` event, records the non-stopping reason
 `oast_unavailable` (the scan is `partial`), and runs without out-of-band checks.
 `grace_period` is only waited out when a round actually planted a callback URL.
 
+#### Your own callback endpoint (`oast_url`)
+
+`oast_url` (or `--oast-url`) replaces interactsh with an endpoint you run and
+log. Put `{nonce}` in it so every probe gets its own callback:
+
+```yaml
+oast:
+  oast_url: "https://{nonce}.cb.example.com"   # nonce in the host (DNS + HTTP)
+  # oast_url: "https://cb.example.com/{nonce}" # nonce in the path (HTTP only)
+```
+
+Each probe mints a nonce locally (an xid: 20 characters of `[0-9a-v]`) and
+plants the template with it, without the scheme (`<nonce>.cb.example.com`, the
+same bare shape interactsh URLs have). The nonce's context (project, scan,
+class, module, target, parameter, request hash, planted payload) is stored in
+the `oast_payloads` table. Nothing polls your endpoint: when its log holds the
+callbacks, attribute them with
+
+```bash
+vigolium oast ingest cb.log --format raw-log            # access / DNS query log, one callback per line
+vigolium oast ingest out.jsonl --format interactsh-json # interactsh-client -json
+vigolium oast ingest poll.json --format collaborator-json -j
+```
+
+`oast ingest` looks for stored nonces in each callback's host or path (case-
+insensitively), rates the callback as a live interactsh callback would, and
+saves the finding to the scan that planted the probe. Callbacks without a
+stored nonce are ignored (`unmatched`); ingesting the same log again adds
+nothing (`duplicates`). The lookup is scoped to the current project. For
+`raw-log` the protocol is guessed per line (an HTTP request line is `http`,
+SMTP verbs `smtp`, anything else `dns`, the weakest claim); `--protocol`
+sets it for every line.
+
+An `oast_url` without `{nonce}` keeps the old behaviour: every probe plants the
+same URL, so a callback cannot be traced to the probe that caused it. The scan
+says so once at the start of dynamic assessment (`oast.mode:
+fixed-uncorrelated` on stderr and as an `error` event); the scan is not marked
+partial. `doctor` shows the mode on its OAST line.
+
 ### `notify`
 
 Vigolium ships three notification channels:

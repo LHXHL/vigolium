@@ -39,6 +39,7 @@ var dbIntents = map[string]string{
 	"completion zsh":        dbIntentNone,
 	"kit":                   dbIntentNone,
 	"kit oast":              dbIntentNone,
+	"oast":                  dbIntentNone,
 	"arjun":                 dbIntentNone,
 	"ffuf":                  dbIntentNone,
 	"gau":                   dbIntentNone,
@@ -129,6 +130,9 @@ var dbIntents = map[string]string{
 	"import": "write",
 	"ingest": "write",
 	"init":   "write",
+
+	// Ingested callbacks become findings of the scan that planted them.
+	"oast ingest": "write",
 
 	// Kit utilities are offline tools.
 	"kit harvest":     dbIntentNone,

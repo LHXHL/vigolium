@@ -193,6 +193,7 @@ Full event table and field-by-field notes:
 | Pull endpoints, routes, paths, flows out of a JS bundle | `vigolium kit js-beautify -j --extract app.min.js` (check `status`, `truncated`) |
 | Find leaked keys in a JS bundle | `vigolium kit js-beautify -j --secrets app.min.js` |
 | OOB (OAST) callback URL + polling | `vigolium kit oast new` → `vigolium kit oast poll --session run.yaml` |
+| Attribute callbacks logged by your own OAST endpoint (scan ran with `--oast-url 'https://{nonce}.cb.example.com'`) | `vigolium oast ingest cb.log --format raw-log -j` |
 | Harvest known URLs for a domain | `vigolium kit harvest target.example` |
 | Crack a JWT's HMAC secret | `vigolium kit jwt-crack <token>` |
 | List/print built-in wordlists or payloads | `vigolium kit wordlist [name]` / `vigolium kit payload --class sqli` |

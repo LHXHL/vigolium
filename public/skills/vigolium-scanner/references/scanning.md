@@ -119,7 +119,7 @@ to read as "what this target looks like".
 |------|------|---------|-------------|
 | `--auth-file` | []string | — | Path to auth file (YAML/JSON, single session or `sessions:` bundle), or bare name resolved against session_dir. Repeatable. |
 | `--auth` | []string | — | Inline session in `name:Header:value` format. Repeatable. |
-| `--oast-url` | string | — | Fixed out-of-band callback URL (overrides auto-generated interactsh URL) |
+| `--oast-url` | string | — | Fixed out-of-band callback URL instead of interactsh. Put `{nonce}` in it (`https://{nonce}.cb.example.com` or `https://cb.example.com/{nonce}`) so each probe gets its own nonce; then `vigolium oast ingest <log> --format raw-log\|interactsh-json\|collaborator-json` turns the callbacks your endpoint logged into findings of the planting scan. Without `{nonce}` callbacks cannot be attributed (`oast.mode: fixed-uncorrelated`) |
 | `--max-findings-per-module` | int | `10` | Stop reporting after N findings **per module** (`0` = unlimited) |
 | `--max-host-error` | int | `30` | Skip a host after this many consecutive errors |
 | `--no-clustering` | bool | `false` | Disable deduplication of identical concurrent HTTP requests |

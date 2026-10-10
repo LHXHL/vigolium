@@ -88,6 +88,8 @@ run `vigolium <command> -h`.
 - [vigolium module enable](#vigolium-module-enable)
 - [vigolium module ls](#vigolium-module-ls)
 - [vigolium nuclei](#vigolium-nuclei)
+- [vigolium oast](#vigolium-oast)
+- [vigolium oast ingest](#vigolium-oast-ingest)
 - [vigolium olium](#vigolium-olium)
 - [vigolium params](#vigolium-params)
 - [vigolium project](#vigolium-project)
@@ -1452,6 +1454,23 @@ Run the known-issue scan using nuclei's argv (routed to `vigolium run known-issu
 
 _No command-specific flags._
 
+## vigolium oast
+
+Attribute out-of-band callbacks logged by your own OAST endpoint
+
+_No command-specific flags._
+
+## vigolium oast ingest
+
+Usage: `vigolium oast ingest [file|-]`
+
+Turn logged OAST callbacks into findings of the scan that planted them
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--protocol` | - | string | - | Protocol of every raw-log line (http, https, dns, smtp); default: guessed per line |
+| `--stateless` | `-S` | bool | `false` | Write to the standalone .sqlite named by --db with project scoping off |
+
 ## vigolium olium
 
 Usage: `vigolium olium [prompt...]`
@@ -1688,7 +1707,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--no-prefix-breaker` | - | bool | `false` | Disable per-prefix circuit breaker that stops discovery from recursing into trap directories |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
-| `--oast-url` | - | string | - | Fixed out-of-band callback URL (overrides auto-generated interactsh URL) |
+| `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
 | `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |
@@ -1795,7 +1814,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--no-prefix-breaker` | - | bool | `false` | Disable per-prefix circuit breaker that stops discovery from recursing into trap directories |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
-| `--oast-url` | - | string | - | Fixed out-of-band callback URL (overrides auto-generated interactsh URL) |
+| `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
 | `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |

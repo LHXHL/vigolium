@@ -102,6 +102,14 @@ type Service struct {
 	blindXSSSrc        string // JS script src for blind XSS payloads
 	enabledBlindXSS    bool   // whether blind XSS probing is active
 
+	// template is the parsed fixedURL when it carries {nonce} (see fixed.go);
+	// nil for interactsh mode and for a fixed URL without the placeholder.
+	template *fixedTemplate
+	// payloadMu guards pendingPayloads, the payload contexts minted from a
+	// {nonce} template and not yet written to oast_payloads.
+	payloadMu       sync.Mutex
+	pendingPayloads []*database.OASTPayload
+
 	// emitMu guards emittedRank, the finding-coalescing state. A single planted
 	// payload typically produces several callbacks — DNS A + AAAA, multiple recursive
 	// resolvers hitting the authoritative server, then the HTTP fetch leg — and
@@ -172,9 +180,21 @@ func (s *Service) GenerateURLFor(cls Class, targetURL, paramName, label, moduleI
 		cls = ClassFromLegacyLabel(label)
 	}
 
-	// Fixed URL mode: return the configured URL directly (no nonce tracking)
+	// Fixed URL mode. A {nonce} template mints a per-probe nonce that is
+	// tracked and persisted for `oast ingest`; a plain URL is returned as it
+	// is, and its callbacks cannot be attributed (fixed-uncorrelated).
 	if s.fixedURL != "" {
-		return s.fixedURL
+		if s.template == nil {
+			return s.fixedURL
+		}
+		return s.mintFixed(PayloadContext{
+			TargetURL:     targetURL,
+			ParameterName: paramName,
+			InjectionType: label,
+			Class:         cls,
+			ModuleID:      moduleID,
+			RequestHash:   requestHash,
+		})
 	}
 
 	// Still registering, or registration failed: no callback host exists yet.
@@ -216,7 +236,14 @@ func (s *Service) GenerateURLFor(cls Class, targetURL, paramName, label, moduleI
 // written at the injection point (header value, parameter value, …). A no-op
 // when OAST is in fixed-URL mode or the context has already been evicted.
 func (s *Service) RecordPayload(callbackURL, payload string) {
-	if s == nil || s.client.Load() == nil || callbackURL == "" || payload == "" {
+	if s == nil || callbackURL == "" || payload == "" {
+		return
+	}
+	if s.template != nil {
+		s.recordFixedPayload(callbackURL, payload)
+		return
+	}
+	if s.client.Load() == nil {
 		return
 	}
 	nonce := extractNonce(callbackURL)
@@ -276,7 +303,18 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 		zap.String("remote_addr", interaction.RemoteAddress),
 		zap.Bool("correlated", found))
 
-	// Save to database
+	s.recordInteraction(interaction, pctx)
+
+	// Only emit finding if we have correlation context
+	if !found {
+		return
+	}
+	s.reportCorrelated(interaction, nonce, pctx)
+}
+
+// recordInteraction stores one callback in oast_interactions, with the
+// correlated payload context when there is one (pctx may be zero).
+func (s *Service) recordInteraction(interaction *server.Interaction, pctx PayloadContext) {
 	if s.repo != nil {
 		record := &database.OASTInteraction{
 			ProjectUUID:   s.projectUUID,
@@ -299,12 +337,15 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 			zap.L().Warn("OAST: failed to save interaction", zap.Error(err))
 		}
 	}
+}
 
-	// Only emit finding if we have correlation context
-	if !found {
-		return
-	}
-
+// reportCorrelated turns a callback correlated to the payload context pctx
+// (planted with nonce) into a finding: it classifies, coalesces per emission
+// key, saves the finding to this service's scan and emits it. It is shared by
+// the live interactsh poller (handleInteraction) and `oast ingest`, which
+// passes a context restored from oast_payloads. It returns the finding, or nil
+// when the callback folded into one already reported.
+func (s *Service) reportCorrelated(interaction *server.Interaction, nonce string, pctx PayloadContext) *output.ResultEvent {
 	// Classify first (cheap, no I/O) so the emission key can depend on severity.
 	sev, conf, desc := classifyInteraction(interaction.Protocol, pctx)
 
@@ -335,7 +376,7 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 	// point), not a pile.
 	emit, upgrade := s.claimEmission(emitKey, interaction.Protocol)
 	if !emit {
-		return
+		return nil
 	}
 
 	// Recover the request that planted the payload so both the finding's trace
@@ -378,6 +419,7 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 		// description/severity that an upgrade changes.
 		DedupKey: "oast:" + emitKey,
 	}
+	result.SetSignal(output.SignalOAST)
 
 	// Attach the originating request and human-readable trace anchors so the
 	// finding answers "which request caused this callback?" on its own.
@@ -408,6 +450,7 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 	if s.emitResult != nil {
 		s.emitResult(result)
 	}
+	return result
 }
 
 // oastProtocolRank ranks an OAST callback protocol by how strongly it proves the
@@ -791,7 +834,12 @@ func oneLinePayload(s string) string {
 // header (oast_probe, log4shell/command-injection header legs, internal-header
 // probe, …). The injection-type label carries "header" for every such module.
 func isHeaderInjection(pctx PayloadContext) bool {
-	return pctx.ParameterName != "" && strings.Contains(strings.ToLower(pctx.InjectionType), "header")
+	if pctx.ParameterName == "" {
+		return false
+	}
+	// A context restored from oast_payloads has no label; its class still
+	// names the header-planting probes.
+	return pctx.Class == oastclass.HeaderHarvest || strings.Contains(strings.ToLower(pctx.InjectionType), "header")
 }
 
 // callbackHost strips any scheme/path from a stored callback URL, returning the
