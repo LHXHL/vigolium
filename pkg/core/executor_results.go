@@ -532,7 +532,7 @@ func (e *Executor) runScanFnGuarded(
 		if r := recover(); r != nil {
 			e.reportPanic("module "+moduleID, r)
 			events = nil
-			err = fmt.Errorf("module %s panicked: %v", moduleID, r)
+			err = &modulePanicError{moduleID: moduleID, value: r}
 		}
 	}()
 	return fn(ctx)

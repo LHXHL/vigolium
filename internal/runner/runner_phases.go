@@ -56,6 +56,7 @@ func (r *Runner) RunNativeScan() (err error) {
 	// here rather than at construction — otherwise the second run's scan row
 	// would carry the first run's curtailment.
 	r.scanOutcome.reset()
+	r.moduleErrors.Store(newModuleErrorLedger())
 	r.preflight = nil
 
 	// Total scan budget: when --scanning-max-duration is set, bound the WHOLE scan
@@ -184,6 +185,7 @@ func (r *Runner) RunNativeScan() (err error) {
 			finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(r.ctx), 30*time.Second)
 			defer finalCancel()
 			liveness.Stop(finalCtx)
+			r.persistModuleErrors(finalCtx, infra.scanUUID)
 			// WithOutcome, not CompleteScan: the runner is the only component that
 			// saw every phase, so it is the only one that can say whether the run
 			// actually covered its input. Everything else writes "unknown".
@@ -315,6 +317,7 @@ func (r *Runner) RunNativeScan() (err error) {
 			finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(r.ctx), 10*time.Second)
 			defer finalCancel()
 			r.printFinishedBanner(finalCtx, os.Stderr, infra.scanUUID, time.Since(scanStartedAt))
+			r.printModuleErrorSummary(os.Stderr, infra.scanUUID)
 		}()
 	}
 
@@ -483,6 +486,8 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 	if unit, ok := executorProgressUnit[phase]; ok {
 		tracker.setProgress(unit, tracker.executorProgress)
 		ctx = core.WithExecutorObserver(ctx, tracker.observeExecutor)
+		// extensions_all_failed, read off the same executors.
+		tracker.onFinish(noteExtensionsAllFailed)
 	}
 	liveness := r.liveness.Load()
 	liveness.PhaseStarted(string(phase))

@@ -105,6 +105,10 @@ type Runner struct {
 	// the top of RunNativeScan; see scanOutcome.
 	scanOutcome scanOutcome
 
+	// moduleErrors counts the running scan's failed module calls per module id
+	// (see moduleErrorLedger). Replaced at the top of RunNativeScan.
+	moduleErrors atomic.Pointer[moduleErrorLedger]
+
 	// liveness is the running scan's heartbeat (status.json and the scan row's
 	// heartbeat columns), nil outside RunNativeScan. Atomic for the same reason
 	// as currentPhase: the finding observer reads it from worker goroutines.

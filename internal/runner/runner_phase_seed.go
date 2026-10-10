@@ -19,6 +19,8 @@ func (r *Runner) seedCLITargets(ctx context.Context, infra *phaseInfra) error {
 	authWalls := newAuthWallCollector()
 
 	executorCfg := core.ExecutorConfig{
+		OnModuleError: r.noteModuleError,
+		Phase:         string(PhaseSeed),
 		Workers:       r.options.Concurrency,
 		Services:      infra.svc,
 		HTTPRequester: infra.httpRequester,

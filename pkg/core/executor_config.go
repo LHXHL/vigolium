@@ -106,6 +106,16 @@ type ExecutorConfig struct {
 	// A multi-round phase passes one shared counter so the timed-out total in the
 	// status line accumulates across the per-round executors it creates.
 	ModuleTimeouts *atomic.Int64
+	// OnModuleError, when non-nil, records one failed module call (kind is
+	// exception, timeout or panic) on an externally-owned ledger and returns
+	// that module's running error total. The runner passes one ledger to every
+	// executor of a scan, so the rate-limited module.error events count across
+	// phases and feedback rounds, and the totals reach scans.module_errors. nil
+	// = executor-local counting only.
+	OnModuleError func(moduleID, kind string) int64
+	// Phase is the canonical phase id this executor runs under, carried on the
+	// module.error events it emits. Empty leaves the field off.
+	Phase string
 	// FirstStatusInterval, when > 0 and shorter than StatusInterval, fires the
 	// very first status tick after this duration instead of waiting a full
 	// StatusInterval. Useful for long-cadence status (e.g., 2m) where users

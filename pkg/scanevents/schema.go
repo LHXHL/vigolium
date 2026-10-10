@@ -108,7 +108,7 @@ var eventFields = map[string]contract.EventFields{
 		Optional:    []string{"phase", "gen", "count", "message"},
 	},
 	TypeModuleError: {
-		Description: "Module failures, rate-limited: count is how many occurrences the line stands for.",
+		Description: "A module call failed (error_kind exception, timeout or panic). Rate-limited per module: the first 3, then every 100th; count is the module's running error total for the scan.",
 		Optional:    []string{"module_id", "phase", "url", "error_kind", "message", "count"},
 	},
 	TypeExtensionFailed: {

@@ -230,7 +230,9 @@ type Event struct {
 	Explicit *bool  `json:"explicit,omitempty"`
 	// ErrorKind classifies a module.error: exception, timeout, panic or load.
 	ErrorKind string `json:"error_kind,omitempty"`
-	// Count is how many occurrences one rate-limited line stands for.
+	// Count is the module's running error total on a module.error line (rate-
+	// limited, so a line can stand for many occurrences); auth.relogin uses it
+	// for the logins tried.
 	Count *int64 `json:"count,omitempty"`
 
 	// Live sessions (auth.session_suspect, auth.relogin): which session, the

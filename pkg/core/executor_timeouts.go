@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -240,15 +241,13 @@ var moduleResultChanPool = sync.Pool{
 }
 
 // recordPassiveResult records the module's timing/metrics and normalizes its
-// return: on error it logs at debug and drops the events (returns nil), otherwise
-// it returns the events. Shared by the inline and watchdog-goroutine completion
-// paths of runPassiveWithTimeout.
-func (e *Executor) recordPassiveResult(module modules.PassiveModule, start time.Time, events []*output.ResultEvent, err error) []*output.ResultEvent {
+// return: on error it notes the failure (noteModuleError) and drops the events
+// (returns nil), otherwise it returns the events. Shared by the inline and
+// watchdog-goroutine completion paths of runPassiveWithTimeout.
+func (e *Executor) recordPassiveResult(module modules.PassiveModule, item *httpmsg.HttpRequestResponse, start time.Time, events []*output.ResultEvent, err error) []*output.ResultEvent {
 	e.moduleMetrics.Record(module.ID(), time.Since(start), len(events), err)
 	if err != nil {
-		zap.L().Debug("Passive module error",
-			zap.String("module", module.ID()),
-			zap.Error(err))
+		e.noteModuleError(module, item, err, moduleErrorKind(err))
 		return nil
 	}
 	return events
@@ -292,11 +291,14 @@ func (e *Executor) runPassiveWithTimeout(
 	// recoverFromPanic instead of crashing an unrecovered raw goroutine). Modules
 	// that observe the context or ask for a specific timeout keep the enforced
 	// goroutine path below; the end-of-scan drain-stall cap remains the backstop.
+	// A panic is recovered here, at the module, rather than unwinding to the
+	// worker: the item's other passive modules still run, and the failure is
+	// counted against the module that caused it (error_kind panic).
 	runInline := !isContextual && !hintedTimeout
 	if runInline {
 		start := time.Now()
-		events, err := scanFn(ctx)
-		return e.recordPassiveResult(module, start, events, err)
+		events, err := e.runScanFnGuarded(ctx, module.ID(), scanFn)
+		return e.recordPassiveResult(module, item, start, events, err)
 	}
 
 	// Enforced-timeout path: contextual modules need a cancellable child (see
@@ -317,13 +319,16 @@ func (e *Executor) runPassiveWithTimeout(
 	select {
 	case r := <-ch:
 		moduleResultChanPool.Put(ch) // goroutine done; channel drained and safe to reuse
-		return e.recordPassiveResult(module, start, r.events, r.err)
+		return e.recordPassiveResult(module, item, start, r.events, r.err)
 	case <-timeoutC:
 		// The scan goroutine is still running and still holds item, whose response
 		// is built over the item's pooled buffer. Withhold that buffer from the
 		// pool so this abandoned call cannot be fed another request's bytes.
 		markResponseBufferEscaped(ctx)
 		e.moduleMetrics.Record(module.ID(), time.Since(start), 0, nil)
+		if ctx.Err() == nil {
+			e.noteModuleError(module, item, fmt.Errorf("timed out after %s", timeout), ModuleErrorTimeout)
+		}
 		zap.L().Warn("Passive module timed out — skipping",
 			zap.String("module", module.ID()),
 			zap.String("url", item.Target()),
@@ -444,13 +449,13 @@ func (e *Executor) runActiveWithTimeout(
 		e.moduleMetrics.Record(module.ID(), time.Since(start), len(r.events), r.err)
 		if r.err != nil {
 			if isLevelDBClosed(r.err) {
+				// A store closed under a module at shutdown is not the module's
+				// failure, so it is not counted.
 				zap.L().Debug("Active module error (shutdown)",
 					zap.String("module", module.ID()),
 					zap.Error(r.err))
 			} else {
-				zap.L().Warn("Active module error",
-					zap.String("module", module.ID()),
-					zap.Error(r.err))
+				e.noteModuleError(module, item, r.err, moduleErrorKind(r.err))
 			}
 			return nil, true
 		}
@@ -467,6 +472,7 @@ func (e *Executor) runActiveWithTimeout(
 		e.moduleMetrics.Record(module.ID(), time.Since(start), 0, nil)
 		if ctx.Err() == nil {
 			e.recordModuleTimeout()
+			e.noteModuleError(module, item, fmt.Errorf("timed out after %s", timeout), ModuleErrorTimeout)
 		}
 		// Logged at debug level: a per-skip WARN floods stderr on slow targets.
 		// The running count is surfaced in the status line via OnStatus instead.

@@ -156,6 +156,8 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	authWalls := newAuthWallCollector()
 
 	executorCfg := core.ExecutorConfig{
+		OnModuleError: r.noteModuleError,
+		Phase:         string(PhaseProbe),
 		Workers:       pace.Concurrency,
 		Services:      infra.svc,
 		HTTPRequester: infra.httpRequester,

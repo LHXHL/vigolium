@@ -258,6 +258,8 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 	authWalls := newAuthWallCollector()
 
 	executorCfg := core.ExecutorConfig{
+		OnModuleError: r.noteModuleError,
+		Phase:         string(PhaseDiscovery),
 		Workers:       r.options.Concurrency,
 		Services:      infra.svc,
 		HTTPRequester: infra.httpRequester,

@@ -289,8 +289,10 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	phaseAdmission := core.NewFindingAdmission()
 
 	baseExecutorCfg := core.ExecutorConfig{
-		Workers:  daConcurrency,
-		Services: infra.svc,
+		OnModuleError: r.noteModuleError,
+		Phase:         string(PhaseDynamicAssessment),
+		Workers:       daConcurrency,
+		Services:      infra.svc,
 		// The authenticated view when use_in_discovery is false; otherwise
 		// infra.httpRequester itself. See assessmentRequester.
 		HTTPRequester: daRequester,

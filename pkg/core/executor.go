@@ -51,6 +51,9 @@ type Executor struct {
 	results       atomic.Bool
 	statsTracker  *stats.Tracker
 	moduleMetrics *stats.ModuleMetrics
+	// moduleErrs counts this executor's failed module calls per module id
+	// (see noteModuleError).
+	moduleErrs moduleErrorCounts
 
 	// moduleTimeouts counts active-module invocations that hit the per-module
 	// timeout and were skipped. Surfaced via the OnStatus callback so the status

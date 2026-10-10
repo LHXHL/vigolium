@@ -357,10 +357,11 @@ What each type is for:
 | `finding.new` | Metadata only. Evidence lives in `db_path`; query it with `finding -j --with-records` afterwards. |
 | `oast.unavailable` | OAST registration with the interactsh server failed or did not finish within 3s of `dynamic-assessment` starting. `message` names the server and cause (`oast.pro: dial timeout`). Blind/out-of-band checks did not run; the phase carries the `oast_unavailable` reason and the scan is `partial`. |
 | `extension.failed` | An extension failed to load: `module_id` (when its metadata loaded), `path`, `stage` (`read`/`transpile`/`compile`/`metadata`/`schema`/`unknown_type`/`module`), `explicit` (named with `--ext`: the scan then stops, exit 2 `extension_load_failed`, unless `--ext-allow-failures`), `message`. Run failures arrive with `module.error`. |
+| `module.error` | A module call failed: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`), `message`, and `count`, the module's running total for the scan. Rate-limited per module: the first 3, then every 100th, so the last line's `count` is close to the real total and `scan.finished.module_errors` has the exact one. An `ext-*` module erroring is **your extension's bug** (fix it, then `vigolium ext lint`); a built-in module erroring means that check did not run on that item. |
 | `error` | A phase failed and the scan **carried on** — non-fatal by construction. A failure that ends the run rides on `scan.finished{status:"failed"}` instead, so this is never a reason to abandon a run that is still producing findings. |
 | `phase.finished` | `status` plus `reasons`/`limits` (below) for that phase. |
 | `scan.interrupting` | **Nonterminal.** A shutdown began (SIGINT/SIGTERM). The terminal event still follows — do not treat this as the end of the stream. |
-| `scan.finished` | Terminal. `status`, `findings_by_severity`, `records_written`, and `stop_reason`/`reasons` when coverage was lost. `--max-requests` running out ends the scan `curtailed` with `stop_reason: request_budget`; hosts that used their `--max-requests-per-host` are listed in `budget_exhausted_hosts` (their phases carry the `host_request_budget` limit). `extensions_failed` lists the paths of extensions that failed to load. |
+| `scan.finished` | Terminal. `status`, `findings_by_severity`, `records_written`, and `stop_reason`/`reasons` when coverage was lost. `--max-requests` running out ends the scan `curtailed` with `stop_reason: request_budget`; hosts that used their `--max-requests-per-host` are listed in `budget_exhausted_hosts` (their phases carry the `host_request_budget` limit). `extensions_failed` lists the paths of extensions that failed to load; `module_errors` is the error count per module id (exceptions, timeouts and panics; also on the scan row). |
 | `auth.session_suspect` | A session's responses (or its proactive probe) look logged out: `session`, `gen` (credential generation), `detail` (`status`/`redirect`/`body`/`interval`). The `check.url` probe confirms before any re-login. |
 | `auth.relogin` | A re-login cycle ended: `session`, `gen` (new generation when `ok`), `ok`, `count` (logins tried), `message` on failure. `ok: false` means the session is lost: phases go partial with `auth_lost`. |
 
@@ -374,7 +375,6 @@ them while they are missing.
 | Type | Carries | Emitted from |
 |---|---|---|
 | `scan.setup` | A first-run install step: `component`, `state` (`started`/`finished`/`failed`), `bytes`, `duration_ms`. | v0.7 |
-| `module.error` | Module failures, rate-limited: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`/`load`), `message`, `count`. | v0.7 |
 
 | Field | On | Means | Emitted from |
 |---|---|---|---|
@@ -382,7 +382,6 @@ them while they are missing.
 | `requests_in_scope` | `phase.progress`, `phase.finished` | The in-scope share of `requests_sent` (the browser crawl also counts third-party requests). Only on `spidering` and `targeted-respider`. | next release |
 | `records_basis` | `scan.finished` | Absent: `records_written` counts records stamped with this scan. `time_window`: records created since the scan started (approximate on a shared DB). | v0.6 |
 | `exports` | `scan.finished` | `[{format, path}]` for every file the scan wrote. | v0.6 |
-| `module_errors` | `scan.finished` | Error count per module id. | v0.7 |
 
 ### Terminal `status` values
 
@@ -405,7 +404,7 @@ not empty.
 
 | Field | On | Means |
 |---|---|---|
-| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), `targets_unreachable` (some admitted targets gave no HTTP answer to the preflight GET, or a quarantined host's items were skipped), the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), and the stop reason `no_targets_reachable` (no admitted target answered; no phase ran, exit 1), `auth_lost` (a session expired mid-scan and re-login did not restore it; with `reauth.on_failure: abort` it is also the `stop_reason`), … Reserved, not emitted yet: `request_budget`, `phase_error`, `extensions_all_failed`. |
+| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), `targets_unreachable` (some admitted targets gave no HTTP answer to the preflight GET, or a quarantined host's items were skipped), the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), and the stop reason `no_targets_reachable` (no admitted target answered; no phase ran, exit 1), `auth_lost` (a session expired mid-scan and re-login did not restore it; with `reauth.on_failure: abort` it is also the `stop_reason`), `extensions_all_failed` (every extension that ran failed on every item it ran on — the run's extension coverage is nil, not clean), … Reserved, not emitted yet: `request_budget`, `phase_error`. |
 | `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`, and `responses_while_logged_out` — responses a phase received while a session was logged out, counted in the phase's `counts`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
 | `stop_reason` | `scan.finished` | The scan-level roll-up of why the run stopped launching work. |
 
