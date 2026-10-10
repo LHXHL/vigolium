@@ -160,6 +160,13 @@ type RunScanRequest struct {
 	// Max scan duration (like --scanning-max-duration)
 	ScanningMaxDuration string `json:"scanning_max_duration,omitempty"`
 
+	// Request budgets (like --max-requests / --max-requests-per-host): the scan
+	// stops after max_requests requests to the targets (partial, stop_reason
+	// request_budget), and sends at most max_requests_per_host to any one host.
+	// 0 or absent = scanning_pace.max_requests / max_requests_per_host.
+	MaxRequests        int64 `json:"max_requests,omitempty"`
+	MaxRequestsPerHost int64 `json:"max_requests_per_host,omitempty"`
+
 	// Scope origin mode: all, relaxed, balanced, strict
 	ScopeOrigin string `json:"scope_origin,omitempty"`
 
@@ -228,6 +235,13 @@ type ScanAllRecordsRequest struct {
 
 	// Max scan duration (like --scanning-max-duration)
 	ScanningMaxDuration string `json:"scanning_max_duration,omitempty"`
+
+	// Request budgets (like --max-requests / --max-requests-per-host): the scan
+	// stops after max_requests requests to the targets (partial, stop_reason
+	// request_budget), and sends at most max_requests_per_host to any one host.
+	// 0 or absent = scanning_pace.max_requests / max_requests_per_host.
+	MaxRequests        int64 `json:"max_requests,omitempty"`
+	MaxRequestsPerHost int64 `json:"max_requests_per_host,omitempty"`
 
 	// Heuristics check level: none, basic, advanced
 	HeuristicsCheck string `json:"heuristics_check,omitempty"`

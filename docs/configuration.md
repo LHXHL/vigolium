@@ -278,6 +278,8 @@ scanning_pace:
   rate_limit: 100          # max requests/sec across all hosts
   max_per_host: 40         # max concurrent requests per host
   max_duration: 45m        # per-phase base duration (each phase scales it by its duration_factor)
+  max_requests: 0          # stop the scan after N requests to the targets (0 = unlimited; --max-requests)
+  max_requests_per_host: 0 # at most N requests to any one host (0 = unlimited; --max-requests-per-host)
 
   # Per-phase overrides (zero = inherit from common):
   discovery:
@@ -387,6 +389,15 @@ slot (`max_per_host`), then one counted wire attempt.
   gated; its TCP connect pre-filter is counted but not paced. The
   `tls_cert_recon` and `tls_protocol_cipher_audit` handshakes take a gated
   attempt each.
+
+- **Request budgets** (`max_requests`, `max_requests_per_host`) are checked in
+  the gate too, before the rate token: a request over budget is refused and
+  never dialed. Running out of `max_requests` stops the scan (partial,
+  `stop_reason: request_budget`); running out of `max_requests_per_host` stops
+  traffic to that host only (the `host_request_budget` limit). The browser
+  crawl's in-scope requests count toward `max_requests` within 500ms; nuclei
+  and the own-dialer paths below are not counted. See
+  [request budgets](guides/native-scan-phases.md#request-budgets).
 
 Some paths bypass the gate. `scan.started` lists them, for the phases the scan
 runs, as `egress: {gated: [...], exempt: [{path, reason}]}`:

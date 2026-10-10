@@ -364,7 +364,7 @@ func TestNewFieldsOmittedWhenUnset(t *testing.T) {
 	New(&buf, "scan-1").Emit(Event{Type: TypePhaseStarted, Phase: "discovery"})
 	for _, key := range []string{
 		"targets_admitted", "targets_rejected", "targets_reached", "targets_unreachable",
-		"budgets", "egress", "requests_in_scope", "records_basis", "exports",
+		"budgets", "request_cap_enforcement", "budget_exhausted_hosts", "egress", "requests_in_scope", "records_basis", "exports",
 		"module_errors", "extensions_failed", "error_kind", "count", "component", "state", "bytes",
 	} {
 		if strings.Contains(buf.String(), `"`+key+`"`) {

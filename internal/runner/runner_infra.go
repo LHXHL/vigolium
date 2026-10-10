@@ -114,7 +114,10 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 	// The scan's one egress gate over the three components above: every target
 	// sender (requester, discovery, login, port-sweep) admits through it or a
 	// view of it, so they share one wire-attempt counter.
-	svc.Egress = egress.New(egress.Config{Rate: svc.RateLimiter, Hosts: hostLimiter, Breaker: svc.HostErrors})
+	// The request budget (armRequestBudget) rides on the root gate, so every
+	// view taken from it — phase-local paces included — is held to it.
+	svc.Egress = egress.New(egress.Config{Rate: svc.RateLimiter, Hosts: hostLimiter, Breaker: svc.HostErrors}).
+		WithBudget(r.requestBudget)
 	infra.svc = svc
 
 	httpRequester, err := http.NewRequester(r.options, svc)

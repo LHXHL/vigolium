@@ -1570,6 +1570,8 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
+| `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
 | `--no-carry-browser-session` | - | bool | `false` | Do not carry the spidering browser's cleared session (cookies + UA) into discovery/scanning (on by default when --spider runs; scoped to the same host, respects -H) |
@@ -1664,6 +1666,8 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
+| `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
 | `--module-id` | - | stringSlice | - | Run exactly these module IDs (exact match against active AND passive modules, repeatable). Unlike -m, also selects passive modules. |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
@@ -1765,6 +1769,8 @@ Scan a raw HTTP request for vulnerabilities
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
+| `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
 | `--module-id` | - | stringSlice | - | Run exactly these module IDs (exact match against active AND passive modules, repeatable). Unlike -m, also selects passive modules. |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
 | `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
@@ -1809,6 +1815,8 @@ Scan a single URL for vulnerabilities
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
+| `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
 | `--method` | - | string | `GET` | HTTP method |
 | `--module-id` | - | stringSlice | - | Run exactly these module IDs (exact match against active AND passive modules, repeatable). Unlike -m, also selects passive modules. |
 | `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |

@@ -55,6 +55,10 @@ type ExplicitPace struct {
 	// duration instead of the scanning_pace-resolved one.
 	DiscoverMaxDuration  bool
 	SpideringMaxDuration bool
+	// MaxRequests / MaxRequestsPerHost keep the caller's request budget instead
+	// of scanning_pace.max_requests / max_requests_per_host.
+	MaxRequests        bool
+	MaxRequestsPerHost bool
 }
 
 // StrategyRequest is the strategy half of a scan request.
@@ -272,11 +276,23 @@ func ApplyScanPace(settings *config.Settings, opts *types.Options, explicit Expl
 	if !explicit.RateLimit && pace.RateLimit > 0 {
 		opts.RateLimit = pace.RateLimit
 	}
+	if !explicit.MaxRequests && pace.MaxRequests > 0 {
+		opts.MaxRequests = pace.MaxRequests
+	}
+	if !explicit.MaxRequestsPerHost && pace.MaxRequestsPerHost > 0 {
+		opts.MaxRequestsPerHost = pace.MaxRequestsPerHost
+	}
 	if d := pace.ResolvePhase("discovery").MaxDuration; !explicit.DiscoverMaxDuration && d > 0 {
 		opts.DiscoverMaxDuration = d
 	}
-	if d := pace.ResolvePhase("spidering").MaxDuration; !explicit.SpideringMaxDuration && d > 0 {
-		opts.SpideringMaxDuration = d
+	// The source travels with the value so SpideringBudget can tell a derived
+	// budget (which gets the spidering floor) from one somebody chose.
+	switch spider := pace.ResolvePhase("spidering"); {
+	case explicit.SpideringMaxDuration:
+		opts.SpideringMaxDurationSource = SpideringSourceFlag
+	case spider.MaxDuration > 0:
+		opts.SpideringMaxDuration = spider.MaxDuration
+		opts.SpideringMaxDurationSource = string(spider.Source)
 	}
 	return nil
 }

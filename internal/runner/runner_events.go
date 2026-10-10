@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,6 +81,10 @@ type phaseTracker struct {
 	// quarantined are the hosts whose items the phase's executors dropped for
 	// the dead-host breaker, merged across runs. Guarded by mu.
 	quarantined map[string]core.QuarantinedHost
+
+	// budgetHosts are the hosts whose --max-requests-per-host ran out during
+	// the phase (see noteHostBudget). Guarded by mu.
+	budgetHosts map[string]struct{}
 }
 
 // Units for phase progress. One table so a consumer sees one spelling per kind.
@@ -522,13 +525,10 @@ func (t *phaseTracker) finish(ctx context.Context, err error) database.PhaseOutc
 	// arms that log-and-continue have already called noteError themselves.
 	t.recordError(err)
 	// The context the phase ran under explains a curtailment the phase itself
-	// cannot see: the total scan budget, or an operator's Ctrl-C.
+	// cannot see: the total scan budget, the request budget, or an operator's
+	// Ctrl-C.
 	if ctx != nil && ctx.Err() != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			t.markPartial(database.ReasonScanBudget)
-		} else {
-			t.markPartial(database.ReasonCancelled)
-		}
+		t.markPartial(contextStopReason(ctx))
 	}
 
 	out := t.outcome()
@@ -582,6 +582,7 @@ func (t *phaseTracker) outcome() database.PhaseOutcome {
 		DurationMS:  time.Since(t.start).Milliseconds(),
 	}
 	out.State = database.ResolvePhaseState(out.Errors, out.Reasons, t.skipped)
+	out.BudgetExhaustedHosts = database.SortedCodes(t.budgetHosts)
 	t.fillQuarantined(&out)
 	if t.hasPersist {
 		p := t.persist

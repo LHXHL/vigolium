@@ -144,6 +144,13 @@ func validateRunScanRequest(req RunScanRequest) error {
 		return fmt.Errorf("max_per_host must be > 0")
 	}
 
+	if req.MaxRequests < 0 {
+		return fmt.Errorf("max_requests must be >= 0 (0 = unlimited)")
+	}
+	if req.MaxRequestsPerHost < 0 {
+		return fmt.Errorf("max_requests_per_host must be >= 0 (0 = unlimited)")
+	}
+
 	return nil
 }
 
@@ -228,6 +235,8 @@ func buildRunScanOptions(req RunScanRequest, projectUUID string, serverConcurren
 	if req.ScopeOrigin != "" {
 		opts.ScopeOriginMode = req.ScopeOrigin
 	}
+	opts.MaxRequests = req.MaxRequests
+	opts.MaxRequestsPerHost = req.MaxRequestsPerHost
 	return opts, nil
 }
 
@@ -246,6 +255,8 @@ func ResolveRunScanRequest(settings *config.Settings, serverConcurrency int, req
 		return nil, runner.ResolvedStrategy{}, err
 	}
 	explicit := requestExplicitPace(req.Concurrency, req.RateLimit, req.MaxPerHost)
+	explicit.MaxRequests = req.MaxRequests > 0
+	explicit.MaxRequestsPerHost = req.MaxRequestsPerHost > 0
 	strategy, err := resolveRequestStrategy(settings, opts, req.Intensity, req.ScanningProfile, runner.StrategyRequest{
 		Name:            req.Strategy,
 		HeuristicsCheck: req.HeuristicsCheck,

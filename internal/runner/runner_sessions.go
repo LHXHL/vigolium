@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/vigolium/vigolium/pkg/authentication"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
 	"go.uber.org/zap"
@@ -160,6 +161,8 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 // the honest attribution — the logins were not slow, the scan ran out of time.
 func authFailureReason(parent context.Context, err error) string {
 	switch {
+	case egress.BudgetCause(parent) != nil:
+		return database.ReasonRequestBudget
 	case errors.Is(err, context.Canceled):
 		return database.ReasonCancelled
 	case errors.Is(err, context.DeadlineExceeded):

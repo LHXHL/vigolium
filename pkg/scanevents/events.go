@@ -192,6 +192,15 @@ type Event struct {
 
 	// Budgets are the request budgets in force (scan.started).
 	Budgets *Budgets `json:"budgets,omitempty"`
+	// RequestCapEnforcement says, per planned phase, how strictly the request
+	// budgets hold for its traffic: "hard" (every request is gated), "soft"
+	// (some is counted and the scan stopped within 500ms of passing the cap) or
+	// "partial" (some is neither gated nor counted). On scan.started.
+	RequestCapEnforcement map[string]string `json:"request_cap_enforcement,omitempty"`
+	// BudgetExhaustedHosts are the hosts that used their whole
+	// --max-requests-per-host (scan.finished; the phases carry the
+	// host_request_budget limit).
+	BudgetExhaustedHosts []string `json:"budget_exhausted_hosts,omitempty"`
 	// Egress lists which outbound paths go through the shared rate/host gate and
 	// which do not, with the reason (scan.started).
 	Egress *Egress `json:"egress,omitempty"`

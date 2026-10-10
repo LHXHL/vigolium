@@ -2857,6 +2857,14 @@
             "description": "Maximum concurrent requests per host",
             "type": "integer"
           },
+          "max_requests": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_requests_per_host": {
+            "format": "int64",
+            "type": "integer"
+          },
           "module_tags": {
             "description": "Enable modules matching these tags",
             "example": [
@@ -3008,6 +3016,14 @@
             "type": "string"
           },
           "max_per_host": {
+            "type": "integer"
+          },
+          "max_requests": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_requests_per_host": {
+            "format": "int64",
             "type": "integer"
           },
           "methods": {

@@ -697,17 +697,30 @@ func (c *Crawler) shouldTerminate(ctx context.Context) bool {
 		return true
 	}
 
+	// Drain window: within DrainGrace of the context's deadline, schedule no
+	// new state. The crawl returns while its in-flight navigation and the
+	// capture writer can still finish, instead of being cut off mid-page by the
+	// deadline itself.
+	if grace := c.config.DrainGrace; grace > 0 {
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= grace {
+			zap.L().Debug("Within the drain grace of the deadline, terminating",
+				zap.Duration("grace", grace))
+			return true
+		}
+	}
+
 	// Check max duration. This is a backstop: the caller normally enforces the
 	// budget via a context deadline (which also propagates into browser ops via
 	// the bound page context), but checking elapsed time here makes MaxDuration
 	// meaningful even when the caller passes a context without a deadline, and
-	// guarantees the loop stops promptly at the boundary regardless.
+	// guarantees the loop stops promptly at the boundary regardless. The drain
+	// grace applies here too.
 	if c.config.MaxDuration > 0 {
 		c.mu.Lock()
 		start := c.stats.StartTime
 		c.mu.Unlock()
 		if !start.IsZero() {
-			if elapsed := time.Since(start); elapsed >= c.config.MaxDuration {
+			if elapsed := time.Since(start); elapsed >= c.config.MaxDuration-c.config.DrainGrace {
 				zap.L().Debug("Max duration reached, terminating",
 					zap.Duration("elapsed", elapsed),
 					zap.Duration("max", c.config.MaxDuration))

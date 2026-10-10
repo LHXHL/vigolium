@@ -97,6 +97,42 @@ func spideringPhaseCeiling(maxDuration time.Duration, numTargets int) time.Durat
 	return maxDuration * time.Duration(min(numTargets, spideringPhaseBudgetCap))
 }
 
+// deadlineWithin reports whether ctx is done or its deadline is no more than d
+// away — too close to start a crawl that would drain for d before it.
+func deadlineWithin(ctx context.Context, d time.Duration) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	if d <= 0 {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && time.Until(deadline) <= d
+}
+
+// targetBudgetUsed is targetBudgetExhausted for a crawl that drains: the
+// crawler stops grace before its deadline, so a target that used its budget
+// returns with up to grace left rather than with its deadline fired. Only the
+// target's OWN deadline counts — when the phase ceiling (parent) is the earlier
+// one, the target was cut short by the phase, not by its budget. Ask it before
+// cancelling target.
+func targetBudgetUsed(target, parent context.Context, grace time.Duration) bool {
+	if targetBudgetExhausted(target, parent) {
+		return true
+	}
+	if grace <= 0 || target.Err() != nil || parent.Err() != nil {
+		return false
+	}
+	own, ok := target.Deadline()
+	if !ok {
+		return false
+	}
+	if inherited, ok := parent.Deadline(); ok && !inherited.After(own) {
+		return false
+	}
+	return time.Until(own) <= grace
+}
+
 // spideringTeardownGrace is how long past a target's max-duration the watchdog
 // waits before declaring RunSpider wedged. Legitimate teardown (browser/page
 // close, record-writer drain) is bounded and quick; this only fires on a true
@@ -393,6 +429,7 @@ func (r *Runner) buildSpiderConfig(target string, settingsCfg config.SpideringCo
 		MaxDepth:            settingsCfg.MaxDepth,
 		MaxStates:           settingsCfg.MaxStates,
 		MaxDuration:         maxDuration,
+		DrainGrace:          SpideringGrace(maxDuration),
 		MaxConsecutiveFails: settingsCfg.MaxConsecutiveFails,
 		Headless:            settingsCfg.Headless,
 		BrowserCount:        settingsCfg.BrowserCount,
@@ -449,12 +486,19 @@ type browserRequestCounters struct {
 	sent, inScope atomic.Int64
 }
 
-// trackBrowserRequests registers a fresh counter pair with the running phase.
+// trackBrowserRequests registers a fresh counter pair with the running phase,
+// and the in-scope counter with the request budget: browser traffic bypasses
+// the egress gate, so --max-requests holds it softly (see armRequestBudget).
+// In-scope only, because the budget caps what the TARGET is sent; the crawl's
+// third-party fetches are its own network cost, not load on the target. The
+// counter stays tracked for the rest of the scan: once the crawl is done it
+// stops moving, and what it reached keeps counting.
 func (r *Runner) trackBrowserRequests() *browserRequestCounters {
 	bc := &browserRequestCounters{}
 	t := r.currentPhase.Load()
 	t.addCounter(bc.sent.Load)
 	t.addInScopeCounter(bc.inScope.Load)
+	r.trackUngatedRequests(bc.inScope.Load)
 	return bc
 }
 
@@ -670,10 +714,16 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 	progress := r.currentPhase.Load().trackTargets(len(targets))
 	requests := r.trackBrowserRequests()
 
+	// The drain window before each target's deadline (see SpideringGrace): the
+	// crawler stops scheduling new states this long before it, and a ceiling
+	// with no more than this left is treated as reached, so no target is
+	// launched only to stop at once.
+	grace := SpideringGrace(maxDuration)
+
 	for _, group := range groups {
 		// Overall ceiling exhausted — skip the remaining targets rather than
 		// launching crawls against an already-expired context.
-		if phaseCtx.Err() != nil {
+		if deadlineWithin(phaseCtx, grace) {
 			skippedTargets = len(targets) - processed
 			zap.L().Warn("Spidering: phase budget ceiling reached, skipping remaining targets",
 				zap.Int("skipped", skippedTargets),
@@ -689,7 +739,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 		abandoned := false
 
 		for gi, target := range group {
-			if phaseCtx.Err() != nil {
+			if deadlineWithin(phaseCtx, grace) {
 				break
 			}
 			processed++
@@ -713,7 +763,7 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 			// Asked BEFORE cancel(): cancelling a context whose deadline had not
 			// fired overwrites Err with Canceled, and the question "did this target
 			// use its whole budget" then has no answer.
-			if targetBudgetExhausted(timeoutCtx, phaseCtx) {
+			if targetBudgetUsed(timeoutCtx, phaseCtx, grace) {
 				budgetExhaustedTargets++
 			}
 			cancel()

@@ -291,7 +291,7 @@ What each type is for:
 
 | Type | Read it for |
 |---|---|
-| `scan.started` | The canonical `phases[]` the aliases resolved to, the `db_path` to query afterwards, and the `pace` that actually applied (plus `phase_pace` when a phase differs). `targets_admitted`/`targets_rejected` (also on `scan.finished`) when the targets are the input: a `targets_admitted: 0` scan fails next with `stop_reason: no_targets_in_scope`, exit 1, nothing sent. `egress {gated, exempt: [{path, reason}]}` names the outbound paths `--rate-limit`/`max_per_host` do **not** govern for this scan's phases (nuclei, the browser crawl, own-dialer probes): budget for that traffic separately. |
+| `scan.started` | The canonical `phases[]` the aliases resolved to, the `db_path` to query afterwards, and the `pace` that actually applied (plus `phase_pace` when a phase differs). `targets_admitted`/`targets_rejected` (also on `scan.finished`) when the targets are the input: a `targets_admitted: 0` scan fails next with `stop_reason: no_targets_in_scope`, exit 1, nothing sent. `egress {gated, exempt: [{path, reason}]}` names the outbound paths `--rate-limit`/`max_per_host` do **not** govern for this scan's phases (nuclei, the browser crawl, own-dialer probes): budget for that traffic separately. `budgets {max_requests, max_requests_per_host}` (0 = unlimited) and, when one is set, `request_cap_enforcement {phase: hard\|soft\|partial}`: `hard` = exact, `soft` = the browser crawl is checked every 500ms, `partial` = some traffic (nuclei, own dialers) is not counted. |
 | `phase.progress` | Liveness. `requests_sent` every 5s is the real slope — a crawl that is working versus one that is wedged. Where the phase has a work-item count, `done`/`total`/`unit` give progress: `records` for `dynamic-assessment` and `seed`, `targets` for `heuristics-check`, `port-sweep`, `spidering` and `probe` (also on `phase.finished`). `total` is a **non-decreasing upper bound**, not a fixed denominator: it can grow (a feedback round adds records) but never shrinks or drops below `done`, and is omitted until a bound is known. |
 | `waf.block` | The edge started filtering. Results for that host are **incomplete** — do not read a thin surface as a clean target. |
 | `waf.pacing` | Vigolium slowed itself down on purpose. Attribute the slowdown here, not to the target. |
@@ -303,7 +303,7 @@ What each type is for:
 | `error` | A phase failed and the scan **carried on** — non-fatal by construction. A failure that ends the run rides on `scan.finished{status:"failed"}` instead, so this is never a reason to abandon a run that is still producing findings. |
 | `phase.finished` | `status` plus `reasons`/`limits` (below) for that phase. |
 | `scan.interrupting` | **Nonterminal.** A shutdown began (SIGINT/SIGTERM). The terminal event still follows — do not treat this as the end of the stream. |
-| `scan.finished` | Terminal. `status`, `findings_by_severity`, `records_written`, and `stop_reason`/`reasons` when coverage was lost. |
+| `scan.finished` | Terminal. `status`, `findings_by_severity`, `records_written`, and `stop_reason`/`reasons` when coverage was lost. `--max-requests` running out ends the scan `curtailed` with `stop_reason: request_budget`; hosts that used their `--max-requests-per-host` are listed in `budget_exhausted_hosts` (their phases carry the `host_request_budget` limit). `extensions_failed` lists the paths of extensions that failed to load. |
 
 ### Reserved types and fields
 
@@ -323,7 +323,6 @@ them while they are missing.
 | Field | On | Means | Emitted from |
 |---|---|---|---|
 | `targets_reached` / `targets_unreachable` | `scan.finished` | Admitted targets that did / did not give an HTTP answer. | v0.6 |
-| `budgets` | `scan.started` | `{max_requests, max_requests_per_host}`; 0 means unlimited. | not yet scheduled |
 | `requests_in_scope` | `phase.progress`, `phase.finished` | The in-scope share of `requests_sent` (the browser crawl also counts third-party requests). Only on `spidering` and `targeted-respider`. | next release |
 | `records_basis` | `scan.finished` | Absent: `records_written` counts records stamped with this scan. `time_window`: records created since the scan started (approximate on a shared DB). | v0.6 |
 | `exports` | `scan.finished` | `[{format, path}]` for every file the scan wrote. | v0.6 |

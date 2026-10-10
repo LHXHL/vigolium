@@ -9,6 +9,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/core"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -64,6 +65,11 @@ type directScanSession struct {
 	sharedCreated bool
 	agg           directScanAggregate
 
+	// budget is the invocation's request budget (--max-requests,
+	// --max-requests-per-host), shared by every input; nil when unset. Its
+	// verdict is folded into each row (runner.ApplyRequestBudget).
+	budget *egress.Budget
+
 	// heartbeats keep each row's liveness fresh while its input runs, one per
 	// scan UUID. Each ends itself once its row is finalized (StopWhenRowDone);
 	// close stops any left. Without them a long scan-url row carried no
@@ -110,6 +116,7 @@ func newDirectScanSession(name string, inputs []scanInput) *directScanSession {
 		pinned:  strings.TrimSpace(globalScanUUID),
 		targets: targets,
 		modules: strings.Join(modules, ","),
+		budget:  directRequestBudget(),
 	}
 }
 
@@ -246,6 +253,7 @@ func (s *directScanSession) complete(ctx context.Context, repo *database.Reposit
 		completion = runner.DirectScanCompletion(s.agg.rep, s.agg.reached, s.agg.interrupted, s.agg.err, s.agg.tally)
 		execErr = s.agg.err
 	}
+	completion = runner.ApplyRequestBudget(completion, s.budget)
 
 	logger := database.NewScanLogger(repo, scanUUID)
 	for _, issue := range tally.Rejected {

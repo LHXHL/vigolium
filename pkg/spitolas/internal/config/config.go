@@ -134,6 +134,7 @@ type Config struct {
 	MaxDepth            int           // 0 = unlimited
 	MaxStates           int           // 0 = unlimited
 	MaxDuration         time.Duration // 0 = unlimited
+	DrainGrace          time.Duration // stop scheduling new states this long before the deadline (shouldTerminate); 0 = off
 	MaxConsecutiveFails int           // 0 = disabled (unlimited)
 
 	// Browser

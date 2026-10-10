@@ -18,14 +18,56 @@ import (
 // spidering.max_duration, a separate config key -- and a banner that read only
 // one of those advertised a budget the phase would not use, which is the defect
 // this whole file exists to close. runSpideringPhase calls it too.
+//
+// It is also the one owner of the spidering FLOOR: a budget DERIVED from
+// scanning_pace (max_duration × duration_factor, Source "factor") is raised to
+// SpideringFloor, because the 0.1 factor turns a short --scanning-max-duration
+// into a crawl too brief to log in and settle a single SPA (4m → 24s). An
+// explicit value — --spider-max-time, scanning_pace.spidering.max_duration,
+// spidering.max_duration — is never adjusted.
 func SpideringBudget(settings *config.Settings, options *types.Options) time.Duration {
 	if options != nil && options.SpideringMaxDuration > 0 {
+		if options.SpideringMaxDurationSource == string(config.PaceSourceFactor) {
+			return SpideringFloor(options.SpideringMaxDuration, options.ScanMaxDuration)
+		}
 		return options.SpideringMaxDuration
 	}
 	if settings == nil {
 		return 0
 	}
 	return settings.Spidering.MaxDurationParsed()
+}
+
+// SpideringSourceFlag marks a per-target spidering budget typed as
+// --spider-max-time (Options.SpideringMaxDurationSource).
+const SpideringSourceFlag = "flag"
+
+// spideringMinBudget is the floor a factor-derived per-target crawl budget is
+// raised to.
+const spideringMinBudget = 60 * time.Second
+
+// SpideringFloor applies the floor to a factor-derived per-target budget:
+// max(derived, 60s), where the 60s is itself capped at half the total scan
+// budget (scanMax, --scanning-max-duration; 0 = none) so the crawl can never
+// take more than half of a short scan. A derived value above the floor is
+// returned unchanged.
+func SpideringFloor(derived, scanMax time.Duration) time.Duration {
+	floor := spideringMinBudget
+	if scanMax > 0 {
+		floor = min(floor, scanMax/2)
+	}
+	return max(derived, floor)
+}
+
+// SpideringGrace is the drain window before a target's crawl deadline: the
+// crawler stops scheduling new states this long before the deadline, so
+// in-flight navigations and the capture writer finish inside the budget
+// instead of being cut off by it. min(10s, 10% of the per-target budget).
+func SpideringGrace(perTarget time.Duration) time.Duration {
+	if perTarget <= 0 {
+		return 0
+	}
+	return min(10*time.Second, perTarget/10)
 }
 
 // DiscoveryBudget returns the wall-clock budget one discovery target gets.

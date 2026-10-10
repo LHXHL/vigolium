@@ -71,6 +71,12 @@ func (r *Runner) RunNativeScan() (err error) {
 		ctx, totalCancel = context.WithTimeout(ctx, r.options.ScanMaxDuration)
 		defer totalCancel()
 	}
+	// Request budget (--max-requests / --max-requests-per-host): built before
+	// the infrastructure, whose egress gate enforces it, and bounding the same
+	// ctx the phases run under, which it cancels when the scan-wide limit runs
+	// out. See armRequestBudget.
+	ctx, stopRequestBudget := r.armRequestBudget(ctx)
+	defer stopRequestBudget()
 
 	plan := BuildNativeScanPlan(r.options)
 
@@ -382,8 +388,9 @@ func (r *Runner) RunNativeScan() (err error) {
 		// curtailed scan ends cleanly instead of starting phases that would
 		// immediately abort on the already-expired ctx.
 		if ctx.Err() != nil {
-			zap.L().Warn("Scan budget (scanning-max-duration) reached; skipping remaining phases",
-				zap.String("phase", string(step.Phase)))
+			zap.L().Warn("Scan stopped (budget or cancellation); skipping remaining phases",
+				zap.String("phase", string(step.Phase)),
+				zap.String("reason", scanStopReason(ctx, r.ctx)))
 			// Record the phases that never ran. Without this the scan row shows
 			// outcomes only for the phases that happened to start, which reads
 			// exactly like a scan whose plan was that short to begin with.

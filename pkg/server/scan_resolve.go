@@ -95,6 +95,8 @@ func resolveScanAllRecordsOptions(settings *config.Settings, serverConcurrency i
 		}
 		opts.ScanMaxDuration = d
 	}
+	opts.MaxRequests = req.MaxRequests
+	opts.MaxRequestsPerHost = req.MaxRequestsPerHost
 	if len(req.Headers) > 0 {
 		headers := make([]string, 0, len(req.Headers))
 		for k, v := range req.Headers {
@@ -104,6 +106,8 @@ func resolveScanAllRecordsOptions(settings *config.Settings, serverConcurrency i
 	}
 
 	explicit := requestExplicitPace(req.Concurrency, req.RateLimit, req.MaxPerHost)
+	explicit.MaxRequests = req.MaxRequests > 0
+	explicit.MaxRequestsPerHost = req.MaxRequestsPerHost > 0
 	strategy, err := resolveRequestStrategy(settings, opts, req.Intensity, req.ScanningProfile, runner.StrategyRequest{
 		HeuristicsCheck: req.HeuristicsCheck,
 		SkipHeuristics:  req.HeuristicsCheck == "",

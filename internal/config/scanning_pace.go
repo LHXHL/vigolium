@@ -33,6 +33,13 @@ type ScanningPaceConfig struct {
 	// concurrency, never past it). Set explicitly to pin either mode.
 	MaxPerHostCeiling int `yaml:"max_per_host_ceiling"`
 
+	// MaxRequests caps the wire attempts the whole scan may send (0 =
+	// unlimited); MaxRequestsPerHost caps them per target host. Enforced by the
+	// egress gate: exactly for gated traffic, within one watcher interval for
+	// the browser crawl. --max-requests / --max-requests-per-host win.
+	MaxRequests        int64 `yaml:"max_requests"`
+	MaxRequestsPerHost int64 `yaml:"max_requests_per_host"`
+
 	Discovery         PhasePace `yaml:"discovery"`
 	Probe             PhasePace `yaml:"probe"`
 	Spidering         PhasePace `yaml:"spidering"`
@@ -55,6 +62,22 @@ type PhasePace struct {
 	ActiveModuleTimeout  string  `yaml:"active_module_timeout,omitempty"`
 }
 
+// PaceSource says where a resolved value came from.
+type PaceSource string
+
+// Provenance of ResolvedPhasePace.MaxDuration.
+const (
+	// PaceSourceUnset: neither the phase nor the common section set a duration.
+	PaceSourceUnset PaceSource = ""
+	// PaceSourcePhase: the phase's own max_duration.
+	PaceSourcePhase PaceSource = "phase"
+	// PaceSourceFactor: the common max_duration × the phase's duration_factor
+	// (also the source when --scanning-max-duration seeded the common value).
+	PaceSourceFactor PaceSource = "factor"
+	// PaceSourceCommon: the common max_duration, unscaled.
+	PaceSourceCommon PaceSource = "common"
+)
+
 // ResolvedPhasePace is the result of merging common + per-phase values.
 type ResolvedPhasePace struct {
 	Concurrency          int
@@ -66,6 +89,11 @@ type ResolvedPhasePace struct {
 	ParallelPassive      bool
 	FeedbackDrainTimeout time.Duration
 	ActiveModuleTimeout  time.Duration
+
+	// Source is where MaxDuration came from. A derived (factor) budget may be
+	// adjusted by its consumer (the spidering floor, SpideringBudget); an
+	// explicit one never is.
+	Source PaceSource
 }
 
 // DefaultScanningPaceConfig returns default scanning pace configuration
@@ -278,11 +306,16 @@ func (c *ScanningPaceConfig) ResolvePhase(phase string) ResolvedPhasePace {
 	commonDuration := c.maxDurationParsed()
 	if pp.MaxDuration != "" {
 		resolved.MaxDuration = pp.MaxDurationParsed()
+		resolved.Source = PaceSourcePhase
 	} else if pp.DurationFactor > 0 && commonDuration > 0 {
 		resolved.MaxDuration = time.Duration(float64(commonDuration) * pp.DurationFactor)
 		resolved.DurationFactor = pp.DurationFactor
+		resolved.Source = PaceSourceFactor
 	} else {
 		resolved.MaxDuration = commonDuration
+		if commonDuration > 0 {
+			resolved.Source = PaceSourceCommon
+		}
 	}
 
 	// ParallelPassive: an explicit per-phase value wins; otherwise the built-in
@@ -353,6 +386,12 @@ func (c *ScanningPaceConfig) Validate() error {
 	}
 	if c.MaxPerHost < 0 {
 		return fmt.Errorf("scanning_pace.max_per_host must be >= 0")
+	}
+	if c.MaxRequests < 0 {
+		return fmt.Errorf("scanning_pace.max_requests must be >= 0")
+	}
+	if c.MaxRequestsPerHost < 0 {
+		return fmt.Errorf("scanning_pace.max_requests_per_host must be >= 0")
 	}
 	if err := validateNonNegDuration("scanning_pace.max_duration", c.MaxDuration); err != nil {
 		return err

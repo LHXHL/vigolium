@@ -205,6 +205,9 @@ type PhaseOutcome struct {
 	// harvest-probe step reports hosts_dead, kept, dropped_not_found, …). Only
 	// phases whose result is a set of numbers rather than records set it.
 	Counts map[string]int64 `json:"counts,omitempty"`
+	// BudgetExhaustedHosts are the hosts whose --max-requests-per-host ran out
+	// during the phase, sorted; set alongside the host_request_budget limit.
+	BudgetExhaustedHosts []string `json:"budget_exhausted_hosts,omitempty"`
 }
 
 // BenignSkip reports whether this phase was skipped for having nothing to do,
@@ -287,6 +290,7 @@ func (o *PhaseOutcome) Merge(b PhaseOutcome) {
 		}
 		o.Counts[name] += n
 	}
+	o.BudgetExhaustedHosts = mergeCodes(o.BudgetExhaustedHosts, b.BudgetExhaustedHosts)
 }
 
 // mergeCodes unions two code lists into one sorted, deduplicated list.

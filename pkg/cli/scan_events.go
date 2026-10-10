@@ -74,6 +74,12 @@ func beginScanEventStream(db *database.DB, opts *types.Options, settings *config
 		// Which outbound paths the rate limit and host slots govern, and which
 		// they do not (and why), for the phases this scan runs.
 		Egress: egress.Inventory(phases),
+		// The request budgets in force; zeros are written (0 = unlimited).
+		Budgets: &scanevents.Budgets{MaxRequests: opts.MaxRequests, MaxRequestsPerHost: opts.MaxRequestsPerHost},
+	}
+	// How strictly a budget holds for each phase's traffic, when one is set.
+	if opts.MaxRequests > 0 || opts.MaxRequestsPerHost > 0 {
+		started.RequestCapEnforcement = egress.RequestCapEnforcement(phases)
 	}
 	// Present only when the targets are the input (see scanTargetAdmission); a
 	// zero is written, so "0 admitted" is visible before the run fails.
@@ -201,6 +207,9 @@ func applyScanCompletion(ev *scanevents.Event, scan *database.Scan) {
 	if reasons := unionPhaseReasons(scan.PhaseOutcomes); len(reasons) > 0 {
 		ev.Reasons = reasons
 	}
+	if hosts := unionBudgetExhaustedHosts(scan.PhaseOutcomes); len(hosts) > 0 {
+		ev.BudgetExhaustedHosts = hosts
+	}
 	// The preflight tally, as the runner recorded it (scope admission).
 	for _, p := range scan.PhaseOutcomes {
 		if p.Phase == string(runner.PhasePreflight) && p.Targets != nil {
@@ -244,6 +253,18 @@ func unionPhaseReasons(phases []database.PhaseOutcome) []string {
 // execution order. Canonical, because --only/--skip and `vigolium run <phase>`
 // all accept aliases (kis, cve, deparos, dast, …) and a consumer that asked for
 // one spelling needs to be able to assert what it actually got.
+// unionBudgetExhaustedHosts collects, sorted, the hosts any phase recorded as
+// having used their whole --max-requests-per-host.
+func unionBudgetExhaustedHosts(phases []database.PhaseOutcome) []string {
+	seen := make(map[string]struct{})
+	for _, p := range phases {
+		for _, host := range p.BudgetExhaustedHosts {
+			seen[host] = struct{}{}
+		}
+	}
+	return database.SortedCodes(seen)
+}
+
 func plannedPhaseIDs(opts *types.Options) []string {
 	plan := runner.BuildNativeScanPlan(opts)
 	out := make([]string, 0, len(plan.Steps))

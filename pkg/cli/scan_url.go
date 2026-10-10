@@ -20,6 +20,7 @@ import (
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/core"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/core/network"
 	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/core/services"
@@ -437,9 +438,10 @@ func buildRequestFromFlags(target, method, body string, headers []string) (*http
 	return rr, nil
 }
 
-// setupScanHTTPStack initializes the HTTP stack for scanning.
+// setupScanHTTPStack initializes the HTTP stack for scanning, held to budget
+// (the invocation's request budget; nil = none).
 // Returns requester, services, and a cleanup function.
-func setupScanHTTPStack() (*http.Requester, *services.Services, func(), error) {
+func setupScanHTTPStack(budget *egress.Budget) (*http.Requester, *services.Services, func(), error) {
 	opts := types.DefaultOptions()
 	opts.Concurrency = globalConcurrency
 	opts.Timeout = globalTimeout
@@ -481,6 +483,12 @@ func setupScanHTTPStack() (*http.Requester, *services.Services, func(), error) {
 
 	httpRequester, err := http.NewRequester(opts, svc)
 	if err != nil {
+	// The request budget rides on the gate, as on the Runner path. A refused
+	// request fails fast; this path does not cancel the run, it lets the
+	// remaining module requests be refused and reports the row partial
+	// (runner.ApplyRequestBudget).
+	svc.Egress = egress.New(egress.Config{Rate: svc.RateLimiter, Hosts: hostLimiter, Breaker: svc.HostErrors}).
+		WithBudget(budget)
 		dedupMgr.Close()
 		_ = hostLimiter.Close()
 		return nil, nil, nil, fmt.Errorf("failed to create HTTP requester: %w", err)
@@ -727,7 +735,7 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 	}
 
 	// Set up HTTP stack
-	httpRequester, svc, cleanup, err := setupScanHTTPStack()
+	httpRequester, svc, cleanup, err := setupScanHTTPStack(sess.budget)
 	if err != nil {
 		return nil, err
 	}
@@ -944,6 +952,8 @@ func buildPhaseOptions(target string) (*types.Options, error) {
 
 	// Global CLI flags
 	opts.ScanUUID = globalScanUUID
+	opts.MaxRequests = scanOpts.MaxRequests
+	opts.MaxRequestsPerHost = scanOpts.MaxRequestsPerHost
 	opts.Timeout = globalTimeout
 	opts.Concurrency = globalConcurrency
 	opts.MaxPerHost = globalMaxPerHost
@@ -1114,6 +1124,7 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 
 	// Validate database config
 	if err := settings.Database.Validate(); err != nil {
+	applyRequestBudgetConfig(settings, opts)
 		return fmt.Errorf("invalid database configuration: %w", err)
 	}
 	if err := settings.DynamicAssessment.Extensions.Validate(); err != nil {

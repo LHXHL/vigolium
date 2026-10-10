@@ -330,6 +330,57 @@ scanning_pace:
 
 CLI flags (`-c`, `--rate-limit`) always take precedence over config values.
 
+### What `max_duration` bounds in each phase
+
+`scanning_pace.<phase>.max_duration` (or the common `max_duration` × the phase's
+`duration_factor`) does **not** mean the same thing in every phase. Until the
+semantics are unified (planned: phase wall clock plus an explicit
+`max_duration_per_target`), this is what each value bounds:
+
+| Phase | `max_duration` bounds | Notes |
+|---|---|---|
+| `discovery` | each **target** (`--discover-max-time`, default 1h) | Up to 3 targets run at once; there is **no phase ceiling**, so the phase can run for about targets ÷ 3 × the budget. |
+| `spidering` | each **target** (`--spider-max-time`) | Phase ceiling = per-target budget × min(targets, 8); targets past it are skipped (`targets_skipped`). A factor-derived budget gets a floor (below). The crawler stops scheduling new states `min(10s, 10%)` before a target's deadline so in-flight pages and capture drain inside the budget. |
+| `known-issue-scan` | each **leg**: nuclei and the secret scan each get the full value | The two legs run one after the other, so the phase can take twice the value. |
+| `dynamic-assessment` | the **whole phase**, every feedback round included | |
+| `probe` | the **whole phase**, prefetch included | |
+| `external-harvest` | each archive **query** (per-call timeout) | |
+| `heuristics-check`, `port-sweep`, `harvest-probe`, `targeted-respider`, `param-mining` | not governed by `scanning_pace` | `targeted-respider` and `param-mining` have their own budgets in config. |
+
+`--scanning-max-duration` is different from all of these: it is the wall clock
+of the **whole scan**. Every phase deadline above is cut short by it, and once
+it elapses the remaining phases are skipped (`scan_budget`).
+
+**Spidering floor.** When the spidering per-target budget is *derived* —
+`max_duration × duration_factor`, including the `max_duration` that
+`--scanning-max-duration` seeds — it is raised to at least **60s**, capped at
+half of `--scanning-max-duration`. Without it a 4m scan gave each crawl 24s,
+too little to log in and settle a single-page app. An explicit value
+(`--spider-max-time`, `scanning_pace.spidering.max_duration`,
+`spidering.max_duration`) is never adjusted. The banner shows the budget the
+phase will actually use.
+
+### Request budgets
+
+`--max-requests N` stops the scan after N requests to the targets, and
+`--max-requests-per-host N` sends at most N to any one host (config:
+`scanning_pace.max_requests` / `max_requests_per_host`; 0 = unlimited, the
+default). Both are enforced in the egress gate, before a request is dialed:
+
+- When the scan-wide budget runs out, the running phase is stopped and the
+  remaining phases are skipped. The scan is **partial** with
+  `stop_reason: request_budget`.
+- When one host's budget runs out, further requests to that host fail at once;
+  the scan carries on with the other hosts. The phase records the
+  `host_request_budget` **limit** (not a reason), and `scan.finished` lists the
+  hosts in `budget_exhausted_hosts`.
+- Gated traffic is held to the number exactly. The browser crawl bypasses the
+  gate, so its in-scope requests are counted and checked every 500ms (the
+  scan can overshoot by what the crawl sends in that time). nuclei and the
+  own-dialer probes are not counted. `scan.started` reports `budgets` and, when
+  a budget is set, `request_cap_enforcement` per phase: `hard`, `soft` or
+  `partial`.
+
 ## Controlling Scope
 
 Scope filtering applies across all phases. Use `--scope-origin` to control host matching:

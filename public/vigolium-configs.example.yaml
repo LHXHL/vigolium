@@ -345,6 +345,8 @@ scanning_pace:
   rate_limit: 100        # Requests/sec (applies to KnownIssueScan currently)
   max_per_host: 40        # Per-host concurrency cap
   max_duration: 1h       # Base duration for all phases (per-phase factors scale this)
+  max_requests: 0        # Stop the scan after N requests to the targets (0 = unlimited; --max-requests)
+  max_requests_per_host: 0  # At most N requests to any one target host (0 = unlimited; --max-requests-per-host)
   # NOTE: the --scanning-max-duration CLI flag additionally caps TOTAL scan
   # wall-clock time (all phases combined) at the value passed, so multi-phase
   # scans can't run past it; the per-phase factors then distribute that budget

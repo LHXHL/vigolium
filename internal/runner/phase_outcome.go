@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/pkg/core"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
@@ -269,13 +270,18 @@ func partialBannerSuffix(c database.ScanCompletion) string {
 }
 
 // scanStopReason names why the scan as a whole stopped launching work: the total
-// --scanning-max-duration elapsed, or the operator cancelled the run. budgetCtx
+// --scanning-max-duration elapsed, --max-requests ran out, or the operator
+// cancelled the run. budgetCtx
 // is the (possibly budget-bounded) context the phase loop runs under; runCtx is
 // the Runner's own, which carries only cancellation.
 func scanStopReason(budgetCtx, runCtx context.Context) string {
 	switch {
 	case runCtx != nil && runCtx.Err() != nil:
 		return database.ReasonCancelled
+	case egress.BudgetCause(budgetCtx) != nil:
+		// --max-requests ran out: the request budget cancelled the scan
+		// context with a *egress.BudgetError as its cause.
+		return database.ReasonRequestBudget
 	case budgetCtx != nil && errors.Is(budgetCtx.Err(), context.DeadlineExceeded):
 		return database.ReasonScanBudget
 	case budgetCtx != nil && budgetCtx.Err() != nil:

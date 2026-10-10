@@ -13,15 +13,18 @@
 // Order inside Acquire, and why:
 //
 //  1. Quarantined (read-only) — a host already known to be dead must not spend
-//     a token or occupy a slot only to be refused.
+//     a token or occupy a slot only to be refused. The request budget's
+//     read-only check runs here too, for the same reason (see Budget).
 //  2. Rate token — taken BEFORE the slot, so a request throttled by the global
 //     rate does not sit on scarce per-host concurrency while it waits.
 //  3. Host slot — LaneNormal waits for one of the host's normal slots;
 //     LanePriority may also take the host's reserved headroom (see
 //     ratelimit.HostRateLimiter.AcquirePriority).
-//  4. Admit — the breaker's mutating check, immediately before the send, so the
+//  4. Budget — the request budget's reservation (--max-requests,
+//     --max-requests-per-host), refused with a *BudgetError, never dialed.
+//  5. Admit — the breaker's mutating check, immediately before the send, so the
 //     half-open probe is claimed by a request that is really about to go out.
-//  5. Count — one wire attempt.
+//  6. Count — one wire attempt.
 //
 // The returned release feeds the outcome to the breaker and frees the slot.
 // Every wire attempt goes through Acquire once: a retry is a new Acquire (Do),
@@ -75,6 +78,9 @@ type Gate struct {
 	// phase, when non-nil, also counts this view's attempts (a phase's own
 	// requests_sent).
 	phase *atomic.Int64
+	// budget, when non-nil, caps the attempts the gate admits. Shared by every
+	// view, like sent.
+	budget *Budget
 }
 
 // New builds a Gate over cfg with a fresh wire-attempt counter.
@@ -121,6 +127,26 @@ func (g *Gate) WithPhaseCounter(c *atomic.Int64) *Gate {
 	return &view
 }
 
+// WithBudget returns a view of g that holds every attempt to b (nil = no
+// budget). Views derived from it share b. Attach it to the scan's root gate
+// before any view is taken, so every sender is held to the same budget.
+func (g *Gate) WithBudget(b *Budget) *Gate {
+	if g == nil {
+		g = New(Config{})
+	}
+	view := *g
+	view.budget = b
+	return &view
+}
+
+// Budget returns the request budget the gate enforces (nil when none).
+func (g *Gate) Budget() *Budget {
+	if g == nil {
+		return nil
+	}
+	return g.budget
+}
+
 // Sent is the number of wire attempts admitted by g and every view sharing its
 // counter.
 func (g *Gate) Sent() int64 {
@@ -131,11 +157,18 @@ func (g *Gate) Sent() int64 {
 }
 
 // Count records n wire attempts that need no admission — a bare TCP dial has
-// no request to rate and no slot worth holding, but it still reaches the host.
+// no request to rate and no slot worth holding, but it still reaches the host,
+// so it is charged to the scan-wide request budget (never refused).
 func (g *Gate) Count(n int64) {
 	if g == nil {
 		return
 	}
+	g.budget.force(n)
+	g.count(n)
+}
+
+// count adds n to the attempt counters without touching the budget.
+func (g *Gate) count(n int64) {
 	g.sent.Add(n)
 	if g.phase != nil {
 		g.phase.Add(n)
@@ -145,16 +178,25 @@ func (g *Gate) Count(n int64) {
 // Token takes one rate token and counts one attempt, without a host slot. A
 // followed redirect hop uses it: the hop is another request on the wire, but
 // the original request's slot is still held.
+//
+// The hop is charged to the scan-wide request budget only: it carries no host
+// key here, so a per-host limit does not see it.
 func (g *Gate) Token(ctx context.Context) error {
 	if g == nil {
 		return nil
+	}
+	if err := g.budget.check(""); err != nil {
+		return err
 	}
 	if g.cfg.Rate != nil {
 		if err := g.cfg.Rate.Wait(ctx); err != nil {
 			return err
 		}
 	}
-	g.Count(1)
+	if err := g.budget.take(""); err != nil {
+		return err
+	}
+	g.count(1)
 	return nil
 }
 
@@ -180,8 +222,10 @@ func noopRelease(Outcome) {}
 // slot and the breaker but still takes a token). On success the caller sends
 // and then calls the returned Release with the attempt's outcome.
 //
-// A quarantined host returns hosterrors.ErrUnresponsiveHost; a cancelled ctx,
-// the rate wait or the slot wait timing out return that error.
+// A quarantined host returns hosterrors.ErrUnresponsiveHost; an attempt over
+// the request budget returns a *BudgetError (errors.Is ErrBudgetExhausted)
+// before anything is waited for or sent; a cancelled ctx, the rate wait or the
+// slot wait timing out return that error.
 func (g *Gate) Acquire(ctx context.Context, hostPort string, lane Lane) (Release, error) {
 	if g == nil {
 		return noopRelease, nil
@@ -194,6 +238,9 @@ func (g *Gate) Acquire(ctx context.Context, hostPort string, lane Lane) (Release
 
 	if breaker != nil && breaker.Quarantined(key) {
 		return nil, hosterrors.ErrUnresponsiveHost
+	}
+	if err := g.budget.check(host); err != nil {
+		return nil, err
 	}
 	if g.cfg.Rate != nil {
 		if err := g.cfg.Rate.Wait(ctx); err != nil {
@@ -219,12 +266,19 @@ func (g *Gate) Acquire(ctx context.Context, hostPort string, lane Lane) (Release
 		}
 	}
 
+	// Reserved before Admit: a refusal after Admit would leave the breaker's
+	// half-open probe claimed by a request that never went out.
+	if err := g.budget.take(host); err != nil {
+		freeSlot()
+		return nil, err
+	}
 	if breaker != nil && !breaker.Admit(key) {
+		g.budget.refund(host)
 		freeSlot()
 		return nil, hosterrors.ErrUnresponsiveHost
 	}
 
-	g.Count(1)
+	g.count(1)
 	return func(o Outcome) {
 		if breaker != nil && !o.Neutral {
 			if o.Err != nil {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/core"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/core/network"
 	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/core/services"
@@ -88,6 +89,11 @@ type Runner struct {
 	// rather than threaded through every module callback. Atomic because the
 	// phase loop swaps it while those workers are still draining.
 	currentPhase atomic.Pointer[phaseTracker]
+
+	// requestBudget is the running scan's request budget (--max-requests,
+	// --max-requests-per-host), nil when none is set or outside RunNativeScan.
+	// See armRequestBudget.
+	requestBudget *egress.Budget
 
 	// scanOutcome collects the per-phase outcomes this scan produced, which the
 	// finalizer persists on the scan row and the terminal banner reads. Reset at

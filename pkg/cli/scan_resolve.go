@@ -27,6 +27,8 @@ func explicitScanPace(cmd *cobra.Command) runner.ExplicitPace {
 		ExternalHarvest:      changed("external-harvest"),
 		DiscoverMaxDuration:  changed("discover-max-time"),
 		SpideringMaxDuration: changed("spider-max-time"),
+		MaxRequests:          changed("max-requests"),
+		MaxRequestsPerHost:   changed("max-requests-per-host"),
 	}
 }
 

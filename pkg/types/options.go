@@ -229,6 +229,14 @@ type Options struct {
 	// (all phases combined). 0 = unbounded. Sourced from --scanning-max-duration.
 	ScanMaxDuration time.Duration
 
+	// MaxRequests caps the wire attempts the whole scan may send, and
+	// MaxRequestsPerHost the attempts to any one target host (0 = unlimited).
+	// Sourced from --max-requests / --max-requests-per-host, else
+	// scanning_pace.max_requests / max_requests_per_host. Enforced by the egress
+	// gate's request budget (pkg/core/egress.Budget).
+	MaxRequests        int64
+	MaxRequestsPerHost int64
+
 	// Content discovery options
 	DiscoverEnabled     bool
 	DiscoverMaxDuration time.Duration
@@ -331,6 +339,13 @@ type Options struct {
 
 	// OastURL is a fixed OAST callback URL (from --oast-url flag)
 	OastURL string
+
+	// SpideringMaxDurationSource is where SpideringMaxDuration came from:
+	// "flag" (typed --spider-max-time), a config.PaceSource value when the
+	// scanning_pace resolution supplied it ("factor", "phase", "common"), or ""
+	// (the flag default / not resolved). Only a "factor" value is subject to the
+	// spidering floor (runner.SpideringBudget).
+	SpideringMaxDurationSource string
 
 	// ConcurrencyExplicitlySet tracks whether the CLI -c/--concurrency flag was explicitly provided
 	ConcurrencyExplicitlySet bool

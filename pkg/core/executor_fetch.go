@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -137,9 +138,13 @@ func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestRe
 		// A fetch the breaker refused (the host was quarantined after the
 		// item was dispatched, or another request holds the half-open probe)
 		// is a quarantine skip, not a transport failure of its own.
+		// A fetch the request budget refused was never sent: the host used its
+		// --max-requests-per-host (or the scan its --max-requests), which the
+		// phase reports as a limit, not as the target failing to answer.
 		switch {
 		case errors.Is(err, hosterrors.ErrUnresponsiveHost):
 			e.quarantine.add(httpmsg.HostPortKey(req))
+		case errors.Is(err, egress.ErrBudgetExhausted):
 		case ctx.Err() == nil:
 			e.recordBaselineFailure(req.Target(), err)
 		}

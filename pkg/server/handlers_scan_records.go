@@ -191,6 +191,9 @@ func validateScanAllRecordsRequest(req ScanAllRecordsRequest) error {
 			return fmt.Errorf("invalid scanning_max_duration %q: %w", req.ScanningMaxDuration, err)
 		}
 	}
+	if req.MaxRequests < 0 || req.MaxRequestsPerHost < 0 {
+		return fmt.Errorf("max_requests and max_requests_per_host must be >= 0 (0 = unlimited)")
+	}
 	if req.HeuristicsCheck != "" {
 		switch req.HeuristicsCheck {
 		case "none", "basic", "advanced":

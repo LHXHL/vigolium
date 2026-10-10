@@ -31,6 +31,7 @@ type SpiderConfig struct {
 	MaxDepth            int
 	MaxStates           int
 	MaxDuration         time.Duration
+	DrainGrace          time.Duration // stop scheduling new states this long before the deadline, so in-flight work drains inside the budget; 0 = off
 	MaxConsecutiveFails int
 	Headless            bool
 	BrowserCount        int
@@ -306,6 +307,7 @@ func buildCrawlerConfig(cfg SpiderConfig) (*config.Config, error) {
 	crawlerCfg.MaxDepth = cfg.MaxDepth
 	crawlerCfg.MaxStates = cfg.MaxStates
 	crawlerCfg.MaxDuration = cfg.MaxDuration
+	crawlerCfg.DrainGrace = cfg.DrainGrace
 	crawlerCfg.MaxConsecutiveFails = cfg.MaxConsecutiveFails
 	crawlerCfg.Headless = cfg.Headless
 	crawlerCfg.Silent = cfg.Silent
