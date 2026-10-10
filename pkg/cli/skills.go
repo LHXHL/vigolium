@@ -107,7 +107,7 @@ An already-installed skill is skipped unless --force is given. --dir
 overrides the computed destination entirely.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsInstall(args)
+		return runSkillsInstall(cmd, args)
 	},
 }
 
@@ -388,7 +388,7 @@ func skillsInstallBaseDir(agent, scope string) (string, error) {
 	}
 }
 
-func runSkillsInstall(names []string) error {
+func runSkillsInstall(cmd *cobra.Command, names []string) error {
 	skills, err := loadBundledSkills()
 	if err != nil {
 		return err
@@ -422,21 +422,38 @@ func runSkillsInstall(names []string) error {
 		baseDir = abs
 	}
 
+	out := humanOut()
 	installed, skipped := 0, 0
+	items := make([]skillInstallView, 0, len(targets))
 	for _, b := range targets {
 		dest := filepath.Join(baseDir, b.Name)
 		if _, statErr := os.Stat(filepath.Join(dest, "SKILL.md")); statErr == nil && !globalForce {
-			fmt.Printf("%s %s already installed at %s (use --force to overwrite)\n",
+			fmt.Fprintf(out, "%s %s already installed at %s (use --force to overwrite)\n",
 				terminal.WarningSymbol(), terminal.Cyan(b.Name), terminal.Gray(dest))
 			skipped++
+			items = append(items, skillInstallView{Name: b.Name, Path: dest, Installed: false, Reason: "already_installed"})
 			continue
 		}
 		if copyErr := copyEmbeddedSkillBundle(b.EmbedDir, dest); copyErr != nil {
 			return fmt.Errorf("install %s: %w", b.Name, copyErr)
 		}
-		fmt.Printf("%s Installed %s → %s\n",
+		fmt.Fprintf(out, "%s Installed %s → %s\n",
 			terminal.SuccessSymbol(), terminal.Cyan(b.Name), terminal.Gray(dest))
 		installed++
+		items = append(items, skillInstallView{Name: b.Name, Path: dest, Installed: true})
+	}
+
+	if globalJSON {
+		action := "install"
+		if installed == 0 {
+			action = "noop"
+		}
+		return emitMutation(cmd, "", mutationResult{
+			Changed: installed > 0,
+			Action:  action,
+			Items:   items,
+			Extra:   map[string]any{"installed": installed, "skipped": skipped, "dir": baseDir},
+		})
 	}
 
 	fmt.Printf("\n%s %d installed, %d skipped. Your agent will auto-trigger on these skills when you mention vigolium.\n",
@@ -446,6 +463,15 @@ func runSkillsInstall(names []string) error {
 		printSkillsScopeHint(skillsOpts.Scope)
 	}
 	return nil
+}
+
+// skillInstallView is one bundle in `skills install -j`: where it went, and
+// whether this run wrote it.
+type skillInstallView struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	Installed bool   `json:"installed"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // printSkillsScopeHint tells the user which scope they just installed into and

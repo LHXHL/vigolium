@@ -32,6 +32,11 @@ type Deps struct {
 	// count, which the caller already knows — passing it avoids reflecting over
 	// the slice on the other side of the seam.
 	WriteJSON func(command, legacyKey string, items any, total int, extra map[string]any) error
+	// WriteMutation emits a state-changing command's result through the CLI's
+	// mutation spine (kind "mutation", changed, action, dry_run). changed and
+	// action are arguments, not extras: the envelope owns those keys, and an
+	// extra named "changed" is dropped rather than rendered.
+	WriteMutation func(command string, items any, changed bool, action string, extra map[string]any) error
 
 	// RecentScanTargets returns the targets of the n most recent scans in the
 	// given project ("" = the project the CLI resolves by default), for
@@ -45,6 +50,11 @@ type Deps struct {
 // built without the hooks (older callers, tests).
 func (d Deps) jsonRequested() bool {
 	return d.JSON != nil && d.WriteJSON != nil && d.JSON()
+}
+
+// mutationJSONRequested is jsonRequested for the mutation writer.
+func (d Deps) mutationJSONRequested() bool {
+	return d.JSON != nil && d.WriteMutation != nil && d.JSON()
 }
 
 // Examples carries the per-command example blocks, defined in pkg/cli.

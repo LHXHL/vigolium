@@ -19,7 +19,8 @@ vigolium project ls -j      # read envelope: items = projects {uuid, name, activ
 ```
 
 `project create` generates a UUID unless the global `--project-uuid` flag is
-set explicitly.
+set explicitly. With `-j` it prints a mutation document whose `items[0].uuid`
+is the new project's UUID.
 
 Select a project:
 
@@ -29,11 +30,27 @@ eval "$(vigolium project use a1b2c3d4-e5f6-7890-abcd-ef1234567890)"
 
 `project use` does two things:
 
-- prints an `export VIGOLIUM_PROJECT_UUID=...` command for the current shell;
-- persists the selection in `~/.vigolium/active-project` for future commands.
+- persists the selection in `~/.vigolium/active-project` for future commands
+  (written atomically);
+- when stdout is not a terminal (the `eval "$(...)"` case), prints an
+  `export VIGOLIUM_PROJECT_UUID=...` line for the current shell. On a terminal
+  it prints only the status on stderr. With `-j` it prints the mutation
+  document instead, never the `export` line.
 
-If the UUID is valid but unknown, `project use` creates it. Use `--name` and
-`--description` to customize an auto-created project.
+An unknown UUID is an error (exit 1, `error.code: "not_found"`) and nothing is
+created or activated. Pass `--create` to create the project with that UUID;
+`--name` and `--description` customize it:
+
+```bash
+vigolium project use a1b2c3d4-e5f6-7890-abcd-ef1234567890 --create --name acme -j
+# {"kind":"mutation","changed":true,"action":"create","items":[{"uuid":"a1b2…","name":"acme",…}],
+#  "env":{"VIGOLIUM_PROJECT_UUID":"a1b2…"},"activated_scope":"global",…}
+```
+
+`changed` is true when the project was created or the active-project file now
+names a different project; re-activating the active project is
+`"action":"noop"`. `VIGOLIUM_PROJECT_READONLY=true` refuses every activation,
+not only one that creates a project.
 
 Show the project configuration path:
 
@@ -51,9 +68,11 @@ vigolium project delete a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
   --keep-config --force
 ```
 
-The CLI refuses to delete the default project. Set
-`VIGOLIUM_PROJECT_READONLY=true` to disable mutating project commands in a
-shared or production environment.
+The CLI refuses to delete the default project. Deleting a project that does
+not exist is not an error: `project delete -j` reports `"changed": false,
+"found": false`. The confirmation preview goes to stderr. Set
+`VIGOLIUM_PROJECT_READONLY=true` to disable mutating project commands
+(`create`, `use`, `delete`) in a shared or production environment.
 
 ## Selecting a Project
 
@@ -69,6 +88,14 @@ The CLI resolves the active project in this order:
 `--project-uuid` and `--project-name` are mutually exclusive. Likewise,
 `VIGOLIUM_PROJECT_UUID` takes precedence over `VIGOLIUM_PROJECT_NAME` when both
 are set.
+
+`~/.vigolium/active-project` is global to the user: a `project use` in one
+shell (or by one agent) re-scopes every other shell that has not pinned a
+project. Every `-j` document therefore carries `project_source`: `flag`, `env`,
+`active_file` or `default`. When a command's project actually came from the
+active-project file, the document also carries a `warnings` entry telling you
+to pin `--project-uuid` or `VIGOLIUM_PROJECT_UUID`. Automation and parallel
+agents should always pin.
 
 ```bash
 # Scan by project name

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/cli/tui"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -122,11 +123,44 @@ var projectCreateCmd = &cobra.Command{
 			return fmt.Errorf("failed to create project config directory: %w", err)
 		}
 
+		if globalJSON {
+			return emitMutation(cmd, "", mutationResult{
+				Changed: true,
+				Action:  "create",
+				Items:   []projectMutationView{newProjectMutationView(project)},
+				Query:   []string{"--project-uuid", projectUUID, "project", "config", "--json"},
+			}, withProjectUUID(projectUUID), withDBPath(resolvedReadDBPath()))
+		}
+
 		fmt.Printf("%s Created project %s\n", terminal.SuccessSymbol(), terminal.BoldGreen(name))
 		fmt.Printf("  UUID: %s\n", terminal.Cyan(projectUUID))
 		fmt.Printf("  Config: %s\n", terminal.Cyan(config.ContractPath(config.ProjectConfigPath(projectUUID))))
 		return nil
 	},
+}
+
+// projectMutationView is the -j row for a project a mutation touched.
+type projectMutationView struct {
+	UUID        string `json:"uuid"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	ConfigPath  string `json:"config_path"`
+}
+
+func newProjectMutationView(p *database.Project) projectMutationView {
+	return projectMutationView{
+		UUID:        p.UUID,
+		Name:        p.Name,
+		Description: p.Description,
+		ConfigPath:  config.ContractPath(config.ProjectConfigPath(p.UUID)),
+	}
+}
+
+// withProjectUUID names the project a project command acted on. Not
+// withProjectScope: that states a read filter (project_scoped), and these
+// commands do not filter anything.
+func withProjectUUID(projectUUID string) envOpt {
+	return func(e *agentEnvelope) { e.ProjectUUID = projectUUID }
 }
 
 var projectListCmd = &cobra.Command{
@@ -214,58 +248,122 @@ var projectListCmd = &cobra.Command{
 }
 
 var projectUseCmd = &cobra.Command{
-	Use:   "use [uuid]",
-	Short: "Print the shell export command to set the active project",
-	Long:  "Prints an export command you can eval to set VIGOLIUM_PROJECT_UUID.\nUsage: eval $(vigolium project use <uuid>)\n\nIf the project does not exist, it is auto-created using the given UUID. Pass --name and --description to customize the new project.",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		defer syncLogger()
-		defer closeDatabaseOnExit()
+	Use:   "use <uuid>",
+	Short: "Set the active project (the global ~/.vigolium/active-project file)",
+	Long: "Make <uuid> the active project: it is written to ~/.vigolium/active-project, which every later command " +
+		"without --project-uuid / $VIGOLIUM_PROJECT_UUID resolves to. That file is global to the user, so a " +
+		"parallel shell or agent should pin --project-uuid or $VIGOLIUM_PROJECT_UUID instead.\n\n" +
+		"When stdout is not a terminal it also prints `export VIGOLIUM_PROJECT_UUID=<uuid>`, so\n" +
+		"  eval \"$(vigolium project use <uuid>)\"\n" +
+		"pins the current shell. With -j it prints the result document instead (no export line).\n\n" +
+		"An unknown UUID is an error (not_found) unless --create is given, which creates the project with that " +
+		"UUID (--name and --description customize it).",
+	Args: cobra.ExactArgs(1),
+	RunE: runProjectUse,
+}
 
-		projectUUID := args[0]
+func runProjectUse(cmd *cobra.Command, args []string) error {
+	// Every activation, not just an auto-create: switching the active project
+	// re-scopes every unpinned command, which is the management action the
+	// read-only switch exists to forbid.
+	if err := checkProjectReadonly(); err != nil {
+		return err
+	}
+	defer syncLogger()
+	defer closeDatabaseOnExit()
 
-		ctx := context.Background()
-		repo, err := openProjectRepo(ctx)
+	projectUUID := strings.TrimSpace(args[0])
+	create, _ := cmd.Flags().GetBool("create")
+	if create {
+		if _, parseErr := uuid.Parse(projectUUID); parseErr != nil {
+			return usageErrorf("--create needs a valid UUID, got %q: %w", projectUUID, parseErr)
+		}
+	}
+
+	ctx := context.Background()
+	repo, err := openProjectRepo(ctx)
+	if err != nil {
+		return err
+	}
+
+	created := false
+	project, err := repo.GetProjectByUUID(ctx, projectUUID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("failed to look up project: %w", err)
+		}
+		if !create {
+			// Never auto-created: a typo'd UUID used to mint a fresh, empty
+			// project and point every later command at it, which an agent cannot
+			// tell apart from a project with no findings yet.
+			return codedErrorf(apicontract.CodeNotFound,
+				"project %s not found; create it with `vigolium project create <name> --project-uuid %s`, or pass --create",
+				projectUUID, projectUUID)
+		}
+		project, err = autoCreateProject(ctx, repo, cmd, projectUUID)
 		if err != nil {
 			return err
 		}
-
-		project, err := repo.GetProjectByUUID(ctx, projectUUID)
-		if err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("failed to look up project: %w", err)
-			}
-			project, err = autoCreateProject(ctx, repo, cmd, projectUUID)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(os.Stderr, "%s Auto-created project %s (%s)\n",
-				terminal.SuccessSymbol(), terminal.BoldGreen(project.Name), project.UUID)
-		}
-
-		if err := config.WriteActiveProject(project.UUID); err != nil {
-			return fmt.Errorf("failed to persist active project: %w", err)
-		}
-
-		// Print export command (user evals this)
-		fmt.Printf("export VIGOLIUM_PROJECT_UUID=%s\n", project.UUID)
-		// Print info to stderr so eval doesn't capture it
-		fmt.Fprintf(os.Stderr, "%s Active project: %s (%s)\n",
+		created = true
+		fmt.Fprintf(os.Stderr, "%s Created project %s (%s)\n",
 			terminal.SuccessSymbol(), terminal.BoldGreen(project.Name), project.UUID)
-		fmt.Fprintf(os.Stderr, "  Saved to %s — picked up automatically by future commands.\n",
-			terminal.Cyan(config.ContractPath(config.ActiveProjectFilePath())))
-		return nil
-	},
+	}
+
+	previous, _ := config.ReadActiveProject()
+	if err := config.WriteActiveProject(project.UUID); err != nil {
+		return fmt.Errorf("failed to persist active project: %w", err)
+	}
+	activeChanged := previous != project.UUID
+
+	if globalJSON {
+		action := "activate"
+		switch {
+		case created:
+			action = "create"
+		case !activeChanged:
+			action = "noop"
+		}
+		return emitMutation(cmd, "", mutationResult{
+			Changed: created || activeChanged,
+			Action:  action,
+			Items:   []projectMutationView{newProjectMutationView(project)},
+			Extra: map[string]any{
+				"created":          created,
+				"previous_project": previous,
+				"activated_scope":  "global",
+				"active_file":      config.ContractPath(config.ActiveProjectFilePath()),
+				"env":              map[string]string{"VIGOLIUM_PROJECT_UUID": project.UUID},
+			},
+			Query: []string{"--project-uuid", project.UUID, "finding", "--json"},
+		}, withProjectUUID(project.UUID), withDBPath(resolvedReadDBPath()))
+	}
+
+	// The export line is for `eval "$(vigolium project use X)"`, whose stdout
+	// is a pipe. On a terminal nobody evals it, so it is only noise there.
+	if !terminal.IsTerminal() {
+		fmt.Printf("export VIGOLIUM_PROJECT_UUID=%s\n", project.UUID)
+	}
+	// Info goes to stderr so eval doesn't capture it.
+	fmt.Fprintf(os.Stderr, "%s Active project: %s (%s)\n",
+		terminal.SuccessSymbol(), terminal.BoldGreen(project.Name), project.UUID)
+	fmt.Fprintf(os.Stderr, "  Saved to %s — picked up by every command that does not pin --project-uuid / $VIGOLIUM_PROJECT_UUID.\n",
+		terminal.Cyan(config.ContractPath(config.ActiveProjectFilePath())))
+	if terminal.IsTerminal() {
+		fmt.Fprintf(os.Stderr, "  To pin this shell instead: %s\n",
+			terminal.Gray(fmt.Sprintf("export VIGOLIUM_PROJECT_UUID=%s", project.UUID)))
+	}
+	return nil
 }
 
-// autoCreateProject creates a new project with the given UUID, honoring
-// VIGOLIUM_PROJECT_READONLY and the --name / --description flags.
+// autoCreateProject creates a new project with the given UUID (`project use
+// --create`), honoring VIGOLIUM_PROJECT_READONLY and the --name / --description
+// flags.
 func autoCreateProject(ctx context.Context, repo *database.Repository, cmd *cobra.Command, projectUUID string) (*database.Project, error) {
 	if err := checkProjectReadonly(); err != nil {
 		return nil, err
 	}
 	if _, parseErr := uuid.Parse(projectUUID); parseErr != nil {
-		return nil, fmt.Errorf("project not found and %q is not a valid UUID: %w", projectUUID, parseErr)
+		return nil, usageErrorf("%q is not a valid UUID: %w", projectUUID, parseErr)
 	}
 
 	name, _ := cmd.Flags().GetString("name")
@@ -320,10 +418,20 @@ var projectDeleteCmd = &cobra.Command{
 
 		project, err := repo.GetProjectByUUID(ctx, projectUUID)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("project %s not found", projectUUID)
+			if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("failed to look up project: %w", err)
 			}
-			return fmt.Errorf("failed to look up project: %w", err)
+			// Idempotent: the state the caller asked for — no such project —
+			// already holds. A cleanup step that runs twice must not fail the
+			// second time.
+			fmt.Fprintf(os.Stderr, "%s Project %s not found; nothing deleted.\n", terminal.InfoSymbol(), projectUUID)
+			if globalJSON {
+				return emitMutation(cmd, "", mutationResult{
+					Action: "noop",
+					Extra:  map[string]any{"found": false},
+				}, withProjectUUID(projectUUID), withDBPath(resolvedReadDBPath()))
+			}
+			return nil
 		}
 
 		stats, statsErr := repo.GetProjectStats(ctx, projectUUID)
@@ -331,26 +439,36 @@ var projectDeleteCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "%s Could not load project stats: %s\n", terminal.WarningSymbol(), statsErr)
 		}
 
-		fmt.Printf("%s About to permanently delete project %s (%s)\n",
+		// The preview is prose about what is about to happen: stderr, so stdout
+		// carries only the result (the -j document, or the final line).
+		fmt.Fprintf(os.Stderr, "%s About to permanently delete project %s (%s)\n",
 			terminal.WarningSymbol(), terminal.BoldGreen(project.Name), terminal.Cyan(projectUUID))
 		if stats != nil {
-			fmt.Printf("  HTTP records:    %d\n", stats.HTTPRecords)
-			fmt.Printf("  Findings:        %d\n", stats.Findings)
-			fmt.Printf("  Scans:           %d\n", stats.Scans)
-			fmt.Printf("  Agentic scans:   %d\n", stats.AgenticScans)
-			fmt.Printf("  OAST events:     %d\n", stats.OASTInteractions)
+			fmt.Fprintf(os.Stderr, "  HTTP records:    %d\n", stats.HTTPRecords)
+			fmt.Fprintf(os.Stderr, "  Findings:        %d\n", stats.Findings)
+			fmt.Fprintf(os.Stderr, "  Scans:           %d\n", stats.Scans)
+			fmt.Fprintf(os.Stderr, "  Agentic scans:   %d\n", stats.AgenticScans)
+			fmt.Fprintf(os.Stderr, "  OAST events:     %d\n", stats.OASTInteractions)
 		}
 
 		keepConfig, _ := cmd.Flags().GetBool("keep-config")
 		configDir := config.ProjectConfigDir(projectUUID)
+		configRemoved := false
 		if !keepConfig {
 			if _, statErr := os.Stat(configDir); statErr == nil {
-				fmt.Printf("  Config dir:      %s (will be removed)\n", terminal.Cyan(config.ContractPath(configDir)))
+				fmt.Fprintf(os.Stderr, "  Config dir:      %s (will be removed)\n", terminal.Cyan(config.ContractPath(configDir)))
 			}
 		}
 
 		if done, confErr := handleConfirmation(fmt.Sprintf(
 			"deleting project %s and purging all of its scan data", projectUUID)); done {
+			if confErr == nil && globalJSON {
+				// Declined at the prompt: one document saying nothing changed.
+				return emitMutation(cmd, "", mutationResult{
+					Action: "noop",
+					Extra:  map[string]any{"found": true, "aborted": true},
+				}, withProjectUUID(projectUUID), withDBPath(resolvedReadDBPath()))
+			}
 			return confErr
 		}
 
@@ -362,26 +480,63 @@ var projectDeleteCmd = &cobra.Command{
 		}
 
 		if !keepConfig {
-			if err := os.RemoveAll(configDir); err != nil {
-				fmt.Fprintf(os.Stderr, "%s Failed to remove project config dir %s: %s\n",
-					terminal.WarningSymbol(), config.ContractPath(configDir), err)
+			if _, statErr := os.Stat(configDir); statErr == nil {
+				if err := os.RemoveAll(configDir); err != nil {
+					fmt.Fprintf(os.Stderr, "%s Failed to remove project config dir %s: %s\n",
+						terminal.WarningSymbol(), config.ContractPath(configDir), err)
+				} else {
+					configRemoved = true
+				}
 			}
 		}
 
 		// If the deleted project was the persisted active one, drop the marker
 		// so future commands fall back to the default project.
+		activeCleared := false
 		if persisted, perr := config.ReadActiveProject(); perr == nil && persisted == projectUUID {
 			if rmErr := os.Remove(config.ActiveProjectFilePath()); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 				fmt.Fprintf(os.Stderr, "%s Failed to clear active-project marker: %s\n", terminal.WarningSymbol(), rmErr)
 			} else {
+				activeCleared = true
 				fmt.Fprintf(os.Stderr, "%s Active project marker cleared (was %s)\n", terminal.InfoSymbol(), projectUUID)
 			}
+		}
+
+		if globalJSON {
+			row := projectDeleteView{
+				projectMutationView: newProjectMutationView(project),
+				ConfigRemoved:       configRemoved,
+				ActiveCleared:       activeCleared,
+			}
+			if stats != nil {
+				row.HTTPRecords, row.Findings, row.Scans = stats.HTTPRecords, stats.Findings, stats.Scans
+				row.AgenticScans, row.OASTInteractions = stats.AgenticScans, stats.OASTInteractions
+			}
+			return emitMutation(cmd, "", mutationResult{
+				Changed: true,
+				Action:  "delete",
+				Items:   []projectDeleteView{row},
+				Extra:   map[string]any{"found": true},
+			}, withProjectUUID(projectUUID), withDBPath(resolvedReadDBPath()))
 		}
 
 		fmt.Printf("%s Deleted project %s (%s)\n",
 			terminal.SuccessSymbol(), terminal.BoldGreen(project.Name), projectUUID)
 		return nil
 	},
+}
+
+// projectDeleteView is the -j row for a deleted project: what it held when it
+// was purged, and what else the delete cleaned up.
+type projectDeleteView struct {
+	projectMutationView
+	HTTPRecords      int64 `json:"http_records"`
+	Findings         int64 `json:"findings"`
+	Scans            int64 `json:"scans"`
+	AgenticScans     int64 `json:"agentic_scans"`
+	OASTInteractions int64 `json:"oast_interactions"`
+	ConfigRemoved    bool  `json:"config_removed"`
+	ActiveCleared    bool  `json:"active_project_cleared"`
 }
 
 var projectConfigCmd = &cobra.Command{
@@ -401,8 +556,18 @@ var projectConfigCmd = &cobra.Command{
 		}
 
 		configPath := config.ProjectConfigPath(projectUUID)
+		_, statErr := os.Stat(configPath)
+		exists := statErr == nil
 
-		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if globalJSON {
+			return emitObject(cmd, ".", projectConfigView{
+				ProjectUUID: projectUUID,
+				Path:        config.ContractPath(configPath),
+				Exists:      exists,
+			}, withProjectUUID(projectUUID))
+		}
+
+		if os.IsNotExist(statErr) {
 			fmt.Printf("No project config file exists yet.\n")
 			fmt.Printf("Create one at: %s\n", terminal.Cyan(config.ContractPath(configPath)))
 			fmt.Printf("\nThis file uses the same format as scanning profiles (partial YAML overlay).\n")
@@ -414,12 +579,21 @@ var projectConfigCmd = &cobra.Command{
 	},
 }
 
+// projectConfigView is `project config -j`: where the overlay lives and
+// whether it exists yet.
+type projectConfigView struct {
+	ProjectUUID string `json:"project_uuid"`
+	Path        string `json:"path"`
+	Exists      bool   `json:"exists"`
+}
+
 func init() {
 	rootCmd.AddCommand(projectCmd)
 
 	projectCreateCmd.Flags().String("description", "", "Project description")
-	projectUseCmd.Flags().String("name", "", "Name to use when auto-creating a project (default: \"Project <short-uuid>\")")
-	projectUseCmd.Flags().String("description", "", "Description to use when auto-creating a project")
+	projectUseCmd.Flags().Bool("create", false, "Create the project with this UUID when it does not exist (otherwise an unknown UUID is a not_found error)")
+	projectUseCmd.Flags().String("name", "", "Name for a project created by --create (default: \"Project <short-uuid>\")")
+	projectUseCmd.Flags().String("description", "", "Description for a project created by --create")
 	projectDeleteCmd.Flags().Bool("keep-config", false, "Keep the project's config directory (~/.vigolium/projects/<uuid>) on disk")
 	tui.AddFlags(projectListCmd, &projectLsTUI, &projectLsNoTUI)
 	projectCmd.AddCommand(projectCreateCmd)

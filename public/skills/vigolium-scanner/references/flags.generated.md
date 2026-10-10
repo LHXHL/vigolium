@@ -1460,14 +1460,15 @@ List all projects
 
 ## vigolium project use
 
-Usage: `vigolium project use [uuid]`
+Usage: `vigolium project use <uuid>`
 
-Print the shell export command to set the active project
+Set the active project (the global ~/.vigolium/active-project file)
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--description` | - | string | - | Description to use when auto-creating a project |
-| `--name` | - | string | - | Name to use when auto-creating a project (default: "Project <short-uuid>") |
+| `--create` | - | bool | `false` | Create the project with this UUID when it does not exist (otherwise an unknown UUID is a not_found error) |
+| `--description` | - | string | - | Description for a project created by --create |
+| `--name` | - | string | - | Name for a project created by --create (default: "Project <short-uuid>") |
 
 ## vigolium replay
 

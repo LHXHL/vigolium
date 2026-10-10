@@ -1,6 +1,7 @@
 package configcmd
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"gopkg.in/yaml.v3"
 )
 
 func newSetCmd(deps Deps, example string) *cobra.Command {
@@ -57,6 +59,10 @@ func runConfigSet(deps Deps, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	// Snapshot before the write so `changed` reports whether the value
+	// actually moved (setting a key to its current value is a no-op write).
+	before, _ := yaml.Marshal(settings)
+
 	// Update the field
 	if err := config.SetField(settings, key, value); err != nil {
 		// A key that names no setting, or a value that cannot be stored under
@@ -84,14 +90,20 @@ func runConfigSet(deps Deps, args []string) error {
 		shown = clicommon.SecretPlaceholder
 	}
 
-	if deps.jsonRequested() {
-		return deps.WriteJSON("config set", "", []configSetResult{{
+	if deps.mutationJSONRequested() {
+		after, _ := yaml.Marshal(settings)
+		changed := before == nil || after == nil || !bytes.Equal(before, after)
+		action := "update"
+		if !changed {
+			action = "noop"
+		}
+		return deps.WriteMutation("config set", []configSetResult{{
 			Key:        key,
 			Value:      shown,
 			Sensitive:  sensitive,
 			Redacted:   sensitive,
 			ConfigPath: config.ContractPath(configPath),
-		}}, 1, map[string]any{"changed": true})
+		}}, changed, action, nil)
 	}
 
 	fmt.Printf("%s Set %s = %s\n", terminal.SuccessSymbol(), terminal.Cyan(key), shown)

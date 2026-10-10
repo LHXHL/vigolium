@@ -42,7 +42,7 @@ func TestResetDatabaseRefusesOnConfigError(t *testing.T) {
 	}
 	withGlobalConfig(t, broken)
 
-	err := resetDatabase()
+	_, err := resetDatabase()
 	if err == nil {
 		t.Fatal("resetDatabase should refuse when the config cannot be read")
 	}

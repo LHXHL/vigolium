@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
@@ -41,6 +42,11 @@ func runScopeSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config, refusing to write: %w", err)
 	}
 
+	// The rule's value before the write, for the -j old/new pair. A list-op key
+	// (`.add`/`.clear`) reports the list it changes.
+	ruleKey := strings.TrimSuffix(strings.TrimSuffix(key, ".add"), ".clear")
+	oldValue := flatSettingValue(settings, ruleKey)
+
 	if err := config.SetField(settings, key, value); err != nil {
 		if errors.Is(err, config.ErrUnknownKey) || errors.Is(err, config.ErrInvalidValue) {
 			return clicommon.AsUsageError(fmt.Errorf("failed to set %q: %w", key, err))
@@ -49,6 +55,7 @@ func runScopeSet(cmd *cobra.Command, args []string) error {
 	}
 
 	where := ""
+	layer, configPath := "global", effectiveConfigPath()
 	if scopeSetProject != "" {
 		path, err := config.SetProjectOverlayValue(scopeSetProject, key, settings)
 		if err != nil {
@@ -58,10 +65,53 @@ func runScopeSet(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to save project config: %w", err)
 		}
 		where = " (" + config.ContractPath(path) + ")"
+		layer, configPath = "project", path
 	} else if err := config.SaveSettings(effectiveConfigPath(), settings); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
+	if globalJSON {
+		newValue := flatSettingValue(settings, ruleKey)
+		changed := oldValue != newValue
+		action := "update"
+		if !changed {
+			action = "noop"
+		}
+		opts := []envOpt{}
+		if scopeSetProject != "" {
+			opts = append(opts, withProjectUUID(scopeSetProject))
+		}
+		return emitMutation(cmd, "", mutationResult{
+			Changed: changed,
+			Action:  action,
+			Items: []scopeSetView{{
+				Key: ruleKey, Old: oldValue, New: newValue,
+				Layer: layer, ConfigPath: config.ContractPath(configPath),
+			}},
+		}, opts...)
+	}
+
 	fmt.Printf("%s Set %s = %s%s\n", terminal.SuccessSymbol(), terminal.Cyan(key), value, terminal.Gray(where))
 	return nil
+}
+
+// scopeSetView is the `scope set -j` row: the rule, its value before and after
+// (in `config ls` rendering), and which config layer was written.
+type scopeSetView struct {
+	Key        string `json:"key"`
+	Old        string `json:"old"`
+	New        string `json:"new"`
+	Layer      string `json:"layer"`
+	ConfigPath string `json:"config_path"`
+}
+
+// flatSettingValue renders one setting the way `config ls` does, or "" when the
+// key is unset.
+func flatSettingValue(settings *config.Settings, key string) string {
+	for _, e := range config.FlattenSettings(settings) {
+		if e.Key == key {
+			return e.Value
+		}
+	}
+	return ""
 }

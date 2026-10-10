@@ -45,6 +45,12 @@ func runInitCmd(cmd *cobra.Command, args []string) error {
 	if _, err := os.Stat(settingsPath); err == nil && !globalForce {
 		fmt.Fprintf(os.Stderr, "%s Already initialized (%s exists). Use --force to reinitialize.\n",
 			terminal.InfoSymbol(), terminal.Cyan(config.ContractPath(settingsPath)))
+		if globalJSON {
+			return emitMutation(cmd, "", mutationResult{
+				Action: "noop",
+				Extra:  map[string]any{"already_initialized": true, "config_path": config.ContractPath(settingsPath)},
+			})
+		}
 		return nil
 	}
 
@@ -112,10 +118,38 @@ func runInitCmd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("core dependency install failed: %w", err)
 	}
 
+	if globalJSON {
+		dbPath := ""
+		if settings.Database.Enabled {
+			dbPath = config.ContractPath(config.ExpandPath(settings.Database.SQLite.Path))
+		}
+		items := []initPathView{{Kind: "config", Path: config.ContractPath(settingsPath)}}
+		if dbPath != "" {
+			items = append(items, initPathView{Kind: "database", Path: dbPath})
+		}
+		for _, sub := range []string{"profiles", "extensions", "prompts"} {
+			items = append(items, initPathView{Kind: sub, Path: config.ContractPath(filepath.Join(vigoliumDir, sub))})
+		}
+		if sk := skill.UserSkillsDir(); sk != "" {
+			items = append(items, initPathView{Kind: "skills", Path: config.ContractPath(sk)})
+		}
+		action := "create"
+		if globalForce {
+			action = "reset"
+		}
+		return emitMutation(cmd, "", mutationResult{Changed: true, Action: action, Items: items})
+	}
+
 	fmt.Fprintf(os.Stderr, "%s %s\n", terminal.SuccessSymbol(), terminal.BoldGreen("Vigolium initialized successfully!"))
 	fmt.Fprintf(os.Stderr, "  %s Config:   %s\n", terminal.InfoSymbol(), terminal.Cyan(config.ContractPath(settingsPath)))
 	fmt.Fprintf(os.Stderr, "  %s Database: %s\n", terminal.InfoSymbol(), terminal.Cyan(config.ContractPath(config.ExpandPath(settings.Database.SQLite.Path))))
 	fmt.Fprintf(os.Stderr, "  %s Docs:     %s\n", terminal.InfoSymbol(), terminal.Cyan("https://docs.vigolium.com"))
 
 	return nil
+}
+
+// initPathView is one path `init -j` wrote or re-extracted.
+type initPathView struct {
+	Kind string `json:"kind"`
+	Path string `json:"path"`
 }

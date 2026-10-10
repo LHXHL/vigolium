@@ -556,6 +556,7 @@ Delete database records with filtering. Destructive operations require `--force`
 - `db clean` with **no selector** is rejected (it never implicitly wipes the DB). Use `--all --force` to delete every row, or `db reset --force` to delete and recreate the database file.
 - `--all` without `--force`: error.
 - Without `--force`: interactive confirmation prompt.
+- `-j`: one mutation document, `items:[{table, rows}]` plus `rows_matched`/`rows_deleted`, `mode`, `scope`; `--dry-run` gives `dry_run:true, changed:false`.
 
 ### Examples
 
@@ -1561,11 +1562,11 @@ Manage projects for multi-tenancy scan data scoping.
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `project config` | — | View or update project configuration |
-| `project create <name>` | — | Create a new project (positional name; `--description` optional) |
+| `project config` | — | Show the project's config overlay path (`-j`: `items:[{project_uuid, path, exists}]`) |
+| `project create <name>` | — | Create a new project (positional name; `--description` optional). `-j`: `items[0].uuid` is the new UUID |
 | `project list` | `ls` | List all projects |
-| `project use <uuid>` | — | Print an `export VIGOLIUM_PROJECT_UUID=…` line to `eval`; takes a UUID, not a name (a non-UUID is rejected). Auto-creates the project when the UUID is unknown (`--name`/`--description` used only then) |
-| `project delete <uuid>` | `rm`, `remove` | Delete a project and its data (`--keep-config` retains `~/.vigolium/projects/<uuid>`) |
+| `project use <uuid>` | — | Write the global `~/.vigolium/active-project` file. Takes a UUID, not a name. An unknown UUID exits 1 with `not_found` and creates nothing, unless `--create` (then `--name`/`--description` apply). Prints `export VIGOLIUM_PROJECT_UUID=…` only when stdout is not a terminal (for `eval`); never under `-j` |
+| `project delete <uuid>` | `rm`, `remove` | Delete a project and its data (`--keep-config` retains `~/.vigolium/projects/<uuid>`). An absent project is `changed:false`, not an error |
 
 ### Examples
 
@@ -1574,9 +1575,22 @@ vigolium project list
 vigolium project create my-project                 # positional name (no --name flag on create)
 vigolium project create my-project --description "Q4 engagement"
 eval "$(vigolium project use <project-uuid>)"   # takes a UUID; get it from `project list`
+vigolium project use <uuid> --create --name acme -j   # create-and-activate; never implicit
 vigolium project config
 vigolium project delete <project-uuid>             # aliases: rm, remove
 ```
+
+The active-project file is shared by every shell and agent. Every `-j` document
+carries `project_source` (`flag`/`env`/`active_file`/`default`), plus a
+`warnings` entry when the project came from that file: pin `--project-uuid` or
+`VIGOLIUM_PROJECT_UUID` in automation.
+
+All mutating commands here and in `db clean`/`db reset`, `module enable/disable`,
+`config set/clean`, `scope set`, `storage upload/rm/results`, `init` and
+`skills install` print one mutation document under `-j`:
+`{"kind":"mutation","changed":bool,"action":"…","items":[…]}` (`dry_run:true`
+for `db clean --dry-run`). `changed:false` with `action:"noop"` means nothing
+was written.
 
 ---
 
@@ -1661,7 +1675,7 @@ vigolium storage upload ./report.pdf --content-type application/pdf
 
 **Usage:** `vigolium storage download <key> [flags]` (alias `get`)
 
-Download an object from the active project's storage by full key. Streams to stdout by default; use `-o` to write to a file.
+Download an object from the active project's storage by full key. Streams to stdout by default; use `-o` to write to a file. `-j` requires `-o` (exit 2 otherwise) and prints a receipt `items:[{key, path, size}]`.
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|

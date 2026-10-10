@@ -22,7 +22,7 @@ func init() {
 	storageCmd.AddCommand(storageRmCmd)
 }
 
-func runStorageRm(_ *cobra.Command, args []string) error {
+func runStorageRm(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 
 	sc, projectUUID, err := openStorageClient()
@@ -37,22 +37,54 @@ func runStorageRm(_ *cobra.Command, args []string) error {
 
 	if done, err := handleConfirmation(fmt.Sprintf("deleting %d stored object(s) from project %s",
 		len(args), projectUUID)); done {
+		if err == nil && globalJSON {
+			return emitMutation(cmd, "", mutationResult{Action: "noop", Extra: map[string]any{"aborted": true}},
+				withProjectScope(projectUUID))
+		}
 		return err
 	}
 
 	ctx := context.Background()
+	out := humanOut()
 	var failures int
+	items := make([]storageObjectView, 0, len(args))
 	for _, key := range args {
 		if err := sc.Delete(ctx, projectUUID, key); err != nil {
 			failures++
-			fmt.Printf("%s %s: %s\n", terminal.ErrorSymbol(), terminal.Gray(key), err)
+			fmt.Fprintf(out, "%s %s: %s\n", terminal.ErrorSymbol(), terminal.Gray(key), err)
+			deleted := false
+			items = append(items, storageObjectView{Key: key, Deleted: &deleted, Error: err.Error()})
 			continue
 		}
-		fmt.Printf("%s Deleted %s\n", terminal.SuccessSymbol(), terminal.Gray(key))
+		fmt.Fprintf(out, "%s Deleted %s\n", terminal.SuccessSymbol(), terminal.Gray(key))
+		deleted := true
+		items = append(items, storageObjectView{Key: key, Deleted: &deleted})
 	}
 
+	var failErr error
 	if failures > 0 {
-		return fmt.Errorf("%d of %d deletion(s) failed", failures, len(args))
+		failErr = fmt.Errorf("%d of %d deletion(s) failed", failures, len(args))
 	}
-	return nil
+	if globalJSON {
+		// One document with the per-key outcome; on a partial failure it also
+		// carries ok:false and the error, and the exit code still reports it.
+		removed := len(args) - failures
+		action := "delete"
+		if removed == 0 {
+			action = "noop"
+		}
+		opts := []envOpt{withProjectScope(projectUUID)}
+		if failErr != nil {
+			opts = append(opts, withResultFailure(failErr))
+		}
+		if err := emitMutation(cmd, "", mutationResult{
+			Changed: removed > 0,
+			Action:  action,
+			Items:   items,
+			Extra:   map[string]any{"deleted": removed, "failed": failures},
+		}, opts...); err != nil {
+			return err
+		}
+	}
+	return failErr
 }

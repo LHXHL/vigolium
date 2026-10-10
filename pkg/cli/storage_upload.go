@@ -64,11 +64,31 @@ func runStorageUpload(cmd *cobra.Command, args []string) error {
 	}
 
 	url := storage.StorageURL(projectUUID, key)
+	if globalJSON {
+		return emitMutation(cmd, "", mutationResult{
+			Changed: true,
+			Action:  "upload",
+			Items:   []storageObjectView{{Key: key, Size: info.Size(), URL: url, Source: srcPath}},
+		}, withProjectScope(projectUUID))
+	}
 	fmt.Printf("%s Uploaded %s (%s)\n",
 		terminal.SuccessSymbol(), terminal.Cyan(filepath.Base(srcPath)), terminal.HumanBytes(info.Size()))
 	fmt.Printf("  Key: %s\n", terminal.Gray(key))
 	fmt.Printf("  URL: %s\n", terminal.Gray(url))
 	return nil
+}
+
+// storageObjectView is one object a storage mutation touched: the key, and
+// whichever of size / storage URL / local path applies.
+type storageObjectView struct {
+	Key    string `json:"key"`
+	Size   int64  `json:"size,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Source string `json:"source,omitempty"`
+	Path   string `json:"path,omitempty"`
+	// Deleted and Error are `storage rm`'s per-key outcome.
+	Deleted *bool  `json:"deleted,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // uploadNativeScanResults pushes the run's artifacts to cloud storage when

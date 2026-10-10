@@ -49,9 +49,7 @@ var knownNonConforming = map[string]string{
 	"agent session": "raw {sessions} or raw scan",
 	"agent triage":  "text verdict",
 
-	// Reads still RAW or NONE (B5, or the group that next changes them).
-	"auth lint":          "text report",
-	"auth totp":          "raw {code,expires_in} always",
+	// Reads still RAW or NONE (the group that next changes them).
 	"extensions eval":    "text",
 	"extensions example": "text",
 	"extensions lint":    "text report",
@@ -60,36 +58,18 @@ var knownNonConforming = map[string]string{
 	"import":             "-j is the mutation envelope; local --format (report format) shadows the global --format",
 	"js":                 "-j is the envelope; local --format (json|text) shadows the global --format",
 	"log":                "`log <uuid>` prints a text transcript",
-	"project config":     "text",
 
-	// Mutations without the spine (B5).
-	"auth load":       "text",
-	"config clean":    "text",
-	"config set":      "envelope without changed/action",
-	"db clean":        "text",
-	"db reset":        "text",
-	"db seed":         "text",
-	"init":            "text",
-	"module disable":  "text",
-	"module enable":   "text",
-	"project create":  "text",
-	"project delete":  "text",
-	"project use":     "export line on stdout",
-	"scope set":       "text",
-	"skills install":  "text",
-	"storage results": "text",
-	"storage rm":      "text",
-	"storage upload":  "text",
+	// Mutations without the spine.
+	"db seed": "text (dev-only seeder)",
 
-	// Streams that ignore -j (B4/B5).
-	"db export":        "own --format stream; ignores -j",
-	"export":           "own --format stream; ignores -j",
-	"storage download": "raw object bytes",
+	// Streams that ignore -j.
+	"db export": "own --format stream; ignores -j",
+	"export":    "own --format stream; ignores -j",
 }
 
 // knownNonConformingCeiling pins the ratchet's size. Lower it when an entry is
 // removed; never raise it.
-const knownNonConformingCeiling = 43
+const knownNonConformingCeiling = 23
 
 // shadowCheckedFlags are the local flag names that must not shadow a persistent
 // one: a local --json silently replaces the global -j on that command.

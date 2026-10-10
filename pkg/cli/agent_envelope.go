@@ -131,6 +131,8 @@ func newAgentEnvelope(command, legacyKey string, items any, total int64, offset,
 		extra:         map[string]any{},
 	}
 	env.legacyKey = legacyKey
+	// Every envelope says where its project came from (project_source.go).
+	attachProjectSource(env)
 	return env
 }
 

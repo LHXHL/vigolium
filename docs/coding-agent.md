@@ -237,6 +237,13 @@ duplicates the rows on the wire and exists only for consumers still migrating.
   key, and what SARIF fingerprints use); `--fields` accepts it.
 - `project_scoped` says whether a project filter was applied at all, so "no
   filter" is explicit rather than inferred from an absent `project_uuid`.
+- `project_source` says where the project selection came from: `flag`
+  (`--project-uuid`/`--project-name`), `env` (`VIGOLIUM_PROJECT_UUID`/`_NAME`),
+  `active_file` (`~/.vigolium/active-project`, written by `project use`) or
+  `default`. That file is shared by every shell and agent on the machine, so a
+  document whose project was actually resolved from it also carries
+  `warnings: ["project resolved from the global active-project file …"]`. Pin
+  `--project-uuid` or `VIGOLIUM_PROJECT_UUID` and both go away.
 - `db_path` names the store that was actually opened, so a consumer pinning
   `VIGOLIUM_DB_PATH` or `--db` can assert the pin survived.
 - `query`/`query_argv` are absent together under `--glob-db`; `db_path` is
@@ -278,6 +285,33 @@ row name, or flattens a single object back to the top level, for one release.
 | `finding load` | mutation | stored finding ids | `format`, `parsed`, `saved`, `skipped` (the old `total` is `parsed`) | — |
 | `ingest` (local and `-s` remote) | mutation | `[]` | `records_ingested`/… or `records_submitted`, `errors`, `duration_ms` | — |
 | `update` | mutation | steps | — | `steps` |
+
+Mutating commands that used to print only prose now print one mutation
+document under `-j` (prose moves to stderr). `changed: false` with
+`action: "noop"` means nothing was written; a declined confirmation is a noop
+with `aborted: true`.
+
+| Command | `items` | `changed` when | Also at the top level |
+|---|---|---|---|
+| `project create` | `[{uuid, name, description, config_path}]` | always | `project_uuid` |
+| `project use` | `[project]` | created, or the active file now names a different project | `created`, `previous_project`, `activated_scope: "global"`, `active_file`, `env: {VIGOLIUM_PROJECT_UUID}` |
+| `project delete` | `[{uuid, name, http_records, findings, scans, …, config_removed, active_project_cleared}]` | the project existed | `found` (an absent project is `changed: false`, exit 0) |
+| `project config` (read) | `[{project_uuid, path, exists}]` | — | — |
+| `module enable` / `disable` | every matched module `{id, type, changed}` | any module flipped | `modules_changed`, `config_path` |
+| `db clean` | `[{table, rows}]` (rows matched) | rows were deleted | `mode`, `scope`, `store_wide`, `rows_matched`, `rows_deleted`; `dry_run: true` under `--dry-run` |
+| `db reset` | `[{path, files_removed}]` | always | — |
+| `config set` | `[{key, value, sensitive, redacted, config_path}]` | the stored value moved | — |
+| `config clean` | `[{path, reinitialized}]` | `~/.vigolium` existed | — |
+| `scope set` | `[{key, old, new, layer, config_path}]` | `old` ≠ `new` | — |
+| `storage upload` / `results` | `[{key, size, url / path}]` | always | `scan_uuid` (results) |
+| `storage rm` | `[{key, deleted, error?}]` | any key deleted | `deleted`, `failed`; a partial failure also sets `ok: false` and `error`, and exits 1 |
+| `init` | `[{kind, path}]` written | not already initialized (or `--force`) | `already_initialized` on a noop |
+| `skills install` | `[{name, path, installed, reason?}]` | any bundle written | `installed`, `skipped`, `dir` |
+
+`storage download -j` needs `-o <file>` (exit 2 otherwise: without it the
+object's bytes are stdout) and prints a read receipt `[{key, path, size}]`.
+`project use <unknown-uuid>` exits 1 with `error.code: "not_found"` and creates
+nothing; pass `--create` to create it.
 
 `project list`, `storage ls` and `storage presign` had a local `--json` flag
 that shadowed the global one (so `-j` failed). It is gone: `--json` and `-j`

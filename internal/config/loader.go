@@ -490,12 +490,20 @@ func ReadActiveProject() (string, error) {
 
 // WriteActiveProject persists the active project UUID to disk so that future
 // shells/commands resolve to it without needing VIGOLIUM_PROJECT_UUID.
+//
+// Atomic (temp file + rename): every command that resolves a project without a
+// flag or env pin reads this file, so a concurrent reader must see the old UUID
+// or the new one, never an empty or half-written file that silently resolves
+// to the default project.
 func WriteActiveProject(projectUUID string) error {
 	path := ActiveProjectFilePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("failed to create vigolium config dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(projectUUID+"\n"), 0600); err != nil {
+	if err := atomicfile.WriteFile(path, 0o600, func(w *bufio.Writer) error {
+		_, err := w.WriteString(projectUUID + "\n")
+		return err
+	}); err != nil {
 		return fmt.Errorf("failed to write active project file: %w", err)
 	}
 	return nil
