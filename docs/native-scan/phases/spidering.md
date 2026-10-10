@@ -190,6 +190,55 @@ An operator `-H Cookie` always wins over the carried session; the carried
 cookies are merged into a request's own `Cookie` header only for names it does
 not already have.
 
+## Route Seeds
+
+Before the crawl loop starts, the crawler browses a bounded list of seed
+locations into the state graph, so their clickables join the frontier:
+
+- **Declared seeds**: the `Allow`/`Disallow` paths of `robots.txt` and the
+  `<loc>` entries of the sitemap, fetched in-page. All are recorded; up to 25
+  are browsed, spread over distinct path shapes.
+- **Extra seeds** (`SpiderConfig.ExtraSeeds`): caller-supplied entry points,
+  in the product the client routes discovery found in the target's JavaScript
+  (the `jstangle-facts` artifacts). Nothing on the page links to such a route,
+  so an interaction crawl cannot reach it on its own.
+
+Extra seeds are resolved, scope-filtered, deduplicated by route shape (against
+the landing page, the declared seeds and each other; `/users/1` and
+`/users/2` are one seed) and taken highest priority first, up to
+`spidering.max_extra_seeds` (default 50). The navigation rule is shared with
+discovery:
+
+| Route | Navigated to |
+| --- | --- |
+| history (default) | origin + path: `/admin/reports/:id` → `https://app/admin/reports/1` |
+| hash (`#/x`, `#!/x`, or a hash-routed landing page) | start page + fragment: `https://app/#/admin/reports/1` |
+
+Route parameters (`:id`, `[id]`, `[...slug]`, `{id}`, `${id}`) become `1`, the
+substitution discovery uses (`pkg/deparos/jstangle/clientroute`); wildcard
+routes are skipped. A seed whose mode is unset follows the landing page: when
+its URL carries a fragment route (`/#/home`) the app is hash-routed.
+
+The runner feeds client routes in two places, both gated by
+`spidering.route_seeds` (default true):
+
+- **Initial spidering** passes the routes earlier runs of the project stored
+  for the in-scope origins, so `vigolium run spidering` after `run discovery`
+  browses them. A shared host session browses them on its first target only.
+- **Targeted re-spider** adds the routes this scan's discovery stored as
+  candidates (source `jstangle-route`) beside the record-derived ones. They
+  skip the app-shell dedup (every route of one SPA serves the same shell) but
+  share the route-template dedup, the login screen check and the
+  `discovery.respider` per-host and total caps; the selection line reports how
+  many were chosen. A route discovery found only in the JavaScript becomes a
+  browser navigation in the same scan.
+
+Redirect entries, low-confidence routes, API routes and nested routes whose
+parent lives in another module (a templated `fullPath`) are not seeded. A route
+is attributed to the origin of the record its `jstangle-facts` artifact hangs
+on, normally the JS asset's own origin; a bundle served from an out-of-scope
+CDN contributes no seeds.
+
 ## Termination Conditions
 
 The crawl stops when any of these are met:
@@ -219,5 +268,6 @@ submitted / prevented by policy / uncertain, duration, records saved, the
 capture receipt (`Capture`), the authentication outcome (`AuthState`:
 `not-requested`, `configured`, `applied` or `failed` — never "verified"), hosts
 credential headers were withheld from, auxiliary fetches denied by scope, and
-readiness conditions that never met. A crawl that fails after starting returns a
+readiness conditions that never met, and how many extra seeds were accepted
+and browsed (`ExtraSeedsAccepted`, `ExtraSeedsCrawled`). A crawl that fails after starting returns a
 partial result (records saved, capture receipt, auth state) alongside the error.

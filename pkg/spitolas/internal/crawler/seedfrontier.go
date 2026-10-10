@@ -132,6 +132,10 @@ const seedDiscoverScript = `(async () => {
 // settle, so only SeedMaxCrawlURLs of them are actually browsed into states —
 // enough to pull in link neighbourhoods the seed page never exposed, without
 // letting a 50,000-entry sitemap redefine the crawl.
+//
+// Caller-supplied seeds (Config.ExtraSeeds — client routes the target's own
+// JavaScript declares) join the same browse list after the declared ones, under
+// their own cap; see selectExtraSeeds.
 func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 	// shouldTerminate rather than a bare ctx check: seeding reads robots.txt and
 	// the sitemap from the page's OWN origin — which on a walled start is the
@@ -142,8 +146,17 @@ func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 	if page == nil || c.config == nil || c.shouldTerminate(ctx) {
 		return
 	}
+	declared := c.declaredSeedURLs(ctx, page)
+	extra := c.extraSeedURLs(page, declared)
+	c.crawlSeedURLs(ctx, page, declared, extra)
+}
+
+// declaredSeedURLs fetches robots.txt and the sitemap(s) in-page, records every
+// in-scope location they declare, and returns the bounded, shape-diverse slice
+// worth browsing.
+func (c *Crawler) declaredSeedURLs(ctx context.Context, page *browser.Page) []string {
 	if !c.config.SeedFromRobots && !c.config.SeedFromSitemap {
-		return
+		return nil
 	}
 
 	script := strings.NewReplacer(
@@ -154,15 +167,15 @@ func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 
 	raw, ok := evalAwaitCtx(ctx, page, script, seedDiscoverTimeout, "frontier-seed")
 	if !ok {
-		return
+		return nil
 	}
 	jsonStr, ok := raw.(string)
 	if !ok || jsonStr == "" || jsonStr == "<nil>" {
-		return
+		return nil
 	}
 	var discovered []string
 	if err := parseJSONLinks(jsonStr, &discovered); err != nil || len(discovered) == 0 {
-		return
+		return nil
 	}
 
 	// Early pruning only — fetchURLsInPage (admissibleFetchURLs) is the
@@ -170,7 +183,7 @@ func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 	// selection to in-scope locations.
 	inScope := c.filterInScope(discovered)
 	if len(inScope) == 0 {
-		return
+		return nil
 	}
 
 	c.mu.Lock()
@@ -181,19 +194,21 @@ func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 
 	// Record everything (cheap), then browse a bounded, shape-diverse slice.
 	c.fetchURLsInPage(ctx, page, inScope, "seed-url")
-	c.crawlSeedURLs(ctx, page, selectCrawlableSeeds(inScope, c.config.SeedMaxCrawlURLs))
+	return selectCrawlableSeeds(inScope, c.config.SeedMaxCrawlURLs)
 }
 
 // crawlSeedURLs navigates to each seed location and folds the resulting page
 // into the state graph, so its clickables join the frontier and the ordinary
-// crawl loop continues from there. Failures are skipped rather than fatal: a
-// sitemap routinely outlives the pages it lists.
-func (c *Crawler) crawlSeedURLs(ctx context.Context, page *browser.Page, urls []string) {
-	if len(urls) == 0 {
+// crawl loop continues from there. declared are the robots/sitemap locations,
+// extra the caller-supplied ones (already deduped against declared); both are
+// browsed the same way and counted apart. Failures are skipped rather than
+// fatal: a sitemap routinely outlives the pages it lists.
+func (c *Crawler) crawlSeedURLs(ctx context.Context, page *browser.Page, declared, extra []string) {
+	if len(declared) == 0 && len(extra) == 0 {
 		return
 	}
-	visited := 0
-	for _, u := range urls {
+	visited, extraVisited := 0, 0
+	for i, u := range append(append(make([]string, 0, len(declared)+len(extra)), declared...), extra...) {
 		if ctx.Err() != nil || c.shouldTerminate(ctx) {
 			break
 		}
@@ -206,13 +221,19 @@ func (c *Crawler) crawlSeedURLs(ctx context.Context, page *browser.Page, urls []
 			continue
 		}
 		c.checkOnURLState(ctx, page, previous, u)
-		visited++
+		if i < len(declared) {
+			visited++
+		} else {
+			extraVisited++
+		}
 	}
-	if visited > 0 {
+	if visited > 0 || extraVisited > 0 {
 		c.mu.Lock()
 		c.stats.SeedURLsCrawled = visited
+		c.stats.ExtraSeedsCrawled = extraVisited
 		c.mu.Unlock()
-		zap.L().Info("Seed locations browsed into the crawl frontier", zap.Int("visited", visited))
+		zap.L().Info("Seed locations browsed into the crawl frontier",
+			zap.Int("visited", visited), zap.Int("extra_visited", extraVisited))
 	}
 }
 

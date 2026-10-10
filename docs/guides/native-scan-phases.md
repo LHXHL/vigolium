@@ -16,7 +16,7 @@ truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 5. **Spidering** (`spidering`) - browser-based crawling to discover dynamic content
 6. **Probe** (`probe`) - one request per target, passive modules only, no content discovery (an httpx-style host sweep). Opt-in: runs only with `--only probe` / `vigolium run probe`
 7. **Discovery / Ingestion** (`discovery`) - parse inputs and perform content discovery
-8. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl. Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
+8. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl, including client routes found only in the JavaScript (`spidering.route_seeds`). Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
 9. **Seed** (`seed`) - when discovery/ingestion is skipped (for example `--only dynamic-assessment`), store the CLI targets as records so the assessment phases have something to scan. Not run under scan-on-receive
 10. **Param mining** (`param-mining`) - discover hidden parameters (Arjun-style) on this scan's dynamic endpoints and store each one as a record, so the assessment tests it too (see [Param Mining](#param-mining)). On at `--intensity deep` or with `--param-mining`; never without dynamic assessment
 11. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules

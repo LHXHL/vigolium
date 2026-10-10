@@ -266,6 +266,12 @@ type Stats struct {
 	SeedURLsDiscovered int
 	SeedURLsCrawled    int
 
+	// Caller-supplied seeds (Config.ExtraSeeds, e.g. client routes from the
+	// target's JavaScript): ExtraSeedsAccepted survived resolution, scope,
+	// dedup and the cap; ExtraSeedsCrawled were browsed into the frontier.
+	ExtraSeedsAccepted int
+	ExtraSeedsCrawled  int
+
 	// SpeculativeLinksFetched counts URL-like strings scraped from comments and
 	// inline script that were fetched and recorded.
 	SpeculativeLinksFetched int

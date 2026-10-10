@@ -134,6 +134,13 @@ type SpiderConfig struct {
 	// of them without one). Shared across concurrent crawls is fine.
 	RequestCounter        *atomic.Int64
 	InScopeRequestCounter *atomic.Int64
+
+	// ExtraSeeds are entry points browsed into the frontier after the
+	// robots/sitemap seeds; see SeedURL. MaxExtraSeeds caps how many one crawl
+	// browses (0 = DefaultMaxExtraSeeds). A SpiderSession browses them on its
+	// first Crawl only.
+	ExtraSeeds    []SeedURL
+	MaxExtraSeeds int
 }
 
 // requestCounters is cfg's live counter pair in the capture's shape.
@@ -236,6 +243,12 @@ type SpiderResult struct {
 	SeedURLsDiscovered int
 	SeedURLsCrawled    int
 
+	// ExtraSeedsAccepted counts SpiderConfig.ExtraSeeds that survived
+	// resolution, scope, dedup and the cap; ExtraSeedsCrawled how many of them
+	// were browsed into the crawl.
+	ExtraSeedsAccepted int
+	ExtraSeedsCrawled  int
+
 	// SpeculativeLinksFetched counts URL-like strings scraped from the rendered
 	// document's comments and inline script that were fetched and recorded.
 	SpeculativeLinksFetched int
@@ -315,6 +328,8 @@ func buildCrawlerConfig(cfg SpiderConfig) (*config.Config, error) {
 	crawlerCfg.IncludeResponseBody = cfg.IncludeResponseBody
 	crawlerCfg.IncludeResponseHeaders = cfg.IncludeHeaders
 	crawlerCfg.MaxCaptureBodyBytes = cfg.MaxCaptureBodyBytes
+	crawlerCfg.ExtraSeeds = extraSeedsToInternal(cfg.ExtraSeeds)
+	crawlerCfg.MaxExtraSeeds = cfg.MaxExtraSeeds
 
 	if cfg.BrowserCount > 0 {
 		crawlerCfg.BrowserCount = cfg.BrowserCount
@@ -425,6 +440,8 @@ func spiderResultFromCrawl(result *crawler.Result, recordsSaved int) *SpiderResu
 
 		SeedURLsDiscovered:      result.Stats.SeedURLsDiscovered,
 		SeedURLsCrawled:         result.Stats.SeedURLsCrawled,
+		ExtraSeedsAccepted:      result.Stats.ExtraSeedsAccepted,
+		ExtraSeedsCrawled:       result.Stats.ExtraSeedsCrawled,
 		SpeculativeLinksFetched: result.Stats.SpeculativeLinksFetched,
 		SelfRegistered:          result.Stats.SelfRegistered,
 		SelfRegisterIdentity:    result.Stats.SelfRegisterIdentity,

@@ -399,6 +399,13 @@ type Config struct {
 	SeedMaxURLs      int
 	SeedMaxCrawlURLs int
 
+	// ExtraSeeds are caller-supplied entry points (client routes from the
+	// target's JavaScript) browsed into the frontier alongside the robots and
+	// sitemap seeds; see seedFrontier. MaxExtraSeeds caps how many survive
+	// scope, dedup and priority ordering (0 = DefaultMaxExtraSeeds).
+	ExtraSeeds    []ExtraSeed
+	MaxExtraSeeds int
+
 	// SpeculativeLinks makes the crawler scrape URL-like strings out of HTML
 	// comments and inline script in the LIVE document and fetch the same-origin
 	// ones — see harvestSpeculativeLinks. Default on.

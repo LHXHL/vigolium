@@ -6,13 +6,8 @@ import (
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/clientroute"
 	"go.uber.org/zap"
-)
-
-var (
-	colonRouteParameter = regexp.MustCompile(`(^|/):[A-Za-z_][A-Za-z0-9_]*[?+*]?`)
-	bracketRouteParam   = regexp.MustCompile(`\[\[?\.\.\.[^]]+\]\]?|\[[^]]+\]`)
-	braceRouteParam     = regexp.MustCompile(`\$?\{[^}]+\}`)
 )
 
 // processJSTangleCapabilityFacts connects non-legacy record families to
@@ -67,7 +62,7 @@ func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstang
 
 	for i := range result.ClientRoutes {
 		route := &result.ClientRoutes[i]
-		if route.RouteType == "redirect" || route.Provenance.Confidence == "low" {
+		if clientroute.Skip(route.RouteType, route.Provenance.Confidence) {
 			continue
 		}
 		if path, ok := clientRouteSeed(route); ok {
@@ -100,21 +95,17 @@ func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstang
 	}
 }
 
-// clientRouteSeed is the discovery path for a route fact. A helper that
-// normalizes routes reports FullPath (parents joined, leading "/"); an older
-// one reports Angular/Vue children bare ("dashboard"), which used to be
-// dropped outright. Prefixing "/" loses the parent but beats discarding the
-// route, so router-config routes without FullPath get it.
+// clientRouteSeed is the discovery path for a route fact; see
+// clientroute.SeedPath, which the browser crawl's route seeds share.
 func clientRouteSeed(route *jstangle.ClientRouteFact) (string, bool) {
 	if route == nil {
 		return "", false
 	}
-	raw := strings.TrimSpace(route.RoutePath())
-	if route.FullPath == nil && route.Provenance.Extractor == "router-config" &&
-		raw != "" && !strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "$") && !strings.Contains(raw, "://") {
-		raw = "/" + raw
+	fullPath := ""
+	if route.FullPath != nil {
+		fullPath = route.FullPath.Rendered
 	}
-	return stableClientRoute(raw)
+	return clientroute.SeedPath(route.Path.Rendered, fullPath, route.Provenance.Extractor)
 }
 
 // pathLiteralKeyHint marks an object key or binding name that says the
@@ -238,18 +229,4 @@ func graphQLOperationRequest(operation *jstangle.GraphQLOperationFact) (jstangle
 		},
 		Client: "graphql", OperationType: operation.OperationType, Provenance: provenance,
 	}, true
-}
-
-func stableClientRoute(raw string) (string, bool) {
-	route := strings.TrimSpace(raw)
-	if !strings.HasPrefix(route, "/") || strings.Contains(route, "*") || strings.Contains(route, "${") && !braceRouteParam.MatchString(route) {
-		return "", false
-	}
-	route = colonRouteParameter.ReplaceAllString(route, `${1}1`)
-	route = bracketRouteParam.ReplaceAllString(route, "1")
-	route = braceRouteParam.ReplaceAllString(route, "1")
-	if strings.ContainsAny(route, "[]{}*") {
-		return "", false
-	}
-	return route, true
 }

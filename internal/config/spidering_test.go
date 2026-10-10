@@ -164,3 +164,25 @@ func TestSpideringValidate_Stealth(t *testing.T) {
 		t.Errorf("stealth \"max\" = %v, want a spidering.stealth error", err)
 	}
 }
+
+func TestSpideringRouteSeedKeys(t *testing.T) {
+	c := DefaultSpideringConfig()
+	if !c.RouteSeedsEnabled() || c.ExtraSeedsCap() != DefaultMaxExtraSeeds {
+		t.Fatalf("defaults: route_seeds=%v max_extra_seeds=%d", c.RouteSeedsEnabled(), c.ExtraSeedsCap())
+	}
+	c.MaxExtraSeeds = -1
+	if err := c.Validate(); err == nil {
+		t.Error("negative max_extra_seeds must fail validation")
+	}
+
+	settings := DefaultSettings()
+	if err := SetField(settings, "spidering.route_seeds", "false"); err != nil {
+		t.Fatalf("SetField route_seeds: %v", err)
+	}
+	if err := SetField(settings, "spidering.max_extra_seeds", "7"); err != nil {
+		t.Fatalf("SetField max_extra_seeds: %v", err)
+	}
+	if settings.Spidering.RouteSeedsEnabled() || settings.Spidering.ExtraSeedsCap() != 7 {
+		t.Errorf("after set: route_seeds=%v max_extra_seeds=%d", settings.Spidering.RouteSeedsEnabled(), settings.Spidering.ExtraSeedsCap())
+	}
+}

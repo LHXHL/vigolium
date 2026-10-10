@@ -466,6 +466,11 @@ func (r *Runner) buildSpiderConfig(target string, settingsCfg config.SpideringCo
 		GraphOutputDir:     settingsCfg.GraphOutputDir,
 		GraphIncludeValues: settingsCfg.GraphIncludeValues,
 		RunID:              infra.scanUUID,
+
+		// Client routes from the target's JavaScript, browsed after the
+		// robots/sitemap seeds; none outside the spidering phase.
+		ExtraSeeds:    r.spidering.routeSeeds.forTarget(target),
+		MaxExtraSeeds: settingsCfg.ExtraSeedsCap(),
 	}
 
 	if infra.scopeMatcher != nil && !infra.scopeMatcher.IsPassAll() {
@@ -551,6 +556,12 @@ func (r *Runner) reportSpiderCoverage(result *spitolas.SpiderResult, target stri
 			terminal.Orange(fmt.Sprintf("%d", result.SeedURLsDiscovered)),
 			terminal.Gray(target),
 			terminal.Orange(fmt.Sprintf("%d", result.SeedURLsCrawled))))
+	}
+	if result.ExtraSeedsCrawled > 0 {
+		zap.L().Info("Spidering: browsed client routes from the JavaScript",
+			zap.String("target", target),
+			zap.Int("accepted", result.ExtraSeedsAccepted),
+			zap.Int("browsed", result.ExtraSeedsCrawled))
 	}
 	if result.SpeculativeLinksFetched > 0 {
 		zap.L().Info("Spidering: fetched URLs scraped from comments and inline script",
@@ -664,6 +675,14 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 		r.printPhaseDetail("Priming: " + terminal.HiTeal("in-page fetches limited to the operator scope, service_worker=off (custom scope)"))
 	}
 	r.printTargetDetail(r.formatTargetCounts(ctx, len(targets)))
+	// Routes earlier discovery runs of this project found in the JavaScript
+	// (`run spidering` after `run discovery`), held only while this phase runs.
+	r.spidering.routeSeeds = r.loadSpiderRouteSeeds(ctx)
+	defer func() { r.spidering.routeSeeds = nil }()
+	if n := r.spidering.routeSeeds.count(); n > 0 {
+		r.printPhaseDetail(fmt.Sprintf("Route seeds: %s client route(s) stored by earlier discovery, browsed after each target's landing page",
+			terminal.HiTeal(fmt.Sprintf("%d", n))))
+	}
 	r.printVerboseTargets(targets)
 
 	// Per-target budget with an overall phase ceiling. Each target still gets

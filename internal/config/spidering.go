@@ -80,6 +80,34 @@ type SpideringConfig struct {
 	// (password/hidden field values, sensitive URL parameters, value/data-*
 	// attributes). Off by default: the graph is redacted and records that it is.
 	GraphIncludeValues bool `yaml:"graph_include_values"`
+
+	// RouteSeeds feeds client-side routes from the target's JavaScript (the
+	// jstangle route facts discovery stores) to the browser as crawl entry
+	// points: the initial crawl takes routes earlier runs of the project
+	// stored, and the targeted re-spider takes the ones this scan's discovery
+	// found. nil = default (true).
+	RouteSeeds *bool `yaml:"route_seeds,omitempty"`
+
+	// MaxExtraSeeds caps the route seeds one target's crawl browses, after
+	// scope filtering and dedup. 0 = default (50).
+	MaxExtraSeeds int `yaml:"max_extra_seeds"`
+}
+
+// DefaultMaxExtraSeeds is spidering.max_extra_seeds when unset.
+const DefaultMaxExtraSeeds = 50
+
+// RouteSeedsEnabled reports whether client routes seed the browser crawl
+// (default on).
+func (c *SpideringConfig) RouteSeedsEnabled() bool {
+	return c.RouteSeeds == nil || *c.RouteSeeds
+}
+
+// ExtraSeedsCap returns max_extra_seeds with the default applied.
+func (c *SpideringConfig) ExtraSeedsCap() int {
+	if c.MaxExtraSeeds <= 0 {
+		return DefaultMaxExtraSeeds
+	}
+	return c.MaxExtraSeeds
 }
 
 // SpideringInteractionConfig is what the browser crawl is permitted to change.
@@ -191,6 +219,9 @@ func (c *SpideringConfig) Validate() error {
 	}
 	if c.Stealth != "" && !slices.Contains(SpideringStealthModes, c.Stealth) {
 		return fmt.Errorf("spidering.stealth must be one of %s, got: %s", strings.Join(SpideringStealthModes, ", "), c.Stealth)
+	}
+	if c.MaxExtraSeeds < 0 {
+		return fmt.Errorf("spidering.max_extra_seeds must be >= 0 (0 = default %d), got: %d", DefaultMaxExtraSeeds, c.MaxExtraSeeds)
 	}
 	if c.MaxCaptureBodyBytes < -1 {
 		return fmt.Errorf("spidering.max_capture_body_bytes must be 0 (default), -1 (no ceiling) or a positive byte count, got: %d", c.MaxCaptureBodyBytes)

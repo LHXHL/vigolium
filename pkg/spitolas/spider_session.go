@@ -28,6 +28,10 @@ type SpiderSession struct {
 	br      *browser.Browser
 	capture *network.Capture
 	closed  bool
+	// seeded is set once a Crawl has carried base.ExtraSeeds: the browser,
+	// capture and dedup are shared, so browsing them again on every seed of
+	// the host would only repeat the same navigations.
+	seeded bool
 }
 
 // NewSpiderSession launches one browser, starts browser-level capture bound to a
@@ -103,6 +107,10 @@ func (s *SpiderSession) Crawl(ctx context.Context, seedURL string) (*SpiderResul
 
 	seedCfg := s.base
 	seedCfg.TargetURL = seedURL
+	if s.seeded {
+		seedCfg.ExtraSeeds = nil
+	}
+	s.seeded = s.seeded || len(seedCfg.ExtraSeeds) > 0
 	crawlerCfg, err := buildCrawlerConfig(seedCfg)
 	if err != nil {
 		return nil, err

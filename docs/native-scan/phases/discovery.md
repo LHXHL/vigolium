@@ -128,7 +128,8 @@ withheld. Each row carries its full fact as a `jstangle-fact` analysis artifact,
 and each JS asset gets one `jstangle-facts` artifact with its non-request facts
 (client routes with `fullPath`, GraphQL operations, WebSocket/SSE endpoints,
 asset references, browser security flows, path literals and low-confidence
-request hints). At most 2000 rows are stored per target; past that the run
+request hints). The browser crawl reads the client routes back as seeds (see
+[Route seeds](spidering.md#route-seeds)). At most 2000 rows are stored per target; past that the run
 reports the `js_template_persist_cap` limit. The knobs are
 `discovery.jstangle.persist_unreplayed` (store never-sent templates, default
 true), `persist_not_found_emit_statuses` and `max_persisted_js_templates`.
