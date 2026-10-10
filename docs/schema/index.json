@@ -217,7 +217,7 @@
   {
     "name": "module.error",
     "kind": "event",
-    "description": "Module failures, rate-limited: count is how many occurrences the line stands for."
+    "description": "A module call failed (error_kind exception, timeout or panic). Rate-limited per module: the first 3, then every 100th; count is the module's running error total for the scan."
   },
   {
     "name": "extension.failed",

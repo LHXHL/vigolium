@@ -224,6 +224,10 @@ func applyScanCompletion(ev *scanevents.Event, scan *database.Scan) {
 	if len(scan.ExtensionsFailed) > 0 {
 		ev.ExtensionsFailed = scan.ExtensionsFailed
 	}
+	// Per-module error totals, persisted by the runner's finalizer.
+	if len(scan.ModuleErrors) > 0 {
+		ev.ModuleErrors = scan.ModuleErrors
+	}
 	// An empty Completeness means unknown (a row written by an older binary, or
 	// by a caller with no outcome data) and must never change the status.
 	if ev.Status == scanevents.StatusCompleted && scan.Completeness == database.CompletenessPartial {

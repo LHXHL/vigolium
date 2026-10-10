@@ -1130,7 +1130,7 @@ New event types and fields are added, never renamed; an event type you do not
 recognise is safe to ignore. `scan.plan` is always the second line, right
 after `scan.started` and before any request; its `plan` is the object
 [`--dry-run`](#plan-first---dry-run) prints, with `scan_uuid` set. Some types
-and fields (`scan.setup`, `host.*`, `auth.*`, `module.error`, `extension.failed`,
+and fields (`scan.setup`, `host.*`, `auth.*`, `extension.failed`,
 `targets_reached`, …) are already reserved in the vocabulary before anything
 emits them; the skill's `references/agent-loop.md` lists each with the release
 expected to start emitting it.
