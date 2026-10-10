@@ -221,7 +221,7 @@ module.exports = {
     var findings = [];
     var headers = ctx.response.headers;
 
-    var poweredBy = headers["X-Powered-By"] || headers["x-powered-by"];
+    var poweredBy = headers.get("x-powered-by");
     if (poweredBy) {
       findings.push({
         matched: "X-Powered-By: " + poweredBy,
@@ -675,15 +675,33 @@ ctx.request.url        // "https://example.com/api/users?id=1"
 ctx.request.method     // "GET"
 ctx.request.path       // "/api/users"
 ctx.request.hostname   // "example.com"
-ctx.request.headers    // { "Content-Type": "application/json", ... }
+ctx.request.headers    // header object, see below
 ctx.request.raw        // full raw HTTP request string
 
 ctx.response.status    // 200
 ctx.response.body      // response body as string
-ctx.response.headers   // { "X-Powered-By": "PHP/8.1", ... }
+ctx.response.headers   // header object, see below
 ctx.response.raw       // full raw HTTP response string
 ctx.response.title     // HTML page title (if applicable)
 ```
+
+### Header objects
+
+`ctx.request.headers`, `ctx.response.headers`, the pre-hook `request.headers`, the `headers` of every `vigolium.http.*`/session/MCP response, and the YAML `js` matcher's `response.headers` all behave the same way:
+
+```javascript
+headers.get("x-powered-by")      // "PHP/8.1": case-insensitive, null when absent
+headers["X-Powered-By"]          // same value; property access is case-insensitive too
+headers.has("content-type")      // true
+headers.getAll("set-cookie")     // ["a=1; Path=/", "b=2; Path=/"]: every value, wire order
+headers["set-cookie"]            // "b=2; Path=/": set-cookie reads as the LAST value
+headers["cache-control"]         // "no-cache, no-store": other repeats join with ", "
+Object.keys(headers)             // ["content-type", "set-cookie", ...]: lowercase, first-occurrence order
+headers.entries()                // [["Set-Cookie", "a=1; Path=/"], ...]: original case, every occurrence
+headers.raw()                    // { "Set-Cookie": "b=2; Path=/", ... }: the pre-0.7 original-case object
+```
+
+Assigning or deleting a property changes only the JS view. In a pre-hook, returning `{headers: request.headers}` applies just the headers you assigned or deleted. A header whose name matches a method (`get`, `getAll`, `has`, `entries`, `raw`) or an `Object.prototype` member is not exposed as a property, so a server cannot shadow `headers.get`; read it with `headers.get(name)` or `headers.entries()`.
 
 ### `insertion` — second arg to `scanPerInsertionPoint`
 

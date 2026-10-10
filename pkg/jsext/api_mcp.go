@@ -9,6 +9,7 @@ import (
 	"github.com/grafana/sobek"
 	gohttp "github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/jsext/jsheaders"
 	mcpinfra "github.com/vigolium/vigolium/pkg/modules/infra/mcp"
 	"go.uber.org/zap"
 )
@@ -385,11 +386,7 @@ func wrapMCPResponse(vm *sobek.Runtime, resp *parsedJSResponse, body string) sob
 	_ = out.Set("body", string(resp.bodyBytes))
 	_ = out.Set("elapsed_ms", resp.elapsedMs)
 
-	headersObj := vm.NewObject()
-	for k, v := range resp.headers {
-		_ = headersObj.Set(k, v)
-	}
-	_ = out.Set("headers", headersObj)
+	_ = out.Set("headers", jsheaders.FromMap(vm, resp.headers))
 
 	// Attempt to surface parsed result/error for convenience.
 	if parsed, err := mcpinfra.ParseResponse(body); err == nil && parsed != nil {

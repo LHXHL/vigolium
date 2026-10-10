@@ -258,12 +258,5 @@ func doRequestFromOpts(vm *sobek.Runtime, httpClient *gohttp.Requester, opts *so
 	if v := opts.Get("body"); v != nil && !sobek.IsUndefined(v) {
 		body = v.String()
 	}
-	headers := make(map[string]string)
-	if v := opts.Get("headers"); v != nil && !sobek.IsUndefined(v) {
-		headersObj := v.ToObject(vm)
-		for _, key := range headersObj.Keys() {
-			headers[key] = headersObj.Get(key).String()
-		}
-	}
-	return doRequest(vm, httpClient, method, urlStr, body, headers)
+	return doRequest(vm, httpClient, method, urlStr, body, headersArg(vm, opts.Get("headers")))
 }

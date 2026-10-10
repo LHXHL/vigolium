@@ -5,6 +5,7 @@ import (
 
 	"github.com/grafana/sobek"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/jsext/jsheaders"
 )
 
 // EvalMatcher evaluates a single matcher against a response.
@@ -130,11 +131,7 @@ func evalJSMatcher(m *MatcherDef, resp *httpmsg.HttpResponse) (bool, string) {
 		_ = respObj.Set("status", resp.StatusCode())
 		_ = respObj.Set("body", resp.BodyToString())
 
-		headersObj := vm.NewObject()
-		for _, h := range resp.Headers() {
-			_ = headersObj.Set(h.Name, h.Value)
-		}
-		_ = respObj.Set("headers", headersObj)
+		_ = respObj.Set("headers", jsheaders.New(vm, resp.Headers()))
 	}
 	_ = vm.Set("response", respObj)
 

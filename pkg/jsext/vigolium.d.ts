@@ -380,11 +380,37 @@ interface RequestOverrides {
   query?: Record<string, string>;
 }
 
+/**
+ * Methods of every header object the API hands out (ctx.request.headers,
+ * ctx.response.headers, HttpResponse.headers, session and MCP responses).
+ */
+interface HttpHeaderMethods {
+  /** Value for a name (case-insensitive); repeats joined with ", ", set-cookie = last value. null when absent. */
+  get(name: string): string | null;
+  /** Every value for a name (case-insensitive), in wire order. Use for set-cookie. */
+  getAll(name: string): string[];
+  /** True when the header is present (case-insensitive). */
+  has(name: string): boolean;
+  /** Every header as [name, value] with its original case, every occurrence, wire order. */
+  entries(): [string, string][];
+  /** Plain object keyed by original-case name, last value wins (the pre-0.7 shape). */
+  raw(): Record<string, string>;
+}
+
+/**
+ * Header object. Property access is case-insensitive (h["Content-Type"] === h["content-type"]);
+ * Object.keys / JSON.stringify see lowercase names in first-occurrence order; a repeated header
+ * reads as its values joined with ", " except set-cookie, which reads as the last value.
+ * Assigning or deleting changes only this JS view. A header named like a method (get, has, ...)
+ * is reachable only through get()/getAll()/entries().
+ */
+type HttpHeaders = HttpHeaderMethods & { [name: string]: string | undefined };
+
 interface HttpResponse {
   status: number;
   body: string;
   raw: string;
-  headers: Record<string, string>;
+  headers: HttpHeaders;
   /** Response time in milliseconds. */
   elapsed_ms: number;
 }
@@ -818,8 +844,8 @@ interface HttpSession {
   setHeader(name: string, value: string): void;
   /** Remove a default header by name (case-insensitive). */
   removeHeader(name: string): void;
-  /** Get all current default headers (including Cookie). */
-  getHeaders(): Record<string, string>;
+  /** Snapshot of the current default headers (including Cookie); edit with setHeader/removeHeader. */
+  getHeaders(): HttpHeaders;
   /** Get all cookies currently stored in this session. */
   getCookies(): Record<string, string>;
   /** Set or update a cookie in this session. */
@@ -1041,7 +1067,7 @@ interface DBGroupedOpts {
 }
 
 interface RecordGroup {
-  /** Path template with dynamic segments replaced by "*", e.g. "/api/users/*/profile". */
+  /** Path template with dynamic segments replaced by "*", e.g. "/api/users/*" for "/api/users/42". */
   template: string;
   method: string;
   records: DBRecord[];
@@ -1062,13 +1088,13 @@ interface ExtensionContext {
     port: number;
     /** "http" or "https". */
     scheme: string;
-    headers: Record<string, string>;
+    headers: HttpHeaders;
   };
   response: {
     status: number;
     body: string;
     raw: string;
-    headers: Record<string, string>;
+    headers: HttpHeaders;
   };
   /** Current HTTP record with UUID and annotate shortcut. */
   record: RecordContext;
@@ -1238,7 +1264,7 @@ interface MCPResponse {
   status: number;
   body: string;
   elapsed_ms: number;
-  headers: Record<string, string>;
+  headers: HttpHeaders;
   /** Decoded `result` field of the JSON-RPC envelope (any shape). */
   result?: unknown;
   /** Populated when the JSON-RPC envelope reports an error. */
@@ -1327,7 +1353,8 @@ interface PreHookRequest {
   raw: string;
   method: string;
   url: string;
-  headers: Record<string, string>;
+  /** Returning {headers: request.headers} applies only the headers the hook assigned or deleted. */
+  headers: HttpHeaders;
 }
 
 /** Finding object passed to a post_hook's execute(result). */

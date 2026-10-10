@@ -332,11 +332,7 @@ func buildRequestContext(vm *sobek.Runtime, ctx *httpmsg.HttpRequestResponse) so
 			_ = reqObj.Set("scheme", svc.Protocol())
 		}
 
-		headersObj := vm.NewObject()
-		for _, h := range ctx.Request().Headers() {
-			_ = headersObj.Set(h.Name, h.Value)
-		}
-		_ = reqObj.Set("headers", headersObj)
+		_ = reqObj.Set("headers", newHeadersObject(vm, ctx.Request().Headers()))
 	}
 	_ = obj.Set("request", reqObj)
 
@@ -347,11 +343,7 @@ func buildRequestContext(vm *sobek.Runtime, ctx *httpmsg.HttpRequestResponse) so
 		_ = respObj.Set("body", ctx.Response().BodyToString())
 		_ = respObj.Set("raw", string(ctx.Response().Raw()))
 
-		headersObj := vm.NewObject()
-		for _, h := range ctx.Response().Headers() {
-			_ = headersObj.Set(h.Name, h.Value)
-		}
-		_ = respObj.Set("headers", headersObj)
+		_ = respObj.Set("headers", newHeadersObject(vm, ctx.Response().Headers()))
 	}
 	_ = obj.Set("response", respObj)
 

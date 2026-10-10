@@ -178,10 +178,10 @@ module.exports = {
     var headers = ctx.response.headers;
 
     var missing = [];
-    if (!headers["x-frame-options"] && !headers["content-security-policy"]) {
+    if (!headers.get("x-frame-options") && !headers.get("content-security-policy")) {
       missing.push("X-Frame-Options or CSP frame-ancestors");
     }
-    if (!headers["strict-transport-security"]) {
+    if (!headers.get("strict-transport-security")) {
       missing.push("Strict-Transport-Security");
     }
 
@@ -196,6 +196,8 @@ module.exports = {
   }
 };
 ```
+
+Header objects (`ctx.request.headers`, `ctx.response.headers`, every `vigolium.http.*` response) are case-insensitive: `headers.get("x-frame-options")` is the idiom, and `headers["X-Frame-Options"]` reads the same value. `Object.keys(headers)` returns lowercase names. A repeated header reads as its values joined with `", "`, except `set-cookie`, which reads as the last value; use `headers.getAll("set-cookie")` for all of them. `headers.entries()` returns original-case `[name, value]` pairs in wire order, and `headers.raw()` returns the pre-0.7 original-case object.
 
 ### Active Module
 
@@ -747,7 +749,7 @@ module.exports = {
 
   scanPerRequest: function(ctx) {
     // Look for JWT in Authorization header
-    var auth = ctx.request.headers["authorization"] || ctx.request.headers["Authorization"];
+    var auth = ctx.request.headers.get("authorization");
     if (!auth || auth.indexOf("Bearer ") !== 0) return null;
 
     var token = auth.substring(7);

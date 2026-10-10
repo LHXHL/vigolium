@@ -223,3 +223,20 @@ func TestEvalRuleMatch_Status(t *testing.T) {
 	matched, _ := EvalRuleMatch(&match, resp, &TemplateContext{})
 	assert.True(t, matched)
 }
+
+// The JS matcher's response.headers is the shared case-insensitive header
+// object (pkg/jsext/jsheaders), like every other header map extensions see.
+func TestEvalMatcher_JSHeadersCaseInsensitive(t *testing.T) {
+	resp := httpmsg.NewHttpResponse([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\n{}"))
+	for _, code := range []string{
+		`response.headers["content-type"] === "application/json"`,
+		`response.headers["Content-Type"] === "application/json"`,
+		`response.headers.get("CONTENT-TYPE") === "application/json"`,
+		`response.headers.getAll("set-cookie").length === 2`,
+		`Object.keys(response.headers).join(",") === "content-type,set-cookie"`,
+	} {
+		m := MatcherDef{Type: "js", Code: code}
+		matched, _ := EvalMatcher(&m, resp, &TemplateContext{})
+		assert.True(t, matched, code)
+	}
+}
