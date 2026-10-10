@@ -68,8 +68,9 @@ const (
 
 	// TypeScanPlan carries the resolved scan plan, second on every stream (C3).
 	TypeScanPlan = "scan.plan"
-	// TypeScanSetup reports a first-run install step (nuclei templates, Chrome):
-	// Component + State started|finished|failed, Bytes, DurationMS (A9).
+	// TypeScanSetup reports a lazy first-run install step (Chrome for Testing
+	// before spidering, nuclei-templates before known-issue-scan): Component +
+	// State started|finished|failed, Bytes, DurationMS, Phase.
 	TypeScanSetup = "scan.setup"
 	// TypeOASTUnavailable says OAST registration failed or timed out; out-of-band
 	// checks do not run and the scan is partial with oast_unavailable (A7).

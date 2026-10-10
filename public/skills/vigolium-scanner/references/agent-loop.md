@@ -378,6 +378,7 @@ What each type is for:
 | `host.recovered` | A re-probe of a quarantined `host` succeeded; requests to it resume. |
 | `host.dead` | Every re-probe failed (`host_errors.max_trips`); nothing more is sent to `host` this scan. |
 | `finding.new` | Metadata only. Evidence lives in `db_path`; query it with `finding -j --with-records` afterwards. |
+| `scan.setup` | A lazy first-run install inside the phase that needs it, before that phase's budget starts: `component` (`chrome` before spidering, `nuclei` before known-issue-scan; the `doctor --fix --only` id), `state` (`started`, then `finished` or `failed`), `phase`, `bytes` (download size, when known), `duration_ms` and `message` (on `failed`) on the terminal line. A pause after `started` is the download, not a hung scan. A `failed` install fails that phase only (message names `vigolium doctor --fix --only chrome\|nuclei`). |
 | `oast.unavailable` | OAST registration with the interactsh server failed or did not finish within 3s of `dynamic-assessment` starting. `message` names the server and cause (`oast.pro: dial timeout`). Blind/out-of-band checks did not run; the phase carries the `oast_unavailable` reason and the scan is `partial`. |
 | `extension.failed` | An extension failed to load: `module_id` (when its metadata loaded), `path`, `stage` (`read`/`transpile`/`compile`/`metadata`/`schema`/`unknown_type`/`module`), `explicit` (named with `--ext`: the scan then stops, exit 2 `extension_load_failed`, unless `--ext-allow-failures`), `message`. Run failures arrive with `module.error`. |
 | `module.error` | A module call failed: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`), `message`, and `count`, the module's running total for the scan. Rate-limited per module: the first 3, then every 100th, so the last line's `count` is close to the real total and `scan.finished.module_errors` has the exact one. An `ext-*` module erroring is **your extension's bug** (fix it, then `vigolium ext lint`); a built-in module erroring means that check did not run on that item. |
@@ -396,7 +397,6 @@ is absent; code against them and ignore them while they are missing.
 
 | Type or field | On | Carries |
 |---|---|---|
-| `scan.setup` | (type) | A first-run install step: `component`, `state` (`started`/`finished`/`failed`), `bytes`, `duration_ms`. |
 | `records_basis` | `scan.finished` | Absent: `records_written` counts records stamped with this scan. `time_window`: records created since the scan started (approximate on a shared DB). |
 | `exports` | `scan.finished` | `[{format, path}]` for every file the scan wrote. |
 

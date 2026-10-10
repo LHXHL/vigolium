@@ -152,6 +152,25 @@ the updated status. `--only` accepts any of:
 `vigolium-scanner` coding-agent skill copies that `doctor` found in
 `./.claude/skills`, `~/.claude/skills`, `./.agents/skills` or `~/.agents/skills`.
 
+### What happens if you skip it
+
+Nothing is installed before a scan starts. When chromium or the nuclei
+templates are missing, a scan prints one stderr line saying so, then the phase
+that needs a dependency fetches it the first time it runs:
+
+- the first spidering phase (`--spider`, or a full `scan`) downloads Chrome for
+  Testing (~150 MB) into `~/.cache/vigolium/` when no Chrome/Chromium is
+  installed;
+- the first known-issue scan clones nuclei-templates into `~/nuclei-templates`
+  (or `known_issue_scan.templates_dir`), typically 1-3 minutes.
+
+Each step prints an ETA line and emits a `scan.setup` event on `--events`
+streams, and its time is not charged to the phase's budget. If the download
+fails, only that phase fails, with a message pointing at
+`vigolium doctor --fix --only chrome` (or `--only nuclei`). `vigolium init`
+installs both up front, like `doctor --fix --only chrome,nuclei`.
+`--skip-dependency-check` silences the one-line notice.
+
 ## Updating
 
 `vigolium update` replaces the running binary with the latest signed release

@@ -194,7 +194,7 @@
   {
     "name": "scan.setup",
     "kind": "event",
-    "description": "A first-run install step (templates, browser): component, state started|finished|failed."
+    "description": "A lazy first-run install inside the phase that needs it, before that phase's clock starts: component chrome|nuclei (the `doctor --fix --only` id), state started|finished|failed. bytes is the download size when known; duration_ms and message (failed) ride on the terminal line."
   },
   {
     "name": "oast.unavailable",

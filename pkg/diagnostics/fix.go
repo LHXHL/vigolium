@@ -22,9 +22,9 @@ import (
 // that is the whole point.
 //
 // This package is reached two ways. Interactively it is `vigolium doctor --fix`,
-// where the chatter is the user's feedback. Silently it is ensureCoreDeps — the
-// FIRST scan on a machine, which installs nuclei templates and Chrome for
-// Testing before the scan starts. That scan may be running under `--events
+// where the chatter is the user's feedback. It is also `vigolium init`, which
+// installs nuclei templates and Chrome for Testing as part of setup (scans
+// themselves fetch them lazily, per phase). That may be running under `--events
 // ndjson`, whose contract is that stdout carries the event stream and nothing
 // else, or it may be `doctor --fix --json`, which prints one JSON document.
 // Every line below was a bare fmt.Printf and every subprocess inherited
@@ -404,7 +404,7 @@ func fixChromium(ctx context.Context, _ *config.Settings) error {
 	if !cftbrowser.IsSupported() {
 		return fmt.Errorf("chrome for Testing not available for %s/%s — install Chromium manually", runtime.GOOS, runtime.GOARCH)
 	}
-	binPath, err := cftbrowser.EnsureBrowser(ctx)
+	binPath, err := cftbrowser.EnsureBrowser(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("chrome for Testing download failed: %w", err)
 	}

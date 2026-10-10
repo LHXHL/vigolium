@@ -83,9 +83,9 @@ Walkthrough with output shapes: **`references/agent-loop.md`** (read it first).
 
 ## Before the first scan
 
-- The first scan-touching command installs Chromium and nuclei templates once
-  (stderr, up to 10 minutes). Pre-install with `vigolium doctor --fix`; in CI
-  or containers pass `--skip-dependency-check`.
+- Nothing installs up front. The first `--spider` run downloads Chrome (~150 MB)
+  and the first known-issue scan clones nuclei templates, inside that phase but
+  outside its budget (`scan.setup` events). Pre-install: `vigolium doctor --fix`.
 - A scan that did nothing exits `1`: `no_targets_in_scope` (`--dry-run` shows it
   first) or `no_targets_reachable`. Rescanning the DB needs `--all-records`.
 - A full `scan` can run past 30 minutes per target (discovery 1h, spidering

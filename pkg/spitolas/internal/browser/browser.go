@@ -324,7 +324,40 @@ func (b *Browser) browserCandidates(ctx context.Context) []browserCandidate {
 
 // ensureCfTBrowser downloads (or reuses) Chrome for Testing. A variable so
 // tests can observe the call without a network fetch.
-var ensureCfTBrowser = cftbrowser.EnsureBrowser
+//
+// Reaching it mid-crawl is the fallback: the scan runner pre-provisions the
+// browser before the spidering phase's deadline starts (see NeedsDownload), so
+// this rung only downloads when every resolved browser failed to launch. Its
+// progress is the text rendering on stderr.
+var ensureCfTBrowser = func(ctx context.Context) (string, error) {
+	return cftbrowser.EnsureBrowser(ctx, nil)
+}
+
+// NeedsDownload reports whether launching a browser for cfg would have to fall
+// through to the Chrome for Testing download: no configured browser_path, no
+// embedded engine binary, no working system browser and no cached CfT copy, on
+// a platform CfT supports. No network. The scan runner asks before the
+// spidering phase so it can download (with progress) outside the phase budget.
+func NeedsDownload(cfg *config.Config) bool {
+	if cfg == nil || cfg.BrowserPath != "" {
+		return false
+	}
+	if !cftbrowser.IsSupported() {
+		return false // nothing to download; launch reports the install hint
+	}
+	if _, err := (&Browser{config: cfg}).getEmbeddedBrowserPath(); err == nil {
+		return false
+	}
+	for _, name := range browserPreferenceOrderFor(runtime.GOOS) {
+		if p, ok := lookPathFound(name); ok && validateBrowserBin(p) {
+			return false
+		}
+	}
+	if _, err := cftbrowser.FindCachedBrowser(); err == nil {
+		return false
+	}
+	return true
+}
 
 // buildBrowserCandidates assembles the ordered candidate list from already-
 // resolved inputs. Platform (goos/goarch), the configured path, the resolved

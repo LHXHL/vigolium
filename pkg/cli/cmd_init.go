@@ -106,15 +106,16 @@ func runInitCmd(cmd *cobra.Command, args []string) error {
 	bootstrapPrompts(vigoliumDir)
 	bootstrapSkills()
 
-	// Trigger the core dep install (chromium + nuclei templates) inline so
-	// explicit `vigolium init` is a complete first-run setup. Without --force
-	// the marker may already exist and ensureCoreDeps short-circuits; under
-	// --force we wipe the marker first so the dep check re-runs on the same
-	// invocation (handy when --force is used to recover a broken setup).
+	// Install the core deps (chromium + nuclei templates) inline so explicit
+	// `vigolium init` is a complete setup — unlike a scan, which only checks and
+	// lets the phase that needs a dependency fetch it. Without --force the
+	// marker may already exist and installCoreDeps short-circuits; under --force
+	// we wipe the marker first so the check re-runs on the same invocation
+	// (handy when --force is used to recover a broken setup).
 	if globalForce {
 		_ = os.Remove(filepath.Join(vigoliumDir, initMarkerFileName))
 	}
-	if err := ensureCoreDeps(); err != nil {
+	if err := installCoreDeps(); err != nil {
 		return fmt.Errorf("core dependency install failed: %w", err)
 	}
 

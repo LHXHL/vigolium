@@ -12,7 +12,9 @@ vigolium doctor
 ```
 
 `doctor` reports any missing optional dependencies (e.g. a browser for SPA
-spidering) and confirms your config is valid.
+spidering) and confirms your config is valid. You can skip installing them:
+the first `--spider` run downloads Chrome and the first known-issue scan clones
+nuclei templates on demand (`vigolium doctor --fix` does both now).
 
 ## 1. Scan a single URL
 

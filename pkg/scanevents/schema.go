@@ -75,8 +75,9 @@ var eventFields = map[string]contract.EventFields{
 		Required:    []string{"plan"},
 	},
 	TypeScanSetup: {
-		Description: "A first-run install step (templates, browser): component, state started|finished|failed.",
-		Optional:    []string{"component", "state", "bytes", "duration_ms", "message"},
+		Description: "A lazy first-run install inside the phase that needs it, before that phase's clock starts: component chrome|nuclei (the `doctor --fix --only` id), state started|finished|failed. bytes is the download size when known; duration_ms and message (failed) ride on the terminal line.",
+		Required:    []string{"component", "state"},
+		Optional:    []string{"phase", "bytes", "duration_ms", "message"},
 	},
 	TypeOASTUnavailable: {
 		Description: "OAST registration failed or timed out: out-of-band checks do not run (scan partial, oast_unavailable).",

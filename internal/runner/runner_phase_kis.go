@@ -153,9 +153,17 @@ func (r *Runner) runKnownIssueScanPhase(ctx context.Context, infra *phaseInfra) 
 	// legs are bounded independently rather than sharing one budget. A ctx error
 	// means this leg's max_duration (or the overall scan) elapsed — that is a
 	// curtailment, not a failure.
+	//
+	// A first run clones nuclei-templates here, before the leg's deadline starts
+	// (setup, not scanning). When the clone fails the nuclei leg is skipped and
+	// the phase records the error; the secret scan below still runs.
+	templatesErr := r.provisionNucleiTemplates(ctx, inScopeHosts)
 	nucleiCtx, nucleiCancel := r.trackedPhaseDeadline(ctx, kisMaxDuration)
 	defer nucleiCancel()
-	if err := r.runKnownIssueScan(nucleiCtx, infra, onResult, inScopeHosts); err != nil {
+	if templatesErr != nil {
+		zap.L().Error("KnownIssueScan: nuclei templates unavailable, skipping the nuclei leg", zap.Error(templatesErr))
+		r.currentPhase.Load().noteError(templatesErr)
+	} else if err := r.runKnownIssueScan(nucleiCtx, infra, onResult, inScopeHosts); err != nil {
 		if nucleiCtx.Err() != nil {
 			zap.L().Warn("KnownIssueScan: Nuclei scan stopped at phase max_duration", zap.Error(nucleiCtx.Err()))
 		} else {

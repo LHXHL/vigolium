@@ -123,7 +123,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	// Backfill the first-run marker only when the mandatory native-scan deps are
 	// actually present (chromium + nuclei-templates). A read-only doctor on a
 	// machine missing them must NOT stamp it, or the next scan would skip the
-	// first-run auto-install. The --fix path re-checks below after RunFixes.
+	// first-run notice. The --fix path re-checks below after RunFixes.
 	ensureInitMarkerIfDepsPresent(report)
 
 	if !doctorFix {

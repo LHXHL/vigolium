@@ -446,9 +446,9 @@ func checkDatabase(db *database.DB, dbErr error) *CheckResult {
 	}
 }
 
-// checkInitMarker inspects ~/.vigolium/initialized, the sentinel written by
-// ensureCoreDeps after the first-run dependency setup (chromium + nuclei
-// templates) completes. The marker is a status/debugging surface — its
+// checkInitMarker inspects ~/.vigolium/initialized, the sentinel written once
+// chromium and nuclei templates have both been seen present (by the scan
+// bootstrap's check, doctor, or `vigolium init`). The marker is a status/debugging surface — its
 // absence here just means the user has not yet run a scan-touching command,
 // not that anything is broken — so the result is StatusWarning at worst and
 // never affects overall readiness.
@@ -470,7 +470,7 @@ func checkInitMarker() *CheckResult {
 				Status:  StatusWarning,
 				Message: "first-run dep setup not yet completed",
 				Details: details,
-				Tip:     "Run any scan command (e.g. `vigolium scan-url <target>`) or `vigolium init` to trigger the chromium + nuclei-templates install and stamp the marker.",
+				Tip:     "Run `vigolium doctor --fix --only chrome,nuclei` (or `vigolium init`) to install chromium + nuclei-templates and stamp the marker; otherwise the first --spider / known-issue scan fetches them.",
 			}
 		}
 		return &CheckResult{

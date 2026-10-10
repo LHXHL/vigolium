@@ -697,6 +697,15 @@ func (r *Runner) runSpideringPhase(ctx context.Context, infra *phaseInfra) error
 	// context derives from it, so the last target before the ceiling gets
 	// whatever budget remains and any targets beyond it are skipped (logged).
 	// phaseDeadline treats a zero ceiling (unlimited max-duration) as unbounded.
+	//
+	// A first run on a machine with no browser downloads Chrome for Testing
+	// here, BEFORE the ceiling starts: the download is setup, not crawling, and
+	// charging ~150 MB to a budget sized for crawling would leave little or
+	// nothing for the targets.
+	if err := r.provisionSpideringBrowser(ctx, settingsCfg); err != nil {
+		r.printPhaseComplete("Spidering", "failed — "+err.Error())
+		return err
+	}
 	phaseCeiling := spideringPhaseCeiling(maxDuration, len(targets))
 	phaseCtx, phaseCancel := r.trackedPhaseDeadline(ctx, phaseCeiling)
 	defer phaseCancel()

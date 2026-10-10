@@ -179,7 +179,7 @@ and wins for that command — read it instead of the row here.
 | `--read-only` | - | bool | `false` | Open the database without modifying it (no directory creation, no journal-mode change, no WAL checkpoint). Read commands only; use it when the source file is evidence |
 | `--scan-uuid` | - | string | - | Pin scan UUID for this session (use to sync results across nodes; defaults to a freshly-minted UUID) |
 | `--silent` | - | bool | `false` | Suppress all output except findings |
-| `--skip-dependency-check` | - | bool | `false` | Skip the first-run dependency check (chromium, nuclei templates) and stamp ~/.vigolium/initialized immediately |
+| `--skip-dependency-check` | - | bool | `false` | Skip the first-run dependency check and stamp ~/.vigolium/initialized (the check only prints a notice; chromium and nuclei templates are fetched by the phase that needs them) |
 | `--soft-fail` | - | bool | `false` | Always exit 0, even when a command fails (error is still printed to stderr; keeps wrapping scripts/CI from being interrupted) |
 | `--verbose` | `-v` | bool | `false` | Enable verbose logging output |
 | `--width` | - | int | `70` | Maximum column width for table output |

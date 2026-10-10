@@ -1108,9 +1108,11 @@ terminal `scan.finished`. Human output stays on stderr throughout.
   `--print-finding`, `--print-traffic`, `--print-traffic-tree` — is rejected
   before any work starts, with exit `2` naming the conflict. It used to produce
   a corrupt interleaved stream and exit `0`. Exactly one protocol on stdout,
-  always. (First-run setup — the nuclei-template and Chrome-for-Testing
-  install a cold `$HOME` triggers — writes to stderr too, so a brand-new
-  machine's very first `--events` run is still clean NDJSON.)
+  always. (First-run setup — the Chrome-for-Testing download a cold machine's
+  first spidering phase triggers, and the nuclei-template clone of its first
+  known-issue scan — writes its progress to stderr and announces itself on the
+  stream as `scan.setup`, so a brand-new machine's very first `--events` run is
+  still clean NDJSON.)
 - **`seq`** is the stream's own total order: 1-based, stamped under the write
   lock, one per line. Use it rather than `ts` — timestamps are
   millisecond-precision and a busy scan emits several events per millisecond, so
@@ -1136,7 +1138,7 @@ New event types and fields are added, never renamed; an event type you do not
 recognise is safe to ignore. `scan.plan` is always the second line, right
 after `scan.started` and before any request; its `plan` is the object
 [`--dry-run`](#plan-first---dry-run) prints, with `scan_uuid` set. Some types
-and fields (`scan.setup`, `host.*`, `auth.*`, `extension.failed`,
+and fields (`host.*`, `auth.*`, `extension.failed`,
 `targets_reached`, …) are already reserved in the vocabulary before anything
 emits them; the skill's `references/agent-loop.md` lists each with the release
 expected to start emitting it.

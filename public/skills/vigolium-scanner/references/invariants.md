@@ -95,6 +95,13 @@ Shows it: `vigolium finding --read-only --db evidence.sqlite -j`
   `vigolium scan wait <uuid> --fail-on-partial` turns it into `5`.
 - `oast_unavailable` (no interactsh registration, e.g. offline) makes the run
   partial without stopping it: blind/out-of-band checks did not run.
+- Chrome and nuclei templates install lazily, never before the scan starts: a
+  cold machine's first spidering phase downloads Chrome (~150 MB) and its first
+  known-issue scan clones the templates, each announced by `scan.setup`
+  (`component` `chrome`/`nuclei`, `state` `started`/`finished`/`failed`) and kept
+  out of the phase's time budget. A failed install fails only that phase; its
+  message names `vigolium doctor --fix --only chrome|nuclei`.
+  `--skip-dependency-check` only silences the first-run stderr notice.
 - Reason codes are add-only. Match the ones you care about and ignore the rest.
 
 Shows it: `vigolium scan wait <scan-uuid> -j | jq '{status, completeness, stop_reason, reasons}'`

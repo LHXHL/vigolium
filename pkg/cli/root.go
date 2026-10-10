@@ -260,20 +260,20 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 			}
 			// --skip-dependency-check opts out of the first-run chromium +
 			// nuclei-templates check entirely: stamp the marker now so this and
-			// every future scan fast-path past the diagnostic. Applies to any
-			// command so users can pre-seed the marker (e.g. in CI) ahead of a
-			// scan without triggering a chrome download.
+			// every future scan fast-path past it. Nearly a no-op since the
+			// check stopped installing (it only silences the one-line notice);
+			// kept for compatibility.
 			if globalSkipDependencyCheck {
 				if skipCoreDepCheck() {
 					fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(),
 						terminal.BoldCyan("Skipping dependency check (--skip-dependency-check) — stamped ~/.vigolium/initialized"))
 				}
 			} else if needsCoreDeps(cmd) {
-				// For commands that drive a native scan, guarantee the core
-				// scan dependencies (chromium + nuclei templates) are installed
-				// before handing control to the command. Cheap/informational
-				// commands skip this so they don't trigger a chrome download.
-				if err := ensureCoreDeps(); err != nil {
+				// For commands that drive a native scan, check (never install)
+				// the core scan dependencies and say once on stderr what a
+				// --spider or known-issue scan will fetch lazily. The phases
+				// provision them, outside their budgets, with scan.setup events.
+				if err := ensureCoreDeps(coreDepNoticeQuiet(cmd)); err != nil {
 					return err
 				}
 			}
@@ -350,7 +350,7 @@ func init() {
 	pf.BoolVarP(&globalListModules, "list-modules", "M", false, "List all available scanner modules")
 	pf.BoolVar(&globalListInputModes, "list-input-mode", false, "List all supported input modes with examples")
 	pf.BoolVar(&globalForce, "force", false, "Skip confirmation prompts")
-	pf.BoolVar(&globalSkipDependencyCheck, "skip-dependency-check", false, "Skip the first-run dependency check (chromium, nuclei templates) and stamp ~/.vigolium/initialized immediately")
+	pf.BoolVar(&globalSkipDependencyCheck, "skip-dependency-check", false, "Skip the first-run dependency check and stamp ~/.vigolium/initialized (the check only prints a notice; chromium and nuclei templates are fetched by the phase that needs them)")
 	pf.BoolVar(&globalSoftFail, "soft-fail", false, "Always exit 0, even when a command fails (error is still printed to stderr; keeps wrapping scripts/CI from being interrupted)")
 	pf.IntVar(&globalWidth, "width", 70, "Maximum column width for table output")
 	registerStatelessRootFlag(rootCmd)
