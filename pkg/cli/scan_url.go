@@ -1024,11 +1024,11 @@ func buildPhaseOptions(target string) (*types.Options, error) {
 	opts.NoTechFilter = globalNoTechFilter
 	opts.AllowRiskyPayloads = scanOpts.AllowRiskyPayloads
 	opts.NoParamDedup = scanOpts.NoParamDedup
+	opts.MaxRequests = scanOpts.MaxRequests
+	opts.MaxRequestsPerHost = scanOpts.MaxRequestsPerHost
 
 	// Global CLI flags
 	opts.ScanUUID = globalScanUUID
-	opts.MaxRequests = scanOpts.MaxRequests
-	opts.MaxRequestsPerHost = scanOpts.MaxRequestsPerHost
 	opts.Timeout = globalTimeout
 	opts.Concurrency = globalConcurrency
 	opts.MaxPerHost = globalMaxPerHost

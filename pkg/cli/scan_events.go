@@ -210,7 +210,8 @@ func applyScanCompletion(ev *scanevents.Event, scan *database.Scan) {
 	if hosts := unionBudgetExhaustedHosts(scan.PhaseOutcomes); len(hosts) > 0 {
 		ev.BudgetExhaustedHosts = hosts
 	}
-	// The preflight tally, as the runner recorded it (scope admission).
+	// The preflight tally, as the runner recorded it (scope admission, and
+	// reachability when the preflight GET ran).
 	for _, p := range scan.PhaseOutcomes {
 		if p.Phase == string(runner.PhasePreflight) && p.Targets != nil {
 			ev.TargetsAdmitted = scanevents.Int(p.Targets.Admitted)
@@ -256,10 +257,6 @@ func unionPhaseReasons(phases []database.PhaseOutcome) []string {
 	return database.SortedCodes(seen)
 }
 
-// plannedPhaseIDs returns the CANONICAL ids of the phases this scan will run, in
-// execution order. Canonical, because --only/--skip and `vigolium run <phase>`
-// all accept aliases (kis, cve, deparos, dast, …) and a consumer that asked for
-// one spelling needs to be able to assert what it actually got.
 // unionBudgetExhaustedHosts collects, sorted, the hosts any phase recorded as
 // having used their whole --max-requests-per-host.
 func unionBudgetExhaustedHosts(phases []database.PhaseOutcome) []string {
@@ -272,6 +269,10 @@ func unionBudgetExhaustedHosts(phases []database.PhaseOutcome) []string {
 	return database.SortedCodes(seen)
 }
 
+// plannedPhaseIDs returns the CANONICAL ids of the phases this scan will run, in
+// execution order. Canonical, because --only/--skip and `vigolium run <phase>`
+// all accept aliases (kis, cve, deparos, dast, …) and a consumer that asked for
+// one spelling needs to be able to assert what it actually got.
 func plannedPhaseIDs(opts *types.Options) []string {
 	plan := runner.BuildNativeScanPlan(opts)
 	out := make([]string, 0, len(plan.Steps))

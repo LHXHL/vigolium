@@ -146,6 +146,34 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
   when every input was refused the command exits `1` with
   `stop_reason: "no_targets_in_scope"`. `--ignore-scope` scans it anyway.
 
+### Plan first (`--dry-run`)
+
+`vigolium scan … --dry-run` (and `run <phase> --dry-run`) resolves the scan and
+prints its plan without running it: no scan UUID, no scan row, no output file,
+no wordlist materialized, no login, no OAST registration, no request; an
+existing database is opened read-only for the record counts. `-j` prints a
+`kind: "scan"` envelope with `dry_run: true`, `items` = the plan's phases and
+`plan` = the full plan:
+
+```bash
+vigolium scan -t https://target.example --dry-run -j | jq '.plan | {phases: [.phases[] | {id, enabled, disabled_by}], targets, estimate}'
+```
+
+- Every phase is listed, enabled or not; `disabled_by` says why one is off
+  (`strategy`, `only`, `skip`, `heuristics`, `intensity`, `module_selection`,
+  `default`, `gate`, `flag`, `scope`). `budget.semantics` says what a phase's
+  max-duration bounds (`per_target`, `per_target_capped`, `phase`, `per_leg`,
+  `per_call`) and `budget.source` where it came from.
+- `targets` carries scope admission. When scope refuses every seeded target the
+  dry run exits `1` with `error.code: no_targets_in_scope`, as the scan would.
+- `estimate` is a rough request count (`confidence: "rough"`, a `basis` per
+  phase). `ceiling_by_pace` — rate limit × the time budget — is the one hard
+  number; `--max-requests` clamps the rest (`clamped_to`, `hits_max_requests`).
+- `auth` lists session names and kinds, never values.
+
+The same plan is the second event of every `--events` stream (`scan.plan`),
+is stored on the scan row (`scans.plan`), and drives the pre-scan banner.
+
 ### The scan document
 
 ```json
@@ -232,34 +260,6 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
 - **`--ci-output-format`** still prints nuclei-shaped finding lines this release,
   with a one-time deprecation notice on stderr; next release they become
   `{"type":"finding","data":<finding view>}` lines.
-
-### Plan first (`--dry-run`)
-
-`vigolium scan … --dry-run` (and `run <phase> --dry-run`) resolves the scan and
-prints its plan without running it: no scan UUID, no scan row, no output file,
-no wordlist materialized, no login, no OAST registration, no request; an
-existing database is opened read-only for the record counts. `-j` prints a
-`kind: "scan"` envelope with `dry_run: true`, `items` = the plan's phases and
-`plan` = the full plan:
-
-```bash
-vigolium scan -t https://target.example --dry-run -j | jq '.plan | {phases: [.phases[] | {id, enabled, disabled_by}], targets, estimate}'
-```
-
-- Every phase is listed, enabled or not; `disabled_by` says why one is off
-  (`strategy`, `only`, `skip`, `heuristics`, `intensity`, `module_selection`,
-  `default`, `gate`, `flag`, `scope`). `budget.semantics` says what a phase's
-  max-duration bounds (`per_target`, `per_target_capped`, `phase`, `per_leg`,
-  `per_call`) and `budget.source` where it came from.
-- `targets` carries scope admission. When scope refuses every seeded target the
-  dry run exits `1` with `error.code: no_targets_in_scope`, as the scan would.
-- `estimate` is a rough request count (`confidence: "rough"`, a `basis` per
-  phase). `ceiling_by_pace` — rate limit × the time budget — is the one hard
-  number; `--max-requests` clamps the rest (`clamped_to`, `hits_max_requests`).
-- `auth` lists session names and kinds, never values.
-
-The same plan is the second event of every `--events` stream (`scan.plan`),
-is stored on the scan row (`scans.plan`), and drives the pre-scan banner.
 
 ## Query findings
 
@@ -1164,7 +1164,7 @@ New event types and fields are added, never renamed; an event type you do not
 recognise is safe to ignore. `scan.plan` is always the second line, right
 after `scan.started` and before any request; its `plan` is the object
 [`--dry-run`](#plan-first---dry-run) prints, with `scan_uuid` set. Some types
-and fields (`host.*`, `auth.*`, `extension.failed`,
+and fields (`host.*`, `auth.*`,
 `targets_reached`, …) are already reserved in the vocabulary before anything
 emits them; the skill's `references/agent-loop.md` lists each with the release
 expected to start emitting it.

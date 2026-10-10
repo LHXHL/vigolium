@@ -5895,7 +5895,7 @@
     },
     "/api/findings/{id}/status": {
       "patch": {
-        "description": "Updates a finding to draft, triaged, false_positive, accepted_risk, or fixed. Requires operator role.",
+        "description": "Updates a finding to draft, triaged, confirmed, false_positive, accepted_risk, or fixed. Requires operator role.",
         "operationId": "updateFindingStatus",
         "parameters": [
           {
@@ -5916,6 +5916,7 @@
                     "enum": [
                       "draft",
                       "triaged",
+                      "confirmed",
                       "false_positive",
                       "accepted_risk",
                       "fixed"
