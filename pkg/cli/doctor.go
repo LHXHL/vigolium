@@ -71,6 +71,11 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	settings, cfgErr := clicommon.LoadSettings(globalConfig)
 	if cfgErr != nil {
 		settings = config.DefaultSettings()
+	} else if project, perr := overlayProjectUUID(); perr == nil {
+		// The scope checks judge the scope a scan would run under, which
+		// includes the project's overlay. A broken overlay is reported as the
+		// config failure it is; the global settings stay in use for the rest.
+		cfgErr = config.ApplyProjectOverlay(settings, project)
 	}
 
 	deps := diagnostics.Deps{

@@ -520,30 +520,17 @@ func LoadProjectConfig(projectUUID string) (*ProfileSettings, error) {
 }
 
 // LoadSettingsWithProject loads global settings, then overlays project-specific
-// config on top. This implements the merge strategy: global → project → CLI flags.
-// CLI flag overrides happen after this function returns.
+// config on top (ApplyProjectOverlay). This implements the merge strategy:
+// global → project → scanning profile → CLI flags; the profile and CLI layers
+// are applied by the caller after this returns.
 func LoadSettingsWithProject(configPath string, projectUUID string) (*Settings, error) {
 	settings, err := LoadSettings(configPath)
 	if err != nil {
 		return nil, err
 	}
-
-	if projectUUID == "" {
-		return settings, nil
+	if err := ApplyProjectOverlay(settings, projectUUID); err != nil {
+		return nil, err
 	}
-
-	profile, err := LoadProjectConfig(projectUUID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load project config for %s: %w", projectUUID, err)
-	}
-	if profile == nil {
-		return settings, nil
-	}
-
-	if err := ApplyProfile(settings, profile); err != nil {
-		return nil, fmt.Errorf("failed to apply project config: %w", err)
-	}
-
 	return settings, nil
 }
 
@@ -563,6 +550,7 @@ func SaveProjectConfig(projectUUID string, profile *ProfileSettings) error {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write project config: %w", err)
 	}
+	InvalidateProjectOverlay(projectUUID)
 
 	return nil
 }

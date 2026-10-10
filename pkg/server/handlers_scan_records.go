@@ -8,7 +8,6 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
-	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -282,13 +281,14 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 
 	projectUUID := getProjectUUID(c)
 
-	// Clone settings
-	var settings *config.Settings
-	if h.settings != nil {
-		clone := *h.settings
-		settings = &clone
-	} else {
-		settings = config.DefaultSettings()
+	// A private copy of the project's settings (global → X-Project-UUID's
+	// overlay); the request's profile and fields are layered on below.
+	settings, err := h.settingsForProject(projectUUID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
+			Error: err.Error(),
+			Code:  fiber.StatusInternalServerError,
+		})
 	}
 
 	// Same resolution as the CLI and POST /api/scans/run, before anything else

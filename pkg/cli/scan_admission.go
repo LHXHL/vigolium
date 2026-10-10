@@ -190,7 +190,9 @@ func admitDirectInputs(inputs []scanInput) (*directAdmission, error) {
 	if scanIgnoreScope || len(inputs) == 0 {
 		return nil, nil
 	}
-	settings, err := clicommon.LoadSettings(globalConfig)
+	// Global → the resolved project's overlay: the scope a project narrowed
+	// with `scope set --project` is the one that admits these inputs.
+	settings, err := loadProjectSettings(globalConfig)
 	if err != nil {
 		return nil, err
 	}

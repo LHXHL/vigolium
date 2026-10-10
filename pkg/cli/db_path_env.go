@@ -26,6 +26,13 @@ const dbPathEnvVar = "VIGOLIUM_DB_PATH"
 // consults — rather than by a list of command names here.
 var dbPathEnvAutoStateless bool
 
+// dbPathEnvPinned records that dbPathEnvVar was honored as this invocation's
+// --db, whether or not the file exists yet. dbPathEnvAutoStateless is gated on
+// existence (a read of a missing file must not fail), so it cannot answer "is
+// this shell pinned to a session database" consistently from the first scan of
+// a session to the second; overlayProjectUUID needs exactly that answer.
+var dbPathEnvPinned bool
+
 // statelessWriteCommands are the commands whose -S/--stateless means "work in a
 // throwaway temporary database and discard it", the opposite of pinning a shell
 // to a session database. `scan`/`scan-url`/`scan-request`/`run` reject --db
@@ -110,6 +117,7 @@ func applyDBPathEnv(cmd *cobra.Command) error {
 			dbPathEnvVar, raw, err, dbPathEnvVar)
 	}
 	globalDB = path
+	dbPathEnvPinned = true
 
 	notice := fmt.Sprintf("%s → %s",
 		terminal.BoldCyan(dbPathEnvVar), terminal.BoldYellow(terminal.ShortenHome(path)))

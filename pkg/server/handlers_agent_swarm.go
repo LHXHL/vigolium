@@ -322,20 +322,27 @@ func (h *Handlers) buildSwarmConfig(req AgentSwarmRequest, projectUUID string) a
 		normalizedSkip = append(normalizedSkip, agent.SwarmPhaseTriage)
 	}
 
-	// Apply scanning profile if specified
-	settings := h.settings
+	// Global → the project's overlay → the request's scanning profile. A
+	// private deep copy (settingsForProject): the profile overlay decodes into
+	// existing maps and pointers, which a shallow copy shares with h.settings.
+	settings, settingsErr := h.settingsForProject(projectUUID)
+	if settingsErr != nil {
+		// buildSwarmConfig has no error path; say so loudly rather than
+		// pretending the overlay applied.
+		zap.L().Warn("Project config overlay not applied to agent swarm; using global settings",
+			zap.String("project_uuid", projectUUID), zap.Error(settingsErr))
+		h.configWatcher.RLock()
+		settings = config.CloneSettings(h.settings)
+		h.configWatcher.RUnlock()
+		if settings == nil {
+			settings = config.DefaultSettings()
+		}
+	}
 	if req.Profile != "" {
 		profilePath := settings.ScanningStrategy.ResolveProfilePath(req.Profile)
 		profile, profileErr := config.LoadProfile(profilePath)
 		if profileErr == nil {
-			// Snapshot under the config-watcher read lock so a live hot-reload
-			// swapping settings sections can't tear this value copy of h.settings.
-			h.configWatcher.RLock()
-			settingsCopy := *settings
-			h.configWatcher.RUnlock()
-			if applyErr := config.ApplyProfile(&settingsCopy, profile); applyErr == nil {
-				settings = &settingsCopy
-			}
+			_ = config.ApplyProfile(settings, profile)
 		}
 	}
 

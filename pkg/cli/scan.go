@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
-	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -282,7 +281,11 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	// different rate limit — is worse than not running it. The old branch printed
 	// "Config file not found, using defaults", which was wrong twice: the file is
 	// usually found and unparseable, and "using defaults" was the problem.
-	settings, err := clicommon.LoadSettings(scanOpts.ConfigPath)
+	//
+	// The project layer comes with it: global → the resolved project's overlay
+	// (`scope set --project`, `project config`), then the profile and CLI layers
+	// in resolveNativeScanOptions below.
+	settings, err := loadProjectSettings(scanOpts.ConfigPath)
 	if err != nil {
 		return err
 	}

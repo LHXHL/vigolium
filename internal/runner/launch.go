@@ -20,8 +20,10 @@ type LaunchParams struct {
 	// Targets lists URLs / file paths the scan should ingest. Required.
 	Targets []string
 
-	// ProjectUUID scopes the scan. Empty leaves it unscoped — the same
-	// behavior as `vigolium scan-url` without --project.
+	// ProjectUUID scopes the scan and selects the project config overlay
+	// layered over the global settings. Empty leaves it unscoped (global
+	// settings only) — the same behavior as `vigolium scan-url` without
+	// --project.
 	ProjectUUID string
 
 	// Modules optionally narrows the active-module set. Empty = no
@@ -117,7 +119,7 @@ func LaunchScan(ctx context.Context, params LaunchParams) (*LaunchResult, error)
 		return nil, fmt.Errorf("LaunchScan: at least one target is required")
 	}
 
-	settings, err := loadLaunchSettings(params.ConfigPath)
+	settings, err := loadLaunchSettings(params.ConfigPath, params.ProjectUUID)
 	if err != nil {
 		return nil, fmt.Errorf("LaunchScan: load settings: %w", err)
 	}
@@ -192,10 +194,14 @@ func LaunchScan(ctx context.Context, params LaunchParams) (*LaunchResult, error)
 	return res, runErr
 }
 
-// loadLaunchSettings resolves the settings the runner will use. We prefer
-// the same precedence as the CLI: explicit ConfigPath, else default search.
-func loadLaunchSettings(configPath string) (*config.Settings, error) {
-	settings, err := config.LoadSettings(configPath)
+// loadLaunchSettings resolves the settings the runner will use, with the same
+// precedence as the CLI: explicit ConfigPath, else default search, then the
+// scanned project's overlay (config.ApplyProjectOverlay) — so an agent's
+// run_scan honours the scope `scope set --project` wrote, exactly as `vigolium
+// scan` does under that project. The profile/strategy layers follow in
+// resolveLaunchOptions. An empty projectUUID is global-only.
+func loadLaunchSettings(configPath, projectUUID string) (*config.Settings, error) {
+	settings, err := config.LoadSettingsWithProject(configPath, projectUUID)
 	if err != nil {
 		return nil, err
 	}

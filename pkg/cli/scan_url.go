@@ -1031,7 +1031,8 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 
 	// Fatal, for the reason spelled out in runScanCmd: an explicit --config that
 	// cannot be read means the scan would run under settings nobody chose.
-	settings, err := clicommon.LoadSettings(opts.ConfigPath)
+	// The resolved project's overlay is layered on, as for `vigolium scan`.
+	settings, err := loadProjectSettings(opts.ConfigPath)
 	if err != nil {
 		return err
 	}

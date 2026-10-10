@@ -344,7 +344,8 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		swarmCodeAudit = true
 	}
 
-	settings, err := clicommon.LoadSettings(globalConfig)
+	// Global → project overlay; --scanning-profile is layered on below.
+	settings, err := loadProjectSettings(globalConfig)
 	if err != nil {
 		return err
 	}

@@ -17,12 +17,12 @@ import (
 func resetDBPathEnvGlobals(t *testing.T) {
 	t.Helper()
 	origDB, origStateless, origGlob := globalDB, globalStateless, globalGlobDB
-	origAuto, origSilent := dbPathEnvAutoStateless, globalSilent
-	globalDB, globalStateless, globalGlobDB, dbPathEnvAutoStateless = "", false, "", false
+	origAuto, origPinned, origSilent := dbPathEnvAutoStateless, dbPathEnvPinned, globalSilent
+	globalDB, globalStateless, globalGlobDB, dbPathEnvAutoStateless, dbPathEnvPinned = "", false, "", false, false
 	globalSilent = true // keep the notice out of the test log
 	t.Cleanup(func() {
 		globalDB, globalStateless, globalGlobDB = origDB, origStateless, origGlob
-		dbPathEnvAutoStateless, globalSilent = origAuto, origSilent
+		dbPathEnvAutoStateless, dbPathEnvPinned, globalSilent = origAuto, origPinned, origSilent
 	})
 }
 

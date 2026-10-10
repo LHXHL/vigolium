@@ -16,7 +16,6 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/ingestor"
 	"github.com/vigolium/vigolium/internal/runner"
-	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/core/network"
 	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
@@ -444,7 +443,9 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 	}
 
 	// --- 4. Initialize database ---
-	settings, err := clicommon.LoadSettings(globalConfig)
+	// Global → the resolved project's overlay: the scope judged below (static
+	// filtering, --scan-on-receive admission) is the project's, as for `scan`.
+	settings, err := loadProjectSettings(globalConfig)
 	if err != nil {
 		return outcome, err
 	}

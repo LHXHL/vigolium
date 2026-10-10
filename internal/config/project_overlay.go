@@ -106,5 +106,6 @@ func SetProjectOverlayValue(projectUUID, key string, settings *Settings) (string
 	}); err != nil {
 		return "", fmt.Errorf("failed to write project config: %w", err)
 	}
+	InvalidateProjectOverlay(projectUUID)
 	return path, nil
 }

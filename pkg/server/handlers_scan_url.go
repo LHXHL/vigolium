@@ -427,16 +427,26 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 	})
 }
 
-// refuseOutOfScope admits target against the server's configured scope, the
-// verdict the CLI direct path and the runner enforce. When scope refuses it, it
-// returns the responder for 422 with details "no_targets_in_scope" (the
-// apicontract code) and the rule in the message; nothing is created or sent.
-// nil means admitted, or no settings to judge by.
+// refuseOutOfScope admits target against the request project's scope (the
+// server's settings plus X-Project-UUID's overlay), the verdict the CLI direct
+// path and the runner enforce. When scope refuses it, it returns the responder
+// for 422 with details "no_targets_in_scope" (the apicontract code) and the
+// rule in the message; nothing is created or sent. nil means admitted, or no
+// settings to judge by.
 func (h *Handlers) refuseOutOfScope(c fiber.Ctx, target string) func() error {
 	if h.settings == nil {
 		return nil
 	}
-	adm := runner.AdmitTargets(h.settings.Scope, []string{target})
+	settings, err := h.settingsForProject(getProjectUUID(c))
+	if err != nil {
+		return func() error {
+			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
+				Error: err.Error(),
+				Code:  fiber.StatusInternalServerError,
+			})
+		}
+	}
+	adm := runner.AdmitTargets(settings.Scope, []string{target})
 	if !adm.NoneAdmitted() {
 		return nil
 	}

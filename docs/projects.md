@@ -99,13 +99,15 @@ The project overlay lives at:
 ~/.vigolium/projects/<uuid>/config.yaml
 ```
 
-It uses the same partial YAML shape as a scanning profile. Only specified
-values override the global settings.
+It uses the same partial YAML shape as a scanning profile. Only the keys it
+sets override the global settings; every other key keeps its global value.
+`vigolium scope set --project <uuid> <key> <value>` writes one key into it.
 
 ```yaml
 scope:
-  hosts:
-    - "*.example.com"
+  host:
+    include:
+      - "*.example.com"
 
 scanning_pace:
   concurrency: 30
@@ -121,6 +123,28 @@ built-in defaults
   -> --scanning-profile
   -> CLI flags
 ```
+
+The project layer applies wherever a scan or a scope check runs under a
+project:
+
+- **CLI**: `scan`, `run`, `scan-url`/`scan-request` (runner path), `ingest`,
+  `agent swarm`, `doctor` and `config validate --project` use the resolved
+  project (`--project-uuid`/`--project-name`, their env vars, then
+  `project use`, then the default project).
+- **REST**: `POST /api/scans/run`, `POST /api/scan-all-records` and
+  `POST /api/agent/run/swarm` use the `X-Project-UUID` project. The overlay is
+  re-read when its file changes, so a `scope set --project` takes effect on
+  the next REST scan without restarting the server. Request fields still
+  outrank it.
+- **Agent tools**: an olium `run_native_scan`/`run_module`/`run_extension` launch uses
+  the project the agent runs in.
+
+A standalone database runs global-only unless you name a project: under
+`-S`/`--stateless`, `--glob-db`, or a shell pinned with `VIGOLIUM_DB_PATH`,
+the `project use` selection contributes no overlay, while an explicit
+`--project-uuid`/`--project-name` (or `VIGOLIUM_PROJECT_UUID`/`_NAME`) still
+applies it. An overlay that exists but does not parse fails the scan rather
+than running it with the wider global scope.
 
 ## Project REST API
 

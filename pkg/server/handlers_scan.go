@@ -305,9 +305,18 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 
 	projectUUID := getProjectUUID(c)
 
-	// Clone settings and force persist_logs so API-triggered scans always
-	// produce a runtime.log for `vigolium log <uuid>`.
-	settings := forceNativePersistLogs(h.settings)
+	// The project's settings (global → X-Project-UUID's overlay), with
+	// persist_logs forced so API-triggered scans always produce a runtime.log
+	// for `vigolium log <uuid>`. The request's profile and fields are layered
+	// on by ResolveRunScanRequest.
+	projectSettings, err := h.settingsForProject(projectUUID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
+			Error: err.Error(),
+			Code:  fiber.StatusInternalServerError,
+		})
+	}
+	settings := forceNativePersistLogs(projectSettings)
 
 	// Profile, strategy, phase selection and pace resolve exactly as the CLI
 	// resolves them. Every failure here — an unknown profile or strategy, an
