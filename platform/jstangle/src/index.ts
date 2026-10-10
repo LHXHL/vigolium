@@ -23,7 +23,8 @@ import {
   type RequestPatternRecord,
 } from './context';
 import { buildFunctionMap, clearFunctionMap, getWebpackExtractedRequests } from './mapping';
-import { collectTrackedVariablesFromIndex, createGlobalVariableTracking, clearTrackedVariables, getTrackedVariablesMap } from './requestpattern/globalVariableTracking';
+import { collectTrackedVariablesFromIndex, createGlobalVariableTracking, clearTrackedVariables, getTrackedVariablesMap, snapshotTrackedVariables } from './requestpattern/globalVariableTracking';
+import { collectUrlModels } from './requestpattern/urlModel';
 import { createFetchRequestTransform } from './requestpattern/fetchRequest';
 import { createAxiosRequestTransform, clearAxiosInstances } from './requestpattern/axiosRequest';
 import { createProtocolRequestTransform } from './requestpattern/protocolRequest';
@@ -48,7 +49,8 @@ import type {
 import { sha256 } from './protocol';
 import { buildStagePlan, type StageName } from './stages';
 import { extractAssetReferences } from './assets';
-import { analyzeBrowserCapabilities, analyzeGraphQL } from './capabilities';
+import { analyzeBrowserCapabilities, analyzeGraphQL, extractPathLiterals } from './capabilities';
+import { attachAuthSources } from './requestpattern/auth';
 import { buildStructuralIndex } from './structure';
 
 // Re-export tracking utilities for testing
@@ -67,6 +69,9 @@ export interface JstangleResult {
   eventSources: import('./protocol').EventSourceFact[];
   clientRoutes: import('./protocol').ClientRouteFact[];
   browserSecurityFlows: import('./protocol').BrowserSecurityFlowFact[];
+  pathLiterals: import('./protocol').PathLiteralFact[];
+  /** Records dropped by per-kind caps, keyed by record kind. */
+  truncated: import('./protocol').TruncationCounts;
   diagnostics: Diagnostic[];
   stageMetrics: StageMetric[];
   profile: AnalysisProfile;
@@ -437,8 +442,9 @@ export async function jstangle(
           }
         }
         if (domFlows.length > context.limits.maxDomFlows) {
+          context.noteTruncated('domFlow', 'domFlows', 'dom_flow_limit_reached',
+            `DOM flows were limited to ${context.limits.maxDomFlows}`, domFlows.length - context.limits.maxDomFlows);
           domFlows = domFlows.slice(0, context.limits.maxDomFlows);
-          context.partial = true;
         }
       } catch (err) {
         debug('jstangle:domxss')('analysis failed', err);
@@ -476,6 +482,11 @@ export async function jstangle(
     valueTracking: () => {
       if (context.structuralIndex) collectTrackedVariablesFromIndex(context.structuralIndex);
       else if (ast) applyTransforms(ast, [createGlobalVariableTracking()]);
+      // Fold URL/URLSearchParams mutations into their bindings before any
+      // request extractor resolves them. The index exists only for endpoints.
+      if (context.structuralIndex && code.includes('URL')) {
+        collectUrlModels(context.structuralIndex, snapshotTrackedVariables());
+      }
     },
     assetDiscovery: () => {
       if (ast) extractAssetReferences(ast, context);
@@ -509,6 +520,14 @@ export async function jstangle(
         createGenericRequestPattern4Transform(context, ast, code),
         createVariableContainsURLTransform(context, ast, code),
       ] as Transform<unknown>[]);
+    },
+    // Name the storage slot behind each credential header. Needs the call
+    // nodes the request stages retained, so it runs right after them.
+    requestAuth: () => {
+      if (ast) attachAuthSources(ast, context);
+    },
+    pathLiterals: () => {
+      if (ast) extractPathLiterals(ast, context);
     },
     // Unpack the bundle and re-scan each recovered module independently, merging
     // endpoints with module-path provenance. Non-fatal. Runs when the caller asked
@@ -659,6 +678,8 @@ export async function jstangle(
     eventSources: [...context.eventSources],
     clientRoutes: [...context.clientRoutes],
     browserSecurityFlows: [...context.browserSecurityFlows],
+    pathLiterals: [...context.pathLiterals],
+    truncated: { ...context.truncated },
     diagnostics: [...context.diagnostics],
     stageMetrics: [...context.stageMetrics],
     profile: context.profile,

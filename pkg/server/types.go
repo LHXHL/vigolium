@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -10,14 +11,15 @@ import (
 
 // ServerConfig holds configuration for the API server.
 type ServerConfig struct {
-	ServiceAddr          string   // e.g. "0.0.0.0:9002"
-	BurpBridgeURL        string   // optional loopback Burp listener merged into GET /api/http-records
-	IngestProxyAddr      string   // e.g. "0.0.0.0:9003" (empty = disabled)
-	IngestProxyMITM      bool     // Intercept HTTPS via a generated CA (records + scans TLS traffic)
-	IngestProxyInsecure  bool     // Skip upstream TLS verification when intercepting HTTPS
-	IngestProxyCADir     string   // Directory holding the MITM CA (empty = ~/.vigolium/ca)
-	APIKeys              []string // Valid Bearer tokens
-	NoAuth               bool     // If true, skip auth
+	ServiceAddr          string     // e.g. "0.0.0.0:9002"
+	BurpBridgeURL        string     // optional loopback Burp listener merged into GET /api/http-records
+	IngestProxyAddr      string     // e.g. "0.0.0.0:9003" (empty = disabled)
+	IngestProxyMITM      bool       // Intercept HTTPS via a generated CA (records + scans TLS traffic)
+	IngestProxyInsecure  bool       // Skip upstream TLS verification when intercepting HTTPS
+	IngestProxyCADir     string     // Directory holding the MITM CA (empty = ~/.vigolium/ca)
+	IngestProxyAuth      *ProxyAuth // Token and/or client allow-list for the ingest proxy (nil = open; loopback only)
+	APIKeys              []string   // Valid Bearer tokens
+	NoAuth               bool       // If true, skip auth
 	ScanOnReceive        bool
 	DisableFetchResponse bool
 	Concurrency          int // Worker concurrency for API-triggered scans
@@ -66,7 +68,26 @@ type ServerConfig struct {
 	// hot-reload. Empty falls back to config.ConfigFilePath() (the default
 	// ~/.vigolium/vigolium-configs.yaml).
 	ConfigPath string
+	// ReportFormats are the post-scan report formats (html, report, …) that
+	// RenderReport can produce. REST `output_formats` accepts "jsonl" (the live
+	// stream the runner writes) plus exactly these; anything else is a 400, so a
+	// format is never accepted and then silently not produced.
+	ReportFormats []string
+	// RenderReport renders one report file for a finished REST scan. Injected by
+	// the CLI so REST output comes from the same generator `scan --format` uses
+	// (pkg/server cannot import pkg/cli). Nil means no report formats.
+	RenderReport ReportRenderFunc
+	// APIVersionDefault is the REST response version a request gets when it
+	// does not negotiate one (server.api_version_default). 0 or 1 = v1, 2 = v2.
+	APIVersionDefault int
+	// AutoCreateProjects creates the project an unknown X-Project-UUID names
+	// instead of answering 404 project_not_found (server.auto_create_projects).
+	AutoCreateProjects bool
 }
+
+// ReportRenderFunc renders one post-scan report file in format to outputPath
+// from db, scoped to projectUUID and scanUUID.
+type ReportRenderFunc func(ctx context.Context, db *database.DB, format, outputPath, projectUUID, scanUUID string) error
 
 // DefaultServerConfig returns sensible defaults.
 // defaultMaxUploadBytes is the framework-level request body ceiling applied when
@@ -145,6 +166,13 @@ type RunScanRequest struct {
 	// Max scan duration (like --scanning-max-duration)
 	ScanningMaxDuration string `json:"scanning_max_duration,omitempty"`
 
+	// Request budgets (like --max-requests / --max-requests-per-host): the scan
+	// stops after max_requests requests to the targets (partial, stop_reason
+	// request_budget), and sends at most max_requests_per_host to any one host.
+	// 0 or absent = scanning_pace.max_requests / max_requests_per_host.
+	MaxRequests        int64 `json:"max_requests,omitempty"`
+	MaxRequestsPerHost int64 `json:"max_requests_per_host,omitempty"`
+
 	// Scope origin mode: all, relaxed, balanced, strict
 	ScopeOrigin string `json:"scope_origin,omitempty"`
 
@@ -163,8 +191,11 @@ type RunScanRequest struct {
 	// Upload results to cloud storage after scan completion
 	UploadResults bool `json:"upload_results,omitempty"`
 
-	// OutputFormats selects extra result formats to materialize on disk during
-	// the scan. Currently supports "jsonl" and "html". When set, files are
+	// OutputFormats selects extra result formats to materialize on disk: "jsonl"
+	// (written live during the scan) plus the report formats in
+	// ServerConfig.ReportFormats — the REST surface of the output format table
+	// (html, report, pdf, markdown, sarif, csv, junit; rendered after the
+	// scan). Aliases and case are folded. Any other value is a 400. When set, files are
 	// written to <sessions_dir>/<scan_uuid>/output.<ext> and — if
 	// upload_results is also true — bundled into the uploaded tar.gz alongside
 	// runtime.log.
@@ -212,6 +243,13 @@ type ScanAllRecordsRequest struct {
 	// Max scan duration (like --scanning-max-duration)
 	ScanningMaxDuration string `json:"scanning_max_duration,omitempty"`
 
+	// Request budgets (like --max-requests / --max-requests-per-host): the scan
+	// stops after max_requests requests to the targets (partial, stop_reason
+	// request_budget), and sends at most max_requests_per_host to any one host.
+	// 0 or absent = scanning_pace.max_requests / max_requests_per_host.
+	MaxRequests        int64 `json:"max_requests,omitempty"`
+	MaxRequestsPerHost int64 `json:"max_requests_per_host,omitempty"`
+
 	// Heuristics check level: none, basic, advanced
 	HeuristicsCheck string `json:"heuristics_check,omitempty"`
 
@@ -248,6 +286,10 @@ type ScanRequestRequest struct {
 	TargetURL          string `json:"target_url"` // scheme://host override
 	Modules            string `json:"modules"`    // comma-separated module IDs
 	NoPassive          bool   `json:"no_passive"`
+	// NoSchemeProbe keeps the inferred https default for a request whose
+	// scheme nothing in it settles, instead of probing the target first (the
+	// CLI's --no-scheme-probe).
+	NoSchemeProbe bool `json:"no_scheme_probe,omitempty"`
 }
 
 // ReqBase64 returns the base64-encoded raw request, preferring http_request_base64 over raw_request.
@@ -275,6 +317,23 @@ type ScanResponse struct {
 	RecordsToScan int64  `json:"records_to_scan,omitempty"`
 	TargetsCount  int    `json:"targets_count,omitempty"`
 	ScanMode      string `json:"scan_mode,omitempty"` // "target", "full", "incremental"
+	// Target is the URL a scan-request will send to, after scheme resolution.
+	Target string `json:"target,omitempty"`
+	// SchemeSource is what decided a scan-request's scheme: explicit, port,
+	// origin, referer, probe or default (the CLI result's scheme_source).
+	SchemeSource string `json:"scheme_source,omitempty"`
+	// Resolved is the pace the scan will run with after profile, strategy and
+	// scanning_pace resolution — the same values `vigolium scan` resolves for
+	// the same inputs.
+	Resolved *ScanResolved `json:"resolved,omitempty"`
+}
+
+// ScanResolved is the invocation-wide pace a submitted scan resolved to.
+type ScanResolved struct {
+	Strategy    string `json:"strategy"`
+	Concurrency int    `json:"concurrency"`
+	RateLimit   int    `json:"rate_limit"`
+	MaxPerHost  int    `json:"max_per_host"`
 }
 
 // ScanStatusResponse is the response for GET /api/scan/status.
@@ -292,14 +351,23 @@ type HealthResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
-// ErrorResponse is returned for error conditions.
+// ErrorResponse is the v1 error body. Code is always the HTTP status;
+// ErrorCode is the stable string classification (pkg/apicontract) a client
+// branches on. v2 clients get apicontract.RESTErrorEnvelope instead. Build it
+// only through respondError and friends (respond.go).
 type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    int    `json:"code,omitempty"`
-	Details string `json:"details,omitempty"`
+	Error     string `json:"error"`
+	Code      int    `json:"code"`
+	ErrorCode string `json:"error_code"`
+	Details   string `json:"details,omitempty"`
 }
 
 // IngestHTTPRequest is the request body for POST /api/ingest-http.
+//
+// input_mode is one of the REST-only single-item modes (url, burp_base64,
+// curl), "auto" (detect the format from content), or any input-format name or
+// alias -I accepts (urls/url_file, har/http_archive, postman/postman_collection,
+// openapi/swagger, wsdl, burpxml, burpraw, burpscope, nuclei, deparos).
 type IngestHTTPRequest struct {
 	InputMode          string `json:"input_mode"`
 	URL                string `json:"url,omitempty"`
@@ -307,25 +375,43 @@ type IngestHTTPRequest struct {
 	ContentBase64      string `json:"content_base64,omitempty"`
 	HTTPRequestBase64  string `json:"http_request_base64,omitempty"`
 	HTTPResponseBase64 string `json:"http_response_base64,omitempty"`
+	// Variables fill {{name}} placeholders in Postman collections and named
+	// parameters / security credentials in OpenAPI and WSDL specs (the REST
+	// equivalent of --spec-var), e.g. {"baseUrl": "https://api.example.com"}.
+	Variables map[string]string `json:"variables,omitempty"`
 }
 
 // IngestHTTPResponse is the response for POST /api/ingest-http.
 type IngestHTTPResponse struct {
-	ProjectUUID string   `json:"project_uuid,omitempty"`
-	Imported    int      `json:"imported"`
-	Skipped     int      `json:"skipped,omitempty"`
-	Errors      []string `json:"errors,omitempty"`
-	Message     string   `json:"message"`
+	ProjectUUID string `json:"project_uuid,omitempty"`
+	Imported    int    `json:"imported"`
+	Skipped     int    `json:"skipped,omitempty"`
+	// Format is the canonical input format the content was parsed as (empty
+	// for the single-item url/burp_base64/curl modes).
+	Format string `json:"format,omitempty"`
+	// DetectedFormat is set when input_mode was "auto": the format the content
+	// was detected as.
+	DetectedFormat string `json:"detected_format,omitempty"`
+	// SkippedReasons counts everything that did not become a stored record, by
+	// reason (out_of_scope, unparsed_line, skipped_operation, …), so nothing
+	// is dropped silently. Skipped is the out_of_scope count.
+	SkippedReasons map[string]int `json:"skipped_reasons,omitempty"`
+	Errors         []string       `json:"errors,omitempty"`
+	Message        string         `json:"message"`
 }
 
-// PaginatedResponse wraps paginated results.
+// PaginatedResponse is the v1 paginated list body. SchemaVersion (1) and
+// Command are stamped by respondList; v2 clients get apicontract.RESTList,
+// which carries the rows under items.
 type PaginatedResponse struct {
-	ProjectUUID string      `json:"project_uuid,omitempty"`
-	Data        interface{} `json:"data"`
-	Total       int64       `json:"total"`
-	Limit       int         `json:"limit"`
-	Offset      int         `json:"offset"`
-	HasMore     bool        `json:"has_more"`
+	SchemaVersion int         `json:"schema_version"`
+	Command       string      `json:"command"`
+	ProjectUUID   string      `json:"project_uuid,omitempty"`
+	Data          interface{} `json:"data"`
+	Total         int64       `json:"total"`
+	Limit         int         `json:"limit"`
+	Offset        int         `json:"offset"`
+	HasMore       bool        `json:"has_more"`
 }
 
 // ModuleInfo is the response type for module listing.
@@ -356,15 +442,18 @@ type AppInfoResponse struct {
 
 // ServerInfoResponse is the response for GET /server-info.
 type ServerInfoResponse struct {
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	Author        string `json:"author"`
-	Docs          string `json:"docs"`
-	BuildTime     string `json:"build_time,omitempty"`
-	Commit        string `json:"commit,omitempty"`
-	Uptime        string `json:"uptime"`
-	ServiceAddr   string `json:"service_addr"`
-	ProxyAddr     string `json:"proxy_addr,omitempty"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Author      string `json:"author"`
+	Docs        string `json:"docs"`
+	BuildTime   string `json:"build_time,omitempty"`
+	Commit      string `json:"commit,omitempty"`
+	Uptime      string `json:"uptime"`
+	ServiceAddr string `json:"service_addr"`
+	ProxyAddr   string `json:"proxy_addr,omitempty"`
+	// ProxyAuth names the ingest proxy's access control: "token",
+	// "allowlist", "token+allowlist" or "none". Omitted without a proxy.
+	ProxyAuth     string `json:"proxy_auth,omitempty"`
 	QueueDepth    int64  `json:"queue_depth"`
 	TotalRecords  int64  `json:"total_records"`
 	TotalFindings int64  `json:"total_findings"`
@@ -373,6 +462,9 @@ type ServerInfoResponse struct {
 	Source        string `json:"source"`
 	DemoOnly      bool   `json:"demo_only,omitempty"`
 	ViewOnly      bool   `json:"view_only,omitempty"`
+	// MirrorDropped counts --mirror-fs jobs dropped because the mirror writer
+	// stayed saturated past its enqueue timeout. Present only with --mirror-fs.
+	MirrorDropped *int64 `json:"mirror_dropped,omitempty"`
 }
 
 // StatsResponse is the response for GET /api/stats.
@@ -527,8 +619,8 @@ type AgentAutopilotRequest struct {
 	// compatibility with older API clients; "off" maps to NoAudit=true and
 	// any other value (e.g. "deep") maps to AuditDriverMode. Slated for removal.
 	Audit           string                      `json:"audit,omitempty"`             // legacy values: "lite", "balanced", "deep", "off"
-	NoAudit         bool                        `json:"no_audit,omitempty"`          // disable automatic vigolium-audit (enabled by default when source is set)
-	AuditDriverMode string                      `json:"audit_mode,omitempty"`        // audit mode: "lite" (default), "balanced", "deep"
+	NoAudit         bool                        `json:"no_audit,omitempty"`          // keep the nested vigolium-audit harness off (the default; kept for older clients)
+	AuditDriverMode string                      `json:"audit_mode,omitempty"`        // run the nested vigolium-audit harness (needs source): "lite", "balanced", "deep", "mock"; empty = off
 	Diff            string                      `json:"diff,omitempty"`              // focus on changed code: PR URL, git ref range, or HEAD~N
 	LastCommits     int                         `json:"last_commits,omitempty"`      // focus on last N commits (shorthand for diff HEAD~N)
 	Browser         bool                        `json:"browser,omitempty"`           // explicitly enable browser tooling
@@ -539,11 +631,9 @@ type AgentAutopilotRequest struct {
 	BrowserStartURL string                      `json:"browser_start_url,omitempty"` // explicit login/start URL for browser-based flows
 	FocusRoutes     []string                    `json:"focus_routes,omitempty"`      // protected/browser focus routes
 
-	// Piolium audit mode (Pi runtime). Empty triggers server-side auto-pick:
-	// when pi+piolium are installed, the server runs piolium instead of
-	// audit. Set explicitly to force piolium; pair with audit:"off" to
-	// keep both off, or with an audit mode to keep audit (auto-pick is
-	// suppressed once either flag is set).
+	// Piolium runs the nested piolium audit harness (Pi runtime; needs
+	// source) in this mode instead of vigolium-audit. Empty = off: an
+	// installed piolium is never picked automatically.
 	Piolium string `json:"piolium,omitempty"`
 
 	// Triage, when true, runs an AI triage pass over the findings after the
@@ -841,12 +931,14 @@ type AgentSwarmRequest struct {
 	ProjectUUID string `json:"project_uuid,omitempty"` // optional project UUID
 	ScanUUID    string `json:"scan_uuid,omitempty"`    // optional scan UUID
 
-	// Background vigolium-audit
-	Audit string `json:"audit,omitempty"` // run background vigolium-audit: "lite" (3-phase), "balanced" (6-phase), "deep" (10-phase), "off" to disable
+	// Nested vigolium-audit harness (launches a claude/codex CLI; needs
+	// source): "lite" (3-phase), "balanced" (9-phase), "deep" (12-phase).
+	// Empty or "off" = off; the intensity preset never turns it on.
+	Audit string `json:"audit,omitempty"`
 
-	// Background piolium audit (Pi runtime). Empty triggers server-side
-	// auto-pick when audit is also empty: piolium runs when pi+piolium
-	// are installed, otherwise nothing. Set explicitly to force piolium.
+	// Nested piolium audit harness (Pi runtime; launches a pi CLI; needs
+	// source). Empty = off: an installed piolium is never picked
+	// automatically. Wins over audit when both are set.
 	Piolium string `json:"piolium,omitempty"`
 
 	// Diff context

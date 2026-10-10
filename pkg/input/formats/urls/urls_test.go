@@ -96,3 +96,33 @@ func TestCount_MissingFile(t *testing.T) {
 	_, err := New().Count(filepath.Join(t.TempDir(), "nope.txt"))
 	assert.Error(t, err)
 }
+
+func TestParse_CommentLinesSkipped(t *testing.T) {
+	content := "# targets for the staging run\nhttp://example.com/a\n  # indented comment\n\nhttp://example.com/b\n"
+	tmpFile := writeTestFile(t, content)
+
+	f := New()
+	var results []*httpmsg.HttpRequestResponse
+	require.NoError(t, f.Parse(tmpFile, func(rr *httpmsg.HttpRequestResponse) bool {
+		results = append(results, rr)
+		return true
+	}))
+	require.Len(t, results, 2, "comment lines must not become requests")
+
+	n, err := f.Count(tmpFile)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n, "Count must agree with Parse")
+}
+
+func TestParse_MissingFileErrorText(t *testing.T) {
+	err := New().Parse(filepath.Join(t.TempDir(), "nope.txt"), func(*httpmsg.HttpRequestResponse) bool { return true })
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not open URL list")
+	assert.NotContains(t, err.Error(), "json")
+}
+
+func TestIsTargetLine(t *testing.T) {
+	assert.True(t, IsTargetLine("https://example.com"))
+	assert.False(t, IsTargetLine(""))
+	assert.False(t, IsTargetLine("# comment"))
+}

@@ -15,6 +15,7 @@ import (
 	gohttp "github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/jsext/api/parse"
+	"github.com/vigolium/vigolium/pkg/jsext/jsheaders"
 	"go.uber.org/zap"
 	"golang.org/x/net/publicsuffix"
 )
@@ -92,13 +93,7 @@ func (s *jsSession) toJSObject() sobek.Value {
 		if v := opts.Get("body"); v != nil && !sobek.IsUndefined(v) {
 			body = v.String()
 		}
-		headers := make(map[string]string)
-		if v := opts.Get("headers"); v != nil && !sobek.IsUndefined(v) {
-			headersObj := v.ToObject(s.vm)
-			for _, key := range headersObj.Keys() {
-				headers[key] = headersObj.Get(key).String()
-			}
-		}
+		headers := headersArg(s.vm, opts.Get("headers"))
 		return s.doSessionHTTP(method, urlStr, body, headers)
 	})
 
@@ -126,11 +121,8 @@ func (s *jsSession) toJSObject() sobek.Value {
 	})
 
 	_ = obj.Set("getHeaders", func(call sobek.FunctionCall) sobek.Value {
-		headersObj := s.vm.NewObject()
-		for k, v := range s.defaultHeaders {
-			_ = headersObj.Set(k, v)
-		}
-		return headersObj
+		// A snapshot: editing it does not change the session (use setHeader).
+		return jsheaders.FromMap(s.vm, s.defaultHeaders)
 	})
 
 	_ = obj.Set("getCookies", func(call sobek.FunctionCall) sobek.Value {
@@ -179,17 +171,10 @@ func (s *jsSession) toJSObject() sobek.Value {
 
 // extractCallHeaders extracts a headers map from an optional opts argument.
 func (s *jsSession) extractCallHeaders(optsVal sobek.Value) map[string]string {
-	headers := make(map[string]string)
-	if optsVal != nil && !sobek.IsUndefined(optsVal) && !sobek.IsNull(optsVal) {
-		opts := optsVal.ToObject(s.vm)
-		if v := opts.Get("headers"); v != nil && !sobek.IsUndefined(v) {
-			headersObj := v.ToObject(s.vm)
-			for _, key := range headersObj.Keys() {
-				headers[key] = headersObj.Get(key).String()
-			}
-		}
+	if optsVal == nil || sobek.IsUndefined(optsVal) || sobek.IsNull(optsVal) {
+		return map[string]string{}
 	}
-	return headers
+	return headersArg(s.vm, optsVal.ToObject(s.vm).Get("headers"))
 }
 
 // doSessionHTTP builds a raw request with session headers merged, sends it, and updates the cookie jar.
@@ -200,6 +185,13 @@ func (s *jsSession) doSessionHTTP(method, urlStr, body string, perRequestHeaders
 		merged[k] = v
 	}
 	for k, v := range perRequestHeaders {
+		// Case-insensitive override: a per-request "authorization" replaces a
+		// default "Authorization" instead of sending both.
+		for dk := range merged {
+			if strings.EqualFold(dk, k) {
+				delete(merged, dk)
+			}
+		}
 		merged[k] = v
 	}
 
@@ -214,7 +206,7 @@ func (s *jsSession) doSessionHTTP(method, urlStr, body string, perRequestHeaders
 		}
 		fmt.Fprintf(&sb, "%s: %s\r\n", k, v)
 	}
-	if body != "" && merged["Content-Length"] == "" {
+	if body != "" && !mapHasHeader(merged, "Content-Length") {
 		fmt.Fprintf(&sb, "Content-Length: %d\r\n", len(body))
 	}
 	sb.WriteString("\r\n")
@@ -347,6 +339,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "session",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".session(opts?: {headers, cookies})",
 			Returns:     "HttpSession",
@@ -386,6 +379,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "login",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".login(opts: {url, method?, body?, content_type?, headers?, extract?})",
 			Returns:     "HttpSession",
@@ -528,6 +522,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "batch",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".batch(requests: FullRequestOptions[], opts?: {concurrency})",
 			Returns:     "HttpResponse[]",
@@ -642,6 +637,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "replay",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".replay(rawRequest: string, variations: object[])",
 			Returns:     "HttpResponse[]",
@@ -691,6 +687,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "sequence",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".sequence(steps: SequenceStep[])",
 			Returns:     "{responses, variables, success}",
@@ -1136,11 +1133,7 @@ func buildResponseObject(vm *sobek.Runtime, rawResponse []byte, elapsedMs int64)
 	_ = result.Set("raw", string(rawResponse))
 	_ = result.Set("elapsed_ms", elapsedMs)
 
-	headersObj := vm.NewObject()
-	for _, h := range httpResp.Headers() {
-		_ = headersObj.Set(strings.ToLower(h.Name), h.Value)
-	}
-	_ = result.Set("headers", headersObj)
+	_ = result.Set("headers", newHeadersObject(vm, httpResp.Headers()))
 
 	return result
 }
@@ -1152,6 +1145,7 @@ func tokenUtilsFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsUtils,
 			Name:        "extractToken",
+			Effect:      EffectPure,
 			Category:    "Utils",
 			Signature:   ".extractToken(response: HttpResponse, rules: ExtractRule[])",
 			Returns:     "Record<string, string>",

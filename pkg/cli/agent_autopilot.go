@@ -16,7 +16,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/burpbridge"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/piolium"
 	"github.com/vigolium/vigolium/pkg/spitolas"
 	"github.com/vigolium/vigolium/pkg/storage"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -44,6 +43,9 @@ var (
 	autopilotMaxCommands   int
 	autopilotInstruction   string // internal: populated by --plan-file and the NL intent parser (no --instruction flag)
 	autopilotPlanFile      string
+	// autopilotAuthFiles are native session files (--auth-file), logged in
+	// before the run (agent_auth_file.go).
+	autopilotAuthFiles []string
 	// Auth/browser signals below have no CLI flags — the browser is always
 	// available for autopilot, and credentials/auth intent are extracted from
 	// the prompt (NL path via applyIntentToAutopilotFlags, explicit path via
@@ -82,6 +84,9 @@ var (
 	autopilotKnowledgeBaseNoTraffic bool
 	autopilotStateless              bool
 	autopilotOutput                 string
+	autopilotTokenBudget            int64
+	autopilotMaxCostUSD             float64
+	autopilotPreflight              agentPreflightFlags
 
 	// autopilotStatelessPlan carries the resolved -S/--format state for this
 	// invocation. It is package-level (not a local) because the natural-language
@@ -129,13 +134,19 @@ produces.
 fenced ` + "```http```" + ` blocks. First request is the live seed; rest fold into
 context. Mutually exclusive with --input or a prompt (--prompt / positional).
 
---source enables whitebox: vigolium-audit prepares a context bundle + plan
-before the operator launches. Disable with --audit=off.
+--source enables whitebox: the operator reads the code. --audit lite|balanced|deep
+(or --piolium <mode>) additionally runs a nested audit harness (a claude/codex
+CLI) that prepares a context bundle + plan before the operator launches; it is
+off unless asked for.
 
 Intensity presets (--intensity), explicit flags override:
-  quick     — 30 cmds, 1h,  lite  audit + pre-scan
-  balanced  — 100 cmds, 6h,  balanced audit + pre-scan  (default)
-  deep      — 300 cmds, 12h, deep  audit + pre-scan
+  quick     — 150 cmds, 1h,  pre-scan
+  balanced  — 750 cmds, 6h,  pre-scan  (default)
+  deep      — 3000 cmds, 12h, pre-scan
+
+Budgets: --max-commands (tool calls), --token-budget (input+output tokens),
+--max-cost-usd (estimated spend) and --max-duration (wall clock). A run stopped
+by one exits 5 with status budget_exhausted (timed_out for --max-duration).
 
 Pre-scan runs a full native scan (discovery + spidering + dynamic-assessment)
 to seed http_records before the operator starts (target-only runs; skip with
@@ -162,6 +173,8 @@ func init() {
 	f.StringVar(&autopilotOliumOAuthToken, "oauth-token", "", "Olium Anthropic OAuth bearer token (anthropic-oauth provider; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY)")
 	f.StringVar(&autopilotOliumLLMAPIKey, "llm-api-key", "", "Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var)")
 	f.StringVar(&autopilotSource, "source", "", "Path to application source code for source-aware scanning")
+	f.StringArrayVar(&autopilotAuthFiles, "auth-file", nil, authFileFlagUsage+" The sessions log in before the run, the pre-scan uses them, and they are stored for the target so the operator's list_auth_sessions/replay_request can use them.")
+	addFlagAliases(agentAutopilotCmd, authFileAliases)
 	f.StringSliceVar(&autopilotFiles, "files", nil, "Specific files to include (relative to --source)")
 	f.StringVar(&autopilotPrompt, "prompt", "", "Free-text task guidance for the agent (same as the positional [prompt]; use --plan-file for a whole plan with seed HTTP requests)")
 	f.StringVar(&autopilotPromptFile, "prompt-file", "", "Read task guidance from a file (same channel as --prompt — its contents flow through credential extraction, so role-tagged accounts become primary/compare sessions). Convenient for long/complex prompts; mutually exclusive with --prompt, the positional [prompt], and --plan-file")
@@ -178,8 +191,8 @@ func init() {
 	// prompt — e.g. `autopilot "log in as admin/admin123, focus on /admin"`.
 	f.BoolVar(&autopilotHeaded, "headed", false, "Show the browser window during the run (native pre-scan spidering, in-process probes, and agent-browser subprocesses); sets VIGOLIUM_BROWSER_HEADED=1 for the run. Debugging aid.")
 	_ = f.MarkHidden("headed")
-	f.StringVar(&autopilotAudit, "audit", "lite", "vigolium-audit mode: lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off (disable). Default: lite when --source is set")
-	f.StringVar(&autopilotPiolium, "piolium", "", "Piolium audit mode: lite, balanced, deep, longshot, etc. Default: empty triggers auto-pick (piolium when pi is installed, else audit). Set explicitly to force piolium; set --audit=off alongside to disable audit")
+	f.StringVar(&autopilotAudit, "audit", "off", "Nested vigolium-audit harness (runs a claude/codex CLI before the operator; needs --source): lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off. Default off: the intensity preset never turns it on")
+	f.StringVar(&autopilotPiolium, "piolium", "", "Nested piolium audit harness (needs --source): lite, balanced, deep, longshot, etc. Default empty = off; set explicitly to run piolium instead of --audit")
 	f.StringVar(&autopilotDiff, "diff", "", "Focus on changed code: PR URL (github.com/.../pull/123), git ref range (main...branch), or HEAD~N")
 	f.IntVar(&autopilotLastCommits, "last-commits", 0, "Focus on last N commits (shorthand for --diff HEAD~N)")
 	f.StringVar(&autopilotIntensity, "intensity", "balanced", "Scan intensity preset: quick, balanced, or deep")
@@ -187,6 +200,10 @@ func init() {
 	f.BoolVar(&autopilotTriage, "triage", false, "After the scan completes, run an AI triage pass over the findings (confirm real issues vs false positives, written back to finding status)")
 	f.BoolVar(&autopilotNoPreflight, "no-preflight-discovery", false, "Skip the pre-flight discovery + OpenAPI/Swagger ingestion pass that seeds http_records before the operator agent starts")
 	f.BoolVar(&autopilotNoPostHaltVerify, "no-post-halt-verify", false, "Skip the post-halt coverage verification re-entry (operator halts → coverage probe → re-prompt agent when new routes turn up)")
+	f.IntVar(&autopilotMaxCommands, "max-commands", 0, "Tool-call budget for the operator (0 = the --intensity preset: quick 150, balanced 750, deep 3000). Hitting it stops the run: status budget_exhausted, exit 5")
+	f.Int64Var(&autopilotTokenBudget, "token-budget", 0, "Cap on the operator's cumulative input+output tokens (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	f.Float64Var(&autopilotMaxCostUSD, "max-cost-usd", 0, "Cap on the operator's estimated spend in USD, priced per turn from provider usage (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	registerAgentPreflightFlags(agentAutopilotCmd, &autopilotPreflight)
 	f.IntVar(&autopilotPostHaltGap, "post-halt-gap-threshold", 0, "Minimum new (method, URL) routes the post-halt probe must turn up before the agent is re-entered. 0 = built-in default (5)")
 
 	f.BoolVar(&autopilotUploadResults, "upload-results", false, "Upload scan results to cloud storage after completion (requires storage config)")
@@ -204,6 +221,9 @@ func init() {
 }
 
 func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
+	// The bash tool's children run against this process's binary, database,
+	// project and config (agent_child_env.go).
+	installAgentChildEnv()
 	// -S/--stateless: validate the --format/-o combination and mint the throwaway
 	// database before anything opens a DB handle. Two orderings matter here.
 	// First, the temp-file removal defer is registered BEFORE the
@@ -218,7 +238,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 		// combination never prints the plan's default-base notice on its way to
 		// the error.
 		if autopilotStateless && autopilotResume != "" {
-			return fmt.Errorf("--stateless/-S cannot be combined with --resume: a resumed run restores its target, scratchpad, and prior findings from the project database, which a throwaway one does not have")
+			return usageErrorf("--stateless/-S cannot be combined with --resume: a resumed run restores its target, scratchpad, and prior findings from the project database, which a throwaway one does not have")
 		}
 		plan, planErr := planAgentStateless(cmd, "agent autopilot", autopilotStateless, autopilotOutput)
 		if planErr != nil {
@@ -280,8 +300,11 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 			auditModeLocal = ""
 		}
 		changed := map[string]bool{
-			"timeout":    cmd.Flags().Changed("max-duration"),
-			"audit-mode": auditChanged,
+			"max-commands": cmd.Flags().Changed("max-commands"),
+			"timeout":      cmd.Flags().Changed("max-duration"),
+			// The preset's audit mode is never applied: a nested agent CLI
+			// runs only when --audit/--piolium asks for one.
+			"audit-mode": true,
 			"no-audit":   auditChanged && noAudit,
 			"no-prescan": cmd.Flags().Changed("no-prescan"),
 		}
@@ -300,17 +323,13 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 		}
 		autopilotNoPrescan = intensityResult.NoPrescan
 
-		// Audit-harness auto-pick: when neither flag is explicit, prefer
-		// piolium if pi+piolium are installed; otherwise audit's existing
-		// lite-default applies. Explicit --piolium turns audit off so the
-		// two harnesses don't double-run.
-		pioliumChanged := cmd.Flags().Changed("piolium")
-		switch {
-		case !auditChanged && !pioliumChanged && piolium.IsAvailable():
-			autopilotPiolium = autopilotAudit
+		// Audit harness: off unless asked for. Explicit --piolium alone turns
+		// audit off so the two harnesses don't double-run.
+		if cmd.Flags().Changed("piolium") && !auditChanged {
 			autopilotAudit = "off"
-		case pioliumChanged && !auditChanged:
-			autopilotAudit = "off"
+		}
+		if err := validateAgentBudgets(autopilotMaxCommands, autopilotTokenBudget, autopilotMaxCostUSD); err != nil {
+			return err
 		}
 	}
 
@@ -351,6 +370,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	if autopilotOliumLLMAPIKey != "" {
 		settings.Agent.Olium.LLMAPIKey = autopilotOliumLLMAPIKey
 	}
+	autopilotPreflight.apply(settings)
 
 	// --db-isolate: run into a private temp DB and merge into the real --db (or
 	// default DB) at the end, so parallel autopilot runs can share one --db
@@ -367,13 +387,12 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	// resolution so --input <record-uuid> and the --record-uuid flag can
 	// look up records from the database.
 	var repo *database.Repository
-	db, dbErr := getDB()
+	// Write intent: the opener makes the schema ready, so no CreateSchema here.
+	db, dbErr := getDBFor(clicommon.IntentWrite)
 	if dbErr == nil {
-		ctx := context.Background()
-		if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-			zap.L().Warn("Failed to create schema", zap.Error(schemaErr))
-		}
 		repo = database.NewRepository(db)
+	} else {
+		zap.L().Warn("Database unavailable; continuing without persistence", zap.Error(dbErr))
 	}
 
 	// --resume: continue an existing durable-autopilot run. Rewires target /
@@ -385,7 +404,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	// (clicommon.PinProjectUUID), so scoping no longer depends on this ordering.
 	if autopilotResume != "" {
 		if autopilotInput != "" || autopilotRecordUUID != "" || autopilotPlanFile != "" {
-			return fmt.Errorf("--resume cannot be combined with --input/--record-uuid/--plan-file")
+			return usageErrorf("--resume cannot be combined with --input/--record-uuid/--plan-file")
 		}
 		if err := prepareAutopilotResume(context.Background(), repo, autopilotResume, settings.Agent.EffectiveSessionsDir()); err != nil {
 			return err
@@ -401,7 +420,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	if bridge := strings.TrimSpace(autopilotBurpBridgeURL); bridge != "" && repo != nil {
 		validated, verr := burpbridge.ValidateURL(bridge)
 		if verr != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", verr)
+			return usageErrorf("--burp-bridge-url: %w", verr)
 		}
 		projectUUID, _ := resolveProjectUUID()
 		fmt.Fprintf(os.Stderr, "%s Importing live bridge traffic from %s ...\n",
@@ -428,7 +447,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 		// is multi-valued and just adds more seeds alongside the plan's, so
 		// combining is allowed there.
 		if autopilotRecordUUID != "" {
-			return fmt.Errorf("--plan-file cannot be combined with --record-uuid")
+			return usageErrorf("--plan-file cannot be combined with --record-uuid")
 		}
 		planInstruction, planRequests, perr := resolvePlanFile(autopilotPlanFile, autopilotInput)
 		if perr != nil {
@@ -448,10 +467,11 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	// dedicated flag makes intent obvious in scripts and shell history.
 	if autopilotRecordUUID != "" {
 		if repo == nil {
+			//vigolium:not-usage no database is open; a store problem, not a flag problem
 			return fmt.Errorf("--record-uuid requires a database connection")
 		}
 		if autopilotInput != "" || autopilotTarget != "" {
-			return fmt.Errorf("--record-uuid cannot be combined with --input or --target")
+			return usageErrorf("--record-uuid cannot be combined with --input or --target")
 		}
 		autopilotInput = strings.TrimSpace(autopilotRecordUUID)
 	}
@@ -464,7 +484,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	autopilotTarget = resolved.Target
 
 	if autopilotTarget == "" && autopilotSource == "" {
-		return fmt.Errorf("target is required: use --target, --input, --record-uuid, --source, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent autopilot \"scan source at ~/src/app on localhost:3005\"")
+		return usageErrorf("target is required: use --target, --input, --record-uuid, --source, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent autopilot \"scan source at ~/src/app on localhost:3005\"")
 	}
 
 	// autopilotInstruction is populated only by --plan-file (above); the raw
@@ -518,6 +538,7 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 	if autopilotKnowledgeBase != "" {
 		expanded := config.ExpandPath(autopilotKnowledgeBase)
 		if _, statErr := os.Stat(expanded); statErr != nil {
+			//vigolium:not-usage filesystem stat failure
 			return fmt.Errorf("--knowledge-base %q: %w", autopilotKnowledgeBase, statErr)
 		}
 		autopilotKnowledgeBase = expanded

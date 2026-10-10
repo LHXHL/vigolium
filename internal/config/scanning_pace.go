@@ -33,6 +33,13 @@ type ScanningPaceConfig struct {
 	// concurrency, never past it). Set explicitly to pin either mode.
 	MaxPerHostCeiling int `yaml:"max_per_host_ceiling"`
 
+	// MaxRequests caps the wire attempts the whole scan may send (0 =
+	// unlimited); MaxRequestsPerHost caps them per target host. Enforced by the
+	// egress gate: exactly for gated traffic, within one watcher interval for
+	// the browser crawl. --max-requests / --max-requests-per-host win.
+	MaxRequests        int64 `yaml:"max_requests"`
+	MaxRequestsPerHost int64 `yaml:"max_requests_per_host"`
+
 	Discovery         PhasePace `yaml:"discovery"`
 	Probe             PhasePace `yaml:"probe"`
 	Spidering         PhasePace `yaml:"spidering"`
@@ -55,6 +62,22 @@ type PhasePace struct {
 	ActiveModuleTimeout  string  `yaml:"active_module_timeout,omitempty"`
 }
 
+// PaceSource says where a resolved value came from.
+type PaceSource string
+
+// Provenance of ResolvedPhasePace.MaxDuration.
+const (
+	// PaceSourceUnset: neither the phase nor the common section set a duration.
+	PaceSourceUnset PaceSource = ""
+	// PaceSourcePhase: the phase's own max_duration.
+	PaceSourcePhase PaceSource = "phase"
+	// PaceSourceFactor: the common max_duration × the phase's duration_factor
+	// (also the source when --scanning-max-duration seeded the common value).
+	PaceSourceFactor PaceSource = "factor"
+	// PaceSourceCommon: the common max_duration, unscaled.
+	PaceSourceCommon PaceSource = "common"
+)
+
 // ResolvedPhasePace is the result of merging common + per-phase values.
 type ResolvedPhasePace struct {
 	Concurrency          int
@@ -66,6 +89,11 @@ type ResolvedPhasePace struct {
 	ParallelPassive      bool
 	FeedbackDrainTimeout time.Duration
 	ActiveModuleTimeout  time.Duration
+
+	// Source is where MaxDuration came from. A derived (factor) budget may be
+	// adjusted by its consumer (the spidering floor, SpideringBudget); an
+	// explicit one never is.
+	Source PaceSource
 }
 
 // DefaultScanningPaceConfig returns default scanning pace configuration
@@ -74,7 +102,7 @@ func DefaultScanningPaceConfig() *ScanningPaceConfig {
 	return &ScanningPaceConfig{
 		Concurrency: types.DefaultConcurrency,
 		RateLimit:   100,
-		MaxPerHost:  40,
+		MaxPerHost:  types.DefaultMaxPerHost,
 		MaxDuration: "45m",
 
 		Discovery:         PhasePace{DurationFactor: 0.5},
@@ -174,8 +202,9 @@ func PhaseSectionNames() []string {
 // Honest as of improvement-2 WP11. Flipping an entry to true is part of the
 // change that makes it true, never a separate bookkeeping step.
 var phasePaceSupport = map[string]struct{ Concurrency, RateLimit, MaxPerHost bool }{
-	// Deparos engine threads, and (WP11) a per-engine token bucket. Targets run
-	// sequentially, so the per-engine bucket is the phase-wide rate.
+	// Deparos engine threads, and one token bucket shared by every concurrent
+	// discovery target (through the scan's egress gate), so the rate is
+	// phase-wide. Host slots are the scan's shared ones, not a section value.
 	"discovery": {Concurrency: true, RateLimit: true},
 	// The crawler is a single browser with no limiter fields at all.
 	"spidering": {},
@@ -185,8 +214,10 @@ var phasePaceSupport = map[string]struct{ Concurrency, RateLimit, MaxPerHost boo
 	"dynamic-assessment": {Concurrency: true},
 	// Nuclei owns its own HTTP stack and takes both.
 	"known-issue-scan": {Concurrency: true, RateLimit: true},
-	// Archive/API fan-out, bounded by worker count.
-	"external-harvest": {Concurrency: true},
+	// Request-only: harvested URLs are stored, never fetched from the target,
+	// so no target-facing dial applies (the archive queries are bounded by the
+	// phase's max_duration alone).
+	"external-harvest": {},
 }
 
 // Pace field names, as they appear in warnings and in the support table.
@@ -275,14 +306,25 @@ func (c *ScanningPaceConfig) ResolvePhase(phase string) ResolvedPhasePace {
 	commonDuration := c.maxDurationParsed()
 	if pp.MaxDuration != "" {
 		resolved.MaxDuration = pp.MaxDurationParsed()
+		resolved.Source = PaceSourcePhase
 	} else if pp.DurationFactor > 0 && commonDuration > 0 {
 		resolved.MaxDuration = time.Duration(float64(commonDuration) * pp.DurationFactor)
 		resolved.DurationFactor = pp.DurationFactor
+		resolved.Source = PaceSourceFactor
 	} else {
 		resolved.MaxDuration = commonDuration
+		if commonDuration > 0 {
+			resolved.Source = PaceSourceCommon
+		}
 	}
 
-	// ParallelPassive: per-phase pointer overrides common default (false)
+	// ParallelPassive: an explicit per-phase value wins; otherwise the built-in
+	// per-phase default, which is on for dynamic-assessment (the only phase that
+	// runs passive modules at volume) and off elsewhere. The default lives here,
+	// not only in DefaultScanningPaceConfig, so a pace config that never went
+	// through the defaults (a zero Settings, a config file without the section)
+	// still gets it.
+	resolved.ParallelPassive = defaultParallelPassive(phase)
 	if pp.ParallelPassive != nil {
 		resolved.ParallelPassive = *pp.ParallelPassive
 	}
@@ -302,6 +344,12 @@ func (c *ScanningPaceConfig) ResolvePhase(phase string) ResolvedPhasePace {
 	}
 
 	return resolved
+}
+
+// defaultParallelPassive is the built-in parallel_passive for phase when its
+// pace section does not set one.
+func defaultParallelPassive(phase string) bool {
+	return phase == "dynamic-assessment"
 }
 
 // boolPtr returns a pointer to a bool value. Used for optional YAML fields.
@@ -338,6 +386,12 @@ func (c *ScanningPaceConfig) Validate() error {
 	}
 	if c.MaxPerHost < 0 {
 		return fmt.Errorf("scanning_pace.max_per_host must be >= 0")
+	}
+	if c.MaxRequests < 0 {
+		return fmt.Errorf("scanning_pace.max_requests must be >= 0")
+	}
+	if c.MaxRequestsPerHost < 0 {
+		return fmt.Errorf("scanning_pace.max_requests_per_host must be >= 0")
 	}
 	if err := validateNonNegDuration("scanning_pace.max_duration", c.MaxDuration); err != nil {
 		return err

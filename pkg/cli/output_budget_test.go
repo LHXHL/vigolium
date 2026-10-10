@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 )
 
 // budgetItems builds n rows of roughly size bytes each, so a test can state its
@@ -137,7 +138,7 @@ func TestOutputBudgetTooSmallIsCoded(t *testing.T) {
 
 	var coded codedError
 	require.True(t, errors.As(err, &coded))
-	assert.Equal(t, errCodeOutputTooLarge, coded.Code())
+	assert.Equal(t, apicontract.CodeOutputTooLarge, coded.Code())
 	assert.Contains(t, err.Error(), "--max-output-bytes")
 }
 
@@ -322,5 +323,5 @@ func TestOutputBudgetSearchIsMaximalAndUnderBudget(t *testing.T) {
 
 func isOutputTooLarge(err error) bool {
 	var coded codedError
-	return errors.As(err, &coded) && coded.Code() == errCodeOutputTooLarge
+	return errors.As(err, &coded) && coded.Code() == apicontract.CodeOutputTooLarge
 }

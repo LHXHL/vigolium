@@ -1,0 +1,314 @@
+[
+  {
+    "name": "db export",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "A receipt: the files written (-j needs -o; the export itself never shares stdout with the document) and their counts."
+  },
+  {
+    "name": "db seed",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Sample rows written per table; a row already present is skipped and not counted."
+  },
+  {
+    "name": "endpoints",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Endpoints (origin + path template) aggregated from stored traffic."
+  },
+  {
+    "name": "export",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "A receipt: the files written (-j needs -o; the export itself never shares stdout with the document) and their counts."
+  },
+  {
+    "name": "extensions eval",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "The code's return value as JSON (null for undefined), as `js -j`. With --record-uuid the document is `extensions run`'s."
+  },
+  {
+    "name": "extensions example",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Copy-pasteable example extensions; code is omitted under --list."
+  },
+  {
+    "name": "extensions lint",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One item per linted file with its issues (severity, line, col, message, rule); summary counts them. ok is false exactly when there are errors (exit 1, lint_failed)."
+  },
+  {
+    "name": "extensions preset",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Every preset file considered (installed, skipped, failed) plus vigolium.d.ts (updated or current)."
+  },
+  {
+    "name": "extensions run",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "What one extension reported for one stored record (ext run, ext eval --record-uuid): items are its results; errors are the handler calls that threw; network_calls_blocked counts the requests an offline run refused. ok is false when a handler threw (exit 1)."
+  },
+  {
+    "name": "extensions test",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One item per fixture case (or per extension that ran none: skipped with a reason, or failed to load); passed/failed/skipped count them. ok is false when any case failed (exit 1)."
+  },
+  {
+    "name": "extensions types",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "vigolium.d.ts: the file written with -o, or the declarations inline as content."
+  },
+  {
+    "name": "finding",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Stored findings as finding views; --curl rows render each finding's request as a curl command."
+  },
+  {
+    "name": "finding mark",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Findings whose status changed; unchanged and not_found list the rest."
+  },
+  {
+    "name": "import",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "items is always []; the import counters stay at the top level (a parse, a SQLite merge, or a live bridge import)."
+  },
+  {
+    "name": "js",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "The script's return value as JSON (null for undefined)."
+  },
+  {
+    "name": "log",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "`log \u003cuuid\u003e -j`: the session log's lines (the --tail/--full window) with its identity and liveness."
+  },
+  {
+    "name": "log ls",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at); --reap adds reaped and status_files_removed."
+  },
+  {
+    "name": "module disable",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Every module the search matched, each saying whether this run flipped it."
+  },
+  {
+    "name": "module enable",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Every module the search matched, each saying whether this run flipped it."
+  },
+  {
+    "name": "oast ingest",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Findings saved from logged OAST callbacks; the counters say how the callbacks were attributed."
+  },
+  {
+    "name": "params",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Parameters by endpoint and location, aggregated from stored traffic."
+  },
+  {
+    "name": "project create",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "The project created."
+  },
+  {
+    "name": "project delete",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "The project deleted, with what it held."
+  },
+  {
+    "name": "project use",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "The project activated (or created with --create)."
+  },
+  {
+    "name": "run",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document: one document per invocation, items are finding views."
+  },
+  {
+    "name": "scan",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document: one document per invocation, items are finding views."
+  },
+  {
+    "name": "scan diff",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Findings classified new / unchanged / fixed / not_reobserved between two scans."
+  },
+  {
+    "name": "scan status",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One scan's live status: phase, progress, liveness, ETA and the stored plan."
+  },
+  {
+    "name": "scan wait",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The finished scan's scan document (the one scan -j prints, rebuilt from the stored row), printed once the scan ends."
+  },
+  {
+    "name": "scan-request",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document: one document per invocation, items are finding views."
+  },
+  {
+    "name": "scan-url",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document: one document per invocation, items are finding views."
+  },
+  {
+    "name": "traffic",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Stored HTTP records; --curl rows render each request as a curl command."
+  },
+  {
+    "name": "scan.started",
+    "kind": "event",
+    "description": "First line of every stream: what the scan will run, against what, at what pace and budget."
+  },
+  {
+    "name": "scan.interrupting",
+    "kind": "event",
+    "description": "A shutdown signal arrived and the graceful stop began. Nonterminal: scan.finished still follows."
+  },
+  {
+    "name": "scan.finished",
+    "kind": "event",
+    "description": "The terminal line, on every reachable exit path. status: completed, curtailed, interrupted or failed."
+  },
+  {
+    "name": "phase.started",
+    "kind": "event",
+    "description": "A phase began."
+  },
+  {
+    "name": "phase.progress",
+    "kind": "event",
+    "description": "Heartbeat while a phase runs. total is a non-decreasing upper bound, absent until known."
+  },
+  {
+    "name": "phase.finished",
+    "kind": "event",
+    "description": "A phase ended. status: completed, curtailed or failed; reasons are defects, limits configured bounds reached."
+  },
+  {
+    "name": "waf.block",
+    "kind": "event",
+    "description": "The edge started filtering scan traffic for a host."
+  },
+  {
+    "name": "waf.pacing",
+    "kind": "event",
+    "description": "Proactive pacing armed for a host behind a CDN/WAF edge."
+  },
+  {
+    "name": "finding.new",
+    "kind": "event",
+    "description": "A finding was reported. Metadata only: the evidence is in the database."
+  },
+  {
+    "name": "import.summary",
+    "kind": "event",
+    "description": "What a bridge import is about to write: total will cross, matched is what the source holds."
+  },
+  {
+    "name": "error",
+    "kind": "event",
+    "description": "A NON-fatal error. A failure that ends the run is scan.finished{status:failed}."
+  },
+  {
+    "name": "scan.plan",
+    "kind": "event",
+    "description": "The resolved scan plan, second on every stream (the same object `scan --dry-run` prints)."
+  },
+  {
+    "name": "scan.setup",
+    "kind": "event",
+    "description": "A lazy first-run install inside the phase that needs it, before that phase's clock starts: component chrome|nuclei (the `doctor --fix --only` id), state started|finished|failed. bytes is the download size when known; duration_ms and message (failed) ride on the terminal line."
+  },
+  {
+    "name": "oast.unavailable",
+    "kind": "event",
+    "description": "OAST registration failed or timed out: out-of-band checks do not run (scan partial, oast_unavailable)."
+  },
+  {
+    "name": "host.quarantined",
+    "kind": "event",
+    "description": "A host's breaker opened after consecutive errors; it is re-probed after a cooldown."
+  },
+  {
+    "name": "host.recovered",
+    "kind": "event",
+    "description": "A quarantined host answered its probe and is back in rotation."
+  },
+  {
+    "name": "host.dead",
+    "kind": "event",
+    "description": "A host failed every probe: no further requests go to it this scan."
+  },
+  {
+    "name": "auth.session_suspect",
+    "kind": "event",
+    "description": "Responses for a session look logged out; gen is the suspected credential generation."
+  },
+  {
+    "name": "auth.relogin",
+    "kind": "event",
+    "description": "How a re-login cycle ended: ok, the new generation when it worked, count of logins tried."
+  },
+  {
+    "name": "module.error",
+    "kind": "event",
+    "description": "A module call failed (error_kind exception, timeout or panic). Rate-limited per module: the first 3, then every 100th; count is the module's running error total for the scan."
+  },
+  {
+    "name": "extension.failed",
+    "kind": "event",
+    "description": "An extension failed to load: stage is the load step that failed; explicit says it was named with --ext (the scan then stops, exit 2 extension_load_failed, unless --ext-allow-failures)."
+  },
+  {
+    "name": "error",
+    "kind": "error",
+    "description": "The -j error envelope (ok:false)."
+  },
+  {
+    "name": "plan",
+    "kind": "document",
+    "description": "The resolved scan plan: phases with disabled_by, budgets, modules, scope, auth names, target admission and a rough request estimate. Printed by scan --dry-run, carried by the scan.plan event, stored on scans.plan."
+  },
+  {
+    "name": "scan-dry-run",
+    "kind": "document",
+    "description": "The scan --dry-run / run \u003cphase\u003e --dry-run -j document: items are the plan's phases, plan the full plan, dry_run true."
+  }
+]

@@ -305,6 +305,11 @@ func appendAnalysisRecord(result *ScanResult, record json.RawMessage) {
 		if decode(&fact) {
 			result.BrowserFlows = append(result.BrowserFlows, fact)
 		}
+	case "pathLiteral":
+		var fact PathLiteralFact
+		if decode(&fact) {
+			result.PathLiterals = append(result.PathLiterals, fact)
+		}
 	default:
 		result.UnknownRecords++
 		result.appendUnknownRecord(record)

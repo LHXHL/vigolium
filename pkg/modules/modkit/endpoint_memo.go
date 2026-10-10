@@ -1,6 +1,8 @@
 package modkit
 
 import (
+	"strings"
+
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
@@ -61,4 +63,46 @@ func (sc *ScanContext) EndpointMeasurement(name string, ctx *httpmsg.HttpRequest
 	})
 	v, _ := res.(int)
 	return v
+}
+
+func (sc *ScanContext) getHostMemoCache() *lru.Cache[string, any] {
+	sc.hostMemoOnce.Do(func() {
+		sc.hostMemoCache, _ = lru.New[string, any](perHostRegistryCacheSize)
+	})
+	return sc.hostMemoCache
+}
+
+// HostMemo memoizes an artifact a module derives once per host — a fetched JWKS
+// key set, a parsed discovery document — so every record on that host reuses it
+// instead of re-fetching. It is EndpointMeasurement's per-host sibling for
+// non-numeric values: concurrent callers for the same (name, host) collapse into
+// one compute via singleflight, the LRU is bounded like the other per-host
+// registries, and the cache dies with the ScanContext so nothing leaks across
+// scans.
+//
+// host should include the port (`example.com:8443`) when the module's notion of
+// "host" depends on it. compute's result is cached as-is, including a nil or
+// empty "nothing found" value, so a host without the artifact is not re-probed.
+// A nil ScanContext (unit tests) computes directly.
+func (sc *ScanContext) HostMemo(name, host string, compute func() any) any {
+	if compute == nil {
+		return nil
+	}
+	if sc == nil || host == "" {
+		return compute()
+	}
+	key := name + "\x00" + strings.ToLower(host)
+	cache := sc.getHostMemoCache()
+	if v, ok := cache.Get(key); ok {
+		return v
+	}
+	res, _, _ := sc.hostMemoFlight.Do(key, func() (interface{}, error) {
+		if v, ok := cache.Get(key); ok {
+			return v, nil
+		}
+		v := compute()
+		cache.Add(key, v)
+		return v, nil
+	})
+	return res
 }

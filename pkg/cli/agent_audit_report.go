@@ -160,10 +160,11 @@ func emitAuditStatelessReport(ctx context.Context, db *database.DB, projectUUID,
 		outputArg = defaultAuditStatelessReport
 	}
 
-	gen, defaultTitle, ok := reportGenerator("html")
+	rf, ok := reportGenerator("html")
 	if !ok {
 		return fmt.Errorf("html report generator unavailable")
 	}
+	gen, defaultTitle := rf.Render, rf.DefaultTitle
 
 	localOutput, finalize, err := resolveExportOutput(ctx, outputArg)
 	if err != nil {

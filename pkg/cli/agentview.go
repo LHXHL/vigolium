@@ -19,6 +19,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -141,22 +142,32 @@ func normalizeFieldList(in []string) []string {
 // writeAgentJSON writes a command's RESULT document: to stdout, or to the file
 // -o/--output named, with a small receipt taking its place on stdout.
 //
-// Only result documents belong here. The error envelope (emitJSONError) and the
-// -o receipt itself call writeAgentJSONToStdout instead: filing an error object
-// under `"artifact": "json_result"` would be a lie, and a receipt that could
-// itself be redirected has nowhere left to report.
-func writeAgentJSON(v any) error {
+// It takes the envelope and nothing else. It used to take `any`, and every
+// command that hand-built a map or passed its own struct got a document with no
+// schema_version, command, ok or kind — the RAW shapes the machine contract
+// exists to remove. With this signature a command cannot ship one without the
+// compiler noticing; emitRead/emitObject/emitMutation/envelopeFromStruct build
+// the envelope.
+//
+// Only result documents belong here. The error envelope (writeErrorFrame) and
+// the -o receipt (writeReceiptFrame) have their own writers: filing an error
+// object under `"artifact": "json_result"` would be a lie, and a receipt that
+// could itself be redirected has nowhere left to report.
+func writeAgentJSON(env *agentEnvelope) error {
 	// Attached here rather than at each call site: every -j read that can be
 	// sourced from --glob-db funnels through this function, and a per-command
 	// hook is one a new command forgets — which is how a merged read with a
 	// skipped file reported a clean short answer in the first place.
-	if env, ok := v.(*agentEnvelope); ok {
-		attachGlobSources(env)
-	}
-	// After attachGlobSources, because glob_sources is part of the document the
-	// budget is measured against, and before any destination is chosen: a
-	// budgeted document is the same document whether it goes to stdout or to a
-	// file, which is the invariant encodeAgentJSON exists to hold.
+	attachGlobSources(env)
+	return writeResultDocument(env)
+}
+
+// writeResultDocument is the tail of writeAgentJSON: budget, then stdout or
+// the -o file.
+func writeResultDocument(v any) error {
+	// Before any destination is chosen: a budgeted document is the same
+	// document whether it goes to stdout or to a file, which is the invariant
+	// encodeAgentJSON exists to hold.
 	//
 	// It hands back the bytes it measured, so a budgeted document is encoded once
 	// here rather than once to decide where to cut and again to emit.
@@ -180,9 +191,26 @@ func writeAgentJSON(v any) error {
 	return writeAgentJSONDoc(doc)
 }
 
-// writeAgentJSONToStdout writes v to stdout. It is the only path that touches
-// stdout, so the encoder is configured in exactly one place.
-func writeAgentJSONToStdout(v any) error {
+// writeErrorFrame writes the error envelope straight to stdout. Never through
+// writeAgentJSON: -o/--output redirects the RESULT document, and an error is not
+// one. Routing it there would write the failure into the file the caller
+// expected results in, and leave stdout carrying a receipt for it.
+func writeErrorFrame(env agentErrorEnvelope) error {
+	return writeStdoutFrame(env)
+}
+
+// writeReceiptFrame writes a receipt — the stdout stand-in for a result that
+// went somewhere else (the -o file, or body bytes written to a path) — straight
+// to stdout. A receipt that could itself be redirected has nowhere left to
+// report.
+func writeReceiptFrame(receipt any) error {
+	return writeStdoutFrame(receipt)
+}
+
+// writeStdoutFrame encodes v with the shared encoder and writes it to stdout.
+// Unexported to the frame writers above, so the only ways onto stdout are a
+// result envelope, an error, or a receipt.
+func writeStdoutFrame(v any) error {
 	doc, err := encodeAgentJSON(v)
 	if err != nil {
 		return err
@@ -191,7 +219,7 @@ func writeAgentJSONToStdout(v any) error {
 }
 
 // writeAgentJSONDoc writes an already-encoded document and latches. Separate
-// from writeAgentJSONToStdout so a caller that has the exact bytes in hand —
+// from writeStdoutFrame so a caller that has the exact bytes in hand —
 // applyOutputBudget measured them — does not encode the same value twice.
 func writeAgentJSONDoc(doc []byte) error {
 	_, err := os.Stdout.Write(doc)
@@ -204,15 +232,20 @@ func writeAgentJSONDoc(doc []byte) error {
 // it. A second copy of this configuration is a silent divergence waiting for the
 // next encoder option.
 //
+// The document is compact — one line plus the trailing newline — unless the
+// global --pretty (or $VIGOLIUM_JSON_PRETTY=1) asked for indentation. A program
+// pays for every indent byte and reads none of them.
+//
 // In stream mode each document must occupy exactly one line, which is what makes
 // a repeated read (--watch) readable with a line-oriented consumer; indented
 // output would emit a multi-line object per tick and the "stream" would only be
-// splittable by a full JSON parser. HTML escaping stays off so body text
-// containing <, >, & stays readable — and cheap in tokens.
+// splittable by a full JSON parser, so --pretty does not apply there. HTML
+// escaping stays off so body text containing <, >, & stays readable — and cheap
+// in tokens.
 func encodeAgentJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
-	if !jsonStreamMode {
+	if globalPretty && !jsonStreamMode {
 		enc.SetIndent("", "  ")
 	}
 	enc.SetEscapeHTML(false)
@@ -222,9 +255,9 @@ func encodeAgentJSON(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// jsonStreamMode switches -j output from one indented document to NDJSON: one
-// compact document per line. Set only by a repeated read (--watch), where a
-// single document is not the shape of the answer.
+// jsonStreamMode switches -j output from one document to NDJSON: one compact
+// document per line, even under --pretty. Set only by a repeated read
+// (--watch), where a single document is not the shape of the answer.
 var jsonStreamMode bool
 
 // jsonStreamFramed records that this invocation's stdout is an NDJSON stream, so
@@ -545,12 +578,13 @@ var (
 		"body_compaction", "request", "response",
 	}, database.HostFactsFieldNames...)
 	findingViewFields = []string{
-		"id", "severity", "confidence", "module_id", "module_name", "module_type",
+		"id", "finding_hash", "severity", "confidence", "module_id", "module_name", "module_type",
 		"finding_source", "record_kind", "evidence_grade", "short", "description",
 		"url", "hostname", "matched_at", "extracted_results", "additional_evidence",
-		"tags", "cwe_id", "cvss_score", "remediation", "status", "scan_uuid",
+		"tags", "cwe_id", "cvss_score", "remediation", "status", "status_note", "status_actor", "scan_uuid",
 		"agentic_scan_uuid", "repo_name", "source_file", "found_at",
-		"http_record_uuids", "response_evidence", "request", "response",
+		"http_record_uuids", "origin_record_uuid", "insertion_point", "payload", "verification", "verified_at",
+		"response_evidence", "request", "response",
 		"records", "records_total", "records_truncated", "records_error",
 	}
 )
@@ -683,7 +717,6 @@ func compactRecordView(rec *database.HTTPRecord, opts agentViewOptions) map[stri
 // any inline response keep the proof small by default.
 func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opts agentViewOptions) map[string]any {
 	m := map[string]any{
-		"id":             f.ID,
 		"severity":       f.Severity,
 		"confidence":     f.Confidence,
 		"module_id":      f.ModuleID,
@@ -692,6 +725,18 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 		"finding_source": f.FindingSource,
 		"record_kind":    f.RecordKind,
 		"evidence_grade": f.EvidenceGrade,
+	}
+	// id is the store's row id, absent on a finding that was never persisted
+	// (a direct scan with no store, see findingViewFromEvent) — a 0 would read
+	// as a real id and resolve to nothing, or to another row.
+	if f.ID != 0 {
+		m["id"] = f.ID
+	}
+	// finding_hash is the finding's stable identity: the dedup key, what SARIF
+	// fingerprints are built from, and the only identity an unpersisted finding
+	// (no id) has.
+	if f.FindingHash != "" {
+		m["finding_hash"] = f.FindingHash
 	}
 	if f.ModuleShort != "" {
 		m["short"] = f.ModuleShort
@@ -729,6 +774,13 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 	if f.Status != "" {
 		m["status"] = f.Status
 	}
+	// The verdict's provenance (`finding mark --note/--by`): why and by whom.
+	if f.StatusNote != "" {
+		m["status_note"] = f.StatusNote
+	}
+	if f.StatusActor != "" {
+		m["status_actor"] = f.StatusActor
+	}
 	if f.ScanUUID != "" {
 		m["scan_uuid"] = f.ScanUUID
 	}
@@ -744,6 +796,22 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 	m["found_at"] = f.FoundAt.Format(time.RFC3339)
 	if len(f.HTTPRecordUUIDs) > 0 {
 		m["http_record_uuids"] = f.HTTPRecordUUIDs
+	}
+	// Replay context and the latest `finding verify` result.
+	if f.OriginRecordUUID != "" {
+		m["origin_record_uuid"] = f.OriginRecordUUID
+	}
+	if f.InsertionPoint != nil {
+		m["insertion_point"] = f.InsertionPoint
+	}
+	if f.Payload != "" {
+		m["payload"] = f.Payload
+	}
+	if f.Verification != nil {
+		m["verification"] = f.Verification
+	}
+	if f.VerifiedAt != nil {
+		m["verified_at"] = f.VerifiedAt.Format(time.RFC3339)
 	}
 
 	if !opts.noBodies {
@@ -797,6 +865,26 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 		}
 	}
 	return projectFields(m, opts.fields, pinned...)
+}
+
+// findingViewFromEvent renders an in-memory scan result in the same shape
+// `finding -j` gives the stored row: the event goes through the converter the
+// finding writer uses (database.Finding.FromResultEvent), then through
+// compactFindingView. It is the one way a result that never reached a store is
+// rendered for a machine, so the scan document's items cannot drift from the
+// read path — the nuclei-shaped output.ResultEvent keys (template-id,
+// matched-at, info{}) are an import and legacy format, never a -j shape.
+//
+// Such a finding has no id; finding_hash is its identity. scanUUID and
+// projectUUID are the run's, as the writer would stamp them.
+func findingViewFromEvent(ev *output.ResultEvent, scanUUID, projectUUID string, opts agentViewOptions) map[string]any {
+	var f database.Finding
+	if err := f.FromResultEvent(ev); err != nil {
+		return nil
+	}
+	f.ScanUUID = scanUUID
+	f.ProjectUUID = projectUUID
+	return compactFindingView(&f, nil, opts)
 }
 
 // findingViews renders a slice of findings, optionally resolving + embedding the

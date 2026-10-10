@@ -104,12 +104,13 @@ func TestReconcileOutputFormatsDeferredJSONL(t *testing.T) {
 		assert.False(t, opts.DeferredJSONLExport, "CI output must not route through the envelope export")
 	})
 
-	t.Run("--json maps to jsonl and defers", func(t *testing.T) {
+	t.Run("--json is the scan document, not jsonl", func(t *testing.T) {
 		globalJSON, globalCIOutput = true, false
 		opts := &types.Options{OutputFormats: []string{"console"}}
 		require.NoError(t, reconcileOutputFormats(opts))
-		assert.Equal(t, []string{"jsonl"}, opts.OutputFormats)
-		assert.True(t, opts.DeferredJSONLExport)
+		assert.Equal(t, []string{"console"}, opts.OutputFormats, "--format jsonl only when explicit")
+		assert.False(t, opts.DeferredJSONLExport)
+		assert.True(t, opts.StdoutDocument)
 	})
 }
 
@@ -198,7 +199,7 @@ func TestWriteJSONLExportEnvelopeAndProjectScope(t *testing.T) {
 	insertRecord("rec-b", projB, "b.example", "http://b.example/", "rhash-b")
 
 	var buf bytes.Buffer
-	n, err := writeJSONLExport(ctx, db, &buf, false, projA)
+	n, err := writeJSONLExport(ctx, db, &buf, false, projA, "")
 	require.NoError(t, err)
 	require.Positive(t, n)
 
@@ -270,7 +271,7 @@ func TestWriteJSONLExportOmitResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	var buf bytes.Buffer
-	_, err = writeJSONLExport(ctx, db, &buf, true, proj)
+	_, err = writeJSONLExport(ctx, db, &buf, true, proj, "")
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -375,6 +376,61 @@ func TestFinishScanJSONLExport(t *testing.T) {
 		require.NoError(t, err)
 		// Only the default-project finding, not projA's.
 		assert.Equal(t, 1, countEnvelopeTypes(t, data)["finding"])
+	})
+
+	t.Run("persisted run streams only this scan, not the project", func(t *testing.T) {
+		db := newExportTestDB(t)
+		ctx := context.Background()
+		repo := database.NewRepository(db)
+		const scanOld, scanNew = "scan-old", "scan-new"
+		for _, s := range []struct{ scan, suffix string }{{scanOld, "old"}, {scanNew, "new"}} {
+			_, err := db.NewInsert().Model(&database.Scan{
+				UUID: s.scan, ProjectUUID: projA, Status: "completed",
+			}).Exec(ctx)
+			require.NoError(t, err)
+			require.NoError(t, repo.SaveFindingDirect(ctx, &database.Finding{
+				ProjectUUID: projA,
+				ScanUUID:    s.scan,
+				ModuleID:    "mod-" + s.suffix,
+				ModuleName:  "Module " + s.suffix,
+				Severity:    "high",
+				Confidence:  "firm",
+				FindingHash: "hash-" + s.suffix,
+				URL:         "http://" + s.suffix + ".example/",
+				Hostname:    s.suffix + ".example",
+			}))
+			// Each scan stored one exchange (http_records.scan_uuid, A5b).
+			_, err = db.NewInsert().Model(&database.HTTPRecord{
+				UUID: "rec-" + s.suffix, ProjectUUID: projA, ScanUUID: s.scan,
+				Scheme: "http", Hostname: s.suffix + ".example", Port: 80, Method: "GET",
+				Path: "/", URL: "http://" + s.suffix + ".example/", HTTPVersion: "HTTP/1.1",
+				RequestHash: "rhash-" + s.suffix,
+			}).Exec(ctx)
+			require.NoError(t, err)
+		}
+		opts := &types.Options{
+			DeferredJSONLExport: true,
+			OutputFormats:       []string{"jsonl"},
+			ProjectUUID:         projA,
+			ScanUUID:            scanNew,
+		}
+		out := captureStdout(t, func() { require.NoError(t, finishScanJSONLExport(db, opts)) })
+		counts := countEnvelopeTypes(t, []byte(out))
+		assert.Equal(t, 1, counts["finding"], "only this scan's finding")
+		assert.Equal(t, 1, counts["scan"], "only this scan's row")
+		assert.Equal(t, 1, counts["http_record"], "only the record this scan stored")
+		assert.Contains(t, out, `"hash-new"`)
+		assert.Contains(t, out, `"rec-new"`)
+		assert.NotContains(t, out, `"hash-old"`, "an earlier scan's finding must not leak into this scan's stream")
+		assert.NotContains(t, out, `"rec-old"`, "nor an earlier scan's records")
+		assert.NotContains(t, out, `"scan-old"`)
+
+		// `vigolium export` (streamJSONLExport, no scan UUID) stays project-wide.
+		var buf bytes.Buffer
+		all, err := streamJSONLExport(ctx, db, &buf, false, projA)
+		require.NoError(t, err)
+		assert.Equal(t, 2, all.byType["finding"])
+		assert.Equal(t, 2, all.byType["http_record"])
 	})
 
 	t.Run("not deferred is a no-op", func(t *testing.T) {

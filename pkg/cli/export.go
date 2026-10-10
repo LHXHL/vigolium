@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -65,7 +66,7 @@ JSONL coverage is a view, not a lossless archive: HTTP exchanges sharing a URL c
 
 func init() {
 	rootCmd.AddCommand(exportCmd)
-	exportCmd.Flags().StringVar(&topExportFormat, "format", "jsonl", "Export format(s), comma-separated: html, report, pdf, jsonl, markdown (alias: md), sarif (SARIF 2.1.0 for GitHub code scanning / DefectDojo / SARIF viewers), bundle (alias: gz), fs (alias: file-system; flat request/response + finding tree)")
+	exportCmd.Flags().StringVar(&topExportFormat, "format", "jsonl", "Export format(s), comma-separated: "+output.FormatsHelp(output.SurfaceExport))
 	exportCmd.Flags().StringVarP(&topExportOutput, "output", "o", "", "Output file path or gs://<project>/<key> URL (required for html; base path when multiple formats are given); supports {ts} and {project-uuid} placeholders")
 	exportCmd.Flags().StringSliceVar(&topExportOnly, "only", nil,
 		"Export only these tables (repeatable: http, findings, scans, modules, oast, source-repos, scopes)")
@@ -93,6 +94,7 @@ func init() {
 		"Filter findings by severity (comma-separated: critical,high,medium,low,info)")
 	exportCmd.Flags().StringSliceVar(&topExportScanUUIDs, "scan-uuid", nil,
 		"Agentic scan UUID(s) whose session directories to include in --format bundle (repeatable)")
+	registerReportFlags(exportCmd.Flags())
 	exportCmd.Flags().BoolVarP(&globalStateless, "stateless", "S", false,
 		"Read from --db (a standalone .sqlite or .jsonl export) instead of your project DB; never writes to it")
 	exportCmd.Flags().StringVar(&globalGlobDB, "glob-db", "",
@@ -148,7 +150,7 @@ func (s exportScope) includes(dataType string) bool {
 func (s exportScope) validate(flagName string) error {
 	for _, t := range s.only {
 		if !slices.Contains(validExportTypes, t) {
-			return fmt.Errorf("invalid %s value %q; valid values: %s",
+			return usageErrorf("invalid %s value %q; valid values: %s",
 				flagName, t, strings.Join(validExportTypes, ", "))
 		}
 	}
@@ -182,10 +184,6 @@ func scopeProjectBun(q *bun.SelectQuery, projectUUID string) *bun.SelectQuery {
 	return q
 }
 
-// validExportFormats lists the canonical --format values `vigolium export`
-// accepts. Aliases are normalized onto these by parseExportFormats.
-var validExportFormats = []string{"html", "report", "pdf", "jsonl", "markdown", "sarif", "bundle", "fs"}
-
 // exportFormatSpec is one requested format after alias normalization: the
 // canonical name, the token the user actually typed (so errors quote their
 // spelling), and the output path assigned to it.
@@ -208,10 +206,11 @@ func parseExportFormats(raw string) ([]exportFormatSpec, error) {
 		if token == "" {
 			continue
 		}
-		canonical := canonicalFormat(token)
-		if !slices.Contains(validExportFormats, canonical) {
-			return nil, fmt.Errorf("unsupported format %q; valid formats: %s", token, strings.Join(validExportFormats, ", "))
+		f, err := output.Lookup(token, output.SurfaceExport)
+		if err != nil {
+			return nil, usageErrorf("unsupported format %q; valid formats: %s", token, strings.Join(output.Names(output.SurfaceExport), ", "))
 		}
+		canonical := f.Name
 		if seen[canonical] {
 			continue
 		}
@@ -219,7 +218,7 @@ func parseExportFormats(raw string) ([]exportFormatSpec, error) {
 		specs = append(specs, exportFormatSpec{format: canonical, raw: token})
 	}
 	if len(specs) == 0 {
-		return nil, fmt.Errorf("--format requires at least one format; valid formats: %s", strings.Join(validExportFormats, ", "))
+		return nil, usageErrorf("--format requires at least one format; valid formats: %s", strings.Join(output.Names(output.SurfaceExport), ", "))
 	}
 	return specs, nil
 }
@@ -252,10 +251,10 @@ func assignExportPaths(specs []exportFormatSpec, base string) {
 // the path the format actually resolved to.
 func validateExportFormatPath(s exportFormatSpec) error {
 	if formatNeedsOutput(s.format) && s.path == "" {
-		return fmt.Errorf("--format %s requires -o/--output to specify the report file path", s.raw)
+		return usageErrorf("--format %s requires -o/--output to specify the report file path", s.raw)
 	}
 	if s.format == "bundle" && !strings.HasSuffix(s.path, ".tar.gz") && !strings.HasSuffix(s.path, ".tgz") {
-		return fmt.Errorf("--format %s requires -o ending in .tar.gz or .tgz (got %q)", s.raw, s.path)
+		return usageErrorf("--format %s requires -o ending in .tar.gz or .tgz (got %q)", s.raw, s.path)
 	}
 	return nil
 }
@@ -276,6 +275,9 @@ func runExportCmd(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 
 	if err := validateExportOnly(); err != nil {
+		return err
+	}
+	if err := validateReportFlags(); err != nil {
 		return err
 	}
 
@@ -306,6 +308,9 @@ func runExportCmd(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	if err := validateExportJSON(specs); err != nil {
+		return err
+	}
 
 	ctx := context.Background()
 	run := &exportRun{multi: len(specs) > 1}
@@ -335,13 +340,98 @@ func runExportCmd(cmd *cobra.Command, args []string) error {
 
 	if run.multi {
 		printMultiExportSummary(exportFormatNames(specs), run.items, outputs, run.printProjectScope)
+		if run.itemsSet {
+			run.counts, run.countsSet = countExportItems(run.items), true
+		}
 	}
+	var failErr error
 	if len(failed) > 0 {
 		// Each failure printed its own reason above; this only carries the
 		// non-zero exit and names which formats to look for.
-		return fmt.Errorf("%d of %d formats failed: %s", len(failed), len(specs), strings.Join(failed, ", "))
+		failErr = fmt.Errorf("%d of %d formats failed: %s", len(failed), len(specs), strings.Join(failed, ", "))
+	}
+	if globalJSON {
+		if err := emitExportReceipt(cmd, run, outputs, failErr); err != nil {
+			return err
+		}
+	}
+	return failErr
+}
+
+// validateExportJSON: under -j stdout carries the one result document, so a
+// format that would stream to stdout (jsonl or github without -o) has nowhere
+// to go. Refused before anything is read, like `storage download -j`.
+func validateExportJSON(specs []exportFormatSpec) error {
+	if !globalJSON {
+		return nil
+	}
+	for _, s := range specs {
+		if s.path == "" && s.format != "fs" {
+			return usageErrorf("export -j needs -o <path>: without it the %s export is written to stdout, "+
+				"where the -j document goes (drop -j for the stream itself)", s.format)
+		}
 	}
 	return nil
+}
+
+// exportFileView is one artifact `export -j` / `db export -j` wrote.
+type exportFileView struct {
+	Format string `json:"format"`
+	Path   string `json:"path"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// exportReceiptExtras are the top-level keys of the export receipt.
+type exportReceiptExtras struct {
+	// Counts tallies the exported items by type (http_record, finding, scan,
+	// …) plus total; absent for a format that does not count (fs).
+	Counts map[string]int `json:"counts,omitempty"`
+}
+
+func exportFileViews(outputs []exportedFile) []exportFileView {
+	views := make([]exportFileView, 0, len(outputs))
+	for _, o := range outputs {
+		views = append(views, exportFileView{Format: o.label, Path: receiptPath(o.path), Detail: o.detail})
+	}
+	return views
+}
+
+// receiptPath is a written file's path as a receipt reports it: absolute for a
+// local file, so it does not depend on the caller's working directory; a
+// gs:// URL as given.
+func receiptPath(p string) string {
+	if p == "" || strings.Contains(p, "://") {
+		return p
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+// emitExportReceipt prints `export -j`: the files written as items, the item
+// counts, and the project filter applied. A multi-format run with a failed
+// format still lists what landed, with ok:false and the error.
+func emitExportReceipt(cmd *cobra.Command, run *exportRun, outputs []exportedFile, failErr error) error {
+	views := exportFileViews(outputs)
+	opts := []envOpt{withProjectScope(run.projectUUID)}
+	if run.countsSet {
+		opts = append(opts, withExtra("counts", run.counts.view()))
+	}
+	if failErr != nil {
+		opts = append(opts, withResultFailure(failErr))
+	}
+	return emitRead(cmd, "", views, int64(len(views)), 0, len(views), opts...)
+}
+
+// view renders the tally as {type: n, …, "total": n}.
+func (c exportCounts) view() map[string]int {
+	out := make(map[string]int, len(c.byType)+1)
+	for k, v := range c.byType {
+		out[k] = v
+	}
+	out["total"] = c.total
+	return out
 }
 
 // exportRun carries the state shared by every format in one `vigolium export`
@@ -384,6 +474,10 @@ type exportRun struct {
 	// multi records that more than one format was requested, which switches the
 	// per-format count blocks off in favor of one unified summary at the end.
 	multi bool
+
+	// counts is the last tally a format reported, for the -j receipt.
+	counts    exportCounts
+	countsSet bool
 }
 
 // openDB opens the export database once per run and resolves the project filter
@@ -437,6 +531,7 @@ func (r *exportRun) reportMeta(ctx context.Context, db *database.DB) (target, du
 // where every format renders the same result set and the counts are reported once
 // by printMultiExportSummary instead.
 func (r *exportRun) printStats(format, outputPath string, counts exportCounts) {
+	r.counts, r.countsSet = counts, true
 	if r.multi {
 		return
 	}
@@ -503,12 +598,13 @@ func (r *exportRun) runFormat(ctx context.Context, s exportFormatSpec) ([]export
 // exportReport renders one of the document formats (html, report, pdf, markdown)
 // from the run's shared item set.
 func (r *exportRun) exportReport(ctx context.Context, format, outputPath string) ([]exportedFile, error) {
-	generate, defaultTitle, ok := reportGenerator(format)
+	rf, ok := reportGenerator(format)
 	if !ok {
-		return nil, fmt.Errorf("unsupported format %q; valid formats: %s", format, strings.Join(validExportFormats, ", "))
+		return nil, fmt.Errorf("unsupported format %q; valid formats: %s", format, strings.Join(output.Names(output.SurfaceExport), ", "))
 	}
-	if format == "pdf" {
-		fmt.Fprintf(os.Stderr, "%s Generating PDF report (headless Chrome)...\n", terminal.InfoSymbol())
+	generate, defaultTitle := rf.Render, rf.DefaultTitle
+	if rf.NeedsChrome {
+		fmt.Fprintf(os.Stderr, "%s Generating %s (headless Chrome)...\n", terminal.InfoSymbol(), rf.Label)
 	}
 
 	db, err := r.openDB()
@@ -544,36 +640,28 @@ func (r *exportRun) exportReport(ctx context.Context, format, outputPath string)
 		GeneratedAt:     topExportGeneratedAt,
 		ReportSharedURL: topExportReportURL,
 	}
+	applyReportFlags(&meta, false)
 	if err := generate(items, outputPath, meta); err != nil {
 		return nil, err
 	}
 	r.printStats(format, outputPath, countExportItems(items))
+	if outputPath == "" {
+		return nil, nil // streamed to stdout (github); nothing to list
+	}
 	return []exportedFile{{label: format, path: outputPath}}, nil
 }
 
-// reportGenerator maps a document/report format to its generator and default
-// title. It is the single source of truth shared by `vigolium export` and the
-// `vigolium import --format <fmt> -o <file>` post-import shortcut, so both
-// commands stay in lockstep when a format is added or renamed.
-func reportGenerator(format string) (gen func([]any, string, output.HTMLReportMeta) error, defaultTitle string, ok bool) {
-	// Resolve through the shared alias table rather than matching the raw token:
-	// `vigolium import --format` calls this directly with what the user typed, so
-	// a case-folded spelling or an alias must mean the same thing here as it does
-	// on `export`. Idempotent for exportRun, which passes an already-canonical
-	// format.
-	switch canonicalFormat(format) {
-	case "html":
-		return output.GenerateHTMLReport, "Vigolium Static Report", true
-	case "report":
-		return output.GenerateDocumentReport, "Vigolium Scan Report", true
-	case "pdf":
-		return output.GeneratePDFReport, "Vigolium Scan Report", true
-	case "markdown":
-		return output.GenerateMarkdownReport, "Vigolium Scan Report", true
-	case "sarif":
-		return output.GenerateSARIFReport, "Vigolium Scan Report", true
+// reportGenerator resolves a document/report format (alias-aware,
+// case-insensitive) to its row in the output format table, renderer bound. It
+// is shared by `vigolium export` and the `vigolium import --format <fmt> -o
+// <file>` post-import shortcut, so both render through the same table; each
+// caller checks its own surface (output.Lookup) before rendering.
+func reportGenerator(format string) (output.OutputFormat, bool) {
+	f, ok := output.FormatByName(format)
+	if !ok || f.Kind != output.KindReport || f.Render == nil {
+		return output.OutputFormat{}, false
 	}
-	return nil, "", false
+	return f, true
 }
 
 // computeReportMeta auto-detects scanTarget and scanDuration from the database.
@@ -866,6 +954,11 @@ func streamExportData(ctx context.Context, db *database.DB, scope exportScope, o
 	if scope.includes("scans") && db != nil && !excluded["scan"] {
 		var scans []*database.Scan
 		q := scopeProjectBun(db.NewSelect().Model(&scans).OrderExpr("created_at DESC"), projectUUID)
+		// A scan-scoped export (the post-scan report/jsonl of one run) carries
+		// only that run's scan row, not every scan the project ever ran.
+		if scanUUID != "" {
+			q = q.Where("uuid = ?", scanUUID)
+		}
 		if topExportSearch != "" {
 			p := database.LikeContains(topExportSearch)
 			q = q.Where(database.WithLikeEscape("(uuid LIKE ? OR status LIKE ? OR error_message LIKE ?)"), p, p, p)
@@ -1035,6 +1128,12 @@ func streamHTTPRecords(ctx context.Context, db *database.DB, omitResponse bool, 
 		qb = qb.OmitBodies()
 	}
 	query := qb.BuildRecordsQuery()
+	// A scan-scoped export (the post-scan jsonl/report of one run) carries the
+	// exchanges that run stored plus the evidence its findings cite, not every
+	// record the project ever accumulated. `vigolium export` passes "".
+	if scanUUID != "" {
+		query = database.WhereScanRecords(query, scanUUID)
+	}
 	rows, err := query.Rows(ctx)
 	if err != nil {
 		return fmt.Errorf("export http records: %w", err)
@@ -1112,8 +1211,8 @@ func streamFindings(ctx context.Context, db *database.DB, projectUUID, scanUUID 
 	q = q.Where("(f.record_kind IS NULL OR f.record_kind = '' OR f.record_kind = ?)", database.RecordKindFinding)
 	// Post-scan report scope: restrict to the current scan's findings so a re-run's
 	// report reflects that run, not the project's whole history. maybeGenerateReports
-	// passes the scan uuid; every other export path passes "" (project-wide),
-	// parallel to how projectUUID is threaded.
+	// and finishScanJSONLExport pass the scan uuid; `vigolium export` passes ""
+	// (project-wide), parallel to how projectUUID is threaded.
 	if scanUUID != "" {
 		q = q.Where("f.scan_uuid = ?", scanUUID)
 	}

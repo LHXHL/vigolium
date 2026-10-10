@@ -12,6 +12,7 @@ func payloadsFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsRoot, Name: "payloads",
+			Effect:   EffectPure,
 			Category: "Payloads", Signature: ".payloads(type: string)", Returns: "string[]",
 			Description: "Returns built-in payload wordlists by vulnerability type (xss, sqli, ssti, ssrf, lfi, path_traversal, xxe, cmdi, open_redirect, crlf).",
 			Example:     "",

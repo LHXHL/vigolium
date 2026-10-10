@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/vigolium/vigolium/pkg/apicontract"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 )
 
 func TestClassifyExitCodeSeparatesGateFromError(t *testing.T) {
@@ -68,5 +71,74 @@ func TestIsFlagParseError(t *testing.T) {
 		if got := isFlagParseError(errors.New(msg)); got != want {
 			t.Errorf("isFlagParseError(%q) = %v, want %v", msg, got, want)
 		}
+	}
+}
+
+// TestExitCodeTable pins the whole exit-code contract (docs/coding-agent.md,
+// "Process contract") in one place: the code classifyExitCode picks, the
+// error.code classifyErrorCode reports for it, and the process status with and
+// without --soft-fail.
+func TestExitCodeTable(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantExit int
+		wantCode apicontract.ErrorCode
+	}{
+		{"plain error", errors.New("boom"), ExitError, apicontract.CodeFailed},
+		{"usage error", usageErrorf("--a and --b are mutually exclusive"), ExitUsageError, apicontract.CodeUsageError},
+		{"usage error from clicommon", clicommon.UsageErrorf("usage: config set <key> <value>"), ExitUsageError, apicontract.CodeUsageError},
+		{"confirmation required", fmt.Errorf("delete: %w", errConfirmationRequired), ExitUsageError, apicontract.CodeUsageError},
+		{"coded error", codedErrorf(apicontract.CodeNoTargetsInScope, "all 3 targets rejected by scope"), ExitError, apicontract.CodeNoTargetsInScope},
+		{"fuzz match", asMatchErrorf("matched 2 responses"), ExitFuzzMatch, apicontract.CodeFailed},
+		{"fail-on gate", gateError{err: errors.New("--fail-on high")}, ExitFailOnGate, apicontract.CodeGateTripped},
+		{"incomplete timed_out", incompleteErrorf(apicontract.CodeTimedOut, "agent hit --max-duration"), ExitIncomplete, apicontract.CodeTimedOut},
+		{"incomplete budget", incompleteErrorf(apicontract.CodeBudgetExhausted, "request budget spent"), ExitIncomplete, apicontract.CodeBudgetExhausted},
+		{"incomplete partial", incompleteErrorf(apicontract.CodePartial, "2 of 5 phases failed"), ExitIncomplete, apicontract.CodePartial},
+		{"incomplete with non-incomplete code", incompleteErrorf(apicontract.CodeFailed, "x"), ExitIncomplete, apicontract.CodePartial},
+		{"wrapped incomplete", fmt.Errorf("agent run: %w", incompleteErrorf(apicontract.CodeTimedOut, "deadline")), ExitIncomplete, apicontract.CodeTimedOut},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exit := classifyExitCode(tc.err)
+			if exit != tc.wantExit {
+				t.Fatalf("exit = %d, want %d", exit, tc.wantExit)
+			}
+			if code := classifyErrorCode(tc.err, exit); code != tc.wantCode {
+				t.Errorf("error.code = %q, want %q", code, tc.wantCode)
+			}
+			if !tc.wantCode.Valid() {
+				t.Errorf("%q is not in the apicontract closed set", tc.wantCode)
+			}
+			if got := processExitCode(exit, false); got != tc.wantExit {
+				t.Errorf("process exit without --soft-fail = %d, want %d", got, tc.wantExit)
+			}
+			if got := processExitCode(exit, true); got != ExitSuccess {
+				t.Errorf("process exit with --soft-fail = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// The pkg/cli names are aliases, not copies: an error built in a subpackage
+// through clicommon must classify exactly like one built here.
+func TestExitCodesMatchAPIContract(t *testing.T) {
+	for got, want := range map[int]int{
+		ExitSuccess:    apicontract.ExitSuccess,
+		ExitError:      apicontract.ExitError,
+		ExitUsageError: apicontract.ExitUsageError,
+		ExitFuzzMatch:  apicontract.ExitFuzzMatch,
+		ExitFailOnGate: apicontract.ExitFailOnGate,
+		ExitIncomplete: apicontract.ExitIncomplete,
+	} {
+		if got != want {
+			t.Errorf("exit code %d drifted from apicontract %d", got, want)
+		}
+	}
+	if ExitIncomplete != 5 {
+		t.Errorf("ExitIncomplete = %d, want 5", ExitIncomplete)
+	}
+	if AgentSchemaVersion != apicontract.SchemaVersion {
+		t.Errorf("AgentSchemaVersion %d != apicontract.SchemaVersion %d", AgentSchemaVersion, apicontract.SchemaVersion)
 	}
 }

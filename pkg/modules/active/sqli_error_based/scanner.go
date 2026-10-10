@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	httputil "github.com/projectdiscovery/utils/http"
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
@@ -39,6 +38,13 @@ func New() *Module {
 	m.ModuleTags = ModuleTags
 	return m
 }
+
+// VulnClass enables cross-module (param, class) dedup: once any sqli module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassSQLi }
+
+// ClassPriority orders this module within its vuln class (lower runs first).
+func (m *Module) ClassPriority() int { return modkit.ClassCostInBand }
 
 // ScanPerInsertionPoint tests a single insertion point for SQL injection.
 func (m *Module) ScanPerInsertionPoint(
@@ -95,7 +101,7 @@ func (m *Module) ScanPerInsertionPoint(
 		// Cloudflare 429 "challenge" page (Cf-Mitigated: challenge) matched the TiDB
 		// signature and was reported as Critical/Certain SQLi. Never read a blocked
 		// response as a SQL error.
-		if isBlockedResponse(resp) {
+		if infra.IsBlockedResponse(resp) {
 			resp.Close()
 			continue
 		}
@@ -163,16 +169,6 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	return results, nil
-}
-
-// isBlockedResponse reports whether resp came from a WAF/CDN challenge, auth gate,
-// rate limiter, or maintenance page rather than the application. A genuine
-// error-based SQLi leak is emitted by the app stack, so a denied or challenged
-// response can only yield false matches. It combines the vendor-aware block
-// detector (Cloudflare, Akamai, Incapsula, …) with a plain status gate that also
-// catches generic WAFs the detector does not recognize.
-func isBlockedResponse(resp *httputil.ResponseChain) bool {
-	return infra.IsBlockedResponse(resp)
 }
 
 func getResponseBodyIfNotResponsive(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester) string {

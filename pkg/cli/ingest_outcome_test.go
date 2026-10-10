@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/source"
@@ -207,7 +208,7 @@ func TestReportIngestExitsNonZeroWhenRecordsCouldNotBeStored(t *testing.T) {
 
 	err := reportIngest(ingestOutcome{Stored: 0, Failed: 30}, false, 0, 1, 0)
 	require.Error(t, err)
-	assert.Equal(t, errCodeIngestIncomplete, classifyErrorCode(err, 1))
+	assert.Equal(t, apicontract.CodeIngestIncomplete, classifyErrorCode(err, 1))
 	assert.Contains(t, err.Error(), "stored 0 of 30 record(s)")
 
 	assert.NoError(t, reportIngest(ingestOutcome{Stored: 30}, false, 0, 1, 0))

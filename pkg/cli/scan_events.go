@@ -8,6 +8,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -59,17 +60,34 @@ func beginScanEventStream(db *database.DB, opts *types.Options, settings *config
 		dbPath = config.ExpandPath(settings.Database.SQLite.Path)
 	}
 
-	scanevents.Emit(scanevents.Event{
+	phases := plannedPhaseIDs(opts)
+	started := scanevents.Event{
 		Type:      scanevents.TypeScanStarted,
 		Target:    target,
 		Targets:   len(opts.Targets),
 		Strategy:  strategyName,
-		Phases:    plannedPhaseIDs(opts),
+		Phases:    phases,
 		DBPath:    dbPath,
 		Project:   opts.ProjectUUID,
 		Pace:      &globalPace,
 		PhasePace: phasePace,
-	})
+		// Which outbound paths the rate limit and host slots govern, and which
+		// they do not (and why), for the phases this scan runs.
+		Egress: egress.Inventory(phases),
+		// The request budgets in force; zeros are written (0 = unlimited).
+		Budgets: &scanevents.Budgets{MaxRequests: opts.MaxRequests, MaxRequestsPerHost: opts.MaxRequestsPerHost},
+	}
+	// How strictly a budget holds for each phase's traffic, when one is set.
+	if opts.MaxRequests > 0 || opts.MaxRequestsPerHost > 0 {
+		started.RequestCapEnforcement = egress.RequestCapEnforcement(phases)
+	}
+	// Present only when the targets are the input (see scanTargetAdmission); a
+	// zero is written, so "0 admitted" is visible before the run fails.
+	if adm := opts.TargetAdmission; adm != nil {
+		started.TargetsAdmitted = scanevents.Int(len(adm.Admitted))
+		started.TargetsRejected = scanevents.Int(len(adm.Rejected))
+	}
+	scanevents.Emit(started)
 
 	// A consumer that goes away must not take the scan with it. Without this the
 	// first event written to a closed stdout killed the process outright on the
@@ -189,6 +207,28 @@ func applyScanCompletion(ev *scanevents.Event, scan *database.Scan) {
 	if reasons := unionPhaseReasons(scan.PhaseOutcomes); len(reasons) > 0 {
 		ev.Reasons = reasons
 	}
+	if hosts := unionBudgetExhaustedHosts(scan.PhaseOutcomes); len(hosts) > 0 {
+		ev.BudgetExhaustedHosts = hosts
+	}
+	// The preflight tally, as the runner recorded it (scope admission, and
+	// reachability when the preflight GET ran).
+	for _, p := range scan.PhaseOutcomes {
+		if p.Phase == string(runner.PhasePreflight) && p.Targets != nil {
+			ev.TargetsAdmitted = scanevents.Int(p.Targets.Admitted)
+			ev.TargetsRejected = scanevents.Int(p.Targets.Requested - p.Targets.Admitted)
+			if unreachable, checked := p.Targets.UnreachableCount(); checked {
+				ev.TargetsReached = scanevents.Int(p.Targets.Reached)
+				ev.TargetsUnreachable = scanevents.Int(unreachable)
+			}
+		}
+	}
+	if len(scan.ExtensionsFailed) > 0 {
+		ev.ExtensionsFailed = scan.ExtensionsFailed
+	}
+	// Per-module error totals, persisted by the runner's finalizer.
+	if len(scan.ModuleErrors) > 0 {
+		ev.ModuleErrors = scan.ModuleErrors
+	}
 	// An empty Completeness means unknown (a row written by an older binary, or
 	// by a caller with no outcome data) and must never change the status.
 	if ev.Status == scanevents.StatusCompleted && scan.Completeness == database.CompletenessPartial {
@@ -212,6 +252,18 @@ func unionPhaseReasons(phases []database.PhaseOutcome) []string {
 		}
 		for _, reason := range p.Reasons {
 			seen[reason] = struct{}{}
+		}
+	}
+	return database.SortedCodes(seen)
+}
+
+// unionBudgetExhaustedHosts collects, sorted, the hosts any phase recorded as
+// having used their whole --max-requests-per-host.
+func unionBudgetExhaustedHosts(phases []database.PhaseOutcome) []string {
+	seen := make(map[string]struct{})
+	for _, p := range phases {
+		for _, host := range p.BudgetExhaustedHosts {
+			seen[host] = struct{}{}
 		}
 	}
 	return database.SortedCodes(seen)

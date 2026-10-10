@@ -1,0 +1,80 @@
+# Golden Report
+
+**Generated:** 2026-10-10 00:00 UTC  
+**Vigolium Version:** v0.0.0-test  
+**Target:** https://shop.example  
+
+---
+
+## Table of Contents
+
+- [Executive Summary](#executive-summary)
+- [High Findings (1)](#high-findings)
+  - [#12 Error-based SQL injection — https://shop.example/item?id=1'](#12-error-based-sql-injection-httpsshopexampleitemid1)
+
+## Executive Summary
+
+A total of **1 findings** were identified during the scan.
+
+| Severity | Count |
+|----------|-------|
+| High | 1 |
+| **Total** | **1** |
+
+**Total HTTP Requests:** 3  
+
+## High Findings
+
+### 12. Error-based SQL injection — https://shop.example/item?id=1'
+
+**Module:** Error-based SQL injection (`sqli-error`)  
+**Severity:** High  
+**Confidence:** firm  
+**CWE:** CWE-89  
+**URL:** `https://shop.example/item?id=1'`  
+**Found At:** 2026-10-10T00:00:00Z  
+
+| Field | Value |
+|-------|-------|
+| finding_id | `12` |
+| finding_hash | `f00dfeed` |
+| scan_uuid | `11111111-2222-3333-4444-555555555555` |
+| module_id | `sqli-error` |
+| record_uuids | `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee` |
+
+**Follow-up:** `vigolium finding --id 12`
+
+The `id` parameter reaches a SQL query.
+
+**Matched At:**
+- `https://shop.example/item?id=1'`
+
+**Extracted Results:**
+- `You have an error in your SQL syntax`
+
+<details>
+<summary>HTTP Request</summary>
+
+```http
+GET /item?id=1' HTTP/1.1
+Host: shop.example
+```
+
+</details>
+
+<details>
+<summary>HTTP Response</summary>
+
+````http
+HTTP/1.1 500 Internal Server Error
+Content-Type: text/plain
+
+You have an error in your SQL syntax near ```'``` — 日本語 üüüüüüü
+````
+
+… [truncated, 139 of 205 bytes; full: vigolium traffic body --uuid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee]
+
+</details>
+
+---
+

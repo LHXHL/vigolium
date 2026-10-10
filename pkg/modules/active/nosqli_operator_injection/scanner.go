@@ -59,6 +59,13 @@ func (m *Module) CanProcess(ctx *httpmsg.HttpRequestResponse) bool {
 	return true
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any nosqli module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassNoSQLi }
+
+// ClassPriority orders this module within its vuln class (lower runs first).
+func (m *Module) ClassPriority() int { return modkit.ClassCostBoolean }
+
 // ScanPerInsertionPoint tests a single insertion point for NoSQL operator injection.
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,
@@ -211,6 +218,7 @@ func (m *Module) testPayload(
 
 	var detected bool
 	var detectionDesc string
+	var detection string
 	// These paths are behavioral inferences, not direct proof of query control.
 	// Auth bypass (a re-confirmed 401/403→2xx transition) is the strongest signal,
 	// reported High/Tentative. The size-increase path only INFERS exfiltration
@@ -224,6 +232,7 @@ func (m *Module) testPayload(
 		if analyzeAuthBypass(baselineStatus, probeStatus) &&
 			m.confirmAuthBypass(ctx, ip, httpClient, fuzzedValue) {
 			detected = true
+			detection = detectionAuthBypass
 			detectionDesc = fmt.Sprintf("Auth bypass: status changed from %d to %d", baselineStatus, probeStatus)
 		}
 	case detectSizeChange:
@@ -260,6 +269,7 @@ func (m *Module) testPayload(
 			m.confirmSizeIncrease(ctx, ip, httpClient, fuzzedValue, body) &&
 			!modkit.EndpointVolatile(scanCtx, ctx, httpClient) {
 			detected = true
+			detection = detectionSizeChange
 			detectionDesc = fmt.Sprintf("Data exfiltration: body size increased from %d to %d bytes", len(baselineBody), len(body))
 		}
 	}
@@ -287,6 +297,10 @@ func (m *Module) testPayload(
 			Confidence:  findingConfidence,
 			Tags:        []string{"nosqli", "injection", "mongodb"},
 			Reference:   []string{"https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05.6-Testing_for_NoSQL_Injection"},
+		},
+		Metadata: map[string]any{
+			output.MetaSignal: output.SignalInband,
+			metaDetection:     detection,
 		},
 	}, nil
 }
@@ -561,6 +575,8 @@ func (m *Module) testTimeBasedPayload(
 			Reference:  []string{"https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05.6-Testing_for_NoSQL_Injection"},
 		},
 		Metadata: map[string]any{
+			output.MetaSignal:     output.SignalTiming,
+			metaDetection:         detectionTimeBased,
 			"baseline_ms":         baselineDuration.Milliseconds(),
 			"control_ms":          lastControl.Milliseconds(),
 			"low_sleep_ms":        timeBasedLowMs,
@@ -729,9 +745,11 @@ func (m *Module) testBooleanDiff(
 				Reference:  []string{"https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05.6-Testing_for_NoSQL_Injection"},
 			},
 			Metadata: map[string]any{
-				"true_samples":  len(trueBodies),
-				"false_samples": len(falseBodies),
-				"baseline_len":  len(baselineBody),
+				output.MetaSignal: output.SignalInband,
+				metaDetection:     detectionBooleanDiff,
+				"true_samples":    len(trueBodies),
+				"false_samples":   len(falseBodies),
+				"baseline_len":    len(baselineBody),
 			},
 		}, nil
 	}

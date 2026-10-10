@@ -1,14 +1,16 @@
 package jstangle
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vigolium/vigolium/internal/helperblob"
 )
 
 const (
@@ -19,19 +21,15 @@ const (
 	ChecksumFileName = "checksum.txt"
 )
 
-var (
-	embeddedChecksum     string
-	embeddedChecksumOnce sync.Once
-)
-
-// getEmbeddedChecksum calculates SHA256 of embeddedBinary once at runtime.
-// No hardcoded checksum needed - automatically updates when binary changes.
+// getEmbeddedChecksum returns the pinned sha256 of the uncompressed embedded
+// helper, or "" when no valid pin was embedded. The pin is written at stage
+// time (internal/tools/blobpack), so this never decompresses the blob.
 func getEmbeddedChecksum() string {
-	embeddedChecksumOnce.Do(func() {
-		hash := sha256.Sum256(embeddedBinary)
-		embeddedChecksum = hex.EncodeToString(hash[:])
-	})
-	return embeddedChecksum
+	pin, err := embeddedPin()
+	if err != nil {
+		return ""
+	}
+	return pin.SHA256
 }
 
 // Extractor handles extracting and caching the jstangle binary.
@@ -128,13 +126,24 @@ func (e *Extractor) isChecksumCurrent(checksum string) bool {
 
 // extractAndCache extracts the embedded binary to the cache directory.
 func (e *Extractor) extractAndCache() (*CachedBinary, error) {
-	binaryPath := filepath.Join(e.cacheDir, binaryName)
-
-	if err := os.WriteFile(binaryPath, embeddedBinary, 0755); err != nil {
-		return nil, fmt.Errorf("%w: write binary: %w", ErrExtractionFailed, err)
+	pin, err := embeddedPin()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrExtractionFailed, err)
+	}
+	// The pin's platform was decoded from the executable header at stage
+	// time; a foreign one means the release embedded the wrong helper.
+	if host := runtime.GOOS + "/" + runtime.GOARCH; pin.Platform != "" && pin.Platform != host {
+		return nil, fmt.Errorf("%w: embedded jstangle targets %s but this build runs on %s (packaging bug, please report)", ErrExtractionFailed, pin.Platform, host)
+	}
+	// Install decompresses into a temp file, checks the result against the
+	// pin (a mismatch is a hard error naming expected vs actual sha256) and
+	// only then renames it to binaryPath.
+	binaryPath, err := helperblob.Install(bytes.NewReader(embeddedBlob), pin, e.cacheDir, binaryName)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrExtractionFailed, err)
 	}
 
-	currentChecksum := getEmbeddedChecksum()
+	currentChecksum := pin.SHA256
 
 	checksumPath := filepath.Join(e.cacheDir, ChecksumFileName)
 	checksumData := fmt.Sprintf("%s\n%s", currentChecksum, time.Now().Format(time.RFC3339))

@@ -161,7 +161,8 @@ type Result struct {
 
 // Eligible reports whether a database-style filter can include ephemeral bridge
 // records. Risk and remark filters are database enrichments that live traffic
-// does not have, so those queries remain database-only.
+// does not have, and neither is scan provenance (--scan-uuid), so those
+// queries remain database-only.
 //
 // A --source filter naming *any* bridge vendor keeps the bridge in play rather
 // than only the one this build defaults to. Which vendor is actually listening
@@ -172,7 +173,8 @@ func Eligible(filters database.QueryFilters) bool {
 	if filters.Source != "" && !database.IsBridgeRecordSource(filters.Source) {
 		return false
 	}
-	return filters.MinRiskScore == 0 && filters.Remark == "" && len(filters.Remarks) == 0
+	return filters.MinRiskScore == 0 && filters.Remark == "" && len(filters.Remarks) == 0 &&
+		filters.ScanUUID == ""
 }
 
 // MatchesSourceFilter reports whether live records from a listener that

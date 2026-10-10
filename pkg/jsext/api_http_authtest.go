@@ -15,6 +15,7 @@ func httpAuthTestFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsHTTP, Name: "authTest",
+			Effect:   EffectNetwork,
 			Category: CatHTTP, Signature: ".authTest(opts)", Returns: "AuthTestResult[]",
 			Description: "Test authorization by replaying requests with different sessions to detect IDOR/BOLA vulnerabilities.",
 			Example:     `var results = vigolium.http.authTest({sessions: [adminSess, userSess], records: [record1, record2]})`,

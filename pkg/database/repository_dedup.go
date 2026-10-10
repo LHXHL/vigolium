@@ -105,13 +105,13 @@ func migrateFindingRecordsTx(ctx context.Context, tx bun.Tx, survivorID int64, d
 }
 
 // deleteFindingsByIDsTx deletes the findings identified by ids and their
-// finding_records junction rows inside tx, chunking the IN lists. Shared by the
-// finding-dedup passes.
+// findingChildTables rows (evidence junction, observations, status history)
+// inside tx, chunking the IN lists. Shared by the finding-dedup passes.
 func deleteFindingsByIDsTx(ctx context.Context, tx bun.Tx, ids []int64) error {
+	if err := deleteFindingChildrenTx(ctx, tx, ids); err != nil {
+		return err
+	}
 	for chunk := range slices.Chunk(ids, SQLChunkSize) {
-		if _, err := tx.NewRaw("DELETE FROM finding_records WHERE finding_id IN (?)", bun.List(chunk)).Exec(ctx); err != nil {
-			return fmt.Errorf("failed to delete finding_records: %w", err)
-		}
 		if _, err := tx.NewDelete().Model((*Finding)(nil)).Where("id IN (?)", bun.List(chunk)).Exec(ctx); err != nil {
 			return fmt.Errorf("failed to delete findings: %w", err)
 		}
@@ -702,6 +702,11 @@ func (r *Repository) DeduplicateFindings(ctx context.Context, projectUUID string
 				dupIDs[i] = d.id
 			}
 			if err := migrateFindingRecordsTx(ctx, tx, g.survivorID, dupIDs); err != nil {
+				return err
+			}
+			// Likewise their history: every scan that observed a folded
+			// duplicate observed the survivor's issue.
+			if err := migrateFindingHistoryTx(ctx, tx, g.survivorID, dupIDs); err != nil {
 				return err
 			}
 

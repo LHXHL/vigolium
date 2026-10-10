@@ -12,7 +12,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/input/formats/curl"
 	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
 	"github.com/vigolium/vigolium/pkg/input/formats/postman"
-	"github.com/vigolium/vigolium/pkg/storagesig"
 	"go.uber.org/zap"
 )
 
@@ -23,6 +22,7 @@ func ingestFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsIngest, Name: "url",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".url(url: string)", Returns: "IngestResult",
 			Description: "Ingest a single URL into the database. Fetches response if HTTP client is available.", Example: exIngestURL,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -59,6 +59,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "urls",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".urls(content: string)", Returns: "IngestBatchResult",
 			Description: "Ingest newline-separated URLs into the database.", Example: exIngestURLs,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -105,6 +106,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "curl",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".curl(command: string)", Returns: "IngestResult",
 			Description: "Parse a curl command and ingest into the database.", Example: exIngestCurl,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -141,6 +143,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "raw",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".raw(rawRequest: string, rawResponse?: string)", Returns: "IngestResult",
 			Description: "Ingest a raw HTTP request (and optional response) into the database.", Example: exIngestRaw,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -189,6 +192,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "openapi",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".openapi(spec: string, opts?: {base_url?: string})", Returns: "IngestBatchResult",
 			Description: "Parse an OpenAPI/Swagger spec and ingest all operations.", Example: exIngestOpenAPI,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -243,6 +247,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "postman",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".postman(collection: string)", Returns: "IngestBatchResult",
 			Description: "Parse a Postman collection and ingest all requests.", Example: exIngestPostman,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -310,45 +315,11 @@ func fetchResponseForIngest(rr *httpmsg.HttpRequestResponse, httpClient *http.Re
 	return rr.WithResponse(httpmsg.NewHttpResponseWithDuration(raw, elapsed))
 }
 
-// isExtIngestInScope checks whether a request/response pair should be saved.
-// Static file filtering is always enforced when a scopeMatcher is available.
-// Full scope rules are also checked when the matcher is present.
-// Returns true when scopeMatcher is nil (no scope filtering).
+// isExtIngestInScope checks whether a request/response pair should be saved:
+// static files are always filtered and the full scope rules always apply
+// (config.ScopeMatcher.AdmitIngest). A nil scopeMatcher admits everything.
 func isExtIngestInScope(scopeMatcher *config.ScopeMatcher, rr *httpmsg.HttpRequestResponse) bool {
-	if scopeMatcher == nil {
-		return true
-	}
-
-	// Always filter static files — except object-storage assets, which are kept
-	// as metadata-only (body stripped) so the CDN traversal modules can probe
-	// storage-fronted static URLs.
-	if scopeMatcher.IsStaticFile(rr.Request().Path()) {
-		var hg storagesig.HeaderGetter
-		if rr.HasResponse() && rr.Response() != nil {
-			hg = rr.Response()
-		}
-		if !storagesig.KeepStaticAsMeta(rr.Request().Path(), hg) {
-			return false
-		}
-		if rr.Response() != nil {
-			rr.Response().TruncateBody(0)
-		}
-	}
-
-	input := config.ScopeMatchInput{
-		Host:               rr.Service().Host(),
-		Path:               rr.Request().Path(),
-		RequestContentType: rr.Request().Header("Content-Type"),
-		RequestRaw:         string(rr.Request().Raw()),
-	}
-	if rr.HasResponse() {
-		resp := rr.Response()
-		input.StatusCode = resp.StatusCode()
-		input.ResponseContentType = resp.Header("Content-Type")
-		input.ResponseBody = resp.BodyToString()
-	}
-
-	return scopeMatcher.InScope(input)
+	return scopeMatcher.AdmitIngest(rr, true)
 }
 
 // ingestResultToJS creates a JS IngestResult object.

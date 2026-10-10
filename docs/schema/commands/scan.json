@@ -1,0 +1,1926 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cli.bodyViewSchema": {
+      "properties": {
+        "raw_headers": {
+          "type": "string"
+        },
+        "body_size": {
+          "type": "integer"
+        },
+        "body_size_at_least": {
+          "type": "integer"
+        },
+        "body_sha256": {
+          "type": "string"
+        },
+        "decoder_capped": {
+          "type": "boolean"
+        },
+        "decoder_limit": {
+          "type": "integer"
+        },
+        "decoder_hint": {
+          "type": "string"
+        },
+        "body_omitted": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "body_truncated": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "cli.findingViewSchema": {
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "finding_hash": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "module_name": {
+          "type": "string"
+        },
+        "module_type": {
+          "type": "string"
+        },
+        "finding_source": {
+          "type": "string"
+        },
+        "record_kind": {
+          "type": "string"
+        },
+        "evidence_grade": {
+          "type": "string"
+        },
+        "short": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "matched_at": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "extracted_results": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "additional_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cwe_id": {
+          "type": "string"
+        },
+        "cvss_score": {
+          "type": "number"
+        },
+        "remediation": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "status_note": {
+          "type": "string"
+        },
+        "status_actor": {
+          "type": "string"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "agentic_scan_uuid": {
+          "type": "string"
+        },
+        "repo_name": {
+          "type": "string"
+        },
+        "source_file": {
+          "type": "string"
+        },
+        "found_at": {
+          "type": "string"
+        },
+        "http_record_uuids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "origin_record_uuid": {
+          "type": "string"
+        },
+        "insertion_point": {
+          "$ref": "#/$defs/database.FindingInsertionPoint"
+        },
+        "payload": {
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/database.FindingVerification"
+        },
+        "verified_at": {
+          "type": "string"
+        },
+        "response_evidence": {
+          "type": "string"
+        },
+        "request": {
+          "type": "string"
+        },
+        "response": {
+          "type": "string"
+        },
+        "records": {
+          "items": {
+            "$ref": "#/$defs/cli.recordViewSchema"
+          },
+          "type": "array"
+        },
+        "records_total": {
+          "type": "integer"
+        },
+        "records_truncated": {
+          "type": "boolean"
+        },
+        "records_error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "severity",
+        "confidence",
+        "module_id",
+        "module_name",
+        "module_type",
+        "finding_source",
+        "record_kind",
+        "evidence_grade",
+        "found_at"
+      ]
+    },
+    "cli.recordViewSchema": {
+      "properties": {
+        "uuid": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "response_content_type": {
+          "type": "string"
+        },
+        "response_content_length": {
+          "type": "integer"
+        },
+        "response_time_ms": {
+          "type": "integer"
+        },
+        "response_words": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "response_title": {
+          "type": "string"
+        },
+        "ip": {
+          "type": "string"
+        },
+        "risk_score": {
+          "type": "integer"
+        },
+        "surface_score": {
+          "type": "integer"
+        },
+        "is_authenticated": {
+          "type": "boolean"
+        },
+        "a": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "aaaa": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cname": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tls": {
+          "$ref": "#/$defs/tlsprobe.Info"
+        },
+        "technology": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "remarks": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "body_compaction": {
+          "$ref": "#/$defs/database.BodyCompaction"
+        },
+        "request": {
+          "$ref": "#/$defs/cli.bodyViewSchema"
+        },
+        "response": {
+          "$ref": "#/$defs/cli.bodyViewSchema"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "uuid",
+        "method",
+        "url",
+        "host",
+        "status_code",
+        "response_content_type",
+        "response_content_length",
+        "response_time_ms",
+        "response_words",
+        "source"
+      ]
+    },
+    "cli.scanDocError": {
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "body_decode_failed",
+            "body_incomplete",
+            "body_unavailable",
+            "budget_exhausted",
+            "config_invalid",
+            "conflict",
+            "database_locked",
+            "database_unavailable",
+            "export_failed",
+            "extension_load_failed",
+            "failed",
+            "finding_not_found",
+            "forbidden",
+            "gate_tripped",
+            "ingest_incomplete",
+            "input_unparsed",
+            "internal_error",
+            "invalid_project_uuid",
+            "invalid_request",
+            "lint_failed",
+            "login_failed",
+            "method_not_allowed",
+            "no_targets_in_scope",
+            "no_targets_reachable",
+            "not_authenticated",
+            "not_found",
+            "not_ready",
+            "output_too_large",
+            "partial",
+            "payload_too_large",
+            "pdf_failed",
+            "preflight_failed",
+            "project_not_found",
+            "provider_missing",
+            "proxy_auth_required",
+            "queue_full",
+            "rate_limited",
+            "record_not_found",
+            "scan_abandoned",
+            "scan_not_found",
+            "schema_outdated",
+            "schema_too_new",
+            "service_unavailable",
+            "source_incompatible",
+            "source_missing",
+            "source_unreadable",
+            "timed_out",
+            "unauthorized",
+            "unsupported_api_version",
+            "unsupported_input_mode",
+            "usage_error",
+            "wait_timeout"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "cli.scanDocModules": {
+      "properties": {
+        "selected": {
+          "type": "integer"
+        },
+        "executed": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "selected",
+        "executed"
+      ]
+    },
+    "cli.scanDocTarget": {
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "admitted": {
+          "type": "boolean"
+        },
+        "reached": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "resolved_target": {
+          "type": "string"
+        },
+        "scheme_source": {
+          "type": "string"
+        },
+        "findings": {
+          "type": "integer"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "target",
+        "admitted",
+        "reached"
+      ]
+    },
+    "contract.GlobSkipped": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "file",
+        "error"
+      ]
+    },
+    "contract.GlobSources": {
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        },
+        "loaded": {
+          "type": "integer"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/contract.GlobSkipped"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parse_errors": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pattern",
+        "matched",
+        "loaded",
+        "skipped",
+        "parse_errors"
+      ]
+    },
+    "contract.OutputBudget": {
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "returned": {
+          "type": "integer"
+        },
+        "omitted": {
+          "type": "integer"
+        },
+        "next_offset": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_bytes",
+        "returned",
+        "omitted",
+        "next_offset"
+      ]
+    },
+    "database.BodyCompaction": {
+      "properties": {
+        "version": {
+          "type": "integer"
+        },
+        "compacted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "keep_head": {
+          "type": "integer"
+        },
+        "response": {
+          "$ref": "#/$defs/database.CompactedBody"
+        },
+        "request": {
+          "$ref": "#/$defs/database.CompactedBody"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "version",
+        "compacted_at",
+        "keep_head"
+      ]
+    },
+    "database.CompactedBody": {
+      "properties": {
+        "original_length": {
+          "type": "integer"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "kept_length": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "original_length",
+        "sha256",
+        "kept_length"
+      ]
+    },
+    "database.FindingInsertionPoint": {
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type"
+      ]
+    },
+    "database.FindingVerification": {
+      "properties": {
+        "verdict": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "module_version": {
+          "type": "string"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "verdict",
+        "at"
+      ]
+    },
+    "database.PersistenceOutcome": {
+      "properties": {
+        "writer": {
+          "type": "string"
+        },
+        "accepted": {
+          "type": "integer"
+        },
+        "committed": {
+          "type": "integer"
+        },
+        "failed": {
+          "type": "integer"
+        },
+        "unknown": {
+          "type": "integer"
+        },
+        "timed_out": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "writer",
+        "accepted",
+        "committed"
+      ]
+    },
+    "database.PhaseOutcome": {
+      "properties": {
+        "phase": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "errors": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "unprocessed": {
+          "type": "integer"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "persistence": {
+          "$ref": "#/$defs/database.PersistenceOutcome"
+        },
+        "targets": {
+          "$ref": "#/$defs/database.TargetTally"
+        },
+        "counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "budget_exhausted_hosts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "phase",
+        "state",
+        "duration_ms"
+      ]
+    },
+    "database.TargetIssue": {
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "target",
+        "code"
+      ]
+    },
+    "database.TargetTally": {
+      "properties": {
+        "requested": {
+          "type": "integer"
+        },
+        "admitted": {
+          "type": "integer"
+        },
+        "reached": {
+          "type": "integer"
+        },
+        "reachability_checked": {
+          "type": "boolean"
+        },
+        "rejected": {
+          "items": {
+            "$ref": "#/$defs/database.TargetIssue"
+          },
+          "type": "array"
+        },
+        "unreachable": {
+          "items": {
+            "$ref": "#/$defs/database.TargetIssue"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "requested",
+        "admitted",
+        "reached"
+      ]
+    },
+    "scanplan.AuthSession": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "primary": {
+          "type": "boolean"
+        },
+        "login_host": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "role",
+        "kind",
+        "primary",
+        "source"
+      ]
+    },
+    "scanplan.Budgets": {
+      "properties": {
+        "scan_max_duration_ms": {
+          "type": "integer"
+        },
+        "max_requests": {
+          "type": "integer"
+        },
+        "max_requests_per_host": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "type": "integer"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "max_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "scan_max_duration_ms",
+        "max_requests",
+        "max_requests_per_host",
+        "rate_limit",
+        "concurrency",
+        "max_per_host"
+      ]
+    },
+    "scanplan.Discovery": {
+      "properties": {
+        "wordlist_tier": {
+          "type": "string"
+        },
+        "wordlists": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Wordlist"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fuzzing": {
+          "type": "boolean"
+        },
+        "fuzzing_reason": {
+          "type": "string"
+        },
+        "recursion_enabled": {
+          "type": "boolean"
+        },
+        "recursion_max_depth": {
+          "type": "integer"
+        },
+        "target_concurrency": {
+          "type": "integer"
+        },
+        "jstangle": {
+          "$ref": "#/$defs/scanplan.JSTangle"
+        },
+        "sitemap": {
+          "$ref": "#/$defs/scanplan.Sitemap"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "wordlist_tier",
+        "wordlists",
+        "fuzzing",
+        "fuzzing_reason",
+        "recursion_enabled",
+        "recursion_max_depth",
+        "target_concurrency"
+      ]
+    },
+    "scanplan.Egress": {
+      "properties": {
+        "gated": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exempt": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.EgressExemption"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "gated",
+        "exempt"
+      ]
+    },
+    "scanplan.EgressExemption": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "reason"
+      ]
+    },
+    "scanplan.Estimate": {
+      "properties": {
+        "low": {
+          "type": "integer"
+        },
+        "high": {
+          "type": "integer"
+        },
+        "ceiling_by_pace": {
+          "type": "integer"
+        },
+        "clamped_to": {
+          "type": "integer"
+        },
+        "hits_max_requests": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "by_phase": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/scanplan.PhaseEstimate"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "low",
+        "high",
+        "by_phase",
+        "basis",
+        "confidence"
+      ]
+    },
+    "scanplan.ExtensionSelection": {
+      "properties": {
+        "active": {
+          "type": "integer"
+        },
+        "passive": {
+          "type": "integer"
+        },
+        "skipped": {
+          "type": "integer"
+        },
+        "skipped_by": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "active",
+        "passive",
+        "skipped",
+        "summary"
+      ]
+    },
+    "scanplan.Harvest": {
+      "properties": {
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_urls": {
+          "type": "integer"
+        },
+        "per_shape": {
+          "type": "integer"
+        },
+        "cdx_max_rows": {
+          "type": "integer"
+        },
+        "probe": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "sources",
+        "max_urls",
+        "per_shape",
+        "cdx_max_rows",
+        "probe"
+      ]
+    },
+    "scanplan.JSTangle": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "workers": {
+          "type": "integer"
+        },
+        "memory_budget_mb": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled",
+        "workers",
+        "memory_budget_mb"
+      ]
+    },
+    "scanplan.Modules": {
+      "properties": {
+        "active": {
+          "type": "integer"
+        },
+        "passive": {
+          "type": "integer"
+        },
+        "extensions": {
+          "type": "integer"
+        },
+        "tier_ceiling": {
+          "type": "string"
+        },
+        "tier_filtered": {
+          "type": "integer"
+        },
+        "hygiene_suppressed": {
+          "type": "integer"
+        },
+        "risk_gated": {
+          "type": "integer"
+        },
+        "risky_payloads_allowed": {
+          "type": "boolean"
+        },
+        "payloads_gated": {
+          "items": {
+            "$ref": "#/$defs/scanplan.PayloadGate"
+          },
+          "type": "array"
+        },
+        "by_scope": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extension_selection": {
+          "$ref": "#/$defs/scanplan.ExtensionSelection"
+        },
+        "ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "active",
+        "passive",
+        "extensions",
+        "tier_ceiling",
+        "tier_filtered",
+        "hygiene_suppressed",
+        "risk_gated",
+        "risky_payloads_allowed",
+        "by_scope"
+      ]
+    },
+    "scanplan.Pace": {
+      "properties": {
+        "rate_limit": {
+          "type": "integer"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "max_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "rate_limit",
+        "concurrency",
+        "max_per_host"
+      ]
+    },
+    "scanplan.ParamMining": {
+      "properties": {
+        "endpoints_per_host": {
+          "type": "integer"
+        },
+        "requests_per_endpoint": {
+          "type": "integer"
+        },
+        "workers": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "endpoints_per_host",
+        "requests_per_endpoint",
+        "workers"
+      ]
+    },
+    "scanplan.PayloadGate": {
+      "properties": {
+        "module": {
+          "type": "string"
+        },
+        "gated": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "module",
+        "gated",
+        "total",
+        "reason"
+      ]
+    },
+    "scanplan.Phase": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "disabled_by": {
+          "type": "string"
+        },
+        "sends_target_traffic": {
+          "type": "boolean"
+        },
+        "budget": {
+          "$ref": "#/$defs/scanplan.PhaseBudget"
+        },
+        "pace": {
+          "$ref": "#/$defs/scanplan.Pace"
+        },
+        "request_cap_enforcement": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "enabled",
+        "sends_target_traffic"
+      ]
+    },
+    "scanplan.PhaseBudget": {
+      "properties": {
+        "per_target_ms": {
+          "type": "integer"
+        },
+        "phase_ceiling_ms": {
+          "type": "integer"
+        },
+        "duration_factor": {
+          "type": "number"
+        },
+        "grace_ms": {
+          "type": "integer"
+        },
+        "semantics": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "semantics",
+        "source"
+      ]
+    },
+    "scanplan.PhaseEstimate": {
+      "properties": {
+        "low": {
+          "type": "integer"
+        },
+        "high": {
+          "type": "integer"
+        },
+        "ceiling_by_pace": {
+          "type": "integer"
+        },
+        "basis": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "low",
+        "high",
+        "basis"
+      ]
+    },
+    "scanplan.Plan": {
+      "properties": {
+        "schema_version": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "intensity": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "heuristics_check": {
+          "type": "string"
+        },
+        "phases": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Phase"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "budgets": {
+          "$ref": "#/$defs/scanplan.Budgets"
+        },
+        "modules": {
+          "$ref": "#/$defs/scanplan.Modules"
+        },
+        "scope": {
+          "$ref": "#/$defs/scanplan.Scope"
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.AuthSession"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targets": {
+          "$ref": "#/$defs/scanplan.Targets"
+        },
+        "discovery": {
+          "$ref": "#/$defs/scanplan.Discovery"
+        },
+        "harvest": {
+          "$ref": "#/$defs/scanplan.Harvest"
+        },
+        "param_mining": {
+          "$ref": "#/$defs/scanplan.ParamMining"
+        },
+        "egress": {
+          "$ref": "#/$defs/scanplan.Egress"
+        },
+        "estimate": {
+          "$ref": "#/$defs/scanplan.Estimate"
+        },
+        "warnings": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Warning"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema_version",
+        "strategy",
+        "heuristics_check",
+        "phases",
+        "budgets",
+        "modules",
+        "scope",
+        "auth",
+        "targets",
+        "estimate",
+        "warnings"
+      ]
+    },
+    "scanplan.Rejection": {
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "target",
+        "reason"
+      ]
+    },
+    "scanplan.Scope": {
+      "properties": {
+        "origin_mode": {
+          "type": "string"
+        },
+        "ignore_static": {
+          "type": "boolean"
+        },
+        "host_include": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_exclude": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path_include": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path_exclude": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "origin_mode",
+        "ignore_static",
+        "host_include",
+        "host_exclude",
+        "path_include",
+        "path_exclude"
+      ]
+    },
+    "scanplan.Sitemap": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_urls": {
+          "type": "integer"
+        },
+        "per_shape": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled",
+        "max_urls",
+        "per_shape"
+      ]
+    },
+    "scanplan.Targets": {
+      "properties": {
+        "seeded": {
+          "type": "integer"
+        },
+        "from_files": {
+          "type": "integer"
+        },
+        "all_records": {
+          "type": "boolean"
+        },
+        "db_records_in_scope": {
+          "type": "integer"
+        },
+        "admitted": {
+          "type": "integer"
+        },
+        "rejected": {
+          "type": "integer"
+        },
+        "rejected_sample": {
+          "items": {
+            "$ref": "#/$defs/scanplan.Rejection"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "seeded",
+        "from_files",
+        "admitted",
+        "rejected"
+      ]
+    },
+    "scanplan.Warning": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "scanplan.Wordlist": {
+      "properties": {
+        "slot": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "slot",
+        "source",
+        "name"
+      ]
+    },
+    "tlsprobe.Fingerprints": {
+      "properties": {
+        "md5": {
+          "type": "string"
+        },
+        "sha1": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "tlsprobe.Info": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "probe_status": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "tls_version": {
+          "type": "string"
+        },
+        "cipher": {
+          "type": "string"
+        },
+        "not_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "not_after": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "subject_dn": {
+          "type": "string"
+        },
+        "subject_cn": {
+          "type": "string"
+        },
+        "subject_org": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subject_an": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "serial": {
+          "type": "string"
+        },
+        "issuer_dn": {
+          "type": "string"
+        },
+        "issuer_cn": {
+          "type": "string"
+        },
+        "issuer_org": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "fingerprint_hash": {
+          "$ref": "#/$defs/tlsprobe.Fingerprints"
+        },
+        "tls_connection": {
+          "type": "string"
+        },
+        "sni": {
+          "type": "string"
+        },
+        "self_signed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "port",
+        "probe_status"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "command": {
+      "type": "string",
+      "const": "scan"
+    },
+    "kind": {
+      "type": "string",
+      "const": "scan"
+    },
+    "ok": {
+      "type": "boolean",
+      "const": true
+    },
+    "project_uuid": {
+      "type": "string"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/cli.findingViewSchema"
+      },
+      "type": "array"
+    },
+    "query": {
+      "type": "string"
+    },
+    "query_argv": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "generated_at_ms": {
+      "type": "integer"
+    },
+    "project_source": {
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "active_file",
+        "default"
+      ]
+    },
+    "project_scoped": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "glob_sources": {
+      "$ref": "#/$defs/contract.GlobSources"
+    },
+    "output_budget": {
+      "$ref": "#/$defs/contract.OutputBudget"
+    },
+    "scan_uuid": {
+      "type": "string"
+    },
+    "scan_uuids": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "persisted": {
+      "type": "boolean"
+    },
+    "stateless": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string"
+    },
+    "completeness": {
+      "type": "string"
+    },
+    "reasons": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stop_reason": {
+      "type": "string"
+    },
+    "targets": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/cli.scanDocTarget"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "targets_not_scanned": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "phase_outcomes": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/database.PhaseOutcome"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "modules": {
+      "$ref": "#/$defs/cli.scanDocModules"
+    },
+    "counts_by_severity": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "candidates": {
+      "type": "integer"
+    },
+    "observations": {
+      "type": "integer"
+    },
+    "errors": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/cli.scanDocError"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "items_truncated": {
+      "type": "boolean"
+    },
+    "plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/scanplan.Plan"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "duration_ms": {
+      "type": "integer"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "total",
+    "offset",
+    "limit",
+    "items",
+    "project_source",
+    "scan_uuids",
+    "persisted",
+    "stateless",
+    "status",
+    "completeness",
+    "reasons",
+    "targets",
+    "targets_not_scanned",
+    "phase_outcomes",
+    "modules",
+    "counts_by_severity",
+    "candidates",
+    "observations",
+    "errors",
+    "items_truncated",
+    "plan",
+    "duration_ms",
+    "started_at",
+    "finished_at",
+    "kind"
+  ],
+  "title": "vigolium scan -j",
+  "description": "The scan document: one document per invocation, items are finding views."
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/uptrace/bun"
 
 	"github.com/vigolium/vigolium/pkg/agent"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/burpbridge"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -86,7 +87,8 @@ func init() {
 	importCmd.Flags().Bool("upload", false, "Upload the local import source to cloud storage after import")
 	importCmd.Flags().String("upload-key", "", "Explicit storage key for --upload (default: imports/<basename>-<ts>.<ext>)")
 	importCmd.Flags().StringVar(&globalGlobDB, "glob-db", "", "Glob of local files to import alongside any positional paths (use one format per run), e.g. --glob-db 'prefix-*.sqlite' or '*.jsonl'")
-	importCmd.Flags().String("format", "", "Also write a report after import: html, report, pdf, markdown (md), or sarif. Mirrors `vigolium export --format`.")
+	// --format is the global flag (a local one would shadow it): here it names
+	// the report to write after the import — see importReportFormat.
 	importCmd.Flags().StringP("output", "o", "", "Report output path or gs://<project>/<key> URL (required when --format is set; supports {ts})")
 	// Report customization + finding filters — mirror `vigolium export` so a
 	// single import step can emit a fully-branded, filtered report.
@@ -100,6 +102,7 @@ func init() {
 	// path needs this value too (see importBridgeSearchTerm), and reaching for
 	// importCmd from a function runImport calls would make importCmd's own
 	// initializer cyclic.
+	registerReportFlags(importCmd.Flags())
 	importCmd.Flags().StringVar(&importSearchFilter, "search", "", "Fuzzy search filter across finding fields included in the report; under --burp-bridge-url, narrows which records are imported")
 	rootCmd.AddCommand(importCmd)
 }
@@ -131,15 +134,15 @@ func runImport(cmd *cobra.Command, args []string) error {
 	if bridgeURL != "" {
 		validated, err := burpbridge.ValidateURL(bridgeURL)
 		if err != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", err)
+			return usageErrorf("--burp-bridge-url: %w", err)
 		}
 		bridgeURL = validated
 	}
 	if bridgeURL != "" && (len(args) > 0 || globDB != "") {
-		return fmt.Errorf("--burp-bridge-url is an import source and cannot be combined with path arguments or --glob-db")
+		return usageErrorf("--burp-bridge-url is an import source and cannot be combined with path arguments or --glob-db")
 	}
 	if bridgeURL != "" && upload {
-		return fmt.Errorf("--upload and --upload-key are not applicable to a live Burp bridge import")
+		return usageErrorf("--upload and --upload-key are not applicable to a live Burp bridge import")
 	}
 
 	// Gather every import source: positional paths plus any local files matched
@@ -165,36 +168,36 @@ func runImport(cmd *cobra.Command, args []string) error {
 	// source it would clobber, so reject it up front rather than silently
 	// overwrite. Auto-generated per-source keys (empty --upload-key) are fine.
 	if uploadKey != "" && multi {
-		return fmt.Errorf("--upload-key cannot be used with multiple import sources (%d resolved); drop --upload-key to auto-generate a key per source", len(sources))
+		return usageErrorf("--upload-key cannot be used with multiple import sources (%d resolved); drop --upload-key to auto-generate a key per source", len(sources))
 	}
 
 	// Validate report flags up front so a typo fails before the import work,
 	// not after it has already mutated the database.
-	reportFormat, _ := cmd.Flags().GetString("format")
+	reportFormat := importReportFormat(cmd)
 	reportOutput, _ := cmd.Flags().GetString("output")
 	if reportFormat != "" {
 		if bridgeURL != "" {
-			return fmt.Errorf("--format is not applicable to a traffic-only Burp bridge import")
+			return usageErrorf("--format is not applicable to a traffic-only Burp bridge import")
 		}
-		if _, _, ok := reportGenerator(reportFormat); !ok {
-			return fmt.Errorf("--format %q is not a report format; use html, report, pdf, markdown, or sarif", reportFormat)
+		if _, err := output.Lookup(reportFormat, output.SurfaceImport); err != nil {
+			return usageErrorf("--format %q is not a report format; valid formats: %s",
+				reportFormat, strings.Join(output.Names(output.SurfaceImport), ", "))
+		}
+		if err := validateReportFlags(); err != nil {
+			return err
 		}
 		if reportOutput == "" {
-			return fmt.Errorf("--format %s requires -o/--output for the report path", reportFormat)
+			return usageErrorf("--format %s requires -o/--output for the report path", reportFormat)
 		}
 	}
 
-	db, err := getDB()
+	// Write intent makes the schema ready before any DB work. `import` is often
+	// the first command run against a brand-new database (e.g. a fresh --db
+	// path); an uninitialized store silently dropped the imported findings and
+	// failed any post-import report with "no such table: findings".
+	db, err := getDBFor(clicommon.IntentWrite)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-	// Ensure the schema exists before any DB work. `import` is often the first
-	// command run against a brand-new database (e.g. a fresh --db path), and
-	// unlike scan/ingest/agent it otherwise never initializes the schema — which
-	// silently drops the imported findings and fails any post-import report with
-	// "no such table: findings".
-	if err := db.CreateSchema(ctx); err != nil {
-		return fmt.Errorf("failed to create database schema: %w", err)
 	}
 	if err := db.SeedDefaults(ctx); err != nil {
 		return fmt.Errorf("failed to seed default data: %w", err)
@@ -219,7 +222,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 		client, cErr := burpbridge.New(bridgeURL)
 		if cErr != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", cErr)
+			return usageErrorf("--burp-bridge-url: %w", cErr)
 		}
 		// Count first, write second. An operator who asked for one host and is
 		// shown 12,400 records across their whole history stops here — which is
@@ -229,6 +232,11 @@ func runImport(cmd *cobra.Command, args []string) error {
 			return pErr
 		}
 		if !proceed {
+			if globalJSON {
+				// Nothing matched (or nothing was confirmed): still one document,
+				// saying no state changed, rather than an empty stdout.
+				return emitMutation(cmd, "", mutationResult{Action: "noop", Extra: map[string]any{"bridge_url": bridgeURL}})
+			}
 			return nil
 		}
 		result, err := importBurpTrafficToDB(ctx, repo, bridgeURL, query, projectUUID)
@@ -236,7 +244,15 @@ func runImport(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("import Burp traffic: %w", err)
 		}
 		if globalJSON {
-			return writeAgentJSONToStdout(burpImportResultJSON(bridgeURL, result))
+			extra, err := structFields(burpImportResultJSON(bridgeURL, result))
+			if err != nil {
+				return err
+			}
+			return emitMutation(cmd, "", mutationResult{
+				Changed: result.Inserted+result.Updated > 0,
+				Action:  "import",
+				Extra:   extra,
+			})
 		}
 		writeBurpImportResult(os.Stdout, result)
 		return nil
@@ -322,13 +338,13 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 		reportPath, err := emitImportReport(ctx, db, reportScan, reportFormat, reportOutput, opts)
 		if err != nil {
-			// errCodeExportFailed, not the inferred code: the import landed and the
+			// apicontract.CodeExportFailed, not the inferred code: the import landed and the
 			// findings are queryable; what failed is the artifact that was asked
 			// for, and a driver's correct response is to retry the report rather
 			// than the import. Left to inference, a missing parent directory wraps
 			// os.ErrNotExist and reports source_missing — which names the import
 			// source that was read successfully a moment earlier.
-			return codedErrorf(errCodeExportFailed,
+			return codedErrorf(apicontract.CodeExportFailed,
 				"import succeeded but report generation failed: %w", err)
 		}
 		if jsonOut != nil {
@@ -348,7 +364,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				// Same reasoning as the report above: the requested artifact is what
 				// failed, not the import.
-				return codedErrorf(errCodeExportFailed,
+				return codedErrorf(apicontract.CodeExportFailed,
 					"import succeeded but upload failed: %w", err)
 			}
 			uploaded = append(uploaded, url)
@@ -361,7 +377,13 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if jsonOut != nil {
-		if err := writeAgentJSONToStdout(jsonOut); err != nil {
+		// The counters stay at the top level under the names they always had;
+		// the mutation spine (changed/action) is added around them.
+		if err := emitMutation(cmd, "", mutationResult{
+			Changed: importChanged(summary),
+			Action:  "import",
+			Extra:   jsonOut,
+		}); err != nil {
 			return err
 		}
 	}
@@ -375,6 +397,31 @@ func runImport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// importReportFormat is the report --format names: the global flag, read
+// only when typed — its default ("console") is a scan output format and means
+// "no report" here. A local --format would shadow the global one, which the
+// machine contract forbids outside stream commands.
+func importReportFormat(cmd *cobra.Command) string {
+	if !flagChanged(cmd, "format") {
+		return ""
+	}
+	return strings.TrimSpace(globalFormat)
+}
+
+// importChanged reports whether an import wrote anything: a parsed source that
+// stored a record, a finding or an agentic scan row, or a merge that copied any
+// row.
+func importChanged(r *dbimport.Result) bool {
+	if r == nil {
+		return false
+	}
+	if m := r.MergeStats; m != nil {
+		return m.ProjectsMerged+m.ScansMerged+m.AgenticScansMerged+m.RecordsMerged+m.FindingsMerged+
+			m.FindingRecordsMerged+m.OASTMerged+m.ObservationsMerged+m.StatusEventsMerged > 0
+	}
+	return r.AgenticScanUUID() != "" || r.RecordsImported > 0 || r.FindingsSaved > 0
 }
 
 // importIncompleteError reports a lossy import, or nil when nothing was lost.
@@ -416,7 +463,7 @@ func gatherImportSources(args []string, globDB string) ([]string, error) {
 	if globDB != "" {
 		matches, err := filepath.Glob(expandUserHome(globDB))
 		if err != nil {
-			return nil, fmt.Errorf("invalid --glob-db pattern %q: %w", globDB, err)
+			return nil, usageErrorf("invalid --glob-db pattern %q: %w", globDB, err)
 		}
 		if len(matches) == 0 {
 			fmt.Fprintf(os.Stderr, "%s --glob-db %q matched no files\n", terminal.WarningSymbol(), globDB)
@@ -719,10 +766,11 @@ func printMergeResult(srcPath string, s *database.MergeStats) {
 // cosmetic: {ts} resolves to the current second, so a second expansion names a
 // file that does not exist.
 func emitImportReport(ctx context.Context, db *database.DB, scan *database.AgenticScan, format, outputArg string, opts importReportOpts) (string, error) {
-	gen, defaultTitle, ok := reportGenerator(format)
+	rf, ok := reportGenerator(format)
 	if !ok {
 		return "", fmt.Errorf("unsupported report format %q", format)
 	}
+	gen, defaultTitle := rf.Render, rf.DefaultTitle
 
 	dest, err := expandOutputPlaceholders(outputArg)
 	if err != nil {
@@ -791,10 +839,11 @@ func emitImportReport(ctx context.Context, db *database.DB, scan *database.Agent
 	if opts.duration != "" {
 		meta.ScanDuration = opts.duration
 	}
+	applyReportFlags(&meta, false)
 
 	if !globalJSON {
 		detail := ""
-		if format == "pdf" {
+		if rf.NeedsChrome {
 			detail = " (headless Chrome)"
 		}
 		fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(),

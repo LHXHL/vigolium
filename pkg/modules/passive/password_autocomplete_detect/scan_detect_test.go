@@ -5,23 +5,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 )
-
-// makeHTTPCtx builds a request/response pair from the given path, response
-// headers, and HTML body.
-func makeHTTPCtx(path, headers, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte("GET " + path + " HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := "HTTP/1.1 200 OK\r\n" + headers + "\r\n" + body
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -36,7 +23,7 @@ func TestScanPerRequest_PasswordNoAutocomplete(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<form action="/login"><input type="password" name="pw"></form>`
-	ctx := makeHTTPCtx("/login", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/login", "Content-Type: text/html\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -52,7 +39,7 @@ func TestScanPerRequest_AutocompleteOffIsNotProtection(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<form action="/login"><input type="password" name="pw" autocomplete="off"></form>`
-	ctx := makeHTTPCtx("/login", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/login", "Content-Type: text/html\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -66,7 +53,7 @@ func TestScanPerRequest_SemanticPasswordTokensAreAccepted(t *testing.T) {
 		`<input type="password" name="old" autocomplete="current-password webauthn">` +
 		`<input type="password" name="new" autocomplete="new-password">` +
 		`</form>`
-	ctx := makeHTTPCtx("/account", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/account", "Content-Type: text/html\r\n", body)
 	results, err := New().ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	assert.Empty(t, results)
@@ -79,7 +66,7 @@ func TestScanPerRequest_NonAccountSecretsAreIgnored(t *testing.T) {
 		`<input type="password" name="cvv" autocomplete="cc-csc">` +
 		`<input type="password" name="pin">` +
 		`</form>`
-	ctx := makeHTTPCtx("/checkout", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/checkout", "Content-Type: text/html\r\n", body)
 	results, err := New().ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	assert.Empty(t, results)
@@ -88,7 +75,7 @@ func TestScanPerRequest_NonAccountSecretsAreIgnored(t *testing.T) {
 func TestScanPerRequest_MarkupInsideScriptIsNotAnInput(t *testing.T) {
 	t.Parallel()
 	body := `<script>const example = '<input type="password" name="pw">';</script>`
-	ctx := makeHTTPCtx("/docs", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/docs", "Content-Type: text/html\r\n", body)
 	results, err := New().ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	assert.Empty(t, results)
@@ -100,7 +87,7 @@ func TestScanPerRequest_NoPasswordField(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<form action="/search"><input type="text" name="q"></form>`
-	ctx := makeHTTPCtx("/search", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/search", "Content-Type: text/html\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

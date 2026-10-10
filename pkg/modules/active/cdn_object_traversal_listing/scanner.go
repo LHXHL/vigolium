@@ -292,7 +292,7 @@ func (m *Module) buildFinding(
 		// shows the target host like every other active module, not a bare path.
 		Matched:          matchedURL,
 		Request:          string(rawReq),
-		Response:         truncate(body, maxResponseStore),
+		Response:         modkit.TruncateNoEllipsis(body, maxResponseStore),
 		FuzzingParameter: "url-path",
 		ExtractedResults: evidence,
 		Info: output.Info{
@@ -337,11 +337,4 @@ func collapsedParentPath(objPath, tok string) string {
 
 func matchesWildcard(wildcard *modkit.WildcardEntry, status int, body string) bool {
 	return wildcard.IsWildcard() && wildcard.MatchesBody(status, []byte(body))
-}
-
-func truncate(s string, max int) string {
-	if len(s) > max {
-		return s[:max]
-	}
-	return s
 }

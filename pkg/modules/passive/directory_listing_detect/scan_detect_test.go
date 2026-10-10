@@ -1,26 +1,13 @@
 package directory_listing_detect
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
-
-// makeHTTPCtx builds a 200 text/html request/response pair carrying the given body.
-func makeHTTPCtx(path, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", path))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n%s", body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -36,7 +23,7 @@ func TestScanPerRequest_ApacheListing(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<html><head><title>Index of /uploads</title></head><body><h1>Index of /uploads</h1></body></html>`
-	ctx := makeHTTPCtx("/uploads/", body)
+	ctx := modtest.HTTPCtx("/uploads/", "text/html", body)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
@@ -52,7 +39,7 @@ func TestScanPerRequest_GenericListing(t *testing.T) {
 	body := `<html><head><title>Directory listing for /files/</title></head><body>` +
 		`<h1>Directory listing for /files/</h1><hr><ul>` +
 		`<li><a href="dump.sql">dump.sql</a></li></ul><hr></body></html>`
-	ctx := makeHTTPCtx("/files/", body)
+	ctx := modtest.HTTPCtx("/files/", "text/html", body)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
@@ -62,7 +49,7 @@ func TestScanPerRequest_GenericListing(t *testing.T) {
 func TestScanPerRequest_NoListing(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("/", `<html><body>Welcome home</body></html>`)
+	ctx := modtest.HTTPCtx("/", "text/html", `<html><body>Welcome home</body></html>`)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	assert.Empty(t, results)
@@ -78,7 +65,7 @@ func TestScanPerRequest_ContentPageTitledDirectoryOfNoFinding(t *testing.T) {
 	body := `<html><head><title>Directory of Physicians</title></head><body>` +
 		`<h1>Find a Doctor</h1><ul><li><a href="/doctor/jane-roe">Jane Roe</a></li>` +
 		`<li><a href="/doctor/john-doe">John Doe</a></li></ul></body></html>`
-	ctx := makeHTTPCtx("/physicians/", body)
+	ctx := modtest.HTTPCtx("/physicians/", "text/html", body)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	assert.Empty(t, results, `a content page titled "Directory of X" without listing structure is not an autoindex`)
@@ -94,7 +81,7 @@ func TestScanPerRequest_AppPageNoFinding(t *testing.T) {
 		`<meta property="og:title" content="Index of Publications">` +
 		`<title>Index of Publications</title></head><body>` +
 		`<h1>Index of Publications</h1><hr><ul><li><a href="/pub/1">One</a></li></ul></body></html>`
-	ctx := makeHTTPCtx("/publications/", body)
+	ctx := modtest.HTTPCtx("/publications/", "text/html", body)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	assert.Empty(t, results, "a rendered app/CMS page is not an autoindex even with a listing-shaped title")

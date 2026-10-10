@@ -1,0 +1,2 @@
+{"swagger":"2.0","info":{"title":"fixture","version":"1"},"host":"example.test","schemes":["https"],
+ "paths":{"/pets":{"get":{"responses":{"200":{"description":"ok"}}}}}}

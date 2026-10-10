@@ -21,8 +21,13 @@ func (p *Page) GetEventListeners(selector string) (map[string]interface{}, error
 		})()
 	`, selector)
 
+	ctxID, err := p.evalContextID()
+	if err != nil {
+		return nil, err
+	}
 	result, err := proto.RuntimeEvaluate{
 		Expression:            script,
+		ContextID:             ctxID,
 		IncludeCommandLineAPI: true,
 		ReturnByValue:         true,
 	}.Call(p.boundedPage(0))
@@ -90,8 +95,13 @@ func (p *Page) GetAllEventListeners(xpaths []string) ([]ElementListeners, error)
 		})()
 	`, xpathsJS)
 
+	ctxID, err := p.evalContextID()
+	if err != nil {
+		return nil, err
+	}
 	result, err := proto.RuntimeEvaluate{
 		Expression:            script,
+		ContextID:             ctxID,
 		IncludeCommandLineAPI: true,
 		ReturnByValue:         true,
 	}.Call(p.boundedPage(0))

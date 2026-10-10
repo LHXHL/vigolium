@@ -1,0 +1,751 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cli.bodyViewSchema": {
+      "properties": {
+        "raw_headers": {
+          "type": "string"
+        },
+        "body_size": {
+          "type": "integer"
+        },
+        "body_size_at_least": {
+          "type": "integer"
+        },
+        "body_sha256": {
+          "type": "string"
+        },
+        "decoder_capped": {
+          "type": "boolean"
+        },
+        "decoder_limit": {
+          "type": "integer"
+        },
+        "decoder_hint": {
+          "type": "string"
+        },
+        "body_omitted": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "body_truncated": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "cli.recordViewSchema": {
+      "properties": {
+        "uuid": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "response_content_type": {
+          "type": "string"
+        },
+        "response_content_length": {
+          "type": "integer"
+        },
+        "response_time_ms": {
+          "type": "integer"
+        },
+        "response_words": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "response_title": {
+          "type": "string"
+        },
+        "ip": {
+          "type": "string"
+        },
+        "risk_score": {
+          "type": "integer"
+        },
+        "surface_score": {
+          "type": "integer"
+        },
+        "is_authenticated": {
+          "type": "boolean"
+        },
+        "a": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "aaaa": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cname": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tls": {
+          "$ref": "#/$defs/tlsprobe.Info"
+        },
+        "technology": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "remarks": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "body_compaction": {
+          "$ref": "#/$defs/database.BodyCompaction"
+        },
+        "request": {
+          "$ref": "#/$defs/cli.bodyViewSchema"
+        },
+        "response": {
+          "$ref": "#/$defs/cli.bodyViewSchema"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "uuid",
+        "method",
+        "url",
+        "host",
+        "status_code",
+        "response_content_type",
+        "response_content_length",
+        "response_time_ms",
+        "response_words",
+        "source"
+      ]
+    },
+    "cli.scanDiffItemSchema": {
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "finding_hash": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "module_name": {
+          "type": "string"
+        },
+        "module_type": {
+          "type": "string"
+        },
+        "finding_source": {
+          "type": "string"
+        },
+        "record_kind": {
+          "type": "string"
+        },
+        "evidence_grade": {
+          "type": "string"
+        },
+        "short": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "matched_at": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "extracted_results": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "additional_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cwe_id": {
+          "type": "string"
+        },
+        "cvss_score": {
+          "type": "number"
+        },
+        "remediation": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "status_note": {
+          "type": "string"
+        },
+        "status_actor": {
+          "type": "string"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "agentic_scan_uuid": {
+          "type": "string"
+        },
+        "repo_name": {
+          "type": "string"
+        },
+        "source_file": {
+          "type": "string"
+        },
+        "found_at": {
+          "type": "string"
+        },
+        "http_record_uuids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "origin_record_uuid": {
+          "type": "string"
+        },
+        "insertion_point": {
+          "$ref": "#/$defs/database.FindingInsertionPoint"
+        },
+        "payload": {
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/database.FindingVerification"
+        },
+        "verified_at": {
+          "type": "string"
+        },
+        "response_evidence": {
+          "type": "string"
+        },
+        "request": {
+          "type": "string"
+        },
+        "response": {
+          "type": "string"
+        },
+        "records": {
+          "items": {
+            "$ref": "#/$defs/cli.recordViewSchema"
+          },
+          "type": "array"
+        },
+        "records_total": {
+          "type": "integer"
+        },
+        "records_truncated": {
+          "type": "boolean"
+        },
+        "records_error": {
+          "type": "string"
+        },
+        "change": {
+          "type": "string"
+        },
+        "first_seen_scan": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "severity",
+        "confidence",
+        "module_id",
+        "module_name",
+        "module_type",
+        "finding_source",
+        "record_kind",
+        "evidence_grade",
+        "found_at",
+        "change"
+      ]
+    },
+    "cli.scanDiffSideView": {
+      "properties": {
+        "uuid": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "completeness": {
+          "type": "string"
+        },
+        "finished_at": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "uuid",
+        "status",
+        "target",
+        "started_at"
+      ]
+    },
+    "contract.GlobSkipped": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "file",
+        "error"
+      ]
+    },
+    "contract.GlobSources": {
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        },
+        "loaded": {
+          "type": "integer"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/contract.GlobSkipped"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parse_errors": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pattern",
+        "matched",
+        "loaded",
+        "skipped",
+        "parse_errors"
+      ]
+    },
+    "contract.OutputBudget": {
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "returned": {
+          "type": "integer"
+        },
+        "omitted": {
+          "type": "integer"
+        },
+        "next_offset": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_bytes",
+        "returned",
+        "omitted",
+        "next_offset"
+      ]
+    },
+    "database.BodyCompaction": {
+      "properties": {
+        "version": {
+          "type": "integer"
+        },
+        "compacted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "keep_head": {
+          "type": "integer"
+        },
+        "response": {
+          "$ref": "#/$defs/database.CompactedBody"
+        },
+        "request": {
+          "$ref": "#/$defs/database.CompactedBody"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "version",
+        "compacted_at",
+        "keep_head"
+      ]
+    },
+    "database.CompactedBody": {
+      "properties": {
+        "original_length": {
+          "type": "integer"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "kept_length": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "original_length",
+        "sha256",
+        "kept_length"
+      ]
+    },
+    "database.FindingInsertionPoint": {
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type"
+      ]
+    },
+    "database.FindingVerification": {
+      "properties": {
+        "verdict": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "module_version": {
+          "type": "string"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "verdict",
+        "at"
+      ]
+    },
+    "tlsprobe.Fingerprints": {
+      "properties": {
+        "md5": {
+          "type": "string"
+        },
+        "sha1": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "tlsprobe.Info": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "probe_status": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "tls_version": {
+          "type": "string"
+        },
+        "cipher": {
+          "type": "string"
+        },
+        "not_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "not_after": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "subject_dn": {
+          "type": "string"
+        },
+        "subject_cn": {
+          "type": "string"
+        },
+        "subject_org": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subject_an": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "serial": {
+          "type": "string"
+        },
+        "issuer_dn": {
+          "type": "string"
+        },
+        "issuer_cn": {
+          "type": "string"
+        },
+        "issuer_org": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "fingerprint_hash": {
+          "$ref": "#/$defs/tlsprobe.Fingerprints"
+        },
+        "tls_connection": {
+          "type": "string"
+        },
+        "sni": {
+          "type": "string"
+        },
+        "self_signed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "port",
+        "probe_status"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "command": {
+      "type": "string",
+      "const": "scan diff"
+    },
+    "kind": {
+      "type": "string",
+      "const": "read"
+    },
+    "ok": {
+      "type": "boolean",
+      "const": true
+    },
+    "project_uuid": {
+      "type": "string"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/cli.scanDiffItemSchema"
+      },
+      "type": "array"
+    },
+    "query": {
+      "type": "string"
+    },
+    "query_argv": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "generated_at_ms": {
+      "type": "integer"
+    },
+    "project_source": {
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "active_file",
+        "default"
+      ]
+    },
+    "project_scoped": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "glob_sources": {
+      "$ref": "#/$defs/contract.GlobSources"
+    },
+    "output_budget": {
+      "$ref": "#/$defs/contract.OutputBudget"
+    },
+    "base": {
+      "$ref": "#/$defs/cli.scanDiffSideView"
+    },
+    "head": {
+      "$ref": "#/$defs/cli.scanDiffSideView"
+    },
+    "comparable": {
+      "type": "boolean"
+    },
+    "comparability_reasons": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "history": {
+      "type": "string"
+    },
+    "counts": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "include_dismissed": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "total",
+    "offset",
+    "limit",
+    "items",
+    "project_source",
+    "base",
+    "head",
+    "comparable",
+    "comparability_reasons",
+    "history",
+    "counts",
+    "include_dismissed",
+    "kind"
+  ],
+  "title": "vigolium scan diff -j",
+  "description": "Findings classified new / unchanged / fixed / not_reobserved between two scans."
+}

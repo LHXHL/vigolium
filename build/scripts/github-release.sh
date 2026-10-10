@@ -65,9 +65,13 @@ awk -v ver="$VERSION" '
 artifacts=()
 while IFS= read -r f; do artifacts+=("$f"); done < <(
   ls "$PUBLIC_DIST_DIR"/*.tar.gz "$PUBLIC_DIST_DIR"/*.zip \
-     "$PUBLIC_DIST_DIR"/checksums.txt "$PUBLIC_DIST_DIR"/metadata.json 2>/dev/null
+     "$PUBLIC_DIST_DIR"/checksums.txt "$PUBLIC_DIST_DIR"/checksums.txt.minisig \
+     "$PUBLIC_DIST_DIR"/metadata.json 2>/dev/null
 )
 [ "${#artifacts[@]}" -gt 0 ] || die "no artifacts in $PUBLIC_DIST_DIR/ — run 'make public-release' first"
+# `vigolium update` refuses an unsigned release, so the signature is as
+# load-bearing as the checksums it covers (make release-sign writes it).
+[ -s "$PUBLIC_DIST_DIR/checksums.txt.minisig" ] || die "missing $PUBLIC_DIST_DIR/checksums.txt.minisig — run 'make release-sign DIST=$PUBLIC_DIST_DIR'"
 
 # checksums.txt is generated from every archive `make public-release` built, so
 # it is the authority on what this release is supposed to carry. Cross-checking

@@ -105,6 +105,30 @@ type BodyDifferentialConfirmable interface {
 	ConfirmsByBodyDifferential() bool
 }
 
+// ResultDifferentialConfirmable is the per-result form of
+// BodyDifferentialConfirmable, for modules that mix an in-band leg with OAST or
+// timing legs. The executor consults it only when the module-level interface
+// is absent or returns false, and re-confirms the result by body differential
+// only when it returns true. Implementations return true for in-band results
+// (typically result.Signal() == output.SignalInband) and false for results
+// whose proof is a callback or a delay, which a replay cannot show.
+type ResultDifferentialConfirmable interface {
+	ConfirmsResultByBodyDifferential(result *output.ResultEvent) bool
+}
+
+// ConfirmsByBodyDifferential reports whether m's result should go through the
+// executor's body-differential re-confirmation: the module-level opt-in first,
+// then the per-result one.
+func ConfirmsByBodyDifferential(m Module, result *output.ResultEvent) bool {
+	if c, ok := m.(BodyDifferentialConfirmable); ok && c.ConfirmsByBodyDifferential() {
+		return true
+	}
+	if c, ok := m.(ResultDifferentialConfirmable); ok && result != nil {
+		return c.ConfirmsResultByBodyDifferential(result)
+	}
+	return false
+}
+
 // TechAware is an optional interface for modules that only make sense against
 // certain technology stacks. Implement it on framework-specific modules
 // (e.g. Spring, Rails, Django) to skip them on incompatible targets.

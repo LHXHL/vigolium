@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/uptrace/bun"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -32,7 +33,7 @@ func resetFailOnGate() error {
 	}
 	scanFailOn = strings.ToLower(strings.TrimSpace(scanFailOn))
 	if severitiesAtOrAbove(scanFailOn) == nil {
-		return fmt.Errorf("invalid --fail-on %q (want one of: %s)", scanFailOn, strings.Join(severityOrder, ", "))
+		return usageErrorf("invalid --fail-on %q (want one of: %s)", scanFailOn, strings.Join(severityOrder, ", "))
 	}
 	return nil
 }
@@ -40,6 +41,11 @@ func resetFailOnGate() error {
 // evaluateFailOnGate (DB path) counts findings at or above the threshold for the
 // completed scan, scoped to scanUUID when known (precise even on a shared DB)
 // and otherwise to the project. Used by the full native-scan pipeline.
+//
+// Findings an operator or agent dismissed (`finding mark --as false_positive`
+// or accepted_risk) do not count: a re-detection keeps its verdict, and a CI
+// gate that keeps failing on a finding someone already ruled out teaches people
+// to ignore the gate.
 func evaluateFailOnGate(repo *database.Repository, projectUUID, scanUUID string, silent bool) {
 	if scanFailOn == "" || repo == nil {
 		return
@@ -49,9 +55,10 @@ func evaluateFailOnGate(repo *database.Repository, projectUUID, scanUUID string,
 		return
 	}
 	n, err := database.NewFindingsQueryBuilder(repo.DB(), database.QueryFilters{
-		ProjectUUID: projectUUID,
-		ScanUUID:    scanUUID,
-		Severity:    wanted,
+		ProjectUUID:     projectUUID,
+		ScanUUID:        scanUUID,
+		Severity:        wanted,
+		ExcludeStatuses: database.DismissedFindingStatuses,
 	}).Count(context.Background())
 	if err != nil || n == 0 {
 		return
@@ -81,6 +88,44 @@ func failOnGateFromEvents(findings []*output.ResultEvent, silent bool) {
 	}
 }
 
+// withoutDismissed drops the events whose stored finding carries a dismissed
+// verdict, so the in-memory gate agrees with the DB gate: a re-detection of a
+// finding marked false_positive/accepted_risk keeps its verdict and does not
+// trip --fail-on. With no store (or a failed lookup) the events pass through
+// unchanged — the gate errs toward failing, never toward a silent pass.
+func withoutDismissed(ctx context.Context, repo *database.Repository, projectUUID string, events []*output.ResultEvent) []*output.ResultEvent {
+	if scanFailOn == "" || repo == nil || len(events) == 0 {
+		return events
+	}
+	hashes := make([]string, 0, len(events))
+	for _, e := range events {
+		if e != nil {
+			hashes = append(hashes, e.ID())
+		}
+	}
+	var dismissed []string
+	q := repo.DB().NewSelect().Model((*database.Finding)(nil)).Column("finding_hash").
+		Where("finding_hash IN (?)", bun.List(hashes)).
+		Where("status IN (?)", bun.List(database.DismissedFindingStatuses))
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
+	if err := q.Scan(ctx, &dismissed); err != nil || len(dismissed) == 0 {
+		return events
+	}
+	skip := make(map[string]bool, len(dismissed))
+	for _, h := range dismissed {
+		skip[h] = true
+	}
+	kept := make([]*output.ResultEvent, 0, len(events))
+	for _, e := range events {
+		if e != nil && !skip[e.ID()] {
+			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
 func markFailOnTriggered(n int, silent bool) {
 	failOnGateTriggered = true
 	if !silent {
@@ -99,6 +144,7 @@ func markFailOnTriggered(n int, silent bool) {
 // ignores real breakage or treats every finding as an outage.
 func failOnGateError() error {
 	if failOnGateTriggered {
+		//vigolium:not-usage gate result (exit 4), not a usage error
 		return gateError{err: fmt.Errorf("--fail-on %s: matching findings were found", scanFailOn)}
 	}
 	return nil

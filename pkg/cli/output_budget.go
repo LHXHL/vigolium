@@ -1,6 +1,10 @@
 package cli
 
-import "github.com/spf13/pflag"
+import (
+	"github.com/spf13/pflag"
+
+	"github.com/vigolium/vigolium/pkg/apicontract"
+)
 
 // --max-output-bytes caps the size of a -j result document.
 //
@@ -138,7 +142,7 @@ func applyOutputBudget(v any, budget int) ([]byte, error) {
 	}
 	if !empty {
 		restore()
-		return nil, codedErrorf(errCodeOutputTooLarge,
+		return nil, codedErrorf(apicontract.CodeOutputTooLarge,
 			"result metadata alone exceeds --max-output-bytes %d; raise the budget or narrow the result with --fields/--compact",
 			budget)
 	}

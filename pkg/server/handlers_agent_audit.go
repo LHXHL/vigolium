@@ -86,15 +86,11 @@ func (h *Handlers) resolveBYOKForAudit(byok AgentBYOK, agentPlatform string) (ag
 func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 	var req AgentAuditRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	if strings.TrimSpace(req.Source) == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "source is required (local path or git URL)",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "source is required (local path or git URL)")
 	}
 
 	driver := strings.TrimSpace(req.Driver)
@@ -102,16 +98,12 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 		driver = agent.AuditDriverAuto
 	}
 	if !agent.IsValidAuditDriver(driver) {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: fmt.Sprintf("invalid driver %q: must be auto, both, audit, or piolium", driver),
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("invalid driver %q: must be auto, both, audit, or piolium", driver))
 	}
 
 	intensity, err := agent.ValidateIntensity(req.Intensity)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 	explicitMode := strings.TrimSpace(req.Mode)
 	explicitTimeout := strings.TrimSpace(req.Timeout)
@@ -132,7 +124,7 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 	auditChain, pioliumModes, err := agent.ValidateAuditDriverModes(
 		driver, modeChain, piolium.IsValidMode, agent.IsValidAuditDriverMode)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	// Per-driver availability probe. For single-driver runs we 503 when the
@@ -146,24 +138,18 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 	if agent.DriverIncludesAudit(driver) {
 		platform := h.auditPlatformForReq(&req)
 		if !agent.IsValidAuditDriverPlatform(platform) {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: fmt.Sprintf("invalid audit platform %q: must be claude or codex", platform),
-			})
+			return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("invalid audit platform %q: must be claude or codex", platform))
 		}
 	}
 
 	switch driver {
 	case agent.AuditDriverPiolium:
 		if !pioliumOK {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-				Error: "pi CLI not found in server PATH (install: https://www.npmjs.com/package/@earendil-works/pi-coding-agent), or piolium is not registered in ~/.pi/agent/settings.json",
-			})
+			return respondErrorMsg(c, fiber.StatusServiceUnavailable, "pi CLI not found in server PATH (install: https://www.npmjs.com/package/@earendil-works/pi-coding-agent), or piolium is not registered in ~/.pi/agent/settings.json")
 		}
 	case agent.AuditDriverAudit:
 		if !auditOK {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-				Error: auditReason,
-			})
+			return respondErrorMsg(c, fiber.StatusServiceUnavailable, auditReason)
 		}
 	case agent.AuditDriverBoth, agent.AuditDriverAuto:
 		// Never block a multi-driver run on a single missing runtime — the
@@ -198,7 +184,7 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 	// kick off any subprocess work.
 	authOverride, byokCleanup, err := h.resolveAuditRequestAuthOverride(&req)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error()})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 	cleanups := []func(){byokCleanup}
 	chainedCleanup := func() {
@@ -225,7 +211,7 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 		if req.AuditDriverAuth != nil && !req.AuditDriverAuth.IsZero() {
 			ov, cl, perr := h.resolveBYOKForAudit(*req.AuditDriverAuth, h.auditPlatformForReq(&req))
 			if perr != nil {
-				return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "audit_auth: " + perr.Error()})
+				return respondError(c, fiber.StatusBadRequest, fmt.Errorf("audit_auth: %w", perr))
 			}
 			auditOverride = ov
 			cleanups = append(cleanups, cl)
@@ -233,7 +219,7 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 		if req.PioliumAuth != nil && !req.PioliumAuth.IsZero() {
 			ov, cl, perr := h.resolveBYOKForAudit(*req.PioliumAuth, h.auditPlatformForReq(&req))
 			if perr != nil {
-				return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "piolium_auth: " + perr.Error()})
+				return respondError(c, fiber.StatusBadRequest, fmt.Errorf("piolium_auth: %w", perr))
 			}
 			pioliumOverride = ov
 			cleanups = append(cleanups, cl)
@@ -242,14 +228,10 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 		// Reject per-driver overrides on single-driver runs — the top-level
 		// AgentBYOK already targets the one driver that runs.
 		if req.AuditDriverAuth != nil && !req.AuditDriverAuth.IsZero() {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "audit_auth is only valid with driver=both or driver=auto; use the top-level api_key/oauth_token/oauth_cred_json fields instead",
-			})
+			return respondErrorMsg(c, fiber.StatusBadRequest, "audit_auth is only valid with driver=both or driver=auto; use the top-level api_key/oauth_token/oauth_cred_json fields instead")
 		}
 		if req.PioliumAuth != nil && !req.PioliumAuth.IsZero() {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "piolium_auth is only valid with driver=both or driver=auto; use the top-level api_key/oauth_token/oauth_cred_json fields instead",
-			})
+			return respondErrorMsg(c, fiber.StatusBadRequest, "piolium_auth is only valid with driver=both or driver=auto; use the top-level api_key/oauth_token/oauth_cred_json fields instead")
 		}
 	}
 
@@ -262,9 +244,7 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 	if agent.DriverIncludesAudit(driver) {
 		inv := h.resolveAuditInvocation(req.Agent, auditOverride)
 		if err := agent.ValidateAuditDriverInvocation(inv); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "audit agent/auth mismatch: " + err.Error(),
-			})
+			return respondError(c, fiber.StatusBadRequest, fmt.Errorf("audit agent/auth mismatch: %w", err))
 		}
 	}
 
@@ -277,7 +257,7 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 	case agent.AuditDriverAudit:
 		plan, err := h.buildAuditDriverPlan(req, auditChain, preset, auditOverride)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: err.Error()})
+			return respondError(c, fiber.StatusInternalServerError, err)
 		}
 		plan.authCleanup = chainedCleanup
 		dispatched = true
@@ -290,9 +270,7 @@ func (h *Handlers) HandleAgentAudit(c fiber.Ctx) error {
 	// exhaustive over the constants. Return a 500 rather than panicking so a
 	// future driver added to the constants but missed here degrades into an
 	// error response instead of crashing the request goroutine.
-	return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-		Error: "audit dispatcher: unhandled driver " + driver,
-	})
+	return respondErrorMsg(c, fiber.StatusInternalServerError, "audit dispatcher: unhandled driver "+driver)
 }
 
 func (h *Handlers) buildPioliumAuditPlan(req AgentAuditRequest, modes []string, preset agent.AuditDriverIntensityPreset, additionalArgs []string, authOverride agent.AuthOverride) auditRunPlan {

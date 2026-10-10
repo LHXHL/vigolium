@@ -1,0 +1,1 @@
+curl 'https://example.test/login' -X POST --data 'u=a&p=b'

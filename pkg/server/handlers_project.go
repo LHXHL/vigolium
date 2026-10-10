@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -11,19 +12,13 @@ import (
 // HandleListProjects handles GET /api/projects
 func (h *Handlers) HandleListProjects(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	ownerUUID := c.Query("owner")
 	projects, err := h.repo.ListProjects(c.Context(), ownerUUID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "query failed: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("query failed: %w", err))
 	}
 
 	// Bulk-fetch stats for all projects
@@ -39,31 +34,22 @@ func (h *Handlers) HandleListProjects(c fiber.Ctx) error {
 		result = append(result, ProjectWithStats{Project: p, Stats: ps})
 	}
 
-	return c.JSON(result)
+	return respondBespokeList(c, result, PaginatedResponse{Data: result, Total: int64(len(result))}, nil)
 }
 
 // HandleCreateProject handles POST /api/projects
 func (h *Handlers) HandleCreateProject(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	var req ProjectRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	if req.Name == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "name is required",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	// Honor a client-supplied UUID when present so the cloud console can
@@ -73,10 +59,7 @@ func (h *Handlers) HandleCreateProject(c fiber.Ctx) error {
 	if projectUUID == "" {
 		projectUUID = uuid.NewString()
 	} else if _, err := uuid.Parse(projectUUID); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "uuid is not a valid UUID",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "uuid is not a valid UUID")
 	} else if existing, err := h.repo.GetProjectByUUID(c.Context(), projectUUID); err == nil && existing.UUID != "" {
 		// Idempotent: if the row already exists with this UUID, return it as-is.
 		// This makes the eager-ensure flow safe to retry on the cloud side.
@@ -94,10 +77,7 @@ func (h *Handlers) HandleCreateProject(c fiber.Ctx) error {
 	}
 
 	if err := h.repo.CreateProject(c.Context(), project); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to create project: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to create project: %w", err))
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(project)
@@ -106,19 +86,13 @@ func (h *Handlers) HandleCreateProject(c fiber.Ctx) error {
 // HandleGetProject handles GET /api/projects/:uuid
 func (h *Handlers) HandleGetProject(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	projectUUID := c.Params("uuid")
 	project, err := h.repo.GetProjectByUUID(c.Context(), projectUUID)
 	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: "project not found",
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrProjectNotFound)
 	}
 
 	statsRow, err := h.repo.GetProjectStats(c.Context(), projectUUID)
@@ -137,18 +111,12 @@ func (h *Handlers) HandleGetProject(c fiber.Ctx) error {
 // needs to refresh stats independently of the project record.
 func (h *Handlers) HandleGetProjectStats(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	projectUUID := c.Params("uuid")
 	if _, err := h.repo.GetProjectByUUID(c.Context(), projectUUID); err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: "project not found",
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrProjectNotFound)
 	}
 
 	statsRow, err := h.repo.GetProjectStats(c.Context(), projectUUID)
@@ -162,27 +130,18 @@ func (h *Handlers) HandleGetProjectStats(c fiber.Ctx) error {
 // HandleUpdateProject handles PUT /api/projects/:uuid
 func (h *Handlers) HandleUpdateProject(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	projectUUID := c.Params("uuid")
 	project, err := h.repo.GetProjectByUUID(c.Context(), projectUUID)
 	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: "project not found",
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrProjectNotFound)
 	}
 
 	var req ProjectRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	if req.Name != "" {
@@ -197,10 +156,7 @@ func (h *Handlers) HandleUpdateProject(c fiber.Ctx) error {
 	project.UpdatedAt = time.Now()
 
 	if err := h.repo.UpdateProject(c.Context(), project); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to update project: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to update project: %w", err))
 	}
 
 	return c.JSON(project)
@@ -236,34 +192,22 @@ func buildProjectStats(row *database.ProjectStatsRow) ProjectStats {
 // HandleDeleteProject handles DELETE /api/projects/:uuid
 func (h *Handlers) HandleDeleteProject(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	projectUUID := c.Params("uuid")
 
 	if projectUUID == database.DefaultProjectUUID {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "cannot delete the default project",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "cannot delete the default project")
 	}
 
 	// Reassign all data from this project to the default project before deletion
 	if err := h.repo.ReassignProjectData(c.Context(), projectUUID, database.DefaultProjectUUID); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to reassign project data: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to reassign project data: %w", err))
 	}
 
 	if err := h.repo.DeleteProject(c.Context(), projectUUID); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to delete project: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to delete project: %w", err))
 	}
 
 	return c.JSON(fiber.Map{"message": "project deleted", "uuid": projectUUID})

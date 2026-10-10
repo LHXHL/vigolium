@@ -102,6 +102,32 @@ func IsBlockedResponse(resp *httputil.ResponseChain) bool {
 	return false
 }
 
+// IsBlockedOrThrottled reports whether resp came from a rate limiter or a
+// WAF/CDN edge rather than the application: the vendor-aware block detector
+// (Cloudflare, Akamai, CloudFront, Incapsula, AWS ELB) plus the throttling and
+// edge-block statuses 408, 425, 429 and 451. Such a response never exercised the
+// route, so its body (often an error page reflecting the requested path) cannot
+// confirm exposure.
+//
+// Unlike IsBlockedResponse it does not treat 401/403/503 as blocked, so modules
+// whose signal can legitimately be an auth wall keep seeing those responses.
+func IsBlockedOrThrottled(resp *httputil.ResponseChain) bool {
+	if resp == nil || resp.Response() == nil {
+		return false
+	}
+	if GetBlockDetectionValidator().Validate(resp) != nil {
+		return true
+	}
+	switch resp.Response().StatusCode {
+	case 408, // request timeout
+		425, // too early
+		429, // too many requests
+		451: // unavailable for legal reasons (edge block)
+		return true
+	}
+	return false
+}
+
 // IsErrorSurfaceStatus reports whether resp's status is one an application could
 // plausibly use to surface a server-side leak (a DBMS/driver error string, a
 // reflected file's contents, a stack trace, an injected marker). A genuine leak

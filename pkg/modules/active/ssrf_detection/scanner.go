@@ -123,6 +123,13 @@ func New() *Module {
 	return m
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any ssrf module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassSSRF }
+
+// ClassPriority orders this module within its vuln class (lower runs first).
+func (m *Module) ClassPriority() int { return modkit.ClassCostInBand }
+
 // ScanPerInsertionPoint tests a single insertion point for SSRF.
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,
@@ -147,7 +154,7 @@ func (m *Module) ScanPerInsertionPoint(
 
 	// Only test parameters that look like they might accept URLs
 	baseVal := ip.BaseValue()
-	if !looksLikeURLParam(ip.Name(), baseVal) {
+	if !looksLikeURLParam(ip.Type(), ip.Name(), baseVal) {
 		return nil, nil
 	}
 
@@ -180,7 +187,7 @@ func (m *Module) ScanPerInsertionPoint(
 		// motivating false positive: a scan hammered a host into a 429 whose HTML
 		// error page carried `<html`, absent from the (redirect) baseline, and was
 		// reported as IPv6-loopback SSRF. Never read such a response as SSRF signal.
-		if isBlockedResponse(resp) {
+		if infra.IsBlockedResponse(resp) {
 			resp.Close()
 			continue
 		}
@@ -417,18 +424,7 @@ func (m *Module) fetchBody(ctx *httpmsg.HttpRequestResponse, httpClient *http.Re
 	defer resp.Close()
 	// Capture before Close: FullResponseString() reads pooled buffers Close() returns.
 	ev.Add(label, string(raw), resp.FullResponseString())
-	return resp.Body().String(), isBlockedResponse(resp), true
-}
-
-// isBlockedResponse reports whether resp is a WAF/CDN challenge, auth gate, rate
-// limiter, or maintenance page rather than genuine application traffic. Such
-// pages carry generic HTML that trips the deliberately-broad SSRF markers
-// (`<html`, `<!DOCTYPE`, `localhost`), so they must never be read as evidence of
-// SSRF. It combines the vendor-aware block detector (Cloudflare, Akamai,
-// Incapsula, …) with a plain status gate that also catches generic WAFs the
-// detector does not recognize.
-func isBlockedResponse(resp *httputil.ResponseChain) bool {
-	return infra.IsBlockedResponse(resp)
+	return resp.Body().String(), infra.IsBlockedResponse(resp), true
 }
 
 // looksLikeURLParam reports whether a parameter looks like a URL sink. It delegates
@@ -436,8 +432,8 @@ func isBlockedResponse(resp *httputil.ResponseChain) bool {
 // Origin / Upgrade-Insecure-Requests / … are never fetch sinks, whatever their
 // URL-like name or value — the fcworkflow.acme.com false positives) stays
 // consistent across the SSRF family.
-func looksLikeURLParam(name, value string) bool {
-	return infra.LooksLikeURLParam(name, value)
+func looksLikeURLParam(typ httpmsg.InsertionPointType, name, value string) bool {
+	return infra.LooksLikeURLParamAt(typ, name, value)
 }
 
 // benignSiblingURL is a structurally-identical absolute URL (RFC 5737 TEST-NET-1

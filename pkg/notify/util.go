@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // SanitizeFilename replaces invalid filename characters with underscores.
@@ -26,18 +28,17 @@ func GenerateFilename(moduleID, host, ext string) string {
 	)
 }
 
-// Truncate truncates a string to maxLen with ellipsis "...".
+// Truncate truncates a string to maxLen bytes with ellipsis "...", never
+// splitting a UTF-8 sequence (chat APIs reject invalid UTF-8).
 func Truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	if maxLen <= 3 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-3] + "..."
+	return textutil.TruncateUTF8Ellipsis(s, maxLen, "...")
 }
 
-// TruncateWithIndicator truncates a string and adds "[see attachment]".
+// TruncateWithIndicator truncates a string and adds "[see attachment]",
+// never splitting a UTF-8 sequence.
 func TruncateWithIndicator(s string, maxLen int) string {
 	indicator := " [see attachment]"
 	if len(s) <= maxLen {
@@ -47,5 +48,5 @@ func TruncateWithIndicator(s string, maxLen int) string {
 	if cutLen <= 0 {
 		return indicator
 	}
-	return s[:cutLen] + indicator
+	return textutil.TruncateUTF8(s, cutLen) + indicator
 }

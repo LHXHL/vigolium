@@ -47,7 +47,7 @@ func agentModeCatalog() []agentModeEntry {
 	}
 }
 
-func runStrategy(_ *cobra.Command, _ []string) error {
+func runStrategy(cmd *cobra.Command, _ []string) error {
 	settings, err := clicommon.LoadSettings(globalConfig)
 	if err != nil {
 		return err
@@ -60,7 +60,7 @@ func runStrategy(_ *cobra.Command, _ []string) error {
 	// accept, which is the first thing a driver needs and the last thing it can
 	// get from an ANSI table. See strategy_json.go.
 	if globalJSON {
-		return emitStrategyJSON(cfg)
+		return emitStrategyJSON(cmd, cfg)
 	}
 
 	// Show active scanning profile (native scan data → cyan)

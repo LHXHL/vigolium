@@ -13,6 +13,9 @@ import (
 const (
 	maxFallbackAssets    = 256
 	maxFallbackURLLength = 2048
+	// maxFallbackCountedMatches bounds how far past the request cap the string
+	// pass keeps scanning just to count what the cap dropped.
+	maxFallbackCountedMatches = 100_000
 )
 
 var (
@@ -54,11 +57,13 @@ func cheapFallbackAnalysisWithReason(content []byte, options ScanOptions, toolSo
 	wantsEndpoints := options.Profile != ProfileDOMSecurity && options.Profile != ProfileBeautify
 	wantsAssets := options.Profile == ProfileDiscovery || options.Profile == ProfileDiscoveryLite ||
 		options.Profile == ProfileFull || options.Profile == ProfileInspect
+	dropped := 0
 	if wantsEndpoints {
 		seen := make(map[string]struct{})
-		for _, match := range fallbackEndpointRE.FindAllStringSubmatch(source, options.MaxRequests+1) {
-			if len(result.RequestFacts) >= options.MaxRequests || len(match) < 2 {
-				break
+		limit := max(options.MaxRequests+1, maxFallbackCountedMatches)
+		for _, match := range fallbackEndpointRE.FindAllStringSubmatch(source, limit) {
+			if len(match) < 2 {
+				continue
 			}
 			rawURL := strings.TrimSpace(match[1])
 			if rawURL == "" || len(rawURL) > maxFallbackURLLength {
@@ -68,6 +73,11 @@ func cheapFallbackAnalysisWithReason(content []byte, options ScanOptions, toolSo
 				continue
 			}
 			seen[rawURL] = struct{}{}
+			if len(result.RequestFacts) >= options.MaxRequests {
+				// Keep scanning only to count what the cap cost.
+				dropped++
+				continue
+			}
 			id := fallbackID("http-fallback", rawURL)
 			// The method is deliberately empty: a string match over minified source
 			// cannot resolve one, and the fact schema already means "unresolved" by
@@ -174,6 +184,17 @@ func cheapFallbackAnalysisWithReason(content []byte, options ScanOptions, toolSo
 	completion.Counts.Requests = len(result.RequestFacts)
 	completion.Counts.Diagnostics = 1
 	result.Completion = completion
+	if dropped > 0 {
+		// The status is already partial for the fallback itself, and that reason
+		// stays: it is the more fundamental degradation. The cap still has to be
+		// visible, so it is counted and diagnosed.
+		capDiagnostic := requestCapDiagnostic(options.MaxRequests, dropped)
+		result.Diagnostics = append(result.Diagnostics, capDiagnostic)
+		analysis.Diagnostics = append(analysis.Diagnostics, capDiagnostic)
+		analysis.Stats.Truncated = map[string]int{"httpRequest": dropped}
+		completion.Counts.Truncated = map[string]int{"httpRequest": dropped}
+		completion.Counts.Diagnostics = len(result.Diagnostics)
+	}
 	result.ScanDuration = time.Since(started)
 	return result
 }

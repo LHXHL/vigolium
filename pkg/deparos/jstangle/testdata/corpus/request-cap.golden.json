@@ -1,0 +1,11 @@
+{
+  "status": "partial",
+  "reasonCode": "request_cap",
+  "truncated": {
+    "httpRequest": 1000
+  },
+  "counts": {
+    "httpRequest": 1000
+  },
+  "facts": []
+}

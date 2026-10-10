@@ -39,6 +39,9 @@ type Browser struct {
 	// (uaOnce) so NewPage doesn't re-query the browser version per page/tab.
 	uaOnce     sync.Once
 	uaOverride string
+	// uaMetadata is the client-hint metadata sent with uaOverride when stealth
+	// is on (see stealthUserAgentMetadata); nil otherwise.
+	uaMetadata *proto.EmulationUserAgentMetadata
 
 	// crawlCtx, when set, is bound onto every page created by NewPage so that
 	// the crawl's deadline/cancellation propagates into every rod operation
@@ -321,7 +324,40 @@ func (b *Browser) browserCandidates(ctx context.Context) []browserCandidate {
 
 // ensureCfTBrowser downloads (or reuses) Chrome for Testing. A variable so
 // tests can observe the call without a network fetch.
-var ensureCfTBrowser = cftbrowser.EnsureBrowser
+//
+// Reaching it mid-crawl is the fallback: the scan runner pre-provisions the
+// browser before the spidering phase's deadline starts (see NeedsDownload), so
+// this rung only downloads when every resolved browser failed to launch. Its
+// progress is the text rendering on stderr.
+var ensureCfTBrowser = func(ctx context.Context) (string, error) {
+	return cftbrowser.EnsureBrowser(ctx, nil)
+}
+
+// NeedsDownload reports whether launching a browser for cfg would have to fall
+// through to the Chrome for Testing download: no configured browser_path, no
+// embedded engine binary, no working system browser and no cached CfT copy, on
+// a platform CfT supports. No network. The scan runner asks before the
+// spidering phase so it can download (with progress) outside the phase budget.
+func NeedsDownload(cfg *config.Config) bool {
+	if cfg == nil || cfg.BrowserPath != "" {
+		return false
+	}
+	if !cftbrowser.IsSupported() {
+		return false // nothing to download; launch reports the install hint
+	}
+	if _, err := (&Browser{config: cfg}).getEmbeddedBrowserPath(); err == nil {
+		return false
+	}
+	for _, name := range browserPreferenceOrderFor(runtime.GOOS) {
+		if p, ok := lookPathFound(name); ok && validateBrowserBin(p) {
+			return false
+		}
+	}
+	if _, err := cftbrowser.FindCachedBrowser(); err == nil {
+		return false
+	}
+	return true
+}
 
 // buildBrowserCandidates assembles the ordered candidate list from already-
 // resolved inputs. Platform (goos/goarch), the configured path, the resolved
@@ -453,10 +489,20 @@ func (b *Browser) newLauncher(binPath string, compat config.BrowserCompat) *laun
 		Set("use-fake-device-for-media-stream").
 		Set("dbus-stub").
 		Set("lang", "en-US").
-		Set("disable-background-networking").
-		// Disable HTTPS upgrade features to prevent Chrome from auto-upgrading HTTP to HTTPS
-		// which causes timeout when target doesn't have HTTPS server
-		Set("disable-features", "ChromeWhatsNewUI,HttpsUpgrades,HttpsFirstModeV2,HttpsFirstBalancedMode,HttpsFirstModeForAdvancedProtectionUsers,ImageServiceObserveSyncDownloadStatus,TrackingProtection3pcd,LensOverlay,AutomationControlled")
+		Set("disable-background-networking")
+
+	// Appended, not Set: rod's own disable-features (site-per-process,
+	// TranslateUI) must survive. The HTTPS-upgrade features are off so Chrome
+	// does not auto-upgrade HTTP to HTTPS, which times out against a target with
+	// no HTTPS server.
+	l = appendDisableFeatures(l,
+		"ChromeWhatsNewUI", "HttpsUpgrades", "HttpsFirstModeV2", "HttpsFirstBalancedMode",
+		"HttpsFirstModeForAdvancedProtectionUsers", "ImageServiceObserveSyncDownloadStatus",
+		"TrackingProtection3pcd", "LensOverlay")
+
+	if b.config.StealthEnabled() {
+		l = applyStealthFlags(l)
+	}
 
 	// Security boundaries are configured, not hard-coded: the sandbox, TLS
 	// verification, mixed-content blocking and the same-origin policy each
@@ -555,14 +601,17 @@ var tabCreateTimeout = browserOpTimeout
 // context whose watchdog (the timeout, or the crawl context ending) is
 // disarmed as soon as the tab exists, leaving it live for the page's lifetime.
 // The returned release ends that context; call it once the page is closed.
-func (b *Browser) createRodPage(crawlCtx context.Context) (*rod.Page, context.CancelFunc, error) {
+func (b *Browser) createRodPage(crawlCtx context.Context, browserContext proto.BrowserBrowserContextID, newWindow bool) (*rod.Page, context.CancelFunc, error) {
 	handle, release := b.rodBrowser.WithCancel()
+	// Empty is the default context; rod's Page creates the target in the
+	// handle's context.
+	handle.BrowserContextID = browserContext
 	timer := time.AfterFunc(tabCreateTimeout, release)
 	stopCrawlWatch := func() bool { return true }
 	if crawlCtx != nil {
 		stopCrawlWatch = context.AfterFunc(crawlCtx, release)
 	}
-	rodPage, err := handle.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	rodPage, err := handle.Page(proto.TargetCreateTarget{URL: "about:blank", NewWindow: newWindow})
 	timer.Stop()
 	stopCrawlWatch()
 	if err == nil && handle.GetContext().Err() != nil {
@@ -583,11 +632,55 @@ func (b *Browser) createRodPage(crawlCtx context.Context) (*rod.Page, context.Ca
 
 // NewPage creates a new page (tab).
 func (b *Browser) NewPage() (*Page, error) {
+	return b.newPage("", false)
+}
+
+// NewWindowPage creates a page in a window of its own. Use it for a page that
+// is driven at the same time as another: Chrome stops rendering a tab hidden
+// behind another tab of its window, so requestAnimationFrame never fires there
+// and every rod action that waits for a repaint (a click's scroll-into-view)
+// blocks for good. A page alone in its window stays visible.
+func (b *Browser) NewWindowPage() (*Page, error) {
+	return b.newPage("", true)
+}
+
+// NewIsolatedPage creates a tab in a browser context of its own (CDP
+// Target.createBrowserContext, the same thing rod's Incognito does): it shares
+// no cookies, storage or cache with the default context or any other isolated
+// tab. Closing the page disposes the context. The browser-level traffic
+// capture still sees it, since every page enables Network on its own session.
+// Like NewWindowPage, the tab gets a window of its own.
+func (b *Browser) NewIsolatedPage() (*Page, error) {
+	res, err := proto.TargetCreateBrowserContext{}.Call(b.boundedBrowser())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create browser context: %w", err)
+	}
+	dispose := func() {
+		_ = proto.TargetDisposeBrowserContext{BrowserContextID: res.BrowserContextID}.Call(b.boundedBrowser())
+	}
+	page, err := b.newPage(res.BrowserContextID, true)
+	if err != nil {
+		dispose()
+		return nil, err
+	}
+	release := page.release
+	page.release = func() {
+		if release != nil {
+			release()
+		}
+		dispose()
+	}
+	return page, nil
+}
+
+// newPage creates a tab in browserContext ("" = the default context), in a
+// window of its own when newWindow is set.
+func (b *Browser) newPage(browserContext proto.BrowserBrowserContextID, newWindow bool) (*Page, error) {
 	b.mu.Lock()
 	crawlCtx := b.crawlCtx
 	b.mu.Unlock()
 
-	rodPage, release, err := b.createRodPage(crawlCtx)
+	rodPage, release, err := b.createRodPage(crawlCtx, browserContext, newWindow)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create page: %w", err)
 	}
@@ -611,15 +704,24 @@ func (b *Browser) NewPage() (*Page, error) {
 	// its real content. Strip "Headless" from the actual UA (keeping the accurate
 	// Chrome version) and pin Accept-Language to en-US. The UA is resolved once per
 	// browser; the override itself is a page-level CDP call, so it's applied here.
+	//
+	// With stealth on, the override also carries client-hint metadata for the
+	// same version, so navigator.userAgentData and Sec-CH-UA stop naming
+	// HeadlessChrome either.
+	stealth := b.config.StealthEnabled()
 	b.uaOnce.Do(func() {
 		if ver, verr := (proto.BrowserGetVersion{}).Call(b.boundedBrowser()); verr == nil {
 			b.uaOverride = strings.ReplaceAll(ver.UserAgent, "HeadlessChrome", "Chrome")
+			if stealth {
+				b.uaMetadata = stealthUserAgentMetadata(ver.Product, runtime.GOOS, runtime.GOARCH)
+			}
 		}
 	})
 	if b.uaOverride != "" {
 		_ = proto.NetworkSetUserAgentOverride{
-			UserAgent:      b.uaOverride,
-			AcceptLanguage: "en-US,en;q=0.9",
+			UserAgent:         b.uaOverride,
+			AcceptLanguage:    defaultAcceptLanguage,
+			UserAgentMetadata: b.uaMetadata,
 		}.Call(rodPage)
 	}
 
@@ -628,6 +730,12 @@ func (b *Browser) NewPage() (*Page, error) {
 		config:  b.config,
 		browser: b,
 		release: release,
+	}
+
+	// Registered before the first navigation so it runs ahead of page scripts
+	// in every document this tab loads.
+	if stealth {
+		page.installStealth(stealthOptionsFor(b.config.Headless, runtime.GOOS, runtime.GOARCH))
 	}
 
 	// This runs in background and answers JS dialogs per the dialog policy.
@@ -653,6 +761,18 @@ func (b *Browser) Pages() []*Page {
 	result := make([]*Page, len(b.pages))
 	copy(result, b.pages)
 	return result
+}
+
+// forget drops page from the tracked set (it was closed on its own).
+func (b *Browser) forget(page *Page) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, p := range b.pages {
+		if p == page {
+			b.pages = append(b.pages[:i], b.pages[i+1:]...)
+			return
+		}
+	}
 }
 
 // CurrentPage returns the current persistent page, or nil if none exists.
@@ -785,12 +905,14 @@ func closePageWithTimeout(rodPage *rod.Page, timeout time.Duration, maxRetries i
 	return fmt.Errorf("failed to close page %s after %d attempts", targetID, maxRetries)
 }
 
-// CloseOtherWindows closes all pages except the current one with timeout protection.
-// to get ALL actual browser windows (including those opened by target="_blank" or window.open()).
+// CloseOtherWindows closes all pages except the current one and keep, with
+// timeout protection. It queries the browser to get ALL actual windows
+// (including those opened by target="_blank" or window.open()). keep names the
+// crawl's other tabs, which must survive one tab's popup cleanup.
 //
 // CRITICAL: Uses timeout + retry to prevent deadlocks when pages are slow to close.
 // This is essential for target="_blank" links which may open pages faster than we can track them.
-func (b *Browser) CloseOtherWindows() error {
+func (b *Browser) CloseOtherWindows(keep ...*Page) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -800,6 +922,15 @@ func (b *Browser) CloseOtherWindows() error {
 	}
 
 	currentTargetID := b.currentPage.rodPage.TargetID
+	kept := []*Page{b.currentPage}
+	keepIDs := map[proto.TargetTargetID]bool{currentTargetID: true}
+	for _, p := range keep {
+		if p == nil || p.rodPage == nil || keepIDs[p.rodPage.TargetID] {
+			continue
+		}
+		keepIDs[p.rodPage.TargetID] = true
+		kept = append(kept, p)
+	}
 
 	// Query all browser pages including those opened by target="_blank" or window.open()
 	allPages, err := b.boundedBrowser().Pages()
@@ -817,7 +948,7 @@ func (b *Browser) CloseOtherWindows() error {
 	failedCount := 0
 
 	for _, rodPage := range allPages {
-		if rodPage.TargetID == currentTargetID {
+		if keepIDs[rodPage.TargetID] {
 			continue
 		}
 
@@ -837,12 +968,12 @@ func (b *Browser) CloseOtherWindows() error {
 		zap.Int("closed", closedCount),
 		zap.Int("failed", failedCount))
 
-	// Reset internal tracking to only current page
-	b.pages = []*Page{b.currentPage}
+	// Reset internal tracking to only the kept pages
+	b.pages = kept
 
 	// Return error if ALL pages failed to close (indicates serious problem)
-	if failedCount > 0 && closedCount == 0 && len(allPages) > 1 {
-		return fmt.Errorf("failed to close any of %d extra pages", len(allPages)-1)
+	if failedCount > 0 && closedCount == 0 && len(allPages) > len(kept) {
+		return fmt.Errorf("failed to close any of %d extra pages", len(allPages)-len(kept))
 	}
 
 	return nil

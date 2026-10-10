@@ -1,14 +1,13 @@
 package core
 
 import (
-	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
-	"github.com/vigolium/vigolium/pkg/output"
 )
 
 func filterActiveModulesByScanScope(mods []modules.ActiveModule, scope modules.ScanScope) []modules.ActiveModule {
@@ -47,6 +46,9 @@ func sortActiveByPriority(mods []modules.ActiveModule) {
 	sort.SliceStable(mods, func(i, j int) bool {
 		return modulePriority(mods[i]) < modulePriority(mods[j])
 	})
+	// Within one vuln class, dispatch cheap in-band techniques before boolean,
+	// timing and OAST ones so they claim the parameter first (ParamFindings).
+	modules.OrderWithinVulnClass(mods)
 }
 
 // filterNonScopeAware removes passive modules that declared themselves as
@@ -63,52 +65,52 @@ func filterNonScopeAware(mods []modules.PassiveModule) []modules.PassiveModule {
 	return out
 }
 
-func paramFindingLocationKeyFromItem(item *httpmsg.HttpRequestResponse) string {
-	if item == nil {
-		return ""
+// moduleFilter provides O(1) module-enable lookups via a map.
+type moduleFilter struct {
+	all bool
+	set map[string]struct{}
+}
+
+// allModulesFilter is a pre-allocated filter that allows all modules,
+// avoiding a new moduleFilter allocation on the common path.
+var allModulesFilter = moduleFilter{all: true}
+
+// newModuleFilter builds a filter from the enableModules slice.
+// Empty slice or "all" sentinel means all modules are enabled.
+func newModuleFilter(enableModules []string) moduleFilter {
+	if len(enableModules) == 0 {
+		return moduleFilter{all: true}
 	}
-	if urlx, err := item.URL(); err == nil && urlx != nil {
-		return normalizeParamFindingLocation(urlx.Scheme, urlx.Host, urlx.Path)
+	set := make(map[string]struct{}, len(enableModules))
+	for _, id := range enableModules {
+		if id == "all" {
+			return moduleFilter{all: true}
+		}
+		set[id] = struct{}{}
 	}
-	if item.Request() != nil {
-		host, _ := httpmsg.GetHeaderValue(item.Request().Raw(), "Host")
-		return normalizeParamFindingLocation("", host, item.Request().Path())
+	return moduleFilter{set: set}
+}
+
+// allows returns true if the module should run.
+func (f *moduleFilter) allows(moduleID string) bool {
+	if f.all {
+		return true
+	}
+	_, ok := f.set[moduleID]
+	return ok
+}
+
+// getKnownTotal returns the total count from source if known, otherwise 0.
+func getKnownTotal(src source.InputSource) int64 {
+	return source.GetTotal(src)
+}
+
+// getHeaderValue extracts the first matching header value by name (case-insensitive).
+func getHeaderValue(headers []httpmsg.HttpHeader, name string) string {
+	for _, h := range headers {
+		if strings.EqualFold(h.Name, name) {
+			return h.Value
+		}
 	}
 	return ""
-}
-
-func paramFindingLocationKeyFromResult(result *output.ResultEvent) string {
-	if result == nil {
-		return ""
-	}
-	if result.URL != "" {
-		if parsed, err := url.Parse(result.URL); err == nil {
-			return normalizeParamFindingLocation(parsed.Scheme, parsed.Host, parsed.Path)
-		}
-	}
-	if result.Matched != "" {
-		if parsed, err := url.Parse(result.Matched); err == nil && parsed.Host != "" {
-			return normalizeParamFindingLocation(parsed.Scheme, parsed.Host, parsed.Path)
-		}
-	}
-	if result.Request != "" {
-		host, _ := httpmsg.GetHeaderValue([]byte(result.Request), "Host")
-		path, _ := httpmsg.GetPath([]byte(result.Request))
-		return normalizeParamFindingLocation(result.Scheme, host, path)
-	}
-	return normalizeParamFindingLocation(result.Scheme, result.Host, "")
-}
-
-func normalizeParamFindingLocation(scheme, host, path string) string {
-	host = strings.ToLower(strings.TrimSpace(host))
-	if path == "" {
-		path = "/"
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	if scheme == "" {
-		return host + path
-	}
-	return scheme + "://" + host + path
 }

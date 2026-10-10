@@ -2,16 +2,15 @@ package authentication
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
-	"gopkg.in/yaml.v3"
 )
 
 // DefaultLoginBudget bounds the time ALL login flows together may take. It is a
@@ -36,6 +35,9 @@ type Manager struct {
 	// loginBudget caps the total hydration time across every session and step.
 	// <= 0 means DefaultLoginBudget.
 	loginBudget time.Duration
+	// flowMu guards the login flows rehydrate copies and writes back (a
+	// rotated OAuth2 refresh_token).
+	flowMu sync.Mutex
 }
 
 // ManagerOption configures optional Manager behavior.
@@ -76,9 +78,13 @@ func NewManager(sessions []*Session, opts ...ManagerOption) (*Manager, error) {
 		return nil, fmt.Errorf("at least one session is required")
 	}
 
-	// Validate all sessions
+	// Validate all sessions, then give each login_request-only session the
+	// LoginFlow HydrateSessions runs.
 	for _, s := range sessions {
 		if err := s.Validate(); err != nil {
+			return nil, err
+		}
+		if err := s.convertLoginRequest(); err != nil {
 			return nil, err
 		}
 	}
@@ -153,6 +159,82 @@ func (m *Manager) HydrateSessionsContext(ctx context.Context) error {
 	return nil
 }
 
+// rehydrate runs the named session's login flow again and returns the fresh
+// credential headers, for a scan whose session expired mid-run (LiveSession),
+// and when they expire (zero when the login did not say).
+//
+// It is safe to call from several goroutines and while the scan reads the
+// sessions: the flow runs on a CLONE of the session with an empty header map,
+// so the shared Session (and its Headers map, which the manager handed out at
+// setup) is never mutated. The login goes out over the manager's login
+// transport, so it follows the scan's proxy, TLS stance and egress gate (the
+// priority lane under GatedLoginTransport), bounded by ctx and by the
+// manager's login budget. An OAuth2 refresh token the server rotated is
+// written back to the managed session's flow, so the next re-login presents
+// the new one.
+func (m *Manager) rehydrate(ctx context.Context, name string) (map[string]string, time.Time, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var src *Session
+	for _, s := range m.sessions {
+		if s.Name == name {
+			src = s
+			break
+		}
+	}
+	if src == nil {
+		return nil, time.Time{}, fmt.Errorf("session %q: not managed", name)
+	}
+	if src.Login == nil {
+		return nil, time.Time{}, fmt.Errorf("session %q: no login flow to re-run (static headers cannot be refreshed)", name)
+	}
+	budget := m.loginBudget
+	if budget <= 0 {
+		budget = DefaultLoginBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	m.flowMu.Lock()
+	clone := *src
+	flow := *src.Login // runLogin normalizes the flow in place: give it its own copy
+	m.flowMu.Unlock()
+	usedRefresh := flow.RefreshToken
+	clone.Login = &flow
+	clone.Headers = make(map[string]string)
+	clone.hydrated = false
+	clone.expiresAt = time.Time{}
+	if err := executeLogin(ctx, &clone, m.loginClient()); err != nil {
+		return nil, time.Time{}, err
+	}
+	if flow.RefreshToken != usedRefresh {
+		m.flowMu.Lock()
+		if src.Login.RefreshToken == usedRefresh {
+			src.Login.RefreshToken = flow.RefreshToken
+		}
+		m.flowMu.Unlock()
+	}
+	return clone.Headers, clone.expiresAt, nil
+}
+
+// probeClient is the client a LiveSession's logged-in probe uses: the login
+// transport (proxy, target TLS, the egress gate's priority lane) with
+// redirects NOT followed, so a 302 to the login page is seen as such.
+func (m *Manager) probeClient() *http.Client {
+	c := m.loginClient()
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
+}
+
+// LoginBudget is the total time one hydration (or one re-login) may take.
+func (m *Manager) LoginBudget() time.Duration {
+	if m == nil || m.loginBudget <= 0 {
+		return DefaultLoginBudget
+	}
+	return m.loginBudget
+}
+
 // loginClient builds the HTTP client the login flows share: the manager's
 // transport (proxy + target TLS policy), redirects followed so a login that
 // lands its Set-Cookie on a 302 still works, and a per-request timeout that
@@ -199,10 +281,14 @@ func (m *Manager) PrimaryHeaders() []string {
 }
 
 // LoadFromAuthFiles loads sessions from one or more --auth-file values. Each
-// value is either a file path (YAML/JSON, single session or sessions: bundle)
-// or a bare name resolved against sessionDir (default ~/.vigolium/sessions/),
-// trying .yaml, .yml, .json in order. Files support ${ENV} expansion before
-// parsing.
+// value is either a file path (YAML/JSON: a sessions: bundle, a single session,
+// or an agent session-config.json) or a bare name resolved against sessionDir
+// (default ~/.vigolium/sessions/), trying .yaml, .yml, .json in order. Files
+// support ${ENV} expansion before parsing.
+//
+// An unknown field is logged as a warning, not refused: a file that loaded
+// before the parser learned to notice extra keys keeps loading. `auth lint`
+// reports the same field as an error, with its line.
 func LoadFromAuthFiles(paths []string, sessionDir string) ([]*Session, error) {
 	var sessions []*Session
 	for _, p := range paths {
@@ -211,10 +297,14 @@ func LoadFromAuthFiles(paths []string, sessionDir string) ([]*Session, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read auth file %s: %w", resolved, err)
 		}
-		content := os.ExpandEnv(string(data))
-		loaded, err := parseSessionContent(resolved, content)
+		loaded, issues, err := ParseSessionBytes(data, resolved, ParseOptions{})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("auth file: %w", err)
+		}
+		for _, is := range issues {
+			zap.L().Warn("Auth file has an unknown field (ignored); run `vigolium auth lint` to check it",
+				zap.String("file", resolved), zap.String("field", is.Field),
+				zap.Int("line", is.Line), zap.String("issue", is.Message))
 		}
 		sessions = append(sessions, loaded...)
 	}
@@ -232,44 +322,6 @@ func LoadFromAuthInline(values []string) ([]*Session, error) {
 		sessions = append(sessions, s)
 	}
 	return sessions, nil
-}
-
-// parseSessionContent parses YAML or JSON content as either a sessions: bundle
-// (SessionConfig) or a single top-level Session.
-func parseSessionContent(path string, content string) ([]*Session, error) {
-	asJSON := isJSON(path, content)
-
-	// Try bundle (sessions: ...) first.
-	var cfg SessionConfig
-	var bundleErr error
-	if asJSON {
-		bundleErr = json.Unmarshal([]byte(content), &cfg)
-	} else {
-		bundleErr = yaml.Unmarshal([]byte(content), &cfg)
-	}
-	if bundleErr == nil && len(cfg.Sessions) > 0 {
-		result := make([]*Session, len(cfg.Sessions))
-		for i := range cfg.Sessions {
-			result[i] = &cfg.Sessions[i]
-		}
-		return result, nil
-	}
-
-	// Fall back to single session at top level.
-	var s Session
-	var singleErr error
-	if asJSON {
-		singleErr = json.Unmarshal([]byte(content), &s)
-	} else {
-		singleErr = yaml.Unmarshal([]byte(content), &s)
-	}
-	if singleErr != nil {
-		return nil, fmt.Errorf("failed to parse auth file %s: %w", path, singleErr)
-	}
-	if s.Name == "" {
-		return nil, fmt.Errorf("auth file %s: no sessions defined", path)
-	}
-	return []*Session{&s}, nil
 }
 
 // resolveSessionPath resolves a session file path.
@@ -336,4 +388,11 @@ func isJSON(path string, content string) bool {
 	}
 	trimmed := strings.TrimSpace(content)
 	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+}
+
+// ResolveSessionPath resolves an --auth-file value the way LoadFromAuthFiles
+// does: a path is used as is, a bare name is looked up in sessionDir (default
+// ~/.vigolium/sessions/) with .yaml, .yml and .json tried in order.
+func ResolveSessionPath(path, sessionDir string) string {
+	return resolveSessionPath(path, sessionDir)
 }

@@ -10,19 +10,21 @@ import (
 	"github.com/vigolium/vigolium/pkg/agent/agenttypes"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/input/source"
 )
 
 // uuidPattern matches UUIDs (8-4-4-4-12 hex digits).
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-// httpMethodPattern matches raw HTTP request start lines.
-var httpMethodPattern = regexp.MustCompile(`^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE|CONNECT)\s+\S+\s+HTTP/`)
 
 // base64Pattern matches strings that look like base64-encoded data:
 // long enough, only valid base64 chars, optional padding.
 var base64Pattern = regexp.MustCompile(`^[A-Za-z0-9+/\s]+=*\s*$`)
 
 // DetectInputType determines the input format from the raw string content.
+// File-shaped inputs (curl command, Burp XML, raw HTTP request) are classified
+// by source.DetectFormatHead, the same content detector -i files use; the
+// agent-only shapes (record UUID, single URL, base64-encoded request) are
+// checked here.
 func DetectInputType(input string) agenttypes.InputType {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
@@ -34,23 +36,17 @@ func DetectInputType(input string) agenttypes.InputType {
 		return agenttypes.InputTypeRecordUUID
 	}
 
-	// Curl command
-	lower := strings.ToLower(trimmed)
-	if strings.HasPrefix(lower, "curl ") || strings.HasPrefix(lower, "$ curl ") {
+	switch source.DetectFormatHead([]byte(trimmed), "").Format {
+	case "curl":
 		return agenttypes.InputTypeCurl
-	}
-
-	// Burp XML
-	if strings.HasPrefix(trimmed, "<?xml") || strings.HasPrefix(trimmed, "<items") {
+	case "burpxml":
 		return agenttypes.InputTypeBurp
-	}
-
-	// Raw HTTP request (starts with METHOD /path HTTP/x.x)
-	if httpMethodPattern.MatchString(trimmed) {
+	case "burpraw":
 		return agenttypes.InputTypeRaw
 	}
 
 	// URL
+	lower := strings.ToLower(trimmed)
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 		return agenttypes.InputTypeURL
 	}
@@ -59,8 +55,7 @@ func DetectInputType(input string) agenttypes.InputType {
 	// Must be long enough to be meaningful and decode to a valid HTTP request.
 	if len(trimmed) >= 20 && base64Pattern.MatchString(trimmed) {
 		if decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(trimmed)); err == nil {
-			decodedStr := string(decoded)
-			if httpMethodPattern.MatchString(decodedStr) {
+			if source.DetectFormatHead(decoded, "").Format == "burpraw" {
 				return agenttypes.InputTypeBase64
 			}
 		}

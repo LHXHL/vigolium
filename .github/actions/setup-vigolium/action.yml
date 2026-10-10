@@ -1,0 +1,117 @@
+name: Set up vigolium build
+description: >
+  Go toolchain (module cache on), Bun, and the embedded jstangle helper restored
+  from cache when its TypeScript sources are unchanged. Every Go build in this
+  repo needs the helper for its go:embed, and building it with bun is the
+  slowest setup step, so it is rebuilt only on a cache miss.
+
+  When platform/jstangle is absent (a fork or partial checkout), the helper is
+  skipped and GOFLAGS gains `-tags=jstangle_stub`, which swaps the embed for an
+  empty stub. Steps that pass their own `-tags` must append
+  `$VIGOLIUM_CI_TAGS` themselves, because a command-line `-tags` replaces the
+  one in GOFLAGS.
+
+inputs:
+  jstangle-target:
+    description: >
+      jstangle triple to stage (for example windows-amd64). Empty means the
+      runner's own platform.
+    required: false
+    default: ""
+
+outputs:
+  jstangle:
+    description: "'true' when the real jstangle helper was staged, 'false' when the stub tag is in use."
+    value: ${{ steps.target.outputs.available }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+        cache: true
+
+    - name: Resolve jstangle target
+      id: target
+      shell: bash
+      env:
+        INPUT_TARGET: ${{ inputs.jstangle-target }}
+        HAS_JSTANGLE: ${{ hashFiles('platform/jstangle/package.json') != '' }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS" in
+          Linux) host_os=linux ;;
+          macOS) host_os=darwin ;;
+          Windows) host_os=windows ;;
+          *) echo "::error::unsupported runner OS $RUNNER_OS"; exit 1 ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) host_arch=amd64 ;;
+          ARM64) host_arch=arm64 ;;
+          *) echo "::error::unsupported runner arch $RUNNER_ARCH"; exit 1 ;;
+        esac
+        host="$host_os-$host_arch"
+        target="${INPUT_TARGET:-$host}"
+        name="jstangle-$target"
+        case "$target" in windows-*) name="$name.exe" ;; esac
+        {
+          echo "target=$target"
+          echo "is-host=$([ "$target" = "$host" ] && echo true || echo false)"
+          echo "path=internal/resources/deparos/jstangle/$name"
+          echo "available=$HAS_JSTANGLE"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Set up Bun
+      if: steps.target.outputs.available == 'true'
+      uses: oven-sh/setup-bun@v2
+
+    # Key on the same inputs scripts/source-fingerprint.ts hashes, so a cache
+    # hit means the helper's embedded sourceHash matches the tree. The host leg
+    # re-checks that anyway via `make ensure-jstangle` below. go:embed takes the
+    # zstd-packed .zst and its .pin, so those are cached with the raw blob.
+    - name: Restore jstangle helper
+      id: cache
+      if: steps.target.outputs.available == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ steps.target.outputs.path }}
+          ${{ steps.target.outputs.path }}.zst
+          ${{ steps.target.outputs.path }}.pin
+        key: jstangle-zst-${{ steps.target.outputs.target }}-${{ hashFiles('platform/jstangle/src/**', 'platform/jstangle/scripts/**', 'platform/jstangle/package.json', 'platform/jstangle/bun.lock', 'platform/jstangle/tsconfig.json', 'platform/jstangle/tsconfig.build.json', 'platform/jstangle/vitest.config.ts') }}
+
+    # Host leg: ensure-jstangle is cheap on a hit (it only compares the
+    # helper's --capabilities sourceHash with the tree) and rebuilds when the
+    # cached binary is missing or stale.
+    - name: Stage host jstangle helper
+      if: steps.target.outputs.available == 'true' && steps.target.outputs.is-host == 'true'
+      shell: bash
+      run: make ensure-jstangle
+
+    # Cross leg: the binary cannot run here, so rebuild only on a cache miss.
+    - name: Stage jstangle helper for ${{ steps.target.outputs.target }}
+      if: >-
+        steps.target.outputs.available == 'true' &&
+        steps.target.outputs.is-host != 'true' &&
+        steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: make build-jstangle-target JSTANGLE_TARGET=${{ steps.target.outputs.target }}
+
+    # Content-addressed: a no-op when the restored .zst/.pin already pin the
+    # raw blob, and a repack when only the raw blob is present.
+    - name: Pack jstangle helper for ${{ steps.target.outputs.target }}
+      if: >-
+        steps.target.outputs.available == 'true' &&
+        steps.target.outputs.is-host != 'true'
+      shell: bash
+      run: make pack-jstangle JSTANGLE_TARGET=${{ steps.target.outputs.target }}
+
+    - name: Fall back to the jstangle stub
+      if: steps.target.outputs.available != 'true'
+      shell: bash
+      run: |
+        echo "::warning::platform/jstangle is not in this checkout; building with -tags=jstangle_stub (JS analysis disabled)"
+        echo "GOFLAGS=${GOFLAGS:+$GOFLAGS }-tags=jstangle_stub" >> "$GITHUB_ENV"
+        echo "VIGOLIUM_CI_TAGS=jstangle_stub" >> "$GITHUB_ENV"

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -17,20 +18,33 @@ import (
 func resetDBPathEnvGlobals(t *testing.T) {
 	t.Helper()
 	origDB, origStateless, origGlob := globalDB, globalStateless, globalGlobDB
-	origAuto, origSilent := dbPathEnvAutoStateless, globalSilent
-	globalDB, globalStateless, globalGlobDB, dbPathEnvAutoStateless = "", false, "", false
+	origAuto, origPinned, origSilent := dbPathEnvAutoStateless, dbPathEnvPinned, globalSilent
+	globalDB, globalStateless, globalGlobDB, dbPathEnvAutoStateless, dbPathEnvPinned = "", false, "", false, false
 	globalSilent = true // keep the notice out of the test log
 	t.Cleanup(func() {
 		globalDB, globalStateless, globalGlobDB = origDB, origStateless, origGlob
-		dbPathEnvAutoStateless, globalSilent = origAuto, origSilent
+		dbPathEnvAutoStateless, dbPathEnvPinned, globalSilent = origAuto, origPinned, origSilent
 	})
+}
+
+// cmdAtPath builds a bare command at path ("agent audit") under a stand-in
+// root, for the tables keyed by commandPathWithoutRoot.
+func cmdAtPath(path string) *cobra.Command {
+	parent := &cobra.Command{Use: "vigolium"}
+	var cmd *cobra.Command
+	for _, name := range strings.Fields(path) {
+		cmd = &cobra.Command{Use: name}
+		parent.AddCommand(cmd)
+		parent = cmd
+	}
+	return cmd
 }
 
 // statelessCmd builds a command carrying an -S/--stateless flag, matching how
 // the real commands register it: statelessWriteRequested reads the flag, not the
 // variable behind it, so the binding target is irrelevant here.
-func statelessCmd(name string) *cobra.Command {
-	cmd := &cobra.Command{Use: name}
+func statelessCmd(path string) *cobra.Command {
+	cmd := cmdAtPath(path)
 	var stateless bool
 	cmd.Flags().BoolVarP(&stateless, "stateless", "S", false, "")
 	return cmd
@@ -113,6 +127,16 @@ func TestApplyDBPathEnv(t *testing.T) {
 				require.NoError(t, cmd.Flags().Set("stateless", "true"))
 			},
 			wantDB: "-",
+		},
+		{
+			// Keyed by command path: `extensions run -S` is a read over the
+			// pinned session DB, not top-level `run`'s throwaway store.
+			name: "explicit -S on extensions run keeps the env var",
+			cmd:  statelessCmd("extensions run"),
+			pre: func(cmd *cobra.Command, _ string) {
+				require.NoError(t, cmd.Flags().Set("stateless", "true"))
+			},
+			wantStateless: true,
 		},
 		{
 			// --glob-db already drives a stateless read across a merged set.
@@ -301,9 +325,9 @@ func TestFlagOn(t *testing.T) {
 	})
 }
 
-// `ingest -S=false` asked for ingestion WITHOUT scanning. It used to turn
-// scan-on-receive on.
-func TestDeprecatedScanOnReceiveFalse(t *testing.T) {
+// -S on server/ingest used to mean --scan-on-receive. It is now a usage error
+// whatever its value, and the long flag is unaffected.
+func TestRetiredScanOnReceiveShorthand(t *testing.T) {
 	orig := globalScanOnReceive
 	t.Cleanup(func() { globalScanOnReceive = orig })
 
@@ -313,27 +337,30 @@ func TestDeprecatedScanOnReceiveFalse(t *testing.T) {
 		return cmd
 	}
 
-	globalScanOnReceive = false
-	cmd := newIngest()
-	require.NoError(t, cmd.Flags().Set("scan-on-receive-shorthand", "false"))
-	applyDeprecatedScanOnReceive(cmd)
-	assert.False(t, globalScanOnReceive, "-S=false must not enable scan-on-receive")
+	for _, v := range []string{"true", "false"} {
+		cmd := newIngest()
+		require.NoError(t, cmd.Flags().Set(retiredScanOnReceiveFlag, v))
+		err := rejectRetiredScanOnReceive(cmd)
+		require.Error(t, err, "-S=%s", v)
+		assert.Equal(t, 2, classifyExitCode(err), "usage error")
+		assert.Contains(t, err.Error(), "--scan-on-receive")
+	}
 
 	globalScanOnReceive = false
-	cmd = newIngest()
-	require.NoError(t, cmd.Flags().Set("scan-on-receive-shorthand", "true"))
-	applyDeprecatedScanOnReceive(cmd)
-	assert.True(t, globalScanOnReceive, "-S=true still folds into --scan-on-receive")
+	cmd := newIngest()
+	require.NoError(t, cmd.Flags().Set("scan-on-receive", "true"))
+	assert.NoError(t, rejectRetiredScanOnReceive(cmd))
+	assert.True(t, globalScanOnReceive)
 }
 
 // --read-only rejects flags that WRITE. An explicitly-false writer flag writes
 // nothing, so rejecting it was a conflict that did not exist.
 func TestReadOnlyAcceptsWriterFlagFalse(t *testing.T) {
 	orig := globalReadOnly
-	origRequested := clicommon.ReadOnlyRequested
+	origRequested := clicommon.Policy.ReadOnly
 	t.Cleanup(func() {
 		globalReadOnly = orig
-		clicommon.ReadOnlyRequested = origRequested
+		clicommon.Policy.ReadOnly = origRequested
 	})
 
 	newTraffic := func() *cobra.Command {
@@ -347,13 +374,13 @@ func TestReadOnlyAcceptsWriterFlagFalse(t *testing.T) {
 
 	globalReadOnly = true
 
-	clicommon.ReadOnlyRequested = false
+	clicommon.Policy.ReadOnly = false
 	cmd := newTraffic()
 	require.NoError(t, cmd.Flags().Set("save-to-vigolium-db", "false"))
 	require.NoError(t, applyReadOnlyMode(cmd), "--save-to-vigolium-db=false writes nothing")
-	assert.True(t, clicommon.ReadOnlyRequested)
+	assert.True(t, clicommon.Policy.ReadOnly)
 
-	clicommon.ReadOnlyRequested = false
+	clicommon.Policy.ReadOnly = false
 	cmd = newTraffic()
 	require.NoError(t, cmd.Flags().Set("save-to-vigolium-db", "true"))
 	err := applyReadOnlyMode(cmd)

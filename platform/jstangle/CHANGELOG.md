@@ -5,6 +5,53 @@ All notable changes to `jstangle` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Facts an agent needs that were previously lost between the AST and the record.
+Protocol stays at version 2; every addition is optional and advertised in
+`--capabilities`.
+
+### Added
+
+- `pathLiteral` record kind (schema 1, `pathLiterals` capability, on in the
+  `discovery`, `discovery-lite`, `full` and `inspect` profiles): path-shaped
+  literals bound to an object key, array, const, default parameter, return or
+  assignment, tagged with `reason` and `key`. Low confidence; literals already
+  consumed by a request or route are skipped; capped by `maxPathLiterals`.
+- `new URL(...)` / `searchParams.set|append|delete`, `pathname`/`search`
+  assignments, and `URLSearchParams` as a query string, form body or axios
+  `params` are folded into the request they feed.
+- `httpRequest.auth`: credential header (or API-key query parameter) source -
+  `localStorage`, `sessionStorage`, cookie (including `document.cookie`
+  matches), `getState()` store paths, or `literal` - including axios
+  interceptor and `defaults.headers` credentials. Values are never recorded.
+- `httpRequest.callSite` and `httpRequest.suppressed`: base-URL and
+  un-prefixed facts from the same call site are folded into the
+  higher-confidence fact that resolves them, and listed for audit.
+- `clientRoute.fullPath` and `clientRoute.parentId` for nested route tables.
+- `stats.truncated` / `scanCompleted.counts.truncated` and the `request_cap` /
+  `fact_cap:<kind>` completion reason codes.
+- Runtime-loaded chunks (`loader.webpack-chunk`, `loader.vite-preload`
+  capabilities; `assetReference` schema 3): the webpack chunk-filename function
+  (`__webpack_require__.u`, minified `n.u=`, webpack 4 `jsonpScriptSrc`) and
+  `.miniCssF` are evaluated symbolically over the chunk-id set and emitted as
+  `assetType: "chunk"` with `loader: "webpack-chunk"` / `"webpack-css-chunk"`,
+  prefixed with a static `.p` publicPath; Vite `__vitePreload` dependencies
+  (including `__vite__mapDeps`) as `loader: "vite-preload"`; template imports
+  over a literal map as `loader: "template-import"` with the concrete URLs in
+  `url.alternatives`. Capped by `maxChunksPerRuntime` (2000 per runtime, outside
+  `maxAssetReferences`); the rest count in `truncated.assetReference`.
+
+### Changed
+
+- A query left in a rendered URL template is split into `query[]`; the raw URL
+  is kept as the first `url.alternatives` entry.
+- Cap diagnostics are emitted once per record kind instead of once per dropped
+  record, so an oversized file no longer exhausts the diagnostic budget.
+- `httpRequest` and `clientRoute` schema versions are now 3. Nested route ids
+  hash the full path, so same-named children under different parents no
+  longer collapse into one record.
+
 ## [0.2.0] - 2026-09-20
 
 Large bundles are recovered instead of rejected. A script dense enough to

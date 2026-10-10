@@ -32,7 +32,9 @@ would delete.
 
 `vigolium doctor` never fails on a broken config — reporting it is its job. The
 config appears as its own check under **Core**, and every other check in that
-report then reflects built-in defaults rather than your settings.
+report then reflects built-in defaults rather than your settings. A broken
+config makes the verdict `degraded`, which exits 0 unless you pass `--strict`
+(doctor exits 1 only on `not_ready`, or on `degraded` under `--strict`).
 
 ### Diagnostics
 
@@ -78,7 +80,10 @@ Higher-precedence sources override lower ones. Within the config file, environme
 | Variable | Purpose |
 |---|---|
 | `VIGOLIUM_API_KEY` | API key for the REST server and ingestor client authentication |
+| `VIGOLIUM_DB` | `--db` from the environment: the database path when `--db` is not set, with project scoping kept (wins over `VIGOLIUM_DB_PATH`). An agent run exports it to the `vigolium` commands its bash tool runs |
 | `VIGOLIUM_DB_PATH` | Default SQLite database path when `--db` is not set — pins a shell to one session database (see [Session database](#session-database)) |
+| `VIGOLIUM_CONFIG` | `--config` from the environment: the config file when `--config` is not set (an agent run exports it to its bash tool's commands) |
+| `VIGOLIUM_BIN` | Set (not read) by an agent run for its bash tool: the absolute path of the running `vigolium`, which is also first on that shell's `PATH` |
 | `VIGOLIUM_PROJECT_UUID` | Active project UUID when no project flag is supplied |
 | `VIGOLIUM_PROJECT_NAME` | Active project name when no project flag is supplied (looked up in the database; `VIGOLIUM_PROJECT_UUID` wins if both are set) |
 | `VIGOLIUM_PROXY` | HTTP/SOCKS proxy URL, used when `--proxy` is not set |
@@ -86,7 +91,8 @@ Higher-precedence sources override lower ones. Within the config file, environme
 | `VIGOLIUM_BURP_BRIDGE_URL` | Default loopback Burp bridge URL for bridge-aware commands |
 | `VIGOLIUM_HOME` | Base directory for Vigolium data (used by the installer; defaults to `~/.vigolium`) |
 | `VIGOLIUM_DISABLE_UPDATE_CHECK` | Set truthy to disable the periodic "new version available" check entirely |
-| `VIGOLIUM_AUTO_UPDATE` | Set truthy to silently run `vigolium update` and re-exec the new binary when a newer release is detected |
+| `VIGOLIUM_AUTO_UPDATE` | Set truthy to update the binary in place and re-exec it when a newer release is detected (interactive terminals only; see [Update check](#update-check)) |
+| `VIGOLIUM_UPDATE_BASE_URL` | Release prefix `vigolium update` reads `metadata.json`, `checksums.txt` and its `.minisig` from (default `https://cdn.vigolium.com/vigolium-release`; https only). Signatures are still required |
 
 ### Session database
 
@@ -121,7 +127,9 @@ On startup Vigolium compares the running version against the latest `@vigolium/v
   Run `vigolium update` to upgrade.
 ```
 
-The check is automatically skipped for `--json`, CI (`--ci-output-format`), and non-interactive (piped) output, and for the `version`, `update`, and `init` commands. Set `VIGOLIUM_DISABLE_UPDATE_CHECK=1` to turn it off, or `VIGOLIUM_AUTO_UPDATE=1` to have Vigolium silently update and re-exec the freshly installed binary to continue the current command.
+The check is automatically skipped for `--json`, CI (`--ci-output-format`), and non-interactive (piped) output, and for the `version`, `update`, and `init` commands. Set `VIGOLIUM_DISABLE_UPDATE_CHECK=1` to turn it off, or `VIGOLIUM_AUTO_UPDATE=1` to have Vigolium update the running binary in place (the same signed, verified path as `vigolium update`) and re-exec it to continue the current command.
+
+Auto-update never acts when the caller is not a person at a terminal: it is off under `-j`, `--events` and `--ci-output-format`, when stdout or stderr is not a TTY, for `vigolium server`, when any of `CI`, `CONTINUOUS_INTEGRATION`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `JENKINS_URL`, `VIGOLIUM_AGENT`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_SANDBOX`, `CURSOR_AGENT` or `GEMINI_CLI` is set (to anything but `0`/`false`), and for binaries run by the npm package or Homebrew. In those cases the notice flow applies instead.
 
 Any environment variable can also be interpolated inside `vigolium-configs.yaml`:
 
@@ -144,7 +152,63 @@ vigolium config set server.service_port 8080
 vigolium config set scanning_strategy.http.user_agent "Mozilla/5.0 (compatible; Vigolium/{version}; +https://github.com/vigolium/vigolium)"
 ```
 
-These commands modify the main config file directly. For one-off overrides during a scan, use CLI flags instead.
+These commands modify the main config file directly (an atomic rewrite). For one-off overrides during a scan, use CLI flags instead.
+
+### Lists and maps
+
+List and map settings take JSON or YAML flow syntax, decoded against the
+setting's declared type. The comma form still works for lists:
+
+```bash
+vigolium config set scope.host.include '["*.example.com","example.com"]'   # JSON
+vigolium config set scope.host.include '[*.example.com, example.com]'      # YAML flow
+vigolium config set scope.host.include '*.example.com,example.com'         # comma form
+vigolium config set scope.host.exclude.add admin.example.com               # append one
+vigolium config set scope.host.exclude.add '["a.example.com","b.example.com"]'  # append several
+vigolium config set scope.host.exclude.clear ''                            # empty the list
+vigolium config set known_issue_scan.severity_overrides '{"tech-detect":"info"}'  # replace a map
+```
+
+A value is refused with exit 2 (`error.code: usage_error`) and the file is left
+unchanged when it does not parse (`'["a",'`), has the wrong element type (`[1,2]`
+into a list of strings), has an empty element (`a,,b`), carries JSON residue
+(`"a","b"` in the comma form), or introduces an error-level validation issue at
+that key (see below), such as a host pattern with a scheme. `vigolium scope set`
+goes through the same parser and checks; it also refuses to write when the
+config failed to load, and `--project <uuid>` writes only that key into the
+project's overlay (`~/.vigolium/projects/<uuid>/config.yaml`).
+
+### Validating the config
+
+`vigolium config validate` checks the effective settings with the same rules
+`config set` enforces and doctor's **Scope** check reports:
+
+```bash
+vigolium config validate                       # global config
+vigolium config validate --project <uuid>      # global + that project's overlay
+vigolium config validate -j --strict           # items[] of {key, severity, code, message, fix}
+```
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `scope_pattern_invalid` | error | Empty pattern, leading/trailing whitespace, quote or bracket residue, or a malformed glob |
+| `scope_host_has_scheme_or_path` | error | A host pattern containing `://` or `/` (hosts match the hostname only) |
+| `scope_host_has_port` | warning | A host pattern ending in `:port`, which never matches |
+| `scope_include_restrictive` | warning | `scope.host.include` with no wildcard: subdomains are dropped |
+| `scope_include_matches_no_recent_target` | warning | That include admits none of the last `--recent` (default 5) scans' targets; skipped when no database exists |
+| `scope_path_no_slash` | warning | A path pattern starting with neither `/` nor `*` |
+| `scope_status_invalid` | error | A `status_code` pattern that is not a code, class (`2xx`, `30*`) or range (`400-499`) |
+| `scope_origin_mode_invalid` | error | `scope.cli_origin_mode` not in `all`, `relaxed`, `balanced`, `strict` |
+| `scope_body_action_invalid` | error | `scope.body_size_exceeded_action` not in `truncate`, `drop`, `skip-scan`, `passive-only` |
+| `oast_server_missing` / `oast_server_url_invalid` / `oast_interval_invalid` | error | OAST enabled without a server, a malformed `server_url`, or a negative interval |
+| `config_value_invalid` | error | A section's own validation failed (database, spidering, storage, ...) |
+| `config_unknown_key` | warning | A key in the file that matches no setting |
+| `config_load_failed` | error | The file does not load at all |
+
+Every issue carries a `fix`, usually the exact `config set` to run. The command
+exits 1 with `error.code: config_invalid` when any error-level issue is found;
+`--strict` also fails on warnings. Under `-j` the envelope carries `valid` (the verdict, `--strict` included),
+`errors`, `warnings` and `config_path`.
 
 ## Config Sections
 
@@ -163,12 +227,16 @@ scanning_strategy:
     session_dir: ~/.vigolium/sessions/
     use_in_discovery: true       # apply session headers during discovery/spidering
     compare_enabled: true        # cross-session IDOR/BOLA replay in dynamic-assessment
-    reauth_interval: ""          # reserved; currently not enforced
-    reauth_on_status: []         # reserved; currently not enforced
-    validate_url: ""             # reserved; currently not enforced
+    reauth_interval: ""          # default check.interval for sessions (e.g. "2m")
+    reauth_on_status: []         # default check.logged_out.status (e.g. [401, 440])
+    validate_url: ""             # default check.url; `auth check` probes it without --url
 
   http:
     user_agent: preset           # preset | random | literal value; blank behaves like random
+    host_errors:                 # dead-host breaker; the trip threshold is --max-host-error
+      cooldown: 30s              # quarantine before the first re-probe
+      max_cooldown: 5m           # cap for the doubling cooldown after failed probes
+      max_trips: 5               # failed probes before the host is dead for the scan (<0 = never)
 
   # Phase toggles per strategy:
   balanced:
@@ -213,6 +281,8 @@ scanning_pace:
   rate_limit: 100          # max requests/sec across all hosts
   max_per_host: 40         # max concurrent requests per host
   max_duration: 45m        # per-phase base duration (each phase scales it by its duration_factor)
+  max_requests: 0          # stop the scan after N requests to the targets (0 = unlimited; --max-requests)
+  max_requests_per_host: 0 # at most N requests to any one host (0 = unlimited; --max-requests-per-host)
 
   # Per-phase overrides (zero = inherit from common):
   discovery:
@@ -275,16 +345,18 @@ as effective.
 
 | Phase | `concurrency` | `rate_limit` | `max_per_host` |
 |---|---|---|---|
-| `discovery` | yes (engine threads) | yes, **explicit only** (see below) | no |
+| `discovery` | yes (engine threads) | yes, **explicit only** (see below) | no (the scan's shared host slots apply) |
 | `spidering` | no | no | no |
 | `probe` | yes | yes | yes |
 | `dynamic-assessment` | yes (workers) | no (scan-wide limiter) | no (scan-wide semaphore) |
 | `known-issue-scan` | yes | yes | no |
-| `external-harvest` | yes | no | no |
+| `external-harvest` | no | no | no |
 
 `spidering` applies none of them: it drives one browser, with a per-target
 `max_duration` as its only bound. Its entry is therefore absent from the
-`scan.started` pace table rather than reported as zeros.
+`scan.started` pace table rather than reported as zeros. `external-harvest`
+applies none either: it only queries third-party archives and stores what they
+return as request-only records, so it never sends a request to the target.
 
 `discovery` is the one dial that does **not** inherit the global value. It is
 paced only when a rate is set explicitly — `scanning_pace.discovery.rate_limit`
@@ -292,6 +364,55 @@ paced only when a rate is set explicitly — `scanning_pace.discovery.rate_limit
 the global `rate_limit` carries a 100 rps default and adopting it would slow down
 every scan that merely loaded a config file. Unset means unpaced, and
 `concurrency` remains the throttle. The section value wins over the global flag.
+Discovery runs up to `discovery.target_concurrency` targets at once (never two on
+the same host:port): `concurrency` is the phase's thread budget, split across the
+targets in flight (`max(5, concurrency / active)`), and `rate_limit` is one
+bucket shared by every target in flight, so it is the rate of the whole phase.
+Discovery requests also take the scan's per-host slots and honour its dead-host
+quarantine (see the egress gate below).
+
+#### The egress gate
+
+Every request a native scan sends to a target goes through one gate, in this
+order: the dead-host quarantine check, a global `rate_limit` token, a per-host
+slot (`max_per_host`), then one counted wire attempt.
+
+- **Retries** (`--retries`, default 1) are separate attempts: each takes a
+  token, and the backoff before it (1s, doubling, capped at 10s) is slept
+  without holding the host slot. Only transport errors are retried; raw
+  requests (smuggling and request-line probes) are never retried.
+- **Redirect hops** that are followed take a token each; the original request's
+  host slot is held through the hops.
+- `requests_sent` (events, `scan status`, `scans.total_requests`) counts wire
+  attempts, retries and hops included.
+- **Discovery** uses its own token bucket (above) with the shared host slots and
+  quarantine. **Session logins** go through the gate on a priority lane that may
+  use one reserved slot per host, so a login never waits behind the module
+  requests that are waiting for it. The **port-sweep** HTTP confirm step is
+  gated; its TCP connect pre-filter is counted but not paced. The
+  `tls_cert_recon` and `tls_protocol_cipher_audit` handshakes take a gated
+  attempt each.
+
+- **Request budgets** (`max_requests`, `max_requests_per_host`) are checked in
+  the gate too, before the rate token: a request over budget is refused and
+  never dialed. Running out of `max_requests` stops the scan (partial,
+  `stop_reason: request_budget`); running out of `max_requests_per_host` stops
+  traffic to that host only (the `host_request_budget` limit). The browser
+  crawl's in-scope requests count toward `max_requests` within 500ms; nuclei
+  and the own-dialer paths below are not counted. See
+  [request budgets](guides/native-scan-phases.md#request-budgets).
+
+Some paths bypass the gate. `scan.started` lists them, for the phases the scan
+runs, as `egress: {gated: [...], exempt: [{path, reason}]}`:
+
+| Exempt path | Why |
+|---|---|
+| `known-issue-scan` | nuclei's own HTTP stack; its pace section's rate and concurrency apply |
+| `spidering` | the Chrome crawl; requests are counted, not gated |
+| `browser-confirmations` | Chrome used by confirmation modules; low volume |
+| `http_request_smuggling.cl0` | own raw-socket dialer; also bypasses `--proxy` |
+| `probe-tls`, `scheme-detection` | one TLS handshake / TCP connect per host:port in the probe phase |
+| `external-harvest`, `oast`, `npm-registry` | not target traffic |
 
 ### `discovery`
 
@@ -304,17 +425,21 @@ discovery:
   save_response_body: true
   enable_malformed_path_probe: false
   enrich_targets: false        # feed paths from spidering/harvest into discovery
+  target_concurrency: 0        # targets at once; 0 = min(targets, 3); same host:port never overlaps
+  flush_interval: 15s          # stream records every interval (and per 500 nodes); "0" = at target end
+  stream_fuzz: true            # stream wordlist/fuzz results too (keep-first dedup, first-N cluster cap); false = at target end
 
   recursion:
     enabled: true
     max_depth: 5
 
   wordlists:
-    short_file_path: ""        # custom wordlist paths
+    tier: auto                 # embedded dir/file lists: auto | short | long | large (auto: deep → large, else short)
+    short_file_path: ""        # custom wordlist paths (win over the tier)
     long_file_path: ""
     short_dir_path: ""
     long_dir_path: ""
-    fuzz_wordlist_path: ""
+    fuzz_wordlist_path: ""     # --discovery-wordlist (repeatable) replaces it
     use_observed_names: true
     use_observed_paths: true
     use_observed_files: true
@@ -345,21 +470,31 @@ discovery:
     source_maps: true
     asset_graph: true
     protocol_handshake: false    # bounded WebSocket/SSE GET handshake
-    worker_count: 0              # 0 = derive a conservative count from memory
-    memory_budget_mb: 768
+    worker_count: 0              # 0 = clamp(CPUs/2, 2, memory_budget_mb/384), max 8; one pool per process, grown (never shrunk) when a later discovery asks for more
+    memory_budget_mb: 0          # 0 = min(2048, max(768, RAM/8)) MiB
     cache_mb: 128
     worker_max_jobs: 100
     worker_max_rss_mb: 1024
     job_timeout: 60s
     normal_input_mb: 1           # above this, discovery drops costly stages
     max_ast_input_mb: 4          # above this, use bounded lexical fallback
-    hard_input_mb: 10
+    max_unpack_input_mb: 16      # beautify/unpack without an AST up to here; <= hard_input_mb (0 = hard)
+    hard_input_mb: 16            # larger scripts are skipped and counted (js_input_over_hard_limit)
     max_requests_per_file: 500
     max_ast_nodes: 500000
     max_asset_depth: 4
     max_assets_per_parent: 64
     max_assets_per_host: 512
     max_assets_total: 2048
+    max_chunks_per_runtime: 512  # webpack/Vite chunks one bundle's loader may add (replaces max_assets_per_parent for them)
+    persist_unreplayed: true     # also store JS templates never sent (withheld/deduped) as source=jstangle rows
+    persist_not_found_emit_statuses: [400, 405, 415, 422]  # not-found replays handed to later phases
+    max_persisted_js_templates: 2000  # per-target cap (js_template_persist_cap limit)
+  sitemap:                     # robots-named sitemaps, else /sitemap.xml + /sitemap_index.xml
+    enabled: true
+    max_urls: 2000               # sampled URLs spidered per target (sitemap_cap limit when hit)
+    per_shape: 3                 # sampled URLs per host + path shape
+    follow_index: true           # follow <sitemapindex> children (depth <= 2, <= 16 each)
 ```
 
 `exact` is the safe default: only high-confidence templates produce traffic.
@@ -380,11 +515,14 @@ spidering:
   max_duration: 30m
   max_consecutive_fails: 100
   headless: true
-  browser_count: 1           # >1 is clamped to 1 (single-threaded crawler)
+  browser_count: 1           # >1 is clamped to 1 (parallelism comes from tabs)
+  tabs: 1                    # tabs of that browser crawling one shared state graph (max 16); 1 at every intensity for now
+  tab_isolation: shared      # shared (one cookie jar) | context (each extra tab gets its own)
   strategy: adaptive         # normal | random | oldest_first | shallow_first | adaptive
   include_response_body: true
   browser_engine: chromium   # chromium | ungoogled | fingerprint
   no_cdp: false              # disable CDP event listener detection
+  max_listener_probe_nodes: 2000  # click-listener nodes turned into candidates per state; 0 = 2000, -1 = no cap
   no_forms: false            # legacy: interaction.edit_fields + submit_forms = false
   self_register: false       # legacy: interaction.register_account = true
   identity_email_domain: ""  # domain of generated emails; "" = example.com
@@ -392,6 +530,8 @@ spidering:
   max_capture_body_bytes: 0  # dynamic body ceiling; 0 = 16 MiB, -1 = none
   graph_output_dir: ""       # write crawl graphs here (one file per crawl)
   graph_include_values: false  # keep credential-bearing values in graphs
+  route_seeds: true          # browse client routes found in the JS (initial crawl + re-spider)
+  max_extra_seeds: 50        # route seeds browsed per target crawl (0 = 50)
   interaction:               # what the browser may change; every key optional
     edit_fields: true        # type into / toggle / select controls
     submit_forms: true       # dispatch a form submit by any mechanism
@@ -555,6 +695,12 @@ dynamic-assessment:
     passive_modules: ["all"]
 
   # hygiene_modules: true     # unset = follow intensity (see below)
+  # allow_risky_payloads: true # risk:high payloads/modules below deep (see below)
+
+  param_mining:                 # hidden-parameter mining (deep or --param-mining)
+    max_endpoints_per_host: 50  # 0 = default 50
+    max_requests_per_endpoint: 60
+    # wordlist: ~/params.txt    # extra names, tried before the built-in list
 
   extensions:
     enabled: false
@@ -563,10 +709,19 @@ dynamic-assessment:
     variables: {}               # key-value pairs passed to scripts
     allow_exec: false           # enable exec() and setEnv() in scripts
     sandbox_dir: ""             # base path for file ops (empty = cwd)
+    yaml_strict: false          # unknown .vgm.yaml key = load failure, not a warning (default true next minor)
+    allow_load_failures: false  # keep scanning when an --ext/custom_dir file fails to load (--ext-allow-failures)
     limits:
       timeout: 30s
       max_memory_mb: 128
 ```
+
+An extension named with `--ext` or listed in `custom_dir` that fails to load
+stops the scan before any request (exit 2, `error.code`
+`extension_load_failed`) unless `allow_load_failures` is set; one found in
+`extension_dir` is skipped with a warning. Every failure is reported as an
+`extension.failed` event and in `scan.finished.extensions_failed`. See
+[writing extensions](customization/writing-extensions.md#when-an-extension-fails-to-load).
 
 **Hardening advisories (`hygiene_modules`).** Fourteen modules report a *missing
 best-practice control* rather than an exploitable condition — absent security
@@ -601,6 +756,21 @@ vigolium config set dynamic-assessment.hygiene_modules true    # every scan
 runs them at every intensity, `false` suppresses them even at deep. Naming them
 explicitly with `--module-tag` or `--module-id` always wins, the same way an
 explicit selection already bypasses the intensity tier ceiling.
+
+**Risky payloads (`allow_risky_payloads`).** `OR`-per-row and stacked time-blind
+SQLi payloads, and whole modules tagged `risk:high`, run only at `--intensity
+deep` by default (MSSQL time-blind is therefore deep-only). Set
+`allow_risky_payloads: true` to allow them at every intensity. The
+`--allow-risky-payloads` flag on `scan`, `run`, `scan-url` and `scan-request`
+overrides this value in either direction; deep always allows them. See
+[Risky Payloads](native-scan/modules-reference.md#risky-payloads-riskhigh).
+
+**Param mining (`param_mining`).** Bounds the `param-mining` phase, which runs
+before the assessment at `--intensity deep` or with `--param-mining` and stores
+every hidden parameter it confirms as a `source: param-mining` record. These keys
+shape it only (`max_endpoints_per_host`, `max_requests_per_endpoint`, `max_words`,
+`wordlist`, `concurrency`); `--param-mining=false` or `--skip param-mining` turns
+it off. See [Param Mining](guides/native-scan-phases.md#param-mining).
 
 ### `scope`
 
@@ -648,11 +818,27 @@ server:
   users_file: ~/.vigolium/users.json
   service_port: 9002
   ingest_proxy_port: 0             # 0 = disabled
+  ingest_proxy_host: ""            # empty = 127.0.0.1; --ingest-proxy-host wins
+  ingest_proxy_token: ""           # Proxy-Authorization secret; --proxy-token wins
+  ingest_proxy_allow: []           # client CIDRs/IPs; --proxy-allow replaces
   cors_allowed_origins: reflect-origin
   enable_metrics: true
   enable_burp_bridge: false        # opt in to merging live Burp Proxy history into /api/http-records
   burp_bridge_url: 'http://127.0.0.1:9009'
+  api_version_default: 1           # REST body shape for requests that don't negotiate one (1 or 2)
+  auto_create_projects: false      # true = an unknown X-Project-UUID is created instead of 404
 ```
+
+`api_version_default` picks the REST response version for a client that does
+not ask for one (`Accept: application/vnd.vigolium.v2+json`,
+`Vigolium-Api-Version: 2` or `?api_version=2`). v1 is the historical shape;
+v2 is the CLI's envelope (`items`, and an `error` object with a string `code`).
+See [API overview](api-references/overview.md#response-versions).
+
+`auto_create_projects` restores the old behaviour of creating any unknown
+`X-Project-UUID` on first use. Without it the API answers
+`404 project_not_found`, and a client that means to create the project sends
+`X-Project-Create: 1` (or `?create=1`) with the request.
 
 `enable_burp_bridge` is the gate, not `burp_bridge_url`. The URL ships with a
 default address, so the bool is what decides whether the bridge is contacted —
@@ -662,6 +848,12 @@ otherwise every config would silently enable it. Precedence is
 `--caido-bridge-url` is an alias of the same flag (a Caido plugin exposing the
 same loopback bridge); both spellings set the same value and read the same env
 var and config key.
+
+The REST API binds `127.0.0.1` unless `--host` or `$VIGOLIUM_SERVER_HOST` says
+otherwise. The ingest proxy binds `ingest_proxy_host` (default `127.0.0.1`); a
+non-loopback proxy bind needs `ingest_proxy_token` and/or `ingest_proxy_allow`
+(or the `--proxy-token` / `--proxy-allow` flags), otherwise `vigolium server`
+exits 2 before listening.
 
 ### `agent`
 
@@ -694,6 +886,7 @@ agent:
     cache_size: 1024
     max_concurrent: 4              # 0 = default 4; negative = unbounded
     call_timeout_sec: 600          # negative = no added provider deadline
+    preflight_timeout: ""          # preflight ping deadline; "" = 15s (60s for a loopback endpoint)
     autopilot_mode: legacy         # legacy | shadow | enforced
     custom_provider:
       base_url: http://localhost:11434/v1
@@ -823,7 +1016,31 @@ external_harvester:
   api_keys:
     urlscan: ""
     virustotal: ""
+
+  per_shape: 3          # URLs kept per shape (host + path template + query names); -1 = no cap
+  max_urls: 5000        # URLs kept per harvested domain after shaping; -1 = no cap
+  cdx:
+    page_size: 10000    # Wayback CDX rows per resumeKey page
+    max_rows: 200000    # CDX rows read per domain; hitting it reports limit cdx_max_rows; -1 = no cap
+  probe: true           # harvest-probe: check harvested URLs on the live target before later phases scan them
 ```
+
+Every harvested URL is normalized before dedup: scheme and host lowercased,
+default port and fragment dropped, query pairs sorted by key, and tracking
+parameters (`utm_*`, `fbclid`, `gclid`, `_ga`, `mc_*`, …) removed. Static assets
+(images, fonts, CSS, audio/video, PDFs, archives) are dropped; `.js` and `.map`
+are kept because JS analysis reads them. The survivors are grouped by shape —
+host, `pathshape` template (`/users/42` → `/users/{int}`) and sorted query
+parameter names — and at most `per_shape` URLs per shape and `max_urls` per
+domain are stored. The phase prints raw versus kept counts with the reason for
+each drop.
+
+The Wayback index query keeps `collapse=urlkey`, filters out 404 rows and
+image/font/video/audio MIME types on the server (301/302/401/403 rows are kept:
+they are real endpoints), and pages with `showResumeKey`/`resumeKey`. A server
+that returns a full first page without a resume key is re-read once unpaged.
+Reaching `cdx.max_rows` stops the query and is reported as the `cdx_max_rows`
+limit on the `external-harvest` phase outcome.
 
 `wayback` and `commoncrawl` do more than read their index. Both also mine the
 archived response bodies the index points at — the robots.txt history of the
@@ -833,6 +1050,16 @@ endpoints no CDX index holds: a path that was only ever named in a script
 bundle, or one a site owner listed in robots.txt precisely so no crawler would
 record it. Mining is on by default, is capped by fixed per-domain budgets rather
 than flags, and is skipped entirely if the index query returns nothing.
+
+The harvest never contacts the target; URLs are stored as request-only records
+(`source=harvest`). With `probe: true` (the default) and a later phase that
+reaches the target, the `harvest-probe` step runs right after the harvest: one
+liveness request per origin, then one GET per harvested URL on a live origin
+(redirects recorded, not followed). Dead origins, `404`/`410` and soft-404 answers
+are dropped and their stubs deleted; survivors keep `source=harvest` with their
+response filled in. The counts land on the step's phase outcome. `probe: false`
+(or `--skip harvest-probe` for one run) leaves every stub for the later phases to
+fetch themselves. See [native scan phases](guides/native-scan-phases.md#external-harvest).
 
 ### `oast`
 
@@ -849,6 +1076,58 @@ oast:
   blind_xss_src: ""                # JS script src for blind XSS payloads
   enabled_blind_xss: false
 ```
+
+A `server_url` without a scheme registers over https only. If that fails, OAST
+is unavailable for the scan; it is never retried over cleartext http. Write
+`http://…` explicitly to use a cleartext interactsh server.
+
+Registration runs in the background from the start of a scan whose plan includes
+`dynamic-assessment`, so earlier phases hide its latency. The registration
+request is bounded at 3s with no retry, and dynamic assessment waits at most 3s
+more for it. When OAST is unavailable the scan prints one line
+(`OAST unavailable (oast.pro: dial timeout) — blind/out-of-band checks skipped`),
+emits an `oast.unavailable` event, records the non-stopping reason
+`oast_unavailable` (the scan is `partial`), and runs without out-of-band checks.
+`grace_period` is only waited out when a round actually planted a callback URL.
+
+#### Your own callback endpoint (`oast_url`)
+
+`oast_url` (or `--oast-url`) replaces interactsh with an endpoint you run and
+log. Put `{nonce}` in it so every probe gets its own callback:
+
+```yaml
+oast:
+  oast_url: "https://{nonce}.cb.example.com"   # nonce in the host (DNS + HTTP)
+  # oast_url: "https://cb.example.com/{nonce}" # nonce in the path (HTTP only)
+```
+
+Each probe mints a nonce locally (an xid: 20 characters of `[0-9a-v]`) and
+plants the template with it, without the scheme (`<nonce>.cb.example.com`, the
+same bare shape interactsh URLs have). The nonce's context (project, scan,
+class, module, target, parameter, request hash, planted payload) is stored in
+the `oast_payloads` table. Nothing polls your endpoint: when its log holds the
+callbacks, attribute them with
+
+```bash
+vigolium oast ingest cb.log --format raw-log            # access / DNS query log, one callback per line
+vigolium oast ingest out.jsonl --format interactsh-json # interactsh-client -json
+vigolium oast ingest poll.json --format collaborator-json -j
+```
+
+`oast ingest` looks for stored nonces in each callback's host or path (case-
+insensitively), rates the callback as a live interactsh callback would, and
+saves the finding to the scan that planted the probe. Callbacks without a
+stored nonce are ignored (`unmatched`); ingesting the same log again adds
+nothing (`duplicates`). The lookup is scoped to the current project. For
+`raw-log` the protocol is guessed per line (an HTTP request line is `http`,
+SMTP verbs `smtp`, anything else `dns`, the weakest claim); `--protocol`
+sets it for every line.
+
+An `oast_url` without `{nonce}` keeps the old behaviour: every probe plants the
+same URL, so a callback cannot be traced to the probe that caused it. The scan
+says so once at the start of dynamic assessment (`oast.mode:
+fixed-uncorrelated` on stderr and as an `error` event); the scan is not marked
+partial. `doctor` shows the mode on its OAST line.
 
 ### `notify`
 
@@ -886,15 +1165,28 @@ notify:
     url: ""
     authorization: ""
     timeout_sec: 10
+    events: [completed, failed, cancelled]   # default: every outcome
 ```
 
 #### Webhook on scan completion
 
 Fires a single `POST` once when a native or agentic scan reaches a terminal
-state (`completed` or `failed`). One request per scan, JSON body, retried up
-to 5 times on 5xx and network errors with exponential backoff (1s, 2s, 4s,
-8s, 16s). 4xx responses are not retried. Delivery is fire-and-forget — the
-scan does not block waiting for the response.
+state: `scan.completed`, `scan.failed` or `scan.cancelled`. One request per
+scan, JSON body, retried up to 5 times on 5xx and network errors with
+exponential backoff (1s, 2s, 4s, 8s, 16s). 4xx responses are not retried.
+
+It fires on every exit of `scan`, `run`, `scan-url`, `scan-request` (the
+direct path included, when results are persisted), `-S`, `--db-isolate`,
+`ingest` and the REST server, after the scan row's terminal status is
+written: a failed run, a scope that refused every target, and a Ctrl-C all
+report. The scan does not wait for the POST, but the CLI process waits up to
+10s for pending deliveries before it exits and prints a warning on stderr
+for any it gives up on. A second Ctrl-C exits at once, so a webhook still in
+flight then is lost. The server is long-lived and delivers in the background.
+
+`events` limits which outcomes POST (`completed`, `failed`, `cancelled`; the
+`scan.` prefix is accepted). Unset means all three. `config validate`
+rejects an unknown value.
 
 The webhook is best configured **per project** so each project can post to
 its own endpoint. Run `vigolium project config [uuid]` to print the overlay
@@ -934,9 +1226,27 @@ verbatim, so any scheme works (Bearer, Basic, custom).
 }
 ```
 
+Additive fields: `completeness` (`complete`/`partial`, omitted when
+unknown), `stop_reason` (why a partial run stopped short, e.g. `scan_budget`,
+`cancelled`, `no_targets_in_scope`) and `error` (the failure message on
+`scan.failed`).
+
 Field notes:
-- `event` is always `"scan.completed"`. The `status` field distinguishes
-  successful from failed runs.
+
+| Outcome | `event` | `status` |
+|---|---|---|
+| Ran to its end, including a curtailed run (`completeness: "partial"`) | `scan.completed` | `completed` |
+| Failed (an error, no target in scope, no target answered) | `scan.failed` | `failed` |
+| Interrupted (Ctrl-C, SIGTERM, a REST stop) | `scan.cancelled` | `cancelled` |
+| Agentic run stopped at `timeout` / `budget_exhausted` | `scan.completed` | the run status, `completeness: "partial"` |
+
+- A receiver that filters on `event == "scan.completed"` gets exactly the
+  runs it got before; the other two events are new. A cancelled native scan
+  is stored as `failed` with error `cancelled`, and is reported as
+  `scan.cancelled` / `cancelled`.
+- A run that failed before its scan row was created (for example a session
+  login failure) still reports `scan.failed` with the scan UUID it would have
+  used, its target and an empty findings count.
 - `scan_type` is `"native"` for module-driven scans; for agentic scans it is
   the run mode (`autopilot`, `swarm`, `audit`, `piolium`, or `query`).
 - `result_url` is the [storage](storage.md) `gs://` URL for the result
@@ -950,7 +1260,7 @@ Scanning profiles are YAML files stored in `~/.vigolium/profiles/` that override
 Apply a profile with:
 
 ```bash
-vigolium scan --scanning-profile aggressive
+vigolium scan -t https://example.com --scanning-profile aggressive
 ```
 
 This loads `~/.vigolium/profiles/aggressive.yaml` and overlays it onto the active config. Only non-zero fields in the profile override the base config; unspecified fields are left unchanged.

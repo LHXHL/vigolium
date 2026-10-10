@@ -203,7 +203,7 @@ func buildFuzzBody(fromPositionalURL bool) (body, contentType string, err error)
 
 	if len(fuzzForm) > 0 || len(fuzzFormString) > 0 {
 		if len(parts) > 0 {
-			return "", "", fmt.Errorf("--form cannot be combined with the --data flags (curl builds one body, not both)")
+			return "", "", usageErrorf("--form cannot be combined with the --data flags (curl builds one body, not both)")
 		}
 		body, contentType = curl.BuildMultipartBody(fuzzForm, fuzzFormString)
 		return body, contentType, nil
@@ -258,7 +258,7 @@ func resolveFuzzTimeout() time.Duration {
 // explicit --http-version into one value.
 func fuzzHTTPVersionSetting() (string, error) {
 	if fuzzHTTP11 && fuzzHTTP2 {
-		return "", fmt.Errorf("--http1.1 and --http2 are mutually exclusive")
+		return "", usageErrorf("--http1.1 and --http2 are mutually exclusive")
 	}
 	switch {
 	case fuzzHTTP11:
@@ -274,7 +274,7 @@ func fuzzHTTPVersionSetting() (string, error) {
 	case "http2", "2.0":
 		return "2", nil
 	default:
-		return "", fmt.Errorf("--http-version %q: want 1.1 or 2", v)
+		return "", usageErrorf("--http-version %q: want 1.1 or 2", v)
 	}
 }
 
@@ -308,6 +308,7 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
+			//vigolium:not-usage decided from file contents, after I/O
 			return nil, fmt.Errorf("--cacert %q: no certificates found", fuzzCACert)
 		}
 		tlsCfg.RootCAs = pool
@@ -325,7 +326,7 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
 	} else if fuzzClientKey != "" {
-		return nil, fmt.Errorf("--key requires --cert")
+		return nil, usageErrorf("--key requires --cert")
 	}
 	transport.TLSClientConfig = tlsCfg
 
@@ -392,13 +393,13 @@ func parseResolveOverrides(entries []string) (map[string]string, error) {
 		spec := strings.TrimPrefix(strings.TrimSpace(e), "+")
 		parts := strings.Split(spec, ":")
 		if len(parts) < 3 {
-			return nil, fmt.Errorf("--resolve %q: want host:port:address", e)
+			return nil, usageErrorf("--resolve %q: want host:port:address", e)
 		}
 		host, port := parts[0], parts[1]
 		addr := strings.Join(parts[2:], ":") // IPv6 literals carry colons
 		addr = strings.Trim(addr, "[]")
 		if host == "" || port == "" || addr == "" {
-			return nil, fmt.Errorf("--resolve %q: want host:port:address", e)
+			return nil, usageErrorf("--resolve %q: want host:port:address", e)
 		}
 		out[strings.ToLower(net.JoinHostPort(host, port))] = net.JoinHostPort(addr, port)
 	}
@@ -424,7 +425,7 @@ func fuzzCookieJar() (gohttp.CookieJar, int, func(), error) {
 // long run doesn't start before an unusable combination is noticed.
 func validateFuzzNetFlags() error {
 	if fuzzVerifyTLS && fuzzInsecure {
-		return fmt.Errorf("--insecure and --verify-tls are mutually exclusive")
+		return usageErrorf("--insecure and --verify-tls are mutually exclusive")
 	}
 	if _, err := fuzzHTTPVersionSetting(); err != nil {
 		return err
@@ -433,7 +434,7 @@ func validateFuzzNetFlags() error {
 		return err
 	}
 	if fuzzAsGet && fuzzAsHead {
-		return fmt.Errorf("--get and --head are mutually exclusive")
+		return usageErrorf("--get and --head are mutually exclusive")
 	}
 	return nil
 }

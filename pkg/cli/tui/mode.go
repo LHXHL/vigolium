@@ -1,11 +1,12 @@
 package tui
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
+
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 )
 
 // AddFlags registers the standard --tui and --no-tui flags on a command.
@@ -29,7 +30,7 @@ func Active(forceTUI, noTUI, jsonOutput bool) (bool, error) {
 		return false, nil
 	}
 	if !isatty.IsTerminal(os.Stdout.Fd()) && !isatty.IsTerminal(os.Stderr.Fd()) {
-		return false, fmt.Errorf("--tui requires a terminal, but neither stdout nor stderr is a TTY")
+		return false, clicommon.UsageErrorf("--tui requires a terminal, but neither stdout nor stderr is a TTY")
 	}
 	return true, nil
 }

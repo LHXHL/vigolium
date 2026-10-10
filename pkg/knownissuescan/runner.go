@@ -42,6 +42,7 @@ type Config struct {
 	ExcludeTags  []string      // template tags to exclude
 	Severities   []string      // filter by severity (empty = all)
 	TemplatesDir string        // custom templates directory
+	Templates    []string      // when set, the only template sources (see templateSources)
 	Timeout      time.Duration // max known-issue scan duration (default: 30m)
 	// RequestTimeout bounds a single nuclei request (default: 10s). It also caps
 	// how long an in-flight request can keep the abandoned scan goroutine alive
@@ -229,7 +230,7 @@ func Run(ctx context.Context, cfg Config) error {
 					httpmsg.NewHttpRequest([]byte(result.Request)),
 					httpmsg.NewHttpResponse([]byte(result.Response)),
 				)
-				recordUUID, recErr := cfg.Repository.SaveRecord(scanCtx, fuzzedRR, "spa", cfg.ProjectUUID)
+				recordUUID, recErr := cfg.Repository.SaveRecordWithLineage(scanCtx, fuzzedRR, "spa", cfg.ProjectUUID, database.RecordLineage{ScanUUID: cfg.ScanUUID})
 				if recErr != nil {
 					zap.L().Debug("KnownIssueScan: failed to save http record", zap.Error(recErr))
 				} else {
@@ -328,10 +329,10 @@ func buildEngineOptions(ctx context.Context, cfg Config, logger *gologger.Logger
 	}
 	opts = append(opts, nuclei.WithTemplateFilters(filters))
 
-	// Custom templates directory
-	if cfg.TemplatesDir != "" {
+	// Custom templates directory, or explicit template sources
+	if sources := templateSources(cfg.TemplatesDir, cfg.Templates); len(sources) > 0 {
 		opts = append(opts, nuclei.WithTemplatesOrWorkflows(nuclei.TemplateSources{
-			Templates: []string{cfg.TemplatesDir},
+			Templates: sources,
 		}))
 	}
 
@@ -434,34 +435,116 @@ func convertResult(nr *nucleiOutput.ResultEvent) *output.ResultEvent {
 	return result
 }
 
-// ensureTemplates checks that nuclei templates are available and attempts to
-// download them if missing. When Vigolium embeds nuclei as a library, the
-// automatic template download that the nuclei CLI performs does not run, so
-// fresh environments (Docker, VPS) may not have templates installed.
-func ensureTemplates(customDir string) error {
-	dir := customDir
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("knownissuescan: cannot determine home directory: %w", err)
+// templateSources resolves what nuclei loads: the explicit templates when
+// any are given (a relative entry that exists under dir is anchored there, so
+// `-t http/cves/x.yaml` works against a pinned templates directory), else the
+// templates directory itself. Empty means nuclei's own default directory.
+func templateSources(dir string, templates []string) []string {
+	if len(templates) == 0 {
+		if dir != "" {
+			return []string{dir}
 		}
-		dir = filepath.Join(home, "nuclei-templates")
+		return nil
+	}
+	out := make([]string, 0, len(templates))
+	for _, t := range templates {
+		if dir != "" && !filepath.IsAbs(t) {
+			if _, err := os.Stat(t); err != nil {
+				if _, err := os.Stat(filepath.Join(dir, t)); err == nil {
+					t = filepath.Join(dir, t)
+				}
+			}
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// Template setup states reported to a TemplatesProgress: started, then exactly
+// one finished or failed. Nothing is reported when the templates are present.
+const (
+	TemplatesStarted  = "started"
+	TemplatesFinished = "finished"
+	TemplatesFailed   = "failed"
+)
+
+// TemplatesProgress receives EnsureTemplates' progress. dir is the clone
+// target; err is set on TemplatesFailed.
+type TemplatesProgress func(state, dir string, err error)
+
+// cloneTemplates runs the nuclei-templates git clone. A variable so tests can
+// exercise EnsureTemplates without a network fetch.
+var cloneTemplates = func(ctx context.Context, dir string) ([]byte, error) {
+	return exec.CommandContext(ctx, "git", "clone", "--depth", "1",
+		"https://github.com/projectdiscovery/nuclei-templates.git", dir).CombinedOutput()
+}
+
+// TemplatesDir resolves the directory nuclei templates load from: customDir
+// when set, else ~/nuclei-templates.
+func TemplatesDir(customDir string) (string, error) {
+	if customDir != "" {
+		return customDir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("knownissuescan: cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, "nuclei-templates"), nil
+}
+
+// TemplatesPresent reports whether the templates directory exists. No network.
+func TemplatesPresent(customDir string) bool {
+	dir, err := TemplatesDir(customDir)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
+}
+
+// ensureTemplates is Run's own guard: a no-op when the scan runner already
+// provisioned the templates (EnsureTemplates with progress) before the phase.
+func ensureTemplates(customDir string) error {
+	return EnsureTemplates(customDir, nil)
+}
+
+// EnsureTemplates checks that nuclei templates are available and clones them
+// if missing. When Vigolium embeds nuclei as a library, the automatic template
+// download that the nuclei CLI performs does not run, so fresh environments
+// (Docker, VPS) may not have templates installed.
+//
+// onProgress may be nil, in which case the clone is announced with text lines
+// on stderr. With it, the caller renders the step (the scan runner turns it
+// into an ETA line and a scan.setup event) and the text is suppressed.
+func EnsureTemplates(customDir string, onProgress TemplatesProgress) error {
+	dir, err := TemplatesDir(customDir)
+	if err != nil {
+		return err
 	}
 
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		return nil
 	}
 
-	// Announced on stderr, not only through zap.
+	report := func(state string, err error) {
+		if onProgress != nil {
+			onProgress(state, dir, err)
+		}
+	}
+
+	// Announced, not only logged through zap.
 	//
-	// This is an unannounced network fetch of a multi-hundred-megabyte git repo
-	// into shared global state OUTSIDE the pinned database, triggered by the first
+	// This is a network fetch of a multi-hundred-megabyte git repo into shared
+	// global state OUTSIDE the pinned database, triggered by the first
 	// known-issue-scan a machine ever runs. Logging it at Info level meant it was
 	// invisible without --verbose, so what the operator actually experienced was a
 	// scan that hung for minutes on its first run with no explanation. A clone
 	// that takes that long has to say so while it is happening.
-	fmt.Fprintf(os.Stderr, "%s nuclei templates not found at %s — cloning them now (one-time, several hundred MB; pin a directory with --known-issue-scan-templates-dir to skip)\n",
-		"[known-issue-scan]", dir)
+	if onProgress == nil {
+		fmt.Fprintf(os.Stderr, "%s nuclei templates not found at %s — cloning them now (one-time, several hundred MB; pin a directory with --known-issue-scan-templates-dir to skip)\n",
+			"[known-issue-scan]", dir)
+	}
+	report(TemplatesStarted, nil)
 	zap.L().Info("KnownIssueScan: nuclei templates not found, attempting to download",
 		zap.String("path", dir))
 
@@ -469,16 +552,23 @@ func ensureTemplates(customDir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1",
-		"https://github.com/projectdiscovery/nuclei-templates.git", dir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("knownissuescan: nuclei templates not found at %s and auto-download failed: %s\n"+
-			"Install manually: git clone --depth 1 https://github.com/projectdiscovery/nuclei-templates.git %s",
-			dir, strings.TrimSpace(string(out)), dir)
+	if out, err := cloneTemplates(ctx, dir); err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		failure := fmt.Errorf("knownissuescan: nuclei templates not found at %s and auto-download failed: %s\n"+
+			"Install with: vigolium doctor --fix --only nuclei (or git clone --depth 1 https://github.com/projectdiscovery/nuclei-templates.git %s)",
+			dir, detail, dir)
+		report(TemplatesFailed, failure)
+		return failure
 	}
 
-	fmt.Fprintf(os.Stderr, "%s nuclei templates ready at %s (took %s)\n",
-		"[known-issue-scan]", dir, time.Since(started).Round(time.Second))
+	if onProgress == nil {
+		fmt.Fprintf(os.Stderr, "%s nuclei templates ready at %s (took %s)\n",
+			"[known-issue-scan]", dir, time.Since(started).Round(time.Second))
+	}
+	report(TemplatesFinished, nil)
 	zap.L().Info("KnownIssueScan: nuclei templates downloaded successfully", zap.String("path", dir))
 	return nil
 }

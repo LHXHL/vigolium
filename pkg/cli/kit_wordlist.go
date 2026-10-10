@@ -3,10 +3,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -56,43 +53,41 @@ func runKitWordlist(cmd *cobra.Command, args []string) error {
 
 	// No argument (or the literal "list") → inventory.
 	if len(args) == 0 || strings.EqualFold(args[0], "list") {
-		return printKitWordlistIndex(names)
+		return printKitWordlistIndex(cmd, names)
 	}
 
 	file, ok := resolveWordlistName(args[0], names)
 	if !ok {
-		return fmt.Errorf("unknown wordlist %q (available: %s)", args[0], strings.Join(names, ", "))
+		return usageErrorf("unknown wordlist %q (available: %s)", args[0], strings.Join(names, ", "))
 	}
-	data, err := wordlists.WordlistsFS.ReadFile(file)
+	data, err := wordlists.ReadList(file)
 	if err != nil {
 		return err
 	}
 
 	if globalJSON {
 		entries := splitWordlistEntries(data)
-		return writeAgentJSON(kitWordlistCatResult{Name: file, Count: len(entries), Entries: entries})
+		if entries == nil {
+			entries = []string{}
+		}
+		return emitStructRead(cmd, kitWordlistCatResult{Name: file, Count: len(entries), Entries: entries}, "entries")
 	}
 	// Print raw bytes verbatim so redirection reproduces the list exactly.
-	_, werr := os.Stdout.Write(data)
-	if werr == nil && len(data) > 0 && data[len(data)-1] != '\n' {
-		fmt.Println()
-	}
-	return werr
+	writeBody(data)
+	return nil
 }
 
-func printKitWordlistIndex(names []string) error {
+func printKitWordlistIndex(cmd *cobra.Command, names []string) error {
 	infos := make([]kitWordlistInfo, 0, len(names))
 	for _, n := range names {
-		data, err := wordlists.WordlistsFS.ReadFile(n)
+		data, err := wordlists.ReadList(n)
 		if err != nil {
 			continue
 		}
 		infos = append(infos, kitWordlistInfo{Name: n, Entries: len(splitWordlistEntries(data)), Bytes: len(data)})
 	}
 	if globalJSON {
-		return writeAgentJSON(struct {
-			Wordlists []kitWordlistInfo `json:"wordlists"`
-		}{infos})
+		return emitRead(cmd, "wordlists", infos, int64(len(infos)), 0, len(infos))
 	}
 	for _, in := range infos {
 		fmt.Printf("%s\t%d entries\t%d bytes\n", terminal.Bold(in.Name), in.Entries, in.Bytes)
@@ -100,20 +95,11 @@ func printKitWordlistIndex(names []string) error {
 	return nil
 }
 
-// listEmbeddedWordlists returns the sorted filenames in the embedded wordlist FS.
+// listEmbeddedWordlists returns the sorted names of the embedded wordlists.
+// Gzip-embedded lists appear under their decompressed name; read them with
+// wordlists.ReadList.
 func listEmbeddedWordlists() ([]string, error) {
-	entries, err := fs.ReadDir(wordlists.WordlistsFS, ".")
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
-	return names, nil
+	return wordlists.ListNames()
 }
 
 // resolveBuiltinWordlist reports whether name refers to an embedded wordlist and

@@ -1,0 +1,4 @@
+::error title=[critical] Error-based SQL injection::Error-based SQL injection at https://api.example/v1/users (finding_hash bbbbbbbbbbbb, id 13, module_id sqli-error)
+::error title=[high] Error-based SQL injection::Error-based SQL injection at https://shop.example/item?id=1' (finding_hash aaaaaaaaaaaa, id 12, module_id sqli-error)
+::warning file=app/config.py,line=42,title=[medium] Hardcoded secret%2C in config%3A key::Hardcoded secret, in config: key (finding_hash eeeeeeeeeeee, id 16, module_id audit-hardcoded-secret)
+::notice title=[info] Technology =HYPERLINK("x")::Technology =HYPERLINK("x") at https://shop.example/ (finding_hash cccccccccccc, id 14, module_id tech-detect)

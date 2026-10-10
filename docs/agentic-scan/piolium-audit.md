@@ -47,9 +47,9 @@ Reach for `vigolium agent audit --driver=piolium` (piolium) when:
 Reach for [vigolium-audit](vigolium-audit.md) instead when:
 
 - You have Claude Opus access and want the best-possible audit fidelity.
-- You want to lock the swarm/autopilot audit to Claude/Codex regardless of what's installed locally — pass `--audit=<mode>` to opt out of the auto-pick.
+- You want the swarm/autopilot in-pipeline audit to drive Claude/Codex — pass `--audit=<mode>`.
 
-Both harnesses can run as the in-pipeline audit during `vigolium agent autopilot` and `vigolium agent swarm`. When you don't pass `--audit` or `--piolium`, the CLI auto-picks: piolium runs if `pi`+the piolium extension are installed locally, otherwise it falls back to audit. The two are interoperable: findings from either land in the same `findings` table tagged with their source and can be reported together.
+Both harnesses can run as the in-pipeline audit during `vigolium agent autopilot` and `vigolium agent swarm`. Each runs only when `--audit` or `--piolium` is passed (or, for a natural-language prompt, when the prompt asks for an audit); nothing is auto-picked. The two are interoperable: findings from either land in the same `findings` table tagged with their source and can be reported together.
 
 ---
 
@@ -466,16 +466,9 @@ curl -N -s -X POST http://localhost:9002/api/agent/run/audit \
 
 ## In-Pipeline Audit (autopilot / swarm)
 
-`vigolium agent autopilot` and `vigolium agent swarm` can drive piolium as the in-pipeline audit that runs alongside (and feeds findings into) the operator agent. The same CLI that historically defaulted to audit now auto-picks piolium when it's locally available.
+`vigolium agent autopilot` and `vigolium agent swarm` can drive piolium as the in-pipeline audit that runs alongside (and feeds findings into) the operator agent.
 
-### Auto-pick
-
-When `--source` is set and **neither** `--audit` nor `--piolium` is passed:
-
-- If `pi` is on `$PATH` **and** the piolium extension is registered in `~/.pi/agent/settings.json` → **piolium** runs (mode = whatever the intensity preset chose, default `lite`).
-- Otherwise → **audit** runs (existing default).
-
-This preserves the prior behavior on machines without Pi while picking up piolium automatically once a user installs it.
+**No nested harness runs unless asked** (autopilot, swarm, and their REST endpoints): `--audit` defaults to `off`, `--piolium` to empty, and the intensity preset never turns one on. An installed `pi` is never picked automatically. Pass `--audit <mode>` or `--piolium <mode>` (REST: `audit` / `piolium`) explicitly; a natural-language prompt that asks for an audit counts as asking. The `-j` run document echoes the choice as `audit_harness: {mode, piolium, harness, agent_cli}`.
 
 ### Explicit override
 
@@ -483,13 +476,13 @@ This preserves the prior behavior on machines without Pi while picking up pioliu
 |---|---|
 | `--piolium` (explicit, any mode) | Piolium runs at that mode; audit turns off. |
 | `--audit` (explicit, any mode) | Audit runs at that mode; piolium stays off. |
-| `--audit=off --piolium=off` | No audit. |
+| neither (or `--audit=off --piolium=off`) | No audit (the default). |
 
 Only one harness runs per scan — there's no "run both" mode. If you want to compare both harnesses on the same source, run two scans.
 
 ### REST API equivalents
 
-Both `POST /api/agent/run/autopilot` and `POST /api/agent/run/swarm` accept a new `piolium` field that mirrors the CLI flag exactly. The same auto-pick rule applies server-side: omitting both `audit` and `piolium` triggers piolium when the **server process** has pi+piolium installed, audit otherwise.
+Both `POST /api/agent/run/autopilot` and `POST /api/agent/run/swarm` accept a `piolium` field that mirrors the CLI flag exactly. Omitting both `audit` and `piolium` runs no nested harness, whatever the server has installed.
 
 ```bash
 # Autopilot — explicit piolium audit
@@ -511,7 +504,7 @@ curl -s -X POST http://localhost:9002/api/agent/run/swarm \
     "piolium": "lite"
   }' | jq .
 
-# Autopilot — let auto-pick decide; pi+piolium on this host means piolium wins
+# Autopilot over REST — no audit/piolium field: the operator reads the source itself, no nested CLI
 curl -s -X POST http://localhost:9002/api/agent/run/autopilot \
   -H "Content-Type: application/json" \
   -d '{
@@ -535,7 +528,7 @@ Whichever harness runs:
 ### Caveats
 
 - **Pi-specific knobs** (`--pi-provider`, `--pi-model`, `--plm-*`) are **not** exposed on the autopilot/swarm surface. If you need those, run `vigolium agent audit --driver=piolium` (or `POST /api/agent/run/audit`) directly.
-- Auto-pick is host-local. If your CLI machine has pi installed but the **server** running autopilot doesn't (or vice versa), the auto-pick decision happens where the request handler runs.
+- `piolium` needs pi+piolium on the host that runs the request handler: a REST request runs it on the **server**, not on your CLI machine.
 
 ---
 

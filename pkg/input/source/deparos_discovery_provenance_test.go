@@ -64,7 +64,7 @@ func recWithSource(source string) collectedRecord {
 
 // TestGroupCollectedBySource verifies records bucket by label, first-seen order
 // is preserved (fuzz leads because it is appended first upstream), nil-rr
-// tombstones are dropped, and the flat list spans every group.
+// tombstones are dropped.
 func TestGroupCollectedBySource(t *testing.T) {
 	records := []collectedRecord{
 		recWithSource(crawlRecordSource),
@@ -75,21 +75,20 @@ func TestGroupCollectedBySource(t *testing.T) {
 		recWithSource(jstangleRecordSource),
 	}
 
-	order, bySource, flat := groupCollectedBySource(records)
+	order, bySource := groupCollectedBySource(records)
 
 	assert.Equal(t, []string{crawlRecordSource, jstangleRecordSource, formRecordSource}, order,
 		"labels ordered by first appearance")
 	assert.Len(t, bySource[crawlRecordSource], 2)
 	assert.Len(t, bySource[jstangleRecordSource], 2)
 	assert.Len(t, bySource[formRecordSource], 1)
-	assert.Len(t, flat, 5, "flat list must span every group minus the tombstone")
 }
 
 // TestGroupCollectedBySource_EmptySourceDefaultsToCrawl guards the zero-value
 // fallback: a record with no explicit source label lands under crawlRecordSource
 // rather than an empty-string bucket that no dedup pass would ever match.
 func TestGroupCollectedBySource_EmptySourceDefaultsToCrawl(t *testing.T) {
-	order, bySource, _ := groupCollectedBySource([]collectedRecord{recWithSource("")})
+	order, bySource := groupCollectedBySource([]collectedRecord{recWithSource("")})
 	assert.Equal(t, []string{crawlRecordSource}, order)
 	assert.Len(t, bySource[crawlRecordSource], 1)
 	assert.Empty(t, bySource[""], "no records should land under the empty-string label")

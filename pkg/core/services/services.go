@@ -2,6 +2,7 @@ package services
 
 import (
 	"github.com/projectdiscovery/fastdialer/fastdialer"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/dedup"
@@ -20,14 +21,21 @@ type Services struct {
 
 	// RateLimiter, when non-nil, caps the GLOBAL outbound request rate (requests
 	// per second) across all hosts — distinct from HostLimiter's per-host
-	// concurrency. It is engaged only when the operator sets an explicit
-	// --rate-limit, so default scans keep their current throughput. Shared across
-	// every Requester built from these Services (and their WithContext clones), so
-	// one token bucket governs the whole scan.
+	// concurrency. It is on by default: Options.RateLimit carries the documented
+	// 100 rps default (scanning_pace.rate_limit) even when --rate-limit is not
+	// typed, and only a rate of 0 ("unlimited") leaves it nil. Shared across every
+	// Requester built from these Services (and their WithContext clones), so one
+	// token bucket governs the whole scan.
 	RateLimiter *rate.Limiter
 
 	// HostErrors tracks host failures for circuit breaking
 	HostErrors *hosterrors.Cache
+
+	// Egress is the scan's egress gate over RateLimiter, HostLimiter and
+	// HostErrors, built once per scan so every sender shares one wire-attempt
+	// counter. Read it through EgressGate, which also covers a Services that
+	// never set it or that replaced one of the three components.
+	Egress *egress.Gate
 
 	// Notifier sends notifications (Telegram, Discord, etc.)
 	Notifier *notify.Manager
@@ -37,4 +45,26 @@ type Services struct {
 
 	// DedupManager manages deduplication for modules
 	DedupManager *dedup.Manager
+}
+
+// EgressGate returns the gate that applies these Services' rate limiter, host
+// limiter and breaker.
+//
+// It is s.Egress when that gate applies exactly those three. When a caller has
+// copied the Services and swapped one of them (the probe phase runs on its own
+// rate and host limiter), it is a view over the new components that still
+// counts into s.Egress's wire-attempt counter. With no Egress set it is a fresh
+// gate over the components. Nil-safe: a nil Services yields an ungated gate.
+func (s *Services) EgressGate() *egress.Gate {
+	if s == nil {
+		return egress.New(egress.Config{})
+	}
+	cfg := egress.Config{Rate: s.RateLimiter, Hosts: s.HostLimiter, Breaker: s.HostErrors}
+	if s.Egress == nil {
+		return egress.New(cfg)
+	}
+	if s.Egress.Matches(cfg) {
+		return s.Egress
+	}
+	return s.Egress.With(cfg)
 }

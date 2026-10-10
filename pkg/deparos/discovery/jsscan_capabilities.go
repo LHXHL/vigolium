@@ -6,24 +6,20 @@ import (
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/clientroute"
 	"go.uber.org/zap"
-)
-
-var (
-	colonRouteParameter = regexp.MustCompile(`(^|/):[A-Za-z_][A-Za-z0-9_]*[?+*]?`)
-	bracketRouteParam   = regexp.MustCompile(`\[\[?\.\.\.[^]]+\]\]?|\[[^]]+\]`)
-	braceRouteParam     = regexp.MustCompile(`\$?\{[^}]+\}`)
 )
 
 // processJSTangleCapabilityFacts connects non-legacy record families to
 // discovery without conflating them with generic HTTP traffic. GraphQL HTTP
-// operations become exact typed templates, routes become bounded navigation
-// hints, and WS/SSE/browser-flow records remain metadata for protocol-aware
-// consumers.
+// operations become exact typed templates, routes and path literals become
+// bounded navigation hints, and WS/SSE/browser-flow records remain metadata
+// for protocol-aware consumers.
 func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstangle.ScanResult) {
 	if result == nil {
 		return
 	}
+	e.collectJSFacts(sourceURL, result)
 	if e.storage != nil {
 		if repo := e.storage.Extractions(); repo != nil {
 			var sourceNodeID int64
@@ -66,10 +62,10 @@ func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstang
 
 	for i := range result.ClientRoutes {
 		route := &result.ClientRoutes[i]
-		if route.RouteType == "redirect" || route.Provenance.Confidence == "low" {
+		if clientroute.Skip(route.RouteType, route.Provenance.Confidence) {
 			continue
 		}
-		if path, ok := stableClientRoute(route.Path.Rendered); ok {
+		if path, ok := clientRouteSeed(route); ok {
 			e.AddObservedPath(path)
 		}
 		if route.LazyAsset != nil {
@@ -80,6 +76,55 @@ func (e *Engine) processJSTangleCapabilityFacts(sourceURL string, result *jstang
 			}})
 		}
 	}
+
+	// Path literals are low-confidence hints the helper reports only when no
+	// request or route consumed them; they seed the wordlist like linkfinder.
+	for i := range result.PathLiterals {
+		path, trusted, ok := pathLiteralSeed(&result.PathLiterals[i])
+		if !ok {
+			continue
+		}
+		if trusted {
+			// Same promotion linkfinder output gets: an API-looking path is
+			// fetched, and either kind survives eviction as a trusted seed.
+			e.AddObservedPathTrusted(path)
+			e.preserveAPIPathAsRequest(path)
+			continue
+		}
+		e.AddObservedPath(path)
+	}
+}
+
+// clientRouteSeed is the discovery path for a route fact; see
+// clientroute.SeedPath, which the browser crawl's route seeds share.
+func clientRouteSeed(route *jstangle.ClientRouteFact) (string, bool) {
+	if route == nil {
+		return "", false
+	}
+	fullPath := ""
+	if route.FullPath != nil {
+		fullPath = route.FullPath.Rendered
+	}
+	return clientroute.SeedPath(route.Path.Rendered, fullPath, route.Provenance.Extractor)
+}
+
+// pathLiteralKeyHint marks an object key or binding name that says the
+// literal is a URL or endpoint rather than an arbitrary slash-separated value.
+var pathLiteralKeyHint = regexp.MustCompile(`(?i)url|path|endpoint|api|route|href`)
+
+// pathLiteralSeed decides how a low-confidence path literal feeds discovery.
+// Only static values are used: a templated literal has no concrete path to
+// seed. trusted is true when the binding name or the path itself says
+// "endpoint"; those get the trusted frequency boost and API promotion.
+func pathLiteralSeed(fact *jstangle.PathLiteralFact) (path string, trusted, ok bool) {
+	if fact == nil || !fact.Value.Static {
+		return "", false, false
+	}
+	path = strings.TrimSpace(fact.Value.Rendered)
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return "", false, false
+	}
+	return path, pathLiteralKeyHint.MatchString(fact.Key) || looksLikeAPIEndpointPath(path), true
 }
 
 func staticHeader(name, value string) jstangle.HeaderTemplate {
@@ -184,18 +229,4 @@ func graphQLOperationRequest(operation *jstangle.GraphQLOperationFact) (jstangle
 		},
 		Client: "graphql", OperationType: operation.OperationType, Provenance: provenance,
 	}, true
-}
-
-func stableClientRoute(raw string) (string, bool) {
-	route := strings.TrimSpace(raw)
-	if !strings.HasPrefix(route, "/") || strings.Contains(route, "*") || strings.Contains(route, "${") && !braceRouteParam.MatchString(route) {
-		return "", false
-	}
-	route = colonRouteParameter.ReplaceAllString(route, `${1}1`)
-	route = bracketRouteParam.ReplaceAllString(route, "1")
-	route = braceRouteParam.ReplaceAllString(route, "1")
-	if strings.ContainsAny(route, "[]{}*") {
-		return "", false
-	}
-	return route, true
 }

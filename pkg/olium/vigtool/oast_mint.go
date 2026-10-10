@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/oast"
@@ -17,6 +18,10 @@ import (
 // per surface is normal; well past that the agent is almost certainly
 // spraying rather than reasoning.
 const oastMintPerRunCap = 50
+
+// oastMintReadyWait bounds how long the first mint waits for the interactsh
+// registration that it starts.
+const oastMintReadyWait = 5 * time.Second
 
 // NewOASTMintTool returns the oast_mint tool. The interactsh Service is
 // lazy-owned by autopilot: it isn't created until the agent actually mints a
@@ -72,7 +77,7 @@ func (*OASTMintTool) Schema() map[string]any {
 	}
 }
 
-func (t *OASTMintTool) Execute(_ context.Context, args map[string]any, _ tool.UpdateFn) (tool.Result, error) {
+func (t *OASTMintTool) Execute(ctx context.Context, args map[string]any, _ tool.UpdateFn) (tool.Result, error) {
 	if t.ctx == nil {
 		return tool.Result{Content: "oast_mint unavailable: no scan context configured", IsError: true}, nil
 	}
@@ -87,7 +92,7 @@ func (t *OASTMintTool) Execute(_ context.Context, args map[string]any, _ tool.Up
 		}, nil
 	}
 
-	t.once.Do(t.bringUp)
+	t.once.Do(func() { t.bringUp(ctx) })
 	if t.unavailable != "" {
 		return tool.Result{Content: "oast_mint: " + t.unavailable, IsError: true}, nil
 	}
@@ -132,11 +137,12 @@ func (t *OASTMintTool) Execute(_ context.Context, args map[string]any, _ tool.Up
 	}, nil
 }
 
-// bringUp lazily constructs and starts the interactsh-backed Service from the
-// run's resolved config. Runs exactly once; failure is cached in t.unavailable
+// bringUp lazily constructs the interactsh-backed Service from the run's
+// resolved config and waits up to oastMintReadyWait for its registration. Runs
+// exactly once; failure is cached in t.unavailable
 // so every subsequent call returns the same clear message rather than retrying
 // a broken client.
-func (t *OASTMintTool) bringUp() {
+func (t *OASTMintTool) bringUp(ctx context.Context) {
 	settings, err := config.LoadSettings(t.ctx.ConfigPath)
 	if err != nil || settings == nil {
 		t.unavailable = fmt.Sprintf("could not load config to initialise OAST: %v", err)
@@ -153,7 +159,14 @@ func (t *OASTMintTool) bringUp() {
 			"(server unreachable or misconfigured). Blind callbacks can't be confirmed this run."
 		return
 	}
-	svc.Start()
+	// Registration runs in the background; a canary is only worth minting
+	// once the server has accepted it and polling is live.
+	if err := svc.WaitReady(ctx, oastMintReadyWait); err != nil {
+		svc.Close()
+		t.unavailable = fmt.Sprintf("OAST unavailable (%v). Blind callbacks can't be confirmed this run; "+
+			"confirm blind classes another way.", err)
+		return
+	}
 	t.svc = svc
 }
 

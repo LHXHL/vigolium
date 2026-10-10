@@ -110,7 +110,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 			ExtractedResults: []string{
 				fmt.Sprintf("Technology: %s", stp.Technology),
 				fmt.Sprintf("HTTP status: %d", ctx.Response().StatusCode()),
-				fmt.Sprintf("Stack trace: %s", truncate(match, 200)),
+				fmt.Sprintf("Stack trace: %s", modkit.Truncate(match, 200)),
 			},
 			Info: output.Info{
 				Name:        fmt.Sprintf("%s Stack Trace Exposed", stp.Technology),
@@ -128,11 +128,4 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 	}
 
 	return results, nil
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

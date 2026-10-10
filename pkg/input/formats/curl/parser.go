@@ -102,7 +102,10 @@ func ParseSingleCommand(cmd string) (*httpmsg.HttpRequestResponse, error) {
 func ParseSingleCommandWithHints(cmd string) (*httpmsg.HttpRequestResponse, TransportHints, error) {
 	var spec curlSpec
 
-	tokens := tokenizeCurlCommand(cmd)
+	tokens, err := tokenizeCurlCommand(cmd)
+	if err != nil {
+		return nil, spec.hints, err
+	}
 	if len(tokens) == 0 {
 		return nil, spec.hints, fmt.Errorf("empty curl command")
 	}
@@ -370,9 +373,14 @@ func appendQuery(rawURL, query string) (string, error) {
 	return u.String(), nil
 }
 
-// tokenizeCurlCommand splits a curl command string into tokens, handling single/double
-// quotes and backslash escapes.
-func tokenizeCurlCommand(cmd string) []string {
+// tokenizeCurlCommand splits a curl command string into tokens the way a POSIX
+// shell would for a simple command: single quotes, double quotes, backslash
+// escapes, backslash-newline continuations, and bash's ANSI-C `$'...'` quoting
+// (what Chrome's "Copy as cURL (bash)" emits for any body containing a quote,
+// newline or non-ASCII byte). `$"..."` is treated as a plain double-quoted
+// string. An unterminated quote is an error: guessing where it should have
+// ended would silently produce a different request body.
+func tokenizeCurlCommand(cmd string) ([]string, error) {
 	var tokens []string
 	var current strings.Builder
 	inSingle := false
@@ -406,6 +414,22 @@ func tokenizeCurlCommand(cmd string) []string {
 			}
 			escaped = true
 
+		case ch == '$' && !inSingle && !inDouble && i+1 < len(cmd) && cmd[i+1] == '\'':
+			// ANSI-C quoting: $'...'
+			decoded, next, err := decodeANSICQuoted(cmd, i+2)
+			if err != nil {
+				return nil, err
+			}
+			current.WriteString(decoded)
+			quoted = true
+			i = next
+
+		case ch == '$' && !inSingle && !inDouble && i+1 < len(cmd) && cmd[i+1] == '"':
+			// Locale-translated string $"..." — no translation, plain double quotes.
+			inDouble = true
+			quoted = true
+			i++
+
 		case ch == '\'' && !inDouble:
 			inSingle = !inSingle
 			quoted = true
@@ -426,11 +450,128 @@ func tokenizeCurlCommand(cmd string) []string {
 		}
 	}
 
+	switch {
+	case inSingle:
+		return nil, fmt.Errorf("unterminated single quote in curl command")
+	case inDouble:
+		return nil, fmt.Errorf("unterminated double quote in curl command")
+	case escaped:
+		// A lone trailing backslash: the shell would wait for more input.
+		return nil, fmt.Errorf("curl command ends with a dangling backslash")
+	}
+
 	if current.Len() > 0 || quoted {
 		tokens = append(tokens, current.String())
 	}
 
-	return tokens
+	return tokens, nil
+}
+
+// decodeANSICQuoted decodes the body of a bash `$'...'` string starting at
+// cmd[start] (just past the opening quote). It returns the decoded text and
+// the index of the closing quote.
+//
+// Supported escapes follow bash: \a \b \e \E \f \n \r \t \v \\ \' \" \?
+// \NNN (1-3 octal digits), \xHH (1-2 hex digits), \uHHHH and \UHHHHHHHH
+// (encoded as UTF-8), and \cX (control character). Any other escaped byte is
+// kept with its backslash, as bash does.
+func decodeANSICQuoted(cmd string, start int) (string, int, error) {
+	var sb strings.Builder
+	for i := start; i < len(cmd); i++ {
+		ch := cmd[i]
+		if ch == '\'' {
+			return sb.String(), i, nil
+		}
+		if ch != '\\' {
+			sb.WriteByte(ch)
+			continue
+		}
+		if i+1 >= len(cmd) {
+			break
+		}
+		i++
+		switch e := cmd[i]; e {
+		case 'a':
+			sb.WriteByte('\a')
+		case 'b':
+			sb.WriteByte('\b')
+		case 'e', 'E':
+			sb.WriteByte(0x1b)
+		case 'f':
+			sb.WriteByte('\f')
+		case 'n':
+			sb.WriteByte('\n')
+		case 'r':
+			sb.WriteByte('\r')
+		case 't':
+			sb.WriteByte('\t')
+		case 'v':
+			sb.WriteByte('\v')
+		case '\\', '\'', '"', '?':
+			sb.WriteByte(e)
+		case 'x':
+			n, consumed := parseRadix(cmd[i+1:], 16, 2)
+			if consumed == 0 {
+				sb.WriteString(`\x`)
+				continue
+			}
+			sb.WriteByte(byte(n))
+			i += consumed
+		case 'u', 'U':
+			width := 4
+			if e == 'U' {
+				width = 8
+			}
+			n, consumed := parseRadix(cmd[i+1:], 16, width)
+			if consumed == 0 {
+				sb.WriteByte('\\')
+				sb.WriteByte(e)
+				continue
+			}
+			sb.WriteRune(rune(n))
+			i += consumed
+		case 'c':
+			if i+1 < len(cmd) {
+				i++
+				sb.WriteByte(cmd[i] & 0x1f)
+			}
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			n, consumed := parseRadix(cmd[i:], 8, 3)
+			sb.WriteByte(byte(n))
+			i += consumed - 1
+		default:
+			sb.WriteByte('\\')
+			sb.WriteByte(e)
+		}
+	}
+	return "", 0, fmt.Errorf("unterminated $'...' quote in curl command")
+}
+
+// parseRadix reads up to maxDigits digits of the given base from the front of
+// s, returning the value and how many bytes it consumed.
+func parseRadix(s string, base, maxDigits int) (int, int) {
+	n, i := 0, 0
+	for ; i < len(s) && i < maxDigits; i++ {
+		d := digitValue(s[i])
+		if d < 0 || d >= base {
+			break
+		}
+		n = n*base + d
+	}
+	return n, i
+}
+
+func digitValue(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10
+	default:
+		return -1
+	}
 }
 
 // buildRawHTTPRequest assembles a raw HTTP request string and calls httpmsg.ParseRawRequestWithURL.

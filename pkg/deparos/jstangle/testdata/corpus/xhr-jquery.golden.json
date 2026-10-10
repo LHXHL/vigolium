@@ -1,0 +1,34 @@
+{
+  "status": "complete",
+  "counts": {
+    "httpRequest": 4
+  },
+  "facts": [
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1/config",
+      "method": "GET",
+      "confidence": "medium"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1/items",
+      "method": "DELETE",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1/profile",
+      "method": "PUT",
+      "bodyKind": "json",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1/submit",
+      "method": "POST",
+      "bodyKind": "json",
+      "confidence": "medium"
+    }
+  ]
+}

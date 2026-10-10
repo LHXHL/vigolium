@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -132,6 +134,7 @@ type Config struct {
 	MaxDepth            int           // 0 = unlimited
 	MaxStates           int           // 0 = unlimited
 	MaxDuration         time.Duration // 0 = unlimited
+	DrainGrace          time.Duration // stop scheduling new states this long before the deadline (shouldTerminate); 0 = off
 	MaxConsecutiveFails int           // 0 = disabled (unlimited)
 
 	// Browser
@@ -139,6 +142,23 @@ type Config struct {
 	BrowserCount  int
 	BrowserEngine string // "chromium" (default), "ungoogled", or "fingerprint"
 	BrowserPath   string // explicit path to browser binary (overrides auto-detection)
+
+	// Tabs is how many tabs of the one browser crawl the shared state graph at
+	// once (0 or 1 = one tab, the single-threaded crawl). Each extra tab is a
+	// consumer of the same frontier: it claims a state, reaches it and fires its
+	// actions while the others do the same elsewhere. See TabsCount.
+	Tabs int
+
+	// TabIsolation is TabIsolationShared ("" too): every tab shares the
+	// browser's default context — one cookie jar, so a logout in one tab logs
+	// the others out — or TabIsolationContext: each extra tab gets a browser
+	// context of its own, seeded with the configured auth and the cookies the
+	// first tab holds when it opens.
+	TabIsolation string
+
+	// Stealth is the stealth mode: StealthAuto (or ""), StealthOn or StealthOff.
+	// See StealthEnabled for what auto resolves to.
+	Stealth string
 
 	// BrowserCompat is the set of browser security exceptions in force; see
 	// DefaultBrowserCompat for the defaults.
@@ -187,6 +207,10 @@ type Config struct {
 	ExcludeFrames                []string // Frame names/patterns to exclude from crawling
 	CrawlHiddenAnchors           bool     // Crawl hidden anchor elements
 	RandomizeElements            bool     // Randomize order of extracted elements
+
+	// MaxListenerProbeNodes caps the listener-bearing nodes the CDP listener
+	// pass turns into click candidates per state (0 = 2000, negative = no cap).
+	MaxListenerProbeNodes int
 
 	// Policy is what the crawl is permitted to change. Install it with
 	// ApplyPolicy, which also sets the derived switches below
@@ -392,6 +416,13 @@ type Config struct {
 	SeedMaxURLs      int
 	SeedMaxCrawlURLs int
 
+	// ExtraSeeds are caller-supplied entry points (client routes from the
+	// target's JavaScript) browsed into the frontier alongside the robots and
+	// sitemap seeds; see seedFrontier. MaxExtraSeeds caps how many survive
+	// scope, dedup and priority ordering (0 = DefaultMaxExtraSeeds).
+	ExtraSeeds    []ExtraSeed
+	MaxExtraSeeds int
+
 	// SpeculativeLinks makes the crawler scrape URL-like strings out of HTML
 	// comments and inline script in the LIVE document and fetch the same-origin
 	// ones — see harvestSpeculativeLinks. Default on.
@@ -526,16 +557,18 @@ func New(targetURL string) (*Config, error) {
 		ExcludeSelectors:             []string{},
 		DontClickSelectors:           []string{},
 		DontClickChildrenOfSelectors: []string{},
-		// WebDriverBackedEmbeddedBrowser.USE_CDP defaults to false
-		// Must be explicitly enabled via BrowserOptions.setUSE_CDP(true) or
-		// crawlRules().clickElementsWithClickEventHandler()
-		UseCDPDetection: false,
+		// On by default, matching the product runs (spidering.no_cdp: false):
+		// library and test callers that build a Config directly detect elements
+		// whose only clue is a JS click listener, too.
+		UseCDPDetection: true,
 		ClickOnce:       true,
 		// CRITICAL FIX: (true instead of false)
 		CrawlFrames:        true,
 		ExcludeFrames:      []string{},
 		CrawlHiddenAnchors: true,
 		RandomizeElements:  false,
+
+		MaxListenerProbeNodes: 2000, // browser.DefaultMaxListenerProbeNodes
 
 		FormFillEnabled: true,
 		FormFillMode:    FormFillNormal,
@@ -729,6 +762,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("BrowserCount must be >= 1, got: %d", c.BrowserCount)
 	}
 
+	if c.Tabs < 0 || c.Tabs > MaxTabs {
+		return fmt.Errorf("Tabs must be 0-%d, got: %d", MaxTabs, c.Tabs) //nolint:staticcheck // ST1005: leads with the Config.Tabs field name, like its siblings
+	}
+	if err := ValidateTabIsolation(c.TabIsolation); err != nil {
+		return err
+	}
+
 	if c.FormFillMode != FormFillNormal && c.FormFillMode != FormFillRandom {
 		return fmt.Errorf("FormFillMode must be 'normal' or 'random', got: %s", c.FormFillMode)
 	}
@@ -773,8 +813,76 @@ func (c *Config) Validate() error {
 	if !validEngines[c.BrowserEngine] {
 		return fmt.Errorf("BrowserEngine must be 'chromium', 'ungoogled', or 'fingerprint', got: %s", c.BrowserEngine)
 	}
+	if err := ValidateStealth(c.Stealth); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+// MaxTabs caps Config.Tabs. Each tab costs roughly 80-150 MB of browser memory
+// and shares one renderer budget, so past a handful they add contention, not
+// coverage.
+const MaxTabs = 16
+
+// Tab isolation modes (Config.TabIsolation).
+const (
+	TabIsolationShared  = "shared"
+	TabIsolationContext = "context"
+)
+
+// TabIsolationModes lists the accepted Config.TabIsolation values, default first.
+var TabIsolationModes = []string{TabIsolationShared, TabIsolationContext}
+
+// ValidateTabIsolation rejects a mode outside TabIsolationModes ("" is shared).
+func ValidateTabIsolation(mode string) error {
+	if mode != "" && !slices.Contains(TabIsolationModes, mode) {
+		return fmt.Errorf("TabIsolation must be one of %s, got: %s", strings.Join(TabIsolationModes, ", "), mode)
+	}
+	return nil
+}
+
+// TabsCount returns the number of crawl tabs, at least 1.
+func (c *Config) TabsCount() int {
+	if c.Tabs < 1 {
+		return 1
+	}
+	return c.Tabs
+}
+
+// Stealth modes (Config.Stealth). The default, auto, applies the stealth
+// patches to the default chromium engine and leaves the ungoogled/fingerprint
+// engines alone: those carry their own --fingerprint* identity, which the
+// patches would contradict.
+const (
+	StealthAuto = "auto"
+	StealthOn   = "on"
+	StealthOff  = "off"
+)
+
+// StealthModes lists the accepted Config.Stealth values, default first.
+var StealthModes = []string{StealthAuto, StealthOn, StealthOff}
+
+// ValidateStealth rejects a stealth mode outside StealthModes ("" is auto).
+func ValidateStealth(mode string) error {
+	if mode != "" && !slices.Contains(StealthModes, mode) {
+		return fmt.Errorf("Stealth must be one of %s, got: %s", strings.Join(StealthModes, ", "), mode) //nolint:staticcheck // ST1005: leads with the Config.Stealth field name, like its siblings
+	}
+	return nil
+}
+
+// StealthEnabled reports whether the browser should drop its automation
+// markers (launcher flags, init script, User-Agent client hints). It reduces
+// false negatives from trivial bot walls; it is not an evasion feature.
+func (c *Config) StealthEnabled() bool {
+	switch c.Stealth {
+	case StealthOn:
+		return true
+	case StealthOff:
+		return false
+	default:
+		return c.BrowserEngine != "ungoogled" && c.BrowserEngine != "fingerprint"
+	}
 }
 
 // GetBasicAuthURL returns the URL with basic auth credentials embedded.

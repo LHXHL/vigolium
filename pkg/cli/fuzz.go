@@ -70,11 +70,12 @@ var (
 	fuzzNoCalibrate bool
 	fuzzConcurrency int
 	fuzzDelayMs     int
+	fuzzRateLimit   float64
+	fuzzSuffixes    []string
 	fuzzTimeout     time.Duration
 	fuzzNoRedirects bool
 	fuzzOutputPath  string
 	fuzzAllResults  bool
-	fuzzPretty      bool
 	fuzzFailOnMatch bool
 
 	// Burp bridge.
@@ -108,13 +109,19 @@ SOURCE (one of):
 
 POSITIONS (what to fuzz):
   a literal FUZZ marker anywhere (request line, path, header, body) wins if present;
-  otherwise --fuzz method|path|params|param-name|headers|cookies|all (default: all
-  discovered insertion points), or --point TYPE:name (e.g. URL_PARAM:id) / --header Name.
+  otherwise --fuzz method|path|params|headers|cookies|all (default: all discovered
+  insertion points), or --point TYPE:name (e.g. URL_PARAM:id) / --header Name.
+  Opt-in kinds the default set never includes:
+    --fuzz param-name                rename an existing query/form parameter (?id=1 → ?PAYLOAD=1)
+    --fuzz new-param[:query|body|json]  ADD a parameter named PAYLOAD (parameter discovery;
+                                     alias param-add; location inferred when omitted)
+    --fuzz body                      replace the entire request body
 
 PAYLOADS (combine freely):
   --class <name,..>              built-in class: ` + strings.Join(fuzz.PayloadClasses(), ", ") + `
   -w/--wordlist <file|builtin>   builtins: ` + strings.Join(fuzz.BuiltinNames(), ", ") + `
   -p/--payload <literal>         inline payload (repeatable)
+  --suffix .php,.bak             also send each payload with each suffix appended (ffuf -e)
 
 ANOMALY DETECTION (-a/--anomaly) — the alternative to writing matchers by hand:
   Writing a matcher means knowing the interesting size or status up front. Instead,
@@ -138,10 +145,12 @@ MATCHERS keep a response, EXCLUDES drop it. Numeric flags take a predicate:
   --match-status-code all keeps every status. Auto-calibration (on by default) suppresses
   the target's wildcard/catch-all response; suppressed results carry "calibrated":true.
 
-OUTPUT:
-  default        JSONL (one object per send) to stdout — matched only unless --all-results
-  -j/--json      stream JSONL to stderr, print ONE summary object to stdout (agent handle:
-                 baseline, counts, ranked top anomalies, a ready follow-up query)
+OUTPUT (matched results only unless --all-results):
+  default          a human table, one line per result, to stdout
+  -j/--json        ONE envelope on stdout (agent handle: baseline, counts, ranked
+                   top results in items, anomalies, a ready follow-up query)
+  --format jsonl   the per-payload stream, one JSON object per send, to stdout
+  -o <file>        the per-payload stream to a file (stdout keeps the table or -j)
 Honors HTTP_PROXY / HTTPS_PROXY for Burp inspection.
 
 BURP ENGINE (needs --burp-bridge-url, the extension's loopback listener):
@@ -174,7 +183,7 @@ func init() {
 	f.StringVarP(&fuzzData, "data", "d", "", "Request body override (refreshes Content-Length)")
 
 	// Positions.
-	f.StringVar(&fuzzSelector, "fuzz", "", "What to fuzz: method|path|params|param-name|headers|cookies|all (default: all insertion points)")
+	f.StringVar(&fuzzSelector, "fuzz", "", "What to fuzz: "+fuzz.SelectorNames+" (default: all insertion points; param-name renames a parameter, new-param adds one, body replaces the body)")
 	f.StringArrayVar(&fuzzPoints, "point", nil, "Explicit insertion point 'TYPE:name' e.g. URL_PARAM:id (repeatable)")
 	f.StringArrayVar(&fuzzFuzzHeaders, "fuzz-header", nil, "Fuzz a specific header by name (repeatable)")
 	f.StringVar(&fuzzKeyword, "keyword", fuzz.DefaultKeyword, "Marker keyword replaced by each payload when present in the request")
@@ -183,6 +192,7 @@ func init() {
 	f.StringSliceVar(&fuzzClasses, "class", nil, "Built-in payload class to inject: "+strings.Join(fuzz.PayloadClasses(), ",")+" (comma-list)")
 	f.StringArrayVarP(&fuzzWordlists, "wordlist", "w", nil, "Payload wordlist: a builtin name or file path (repeatable)")
 	f.StringArrayVarP(&fuzzPayloads, "payload", "p", nil, "Inline payload literal (repeatable)")
+	f.StringSliceVar(&fuzzSuffixes, "suffix", nil, "Also send each payload with each of these suffixes appended, literally (comma-list, e.g. .php,.bak — ffuf's -e)")
 
 	// Matchers keep a response; excludes drop it. Same surface on both sides,
 	// registered from one table so they cannot drift.
@@ -208,11 +218,11 @@ func init() {
 	f.BoolVar(&fuzzNoCalibrate, "no-calibrate", false, "Disable auto-calibration of the target's catch-all response")
 	f.IntVarP(&fuzzConcurrency, "concurrency", "c", 10, "Concurrent requests")
 	f.IntVar(&fuzzDelayMs, "delay", 0, "Delay in ms before each request (per worker)")
+	f.Float64VarP(&fuzzRateLimit, "rate-limit", "r", 0, "Max requests/second across all workers, counting baseline and calibration sends (0 = unlimited; fractions allowed, e.g. 0.5). Not taken from scanning config")
 	f.DurationVar(&fuzzTimeout, "timeout", replay.DefaultTimeout, "Per-request timeout (e.g. 30s)")
 	f.BoolVar(&fuzzNoRedirects, "no-redirects", false, "Don't follow 30x redirects")
-	f.StringVarP(&fuzzOutputPath, "output", "o", "", "Write JSONL results to this file (default: stdout)")
+	f.StringVarP(&fuzzOutputPath, "output", "o", "", "Write the per-payload JSONL stream to this file (stdout keeps the human table, or the -j envelope)")
 	f.BoolVar(&fuzzAllResults, "all-results", false, "Emit every result, not just matched ones")
-	f.BoolVar(&fuzzPretty, "pretty", false, "Human-readable table instead of JSONL")
 	f.BoolVar(&fuzzFailOnMatch, "fail-on-match", false, "Exit non-zero (3) if any result matches (for agent/CI gating)")
 
 	// Burp bridge — route each payload through Burp's engine (exact bytes) and,
@@ -242,6 +252,20 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	if err := validateFuzzNetFlags(); err != nil {
+		return err
+	}
+	if fuzzRateLimit < 0 {
+		return usageErrorf("--rate-limit must be >= 0 (0 = unlimited), got %v", fuzzRateLimit)
+	}
+	if fuzzDelayMs < 0 {
+		return usageErrorf("--delay must be >= 0, got %d", fuzzDelayMs)
+	}
+	// Where results go is settled before the source is read or anything is
+	// sent: the human table by default, one envelope under -j, the per-payload
+	// stream under --format jsonl or -o (streamOutputPlan).
+	warnLegacyPretty(cmd, false)
+	plan, err := resolveStreamOutputPlan(cmd, fuzzOutputPath, true)
+	if err != nil {
 		return err
 	}
 
@@ -302,7 +326,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	// which position selector resolved to what, and the exact bytes a payload
 	// produces. Everything above this line is offline; nothing below is.
 	if fuzzDryRun {
-		return emitFuzzDryRun(src, positions, payloads, cases)
+		return emitFuzzDryRun(cmd, src, positions, payloads, cases)
 	}
 
 	bridge, err := setupFuzzBurpBridge(ctx, src)
@@ -323,26 +347,33 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Result-stream sink. Under -j, stdout is reserved for the single summary
-	// object, so per-payload JSONL streams to stderr (the agent can still tail
-	// it); an explicit -o file always wins.
-	out := os.Stdout
-	switch {
-	case fuzzOutputPath != "":
-		f, err := os.Create(fuzzOutputPath)
-		if err != nil {
-			return fmt.Errorf("create --output %q: %w", fuzzOutputPath, err)
+	// Result sinks. The per-payload JSONL stream goes to -o or, under
+	// --format jsonl, stdout; the human table goes to stdout when nothing else
+	// owns it. Under -j neither is on stdout: the envelope is, and the stream
+	// no longer spills onto stderr (a driver capturing 2>&1 would read it as
+	// part of the document). Both are buffered: the engine calls OnResult on
+	// its serialized path, so an unbuffered write(2) per result put every
+	// worker behind one syscall.
+	var stream, table *bufio.Writer
+	var enc *json.Encoder
+	if plan.stream {
+		w := os.Stdout
+		if plan.streamPath != "" {
+			f, err := os.Create(plan.streamPath)
+			if err != nil {
+				return fmt.Errorf("create --output %q: %w", plan.streamPath, err)
+			}
+			defer func() { _ = f.Close() }()
+			w = f
 		}
-		defer func() { _ = f.Close() }()
-		out = f
-	case globalJSON:
-		out = os.Stderr
+		stream = bufio.NewWriter(w)
+		defer func() { _ = stream.Flush() }()
+		enc = json.NewEncoder(stream)
 	}
-	// Buffered: the engine calls OnResult on its serialized path, so an
-	// unbuffered write(2) per result put every worker behind one syscall.
-	sink := bufio.NewWriter(out)
-	defer func() { _ = sink.Flush() }()
-	enc := json.NewEncoder(sink)
+	if plan.human {
+		table = bufio.NewWriter(os.Stdout)
+		defer func() { _ = table.Flush() }()
+	}
 
 	cookies, jarLoaded, saveJar, err := fuzzCookieJar()
 	if err != nil {
@@ -358,8 +389,8 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 			terminal.InfoSymbol(), fuzzSessionID, jarLoaded)
 	}
 
-	fmt.Fprintf(os.Stderr, "%s fuzzing %s://%s (%d position(s), %s, %d sends)\n",
-		terminal.InfoSymbol(), src.Scheme, src.Hostname, len(positions), mode, len(cases))
+	fmt.Fprintf(os.Stderr, "%s fuzzing %s://%s (%d position(s), %s, %d sends, pace: %s)\n",
+		terminal.InfoSymbol(), src.Scheme, src.Hostname, len(positions), mode, len(cases), currentFuzzPace())
 
 	// OnResult is called serially by the engine, so no extra locking is needed
 	// to accumulate the ranked top anomalies for the -j summary.
@@ -384,15 +415,17 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		NoRedirects: fuzzNoRedirects,
 		Concurrency: fuzzConcurrency,
 		DelayMs:     fuzzDelayMs,
+		RateLimit:   fuzzRateLimit,
 		OnResult: func(r fuzz.Result) {
 			if fuzzAllResults || r.Matched {
-				if fuzzPretty {
-					_, _ = fmt.Fprintln(sink, prettyResult(r))
-				} else {
+				if table != nil {
+					_, _ = fmt.Fprintln(table, prettyResult(r))
+				}
+				if enc != nil {
 					_ = enc.Encode(r)
 				}
 			}
-			if globalJSON && r.Matched && len(topResults) < fuzzTopResultsCollect {
+			if plan.envelope && r.Matched && len(topResults) < fuzzTopResultsCollect {
 				topResults = append(topResults, r)
 			}
 		},
@@ -421,13 +454,18 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	}
 
 	report, runErr := fuzz.Run(ctx, job)
-	_ = sink.Flush()
+	if stream != nil {
+		_ = stream.Flush()
+	}
+	if table != nil {
+		_ = table.Flush()
+	}
 	if report != nil {
 		fmt.Fprintf(os.Stderr, "%s baseline: status=%d len=%d | sent=%d matched=%d calibrated=%d errors=%d\n",
 			terminal.InfoSymbol(), report.Baseline.Status, report.Baseline.Length,
 			report.Sent, report.Matched, report.Calibrated, report.Errors)
 		if anomalyCfg != nil {
-			emitAnomalyReport(out, report)
+			emitAnomalyReport(report, !plan.streamOnStdout())
 		}
 	}
 	if runErr != nil {
@@ -439,9 +477,13 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		organizerPushed = pushFuzzMatchesToOrganizer(ctx, bridge, src, organizerMatches, organizerOverflow)
 	}
 
-	if globalJSON && report != nil {
-		if err := emitFuzzJSONSummary(src, args, len(positions), len(payloads), report, topResults, bridge != nil && bridge.sendViaBurp, organizerPushed); err != nil {
+	if plan.envelope && report != nil {
+		if err := emitFuzzJSONSummary(cmd, src, args, len(positions), len(payloads), report, topResults, bridge != nil && bridge.sendViaBurp, organizerPushed); err != nil {
 			return err
+		}
+	} else if report != nil {
+		if tail := fuzzFollowUpArgs(args, report.Matched); tail != nil {
+			fmt.Fprintf(os.Stderr, "%s confirm with the hardened modules: %s\n", terminal.InfoSymbol(), followUpQuery(tail...))
 		}
 	}
 	if fuzzFailOnMatch && report != nil && report.Matched > 0 {
@@ -513,9 +555,39 @@ func loadFuzzPayloadSets(positions []fuzz.Position) (shared []string, sets [][]s
 		if lerr != nil {
 			return nil, nil, fmt.Errorf("payloads for %s: %w", positions[idx].Name, lerr)
 		}
-		sets[idx] = list
+		sets[idx] = fuzz.ExpandSuffixes(list, fuzzSuffixes)
 	}
-	return shared, sets, nil
+	return fuzz.ExpandSuffixes(shared, fuzzSuffixes), sets, nil
+}
+
+// fuzzPace is the effective pacing of a fuzz run, as reported on the
+// "fuzzing …" stderr line and in the -j summary and dry-run report. fuzz is a
+// primitive: these come from its own flags only, never scanning config.
+type fuzzPace struct {
+	RateLimit   float64 `json:"rate_limit"` // requests/second across all workers; 0 = unlimited
+	Concurrency int     `json:"concurrency"`
+	DelayMs     int     `json:"delay_ms"`
+}
+
+func currentFuzzPace() fuzzPace {
+	c := fuzzConcurrency
+	if c <= 0 {
+		c = 10 // fuzz.Run's default
+	}
+	return fuzzPace{RateLimit: fuzzRateLimit, Concurrency: c, DelayMs: fuzzDelayMs}
+}
+
+// String renders the pace for the human stderr line.
+func (p fuzzPace) String() string {
+	rate := "unlimited"
+	if p.RateLimit > 0 {
+		rate = strconv.FormatFloat(p.RateLimit, 'f', -1, 64) + " req/s"
+	}
+	s := fmt.Sprintf("%s, %d worker(s)", rate, p.Concurrency)
+	if p.DelayMs > 0 {
+		s += fmt.Sprintf(", %dms delay", p.DelayMs)
+	}
+	return s
 }
 
 // lastCut splits s at the final occurrence of sep.
@@ -542,18 +614,18 @@ func resolveBaselineSamples(anomalyOn bool) int {
 
 // emitAnomalyReport prints the ranked anomalies after a --anomaly run.
 //
-// It goes to stderr (not the result sink) so it never contaminates the JSONL
-// stream a caller is parsing; the same anomalies also ride in the -j summary
-// object, which is where an agent should read them from.
-func emitAnomalyReport(sink *os.File, report *fuzz.Report) {
+// It goes to stderr (not a result sink) so it never contaminates the JSONL
+// stream a caller is parsing; the same anomalies also ride in the -j envelope,
+// which is where an agent should read them from. detailed renders the ranked
+// table; it is off only when the JSONL stream owns stdout, where every result
+// already carries its score.
+func emitAnomalyReport(report *fuzz.Report, detailed bool) {
 	if len(report.Anomalies) == 0 {
 		fmt.Fprintf(os.Stderr, "%s no anomalies at the %s threshold — every response looked like the others\n",
 			terminal.InfoSymbol(), fuzzAnomalyThreshold)
 		return
 	}
-	// Only render the human table when the results themselves aren't already
-	// going to stdout as JSONL for something else to read.
-	if sink != os.Stdout || fuzzPretty {
+	if detailed {
 		fmt.Fprintf(os.Stderr, "%s %d anomal%s found:\n",
 			terminal.InfoSymbol(), len(report.Anomalies), plural(len(report.Anomalies), "y", "ies"))
 		for _, a := range report.Anomalies {
@@ -619,6 +691,7 @@ type fuzzDryRunReport struct {
 	Sends       int                `json:"sends"`
 	Request     string             `json:"baseline_request"`
 	ExampleCase string             `json:"example_case,omitempty"`
+	Pace        fuzzPace           `json:"pace"`
 }
 
 type fuzzDryRunPos struct {
@@ -637,7 +710,7 @@ type fuzzDryRunPayloads struct {
 // fuzzDryRunSample bounds how many payloads the report echoes back.
 const fuzzDryRunSample = 10
 
-func emitFuzzDryRun(src *replaySource, positions []fuzz.Position, payloads []string, cases []fuzz.Case) error {
+func emitFuzzDryRun(cmd *cobra.Command, src *replaySource, positions []fuzz.Position, payloads []string, cases []fuzz.Case) error {
 	probe := "FUZZED"
 	if len(payloads) > 0 {
 		probe = payloads[0]
@@ -648,6 +721,7 @@ func emitFuzzDryRun(src *replaySource, positions []fuzz.Position, payloads []str
 		Mode:    fuzzMode,
 		Sends:   len(cases),
 		Request: string(src.BaselineRequest),
+		Pace:    currentFuzzPace(),
 		Payloads: fuzzDryRunPayloads{
 			Count:  len(payloads),
 			Sample: payloads[:min(len(payloads), fuzzDryRunSample)],
@@ -669,10 +743,10 @@ func emitFuzzDryRun(src *replaySource, positions []fuzz.Position, payloads []str
 	}
 
 	if globalJSON {
-		return writeAgentJSON(report)
+		return emitObject(cmd, ".", report)
 	}
-	fmt.Printf("%s dry run — %d position(s), %s, %d sends, nothing sent\n\n",
-		terminal.InfoSymbol(), len(positions), fuzzMode, report.Sends)
+	fmt.Printf("%s dry run — %d position(s), %s, %d sends, pace: %s, nothing sent\n\n",
+		terminal.InfoSymbol(), len(positions), fuzzMode, report.Sends, report.Pace)
 	for _, p := range report.Positions {
 		fmt.Printf("  %s:%s\n", p.Type, p.Name)
 		if p.Base != "" {
@@ -725,18 +799,18 @@ func setupFuzzBurpBridge(ctx context.Context, _ *replaySource) (*fuzzBurpBridge,
 		return nil, nil
 	}
 	if strings.TrimSpace(fuzzBurpBridgeURL) == "" {
-		return nil, fmt.Errorf("--send-via-burp/--matches-to-organizer require --burp-bridge-url")
+		return nil, usageErrorf("--send-via-burp/--matches-to-organizer require --burp-bridge-url")
 	}
 	httpMode, err := burpbridge.ParseHTTPMode(fuzzHTTPMode)
 	if err != nil {
-		return nil, fmt.Errorf("--http-mode: %w", err)
+		return nil, usageErrorf("--http-mode: %w", err)
 	}
 	if fuzzHTTPMode != "" && !fuzzSendViaBurp {
 		fmt.Fprintf(os.Stderr, "%s --http-mode only applies with --send-via-burp; ignoring\n", terminal.WarningSymbol())
 	}
 	validated, err := burpbridge.ValidateURL(fuzzBurpBridgeURL)
 	if err != nil {
-		return nil, fmt.Errorf("--burp-bridge-url: %w", err)
+		return nil, usageErrorf("--burp-bridge-url: %w", err)
 	}
 	client, err := burpbridge.New(validated)
 	if err != nil {
@@ -859,12 +933,17 @@ func resolveFuzzSource(ctx context.Context, args []string) (*replaySource, error
 
 	case fuzzRecordUUID != "":
 		if repo == nil {
+			//vigolium:not-usage no database is open; a store problem, not a flag problem
 			return nil, fmt.Errorf("--record-uuid requires database access")
 		}
 		return sourceFromRecord(ctx, repo, fuzzRecordUUID)
 
 	default:
-		if data, ok := readStdinIfPiped(); ok {
+		data, ok, err := readStdinIfPiped()
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			return sourceFromInputString(ctx, repo, data, "")
 		}
 		return nil, fmt.Errorf("no source: pass a URL, --input, --record-uuid, or pipe a request on stdin")
@@ -1017,9 +1096,11 @@ const (
 	fuzzTopResultsEmit    = 20
 )
 
-// fuzzJSONSummary is the single object printed to stdout under -j: a compact,
-// agent-friendly handle on the run (baseline, counts, ranked anomalies, and a
-// ready confirmation command) so an agent needn't parse the JSONL stream.
+// fuzzJSONSummary is the run summary behind the -j envelope: a compact,
+// agent-friendly handle on the run (baseline, counts, ranked anomalies) so an
+// agent needn't parse the JSONL stream. envelopeFromStruct moves top_results
+// to `items` and keeps every other key at the top level; the ready
+// confirmation command rides in the envelope's own query/query_argv.
 type fuzzJSONSummary struct {
 	Target          string        `json:"target"`
 	Positions       int           `json:"positions"`
@@ -1032,17 +1113,17 @@ type fuzzJSONSummary struct {
 	TopResults      []fuzz.Result `json:"top_results"`
 	Anomalies       []fuzz.Result `json:"anomalies,omitempty"`
 	AnomaliesElided int           `json:"anomalies_elided,omitempty"`
-	Query           string        `json:"query,omitempty"`
 	SentViaBurp     bool          `json:"sent_via_burp,omitempty"`
 	OrganizerPushed int           `json:"organizer_pushed,omitempty"`
+	Pace            fuzzPace      `json:"pace"`
 }
 
-func emitFuzzJSONSummary(src *replaySource, args []string, positions, payloadCount int, report *fuzz.Report, top []fuzz.Result, sentViaBurp bool, organizerPushed int) error {
+func emitFuzzJSONSummary(cmd *cobra.Command, src *replaySource, args []string, positions, payloadCount int, report *fuzz.Report, top []fuzz.Result, sentViaBurp bool, organizerPushed int) error {
 	sort.SliceStable(top, func(i, j int) bool { return fuzzResultRank(top[i]) > fuzzResultRank(top[j]) })
 	if len(top) > fuzzTopResultsEmit {
 		top = top[:fuzzTopResultsEmit]
 	}
-	return writeAgentJSON(fuzzJSONSummary{
+	env, err := envelopeFromStruct(cmd, fuzzJSONSummary{
 		Target:          fmt.Sprintf("%s://%s", src.Scheme, src.Hostname),
 		Positions:       positions,
 		Payloads:        payloadCount,
@@ -1054,10 +1135,21 @@ func emitFuzzJSONSummary(src *replaySource, args []string, positions, payloadCou
 		TopResults:      top,
 		Anomalies:       report.Anomalies,
 		AnomaliesElided: report.AnomaliesElided,
-		Query:           fuzzFollowUpQuery(args, report.Matched),
 		SentViaBurp:     sentViaBurp,
 		OrganizerPushed: organizerPushed,
-	})
+		Pace:            currentFuzzPace(),
+	}, "top_results")
+	if err != nil {
+		return err
+	}
+	// items holds the top results, but total is the whole matched count: the
+	// envelope describes the run, and `matched` beyond the top-N is the signal
+	// that there is more in the stream.
+	env.Total = int64(report.Matched)
+	if tail := fuzzFollowUpArgs(args, report.Matched); tail != nil {
+		env.WithQuery(tail...)
+	}
+	return writeAgentJSON(env)
 }
 
 // fuzzResultRank scores a matched result so the most investigation-worthy
@@ -1080,25 +1172,26 @@ func fuzzResultRank(r fuzz.Result) int {
 	return score
 }
 
-// fuzzFollowUpQuery returns a copy-pasteable command to confirm anomalies with
-// the hardened module scanner, seeded from the same source the user supplied.
-// Empty when nothing matched or the source can't be re-expressed as a flag.
-func fuzzFollowUpQuery(args []string, matched int) string {
+// fuzzFollowUpArgs returns the argv tail of a command that confirms anomalies
+// with the hardened module scanner, seeded from the same source the user
+// supplied. nil when nothing matched or the source can't be re-expressed as a
+// flag.
+func fuzzFollowUpArgs(args []string, matched int) []string {
 	if matched == 0 {
-		return ""
+		return nil
 	}
-	var srcArg string
+	var src string
 	switch {
 	case len(args) == 1:
-		srcArg = "-i '" + args[0] + "'"
+		src = args[0]
 	case fuzzInputFile != "":
-		srcArg = "-i " + fuzzInputFile
+		src = fuzzInputFile
 	case fuzzInput != "" && fuzzInput != "-":
-		srcArg = "-i '" + fuzzInput + "'"
+		src = fuzzInput
 	default:
-		return ""
+		return nil
 	}
-	return "vigolium scan-request " + srcArg + " -m " + fuzzConfirmModules() + " -j   # confirm anomalies with hardened modules"
+	return []string{"scan-request", "-i", src, "-m", fuzzConfirmModules(), "-j"}
 }
 
 // fuzzConfirmModules maps the payload classes used into module-selection terms

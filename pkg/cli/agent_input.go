@@ -3,38 +3,48 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 
+	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/agent"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
 )
 
-// stdinIsPiped returns true if stdin is a pipe (not a terminal).
-func stdinIsPiped() bool {
-	fi, err := os.Stdin.Stat()
+// readStdinIfPiped reads stdin when something is actually piped into it, for
+// the commands that fall back to stdin only when no other input was given
+// (autopilot, replay, swarm, fuzz).
+//
+// fileutil.HasStdin is the one "is stdin piped" test. It is true for any stdin
+// that is not a terminal, including a pipe a parent process opened and never
+// writes to, so the read is implicit: it gets the short first-byte window
+// (implicitStdinWait) and nothing within it, or an empty pipe, is reported as
+// not piped — ("", false, nil). A producer that starts and then fails (a stall
+// past --input-read-timeout, input over the size limit, a read error) is an
+// error. That used to be swallowed into "no target", which pointed the caller
+// at the wrong problem.
+func readStdinIfPiped() (data string, ok bool, err error) {
+	if !fileutil.HasStdin() {
+		return "", false, nil
+	}
+	raw, err := readImplicitStdin()
 	if err != nil {
-		return false
+		if errors.Is(err, clicommon.ErrStdinNoData) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to read stdin: %w", err)
 	}
-	return (fi.Mode() & os.ModeCharDevice) == 0
-}
-
-// readStdinIfPiped reads all data from stdin if it's a pipe.
-// Returns the data and true if stdin was piped, or empty string and false otherwise.
-func readStdinIfPiped() (string, bool) {
-	if !stdinIsPiped() {
-		return "", false
+	if len(raw) == 0 {
+		return "", false, nil
 	}
-	data, err := readStdin()
-	if err != nil || len(data) == 0 {
-		return "", false
-	}
-	return strings.TrimRight(string(data), "\n\r"), true
+	return strings.TrimRight(string(raw), "\n\r"), true, nil
 }
 
 // resolveInstruction returns the instruction text from either --instruction or --instruction-file.
@@ -61,7 +71,7 @@ func resolveInstruction(instruction, instructionFile string) (string, error) {
 // file is missing/unreadable or yields neither an instruction nor a request.
 func resolvePlanFile(path, input string) (planInstruction string, requests []string, err error) {
 	if input != "" {
-		return "", nil, fmt.Errorf("--plan-file cannot be combined with --input")
+		return "", nil, usageErrorf("--plan-file cannot be combined with --input")
 	}
 	data, rerr := os.ReadFile(path)
 	if rerr != nil {
@@ -139,7 +149,11 @@ func resolveInputAndTarget(target, input string, repo *database.Repository) (*Re
 		}
 		inputData = string(data)
 	} else if inputData == "" && target == "" {
-		if data, ok := readStdinIfPiped(); ok {
+		data, ok, err := readStdinIfPiped()
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			inputData = data
 		}
 	}
@@ -416,26 +430,28 @@ func resolveRawPrompt(args []string, promptFlag, promptFile, planFile string) (s
 	if len(args) > 0 {
 		if pos := strings.TrimSpace(args[0]); pos != "" {
 			if prompt != "" {
-				return "", fmt.Errorf("pass the task guidance once: use the positional [prompt] or --prompt, not both")
+				return "", usageErrorf("pass the task guidance once: use the positional [prompt] or --prompt, not both")
 			}
 			prompt = pos
 		}
 	}
 	if pf := strings.TrimSpace(promptFile); pf != "" {
 		if prompt != "" {
-			return "", fmt.Errorf("pass the task guidance once: use --prompt-file or the positional [prompt]/--prompt, not both")
+			return "", usageErrorf("pass the task guidance once: use --prompt-file or the positional [prompt]/--prompt, not both")
 		}
 		data, rerr := os.ReadFile(config.ExpandPath(pf))
 		if rerr != nil {
+			//vigolium:not-usage file read failure
 			return "", fmt.Errorf("--prompt-file %q: %w", pf, rerr)
 		}
 		prompt = strings.TrimSpace(string(data))
 		if prompt == "" {
+			//vigolium:not-usage decided from file contents, after I/O
 			return "", fmt.Errorf("--prompt-file %q is empty", pf)
 		}
 	}
 	if prompt != "" && planFile != "" {
-		return "", fmt.Errorf("--plan-file cannot be combined with a prompt (--prompt / --prompt-file / positional): the plan file owns the instruction channel; fold the guidance into the plan file instead")
+		return "", usageErrorf("--plan-file cannot be combined with a prompt (--prompt / --prompt-file / positional): the plan file owns the instruction channel; fold the guidance into the plan file instead")
 	}
 	return prompt, nil
 }

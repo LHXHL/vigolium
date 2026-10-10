@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -15,8 +16,18 @@ import (
 // the full Handlers god-struct. It is composed into Handlers (see the findings
 // field) and wired in NewHandlers.
 type findingsHandlers struct {
-	db   *database.DB
-	repo *database.Repository
+	db *database.DB
+	// readDB is the read-intent pool (nil: db serves reads too).
+	readDB *database.DB
+	repo   *database.Repository
+}
+
+// reader is the pool the list/get queries use.
+func (h *findingsHandlers) reader() *database.DB {
+	if h.readDB != nil {
+		return h.readDB
+	}
+	return h.db
 }
 
 // findingsHandler returns the findings sub-handler, lazily constructing it from
@@ -26,7 +37,7 @@ type findingsHandlers struct {
 // rather than nil-derefing on the first request.
 func (h *Handlers) findingsHandler() *findingsHandlers {
 	if h.findings == nil {
-		h.findings = &findingsHandlers{db: h.db, repo: h.repo}
+		h.findings = &findingsHandlers{db: h.db, readDB: h.readDB, repo: h.repo}
 	}
 	return h.findings
 }
@@ -34,10 +45,7 @@ func (h *Handlers) findingsHandler() *findingsHandlers {
 // HandleListFindings handles GET /api/findings
 func (h *findingsHandlers) HandleListFindings(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	projectUUID := getProjectUUID(c)
@@ -91,10 +99,7 @@ func (h *findingsHandlers) HandleListFindings(c fiber.Ctx) error {
 			case "":
 				continue
 			default:
-				return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-					Error: "invalid record_kind: " + raw,
-					Code:  fiber.StatusBadRequest,
-				})
+				return respondErrorMsg(c, fiber.StatusBadRequest, "invalid record_kind: "+raw)
 			}
 		}
 	}
@@ -145,19 +150,23 @@ func (h *findingsHandlers) HandleListFindings(c fiber.Ctx) error {
 		}
 	}
 
-	fqb := database.NewFindingsQueryBuilder(h.db, filters)
+	fqb := database.NewFindingsQueryBuilder(h.reader(), filters)
 	ctx := c.Context()
 
 	// One round-trip for the page and its total, rather than Execute + Count.
-	findings, total, err := fqb.ExecuteWithCount(ctx)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "query failed: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+	var (
+		findings []*database.Finding
+		total    int64
+	)
+	if err := retryRead(ctx, func() error {
+		var err error
+		findings, total, err = fqb.ExecuteWithCount(ctx)
+		return err
+	}); err != nil {
+		return respondQueryError(c, err)
 	}
 
-	return c.JSON(PaginatedResponse{
+	return respondList(c, PaginatedResponse{
 		ProjectUUID: projectUUID,
 		Data:        findings,
 		Total:       total,
@@ -170,19 +179,13 @@ func (h *findingsHandlers) HandleListFindings(c fiber.Ctx) error {
 // HandleDeleteFinding handles DELETE /api/findings/:id — deletes a single finding by numeric ID.
 func (h *findingsHandlers) HandleDeleteFinding(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	idStr := c.Params("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid finding ID: must be a number",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "invalid finding ID: must be a number")
 	}
 
 	// Verify the finding exists and belongs to the request's project. Only the
@@ -190,28 +193,16 @@ func (h *findingsHandlers) HandleDeleteFinding(c fiber.Ctx) error {
 	existingProject, err := h.repo.FindingProjectUUID(c.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrFindingNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrFindingNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve finding: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve finding: %w", err))
 	}
 	if !inRequestProject(c, existingProject) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrFindingNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrFindingNotFound)
 	}
 
 	if err := h.repo.DeleteFinding(c.Context(), id); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to delete finding: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to delete finding: %w", err))
 	}
 
 	return c.JSON(fiber.Map{
@@ -225,83 +216,50 @@ type UpdateFindingStatusRequest struct {
 	Status string `json:"status"`
 }
 
+// findingStatusActorAPI is the actor recorded on status changes made through
+// the REST API.
+const findingStatusActorAPI = "api"
+
 // HandleUpdateFindingStatus handles PATCH /api/findings/:id/status — updates the
-// lifecycle status of a finding (draft → triaged / false_positive / accepted_risk / fixed).
+// lifecycle status of a finding (one of database.FindingStatuses: draft → triaged → confirmed → fixed, or
+// false_positive / accepted_risk).
 func (h *findingsHandlers) HandleUpdateFindingStatus(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid finding ID: must be a number",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "invalid finding ID: must be a number")
 	}
 
 	var req UpdateFindingStatusRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	status := strings.ToLower(strings.TrimSpace(req.Status))
 	if !database.IsValidFindingStatus(status) {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid status: must be one of draft, triaged, false_positive, accepted_risk, fixed",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "invalid status: must be one of "+strings.Join(database.FindingStatuses, ", "))
 	}
 
-	// Scope the mutation to the request's project: check first so an operator
-	// scoped to one engagement can't flip another project's finding via a raw id.
-	// Only the project is read here; the updated finding is re-loaded in full
-	// below, after the write, for the response body.
-	existingProject, err := h.repo.FindingProjectUUID(c.Context(), id)
-	if err != nil {
+	// Scope the mutation to the request's project: the project predicate is part
+	// of the UPDATE, so an operator scoped to one engagement can't flip another
+	// project's finding via a raw id. A finding outside the project is reported
+	// as not found, exactly like a missing one. The updated finding is re-loaded
+	// in full below, after the write, for the response body. Like every status
+	// writer it goes through the scoped writer, so the change is stamped with
+	// its actor and lands in finding_status_events.
+	if err := h.repo.SetFindingStatus(c.Context(), getProjectUUID(c), id, status, "", findingStatusActorAPI); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrFindingNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrFindingNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve finding: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
-	}
-	if !inRequestProject(c, existingProject) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrFindingNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
-	}
-
-	if err := h.repo.UpdateFindingStatus(c.Context(), id, status); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrFindingNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to update finding status: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to update finding status: %w", err))
 	}
 
 	finding, err := h.repo.GetFindingByID(c.Context(), id)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve updated finding: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve updated finding: %w", err))
 	}
 	return c.JSON(finding)
 }
@@ -309,39 +267,24 @@ func (h *findingsHandlers) HandleUpdateFindingStatus(c fiber.Ctx) error {
 // HandleGetFinding handles GET /api/findings/:id — returns a single finding by numeric ID.
 func (h *findingsHandlers) HandleGetFinding(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	idStr := c.Params("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid finding ID: must be a number",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "invalid finding ID: must be a number")
 	}
 
 	finding, err := h.repo.GetFindingByID(c.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrFindingNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrFindingNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve finding: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve finding: %w", err))
 	}
 	if !inRequestProject(c, finding.ProjectUUID) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrFindingNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrFindingNotFound)
 	}
 
 	return c.JSON(finding)

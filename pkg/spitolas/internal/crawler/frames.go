@@ -2,6 +2,8 @@ package crawler
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/browser"
@@ -142,4 +144,43 @@ func (c *Crawler) selectUnprimedFrames(in []string, max int) []string {
 		out = append(out, u)
 	}
 	return out
+}
+
+// navigateToFrame navigates to a specific frame by its path (e.g., "frame1.frame2").
+// Returns the Page object for the target frame.
+func (c *Crawler) navigateToFrame(page *browser.Page, framePath string) (*browser.Page, error) {
+	if framePath == "" {
+		return page, nil
+	}
+
+	// Split frame path into segments
+	segments := strings.Split(framePath, ".")
+	currentPage := page
+
+	for _, segment := range segments {
+		frameInfos, err := currentPage.FramesWithInfo()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get frames: %w", err)
+		}
+
+		found := false
+		for _, fi := range frameInfos {
+			// Get frame identifier (FramesWithInfo already uses id before name)
+			frameID := fi.ID
+			if frameID == "" {
+				frameID = fmt.Sprintf("frame%d", fi.Index)
+			}
+			if frameID == segment {
+				currentPage = fi.Page
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return nil, fmt.Errorf("frame %q not found", segment)
+		}
+	}
+
+	return currentPage, nil
 }

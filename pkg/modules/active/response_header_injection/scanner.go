@@ -101,6 +101,10 @@ func New() *Module {
 	return m
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any crlf module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassCRLF }
+
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,
 	ip httpmsg.InsertionPoint,
@@ -371,6 +375,7 @@ func (m *Module) buildResult(url, paramName, payloadName, location, contentType,
 				Severity:    severity.Suspect,
 				Confidence:  severity.Tentative,
 			},
+			Metadata: resultMetadata(payloadName),
 		}
 	}
 
@@ -399,5 +404,6 @@ func (m *Module) buildResult(url, paramName, payloadName, location, contentType,
 		FuzzingParameter: paramName,
 		ExtractedResults: extracted,
 		Info:             info,
+		Metadata:         resultMetadata(payloadName),
 	}
 }

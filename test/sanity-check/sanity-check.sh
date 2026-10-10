@@ -205,7 +205,9 @@ else
     printf '    VIGOLIUM_CLAUDE_OAUTH_TOKEN: <unset>\n' >&2
 fi
 
-# Per-run project UUID — segregates this run's bucket prefix from any others
+# Per-run project UUID — segregates this run's bucket prefix from any others.
+# The server answers 404 project_not_found for an unknown X-Project-UUID, so
+# every request below also sends X-Project-Create: 1 to create it on first use.
 PROJECT_UUID="$(uuidgen | tr 'A-Z' 'a-z')"
 ok "project UUID: $PROJECT_UUID"
 
@@ -325,7 +327,7 @@ api() {
     local path="$1"; shift
     curl -fsS --max-time 15 -X "$method" "$BASE$path" \
         -H "Authorization: Bearer $VIGOLIUM_API_KEY" \
-        -H "X-Project-UUID: $PROJECT_UUID" \
+        -H "X-Project-UUID: $PROJECT_UUID" -H "X-Project-Create: 1" \
         "$@"
 }
 
@@ -338,7 +340,7 @@ verify_bundle() {
 
     if ! curl -fsS --max-time 60 -o "$out" "$BASE/api/storage/results/$id" \
             -H "Authorization: Bearer $VIGOLIUM_API_KEY" \
-            -H "X-Project-UUID: $PROJECT_UUID"; then
+            -H "X-Project-UUID: $PROJECT_UUID" -H "X-Project-Create: 1"; then
         err "$label: GET /api/storage/results/$id failed"
         return 1
     fi
@@ -380,7 +382,7 @@ wait_until_terminal() {
         local body status
         body="$(curl -fsS --max-time 15 "$url" \
             -H "Authorization: Bearer $VIGOLIUM_API_KEY" \
-            -H "X-Project-UUID: $PROJECT_UUID" 2>/dev/null || echo '{}')"
+            -H "X-Project-UUID: $PROJECT_UUID" -H "X-Project-Create: 1" 2>/dev/null || echo '{}')"
         status="$(jq -r '.status // empty' <<<"$body")"
         if [[ "$status" != "$last_status" ]]; then
             log "$label: status=$status"
@@ -754,7 +756,7 @@ else
     CONFLICT_CODE="$(curl -sS -o "$CONFLICT_RESP_FILE" -w '%{http_code}' --max-time 15 \
         -X POST "$BASE/api/scans/run" \
         -H "Authorization: Bearer $VIGOLIUM_API_KEY" \
-        -H "X-Project-UUID: $OTHER_PROJECT_UUID" \
+        -H "X-Project-UUID: $OTHER_PROJECT_UUID" -H "X-Project-Create: 1" \
         -H "Content-Type: application/json" \
         -d "$CONFLICT_BODY" 2>/dev/null || echo "000")"
     if [[ "$CONFLICT_CODE" == "409" ]]; then
@@ -910,7 +912,7 @@ NEG7A_RESP="$VIGOLIUM_HOME_DIR/neg7a-resp.json"
 NEG7A_CODE="$(curl -sS -o "$NEG7A_RESP" -w '%{http_code}' --max-time 15 \
     -X POST "$BASE/api/agent/run/audit" \
     -H "Authorization: Bearer $VIGOLIUM_API_KEY" \
-    -H "X-Project-UUID: $PROJECT_UUID" \
+    -H "X-Project-UUID: $PROJECT_UUID" -H "X-Project-Create: 1" \
     -H "Content-Type: application/json" \
     -d "$NEG7A_BODY" 2>/dev/null || echo "000")"
 if [[ "$NEG7A_CODE" == "400" ]] && grep -q "at most one" "$NEG7A_RESP" 2>/dev/null; then
@@ -928,7 +930,7 @@ NEG7B_RESP="$VIGOLIUM_HOME_DIR/neg7b-resp.json"
 NEG7B_CODE="$(curl -sS -o "$NEG7B_RESP" -w '%{http_code}' --max-time 15 \
     -X POST "$BASE/api/agent/run/audit" \
     -H "Authorization: Bearer $VIGOLIUM_API_KEY" \
-    -H "X-Project-UUID: $PROJECT_UUID" \
+    -H "X-Project-UUID: $PROJECT_UUID" -H "X-Project-Create: 1" \
     -H "Content-Type: application/json" \
     -d "$NEG7B_BODY" 2>/dev/null || echo "000")"
 if [[ "$NEG7B_CODE" == "400" ]] && grep -qi "claude" "$NEG7B_RESP" 2>/dev/null; then

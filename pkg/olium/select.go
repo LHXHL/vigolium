@@ -295,6 +295,13 @@ func newGoogleVertexProvider(opts Options, model string) (provider.Provider, str
 // openai-codex-oauth is the default because the OAuth flow is the cheapest
 // path for users on a ChatGPT subscription.
 func autoDetectProvider(opts Options) string {
+	return AutoDetectedProvider()
+}
+
+// AutoDetectedProvider names the provider the runtime picks when none is
+// configured (agent.olium.provider and --provider both empty), for the
+// operator-facing surfaces that report it (`agent --list-agents`).
+func AutoDetectedProvider() string {
 	return "openai-codex-oauth"
 }
 

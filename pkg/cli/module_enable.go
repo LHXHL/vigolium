@@ -125,13 +125,20 @@ func expandAllModuleIDs(moduleType string) []string {
 	return modules.GetPassiveModulesID()
 }
 
+// noModulesMatchError rejects a search that matched nothing. It used to print a
+// warning to stdout and exit 0, so a typo'd module ID in a setup script looked
+// exactly like a successful enable. It is a usage error (exit 2): nothing was
+// read or written, and the fix is a different search term.
+func noModulesMatchError(search string) error {
+	return usageErrorf("no modules matching %q (list module IDs with `vigolium module ls`)", search)
+}
+
 func runModuleEnable(cmd *cobra.Command, args []string) error {
 	search := args[0]
 	matches := findMatchingModules(search, moduleExactID)
 
 	if len(matches) == 0 {
-		fmt.Printf("%s No modules matching %q\n", terminal.WarnPrefix(), search)
-		return nil
+		return noModulesMatchError(search)
 	}
 
 	// EffectiveConfigPath, not ConfigFilePath: with --config set, this command
@@ -159,12 +166,18 @@ func runModuleEnable(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(enabled) == 0 {
+		if globalJSON {
+			return emitModuleToggle(cmd, "enable", matches, enabled, configPath)
+		}
 		fmt.Printf("%s All matching modules are already enabled\n", terminal.InfoSymbol())
 		return nil
 	}
 
 	if err := config.SaveSettings(configPath, settings); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
+	}
+	if globalJSON {
+		return emitModuleToggle(cmd, "enable", matches, enabled, configPath)
 	}
 
 	fmt.Printf("%s Enabled %d module(s):\n", terminal.SuccessSymbol(), len(enabled))
@@ -180,8 +193,7 @@ func runModuleDisable(cmd *cobra.Command, args []string) error {
 	matches := findMatchingModules(search, moduleExactID)
 
 	if len(matches) == 0 {
-		fmt.Printf("%s No modules matching %q\n", terminal.WarnPrefix(), search)
-		return nil
+		return noModulesMatchError(search)
 	}
 
 	// Load and save the SAME file — see runModuleEnable.
@@ -207,12 +219,18 @@ func runModuleDisable(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(disabled) == 0 {
+		if globalJSON {
+			return emitModuleToggle(cmd, "disable", matches, disabled, configPath)
+		}
 		fmt.Printf("%s All matching modules are already disabled\n", terminal.InfoSymbol())
 		return nil
 	}
 
 	if err := config.SaveSettings(configPath, settings); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
+	}
+	if globalJSON {
+		return emitModuleToggle(cmd, "disable", matches, disabled, configPath)
 	}
 
 	fmt.Printf("%s Disabled %d module(s):\n", terminal.SuccessSymbol(), len(disabled))
@@ -230,4 +248,38 @@ func runModuleDisable(cmd *cobra.Command, args []string) error {
 			terminal.Gray(fmt.Sprintf("vigolium module enable %s", strings.ToLower(search))))
 	}
 	return nil
+}
+
+// moduleToggleView is one matched module in `module enable/disable -j`.
+type moduleToggleView struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	// Changed is false for a module that was already in the requested state.
+	Changed bool `json:"changed"`
+}
+
+// emitModuleToggle writes the module enable/disable result: every module the
+// search matched, each saying whether this run flipped it. changed is true when
+// any did (and the config was written).
+func emitModuleToggle(cmd *cobra.Command, action string, matches []matchedModule, flipped []string, configPath string) error {
+	flippedSet := make(map[string]bool, len(flipped))
+	for _, id := range flipped {
+		flippedSet[id] = true
+	}
+	items := make([]moduleToggleView, 0, len(matches))
+	for _, m := range matches {
+		items = append(items, moduleToggleView{ID: m.id, Type: m.moduleType, Changed: flippedSet[m.id]})
+	}
+	if len(flipped) == 0 {
+		action = "noop"
+	}
+	return emitMutation(cmd, "", mutationResult{
+		Changed: len(flipped) > 0,
+		Action:  action,
+		Items:   items,
+		Extra: map[string]any{
+			"modules_changed": len(flipped),
+			"config_path":     config.ContractPath(configPath),
+		},
+	})
 }

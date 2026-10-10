@@ -55,6 +55,10 @@ func New() *Module {
 	return m
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any open-redirect module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassOpenRedirect }
+
 // ScanPerRequest tests redirect-like URL/body parameters with the URL-parser
 // authority-confusion ladder.
 func (m *Module) ScanPerRequest(
@@ -91,6 +95,10 @@ func (m *Module) ScanPerRequest(
 			continue
 		}
 		if !open_redirect.MatchRedirectParam(ip.Name(), ip.BaseValue()) {
+			continue
+		}
+		// Another module of this vuln class already reported this param here.
+		if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
 			continue
 		}
 		if rhm != nil {

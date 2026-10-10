@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -89,7 +90,7 @@ func (m *Module) ScanPerInsertionPoint(
 		return nil, errors.Wrap(err, "failed to get URL")
 	}
 
-	if !infra.LooksLikeURLParam(ip.Name(), ip.BaseValue()) {
+	if !infra.LooksLikeURLParamAt(ip.Type(), ip.Name(), ip.BaseValue()) {
 		return nil, nil
 	}
 
@@ -109,7 +110,7 @@ func (m *Module) ScanPerInsertionPoint(
 	requestHash := ctx.Request().ID()
 
 	for _, p := range smugglePayloads {
-		oastHost := oast.GenerateURL(urlx.String(), ip.Name(), "ssrf-smuggle:"+p.label, ModuleID, requestHash)
+		oastHost := modkit.OASTURLFor(oast, oastclass.SSRFSmuggle, urlx.String(), ip.Name(), "ssrf-smuggle:"+p.label, ModuleID, requestHash)
 		if oastHost == "" {
 			continue
 		}

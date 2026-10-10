@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
@@ -57,7 +59,7 @@ prefer 'vigolium skills install' over copying stale files by hand.
 Running 'vigolium skills' with no subcommand is a shortcut for 'skills list'.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsList()
+		return runSkillsList(cmd)
 	},
 }
 
@@ -68,7 +70,7 @@ var skillsListCmd = &cobra.Command{
 	Short:   "List all bundled skills",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsList()
+		return runSkillsList(cmd)
 	},
 }
 
@@ -77,10 +79,14 @@ var skillsGetCmd = &cobra.Command{
 	Use:   "get [name...]",
 	Short: "Print a skill's full content",
 	Long: `Print a skill's SKILL.md to stdout. Pass --full to also include its
-reference files, or --all to output every bundled skill.`,
+reference files, or --all to output every bundled skill.
+
+With -j the content comes back in the envelope instead: one item per skill,
+with its markdown in "content" and, under --full, each reference file as
+{"path","content"} in "references".`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsGet(args)
+		return runSkillsGet(cmd, args)
 	},
 }
 
@@ -99,11 +105,20 @@ Destination is chosen from --agent and --scope:
   --agent claude          .claude/skills/   (project)   ~/.claude/skills/   (global)
   --agent codex|agents    .agents/skills/   (project)   ~/.agents/skills/   (global)
 
-An already-installed skill is skipped unless --force is given. --dir
-overrides the computed destination entirely.`,
+Each install writes a .vigolium-skill.json manifest beside SKILL.md (binary
+version, commit, bundle sha256, every file's sha256). An existing install is
+skipped unless --force is given, and reported as current, stale (another
+bundle, or an install without a manifest: run 'skills install --force') or
+modified (local edits). --force deletes files the old manifest lists that this
+bundle no longer ships; an install without a manifest is moved to
+<dir>.bak-<timestamp> first (its SKILL.md renamed SKILL.md.bak so the agent
+does not load it). --dir overrides the computed destination entirely.
+
+'vigolium skills ls' shows the state of every install location and
+'vigolium doctor --fix' reinstalls stale copies.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsInstall(args)
+		return runSkillsInstall(cmd, args)
 	},
 }
 
@@ -208,7 +223,7 @@ func resolveNamedTargets(skills []bundledSkill, names []string) ([]bundledSkill,
 	for _, n := range names {
 		b, ok := findBundle(skills, n)
 		if !ok {
-			return nil, fmt.Errorf("unknown skill %q (available: %s)", n, bundleNames(skills))
+			return nil, usageErrorf("unknown skill %q (available: %s)", n, bundleNames(skills))
 		}
 		targets = append(targets, b)
 	}
@@ -224,7 +239,7 @@ func writeBody(data []byte) {
 	}
 }
 
-func runSkillsList() error {
+func runSkillsList(cmd *cobra.Command) error {
 	skills, err := loadBundledSkills()
 	if err != nil {
 		return err
@@ -241,7 +256,8 @@ func runSkillsList() error {
 		for i, s := range skills {
 			entries[i] = jsonEntry{s.Name, s.Description, s.EmbedDir, s.References}
 		}
-		return writeAgentJSON(map[string]any{"skills": entries, "total": len(entries)})
+		return emitRead(cmd, "skills", entries, int64(len(entries)), 0, len(entries),
+			withExtra("installed", scanInstalledSkills(skills)))
 	}
 
 	if len(skills) == 0 {
@@ -257,13 +273,61 @@ func runSkillsList() error {
 		tbl.AddRow(terminal.Cyan(s.Name), s.Description, terminal.Gray(fmt.Sprintf("%d", len(s.References))))
 	}
 	tbl.Print()
+	printInstalledSkills(scanInstalledSkills(skills))
 
 	fmt.Printf("\n%s Read a skill:    %s\n", terminal.InfoSymbol(), terminal.Gray("vigolium skills get "+skills[0].Name+" --full"))
 	fmt.Printf("%s Install a skill: %s\n", terminal.InfoSymbol(), terminal.Gray("vigolium skills install --agent claude --scope project"))
 	return nil
 }
 
-func runSkillsGet(names []string) error {
+// printInstalledSkills lists the install locations that hold a bundled skill,
+// with their state, and how to refresh a stale one.
+func printInstalledSkills(views []skillInstalledView) {
+	var found []skillInstalledView
+	stale := false
+	for _, v := range views {
+		if v.Status == skillStatusMissing {
+			continue
+		}
+		found = append(found, v)
+		stale = stale || v.Status == skillStatusStale
+	}
+	if len(found) == 0 {
+		fmt.Printf("\n%s Not installed in ./.claude/skills, ~/.claude/skills, ./.agents/skills or ~/.agents/skills.\n", terminal.InfoSymbol())
+		return
+	}
+	fmt.Printf("\n  %s installed\n\n", terminal.BoldCyan(fmt.Sprintf("%d", len(found))))
+	tbl := terminal.NewTableWithMaxWidth(globalWidth, "NAME", "AGENT", "SCOPE", "STATUS", "VERSION", "PATH")
+	for _, v := range found {
+		status := terminal.Green(v.Status)
+		if v.Status != skillStatusCurrent {
+			status = terminal.Yellow(v.Status)
+		}
+		tbl.AddRow(terminal.Cyan(v.Name), v.Agent, v.Scope, status, v.Version, terminal.Gray(v.Path))
+	}
+	tbl.Print()
+	if stale {
+		fmt.Printf("\n%s stale: run %s (with the matching --agent/--scope), or %s\n", terminal.WarningSymbol(),
+			terminal.Gray("vigolium skills install --force"), terminal.Gray("vigolium doctor --fix --only skill"))
+	}
+}
+
+// skillGetItem is one skill under `skills get -j`.
+type skillGetItem struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	EmbedPath   string           `json:"embed_path"`
+	Content     string           `json:"content"`
+	References  []skillReference `json:"references,omitempty"`
+}
+
+// skillReference is one reference file of a skill, included under --full.
+type skillReference struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+func runSkillsGet(cmd *cobra.Command, names []string) error {
 	skills, err := loadBundledSkills()
 	if err != nil {
 		return err
@@ -274,11 +338,15 @@ func runSkillsGet(names []string) error {
 	case skillsOpts.All:
 		targets = skills
 	case len(names) == 0:
-		return fmt.Errorf("skills get: provide a skill name or --all (available: %s)", bundleNames(skills))
+		return usageErrorf("skills get: provide a skill name or --all (available: %s)", bundleNames(skills))
 	default:
 		if targets, err = resolveNamedTargets(skills, names); err != nil {
 			return err
 		}
+	}
+
+	if globalJSON {
+		return emitSkillsGetJSON(cmd, targets)
 	}
 
 	for i, b := range targets {
@@ -308,6 +376,32 @@ func runSkillsGet(names []string) error {
 	return nil
 }
 
+// emitSkillsGetJSON writes the requested skills as envelope rows, with each
+// SKILL.md (and, under --full, every reference file) as content. The raw
+// markdown stream is the human form; under -j the one document is the contract.
+func emitSkillsGetJSON(cmd *cobra.Command, targets []bundledSkill) error {
+	items := make([]skillGetItem, 0, len(targets))
+	for _, b := range targets {
+		body, err := public.StaticFS.ReadFile(b.EmbedDir + "/SKILL.md")
+		if err != nil {
+			return fmt.Errorf("read %s: %w", b.Name, err)
+		}
+		item := skillGetItem{Name: b.Name, Description: b.Description, EmbedPath: b.EmbedDir, Content: string(body)}
+		if skillsOpts.Full {
+			item.References = []skillReference{}
+			for _, ref := range b.References {
+				refBody, refErr := public.StaticFS.ReadFile(b.EmbedDir + "/" + ref)
+				if refErr != nil {
+					continue
+				}
+				item.References = append(item.References, skillReference{Path: ref, Content: string(refBody)})
+			}
+		}
+		items = append(items, item)
+	}
+	return emitRead(cmd, "", items, int64(len(items)), 0, len(items))
+}
+
 // skillsInstallBaseDir resolves the parent directory that skill bundles are
 // installed into, from --agent and --scope. Returns an absolute path.
 func skillsInstallBaseDir(agent, scope string) (string, error) {
@@ -318,7 +412,7 @@ func skillsInstallBaseDir(agent, scope string) (string, error) {
 	case "codex", "agents":
 		sub = skill.AgentsSkillsSubdir
 	default:
-		return "", fmt.Errorf("unknown --agent %q (want: claude, codex, or agents)", agent)
+		return "", usageErrorf("unknown --agent %q (want: claude, codex, or agents)", agent)
 	}
 
 	switch strings.ToLower(scope) {
@@ -335,11 +429,11 @@ func skillsInstallBaseDir(agent, scope string) (string, error) {
 		}
 		return filepath.Join(home, sub), nil
 	default:
-		return "", fmt.Errorf("unknown --scope %q (want: project or global)", scope)
+		return "", usageErrorf("unknown --scope %q (want: project or global)", scope)
 	}
 }
 
-func runSkillsInstall(names []string) error {
+func runSkillsInstall(cmd *cobra.Command, names []string) error {
 	skills, err := loadBundledSkills()
 	if err != nil {
 		return err
@@ -373,21 +467,50 @@ func runSkillsInstall(names []string) error {
 		baseDir = abs
 	}
 
+	out := humanOut()
 	installed, skipped := 0, 0
+	items := make([]skillInstallView, 0, len(targets))
+	now := time.Now()
 	for _, b := range targets {
 		dest := filepath.Join(baseDir, b.Name)
-		if _, statErr := os.Stat(filepath.Join(dest, "SKILL.md")); statErr == nil && !globalForce {
-			fmt.Printf("%s %s already installed at %s (use --force to overwrite)\n",
-				terminal.WarningSymbol(), terminal.Cyan(b.Name), terminal.Gray(dest))
+		res, instErr := installSkillBundle(b, dest, globalForce, Version, Commit, now)
+		if instErr != nil {
+			return fmt.Errorf("install %s: %w", b.Name, instErr)
+		}
+		view := skillInstallView{Name: b.Name, Path: dest, Installed: res.Installed, Status: res.Status,
+			PreviousVersion: res.Version, Backup: res.Backup, Pruned: res.Pruned}
+		if !res.Installed {
 			skipped++
+			view.Reason = skillSkipReason(res.Status)
+			printSkillSkip(out, b.Name, dest, res)
+			items = append(items, view)
 			continue
 		}
-		if copyErr := copyEmbeddedSkillBundle(b.EmbedDir, dest); copyErr != nil {
-			return fmt.Errorf("install %s: %w", b.Name, copyErr)
+		if res.Backup != "" {
+			_, _ = fmt.Fprintf(out, "%s Moved the previous (unstamped) install of %s to %s\n",
+				terminal.InfoSymbol(), terminal.Cyan(b.Name), terminal.Gray(res.Backup))
 		}
-		fmt.Printf("%s Installed %s → %s\n",
+		if len(res.Pruned) > 0 {
+			_, _ = fmt.Fprintf(out, "%s Removed %d file(s) the bundle no longer ships: %s\n",
+				terminal.InfoSymbol(), len(res.Pruned), terminal.Gray(strings.Join(res.Pruned, ", ")))
+		}
+		_, _ = fmt.Fprintf(out, "%s Installed %s → %s\n",
 			terminal.SuccessSymbol(), terminal.Cyan(b.Name), terminal.Gray(dest))
 		installed++
+		items = append(items, view)
+	}
+
+	if globalJSON {
+		action := "install"
+		if installed == 0 {
+			action = "noop"
+		}
+		return emitMutation(cmd, "", mutationResult{
+			Changed: installed > 0,
+			Action:  action,
+			Items:   items,
+			Extra:   map[string]any{"installed": installed, "skipped": skipped, "dir": baseDir},
+		})
 	}
 
 	fmt.Printf("\n%s %d installed, %d skipped. Your agent will auto-trigger on these skills when you mention vigolium.\n",
@@ -397,6 +520,52 @@ func runSkillsInstall(names []string) error {
 		printSkillsScopeHint(skillsOpts.Scope)
 	}
 	return nil
+}
+
+// skillInstallView is one bundle in `skills install -j`: where it went, and
+// whether this run wrote it.
+//
+// status is the state found before this run (missing, current, stale,
+// modified); reason says why a bundle was skipped (already_installed for a
+// current copy, otherwise the status). previous_version, backup and pruned
+// describe what a --force reinstall replaced.
+type skillInstallView struct {
+	Name            string   `json:"name"`
+	Path            string   `json:"path"`
+	Installed       bool     `json:"installed"`
+	Status          string   `json:"status"`
+	Reason          string   `json:"reason,omitempty"`
+	PreviousVersion string   `json:"previous_version,omitempty"`
+	Backup          string   `json:"backup,omitempty"`
+	Pruned          []string `json:"pruned,omitempty"`
+}
+
+// skillSkipReason names why an existing install was left alone.
+func skillSkipReason(status string) string {
+	if status == skillStatusCurrent {
+		return "already_installed"
+	}
+	return status
+}
+
+// printSkillSkip explains a skipped install and what --force would do.
+func printSkillSkip(out io.Writer, name, dest string, res skillInstallOutcome) {
+	switch res.Status {
+	case skillStatusStale:
+		was := "an unstamped install"
+		if res.Version != "" {
+			was = "installed by " + res.Version
+		}
+		_, _ = fmt.Fprintf(out, "%s %s at %s is stale (%s; this binary is %s): run %s\n",
+			terminal.WarningSymbol(), terminal.Cyan(name), terminal.Gray(dest), was, Version,
+			terminal.Gray("vigolium skills install --force"))
+	case skillStatusModified:
+		_, _ = fmt.Fprintf(out, "%s %s at %s has local edits (use --force to overwrite them)\n",
+			terminal.WarningSymbol(), terminal.Cyan(name), terminal.Gray(dest))
+	default:
+		_, _ = fmt.Fprintf(out, "%s %s already installed and current at %s\n",
+			terminal.InfoSymbol(), terminal.Cyan(name), terminal.Gray(dest))
+	}
 }
 
 // printSkillsScopeHint tells the user which scope they just installed into and

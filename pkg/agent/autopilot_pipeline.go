@@ -59,6 +59,13 @@ type AutopilotPipelineConfig struct {
 
 	AgentName   string
 	MaxCommands int
+	// TokenBudget / MaxCostUSD cap the operator loop's input+output tokens
+	// and estimated USD cost (autopilot.Options.TokenBudget / MaxCostUSD).
+	// Zero = no cap.
+	TokenBudget int64
+	MaxCostUSD  float64
+	// SkipPreflight skips the provider ping (--no-preflight).
+	SkipPreflight bool
 
 	DryRun     bool
 	ShowPrompt bool
@@ -172,7 +179,11 @@ type auditContextStruct struct {
 func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg AutopilotPipelineConfig) (*AutopilotPipelineResult, error) {
 	start := time.Now()
 
-	if err := r.engine.Preflight(cfg.AgentName); err != nil {
+	var preflightErr error
+	if !cfg.SkipPreflight {
+		preflightErr = r.engine.Preflight(ctx)
+	}
+	if err := preflightErr; err != nil {
 		// The olium provider drives both the audit operator and the
 		// autonomous operator. When its preflight fails (offline local
 		// model, bad creds, network black hole) the AI loop can't run —
@@ -436,6 +447,8 @@ func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg Autopil
 		SessionDir:           cfg.SessionDir,
 		MaxToolCalls:         cfg.MaxCommands,
 		MaxTurns:             cfg.MaxCommands,
+		TokenBudget:          cfg.TokenBudget,
+		MaxCostUSD:           cfg.MaxCostUSD,
 		Out:                  streamWriter,
 		ToolLog:              streamWriter,
 		SystemPrompt:         firstNonEmpty(cfg.SystemPrompt, oliumCfg.SystemPrompt),
@@ -462,6 +475,10 @@ func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg Autopil
 	if autopilotResult != nil {
 		result.OperatorFindingsCount = int(autopilotResult.FindingCount)
 		result.Reentries = autopilotResult.Reentries
+		result.BudgetStop = autopilotResult.BudgetStop
+		result.InputTokens = autopilotResult.InputTokens
+		result.OutputTokens = autopilotResult.OutputTokens
+		result.CostUSD = autopilotResult.CostUSD
 		// Surfaced as a warning so the server marks the run degraded and the
 		// workbench shows why a fast zero-finding run tested nothing.
 		if d := autopilotResult.Diagnosis(); d != "" {
@@ -941,6 +958,7 @@ func buildTargetPrompt(cfg AutopilotPipelineConfig, ac *auditContextStruct, audi
 		}
 		b.WriteString("   - Use `printf '<raw-request>' | vigolium scan-request --json` for targeted scanning\n")
 		b.WriteString("   - Use `vigolium scan-url <url> --json --module-tag <tag>` for route-level scanning\n")
+		b.WriteString("   - `--json` on scan/scan-url/scan-request prints ONE scan document: read `status`, `counts_by_severity`, `targets[]` (`reached`, `reason`) and `items` (finding rows: `id`, `finding_hash`, `severity`, `module_id`, `url`, `matched_at`, `response_evidence`; capped at 200, `total` is exact, run `query` for the rest)\n")
 		stepN := 3
 		if cfg.BrowserEnabled {
 			stepN = 4
@@ -986,6 +1004,7 @@ func buildTargetPrompt(cfg AutopilotPipelineConfig, ac *auditContextStruct, audi
 		b.WriteString("   - Scan high-value endpoints: `vigolium scan-url <url> --json`\n")
 		b.WriteString("   - Use targeted module tags: `--module-tag injection,xss,auth,ssrf,ssti`\n")
 		b.WriteString("   - Pipe raw requests: `printf '...' | vigolium scan-request --json`\n")
+		b.WriteString("   - `--json` on scan/scan-url/scan-request prints ONE scan document: read `status`, `counts_by_severity`, `targets[]` (`reached`, `reason`) and `items` (finding rows: `id`, `finding_hash`, `severity`, `module_id`, `url`, `matched_at`, `response_evidence`; capped at 200, `total` is exact, run `query` for the rest)\n")
 		b.WriteString("   - Write custom JS extensions for edge cases: `vigolium ext eval --ext-file script.js`\n\n")
 
 		fmt.Fprintf(&b, "%d. **Verification & Iteration** — Confirm and expand:\n", stepN+2)

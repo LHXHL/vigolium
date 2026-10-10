@@ -9,6 +9,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -91,7 +92,7 @@ func (m *Module) ScanPerRequest(
 
 	for _, header := range log4jHeaders {
 		for _, tmpl := range jndiTemplates {
-			oastURL := oast.GenerateURL(urlx.String(), header, "header", ModuleID, requestHash)
+			oastURL := modkit.OASTURLFor(oast, oastclass.JNDI, urlx.String(), header, "header", ModuleID, requestHash)
 			if oastURL == "" {
 				continue
 			}
@@ -156,7 +157,7 @@ func (m *Module) ScanPerInsertionPoint(
 	requestHash := ctx.Request().ID()
 
 	for _, tmpl := range jndiTemplates {
-		oastURL := oast.GenerateURL(urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.JNDI, urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}

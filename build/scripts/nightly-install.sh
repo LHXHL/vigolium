@@ -34,6 +34,14 @@ TARBALL_URL=""
 TARBALL_FILENAME=""
 TARBALL_SHA256=""
 
+# Release signing key (minisign): checksums.txt is signed by `make
+# release-sign` and its signature is checked when `minisign` is on PATH.
+# TODO(release-key): set this to the second line of vigolium.pub, the same key
+# as pkg/selfupdate/keys.go. While empty the signature check is skipped (the
+# sha256 check against checksums.txt still runs and still fails closed).
+MINISIGN_PUBKEY=""
+MINISIGN_PUBKEY="${VIGOLIUM_MINISIGN_PUBKEY:-$MINISIGN_PUBKEY}"
+
 # Retry configuration
 MAX_RETRIES=6
 INITIAL_RETRY_DELAY=2  # seconds
@@ -284,10 +292,41 @@ cache_busted_url() {
 	fi
 }
 
+# Verify checksums.txt against its minisign signature when a release key is
+# configured and `minisign` is installed. The trusted comment must name the
+# version being installed, so an older signed checksums.txt cannot stand in.
+# Any failure, including a missing .minisig, aborts the install.
+verify_checksums_signature() {
+	local checksums_file="$1"
+
+	if [[ -z "$MINISIGN_PUBKEY" ]]; then
+		return 0
+	fi
+	if ! command_exists minisign; then
+		warn "minisign not found; checksums.txt signature not verified (install minisign to verify releases end to end)"
+		return 0
+	fi
+
+	local sig_file="${checksums_file}.minisig"
+	log "Verifying checksums.txt signature (minisign)..."
+	downloader "${BASE_URL}/checksums.txt.minisig?t=$(date +%s)" "$sig_file"
+
+	local trusted=""
+	if ! trusted=$(minisign -V -Q -P "$MINISIGN_PUBKEY" -m "$checksums_file" -x "$sig_file" 2>/dev/null); then
+		rm -f "$sig_file"
+		error "checksums.txt signature verification failed; refusing to install"
+	fi
+	rm -f "$sig_file"
+	case " ${trusted} " in
+		*" v${VERSION#v} "* | *" ${VERSION#v} "*) ;;
+		*) error "checksums.txt is signed for '${trusted}', not ${VERSION}; refusing to install" ;;
+	esac
+	success "checksums.txt signature verified"
+}
+
 # Fetch checksums.txt from the CDN and extract the SHA-256 line for
-# TARBALL_FILENAME. A missing checksums.txt or an unlisted file degrades to
-# an unverified download (warning printed); a stale CDN with no checksums
-# at all should not block install.
+# TARBALL_FILENAME. Fails closed: a missing checksums.txt, a bad signature or
+# an unlisted file aborts the install rather than downloading unverified.
 fetch_checksum() {
 	local checksum_url="${BASE_URL}/checksums.txt?t=$(date +%s)"
 	local tmp_checksums
@@ -296,9 +335,9 @@ fetch_checksum() {
 	log "Fetching checksums.txt..."
 	if ! downloader "$checksum_url" "$tmp_checksums" soft; then
 		rm -f "$tmp_checksums"
-		warn "Could not fetch checksums.txt; binary download will not be verified"
-		return 0
+		error "Could not fetch ${BASE_URL}/checksums.txt; refusing to install an unverified binary"
 	fi
+	verify_checksums_signature "$tmp_checksums"
 
 	# checksums.txt format (goreleaser default): one line per file as
 	#   <sha256>  <filename>
@@ -309,7 +348,7 @@ fetch_checksum() {
 	rm -f "$tmp_checksums"
 
 	if [[ -z "$TARBALL_SHA256" ]]; then
-		warn "Checksum for ${TARBALL_FILENAME} not found in checksums.txt; skipping verification"
+		error "Checksum for ${TARBALL_FILENAME} not found in checksums.txt; refusing to install an unverified binary"
 	fi
 }
 
@@ -340,8 +379,7 @@ verify_checksum() {
 	local expected_checksum="$2"
 
 	if [[ -z "$expected_checksum" ]]; then
-		warn "No checksum available; skipping verification"
-		return
+		error "No checksum available for ${TARBALL_FILENAME}; refusing to install an unverified binary"
 	fi
 
 	log "Verifying checksum (SHA-256)..."

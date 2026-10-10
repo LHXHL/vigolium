@@ -172,7 +172,7 @@ func New() *Module {
 }
 
 // VulnClass identifies this module's finding class for cross-module dedup.
-func (m *Module) VulnClass() string { return "xpath" }
+func (m *Module) VulnClass() string { return modkit.VulnClassXPath }
 
 // ScanPerInsertionPoint tests a parameter for XPath injection. It fails closed on
 // any target that shows no XPath-engine evidence: the error leg needs an XPath

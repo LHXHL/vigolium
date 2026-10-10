@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -511,18 +512,24 @@ paths:
           description: OK
 `)
 
-	t.Run("without fallback - skips request", func(t *testing.T) {
+	t.Run("without fallback - synthesizes a placeholder", func(t *testing.T) {
 		var requests []*httpmsg.HttpRequestResponse
 		callback := func(req *httpmsg.HttpRequestResponse) bool {
 			requests = append(requests, req)
 			return true
 		}
 
-		opts := Options{UseSpecServers: true}
+		var stats ParseStats
+		opts := Options{UseSpecServers: true, Stats: &stats}
 		err := ParseOpenAPI(spec, opts, callback)
 		require.NoError(t, err)
-		// Request skipped because required param has no schema/example
-		assert.Empty(t, requests)
+		// The operation used to be dropped because the required param has no
+		// schema/example; it now gets a placeholder value and is counted.
+		require.Len(t, requests, 1)
+		assert.Contains(t, requests[0].Target(), "token=1")
+		assert.Equal(t, 1, stats.SynthesizedParams)
+		assert.Equal(t, 1, stats.Emitted)
+		assert.Zero(t, stats.SkippedOperations)
 	})
 
 	t.Run("with fallback - uses fallback value", func(t *testing.T) {
@@ -698,4 +705,110 @@ paths:
 	}
 
 	assert.Equal(t, expected, order, "Requests should be sorted by method priority (GET>POST>PUT>PATCH>OPTIONS>HEAD>DELETE), then alphabetically by path")
+}
+
+// TestParseOpenAPI_RequiredParamsAndPathEscaping covers G7b: required params
+// without examples are synthesized from their type, and a path value containing
+// "/" stays inside its segment.
+func TestParseOpenAPI_RequiredParamsAndPathEscaping(t *testing.T) {
+	spec := []byte(`
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+servers: [{url: "https://api.example.test"}]
+paths:
+  /files/{name}:
+    get:
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}, example: "a/b c"}
+      responses: {"200": {description: ok}}
+  /users/{id}:
+    get:
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer, not: {}}}
+        - {name: ref, in: query, required: true, schema: {format: uuid, not: {}}}
+        - {name: flag, in: query, required: true, schema: {type: boolean, not: {}}}
+        - name: filter
+          in: query
+          required: true
+          content:
+            application/json:
+              schema: {type: object, properties: {q: {type: string}}}
+      responses: {"200": {description: ok}}
+`)
+	var stats ParseStats
+	got := map[string]string{}
+	err := ParseOpenAPI(spec, Options{UseSpecServers: true, Stats: &stats}, func(rr *httpmsg.HttpRequestResponse) bool {
+		got[rr.Request().Method()+" "+strings.SplitN(rr.Request().Path(), "/", 3)[1]] = string(rr.Request().Raw())
+		return true
+	})
+	require.NoError(t, err)
+	require.Len(t, got, 2, "both operations must produce a request")
+
+	files := got["GET files"]
+	assert.Contains(t, files, "GET /files/a%2Fb%20c HTTP/1.1", "a '/' in a path value must not split the segment")
+
+	users := got["GET users"]
+	assert.Contains(t, users, "GET /users/")
+	assert.Contains(t, users, "ref=00000000-0000-0000-0000-000000000000")
+	assert.Contains(t, users, "flag=true")
+	assert.Contains(t, users, "filter=")
+	assert.Equal(t, 1, stats.SynthesizedParams, "only the untyped uuid param needs a placeholder")
+	assert.Zero(t, stats.SkippedOperations)
+}
+
+// TestParseOpenAPI_SecuritySchemes: bearer/basic/oauth2/openIdConnect build a
+// proper Authorization header from --spec-var, without double prefixes.
+func TestParseOpenAPI_SecuritySchemes(t *testing.T) {
+	specFor := func(scheme string) []byte {
+		return []byte(`
+openapi: "3.0.0"
+info: {title: t, version: "1"}
+servers: [{url: "https://api.example.test"}]
+components:
+  securitySchemes:
+    auth: ` + scheme + `
+security: [{auth: []}]
+paths:
+  /me:
+    get:
+      responses: {"200": {description: ok}}
+`)
+	}
+	authHeader := func(t *testing.T, scheme string, vars map[string]string) string {
+		t.Helper()
+		var header string
+		err := ParseOpenAPI(specFor(scheme), Options{UseSpecServers: true, Variables: vars}, func(rr *httpmsg.HttpRequestResponse) bool {
+			header = rr.Request().Header("Authorization")
+			return true
+		})
+		require.NoError(t, err)
+		return header
+	}
+	bearer := "{type: http, scheme: bearer}"
+	basic := "{type: http, scheme: basic}"
+	oauth2 := "{type: oauth2, flows: {clientCredentials: {tokenUrl: 'https://auth.example.test/token', scopes: {}}}}"
+	oidc := "{type: openIdConnect, openIdConnectUrl: 'https://auth.example.test/.well-known/openid-configuration'}"
+
+	cases := []struct {
+		name, scheme string
+		vars         map[string]string
+		want         string
+	}{
+		{"bearer var", bearer, map[string]string{"bearer": "tok"}, "Bearer tok"},
+		{"bearer by scheme name", bearer, map[string]string{"auth": "tok"}, "Bearer tok"},
+		{"bearer Authorization raw", bearer, map[string]string{"Authorization": "tok"}, "Bearer tok"},
+		{"bearer no double prefix", bearer, map[string]string{"Authorization": "Bearer tok"}, "Bearer tok"},
+		{"bearer no double prefix lower", bearer, map[string]string{"bearer": "bearer tok"}, "bearer tok"},
+		{"basic user:pass", basic, map[string]string{"basic": "user:pass"}, "Basic dXNlcjpwYXNz"},
+		{"basic already encoded", basic, map[string]string{"basic": "dXNlcjpwYXNz"}, "Basic dXNlcjpwYXNz"},
+		{"basic full value", basic, map[string]string{"Authorization": "Basic dXNlcjpwYXNz"}, "Basic dXNlcjpwYXNz"},
+		{"oauth2 reuses bearer", oauth2, map[string]string{"bearer": "tok"}, "Bearer tok"},
+		{"oidc reuses bearer", oidc, map[string]string{"bearer": "Bearer tok"}, "Bearer tok"},
+		{"no value adds nothing", bearer, nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, authHeader(t, c.scheme, c.vars))
+		})
+	}
 }

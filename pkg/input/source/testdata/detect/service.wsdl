@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" xmlns:tns="http://example.org/calc" xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="http://example.org/calc">
+  <message name="AddIn">
+    <part name="a" type="xsd:int"/>
+    <part name="b" type="xsd:int"/>
+  </message>
+  <portType name="CalcPort">
+    <operation name="Add"><input message="tns:AddIn"/></operation>
+  </portType>
+  <binding name="CalcBinding" type="tns:CalcPort">
+    <soap:binding style="rpc" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <operation name="Add">
+      <soap:operation soapAction="urn:Add"/>
+      <input><soap:body use="literal"/></input>
+    </operation>
+  </binding>
+  <service name="CalcService">
+    <port name="CalcPort" binding="tns:CalcBinding">
+      <soap:address location="http://calc.example.org/soap"/>
+    </port>
+  </service>
+</definitions>

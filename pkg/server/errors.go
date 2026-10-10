@@ -1,6 +1,11 @@
 package server
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/vigolium/vigolium/pkg/apicontract"
+	"github.com/vigolium/vigolium/pkg/database"
+)
 
 var (
 	ErrMissingAuthHeader       = errors.New("missing Authorization header")
@@ -28,4 +33,47 @@ var (
 	ErrExtensionNotFound       = errors.New("extension not found")
 	ErrForbidden               = errors.New("insufficient permissions")
 	ErrInvalidCredentials      = errors.New("invalid username or access code")
+	ErrProjectNotFound         = errors.New("project not found")
+	ErrInvalidProjectUUID      = errors.New("X-Project-UUID is not a valid UUID")
 )
+
+// errorCodeSentinels maps the sentinels above (and the database package's) to
+// the string code a REST error carries. errorCodeFor walks it in order with
+// errors.Is, so a wrapped sentinel ("failed to load scan: %w") still
+// classifies; anything unlisted falls back to the HTTP status's code.
+var errorCodeSentinels = []struct {
+	err  error
+	code apicontract.ErrorCode
+}{
+	{database.ErrDatabaseLocked, apicontract.CodeDatabaseLocked},
+	{database.ErrSchemaTooNew, apicontract.CodeSchemaTooNew},
+	{database.ErrSchemaOutdated, apicontract.CodeSchemaOutdated},
+	{ErrDatabaseRequired, apicontract.CodeDatabaseUnavailable},
+	{ErrProjectNotFound, apicontract.CodeProjectNotFound},
+	{ErrInvalidProjectUUID, apicontract.CodeInvalidProjectUUID},
+	{ErrMissingAuthHeader, apicontract.CodeUnauthorized},
+	{ErrInvalidAuthToken, apicontract.CodeUnauthorized},
+	{ErrInvalidCredentials, apicontract.CodeUnauthorized},
+	{ErrForbidden, apicontract.CodeForbidden},
+	{ErrQueueFull, apicontract.CodeQueueFull},
+	{ErrServerClosed, apicontract.CodeServiceUnavailable},
+	{ErrScanAlreadyRunning, apicontract.CodeConflict},
+	{ErrScanNotFound, apicontract.CodeScanNotFound},
+	{database.ErrScanNotFound, apicontract.CodeScanNotFound},
+	{ErrRecordNotFound, apicontract.CodeRecordNotFound},
+	{ErrNoValidRecords, apicontract.CodeRecordNotFound},
+	{ErrFindingNotFound, apicontract.CodeFindingNotFound},
+	{ErrAgentNotFound, apicontract.CodeNotFound},
+	{ErrOASTInteractionNotFound, apicontract.CodeNotFound},
+	{ErrExtensionNotFound, apicontract.CodeNotFound},
+	{database.ErrTableNotFound, apicontract.CodeNotFound},
+	{ErrInvalidMode, apicontract.CodeUnsupportedInputMode},
+	{ErrInvalidRawRequest, apicontract.CodeInputUnparsed},
+	{ErrMissingMode, apicontract.CodeInvalidRequest},
+	{ErrMissingContent, apicontract.CodeInvalidRequest},
+	{ErrMissingPrompt, apicontract.CodeInvalidRequest},
+	{ErrMissingTarget, apicontract.CodeInvalidRequest},
+	{ErrMissingURL, apicontract.CodeInvalidRequest},
+	{ErrMissingRawRequest, apicontract.CodeInvalidRequest},
+	{ErrMissingRecordUUIDs, apicontract.CodeInvalidRequest},
+}

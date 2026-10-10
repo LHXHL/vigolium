@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!DOCTYPE items [
+<!ELEMENT items (item*)>
+<!ATTLIST items burpVersion CDATA "">
+]>
+<items burpVersion="2024.1" exportTime="Mon Jan 01 00:00:00 UTC 2024">
+  <item>
+    <time>Mon Jan 01 00:00:00 UTC 2024</time>
+    <url><![CDATA[https://example.test/a]]></url>
+    <host ip="127.0.0.1">example.test</host>
+    <port>443</port>
+    <protocol>https</protocol>
+    <method><![CDATA[GET]]></method>
+    <path><![CDATA[/a]]></path>
+    <request base64="false"><![CDATA[GET /a HTTP/1.1
+Host: example.test
+
+]]></request>
+    <status>200</status>
+    <response base64="false"><![CDATA[HTTP/1.1 200 OK
+Content-Length: 2
+
+ok]]></response>
+  </item>
+</items>

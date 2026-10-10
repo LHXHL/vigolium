@@ -20,6 +20,7 @@ func FuncDefs() []api.JSFuncDef {
 	return []api.JSFuncDef{
 		{
 			Namespace: api.NsParse, Name: "url",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".url(urlStr: string)", Returns: "object|null",
 			Description: "Parse a URL into its components. Returns an object even for relative paths. Returns null only on hard parse error.",
 			Example:     "",
@@ -64,6 +65,7 @@ func FuncDefs() []api.JSFuncDef {
 		},
 		{
 			Namespace: api.NsParse, Name: "request",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".request(raw: string)", Returns: "object|null",
 			Description: "Parse a raw HTTP request into its components. Handles both CRLF and LF-only line endings. Returns null on empty input.",
 			Example:     "",
@@ -157,6 +159,7 @@ func FuncDefs() []api.JSFuncDef {
 		},
 		{
 			Namespace: api.NsParse, Name: "response",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".response(raw: string)", Returns: "object|null",
 			Description: "Parse a raw HTTP response into its components. Handles both CRLF and LF-only line endings. Returns null on empty input.",
 			Example:     "",
@@ -230,6 +233,7 @@ func FuncDefs() []api.JSFuncDef {
 		},
 		{
 			Namespace: api.NsParse, Name: "headers",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".headers(str: string)", Returns: "object",
 			Description: "Parse a newline-separated header block into a flat map. Lines without a colon are skipped. Last value wins for duplicate names.",
 			Example:     "",
@@ -255,6 +259,7 @@ func FuncDefs() []api.JSFuncDef {
 		},
 		{
 			Namespace: api.NsParse, Name: "cookies",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".cookies(str: string)", Returns: "object",
 			Description: "Parse a Cookie header value (or any semicolon-delimited name=value string) into a map. Last value wins for duplicate names.",
 			Example:     "",
@@ -277,6 +282,7 @@ func FuncDefs() []api.JSFuncDef {
 		},
 		{
 			Namespace: api.NsParse, Name: "query",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".query(str: string)", Returns: "object",
 			Description: "Parse a URL query string (with or without leading '?') into a flat map. First value wins for repeated keys.",
 			Example:     "",
@@ -300,6 +306,7 @@ func FuncDefs() []api.JSFuncDef {
 		},
 		{
 			Namespace: api.NsParse, Name: "json",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".json(str: string)", Returns: "any|null",
 			Description: "Parse a JSON string into a native JS value. Returns null on parse error.",
 			Example:     "",
@@ -315,6 +322,7 @@ func FuncDefs() []api.JSFuncDef {
 		},
 		{
 			Namespace: api.NsParse, Name: "form",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".form(body: string)", Returns: "object",
 			Description: "Parse a URL-encoded form body into a flat map. First value wins for repeated field names.",
 			Example:     "",
@@ -338,6 +346,7 @@ func FuncDefs() []api.JSFuncDef {
 		},
 		{
 			Namespace: api.NsParse, Name: "html",
+			Effect:   api.EffectPure,
 			Category: "Parsing", Signature: ".html(htmlStr: string)", Returns: "object|null",
 			Description: "Parse HTML and extract forms, links, scripts, and meta tags. Returns {forms, links, scripts, meta}.",
 			Example:     "",

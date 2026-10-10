@@ -54,10 +54,7 @@ type ImportResponse struct {
 // requests it's a form field; for JSON it's a body field.
 func (h *Handlers) HandleImport(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	projectUUID := getProjectUUID(c)
@@ -70,29 +67,20 @@ func (h *Handlers) HandleImport(c fiber.Ctx) error {
 	case strings.HasPrefix(contentType, "application/json"):
 		return h.importFromJSON(c, ctx, projectUUID)
 	default:
-		return c.Status(fiber.StatusUnsupportedMediaType).JSON(ErrorResponse{
-			Error: "Content-Type must be multipart/form-data or application/json",
-			Code:  fiber.StatusUnsupportedMediaType,
-		})
+		return respondErrorMsg(c, fiber.StatusUnsupportedMediaType, "Content-Type must be multipart/form-data or application/json")
 	}
 }
 
 func (h *Handlers) importFromMultipart(c fiber.Ctx, ctx context.Context, projectUUID string) error {
 	file, err := c.FormFile("file")
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "file form field is required",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "file form field is required")
 	}
 	agenticScanUUID := strings.TrimSpace(c.FormValue("agentic_scan_uuid"))
 
 	localPath, cleanup, err := persistMultipartToTemp(file)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to persist upload: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to persist upload: %w", err))
 	}
 	defer cleanup()
 
@@ -102,45 +90,27 @@ func (h *Handlers) importFromMultipart(c fiber.Ctx, ctx context.Context, project
 func (h *Handlers) importFromJSON(c fiber.Ctx, ctx context.Context, projectUUID string) error {
 	var req ImportRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 	url := strings.TrimSpace(req.URL)
 	if url == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "url is required for JSON body",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "url is required for JSON body")
 	}
 	url = storage.NormalizeGCSURI(url)
 	if !storage.IsGCSURI(url) {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "url must be a gs:// or gcs:// address",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "url must be a gs:// or gcs:// address")
 	}
 
 	if h.settings == nil || !h.settings.Storage.IsEnabled() {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: "cloud storage is not enabled",
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondErrorMsg(c, fiber.StatusServiceUnavailable, "cloud storage is not enabled")
 	}
 	sc, err := storage.NewClient(&h.settings.Storage)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to create storage client",
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondErrorMsg(c, fiber.StatusInternalServerError, "failed to create storage client")
 	}
 	bucketProj, key, err := storage.ParseGCSPath(url)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid storage URL: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid storage URL: %w", err))
 	}
 
 	ext := dbimport.ArchiveExt(key)
@@ -149,10 +119,7 @@ func (h *Handlers) importFromJSON(c fiber.Ctx, ctx context.Context, projectUUID 
 	}
 	tmpFile, err := os.CreateTemp("", "vigolium-import-*"+ext)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to allocate temp file: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to allocate temp file: %w", err))
 	}
 	tmpPath := tmpFile.Name()
 	_ = tmpFile.Close()
@@ -160,10 +127,7 @@ func (h *Handlers) importFromJSON(c fiber.Ctx, ctx context.Context, projectUUID 
 	defer cleanup()
 
 	if err := sc.DownloadToFile(ctx, bucketProj, key, tmpPath); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to download from storage: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to download from storage: %w", err))
 	}
 
 	return h.runImportAndRespond(c, ctx, tmpPath, projectUUID, req.AgenticScanUUID, url)
@@ -185,10 +149,7 @@ func (h *Handlers) runImportAndRespond(c fiber.Ctx, ctx context.Context, localPa
 			zap.String("project_uuid", projectUUID),
 			zap.String("source", originalSource),
 			zap.Error(err))
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	return c.JSON(ImportResponse{

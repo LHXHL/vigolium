@@ -5,8 +5,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/sourcegraph/conc"
 )
 
 // TestGoActiveTask_ContextCancellationSkipsTask verifies that when every active
@@ -21,9 +19,11 @@ func TestGoActiveTask_ContextCancellationSkipsTask(t *testing.T) {
 	cancel() // already cancelled
 
 	var ran atomic.Bool
-	var g conc.WaitGroup
-	e.goActiveTask(ctx, &g, func(releaseSlot func()) { ran.Store(true); releaseSlot() })
-	g.Wait()
+	item, _ := makeTestItem("example.com", "/", "ok")
+	tr := e.newItemTracker(ctx, item, false)
+	e.goActiveTask(ctx, tr, func(releaseSlot func()) { ran.Store(true); releaseSlot() })
+	tr.done()
+	<-tr.finished
 
 	if ran.Load() {
 		t.Fatal("task ran even though the context was cancelled and the semaphore was full")
@@ -37,9 +37,11 @@ func TestGoActiveTask_RunsWhenSlotAvailable(t *testing.T) {
 	e.pool.activeTaskSem = make(chan struct{}, 1)
 
 	done := make(chan struct{})
-	var g conc.WaitGroup
-	e.goActiveTask(context.Background(), &g, func(releaseSlot func()) { close(done); releaseSlot() })
-	g.Wait()
+	item, _ := makeTestItem("example.com", "/", "ok")
+	tr := e.newItemTracker(context.Background(), item, false)
+	e.goActiveTask(context.Background(), tr, func(releaseSlot func()) { close(done); releaseSlot() })
+	tr.done()
+	<-tr.finished
 
 	select {
 	case <-done:

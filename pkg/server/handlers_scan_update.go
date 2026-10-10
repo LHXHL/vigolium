@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -17,48 +18,30 @@ import (
 // validated against X-Project-UUID before the write.
 func (h *Handlers) HandleUpdateScan(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	scanUUID := c.Params("uuid")
 	if scanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	projectUUID := getProjectUUID(c)
 	existing, err := h.repo.GetScanByUUID(c.Context(), scanUUID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrScanNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrScanNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve scan: %w", err))
 	}
 	// Hide cross-project existence: return 404 rather than 403.
 	if existing.ProjectUUID != projectUUID {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrScanNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrScanNotFound)
 	}
 
 	var patch database.Scan
 	if err := c.Bind().JSON(&patch); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	// Strip immutable creation metadata, then bind the PK from the path.
@@ -70,18 +53,12 @@ func (h *Handlers) HandleUpdateScan(c fiber.Ctx) error {
 	patch.UpdatedAt = time.Now().UTC()
 
 	if err := h.repo.UpdateScanPartial(c.Context(), &patch); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to update scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to update scan: %w", err))
 	}
 
 	updated, err := h.repo.GetScanByUUID(c.Context(), scanUUID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve updated scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve updated scan: %w", err))
 	}
 	return c.JSON(updated)
 }
@@ -92,18 +69,12 @@ func (h *Handlers) HandleUpdateScan(c fiber.Ctx) error {
 // created_at) are ignored if present in the request body.
 func (h *Handlers) HandleUpdateAgenticScan(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	scanUUID := c.Params("uuid")
 	if scanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	projectUUID := getProjectUUID(c)
@@ -111,24 +82,15 @@ func (h *Handlers) HandleUpdateAgenticScan(c fiber.Ctx) error {
 	if err != nil {
 		// GetAgenticScan wraps sql.ErrNoRows; treat any error as not-found
 		// rather than 500 since the repo doesn't surface a richer signal.
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrAgentNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 	}
 	if existing.ProjectUUID != projectUUID {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrAgentNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 	}
 
 	var patch database.AgenticScan
 	if err := c.Bind().JSON(&patch); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	// Strip immutable creation metadata. ID is an autoincrement PK with a
@@ -139,18 +101,12 @@ func (h *Handlers) HandleUpdateAgenticScan(c fiber.Ctx) error {
 	patch.UUID = scanUUID
 
 	if err := h.repo.UpdateAgenticScan(c.Context(), &patch); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to update agentic scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to update agentic scan: %w", err))
 	}
 
 	updated, err := h.repo.GetAgenticScan(c.Context(), scanUUID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve updated agentic scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve updated agentic scan: %w", err))
 	}
 	return c.JSON(updated)
 }

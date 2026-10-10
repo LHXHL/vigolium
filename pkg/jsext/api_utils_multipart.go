@@ -13,6 +13,7 @@ func multipartUtilsFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsUtils, Name: "multipart",
+			Effect:   EffectPure,
 			Category: "Utils", Signature: ".multipart(fields: object[])", Returns: "{body: string, contentType: string}",
 			Description: "Build a multipart/form-data body from an array of field objects.", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {

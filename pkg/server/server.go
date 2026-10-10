@@ -132,6 +132,9 @@ func NewServer(cfg ServerConfig, q queue.Queue, db *database.DB, repo *database.
 		// DefaultBodyLimitMiddleware reject an oversized declared Content-Length
 		// before allocation; the large-upload routes read their stream on demand.
 		StreamRequestBody: true,
+		// Router errors (unknown route, wrong method, recovered panic) and errors
+		// a handler returns render as the negotiated JSON error, not text/plain.
+		ErrorHandler: apiErrorHandler,
 	})
 
 	registerRoutes(app, handlers, cfg)
@@ -159,6 +162,7 @@ func NewServer(cfg ServerConfig, q queue.Queue, db *database.DB, repo *database.
 				zap.String("path", cfg.MirrorFSPath), zap.Error(err))
 		} else {
 			s.fsMirror = mirror
+			handlers.mirrorDropped = mirror.Dropped
 			repo.OnRecordSaved = mirror.OnRecord
 			repo.OnFindingSaved = mirror.OnFinding
 			zap.L().Info("Filesystem mirror enabled", zap.String("path", cfg.MirrorFSPath))
@@ -215,7 +219,7 @@ func NewServer(cfg ServerConfig, q queue.Queue, db *database.DB, repo *database.
 			}
 		}
 		s.proxyServer = newIngestProxy(cfg.IngestProxyAddr, db, repo, recordWriter, settings,
-			handlers.getScopeMatcher, mitmCA, cfg.IngestProxyInsecure)
+			handlers.ingestScopeFor, mitmCA, cfg.IngestProxyInsecure, cfg.IngestProxyAuth)
 	}
 
 	return s

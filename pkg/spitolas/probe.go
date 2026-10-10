@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -56,6 +57,84 @@ type DialogEvent struct {
 	Answered string    `json:"answered,omitempty"`
 }
 
+// defaultProbeProxy is the proxy a ProbeURL call uses when its config names
+// none. See SetDefaultProbeProxy.
+var defaultProbeProxy atomic.Pointer[string]
+
+// SetDefaultProbeProxy makes proxyURL the proxy every ProbeURL call uses when
+// its ProbeConfig.ProxyURL is empty, and returns a func that restores the
+// previous default. An empty proxyURL changes nothing and returns a no-op.
+//
+// It exists for the browser confirmations active modules run (xss_stored,
+// xss_dom_confirm, xss_light_scanner, aem_xss, client_path_traversal_confirm):
+// they build their ProbeConfig from a context.Background()-derived context with
+// no route back to the scan's options, so a scan run with --proxy confirmed its
+// XSS findings around the proxy — traffic the operator's proxy log never saw.
+// The runner installs the scan's proxy here for the dynamic-assessment phase.
+//
+// Process-wide by necessity: two in-process scans with DIFFERENT proxies running
+// concurrently share one default (last setter wins until it restores). A caller
+// that knows its proxy should still set ProbeConfig.ProxyURL, which always wins.
+func SetDefaultProbeProxy(proxyURL string) (restore func()) {
+	if proxyURL == "" {
+		return func() {}
+	}
+	prev := defaultProbeProxy.Swap(&proxyURL)
+	return func() { defaultProbeProxy.CompareAndSwap(&proxyURL, prev) }
+}
+
+// DefaultProbeProxy returns the proxy installed by SetDefaultProbeProxy, or "".
+func DefaultProbeProxy() string {
+	if p := defaultProbeProxy.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// defaultProbeStealth is the stealth mode a ProbeURL call uses when its config
+// names none. See SetDefaultProbeStealth.
+var defaultProbeStealth atomic.Pointer[string]
+
+// SetDefaultProbeStealth makes mode the stealth mode every ProbeURL call uses
+// when its ProbeConfig.Stealth is empty, and returns a func that restores the
+// previous default. An empty mode changes nothing and returns a no-op.
+//
+// The counterpart of SetDefaultProbeProxy for spidering.stealth: the module
+// browser confirmations build their ProbeConfig with no route back to the
+// scan's settings, so they ran with the "auto" default whatever the operator
+// configured — a crawl with stealth off and confirmations with it on saw two
+// different pages. The runner (and the direct scan-url / scan-request paths)
+// install the configured mode for the scan. Process-wide, with the same
+// last-setter-wins caveat as the proxy default.
+func SetDefaultProbeStealth(mode string) (restore func()) {
+	if mode == "" {
+		return func() {}
+	}
+	prev := defaultProbeStealth.Swap(&mode)
+	return func() { defaultProbeStealth.CompareAndSwap(&mode, prev) }
+}
+
+// DefaultProbeStealth returns the mode installed by SetDefaultProbeStealth, or
+// "" (auto).
+func DefaultProbeStealth() string {
+	if p := defaultProbeStealth.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// SetProbeDefaults installs the scan's proxy and stealth mode as the ProbeURL
+// defaults (SetDefaultProbeProxy, SetDefaultProbeStealth) and returns one
+// restore func for both.
+func SetProbeDefaults(proxyURL, stealth string) (restore func()) {
+	restoreProxy := SetDefaultProbeProxy(proxyURL)
+	restoreStealth := SetDefaultProbeStealth(stealth)
+	return func() {
+		restoreStealth()
+		restoreProxy()
+	}
+}
+
 // ProbeConfig configures a single-page probe used to confirm DOM/reflected
 // XSS by observing JavaScript dialogs that fire while the page renders.
 type ProbeConfig struct {
@@ -76,6 +155,11 @@ type ProbeConfig struct {
 	NavTimeout    time.Duration
 	BrowserPath   string
 	BrowserEngine string
+
+	// Stealth is the stealth mode, as for the crawl: "auto" (or ""), "on" or
+	// "off". Auto is on for the default chromium engine, so a module
+	// confirmation sees the same page the crawl did.
+	Stealth string
 
 	// Headed disables headless mode. Zero value keeps headless on so a
 	// default-config caller can never pop a window on the user's desktop.
@@ -197,6 +281,12 @@ func ProbeURL(ctx context.Context, cfg ProbeConfig) (res *ProbeResult, err error
 	if cfg.URL == "" {
 		return nil, errors.New("ProbeURL: URL is required")
 	}
+	if cfg.ProxyURL == "" {
+		cfg.ProxyURL = DefaultProbeProxy()
+	}
+	if cfg.Stealth == "" {
+		cfg.Stealth = DefaultProbeStealth()
+	}
 
 	crawlerCfg, err := config.New(cfg.URL)
 	if err != nil {
@@ -217,6 +307,10 @@ func ProbeURL(ctx context.Context, cfg ProbeConfig) (res *ProbeResult, err error
 	}
 	if cfg.BrowserEngine != "" {
 		crawlerCfg.BrowserEngine = cfg.BrowserEngine
+	}
+	crawlerCfg.Stealth = cfg.Stealth
+	if err := config.ValidateStealth(cfg.Stealth); err != nil {
+		return nil, fmt.Errorf("ProbeURL: %w", err)
 	}
 	if cfg.ProxyURL != "" {
 		crawlerCfg.ProxyURL = cfg.ProxyURL

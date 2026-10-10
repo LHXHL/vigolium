@@ -128,6 +128,14 @@ var (
 	// trafficURLs selects exact stored records by URL (--url).
 	trafficURLs []string
 
+	// trafficScanUUID selects the records a scan stored first (--scan-uuid).
+	trafficScanUUID string
+
+	// trafficCurl renders the matched records as curl commands (--curl);
+	// trafficRedactAuth masks their credential headers (--redact-auth).
+	trafficCurl       bool
+	trafficRedactAuth bool
+
 	// trafficBurpBridgeURL enables live Burp records as an additional source.
 	trafficBurpBridgeURL    string
 	trafficSaveToVigoliumDB bool
@@ -173,6 +181,7 @@ func init() {
 	pf.StringVar(&trafficExcludeHeader, "exclude-header", "", "Exclude records whose HTTP header block contains the term (inverse of --header; headers only, not bodies)")
 	pf.StringVar(&trafficExcludeBody, "exclude-body", "", "Exclude records whose request/response body contains the term (inverse of --body; bodies only, not headers)")
 	pf.StringVar(&trafficSource, "source", "", "Filter by record source (e.g. burp, caido, scanner, probe, ingest-cli, ingest-server, ingest-proxy, seed)")
+	pf.StringVar(&trafficScanUUID, "scan-uuid", "", "Only records first stored by this scan (http_records.scan_uuid; a record deduplicated against an earlier scan keeps that scan's uuid)")
 	pf.StringVar(&trafficSort, "sort", "created_at", "Sort by: uuid, created_at, sent_at, method, status, time")
 	pf.BoolVar(&trafficAsc, "asc", false, "Sort in ascending order (default: descending)")
 	pf.IntVarP(&trafficLimit, "limit", "n", 100, "Maximum records to display")
@@ -187,6 +196,8 @@ func init() {
 	f.BoolVar(&trafficTree, "tree", false, "Display as host/path hierarchy tree")
 	f.BoolVar(&trafficRaw, "raw", false, "Show full raw HTTP request and response")
 	f.BoolVar(&trafficBurp, "burp", false, "Display in Burp Suite-style format (colored request/response)")
+	f.BoolVar(&trafficCurl, "curl", false, "Render each matched record as a curl command (URL from the stored scheme/host/port; renders at most 20 without -a); -j gives {uuid, url, curl, argv}")
+	f.BoolVar(&trafficRedactAuth, "redact-auth", false, "With --curl: replace Authorization/Cookie/API-key header values with <redacted>")
 	f.BoolVar(&trafficMarkdown, "markdown", false, "Render the matched records as Markdown (request/response in fenced http blocks) to stdout; response bodies are compacted to a preview by default (use --full-body for whole bodies)")
 	f.BoolVarP(&globalStateless, "stateless", "S", false, "Read from --db (a .jsonl export or standalone .sqlite) with project scoping off; never writes to your project DB")
 	f.StringVar(&globalGlobDB, "glob-db", "", "Read across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S")
@@ -239,31 +250,31 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	// operator asked for that number or merely inherited the default.
 	limitTyped := cmd.Flags().Changed("limit")
 	if trafficSaveToVigoliumDB && strings.TrimSpace(trafficBurpBridgeURL) == "" {
-		return fmt.Errorf("--save-to-vigolium-db requires --burp-bridge-url")
+		return usageErrorf("--save-to-vigolium-db requires --burp-bridge-url")
 	}
 	if trafficSaveToBurp && strings.TrimSpace(trafficBurpBridgeURL) == "" {
-		return fmt.Errorf("--save-to-burp requires --burp-bridge-url")
+		return usageErrorf("--save-to-burp requires --burp-bridge-url")
 	}
 	if trafficSaveToBurp && trafficSaveToVigoliumDB {
-		return fmt.Errorf("--save-to-burp and --save-to-vigolium-db cannot be combined")
+		return usageErrorf("--save-to-burp and --save-to-vigolium-db cannot be combined")
 	}
 	// Validate against the flags the user actually passed, not the effective
 	// read mode: $VIGOLIUM_DB_PATH also implies a stateless read, and rejecting
 	// the run over it would name two flags that never appeared on the command
 	// line — while saving into the pinned session DB is exactly what it means.
 	if trafficSaveToVigoliumDB && (globalStateless || strings.TrimSpace(globalGlobDB) != "") {
-		return fmt.Errorf("--save-to-vigolium-db cannot be used with --stateless or --glob-db")
+		return usageErrorf("--save-to-vigolium-db cannot be used with --stateless or --glob-db")
 	}
 	if trafficSaveToVigoliumDB && trafficReplay {
-		return fmt.Errorf("--save-to-vigolium-db cannot be combined with --replay")
+		return usageErrorf("--save-to-vigolium-db cannot be combined with --replay")
 	}
 	if trafficSaveToBurp && trafficReplay {
-		return fmt.Errorf("--save-to-burp cannot be combined with --replay")
+		return usageErrorf("--save-to-burp cannot be combined with --replay")
 	}
 	if trafficBurpBridgeURL != "" {
 		validated, err := burpbridge.ValidateURL(trafficBurpBridgeURL)
 		if err != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", err)
+			return usageErrorf("--burp-bridge-url: %w", err)
 		}
 		trafficBurpBridgeURL = validated
 	}
@@ -280,6 +291,12 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		default:
 			fuzzyTerm = args[0]
 		}
+	}
+	if err := rejectTrafficHumanViewsUnderJSON(); err != nil {
+		return err
+	}
+	if err := validateTrafficCurlFlags(cmd); err != nil {
+		return err
 	}
 
 	// Built once, up front: the filters are a pure function of the flags and the
@@ -298,7 +315,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	// and outside runWithWatch so --watch cannot re-post the whole corpus on every
 	// tick, matching how --replay is dispatched below.
 	if trafficSaveToBurp && strings.TrimSpace(globalGlobDB) != "" {
-		return saveGlobToBurp(context.Background(), globalGlobDB, filters)
+		return saveGlobToBurp(context.Background(), cmd, globalGlobDB, filters)
 	}
 
 	rendersRaw := trafficRendersRawBodies()
@@ -323,10 +340,9 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	if trafficSaveToVigoliumDB {
+		// --save-to-vigolium-db flips this invocation to write intent
+		// (dbWriteFlags), so the opener has already made the schema ready.
 		ctx := context.Background()
-		if err := db.CreateSchema(ctx); err != nil {
-			return fmt.Errorf("failed to create database schema: %w", err)
-		}
 		if err := db.SeedDefaults(ctx); err != nil {
 			return fmt.Errorf("failed to seed default data: %w", err)
 		}
@@ -335,7 +351,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	// --replay re-sends matched records instead of listing them. Run it
 	// directly (not under --watch, which would re-fire the traffic each tick).
 	if trafficReplay {
-		return runTrafficReplayShim(context.Background(), fuzzyTerm)
+		return runTrafficReplayShim(context.Background(), cmd, fuzzyTerm)
 	}
 
 	return runWithWatch(func() error {
@@ -343,7 +359,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		// The aggregate answers a question about the matched rows without
 		// hydrating them, so it runs before anything that would.
 		if strings.TrimSpace(trafficGroupBy) != "" {
-			return runTrafficGroupBy(ctx, db, filters)
+			return runTrafficGroupBy(ctx, cmd, db, filters)
 		}
 		if trafficSaveToBurp {
 			records, err := database.NewQueryBuilder(db, filters).Execute(ctx)
@@ -396,6 +412,15 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to query database: %w", err)
 		}
+		// An empty --scan-uuid read is explained, not left to read as "this scan
+		// stored nothing" (see scanProvenanceWarning).
+		var provenance []envOpt
+		if total == 0 && filters.ScanUUID != "" {
+			provenance = noteProvenance(scanProvenanceWarning(ctx, db, filters.ProjectUUID, filters.ScanUUID))
+		}
+		if trafficCurl {
+			return renderTrafficCurl(cmd, records, total, provenance)
+		}
 
 		if tuiActive {
 			if len(records) == 0 {
@@ -406,7 +431,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		}
 
 		if globalJSON {
-			return displayJSON(ctx, db, records, total, trafficOffset, trafficLimit)
+			return displayJSON(ctx, cmd, db, records, total, trafficOffset, trafficLimit, provenance...)
 		}
 
 		// Echo the active filter conditions (search, host, method, status, …) so
@@ -444,6 +469,33 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	})
 }
 
+// rejectTrafficHumanViewsUnderJSON refuses -j together with a human view. -j
+// used to win silently: `traffic --tree -j` printed the flat row list, so a
+// caller that asked for a tree got something else and no sign of it. The tree,
+// markdown, raw and Burp views are renderings for a person; the machine shape
+// of the same data is the row list (or `--group-by host` for the aggregate).
+func rejectTrafficHumanViewsUnderJSON() error {
+	if !globalJSON {
+		return nil
+	}
+	var view string
+	switch {
+	case trafficTree:
+		view = "--tree"
+	case trafficMarkdown:
+		view = "--markdown"
+	case trafficBurp:
+		view = "--burp"
+	case trafficRaw:
+		view = "--raw"
+	default:
+		return nil
+	}
+	return usageErrorf("%s is a human view and cannot be combined with -j/--json.\n\n"+
+		"For the rows use: vigolium traffic -j (add --full-body for complete bodies)\n"+
+		"For a per-host tree as data use: vigolium traffic -j --group-by host", view)
+}
+
 // buildTrafficFilters constructs QueryFilters from traffic flags and an optional fuzzy term.
 func buildTrafficFilters(fuzzyTerm string) (database.QueryFilters, error) {
 	// The alias normalization erases which spelling the user typed, so the error
@@ -474,6 +526,7 @@ func buildTrafficFilters(fuzzyTerm string) (database.QueryFilters, error) {
 		StatusCodes:         trafficStatus,
 		PathPattern:         trafficPath,
 		Source:              trafficSource,
+		ScanUUID:            strings.TrimSpace(trafficScanUUID),
 		DateFrom:            dateFrom,
 		DateTo:              dateTo,
 		FuzzyTerm:           fuzzyTerm,
@@ -492,9 +545,10 @@ func buildTrafficFilters(fuzzyTerm string) (database.QueryFilters, error) {
 
 // trafficRendersRawBodies reports whether any part of this invocation reads
 // HTTPRecord.RawRequest/RawResponse off the records it fetches: --raw/--burp/
-// --markdown and the TUI's detail view print them, --replay re-sends them, the
-// Burp bridge and --save-to-burp ship them to Burp, --json embeds them, and a
-// --columns selection carrying a needsRawBodies column parses them. Everything
+// --markdown and the TUI's detail view print them, --replay re-sends them,
+// --curl renders them as commands, the Burp bridge and --save-to-burp ship them
+// to Burp, --json embeds them, and a --columns selection carrying a
+// needsRawBodies column parses them. Everything
 // else — the table and tree — renders metadata only.
 //
 // A new output mode MUST be added here. This list is exhaustive by construction,
@@ -506,7 +560,7 @@ func trafficRendersRawBodies() bool {
 	// flag is set: that errs toward keeping the bodies, and covers the non-TTY
 	// case where Active errors out before rendering. The TUI's selection handler
 	// renders a full raw view.
-	return trafficRaw || trafficBurp || trafficMarkdown || trafficReplay ||
+	return trafficRaw || trafficBurp || trafficMarkdown || trafficReplay || trafficCurl ||
 		trafficSaveToBurp || trafficSaveToVigoliumDB || globalJSON ||
 		trafficTUI || trafficBurpBridgeURL != "" || trafficColumnsUseRawBodies()
 }
@@ -546,13 +600,14 @@ func printActiveTrafficFilters(filters database.QueryFilters, fuzzyTerm string) 
 	s.add("exclude-header", filters.ExcludeHeaderSearch)
 	s.add("exclude-body", filters.ExcludeBodySearch)
 	s.add("source", filters.Source)
+	s.add("scan-uuid", filters.ScanUUID)
 	if filters.DateFrom != nil {
 		s.add("from", clicommon.FormatTimeFilter(*filters.DateFrom))
 	}
 	if filters.DateTo != nil {
 		s.add("to", clicommon.FormatTimeFilter(*filters.DateTo))
 	}
-	s.print()
+	s.print(trafficMarkdown || trafficBurp || trafficRaw)
 }
 
 // resolveColumns selects columns based on --columns and --exclude-columns flags.

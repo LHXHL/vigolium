@@ -26,6 +26,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra/llm"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
@@ -199,7 +200,7 @@ func (m *Module) probeOASTToolAction(
 	if oast == nil || !oast.Enabled() {
 		return
 	}
-	cb := oast.GenerateURL(u.String(), "llm-prompt", "llm-tool", ModuleID, ctx.Request().ID())
+	cb := modkit.OASTURLFor(oast, oastclass.SSRF, u.String(), "llm-prompt", "llm-tool", ModuleID, ctx.Request().ID())
 	if cb == "" {
 		return
 	}

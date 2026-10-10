@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/vigolium/vigolium/pkg/utils/yamlschema"
 )
 
 // Role identifies how a session is used during scanning.
@@ -32,6 +35,26 @@ type LoginType string
 const (
 	LoginTypeBearer LoginType = "bearer" // JSON body → Authorization: Bearer {value}
 	LoginTypeCookie LoginType = "cookie" // Capture all Set-Cookie headers
+	// LoginTypeOAuth2ClientCredentials fetches an access token from token_url
+	// with the client_credentials grant (oauth.go).
+	LoginTypeOAuth2ClientCredentials LoginType = "oauth2_client_credentials"
+	// LoginTypeOAuth2RefreshToken trades refresh_token for an access token at
+	// token_url (oauth.go).
+	LoginTypeOAuth2RefreshToken LoginType = "oauth2_refresh_token"
+)
+
+// IsOAuth2 reports whether t is one of the OAuth2 token-endpoint types, which
+// take token_url/client_id/... instead of url/method/body/extract.
+func (t LoginType) IsOAuth2() bool {
+	return t == LoginTypeOAuth2ClientCredentials || t == LoginTypeOAuth2RefreshToken
+}
+
+// OAuth2 client authentication styles (login.auth_style).
+const (
+	// OAuth2AuthStyleHeader sends client_id/client_secret as HTTP Basic auth.
+	OAuth2AuthStyleHeader = "header"
+	// OAuth2AuthStyleBody sends them as form fields in the request body.
+	OAuth2AuthStyleBody = "body"
 )
 
 // ExtractRule defines how to extract an auth token from a login response.
@@ -53,12 +76,16 @@ type ExpectResponse struct {
 
 // LoginStep defines a single step in a multi-step login flow.
 type LoginStep struct {
-	URL         string          `yaml:"url" json:"url"`
-	Method      string          `yaml:"method" json:"method"`
-	ContentType string          `yaml:"content_type,omitempty" json:"content_type,omitempty"`
-	Body        string          `yaml:"body,omitempty" json:"body,omitempty"`
-	Extract     []ExtractRule   `yaml:"extract,omitempty" json:"extract,omitempty"`
-	Expect      *ExpectResponse `yaml:"expect,omitempty" json:"expect,omitempty"`
+	URL         string `yaml:"url" json:"url"`
+	Method      string `yaml:"method" json:"method"`
+	ContentType string `yaml:"content_type,omitempty" json:"content_type,omitempty"`
+	// Headers are extra request headers for this step, applied after the
+	// flow's own login.headers (a step header wins). Values support {var}
+	// and the {{env:…}} / {{totp:…}} templates, like url and body.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Body    string            `yaml:"body,omitempty" json:"body,omitempty"`
+	Extract []ExtractRule     `yaml:"extract,omitempty" json:"extract,omitempty"`
+	Expect  *ExpectResponse   `yaml:"expect,omitempty" json:"expect,omitempty"`
 }
 
 // LoginFlow defines how to authenticate to get session credentials.
@@ -75,6 +102,33 @@ type LoginFlow struct {
 	Expect *ExpectResponse `yaml:"expect,omitempty" json:"expect,omitempty"`
 	// Multi-step login flows. When set, URL/Method/Body/Extract on the parent are ignored.
 	Steps []LoginStep `yaml:"steps,omitempty" json:"steps,omitempty"`
+	// Headers are extra request headers sent with every login request: the
+	// single request, each step (a step's own headers win), or the OAuth2
+	// token request. Values support the {{env:…}} / {{totp:…}} templates.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// OAuth2 token endpoint (type oauth2_client_credentials or
+	// oauth2_refresh_token; see oauth.go). Every value supports the
+	// {{env:…}} templates; ${ENV} is expanded when the file loads.
+	TokenURL     string `yaml:"token_url,omitempty" json:"token_url,omitempty"`
+	ClientID     string `yaml:"client_id,omitempty" json:"client_id,omitempty"`
+	ClientSecret string `yaml:"client_secret,omitempty" json:"client_secret,omitempty"`
+	// Scope is space- (or comma-) separated. Sent with client_credentials.
+	Scope string `yaml:"scope,omitempty" json:"scope,omitempty"`
+	// Audience is sent as the `audience` parameter with client_credentials.
+	Audience     string `yaml:"audience,omitempty" json:"audience,omitempty"`
+	RefreshToken string `yaml:"refresh_token,omitempty" json:"refresh_token,omitempty"`
+	// AuthStyle is how the client authenticates: "header" (HTTP Basic) or
+	// "body" (form fields). Empty tries header, then body.
+	AuthStyle string `yaml:"auth_style,omitempty" json:"auth_style,omitempty"`
+
+	// rawHeaders are the headers of a flow converted from a session's
+	// login_request (the raw request's own); sent before Headers.
+	rawHeaders map[string]string
+	// discoverTokens marks a flow converted from login_request: with no
+	// configured Extract, its rules are discovered from each login response,
+	// as `auth load` does for a raw request.
+	discoverTokens bool
 }
 
 // Session represents a named authentication identity used during scanning.
@@ -85,9 +139,28 @@ type Session struct {
 	Login   *LoginFlow        `yaml:"login,omitempty" json:"login,omitempty"`
 	// LoginRequest is a raw HTTP request string for the login flow.
 	LoginRequest string `yaml:"login_request,omitempty" json:"login_request,omitempty"`
+	// Check says how to tell whether the session is still logged in
+	// (loggedin.go). Optional; scanning_strategy.session supplies defaults.
+	Check *SessionCheck `yaml:"check,omitempty" json:"check,omitempty"`
+	// Reauth says what a scan does once Check finds the session logged out.
+	Reauth *SessionReauth `yaml:"reauth,omitempty" json:"reauth,omitempty"`
 
 	// hydrated indicates whether the login flow has been executed.
 	hydrated bool
+	// expiresAt is when the credentials the last login produced expire, when
+	// the login said so (an OAuth2 token's expires_in). Zero = unknown.
+	expiresAt time.Time
+}
+
+// ExpiresAt is when the session's current credentials expire, as reported by
+// the login that produced them (an OAuth2 token response's expires_in). Zero
+// when the login did not say. A scan's LiveSession refreshes the credentials
+// shortly before this time.
+func (s *Session) ExpiresAt() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	return s.expiresAt
 }
 
 // SessionConfig holds multiple sessions, used for --auth-config files (YAML or JSON).
@@ -107,7 +180,8 @@ func (s *Session) Validate() error {
 		return fmt.Errorf("session %q: invalid role %q (must be 'primary' or 'compare')", s.Name, s.Role)
 	}
 	hasStatic := len(s.Headers) > 0
-	hasLogin := s.Login != nil
+	// A Login converted from login_request is the same source, not a second one.
+	hasLogin := s.Login != nil && !s.Login.discoverTokens
 	hasRawLogin := s.LoginRequest != ""
 	sources := 0
 	if hasStatic {
@@ -127,11 +201,27 @@ func (s *Session) Validate() error {
 			return err
 		}
 	}
+	// check and reauth: the same rules auth lint reports, first error wins.
+	for _, is := range append(lintCheck(s.Check, "check"), lintReauth(s, "reauth")...) {
+		if is.Severity == "error" {
+			return fmt.Errorf("session %q: %s: %s", s.Name, is.Field, is.Message)
+		}
+	}
 	return nil
 }
 
 // Validate checks that a LoginFlow is well-formed.
 func (lf *LoginFlow) Validate(sessionName string) error {
+	// OAuth2 token endpoints: the same required fields lint reports.
+	if lf.Type.IsOAuth2() {
+		for _, is := range lintOAuth2Flow(lf, "login") {
+			if is.Severity == "error" {
+				return fmt.Errorf("session %q: %s: %s", sessionName, is.Field, is.Message)
+			}
+		}
+		return nil
+	}
+
 	// Multi-step flows: validate each step instead of top-level fields.
 	if len(lf.Steps) > 0 {
 		for i, step := range lf.Steps {
@@ -160,7 +250,7 @@ func (lf *LoginFlow) Validate(sessionName string) error {
 		case LoginTypeCookie:
 			// No token_path needed for cookie type.
 		default:
-			return fmt.Errorf("session %q: unknown login type %q (must be 'bearer' or 'cookie')", sessionName, lf.Type)
+			return fmt.Errorf("session %q: unknown login type %q (must be %s)", sessionName, lf.Type, loginTypeList)
 		}
 		// URL and Method are still required.
 		if lf.URL == "" {
@@ -244,27 +334,8 @@ func expandBearerTokenPath(tokenPath string) []ExtractRule {
 
 // ValidateExpect checks if an HTTP response satisfies the expect constraints.
 func ValidateExpect(expect *ExpectResponse, statusCode int, body []byte) error {
-	if expect == nil {
-		return nil
-	}
-	if len(expect.Status) > 0 {
-		found := false
-		for _, s := range expect.Status {
-			if s == statusCode {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("unexpected status %d (expected one of %v)", statusCode, expect.Status)
-		}
-	}
-	if expect.BodyContains != "" {
-		if !strings.Contains(string(body), expect.BodyContains) {
-			return fmt.Errorf("response body does not contain %q", expect.BodyContains)
-		}
-	}
-	return nil
+	_, err := checkExpect(expect, statusCode, body)
+	return err
 }
 
 // LoginURL returns the login URL for the session. For multi-step flows, returns
@@ -278,9 +349,14 @@ func (lf *LoginFlow) LoginURL() string {
 
 // LintIssue represents a single validation issue found during linting.
 type LintIssue struct {
-	Field    string // dot-notation path, e.g. "sessions[0].login.url"
-	Severity string // "error" or "warning"
-	Message  string
+	Field    string `json:"field"`    // dot-notation path, e.g. "sessions[0].login.url"
+	Severity string `json:"severity"` // "error" or "warning"
+	Message  string `json:"message"`
+	// Line and Column locate the field in the source file (1-based); 0 when
+	// the issue has no position (a missing field with no present parent, or a
+	// document parsed without one).
+	Line   int `json:"line,omitempty"`
+	Column int `json:"column,omitempty"`
 }
 
 // LintSessionConfig performs detailed validation of a SessionConfig and returns
@@ -343,7 +419,7 @@ func lintSession(s *Session, prefix string) []LintIssue {
 
 	if s.Name == "" {
 		issues = append(issues, LintIssue{
-			Field: prefix + ".name", Severity: "error",
+			Field: yamlschema.JoinPath(prefix, "name"), Severity: "error",
 			Message: "session name is required",
 		})
 	}
@@ -353,7 +429,7 @@ func lintSession(s *Session, prefix string) []LintIssue {
 		// ok
 	default:
 		issues = append(issues, LintIssue{
-			Field: prefix + ".role", Severity: "error",
+			Field: yamlschema.JoinPath(prefix, "role"), Severity: "error",
 			Message: fmt.Sprintf("invalid role %q (must be \"primary\" or \"compare\")", s.Role),
 		})
 	}
@@ -385,14 +461,31 @@ func lintSession(s *Session, prefix string) []LintIssue {
 	}
 
 	if hasLogin {
-		issues = append(issues, lintLoginFlow(s.Login, prefix+".login")...)
+		issues = append(issues, lintLoginFlow(s.Login, yamlschema.JoinPath(prefix, "login"))...)
 	}
+	issues = append(issues, lintCheck(s.Check, yamlschema.JoinPath(prefix, "check"))...)
+	issues = append(issues, lintReauth(s, yamlschema.JoinPath(prefix, "reauth"))...)
 
 	return issues
 }
 
 func lintLoginFlow(lf *LoginFlow, prefix string) []LintIssue {
 	var issues []LintIssue
+
+	issues = append(issues, lintHeaderMap(lf.Headers, prefix+".headers")...)
+	issues = append(issues, lintTemplates(lf.URL, prefix+".url")...)
+	issues = append(issues, lintTemplates(lf.Body, prefix+".body")...)
+
+	// OAuth2 token endpoints.
+	if lf.Type.IsOAuth2() {
+		return append(issues, lintOAuth2Flow(lf, prefix)...)
+	}
+	if oauthOnly := oauth2FieldsSet(lf); len(oauthOnly) > 0 {
+		issues = append(issues, LintIssue{
+			Field: prefix + "." + oauthOnly[0], Severity: "warning",
+			Message: fmt.Sprintf("%s apply only to type oauth2_client_credentials / oauth2_refresh_token and are ignored here", strings.Join(oauthOnly, ", ")),
+		})
+	}
 
 	// Multi-step flows.
 	if len(lf.Steps) > 0 {
@@ -441,7 +534,7 @@ func lintLoginFlow(lf *LoginFlow, prefix string) []LintIssue {
 		default:
 			issues = append(issues, LintIssue{
 				Field: prefix + ".type", Severity: "error",
-				Message: fmt.Sprintf("unknown login type %q (must be \"bearer\" or \"cookie\")", lf.Type),
+				Message: fmt.Sprintf("unknown login type %q (must be %s)", lf.Type, loginTypeList),
 			})
 		}
 		if len(lf.Extract) > 0 {
@@ -515,12 +608,35 @@ func lintLoginStep(step *LoginStep, prefix string) []LintIssue {
 			Message: "step method is required",
 		})
 	}
+	issues = append(issues, lintTemplates(step.URL, prefix+".url")...)
+	issues = append(issues, lintTemplates(step.Body, prefix+".body")...)
+	issues = append(issues, lintHeaderMap(step.Headers, prefix+".headers")...)
 	for i, rule := range step.Extract {
 		rulePrefix := fmt.Sprintf("%s.extract[%d]", prefix, i)
 		issues = append(issues, lintExtractRule(&rule, rulePrefix)...)
 	}
 	if step.Expect != nil {
 		issues = append(issues, lintExpect(step.Expect, prefix+".expect")...)
+	}
+	return issues
+}
+
+// loginTypeList is the accepted login.type values, for error messages.
+const loginTypeList = `"bearer", "cookie", "oauth2_client_credentials" or "oauth2_refresh_token"`
+
+// lintHeaderMap checks a login.headers / steps[].headers map: names must be
+// non-empty tokens, values may carry templates.
+func lintHeaderMap(h map[string]string, prefix string) []LintIssue {
+	var issues []LintIssue
+	for _, name := range headerNames(h) {
+		field := yamlschema.JoinPath(prefix, name)
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " :\t\r\n") {
+			issues = append(issues, LintIssue{
+				Field: field, Severity: "error",
+				Message: fmt.Sprintf("invalid header name %q", name),
+			})
+		}
+		issues = append(issues, lintTemplates(h[name], field)...)
 	}
 	return issues
 }

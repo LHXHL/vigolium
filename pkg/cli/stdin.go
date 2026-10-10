@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -83,12 +84,46 @@ func validateInputReadTimeout(cmd *cobra.Command) error {
 // inputTyped is load-bearing: -i defaults to "-", so testing inputValue alone
 // would call every run an explicit stdin request and restore the stall.
 // A typed `-i <file>` names the input source outright, so stdin is not it.
-func resolveStdinInput(stdinPiped, inputTyped bool, inputValue string, targets, targetFiles int) bool {
+//
+// explicit reports WHY stdin was chosen: true for a typed `-i -` (the operator
+// asked for stdin, so a slow producer is legitimate and gets the full
+// --input-read-timeout), false for the implicit "nothing else was given, maybe
+// something is piped" guess, which readImplicitStdin bounds with a short
+// first-byte window instead.
+func resolveStdinInput(stdinPiped, inputTyped bool, inputValue string, targets, targetFiles int) (use, explicit bool) {
 	if !stdinPiped {
-		return false
+		return false, false
 	}
 	if inputTyped {
-		return inputValue == "-"
+		return inputValue == "-", inputValue == "-"
 	}
-	return targets == 0 && targetFiles == 0
+	return targets == 0 && targetFiles == 0, false
+}
+
+// implicitStdinWait is how long an IMPLICIT stdin read waits for its first byte.
+// fileutil.HasStdin is true for any non-terminal stdin, including a pipe a
+// parent opened and never writes to, so a command that reads stdin only because
+// nothing else was given used to sit for the whole --input-read-timeout (3m)
+// and then fail with "no targets". Two seconds is long enough for `cat` or
+// `echo` and short enough that an agent's tool call does not look hung. A
+// producer that needs longer to emit its first line is served by a typed `-i -`,
+// which waits the full deadline. A var only so tests can shorten it.
+var implicitStdinWait = 2 * time.Second
+
+// readImplicitStdin reads stdin that was chosen implicitly (see
+// resolveStdinInput). It returns an error wrapping clicommon.ErrStdinNoData when
+// nothing arrives within implicitStdinWait; after the first byte the normal
+// --input-read-timeout applies.
+func readImplicitStdin() ([]byte, error) {
+	return clicommon.ReadBoundedWait(os.Stdin, "stdin", clicommon.DefaultStdinLimit,
+		implicitStdinWait, stdinReadTimeout())
+}
+
+// readScanStdin reads stdin for a scan: the full deadline when it was asked for
+// with a typed `-i -`, the first-byte window when it was only a guess.
+func readScanStdin(explicit bool) ([]byte, error) {
+	if explicit {
+		return readStdin()
+	}
+	return readImplicitStdin()
 }

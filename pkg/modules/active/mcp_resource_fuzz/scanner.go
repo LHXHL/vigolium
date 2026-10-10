@@ -11,6 +11,7 @@ import (
 	mcpinfra "github.com/vigolium/vigolium/pkg/modules/infra/mcp"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/modules/shared/filesig"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -272,7 +273,7 @@ func buildPayloads(scanCtx *modkit.ScanContext, targetURL string) []uriPayload {
 		},
 	}
 	if oast := scanCtx.OASTProv(); oast != nil && oast.Enabled() {
-		callback := oast.GenerateURL(targetURL, "uri", "mcp-resource", "mcp-resource-fuzz", "")
+		callback := modkit.OASTURLFor(oast, oastclass.MCPArg, targetURL, "uri", "mcp-resource", "mcp-resource-fuzz", "")
 		if callback != "" {
 			out = append(out, uriPayload{
 				name:     "SSRF (OAST)",

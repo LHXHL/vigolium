@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/secretscan"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -240,7 +241,7 @@ func TestPublicIdentifierRuleNamesExistInCatalog(t *testing.T) {
 // tokenization key and the Branch key as Info, not High.
 func TestModule_PublicFrontEndConfigGradesInfo(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("text/html; charset=utf-8", publicFrontEndConfig)
+	ctx := modtest.HTTPCtx("/test", "text/html; charset=utf-8", publicFrontEndConfig)
 	if !m.CanProcess(ctx) {
 		t.Fatal("module cannot process the config blob response")
 	}

@@ -72,7 +72,7 @@ type SegmentConfig struct {
 // NewSegment creates a new segment with a LevelDB database.
 func NewSegment(cfg SegmentConfig) (*Segment, error) {
 	segPath := filepath.Join(cfg.BaseDir, fmt.Sprintf("segment_%08d", cfg.ID))
-	if err := os.MkdirAll(segPath, 0755); err != nil {
+	if err := os.MkdirAll(segPath, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create segment directory: %w", err)
 	}
 

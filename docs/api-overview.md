@@ -38,6 +38,7 @@ Server startup, authentication, and general endpoints.
 | GET | `/api/findings` | List findings (paginated, filterable) |
 | GET | `/api/findings/:id` | Get finding detail |
 | PATCH | `/api/findings/:id/status` | Update finding status |
+| POST | `/api/findings/:id/verify` | Re-run a finding's module and record the verdict (`finding verify`) |
 | DELETE | `/api/findings/:id` | Delete finding |
 
 ### [Ingestion](api-references/ingestion.md)

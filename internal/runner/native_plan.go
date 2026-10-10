@@ -14,13 +14,20 @@ const (
 	PhaseHeuristicsCheck   NativePhase = "heuristics-check"
 	PhasePortSweep         NativePhase = "port-sweep"
 	PhaseExternalHarvest   NativePhase = "external-harvest"
+	PhaseHarvestProbe      NativePhase = "harvest-probe"
 	PhaseSpidering         NativePhase = "spidering"
 	PhaseProbe             NativePhase = "probe"
 	PhaseDiscovery         NativePhase = "discovery"
 	PhaseTargetedReSpider  NativePhase = "targeted-respider"
 	PhaseSeed              NativePhase = "seed"
+	PhaseParamMining       NativePhase = "param-mining"
 	PhaseKnownIssueScan    NativePhase = "known-issue-scan"
 	PhaseDynamicAssessment NativePhase = "dynamic-assessment"
+	// PhasePreflight carries the CLI-target tally (scope admission,
+	// reachability) on a scan row. Not a plan step: RunNativeScan runs it
+	// before the first phase whenever the targets are the input (see
+	// preflight.go); --skip preflight turns the reachability GET off.
+	PhasePreflight NativePhase = "preflight"
 )
 
 // nativePhaseSpelling is one canonical phase id plus every alternative spelling
@@ -28,10 +35,17 @@ const (
 type nativePhaseSpelling struct {
 	Canonical string
 	Aliases   []string
-	// Skippable reports whether --skip accepts this phase. --only accepts all of
-	// them; --skip has no meaning for "extension", which is opt-in to begin with.
+	// Skippable reports whether --skip accepts this phase.
 	Skippable bool
+	// Internal marks a step the plan schedules on its own gates (seed fills in
+	// for a skipped ingestion, the re-spider rides on spidering). It is listed so
+	// every phase.* id a scan can emit is discoverable, is accepted by --skip
+	// when Skippable, and is never accepted by --only: it cannot run alone.
+	Internal bool
 }
+
+// onlyAccepted reports whether --only (and `run <phase>`) accepts this phase.
+func (p nativePhaseSpelling) onlyAccepted() bool { return !p.Internal }
 
 // nativePhaseVocabulary is the SINGLE owner of the phase-name vocabulary. Every
 // consumer derives from it: NormalizeNativePhase maps a spelling to its canonical
@@ -54,7 +68,30 @@ var nativePhaseVocabulary = []nativePhaseSpelling{
 	{Canonical: "spidering", Aliases: []string{"spider", "spitolas", "crawl", "crawling", "crawler"}, Skippable: true},
 	{Canonical: "known-issue-scan", Aliases: []string{"cve", "kis", "known-issue", "known-issues"}, Skippable: true},
 	{Canonical: "dynamic-assessment", Aliases: []string{"dast", "audit", "assessment", "assess"}, Skippable: true},
-	{Canonical: "extension", Aliases: []string{"ext", "extensions"}, Skippable: false},
+	// --skip extension turns extensions off for the run even when the config or
+	// --ext enabled them; --only extension narrows the assessment to them.
+	{Canonical: "extension", Aliases: []string{"ext", "extensions"}, Skippable: true},
+	// The rows below are steps BuildNativeScanPlan schedules; they appear on
+	// phase.started/phase.finished, so they must be nameable here.
+	{Canonical: "heuristics-check", Aliases: []string{"heuristics", "heuristic"}, Skippable: true},
+	{Canonical: "port-sweep", Aliases: []string{"ports", "portsweep", "port-scan"}, Skippable: true},
+	// harvest-probe checks harvested URLs against the live target before a later
+	// phase scans them. It rides on external-harvest (and on a later phase that
+	// reaches the target), so it cannot run alone; --skip leaves the stubs for
+	// those later phases to fetch unchecked.
+	{Canonical: "harvest-probe", Aliases: []string{"harvest-check"}, Skippable: true, Internal: true},
+	{Canonical: "targeted-respider", Aliases: []string{"respider", "re-spider"}, Skippable: true, Internal: true},
+	// param-mining discovers hidden parameters on the endpoints the scan
+	// recorded, for the assessment to test. It rides on dynamic-assessment
+	// (deep or --param-mining), so it cannot run alone; `vigolium kit
+	// param-mine` is the standalone form.
+	{Canonical: "param-mining", Aliases: []string{"params", "arjun", "param-miner"}, Skippable: true, Internal: true},
+	{Canonical: "seed", Skippable: false, Internal: true},
+	// preflight is the target reachability check (one GET per admitted CLI
+	// target) RunNativeScan runs before any phase. --skip preflight
+	// (opts.SkipPreflight) turns it off; it is not a plan step, so --only
+	// never names it.
+	{Canonical: "preflight", Skippable: true, Internal: true},
 }
 
 // nativePhaseAliasIndex resolves any accepted spelling (canonical included) to
@@ -78,6 +115,10 @@ type PhaseSpelling struct {
 	Canonical string   `json:"canonical"`
 	Aliases   []string `json:"aliases,omitempty"`
 	Skippable bool     `json:"skippable"`
+	// Internal: scheduled by the plan on its own gates; never accepted by --only.
+	Internal bool `json:"internal"`
+	// OnlyAccepted reports whether --only / `run <phase>` accepts this phase.
+	OnlyAccepted bool `json:"only_accepted"`
 }
 
 // PhaseVocabulary returns the accepted phase spellings, derived from the same
@@ -89,23 +130,35 @@ func PhaseVocabulary() []PhaseSpelling {
 	for _, p := range nativePhaseVocabulary {
 		aliases := append([]string(nil), p.Aliases...)
 		out = append(out, PhaseSpelling{
-			Canonical: p.Canonical,
-			Aliases:   aliases,
-			Skippable: p.Skippable,
+			Canonical:    p.Canonical,
+			Aliases:      aliases,
+			Skippable:    p.Skippable,
+			Internal:     p.Internal,
+			OnlyAccepted: p.onlyAccepted(),
 		})
 	}
 	return out
 }
 
+// acceptedBy reports whether the --skip (forSkip) or --only (!forSkip) list
+// includes this phase.
+func (p nativePhaseSpelling) acceptedBy(forSkip bool) bool {
+	if forSkip {
+		return p.Skippable
+	}
+	return p.onlyAccepted()
+}
+
 // PhaseVocabularyLines renders one "canonical (alias, alias)" entry per phase,
-// for help text that lists them vertically. skippableOnly restricts it to the
-// phases --skip accepts. Returned as lines rather than a joined string because
-// the alias lists are themselves comma-separated — splitting the flat form on
-// ", " to lay it out would break entries apart mid-list.
-func PhaseVocabularyLines(skippableOnly bool) []string {
+// for help text that lists them vertically. forSkip selects the phases --skip
+// accepts; false selects the phases --only accepts. Returned as lines rather
+// than a joined string because the alias lists are themselves comma-separated —
+// splitting the flat form on ", " to lay it out would break entries apart
+// mid-list.
+func PhaseVocabularyLines(forSkip bool) []string {
 	lines := make([]string, 0, len(nativePhaseVocabulary))
 	for _, p := range nativePhaseVocabulary {
-		if skippableOnly && !p.Skippable {
+		if !p.acceptedBy(forSkip) {
 			continue
 		}
 		entry := p.Canonical
@@ -118,18 +171,18 @@ func PhaseVocabularyLines(skippableOnly bool) []string {
 }
 
 // phaseVocabularyDesc renders the vocabulary as "canonical (alias, alias), …".
-func phaseVocabularyDesc(skippableOnly bool) string {
-	return strings.Join(PhaseVocabularyLines(skippableOnly), ", ")
+func phaseVocabularyDesc(forSkip bool) string {
+	return strings.Join(PhaseVocabularyLines(forSkip), ", ")
 }
 
 // PhaseNamesDesc renders the canonical phase ids alone, comma-separated. Flag
 // help uses this (the full alias vocabulary is too long for one --help line);
 // the error a wrong value produces quotes ValidOnlyPhasesDesc/ValidSkipPhasesDesc
 // instead, which spells every accepted alias out.
-func PhaseNamesDesc(skippableOnly bool) string {
+func PhaseNamesDesc(forSkip bool) string {
 	names := make([]string, 0, len(nativePhaseVocabulary))
 	for _, p := range nativePhaseVocabulary {
-		if skippableOnly && !p.Skippable {
+		if !p.acceptedBy(forSkip) {
 			continue
 		}
 		names = append(names, p.Canonical)
@@ -167,13 +220,21 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 	steps := []NativePhaseStep{
 		{Phase: PhaseHeuristicsCheck, Enabled: opts.HeuristicsCheck != "" && opts.HeuristicsCheck != "none"},
 		// Alternate-port sweep of the original CLI target hosts. Independent of
-		// the heuristics level — gated only on deep / --follow-subdomains — so any
-		// confirmed extra web services are appended to the target set before the
-		// ingestion/scan phases consume it.
-		{Phase: PhasePortSweep, Enabled: opts.FollowSubdomains || strings.EqualFold(opts.Intensity, "deep")},
+		// the heuristics level — gated on deep / --follow-subdomains, or asked
+		// for by name with --only port-sweep — so any confirmed extra web
+		// services are appended to the target set before the ingestion/scan
+		// phases consume it. --skip port-sweep, and any --only that does not
+		// list it, set SkipPortSweep.
+		{Phase: PhasePortSweep, Enabled: !opts.SkipPortSweep &&
+			(opts.FollowSubdomains || strings.EqualFold(opts.Intensity, "deep") || OnlyPhaseSet(opts.OnlyPhase)[string(PhasePortSweep)])},
 		// ExternalHarvest only queries third-party archives and OSINT sources
 		// ABOUT the target; it never contacts it. See SendsTargetTraffic.
 		{Phase: PhaseExternalHarvest, Enabled: opts.ExternalHarvestEnabled, SkipsTarget: true},
+		// Liveness + one GET per harvested URL, so the phases below scan only the
+		// archive URLs that still answer. Gated after the list is built, because
+		// it runs only when a LATER step reaches the target: a harvest-only run
+		// must stay target-silent. See gateHarvestProbe.
+		{Phase: PhaseHarvestProbe},
 		{Phase: PhaseSpidering, Enabled: opts.SpideringEnabled},
 		// Host sweep: one request per target, passive-only, no content discovery.
 		// Placed before discovery so a full scan's later phases see the probe's
@@ -185,12 +246,65 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 		// browser crawl. Rides along only when browsers are allowed (spidering
 		// enabled), discovery ran, and an assessment phase will consume the new
 		// records. The config toggle + runtime gates are checked in the phase.
-		{Phase: PhaseTargetedReSpider, Enabled: opts.SpideringEnabled && !opts.SkipIngestion && !opts.SkipDynamicAssessment},
+		{Phase: PhaseTargetedReSpider, Enabled: opts.SpideringEnabled && !opts.SkipIngestion && !opts.SkipDynamicAssessment && !opts.SkipTargetedRespider},
 		{Phase: PhaseSeed, Enabled: opts.SkipIngestion && !opts.ScanOnReceive && (opts.KnownIssueScanEnabled || !opts.SkipDynamicAssessment)},
+		// Hidden-parameter mining over the records every phase above stored, so
+		// the assessment below tests the parameters it confirms. See
+		// paramMiningEnabled.
+		{Phase: PhaseParamMining, Enabled: paramMiningEnabled(opts)},
 		{Phase: PhaseDynamicAssessment, Enabled: !opts.SkipDynamicAssessment},
 		{Phase: PhaseKnownIssueScan, Enabled: opts.KnownIssueScanEnabled},
 	}
+	gateHarvestProbe(steps, opts)
 	return NativeScanPlan{Steps: steps}
+}
+
+// gateHarvestProbe enables the harvest-probe step when external-harvest runs,
+// --skip did not name it, and some enabled step after it reaches the target.
+//
+// The last condition is the contract: the probe sends requests, and it exists
+// only to spare a later phase from scanning dead archive URLs. With nothing
+// after it that reaches the target (`run external-harvest`), probing would turn
+// the one target-silent phase into a GET sweep of the live host.
+//
+// --skip harvest-probe is read off SkipPhases rather than a dedicated option:
+// the selection is still visible there after ApplyNativePhaseSelection, and
+// --only (which clears SkipPhases) leaves the probe on whenever it lists
+// external-harvest alongside a phase that reaches the target.
+func gateHarvestProbe(steps []NativePhaseStep, opts *types.Options) {
+	for i := range steps {
+		if steps[i].Phase != PhaseHarvestProbe {
+			continue
+		}
+		steps[i].Enabled = opts.ExternalHarvestEnabled &&
+			!skipListNames(opts.SkipPhases, PhaseHarvestProbe) &&
+			NativeScanPlan{Steps: steps[i+1:]}.SendsTargetTraffic()
+	}
+}
+
+// paramMiningEnabled gates the param-mining step. It only feeds the assessment,
+// so it never runs without one, and --skip param-mining (any alias) turns it
+// off. Otherwise an explicit --param-mining[=false] decides, and without the
+// flag it follows the intensity: on at deep, except under --only, which
+// narrows a run to the phases it names and param-mining is not nameable there.
+func paramMiningEnabled(opts *types.Options) bool {
+	if opts.SkipDynamicAssessment || skipListNames(opts.SkipPhases, PhaseParamMining) {
+		return false
+	}
+	if opts.ParamMining != nil {
+		return *opts.ParamMining
+	}
+	return strings.EqualFold(opts.Intensity, "deep") && opts.OnlyPhase == ""
+}
+
+// skipListNames reports whether a --skip list names phase under any spelling.
+func skipListNames(skip []string, phase NativePhase) bool {
+	for _, s := range skip {
+		if NormalizeNativePhase(s) == string(phase) {
+			return true
+		}
+	}
+	return false
 }
 
 // SendsTargetTraffic reports whether any enabled step in the plan will send a
@@ -224,7 +338,7 @@ func parseOnlyPhases(raw string) (map[string]bool, []string, error) {
 			continue
 		}
 		n := NormalizeNativePhase(p)
-		if !IsNativePhaseSpelling(n) {
+		if !IsOnlyPhaseSpelling(n) {
 			return nil, nil, fmt.Errorf("invalid --only value %q; valid phases: %s", p, ValidOnlyPhasesDesc)
 		}
 		if !allowed[n] {
@@ -280,7 +394,38 @@ func IsNativePhaseSpelling(s string) bool {
 	return ok
 }
 
-func ApplyNativePhaseSelection(opts *types.Options, enableExtensions func()) error {
+// lookupPhaseSpelling returns the vocabulary row a spelling resolves to.
+func lookupPhaseSpelling(s string) (nativePhaseSpelling, bool) {
+	canonical, ok := nativePhaseAliasIndex[strings.ToLower(strings.TrimSpace(s))]
+	if !ok {
+		return nativePhaseSpelling{}, false
+	}
+	for _, p := range nativePhaseVocabulary {
+		if p.Canonical == canonical {
+			return p, true
+		}
+	}
+	return nativePhaseSpelling{}, false
+}
+
+// IsOnlyPhaseSpelling reports whether --only (and `run <phase>`) accepts s.
+// Internal steps (seed, targeted-respider, preflight) are phase names but not
+// runnable on their own.
+func IsOnlyPhaseSpelling(s string) bool {
+	p, ok := lookupPhaseSpelling(s)
+	return ok && p.onlyAccepted()
+}
+
+// IsSkippablePhaseSpelling reports whether --skip accepts s.
+func IsSkippablePhaseSpelling(s string) bool {
+	p, ok := lookupPhaseSpelling(s)
+	return ok && p.Skippable
+}
+
+// ApplyNativePhaseSelection resolves --only / --skip onto opts. setExtensions
+// is how the caller's settings learn the extension decision: called with true
+// when --only lists extension, false on --skip extension. It may be nil.
+func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled bool)) error {
 	if opts.OnlyPhase != "" && len(opts.SkipPhases) > 0 {
 		return fmt.Errorf("--only and --skip are mutually exclusive; use one or the other")
 	}
@@ -308,18 +453,33 @@ func ApplyNativePhaseSelection(opts *types.Options, enableExtensions func()) err
 		opts.SkipIngestion = !allowed["discovery"] && !allowed["ingestion"]
 		opts.SkipDynamicAssessment = !allowed["dynamic-assessment"] && !allowed["extension"]
 		if allowed["extension"] {
-			opts.ExtensionsOnly = true
-			if enableExtensions != nil {
-				enableExtensions()
+			// "extension" alone narrows dynamic-assessment to extension modules;
+			// alongside "dynamic-assessment" it ADDS extensions to the built-ins.
+			opts.ExtensionsOnly = !allowed["dynamic-assessment"]
+			if setExtensions != nil {
+				setExtensions(true)
 			}
 		}
-		opts.HeuristicsCheck = "none"
+		// The alternate-port sweep runs only when --only asked for it by name;
+		// otherwise `--only dast --intensity deep` would still sweep ports.
+		opts.SkipPortSweep = !allowed["port-sweep"]
+		if allowed["heuristics-check"] {
+			if opts.HeuristicsCheck == "" || opts.HeuristicsCheck == "none" {
+				opts.HeuristicsCheck = "basic"
+			}
+		} else {
+			opts.HeuristicsCheck = "none"
+		}
+		noteOnlySelection(opts, allowed)
 	}
 
 	applyProbeOnlyDefaults(opts)
 
 	if len(opts.SkipPhases) > 0 {
 		for _, phase := range opts.SkipPhases {
+			if IsSkippablePhaseSpelling(phase) {
+				opts.NotePhaseDisabled(phase, "skip")
+			}
 			switch phase {
 			case "discovery", "ingestion":
 				opts.SkipIngestion = true
@@ -337,6 +497,23 @@ func ApplyNativePhaseSelection(opts *types.Options, enableExtensions func()) err
 				opts.KnownIssueScanEnabled = false
 			case "dynamic-assessment":
 				opts.SkipDynamicAssessment = true
+			case "extension":
+				opts.ExtensionsOnly = false
+				if setExtensions != nil {
+					setExtensions(false)
+				}
+			case "heuristics-check":
+				opts.HeuristicsCheck = "none"
+			case "port-sweep":
+				opts.SkipPortSweep = true
+			case "harvest-probe":
+				// Read off SkipPhases by gateHarvestProbe; nothing to set here.
+			case "targeted-respider":
+				opts.SkipTargetedRespider = true
+			case "param-mining":
+				// Read off SkipPhases by paramMiningEnabled; nothing to set here.
+			case "preflight":
+				opts.SkipPreflight = true
 			default:
 				return fmt.Errorf("invalid --skip value %q; valid phases: %s", phase, ValidSkipPhasesDesc)
 			}
@@ -344,6 +521,31 @@ func ApplyNativePhaseSelection(opts *types.Options, enableExtensions func()) err
 	}
 
 	return nil
+}
+
+// noteOnlySelection records, for the scan plan, every --only-nameable phase
+// the --only list left out (and clears any earlier record for the ones it
+// names). The phases riding on others (harvest-probe, param-mining, …) are
+// gated, not selected, so they are left to the plan to explain.
+func noteOnlySelection(opts *types.Options, allowed map[string]bool) {
+	for _, p := range nativePhaseVocabulary {
+		if !p.onlyAccepted() {
+			continue
+		}
+		id := p.Canonical
+		on := allowed[id]
+		switch id {
+		case "discovery":
+			on = allowed["discovery"] || allowed["ingestion"]
+		case "dynamic-assessment":
+			on = allowed["dynamic-assessment"] || allowed["extension"]
+		}
+		if on {
+			opts.NotePhaseEnabled(id)
+		} else {
+			opts.NotePhaseDisabled(id, "only")
+		}
+	}
 }
 
 // IsProbeOnlyRun reports whether this invocation is a standalone host sweep:

@@ -259,3 +259,15 @@ rules:
 		t.Error("expected warning about invalid scope")
 	}
 }
+
+func TestLintYAML_InvalidConfidenceIsError(t *testing.T) {
+	for name, source := range map[string]string{
+		"module":  "id: c\ntype: passive\nconfidence: sure\nmatchers:\n  - contains: x\nfinding:\n  name: x\n",
+		"finding": "id: c\ntype: passive\nmatchers:\n  - contains: x\nfinding:\n  name: x\n  confidence: maybe\n",
+	} {
+		result := LintYAML(source, "test.vgm.yaml")
+		if !result.HasErrors() {
+			t.Errorf("%s: expected an error for an unknown confidence, got %+v", name, result.Issues)
+		}
+	}
+}

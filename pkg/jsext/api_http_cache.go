@@ -94,6 +94,7 @@ func httpCacheFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "cache",
+			Effect:      EffectPure,
 			Category:    CatHTTP,
 			Signature:   ".cache(opts?: {ttl_ms?, max_entries?})",
 			Returns:     "void",
@@ -125,6 +126,7 @@ func httpCacheFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "clearCache",
+			Effect:      EffectPure,
 			Category:    CatHTTP,
 			Signature:   ".clearCache()",
 			Returns:     "void",
@@ -140,6 +142,7 @@ func httpCacheFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "cachedGet",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".cachedGet(url: string, opts?: {headers})",
 			Returns:     "HttpResponse",
@@ -181,6 +184,7 @@ func httpCacheFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "cachedRequest",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".cachedRequest(opts: {method?, url, headers?, body?})",
 			Returns:     "HttpResponse",
@@ -254,12 +258,5 @@ func doRequestFromOpts(vm *sobek.Runtime, httpClient *gohttp.Requester, opts *so
 	if v := opts.Get("body"); v != nil && !sobek.IsUndefined(v) {
 		body = v.String()
 	}
-	headers := make(map[string]string)
-	if v := opts.Get("headers"); v != nil && !sobek.IsUndefined(v) {
-		headersObj := v.ToObject(vm)
-		for _, key := range headersObj.Keys() {
-			headers[key] = headersObj.Get(key).String()
-		}
-	}
-	return doRequest(vm, httpClient, method, urlStr, body, headers)
+	return doRequest(vm, httpClient, method, urlStr, body, headersArg(vm, opts.Get("headers")))
 }

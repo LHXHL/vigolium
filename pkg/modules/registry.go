@@ -151,7 +151,35 @@ func (r *Registry) GetPassiveModulesID() []string {
 func (r *Registry) ResolveModuleTags(tags []string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return MatchModuleTags(tags, r.allModulesLocked())
+}
 
+// ResolveModulePatterns resolves user-provided patterns into exact module IDs
+// using fuzzy matching; see MatchModulePatterns. Returns deduplicated matched
+// module IDs (both active and passive), or ["all"] when a pattern is "all".
+func (r *Registry) ResolveModulePatterns(patterns []string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return MatchModulePatterns(patterns, r.allModulesLocked())
+}
+
+// allModulesLocked lists active modules then passive modules. Caller holds r.mu.
+func (r *Registry) allModulesLocked() []Module {
+	all := make([]Module, 0, len(r.activeModules)+len(r.passiveModules))
+	for _, m := range r.activeModules {
+		all = append(all, m)
+	}
+	for _, m := range r.passiveModules {
+		all = append(all, m)
+	}
+	return all
+}
+
+// MatchModuleTags returns the deduplicated IDs of the modules in mods that carry
+// at least one of the given tags (OR condition, case-insensitive), in mods order.
+// It is the matcher behind --module-tag, shared by the registry and by callers
+// that hold modules the registry does not know about (loaded JS/YAML extensions).
+func MatchModuleTags(tags []string, mods []Module) []string {
 	tagSet := make(map[string]struct{}, len(tags))
 	for _, t := range tags {
 		tagSet[strings.ToLower(t)] = struct{}{}
@@ -159,42 +187,33 @@ func (r *Registry) ResolveModuleTags(tags []string) []string {
 
 	seen := make(map[string]struct{})
 	var result []string
-
-	addIfTagged := func(id string, moduleTags []string) {
+	for _, m := range mods {
+		id := m.ID()
 		if _, ok := seen[id]; ok {
-			return
+			continue
 		}
-		for _, mt := range moduleTags {
+		for _, mt := range m.Tags() {
 			if _, ok := tagSet[strings.ToLower(mt)]; ok {
 				seen[id] = struct{}{}
 				result = append(result, id)
-				return
+				break
 			}
 		}
 	}
-
-	for _, m := range r.activeModules {
-		addIfTagged(m.ID(), m.Tags())
-	}
-	for _, m := range r.passiveModules {
-		addIfTagged(m.ID(), m.Tags())
-	}
-
 	return result
 }
 
-// ResolveModulePatterns resolves user-provided patterns into exact module IDs
-// using fuzzy matching. Each pattern is matched (case-insensitive) against:
-//   - Exact module ID match
+// MatchModulePatterns resolves -m patterns against mods. Each pattern is matched
+// (case-insensitive) against:
+//   - Exact module ID match (when any module matches exactly, the pattern stops there)
 //   - Substring match on module ID
 //   - Substring match on module name
 //
-// Returns deduplicated list of matched module IDs (both active and passive).
-// Patterns that match nothing are silently ignored.
-func (r *Registry) ResolveModulePatterns(patterns []string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
+// Returns deduplicated matched module IDs in match order, or ["all"] as soon as
+// a pattern is "all". Patterns that match nothing are silently ignored. Shared by
+// the registry and by callers holding modules the registry does not know about
+// (loaded JS/YAML extensions, so `-m ext-csp` and `-m csp` reach them).
+func MatchModulePatterns(patterns []string, mods []Module) []string {
 	seen := make(map[string]struct{})
 	var result []string
 
@@ -213,13 +232,7 @@ func (r *Registry) ResolveModulePatterns(patterns []string) []string {
 
 		// Pass 1: exact ID match
 		exactMatch := false
-		for _, m := range r.activeModules {
-			if m.ID() == p {
-				addModule(m.ID())
-				exactMatch = true
-			}
-		}
-		for _, m := range r.passiveModules {
+		for _, m := range mods {
 			if m.ID() == p {
 				addModule(m.ID())
 				exactMatch = true
@@ -230,12 +243,7 @@ func (r *Registry) ResolveModulePatterns(patterns []string) []string {
 		}
 
 		// Pass 2: substring match on ID, then name
-		for _, m := range r.activeModules {
-			if strings.Contains(m.ID(), p) || strings.Contains(strings.ToLower(m.Name()), p) {
-				addModule(m.ID())
-			}
-		}
-		for _, m := range r.passiveModules {
+		for _, m := range mods {
 			if strings.Contains(m.ID(), p) || strings.Contains(strings.ToLower(m.Name()), p) {
 				addModule(m.ID())
 			}

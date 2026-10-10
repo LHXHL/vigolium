@@ -1,0 +1,4 @@
+// insertion: URL_PARAM:q
+// expect: {"findings": [{"name~": "probe in q"}], "mock_requests": 1}
+GET /search?q=hello HTTP/1.1
+Host: shop.example.com

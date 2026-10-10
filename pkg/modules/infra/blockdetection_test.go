@@ -151,3 +151,37 @@ func TestIsErrorSurfaceStatus(t *testing.T) {
 		t.Error("IsErrorSurfaceStatus(nil) = true, want false")
 	}
 }
+
+// TestIsBlockedOrThrottled pins the throttle/edge gate the Rails route probes
+// use: rate-limit and edge-block statuses count, auth walls and 5xx do not
+// (callers gate those themselves), and a vendor challenge counts on any status.
+func TestIsBlockedOrThrottled(t *testing.T) {
+	cases := []struct {
+		status int
+		want   bool
+	}{
+		{200, false},
+		{401, false},
+		{403, false},
+		{404, false},
+		{500, false},
+		{503, false},
+		{408, true},
+		{425, true},
+		{429, true},
+		{451, true},
+	}
+	for _, c := range cases {
+		rc := fillResponseChain(t, c.status, nil, "body")
+		if got := IsBlockedOrThrottled(rc); got != c.want {
+			t.Errorf("IsBlockedOrThrottled(%d) = %v, want %v", c.status, got, c.want)
+		}
+	}
+	challenge := fillResponseChain(t, 200, http.Header{"Cf-Mitigated": {"challenge"}}, "<html>Just a moment...</html>")
+	if !IsBlockedOrThrottled(challenge) {
+		t.Error("Cloudflare challenge page on 200 should count as blocked")
+	}
+	if IsBlockedOrThrottled(nil) {
+		t.Error("IsBlockedOrThrottled(nil) = true, want false")
+	}
+}

@@ -3,9 +3,11 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
 // The startup banner used to be printed by main() BEFORE cobra parsed anything,
@@ -43,9 +45,21 @@ var bannerOnce sync.Once
 
 // emitBanner writes one banner to stderr, the first time anyone asks. Every
 // banner in the CLI goes through here: root's generic one, and the variants scan
-// and import choose for themselves.
+// and import choose for themselves — which is what lets bannerWanted gate all of
+// them at once.
 func emitBanner(banner string) {
+	if !bannerWanted() {
+		return
+	}
 	bannerOnce.Do(func() { fmt.Fprint(os.Stderr, banner) })
+}
+
+// bannerWanted is the presentation predicate every banner shares: a person is
+// watching stderr (it is a terminal) and no event stream is running. A driver
+// that captures stderr (2>log, 2>&1 | …) or reads --events gets the
+// configuration lines it can use, not a mascot.
+func bannerWanted() bool {
+	return terminal.StderrIsTerminal() && strings.TrimSpace(scanOpts.Events) == ""
 }
 
 // printRootBanner writes the startup banner to stderr once per process.
@@ -53,7 +67,8 @@ func emitBanner(banner string) {
 // It is skipped in the modes that promise a clean stream (--json, --silent,
 // --ci-output-format) — not because stdout would be corrupted (it is stderr
 // now), but because those modes exist to make output predictable and a mascot
-// in the log is noise a CI consumer did not ask for.
+// in the log is noise a CI consumer did not ask for. emitBanner additionally
+// skips it when stderr is not a terminal or --events is set (bannerWanted).
 func printRootBanner(cmd *cobra.Command) {
 	if machineOutputMode() || !commandWantsBanner(cmd) {
 		return
@@ -91,6 +106,7 @@ var bannerFreeCommands = map[string]bool{
 	"powershell": true,
 	"version":    true,
 	"config":     true,
+	"schema":     true,
 
 	"scan":         true,
 	"scan-url":     true,

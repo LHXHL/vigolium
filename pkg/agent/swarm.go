@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -140,6 +141,19 @@ type SwarmConfig struct {
 	// Audit is the background-audit cfg slot — backed by either audit or
 	// piolium per AuditHarness. Requires SourcePath to be non-empty. Field
 	// name is legacy; the runtime is harness-agnostic.
+	// Run budgets (--max-commands / --token-budget / --max-cost-usd): caps on
+	// the cumulative tool calls, input+output tokens and estimated USD cost
+	// across every agent call of the run (Engine.SetRunBudget). Zero = no cap.
+	// Hitting one stops the run with SwarmResult.BudgetStop set and the
+	// agentic_scans row at "budget_exhausted".
+	MaxCommands int
+	TokenBudget int64
+	MaxCostUSD  float64
+
+	// SkipPreflight skips the provider ping before the first phase
+	// (--no-preflight). The ping's deadline is agent.olium.preflight_timeout.
+	SkipPreflight bool
+
 	Audit *config.AuditAgentConfig
 
 	// AuditHarness selects which harness backs the Audit cfg. Zero-valued
@@ -340,12 +354,30 @@ func (s *SwarmRunner) Run(ctx context.Context, cfg SwarmConfig) (*SwarmResult, e
 
 	result := &SwarmResult{AgenticScanUUID: agenticScanUUID}
 
+	// The parent ctx may expire (--max-duration) or be cancelled by the
+	// budget below; the run row is still finalized after that, so its writes
+	// go through a context that outlives the run's.
+	finalizeCtx := context.WithoutCancel(ctx)
+
+	// Run budget: the engine charges every agent call; the first cap crossed
+	// cancels the run with a *BudgetExhaustedError cause.
+	budget := RunBudget{MaxCommands: cfg.MaxCommands, TokenBudget: cfg.TokenBudget, MaxCostUSD: cfg.MaxCostUSD, Model: model}
+	if s.engine != nil && budget.Active() {
+		var cancelBudget context.CancelCauseFunc
+		ctx, cancelBudget = context.WithCancelCause(ctx)
+		defer cancelBudget(nil)
+		s.engine.SetRunBudget(budget, func(b *BudgetExhaustedError) {
+			fmt.Fprintf(os.Stderr, "[swarm] %s — stopping\n", b.Reason)
+			cancelBudget(b)
+		})
+	}
+
 	// Fail fast on a broken olium provider so callers don't pay for
 	// normalize + discovery before the very first LLM call dies on a
 	// missing credential. Mirrors autopilot's RunAutonomous preflight.
 	var err error
-	if s.engine != nil {
-		if perr := s.engine.Preflight(cfg.AgentName); perr != nil {
+	if s.engine != nil && !cfg.SkipPreflight {
+		if perr := s.engine.Preflight(ctx); perr != nil {
 			err = fmt.Errorf("swarm preflight failed: %w", perr)
 		}
 	}
@@ -389,18 +421,33 @@ func (s *SwarmRunner) Run(ctx context.Context, cfg SwarmConfig) (*SwarmResult, e
 		}
 	}
 
-	if err != nil {
-		agenticScan.Status = "failed"
+	var budgetErr *BudgetExhaustedError
+	if s.engine != nil {
+		budgetErr = s.engine.BudgetExhausted()
+	}
+	if budgetErr != nil {
+		result.BudgetStop = budgetErr.Stop
+	}
+	end := database.AgenticRunEnd{
+		Err:             err,
+		TimedOut:        err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded),
+		BudgetExhausted: budgetErr != nil,
+		Cancelled:       err != nil && budgetErr == nil && errors.Is(ctx.Err(), context.Canceled),
+		Degraded:        result.Degraded,
+	}
+	result.TimedOut = end.TimedOut
+	agenticScan.Status = database.AgenticRunStatus(end)
+	switch {
+	case budgetErr != nil:
+		agenticScan.ErrorMessage = budgetErr.Reason
+	case err != nil:
 		agenticScan.ErrorMessage = err.Error()
-	} else {
-		agenticScan.Status = database.CompletedAgenticScanStatus(result.Degraded)
-		if result.Degraded {
-			agenticScan.ErrorMessage = strings.Join(result.Warnings, "\n")
-		}
+	case result.Degraded:
+		agenticScan.ErrorMessage = strings.Join(result.Warnings, "\n")
 	}
 
 	if s.repo != nil {
-		if updateErr := s.repo.UpdateAgenticScan(ctx, agenticScan); updateErr != nil {
+		if updateErr := s.repo.UpdateAgenticScan(finalizeCtx, agenticScan); updateErr != nil {
 			zap.L().Warn("Failed to update agent run record", zap.Error(updateErr))
 		}
 	}

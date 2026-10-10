@@ -11,6 +11,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
@@ -208,6 +209,7 @@ func (m *Module) confirmEvaluation(
 			Confidence:  ModuleConfidence,
 			Tags:        ModuleTags,
 		},
+		Metadata: map[string]any{output.MetaSignal: output.SignalInband},
 	}, true
 }
 
@@ -335,7 +337,7 @@ func (m *Module) fireExecOAST(
 	}
 	requestHash := ctx.Request().ID()
 	for _, tmpl := range ssiExecTemplates {
-		host := oast.GenerateURL(urlStr, ip.Name(), "ssi-injection command execution", ModuleID, requestHash)
+		host := modkit.OASTURLFor(oast, oastclass.CMDI, urlStr, ip.Name(), "ssi-injection command execution", ModuleID, requestHash)
 		if host == "" {
 			return
 		}

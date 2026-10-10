@@ -1,0 +1,50 @@
+{
+  "status": "complete",
+  "counts": {
+    "graphqlOperation": 2,
+    "httpRequest": 3,
+    "realtime": 2
+  },
+  "facts": [
+    {
+      "kind": "eventSource",
+      "url": "/api/v1/stream",
+      "confidence": "high"
+    },
+    {
+      "kind": "graphqlOperation",
+      "confidence": "medium",
+      "operation": "query:Viewer"
+    },
+    {
+      "kind": "graphqlOperation",
+      "url": "/graphql",
+      "confidence": "high",
+      "operation": "query:Ping"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1/stream",
+      "method": "SSE",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/graphql",
+      "method": "POST",
+      "bodyKind": "json",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "wss://realtime.example.test/socket",
+      "method": "WS",
+      "confidence": "high"
+    },
+    {
+      "kind": "websocket",
+      "url": "wss://realtime.example.test/socket",
+      "confidence": "high"
+    }
+  ]
+}

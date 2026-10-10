@@ -87,6 +87,9 @@ func (m *Module) ScanPerRequest(
 	}
 
 	for _, ip := range points {
+		if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
+			continue // another xss module already reported this param here
+		}
 		result, err := m.scanInsertionPointWithPrefixes(ctx, ip, baseBody, httpClient)
 		if err != nil {
 			if errors.Is(err, hosterrors.ErrUnresponsiveHost) {

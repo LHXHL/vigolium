@@ -109,16 +109,23 @@ func RequestBytes(rec *database.HTTPRecord) []byte {
 // continue (the live mirror). Shared by both writers so their on-disk shape and
 // status/body logic can't drift.
 func WriteResponseFiles(dir, id string, rec *database.HTTPRecord, omitResponse bool) (status int, bodyLen int64, err error) {
+	return WriteResponseFilesMode(dir, id, rec, omitResponse, 0o644)
+}
+
+// WriteResponseFilesMode is WriteResponseFiles with the file mode named: the
+// one-shot export keeps 0644, the live mirror writes owner-only. Each file is
+// written atomically (temp + rename), so a crash never leaves a truncated one.
+func WriteResponseFilesMode(dir, id string, rec *database.HTTPRecord, omitResponse bool, perm os.FileMode) (status int, bodyLen int64, err error) {
 	if !omitResponse {
 		if resp := rec.ParsedResponse(); resp != nil {
 			status = resp.StatusCode()
 			if head := resp.Head(); len(head) > 0 {
-				if err = os.WriteFile(filepath.Join(dir, id+".resp.headers"), head, 0o644); err != nil {
+				if err = writeFileAtomic(filepath.Join(dir, id+".resp.headers"), head, perm); err != nil {
 					return status, 0, err
 				}
 			}
 			if body := DecodeBody(resp.Body()); len(body) > 0 {
-				if err = os.WriteFile(filepath.Join(dir, id+".resp.body"), body, 0o644); err != nil {
+				if err = writeFileAtomic(filepath.Join(dir, id+".resp.body"), body, perm); err != nil {
 					return status, 0, err
 				}
 				bodyLen = int64(len(body))

@@ -154,7 +154,7 @@ func checkWeakHashes(body string) []finding {
 		}
 		findings = append(findings, finding{
 			name:        "Weak Credential Digest Observation (" + algorithm + ")",
-			detail:      fmt.Sprintf("Field %q contains a %s-shaped digest: %s", match[1], algorithm, truncate(match[2], 48)),
+			detail:      fmt.Sprintf("Field %q contains a %s-shaped digest: %s", match[1], algorithm, modkit.Truncate(match[2], 48)),
 			description: "A structured credential/password digest field exposes a legacy hash-shaped value. Passive output cannot prove how it is generated or used; verify the storage/verification algorithm before treating this as a cryptographic vulnerability.",
 			severity:    severity.Info,
 			confidence:  severity.Tentative,
@@ -181,7 +181,7 @@ func checkPaddingOracle(body string, scanCtx *modkit.ScanContext, host string) [
 			}
 			findings = append(findings, finding{
 				name:        "Padding Error Disclosure Candidate",
-				detail:      fmt.Sprintf("Padding error message: %s", truncate(match, 80)),
+				detail:      fmt.Sprintf("Padding error message: %s", modkit.Truncate(match, 80)),
 				description: "The response discloses a padding/decryption error. A padding oracle requires a repeatable ciphertext mutation differential; this single passive response is only a candidate.",
 				severity:    severity.Low,
 				confidence:  severity.Tentative,
@@ -308,11 +308,4 @@ func parseCookieNameValue(header string) (string, string) {
 		return "", ""
 	}
 	return strings.TrimSpace(nameValue[0]), strings.TrimSpace(nameValue[1])
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

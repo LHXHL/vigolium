@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"strings"
 	"testing"
 )
@@ -123,10 +124,10 @@ func TestLooksGzipMatchesDecoderMagic(t *testing.T) {
 // rather than compared to themselves.
 func TestExtractionErrorCodesAreStable(t *testing.T) {
 	for name, pair := range map[string][2]string{
-		"record not found": {errCodeRecordNotFound, "record_not_found"},
-		"body unavailable": {errCodeBodyUnavailable, "body_unavailable"},
-		"decode failed":    {errCodeBodyDecodeFailed, "body_decode_failed"},
-		"incomplete":       {errCodeBodyIncomplete, "body_incomplete"},
+		"record not found": {string(apicontract.CodeRecordNotFound), "record_not_found"},
+		"body unavailable": {string(apicontract.CodeBodyUnavailable), "body_unavailable"},
+		"decode failed":    {string(apicontract.CodeBodyDecodeFailed), "body_decode_failed"},
+		"incomplete":       {string(apicontract.CodeBodyIncomplete), "body_incomplete"},
 	} {
 		if pair[0] != pair[1] {
 			t.Errorf("%s: code is %q, want %q", name, pair[0], pair[1])
@@ -135,16 +136,16 @@ func TestExtractionErrorCodesAreStable(t *testing.T) {
 }
 
 func TestCodedErrorClassifies(t *testing.T) {
-	err := codedErrorf(errCodeRecordNotFound, "no stored record has uuid %q", "abc")
+	err := codedErrorf(apicontract.CodeRecordNotFound, "no stored record has uuid %q", "abc")
 
-	if got := classifyErrorCode(err, ExitError); got != errCodeRecordNotFound {
-		t.Errorf("classifyErrorCode = %q, want %q", got, errCodeRecordNotFound)
+	if got := classifyErrorCode(err, ExitError); got != apicontract.CodeRecordNotFound {
+		t.Errorf("classifyErrorCode = %q, want %q", got, apicontract.CodeRecordNotFound)
 	}
 	if !strings.Contains(err.Error(), `uuid "abc"`) {
 		t.Errorf("message lost its detail: %q", err.Error())
 	}
 	// A usage error still outranks a code: the exit status is the contract there.
-	if got := classifyErrorCode(err, ExitUsageError); got != errCodeUsage {
-		t.Errorf("usage exit code = %q, want %q", got, errCodeUsage)
+	if got := classifyErrorCode(err, ExitUsageError); got != apicontract.CodeUsageError {
+		t.Errorf("usage exit code = %q, want %q", got, apicontract.CodeUsageError)
 	}
 }

@@ -1,6 +1,8 @@
 package configcmd
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -8,22 +10,27 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"gopkg.in/yaml.v3"
 )
 
 func newSetCmd(deps Deps, example string) *cobra.Command {
 	return &cobra.Command{
-		Use:     "set <key> <value>",
-		Short:   "Set a configuration value",
-		Long:    "Set a configuration value using dot-notation key (e.g. notify.enabled true).\nAlso accepts 'key = value' and 'key=value' formats.",
+		Use:   "set <key> <value>",
+		Short: "Set a configuration value",
+		Long: "Set a configuration value using dot-notation key (e.g. notify.enabled true).\nAlso accepts 'key = value' and 'key=value' formats.\n\n" +
+			"List and map values take JSON or YAML flow syntax ('[\"a.example\",\"b.example\"]', '[a, b]', '{\"k\":\"v\"}'),\n" +
+			"checked against the setting's type; the comma form (a,b) still works for lists. '<list>.add <value>' appends\n" +
+			"one element or a JSON list; '<list>.clear' empties it. A value that fails validation (see 'config validate')\n" +
+			"is refused with exit 2 and the file is left unchanged.",
 		Args:    cobra.RangeArgs(1, 3),
 		Example: example,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigSet(deps, args)
+			return runConfigSet(cmd, deps, args)
 		},
 	}
 }
 
-func runConfigSet(deps Deps, args []string) error {
+func runConfigSet(cmd *cobra.Command, deps Deps, args []string) error {
 	var key, value string
 	switch {
 	case len(args) == 1 && strings.Contains(args[0], "="):
@@ -32,7 +39,7 @@ func runConfigSet(deps Deps, args []string) error {
 		key = strings.TrimSpace(k)
 		value = strings.TrimSpace(v)
 		if key == "" {
-			return fmt.Errorf("usage: config set <key>=<value>")
+			return clicommon.UsageErrorf("usage: config set <key>=<value>")
 		}
 	case len(args) == 3 && args[1] == "=":
 		// Support "key = value" format (copied from config ls output)
@@ -42,7 +49,7 @@ func runConfigSet(deps Deps, args []string) error {
 		key = args[0]
 		value = args[1]
 	default:
-		return fmt.Errorf("usage: config set <key> <value> | config set <key>=<value> | config set <key> = <value>")
+		return clicommon.UsageErrorf("usage: config set <key> <value> | config set <key>=<value> | config set <key> = <value>")
 	}
 
 	// Load current settings
@@ -52,8 +59,19 @@ func runConfigSet(deps Deps, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	// Snapshot before the write so `changed` reports whether the value
+	// actually moved (setting a key to its current value is a no-op write).
+	before, _ := yaml.Marshal(settings)
+
 	// Update the field
 	if err := config.SetField(settings, key, value); err != nil {
+		// A key that names no setting, or a value that cannot be stored under
+		// it (a list that does not parse, an element of the wrong type, a scope
+		// pattern that validation rejects), is a mistake on the command line
+		// (exit 2), not a failure to write the config. Nothing was written.
+		if errors.Is(err, config.ErrUnknownKey) || errors.Is(err, config.ErrInvalidValue) {
+			return clicommon.AsUsageError(fmt.Errorf("failed to set %q: %w", key, err))
+		}
 		return fmt.Errorf("failed to set %q: %w", key, err)
 	}
 
@@ -72,14 +90,20 @@ func runConfigSet(deps Deps, args []string) error {
 		shown = clicommon.SecretPlaceholder
 	}
 
-	if deps.jsonRequested() {
-		return deps.WriteJSON("config set", "", []configSetResult{{
+	if deps.mutationJSONRequested() {
+		after, _ := yaml.Marshal(settings)
+		changed := before == nil || after == nil || !bytes.Equal(before, after)
+		action := "update"
+		if !changed {
+			action = "noop"
+		}
+		return deps.WriteMutation(cmd, []configSetResult{{
 			Key:        key,
 			Value:      shown,
 			Sensitive:  sensitive,
 			Redacted:   sensitive,
 			ConfigPath: config.ContractPath(configPath),
-		}}, 1, map[string]any{"changed": true})
+		}}, changed, action, nil)
 	}
 
 	fmt.Printf("%s Set %s = %s\n", terminal.SuccessSymbol(), terminal.Cyan(key), shown)

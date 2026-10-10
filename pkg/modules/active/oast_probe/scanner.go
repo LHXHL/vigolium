@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -140,7 +141,7 @@ func (m *Module) ScanPerRequest(
 	}
 
 	for _, header := range oastHeaders {
-		oastURL := oast.GenerateURL(urlx.String(), header.name, "header", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.HeaderHarvest, urlx.String(), header.name, "header", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}
@@ -202,12 +203,12 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	// Only test parameters that look like they might accept URLs
-	if !looksLikeURLParam(ip.Name(), ip.BaseValue()) {
+	if !looksLikeURLParam(ip.Type(), ip.Name(), ip.BaseValue()) {
 		return nil, nil
 	}
 
 	requestHash := ctx.Request().ID()
-	oastURL := oast.GenerateURL(urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
+	oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
 	if oastURL == "" {
 		return nil, nil
 	}
@@ -236,6 +237,6 @@ func (m *Module) ScanPerInsertionPoint(
 // looksLikeURLParam reports whether a parameter looks like a URL sink. It delegates
 // to the shared infra helper so the standard-request-header exclusion stays
 // consistent across the SSRF/OAST family.
-func looksLikeURLParam(name, value string) bool {
-	return infra.LooksLikeURLParam(name, value)
+func looksLikeURLParam(typ httpmsg.InsertionPointType, name, value string) bool {
+	return infra.LooksLikeURLParamAt(typ, name, value)
 }

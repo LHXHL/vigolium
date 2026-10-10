@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -772,9 +774,9 @@ func mergeSwarmPlans(plans []*SwarmPlan) (*SwarmPlan, *BatchProvenance) {
 	}
 
 	merged := &SwarmPlan{
-		ModuleTags:            sortedKeys(tagSet),
-		ModuleIDs:             sortedKeys(idSet),
-		FocusAreas:            sortedKeys(focusSet),
+		ModuleTags:            slices.Sorted(maps.Keys(tagSet)),
+		ModuleIDs:             slices.Sorted(maps.Keys(idSet)),
+		FocusAreas:            slices.Sorted(maps.Keys(focusSet)),
 		Notes:                 strings.Join(notes, "; "),
 		NeedsExtensions:       needsExt,
 		NeedsExtensionsReason: needsExtReason,
@@ -790,14 +792,4 @@ func mergeSwarmPlans(plans []*SwarmPlan) (*SwarmPlan, *BatchProvenance) {
 		merged.Snippets = append(merged.Snippets, snip)
 	}
 	return merged, prov
-}
-
-// sortedKeys returns sorted keys from a boolean set map.
-func sortedKeys(s map[string]bool) []string {
-	result := make([]string, 0, len(s))
-	for k := range s {
-		result = append(result, k)
-	}
-	sort.Strings(result)
-	return result
 }

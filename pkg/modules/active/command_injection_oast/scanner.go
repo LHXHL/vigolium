@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -88,7 +89,7 @@ func (m *Module) ScanPerRequest(
 		// header) so a callback pinpoints the exact shell payload that fired, and the
 		// per-nonce finding coalescing reports each as its own investigable finding.
 		for _, shape := range shapes {
-			host := oast.GenerateURL(urlx.String(), header, injectionTypeHeader, ModuleID, requestHash)
+			host := modkit.OASTURLFor(oast, oastclass.CMDI, urlx.String(), header, injectionTypeHeader, ModuleID, requestHash)
 			if host == "" {
 				continue
 			}
@@ -150,7 +151,7 @@ func (m *Module) ScanPerInsertionPoint(
 	// insertion point) so a callback pinpoints the exact shell payload that fired, and
 	// the per-nonce finding coalescing reports each as its own investigable finding.
 	for _, shape := range infra.CmdiOASTShapes() {
-		host := oast.GenerateURL(urlx.String(), ip.Name(), injType, ModuleID, requestHash)
+		host := modkit.OASTURLFor(oast, oastclass.CMDI, urlx.String(), ip.Name(), injType, ModuleID, requestHash)
 		if host == "" {
 			return nil, nil
 		}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	deparosconfig "github.com/vigolium/vigolium/pkg/deparos/config"
@@ -16,6 +17,7 @@ type DiscoveryConfig struct {
 	Extensions               DiscoveryExtensionConfig `yaml:"extensions"`
 	Engine                   DiscoveryEngineConfig    `yaml:"engine"`
 	JSTangle                 DiscoveryJSTangleConfig  `yaml:"jstangle"`
+	Sitemap                  DiscoverySitemapConfig   `yaml:"sitemap"`
 	SaveResponseBody         bool                     `yaml:"save_response_body"`
 	EnableMalformedPathProbe bool                     `yaml:"enable_malformed_path_probe"`
 	DedupClusterCap          *int                     `yaml:"dedup_cluster_cap"`   // cap near-identical discovery responses (same host/status/content-type, size & words within 0.5%) per cluster; nil=default(10), 0=disabled, N=keep at most N
@@ -25,6 +27,47 @@ type DiscoveryConfig struct {
 	PassiveModuleTags        []string                 `yaml:"passive_module_tags"` // run passive modules matching these tags during discovery (e.g., ["fingerprint"])
 	ReSpider                 DiscoveryReSpiderConfig  `yaml:"respider"`            // targeted re-spider of rich/SPA routes found after discovery dedup
 	DeparosDedup             DeparosDedupConfig       `yaml:"deparos_dedup"`       // post-discovery status-retention + reflected-URL-robust record dedup
+
+	// TargetConcurrency is how many targets are discovered at once; targets on
+	// the same host:port never overlap and the engine threads are split across
+	// the targets in flight. 0 = default (min(targets, 3)); 1 = one at a time.
+	TargetConcurrency int `yaml:"target_concurrency"`
+	// FlushInterval is how often a running target's JS/form/API-spec records are
+	// persisted and handed to the scan (also every 500 new nodes). "" = default
+	// (15s); "0" = only when the target finishes.
+	FlushInterval string `yaml:"flush_interval"`
+	// StreamFuzz streams the wordlist/spider (fuzz) class with every flush too,
+	// deduplicated keep-first and cluster-capped first-N-wins as it is read.
+	// nil = default (true); false keeps it until the target finishes (keep the
+	// shorter path, cap shortest-path-first). No effect with flush_interval "0".
+	StreamFuzz *bool `yaml:"stream_fuzz"`
+}
+
+// StreamsFuzz resolves discovery.stream_fuzz (default true).
+func (c *DiscoveryConfig) StreamsFuzz() bool {
+	return c.StreamFuzz == nil || *c.StreamFuzz
+}
+
+// maxDiscoveryTargetConcurrency bounds discovery.target_concurrency: each
+// concurrent target holds its own engine and siteMap in memory.
+const maxDiscoveryTargetConcurrency = 32
+
+// FlushIntervalValue resolves discovery.flush_interval for the discovery
+// source: 0 means "use the source default", a negative value turns in-crawl
+// flushing off. Validate rejects anything unparseable, so a bad value here
+// falls back to the default.
+func (c *DiscoveryConfig) FlushIntervalValue() time.Duration {
+	if c.FlushInterval == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(c.FlushInterval)
+	if err != nil {
+		return 0
+	}
+	if d <= 0 {
+		return -1
+	}
+	return d
 }
 
 type DiscoveryJSTangleConfig struct {
@@ -50,7 +93,33 @@ type DiscoveryJSTangleConfig struct {
 	MaxAssetsPerParent int    `yaml:"max_assets_per_parent"`
 	MaxAssetsPerHost   int    `yaml:"max_assets_per_host"`
 	MaxAssetsTotal     int    `yaml:"max_assets_total"`
+	// MaxChunksPerRuntime bounds webpack/Vite chunks rendered from one bundle's
+	// loader runtime (replaces max_assets_per_parent for them). 0 = 512.
+	MaxChunksPerRuntime int `yaml:"max_chunks_per_runtime"`
+
+	// Persistence of JS-derived request templates that did not become
+	// discovery nodes; they are stored as source=jstangle http_records.
+	PersistUnreplayed           *bool `yaml:"persist_unreplayed"`              // also store templates never sent (withheld/deduped/unresolved); nil = true
+	PersistNotFoundEmitStatuses []int `yaml:"persist_not_found_emit_statuses"` // not-found replay statuses handed to later phases; nil = [400,405,415,422], [] = none
+	MaxPersistedJSTemplates     int   `yaml:"max_persisted_js_templates"`      // per-target cap on stored templates; 0 = 2000
 }
+
+// DiscoverySitemapConfig controls the sitemap source: discovery fetches the
+// sitemaps robots.txt names (or /sitemap.xml and /sitemap_index.xml when it
+// names none), feeds every in-scope <loc> path to the observed-path wordlist,
+// and spiders a path-shape sample of them.
+type DiscoverySitemapConfig struct {
+	Enabled     *bool `yaml:"enabled"`      // nil = true
+	MaxURLs     int   `yaml:"max_urls"`     // sampled locs spidered per target; 0 = 2000. Hitting it notes the sitemap_cap limit
+	PerShape    int   `yaml:"per_shape"`    // sampled locs per host + path shape; 0 = 3
+	FollowIndex *bool `yaml:"follow_index"` // fetch <sitemapindex> children (depth <= 2, <= 16 per index); nil = true
+}
+
+// IsEnabled reports whether the sitemap source runs; nil defaults to on.
+func (c DiscoverySitemapConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
+// FollowsIndex reports whether sitemap index children are fetched; nil defaults to on.
+func (c DiscoverySitemapConfig) FollowsIndex() bool { return c.FollowIndex == nil || *c.FollowIndex }
 
 // IsEnabled reports whether jstangle analysis runs; nil defaults to on, matching
 // the sibling *Config.IsEnabled helpers in this file and boolPtrOr on the runner side.
@@ -216,8 +285,21 @@ type DiscoveryRecursionConfig struct {
 	MaxDepth int  `yaml:"max_depth"`
 }
 
+// Discovery wordlist tiers (discovery.wordlists.tier). The tier picks which
+// embedded dir/file lists fill the "long" slot when no path is configured:
+// short = none (short lists only), long = dir-long/file-long (~5k),
+// large = dir-large/file-large (~9.3k). auto (or empty) derives it from
+// --intensity: deep → large, quick and balanced → short.
+const (
+	WordlistTierAuto  = "auto"
+	WordlistTierShort = "short"
+	WordlistTierLong  = "long"
+	WordlistTierLarge = "large"
+)
+
 // DiscoveryWordlistConfig holds paths to wordlist files.
 type DiscoveryWordlistConfig struct {
+	Tier                 string `yaml:"tier"` // auto|short|long|large; empty = auto
 	ShortFilePath        string `yaml:"short_file_path"`
 	LongFilePath         string `yaml:"long_file_path"`
 	ShortDirPath         string `yaml:"short_dir_path"`
@@ -310,11 +392,19 @@ func DefaultDiscoveryConfig() *DiscoveryConfig {
 			ObservedMaxItems: 4000,
 		},
 		JSTangle: DiscoveryJSTangleConfig{
-			ReplayMode: "exact", ReplaySafety: "read-only", WorkerCount: 0, MemoryBudgetMB: 768, CacheMB: 128,
+			// WorkerCount/MemoryBudgetMB 0 = derived from CPUs and RAM. MaxUnpackInputMB
+			// 0 follows HardInputMB, so a config written before the unpack tier existed
+			// (hard_input_mb: 10, no max_unpack_input_mb) still validates.
+			ReplayMode: "exact", ReplaySafety: "read-only", WorkerCount: 0, MemoryBudgetMB: 0, CacheMB: 128,
 			WorkerMaxJobs: 100, WorkerMaxRSSMB: 1024, JobTimeout: "60s",
-			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 16, HardInputMB: 10, MaxRequestsPerFile: 500,
+			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 0, HardInputMB: 16, MaxRequestsPerFile: 500,
 			MaxASTNodes:   500_000,
 			MaxAssetDepth: 4, MaxAssetsPerParent: 64, MaxAssetsPerHost: 512, MaxAssetsTotal: 2048,
+			MaxChunksPerRuntime:     512,
+			MaxPersistedJSTemplates: 2000,
+		},
+		Sitemap: DiscoverySitemapConfig{
+			MaxURLs: deparosconfig.DefaultSitemapMaxURLs, PerShape: deparosconfig.DefaultSitemapPerShape,
 		},
 		SaveResponseBody: true,
 	}
@@ -346,6 +436,13 @@ func (c *DiscoveryConfig) Validate() error {
 		// valid
 	default:
 		return fmt.Errorf("discovery.scope_mode: must be any, subdomain, or exact, got %q", c.ScopeMode)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(c.Wordlists.Tier)) {
+	case "", WordlistTierAuto, WordlistTierShort, WordlistTierLong, WordlistTierLarge:
+		// valid
+	default:
+		return fmt.Errorf("discovery.wordlists.tier: must be auto, short, long, or large, got %q", c.Wordlists.Tier)
 	}
 
 	if c.Recursion.Enabled && c.Recursion.MaxDepth < 1 {
@@ -391,12 +488,47 @@ func (c *DiscoveryConfig) Validate() error {
 	// Discovery phase. Mirror deparos's own floor here (shared constant) so an
 	// invalid budget surfaces as a clear config error at scan start instead. Gated
 	// on IsEnabled to match deparos, which skips all checks when jstangle is off.
-	if c.JSTangle.IsEnabled() && c.JSTangle.MemoryBudgetMB < deparosconfig.MinJSTangleMemoryBudgetMB {
-		return fmt.Errorf("discovery.jstangle.memory_budget_mb must be >= %d when jstangle is enabled, got %d",
+	if c.JSTangle.IsEnabled() && !deparosconfig.ValidJSTangleMemoryBudgetMB(c.JSTangle.MemoryBudgetMB) {
+		return fmt.Errorf("discovery.jstangle.memory_budget_mb must be 0 (auto) or >= %d when jstangle is enabled, got %d",
 			deparosconfig.MinJSTangleMemoryBudgetMB, c.JSTangle.MemoryBudgetMB)
+	}
+	// Same tier rule deparos enforces at engine construction, checked here so an
+	// unpack ceiling above the hard limit is a config error, not a silent clamp.
+	if c.JSTangle.IsEnabled() {
+		if err := deparosconfig.ValidateJSTangleInputTiers(c.JSTangle.NormalInputMB, c.JSTangle.MaxASTInputMB,
+			c.JSTangle.MaxUnpackInputMB, c.JSTangle.HardInputMB); err != nil {
+			return fmt.Errorf("discovery.jstangle: %w", err)
+		}
 	}
 	if c.JSTangle.MaxASTNodes != 0 && (c.JSTangle.MaxASTNodes < 1_000 || c.JSTangle.MaxASTNodes > 5_000_000) {
 		return fmt.Errorf("discovery.jstangle.max_ast_nodes must be 1000-5000000")
+	}
+	if c.JSTangle.MaxPersistedJSTemplates < 0 {
+		return fmt.Errorf("discovery.jstangle.max_persisted_js_templates must be >= 0, got %d", c.JSTangle.MaxPersistedJSTemplates)
+	}
+	if c.Sitemap.MaxURLs < 0 {
+		return fmt.Errorf("discovery.sitemap.max_urls must be >= 0, got %d", c.Sitemap.MaxURLs)
+	}
+	if c.Sitemap.PerShape < 0 {
+		return fmt.Errorf("discovery.sitemap.per_shape must be >= 0, got %d", c.Sitemap.PerShape)
+	}
+	for _, status := range c.JSTangle.PersistNotFoundEmitStatuses {
+		if status < 100 || status > 599 {
+			return fmt.Errorf("discovery.jstangle.persist_not_found_emit_statuses: %d is not an HTTP status", status)
+		}
+	}
+
+	if c.TargetConcurrency < 0 || c.TargetConcurrency > maxDiscoveryTargetConcurrency {
+		return fmt.Errorf("discovery.target_concurrency must be 0 (auto) to %d, got %d", maxDiscoveryTargetConcurrency, c.TargetConcurrency)
+	}
+	if c.FlushInterval != "" {
+		d, err := time.ParseDuration(c.FlushInterval)
+		if err != nil {
+			return fmt.Errorf("discovery.flush_interval: invalid duration %q: %w", c.FlushInterval, err)
+		}
+		if d > 0 && d < time.Second {
+			return fmt.Errorf("discovery.flush_interval must be 0 (off) or >= 1s, got %v", d)
+		}
 	}
 
 	if c.ReSpider.PerSeedMaxDuration != "" {

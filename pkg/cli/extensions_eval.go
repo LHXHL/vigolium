@@ -27,7 +27,11 @@ var extensionsEvalCmd = &cobra.Command{
 Takes the code as a positional argument, from a file (--ext-file, .ts is
 transpiled), or on stdin (--stdin). See also "vigolium js", which runs the
 same API surface and additionally sets a TARGET variable (--target) and
-selects an output format (--format).`,
+selects an output format (--format).
+
+With --record-uuid it runs an extension instead: the one named with --ext,
+loaded as a scan loads it, against a stored record, offline unless
+--allow-network. That mode is "vigolium ext run"; see its help.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runExtensionsEval,
 }
@@ -39,6 +43,19 @@ func init() {
 }
 
 func runExtensionsEval(cmd *cobra.Command, args []string) error {
+	// --record-uuid (and its companions) switch eval to `ext run`: one
+	// extension (--ext) against one stored record.
+	if extRunFlagsSet(cmd) {
+		if len(args) > 0 || evalStdin || evalExtFile != "" {
+			return usageErrorf("--record-uuid runs the extension named with --ext against a stored record; " +
+				"it does not take code (an argument, --ext-file or --stdin)")
+		}
+		// The output is ext run's, so the document names ext run (and its
+		// schema applies), whichever spelling ran it: runExtensionOnRecord
+		// emits under extensionsRunCmd.
+		return runExtensionOnRecord(cmd, "")
+	}
+
 	defer syncLogger()
 
 	// Determine JS source — exactly one input method required
@@ -69,6 +86,10 @@ func runExtensionsEval(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("eval error: %w", result.Error)
 	}
 
+	if globalJSON {
+		// The same document as `js -j`: items:[{"value": …}].
+		return emitJSEvalResult(cmd, result.Value)
+	}
 	if result.Value != "" {
 		fmt.Println(result.Value)
 	}

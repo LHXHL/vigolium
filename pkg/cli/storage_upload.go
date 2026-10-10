@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/notify/webhook"
 	"github.com/vigolium/vigolium/pkg/storage"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -64,6 +63,13 @@ func runStorageUpload(cmd *cobra.Command, args []string) error {
 	}
 
 	url := storage.StorageURL(projectUUID, key)
+	if globalJSON {
+		return emitMutation(cmd, "", mutationResult{
+			Changed: true,
+			Action:  "upload",
+			Items:   []storageObjectView{{Key: key, Size: info.Size(), URL: url, Source: srcPath}},
+		}, withProjectScope(projectUUID))
+	}
 	fmt.Printf("%s Uploaded %s (%s)\n",
 		terminal.SuccessSymbol(), terminal.Cyan(filepath.Base(srcPath)), terminal.HumanBytes(info.Size()))
 	fmt.Printf("  Key: %s\n", terminal.Gray(key))
@@ -71,26 +77,34 @@ func runStorageUpload(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// uploadNativeScanResults pushes the run's artifacts to cloud storage when
-// --upload-results asked for it, and fires the configured webhook.
-//
-// The upload's failure is returned, the webhook's is not, and the split is the
-// point: --upload-results names an artifact the caller asked for, so a run that
-// did not produce it did not finish the job. A webhook is a notification about
-// work that already happened and cannot un-happen; failing the scan because a
-// listener was down would be the wrong answer. opts.UploadResults is only ever
-// set from the flag (scan_flags.go), so nothing here fires without being asked.
-func uploadNativeScanResults(settings *config.Settings, opts *types.Options, repo *database.Repository) error {
-	err := doUploadNativeScanResults(settings, opts, repo)
-	webhook.FireNativeScan(settings, repo, opts.ScanUUID)
-	return err
+// storageObjectView is one object a storage mutation touched: the key, and
+// whichever of size / storage URL / local path applies.
+type storageObjectView struct {
+	Key    string `json:"key"`
+	Size   int64  `json:"size,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Source string `json:"source,omitempty"`
+	Path   string `json:"path,omitempty"`
+	// Deleted and Error are `storage rm`'s per-key outcome.
+	Deleted *bool  `json:"deleted,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
-func doUploadNativeScanResults(settings *config.Settings, opts *types.Options, repo *database.Repository) error {
+// uploadNativeScanResults pushes the run's artifacts to cloud storage when
+// --upload-results asked for it.
+//
+// The upload's failure is returned: --upload-results names an artifact the
+// caller asked for, so a run that did not produce it did not finish the job.
+// opts.UploadResults is only ever set from the flag (scan_flags.go), so nothing
+// here runs without being asked. The scan webhook is not fired here; it is a
+// best-effort notification posted from each entry point's defer (see
+// fireNativeScanWebhook), after this upload stamped the row's storage URL.
+func uploadNativeScanResults(settings *config.Settings, opts *types.Options, repo *database.Repository) error {
 	if !opts.UploadResults {
 		return nil
 	}
 	if !settings.Storage.IsEnabled() {
+		//vigolium:not-usage reached after the scan ran; a config state, reported as a failed delivery
 		return errors.New("--upload-results was requested but storage is not enabled in config")
 	}
 

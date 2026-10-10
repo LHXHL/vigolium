@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -72,7 +73,7 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	// Only test parameters that look like they accept URLs.
-	if !infra.LooksLikeURLParam(ip.Name(), ip.BaseValue()) {
+	if !infra.LooksLikeURLParamAt(ip.Type(), ip.Name(), ip.BaseValue()) {
 		return nil, nil
 	}
 
@@ -102,7 +103,7 @@ func (m *Module) ScanPerInsertionPoint(
 	for _, p := range infra.AuthorityConfusionPayloads(decoy, oastPlaceholder) {
 		// Fresh OAST host per payload; the confusion label rides in the
 		// injection-type for attribution when the callback fires.
-		oastHost := oast.GenerateURL(urlx.String(), ip.Name(), "ssrf-confusion:"+p.Label, ModuleID, requestHash)
+		oastHost := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), ip.Name(), "ssrf-confusion:"+p.Label, ModuleID, requestHash)
 		if oastHost == "" {
 			continue
 		}

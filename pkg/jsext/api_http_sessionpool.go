@@ -17,6 +17,7 @@ func httpSessionPoolFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "sessionPool",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".sessionPool(configs: Record<string, LoginOptions | SessionOptions | {}>)",
 			Returns:     "SessionPool",

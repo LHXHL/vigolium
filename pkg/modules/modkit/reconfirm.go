@@ -14,6 +14,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/shared/authzutil"
+	"github.com/vigolium/vigolium/pkg/utils"
 )
 
 // This file centralizes the response-comparison machinery used to re-confirm a
@@ -799,7 +800,7 @@ func ConfirmReflectionWithValue(rounds int, genValue func() string, probe Reflec
 // FreshCanary returns a short random alphanumeric token (alpha-leading, safe to
 // embed in URLs, headers, and HTML) for reflection probes.
 func FreshCanary() string {
-	return "vgo" + randomToken(10)
+	return "vgo" + utils.RandomOf(10, utils.HEX_CHARSET)
 }
 
 // FreshMultExpr returns a fresh random multiplication expression ("A*B") and its

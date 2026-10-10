@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -21,7 +22,7 @@ func TestModule_SupplementalGenericCredential(t *testing.T) {
 
 	// A broad-keyword credential assignment with a high-entropy value.
 	bundle := `var cfg={bearerToken:"eyQ7wR2nZ9xL4vB8kM3p"};`
-	ctx := makeHTTPCtx("application/javascript", bundle)
+	ctx := modtest.HTTPCtx("/test", "application/javascript", bundle)
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings, "broad-keyword credential assignment should surface")
@@ -41,7 +42,7 @@ func TestModule_SupplementalGenericCredential(t *testing.T) {
 	// A code-identifier value from the same rule family is still dropped by the
 	// value-shape guard (kebab slug near a credential keyword).
 	slug := `qs("login",{labelPassword:[1,"reset-password-field"]});`
-	ctx = makeHTTPCtx("application/javascript", slug)
+	ctx = modtest.HTTPCtx("/test", "application/javascript", slug)
 	findings, err = m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	assert.Empty(t, findings, "identifier-slug value must be dropped, got %v", findingValues(findings))

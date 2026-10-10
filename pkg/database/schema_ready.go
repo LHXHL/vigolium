@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -81,19 +82,35 @@ var expectedSchemaObjects = sync.OnceValue(func() (names struct{ core, deferrabl
 // is reported as a gap rather than as an error. A fresh database legitimately
 // has no catalog to read, and the answer for it is the same anyway.
 func (db *DB) schemaGaps(ctx context.Context) []string {
+	gaps, err := db.schemaGapsDetail(ctx)
+	switch {
+	case errors.Is(err, errSchemaNotInitialized):
+		return []string{"schema not initialized"}
+	case err != nil:
+		return []string{err.Error()}
+	}
+	return gaps
+}
+
+// schemaGapsDetail is schemaGaps with "cannot tell" kept apart from "behind":
+// errSchemaNotInitialized for a store with no core table, another error for a
+// catalog that could not be read, and otherwise the list of gaps. CheckSchema
+// needs the distinction — a reader must not report an unreadable catalog as a
+// store that merely needs migrating.
+func (db *DB) schemaGapsDetail(ctx context.Context) ([]string, error) {
 	expected := expectedSchemaObjects()
 	if len(expected.core) == 0 || len(expected.deferrable) == 0 {
-		return []string{"expected-object list unavailable"}
+		return nil, errors.New("expected-object list unavailable")
 	}
 
 	present, err := db.listSchemaObjects(ctx)
 	if err != nil {
-		return []string{"catalog unreadable: " + err.Error()}
+		return nil, fmt.Errorf("catalog unreadable: %w", err)
 	}
 	// An absent core table means a fresh or empty file: it needs the full
 	// CreateSchema, and being new it has no concurrent writer to contend with.
 	if !present[coreTableName] {
-		return []string{"schema not initialized"}
+		return nil, errSchemaNotInitialized
 	}
 
 	var gaps []string
@@ -116,9 +133,27 @@ func (db *DB) schemaGaps(ctx context.Context) []string {
 	if len(gaps) == 0 {
 		missing, err := db.missingColumnsFrom(ctx, present)
 		if err != nil {
-			return []string{"column catalog unreadable: " + err.Error()}
+			return nil, fmt.Errorf("column catalog unreadable: %w", err)
 		}
 		gaps = append(gaps, missing...)
+	}
+
+	// A legacy integer bool column on Postgres: present, so the column check
+	// passes it, but every bool write to it fails until CreateSchema converts
+	// it (convertLegacyBoolColumns).
+	if len(gaps) == 0 && db.driver == driverPostgres {
+		legacy, err := db.legacyBoolColumns(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("column type catalog unreadable: %w", err)
+		}
+		for b, typ := range legacy {
+			// Only what CreateSchema can convert: an unexpected type it leaves
+			// alone would otherwise be a gap no migration ever closes.
+			if pgIntegerTypes[typ] {
+				gaps = append(gaps, fmt.Sprintf("%s.%s is %s, not boolean", b.Table, b.Column, typ))
+			}
+		}
+		slices.Sort(gaps)
 	}
 
 	// The recorded version last. It gates the one-time O(rows) backfills, so a
@@ -129,7 +164,7 @@ func (db *DB) schemaGaps(ctx context.Context) []string {
 			gaps = append(gaps, fmt.Sprintf("schema version %d < %d", v, currentSchemaVersion))
 		}
 	}
-	return gaps
+	return gaps, nil
 }
 
 // listSchemaObjects returns the lowercased names of every table and index in
@@ -184,11 +219,17 @@ func (db *DB) listSchemaObjects(ctx context.Context) (map[string]bool, error) {
 // migrations needs however long they take, and cutting it off at a deadline
 // derived from a lock-wait budget would turn a slow success into a failure.
 func (db *DB) EnsureSchemaReady(ctx context.Context) error {
-	// A read-only handle cannot be migrated at all; CreateSchema's own read-only
-	// branch reports an unusable schema with a remedy, which is the best answer
-	// available here.
-	if db.readOnly {
+	// A read-only handle (or read-intent pool) cannot be migrated at all;
+	// CreateSchema's own read-only branch reports an unusable schema with a
+	// remedy, which is the best answer available here.
+	if !db.writable() {
 		return db.CreateSchema(ctx)
+	}
+	// Before the fast path: a store a newer binary stamped has every object this
+	// one knows, so "nothing missing" would otherwise let a scan write into a
+	// schema it does not understand.
+	if err := db.guardWriteDB(ctx); err != nil {
+		return err
 	}
 
 	gaps := db.schemaGaps(ctx)

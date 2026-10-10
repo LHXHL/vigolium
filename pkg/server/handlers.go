@@ -108,18 +108,26 @@ type queuedScan struct {
 	projectUUID   string
 	enqueued      time.Time
 	uploadResults bool
+	outputs       scanOutputs
 }
 
 // Handlers holds the HTTP handlers and their dependencies.
 type Handlers struct {
-	queue         queue.Queue
-	db            *database.DB
-	repo          *database.Repository
+	queue queue.Queue
+	db    *database.DB
+	repo  *database.Repository
+	// readDB/readRepo are the read-intent pool list/get handlers use (see
+	// db_read.go); nil when db serves reads itself.
+	readDB        *database.DB
+	readRepo      *database.Repository
 	recordWriter  *database.RecordWriter
 	config        ServerConfig
 	settings      *config.Settings
 	httpRequester *http.Requester
 	services      *services.Services // shared with httpRequester; may be nil
+	// mirrorDropped reports the --mirror-fs drop counter for /server-info;
+	// nil when the mirror is off.
+	mirrorDropped func() int64
 	configWatcher *config.ConfigWatcher
 	startTime     time.Time
 
@@ -137,6 +145,10 @@ type Handlers struct {
 	// Cached scope matcher (lazy-initialized, invalidated on config change)
 	scopeMatcherMu sync.RWMutex
 	scopeMatcher   *config.ScopeMatcher
+	// projectScopes caches the ingest scope of projects with a config overlay
+	// (ingestScopeFor); scopeGen invalidates it on a scope reload.
+	projectScopes map[string]projectScopeEntry
+	scopeGen      uint64
 
 	// Prometheus metrics handler
 	metricsHandler fiber.Handler
@@ -260,7 +272,10 @@ func NewHandlers(q queue.Queue, db *database.DB, repo *database.Repository, rw *
 		runCancels:         make(map[string]context.CancelFunc),
 		nativeScanSem:      make(chan struct{}, maxConcurrentNativeScans),
 	}
-	h.findings = &findingsHandlers{db: db, repo: repo}
+	if h.readDB = openReadPool(db); h.readDB != nil {
+		h.readRepo = database.NewRepository(h.readDB)
+	}
+	h.findings = &findingsHandlers{db: db, readDB: h.readDB, repo: repo}
 	if !cfg.NoAgent {
 		h.agentEngine = agent.NewEngine(settings, repo)
 		go h.agentDBCleanupLoop()
@@ -393,6 +408,13 @@ func (h *Handlers) HandleServerInfo(c fiber.Ctx) error {
 		DemoOnly:    h.config.DemoOnly,
 		ViewOnly:    h.config.ViewOnly,
 	}
+	if h.config.IngestProxyAddr != "" {
+		resp.ProxyAuth = proxyAuthMode(h.config.IngestProxyAuth)
+	}
+	if h.mirrorDropped != nil {
+		dropped := h.mirrorDropped()
+		resp.MirrorDropped = &dropped
+	}
 
 	if h.db != nil {
 		resp.TotalRecords, resp.TotalFindings = h.counts.Get(h.db)
@@ -452,6 +474,8 @@ func (h *Handlers) readReloadableScope() config.ScopeConfig {
 func (h *Handlers) resetScopeMatcher() {
 	h.scopeMatcherMu.Lock()
 	h.scopeMatcher = nil
+	h.projectScopes = nil
+	h.scopeGen++
 	h.scopeMatcherMu.Unlock()
 }
 
@@ -499,7 +523,7 @@ func (h *Handlers) scanQueueWorker(projectUUID string, ch chan *queuedScan) {
 		st.scanID = qs.scanID
 		h.scanMu.Unlock()
 
-		h.runBackgroundScan(qs.scanID, qs.runner, qs.projectUUID, qs.uploadResults)
+		h.runBackgroundScan(qs.scanID, qs.runner, qs.projectUUID, qs.uploadResults, qs.outputs)
 	}
 }
 
@@ -569,6 +593,12 @@ func (h *Handlers) Close() {
 		h.runCancel()
 	}
 	close(h.agentCleanupStop)
+	// The read pool is the handlers' own; the writer belongs to the caller.
+	defer func() {
+		if h.readDB != nil {
+			_ = h.readDB.Close()
+		}
+	}()
 
 	h.scanMu.Lock()
 	for _, ch := range h.scanQueues {
@@ -620,5 +650,5 @@ func (h *Handlers) HandleMetrics(c fiber.Ctx) error {
 	if h.metricsHandler != nil {
 		return h.metricsHandler(c)
 	}
-	return c.Status(fiber.StatusNotFound).SendString("metrics not configured")
+	return respondErrorMsg(c, fiber.StatusNotFound, "metrics not configured")
 }

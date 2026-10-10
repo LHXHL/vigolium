@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/olium"
+	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
 )
@@ -97,8 +98,9 @@ var (
 	globalFullExample bool
 
 	// On-demand extension loading
-	globalExtScripts []string // --ext
-	globalExtDir     string   // --ext-dir
+	globalExtScripts       []string // --ext
+	globalExtDir           string   // --ext-dir
+	globalExtAllowFailures bool     // --ext-allow-failures
 
 	// Stateless mode
 	globalStateless   bool
@@ -171,14 +173,13 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 			return err
 		}
 
-		// Color is on by default for every command — including output captured to
-		// a file or pipe, such as the -P/--parallel fan-out's per-host
-		// <output>.console.log, which should read like a live console scan instead
-		// of losing its color the moment stdout isn't a TTY. --no-color,
-		// --ci-output-format (CI wants plain logs), and the NO_COLOR env var opt
-		// back out; the -P parent forwards --no-color to each child and children
-		// inherit NO_COLOR via the environment, so the opt-out reaches every log.
-		terminal.EnableCLIColor(globalNoColor, globalCIOutput)
+		// --color auto|always|never (--no-color = never). Auto colors only when
+		// stdout and stderr are both terminals; machine modes force never. The -P
+		// parent passes --color=always to its children so their captured
+		// console.log keeps its color. See output_hygiene.go.
+		if err := applyColorFlag(cmd); err != nil {
+			return err
+		}
 
 		// The banner goes out here, after parsing, on stderr — not from main()
 		// before cobra has seen the command line. See banner.go for what the old
@@ -225,14 +226,15 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 
 		// Mutual exclusivity check
 		if globalProjectUUID != "" && globalProjectName != "" {
-			return fmt.Errorf("--project-uuid and --project-name are mutually exclusive")
+			return usageErrorf("--project-uuid and --project-name are mutually exclusive")
 		}
 
-		// Fold the retiring -S on server/ingest into --scan-on-receive before
-		// anything reads it. Must run before applyDBPathEnv, which asks whether
-		// the command wants a throwaway database and would otherwise see a
-		// half-resolved flag state.
-		applyDeprecatedScanOnReceive(cmd)
+		// -S on server/ingest used to mean --scan-on-receive; it is now a usage
+		// error naming the replacement. Before applyDBPathEnv, so a rejected
+		// command line never touches a database.
+		if err := rejectRetiredScanOnReceive(cmd); err != nil {
+			return err
+		}
 
 		// Env var fallback for --db (and -S on the read commands), so a shell
 		// can be pinned to one session database.
@@ -258,20 +260,20 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 			}
 			// --skip-dependency-check opts out of the first-run chromium +
 			// nuclei-templates check entirely: stamp the marker now so this and
-			// every future scan fast-path past the diagnostic. Applies to any
-			// command so users can pre-seed the marker (e.g. in CI) ahead of a
-			// scan without triggering a chrome download.
+			// every future scan fast-path past it. Nearly a no-op since the
+			// check stopped installing (it only silences the one-line notice);
+			// kept for compatibility.
 			if globalSkipDependencyCheck {
 				if skipCoreDepCheck() {
 					fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(),
 						terminal.BoldCyan("Skipping dependency check (--skip-dependency-check) — stamped ~/.vigolium/initialized"))
 				}
 			} else if needsCoreDeps(cmd) {
-				// For commands that drive a native scan, guarantee the core
-				// scan dependencies (chromium + nuclei templates) are installed
-				// before handing control to the command. Cheap/informational
-				// commands skip this so they don't trigger a chrome download.
-				if err := ensureCoreDeps(); err != nil {
+				// For commands that drive a native scan, check (never install)
+				// the core scan dependencies and say once on stderr what a
+				// --spider or known-issue scan will fetch lazily. The phases
+				// provision them, outside their budgets, with scan.setup events.
+				if err := ensureCoreDeps(coreDepNoticeQuiet(cmd)); err != nil {
 					return err
 				}
 			}
@@ -292,8 +294,12 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 
 		// Handle -M/--list-modules shortcut
 		if globalListModules {
-			printModuleTable(moduleOpts, "")
-			fmt.Println()
+			if err := listModulesShortcut(); err != nil {
+				return err
+			}
+			if !globalJSON {
+				fmt.Println()
+			}
 			os.Exit(0)
 		}
 
@@ -344,32 +350,35 @@ func init() {
 	pf.BoolVarP(&globalListModules, "list-modules", "M", false, "List all available scanner modules")
 	pf.BoolVar(&globalListInputModes, "list-input-mode", false, "List all supported input modes with examples")
 	pf.BoolVar(&globalForce, "force", false, "Skip confirmation prompts")
-	pf.BoolVar(&globalSkipDependencyCheck, "skip-dependency-check", false, "Skip the first-run dependency check (chromium, nuclei templates) and stamp ~/.vigolium/initialized immediately")
+	pf.BoolVar(&globalSkipDependencyCheck, "skip-dependency-check", false, "Skip the first-run dependency check and stamp ~/.vigolium/initialized (the check only prints a notice; chromium and nuclei templates are fetched by the phase that needs them)")
 	pf.BoolVar(&globalSoftFail, "soft-fail", false, "Always exit 0, even when a command fails (error is still printed to stderr; keeps wrapping scripts/CI from being interrupted)")
 	pf.IntVar(&globalWidth, "width", 70, "Maximum column width for table output")
 	registerStatelessRootFlag(rootCmd)
 
 	pf.StringVar(&globalScanUUID, "scan-uuid", "", "Pin scan UUID for this session (use to sync results across nodes; defaults to a freshly-minted UUID)")
-	pf.StringVar(&globalFormat, "format", "console", "Output format (comma-separated for multiple): console, jsonl, html, sarif, sqlite (needs -S), fs (alias: file-system; flat traffic/finding tree)")
+	pf.StringVar(&globalFormat, "format", "console", "Output format (comma-separated for multiple): "+output.FormatsHelp(output.SurfaceScan))
 	pf.BoolVar(&globalCIOutput, "ci-output-format", false, "CI-friendly output: JSONL findings only, no color, no banners")
-	pf.BoolVar(&globalNoColor, "no-color", false, "Disable ANSI color in all output (also honored via the NO_COLOR env var)")
+	pf.BoolVar(&globalNoColor, "no-color", false, "Disable ANSI color in all output (same as --color=never; also honored via the NO_COLOR env var)")
+	registerOutputHygieneFlags(pf)
 	pf.BoolVar(&globalFullExample, "full-example", false, "Show full example commands organized by section")
 	pf.StringArrayVar(&globalExtScripts, "ext", nil, "Load JavaScript extension script (repeatable)")
 	pf.StringVar(&globalExtDir, "ext-dir", "", "Override extension scripts directory")
+	pf.BoolVar(&globalExtAllowFailures, "ext-allow-failures", false, "Scan even when an extension named with --ext fails to load (default: abort before any traffic, exit 2 extension_load_failed)")
 	pf.StringVar(&globalProjectUUID, "project-uuid", "", "Project UUID to scope all operations to (defaults to the default project). Also honors $VIGOLIUM_PROJECT_UUID")
 	pf.StringVar(&globalProjectName, "project-name", "", "Project name to scope all operations to (must match exactly one project). Also honors $VIGOLIUM_PROJECT_NAME")
 }
 
-// memLimitCommands are the leaf command names that drive a native scan and so
-// get an auto soft heap ceiling. The long-running server and the ingest proxy
-// are intentionally excluded — they manage their own concurrency and lifetime.
+// memLimitCommands are the command paths (not leaf names: `extensions run` is
+// not `run`) that drive a native scan and so get an auto soft heap ceiling. The
+// long-running server and the ingest proxy are intentionally excluded — they
+// manage their own concurrency and lifetime.
 var memLimitCommands = map[string]bool{
-	"scan":         true,
-	"scan-url":     true,
-	"scan-request": true,
-	"run":          true,
-	"autopilot":    true, // `vigolium agent autopilot`
-	"swarm":        true, // `vigolium agent swarm`
+	"scan":            true,
+	"scan-url":        true,
+	"scan-request":    true,
+	"run":             true,
+	"agent autopilot": true,
+	"agent swarm":     true,
 }
 
 // applyScanMemLimit derives and applies the GOMEMLIMIT soft ceiling for a
@@ -377,7 +386,7 @@ var memLimitCommands = map[string]bool{
 // no-op for other commands and for child processes that already inherited a
 // GOMEMLIMIT from the -P parent.
 func applyScanMemLimit(cmd *cobra.Command) {
-	if !memLimitCommands[cmd.Name()] {
+	if !memLimitCommands[commandPathWithoutRoot(cmd)] {
 		return
 	}
 	res := memlimit.Apply(memlimit.Options{
@@ -390,12 +399,32 @@ func applyScanMemLimit(cmd *cobra.Command) {
 	scanHeapCeiling = res
 }
 
-func Execute() {
+// prepareCommandTree applies the mutations that need the finished command tree
+// (every init() has registered its subcommands). Execute and the tests that
+// inspect or parse against the tree share it, so a test sees exactly the flags
+// and help text the binary has. Safe to call more than once.
+func prepareCommandTree(root *cobra.Command) {
 	// Give every command that lacks one a local -S/--stateless, so the letter
 	// means one thing across the whole surface. Done here rather than in init:
 	// it walks the finished command tree, and every subcommand must already be
 	// registered for the walk to reach it.
-	addStatelessShorthand(rootCmd)
+	addStatelessShorthand(root)
+
+	// kit's subcommands register from their own files' init(), after kit.go's,
+	// so its summary can only be derived once the tree is complete.
+	deriveKitShort()
+
+	// Stamp each command's declared -j output kind from the central table
+	// (machine_kinds.go); machine_contract_test.go checks the result.
+	applyMachineKinds(root)
+
+	// Stamp each command's declared database intent (db_intent.go): read
+	// commands open the query_only pool, never the write lock.
+	applyDBIntentAnnotations(root)
+}
+
+func Execute() {
+	prepareCommandTree(rootCmd)
 
 	// Claim the scratch directory for the whole process, not per scan runner.
 	//
@@ -414,6 +443,10 @@ func Execute() {
 	// ExecuteC (not Execute) so we get the command that actually ran back —
 	// the agent-family setup hint below needs to know which one failed.
 	cmd, err := rootCmd.ExecuteC()
+
+	// Bounded delivery of any scan webhook the command fired (asynchronous
+	// POSTs die with the process otherwise). Before every exit path below.
+	drainScanWebhooks()
 
 	// A failed agent run is nearly always a provider/credential problem, and
 	// the fix always lives on one docs page. Printed before the update notice
@@ -464,11 +497,18 @@ func Execute() {
 		// pipelines are not aborted by errors the operator considers expected.
 		// The structured diagnosis above still describes what actually happened,
 		// and its exit_code field reports the code that WOULD have been used.
-		if globalSoftFail {
-			os.Exit(ExitSuccess)
-		}
-		os.Exit(code)
+		os.Exit(processExitCode(code, globalSoftFail))
 	}
+}
+
+// processExitCode is the status the process actually exits with. --soft-fail
+// forces 0 for every outcome, the completed results (3, 4, 5) included: a
+// caller that opted out of exit-code gating opted out of all of it.
+func processExitCode(code int, softFail bool) int {
+	if softFail {
+		return ExitSuccess
+	}
+	return code
 }
 
 // releaseScratch removes this process's temporary storage and collects what

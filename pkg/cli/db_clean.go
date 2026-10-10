@@ -76,9 +76,83 @@ func runDBReset(cmd *cobra.Command, args []string) error {
 			terminal.Yellow("This will DELETE and recreate the entire database. All scans, HTTP records, and findings will be lost."))
 	}
 	if done, err := handleConfirmation("deleting and recreating the entire database"); done {
+		if err == nil && globalJSON {
+			return emitMutation(cmd, "", mutationResult{Action: "noop", Extra: map[string]any{"aborted": true}})
+		}
 		return err
 	}
-	return resetDatabase()
+	res, err := resetDatabase()
+	if err != nil {
+		return err
+	}
+	if globalJSON {
+		// Always a change: even with no file to delete, a fresh database now
+		// exists where there was none.
+		return emitMutation(cmd, "", mutationResult{
+			Changed: true,
+			Action:  "reset",
+			Items:   []dbResetView{res},
+		}, withDBPath(res.Path))
+	}
+	return nil
+}
+
+// dbResetView is the `db reset -j` row: the file recreated, and how many of
+// the database file and its WAL/SHM companions existed and were removed.
+type dbResetView struct {
+	Path         string `json:"path"`
+	FilesRemoved int    `json:"files_removed"`
+}
+
+// dbCleanView is one table's row in `db clean -j`: rows the selection matched
+// there. Under --dry-run nothing was deleted; otherwise every matched row was.
+type dbCleanView struct {
+	Table string `json:"table"`
+	Rows  int64  `json:"rows"`
+}
+
+// cleanModeTableName names the table a scoped clean mode deletes from.
+func cleanModeTableName(sel *cleanSelection) string {
+	switch sel.Mode {
+	case cleanModeFindings, cleanModeOrphans:
+		return "findings"
+	case cleanModeTable:
+		return sel.Table
+	default:
+		return "http_records"
+	}
+}
+
+// emitDBClean writes the `db clean -j` document. deleted is the total actually
+// removed (0 for a dry run or an empty selection); items are the per-table
+// matched counts.
+func emitDBClean(cmd *cobra.Command, sel *cleanSelection, items []dbCleanView, matched, deleted int64, aborted bool) error {
+	action := "delete"
+	if deleted == 0 && !cleanDryRun {
+		action = "noop"
+	}
+	extra := map[string]any{
+		"mode":         string(sel.Mode),
+		"scope":        sel.describeScope(),
+		"store_wide":   sel.StoreWide,
+		"rows_matched": matched,
+		"rows_deleted": deleted,
+	}
+	if aborted {
+		extra["aborted"] = true
+	}
+	var opts []envOpt
+	if !sel.StoreWide {
+		opts = append(opts, withProjectScope(sel.Filters.ProjectUUID))
+	}
+	opts = append(opts, withDBPath(resolvedReadDBPath()))
+	return emitMutation(cmd, "", mutationResult{
+		Changed: deleted > 0,
+		Action:  action,
+		DryRun:  cleanDryRun,
+		Items:   items,
+		Extra:   extra,
+	}, opts...)
 }
 func runDBClean(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
@@ -116,9 +190,9 @@ func runDBClean(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 	if sel.Mode == cleanModeAll {
-		return cleanAllTables(ctx, db, sel)
+		return cleanAllTables(ctx, cmd, db, sel)
 	}
-	return runScopedClean(ctx, db, sel)
+	return runScopedClean(ctx, cmd, db, sel)
 }
 
 // applySelection performs the selection, or counts it without deleting when
@@ -141,7 +215,7 @@ func applySelection(ctx context.Context, del *database.DeleteBuilder, sel *clean
 // runScopedClean is the single count -> preview -> confirm -> delete path shared
 // by every mode except --all, which reports per-table counts and has its own
 // renderer.
-func runScopedClean(ctx context.Context, db *database.DB, sel *cleanSelection) error {
+func runScopedClean(ctx context.Context, cmd *cobra.Command, db *database.DB, sel *cleanSelection) error {
 	del := database.NewDeleteBuilder(db, sel.Filters)
 
 	count, err := applySelection(ctx, del, sel, true)
@@ -149,9 +223,16 @@ func runScopedClean(ctx context.Context, db *database.DB, sel *cleanSelection) e
 		return fmt.Errorf("failed to count rows to delete: %w", err)
 	}
 
+	rows := func(n int64) []dbCleanView {
+		return []dbCleanView{{Table: cleanModeTableName(sel), Rows: n}}
+	}
+
 	if count == 0 {
 		fmt.Fprintf(os.Stderr, "%s No rows match the selection (%s).\n",
 			terminal.InfoSymbol(), sel.describeScope())
+		if globalJSON {
+			return emitDBClean(cmd, sel, rows(0), 0, 0, false)
+		}
 		return nil
 	}
 
@@ -159,10 +240,16 @@ func runScopedClean(ctx context.Context, db *database.DB, sel *cleanSelection) e
 
 	if cleanDryRun {
 		fmt.Fprintf(os.Stderr, "\n%s Dry-run: nothing was deleted.\n", terminal.InfoSymbol())
+		if globalJSON {
+			return emitDBClean(cmd, sel, rows(count), count, 0, false)
+		}
 		return nil
 	}
 
 	if done, err := handleConfirmation(sel.describeAction(count)); done {
+		if err == nil && globalJSON {
+			return emitDBClean(cmd, sel, rows(count), count, 0, true)
+		}
 		return err
 	}
 
@@ -179,6 +266,9 @@ func runScopedClean(ctx context.Context, db *database.DB, sel *cleanSelection) e
 	// so it stays opt-out-by-default as it was.
 	if sel.Mode != cleanModeOrphans {
 		runVacuum(ctx, db)
+	}
+	if globalJSON {
+		return emitDBClean(cmd, sel, rows(deleted), count, deleted, false)
 	}
 	return nil
 }
@@ -227,7 +317,7 @@ func describeActiveFilters(sel *cleanSelection) string {
 
 // cleanAllTables truncates every data table. It reports per-table counts, so it
 // keeps its own renderer rather than folding into runScopedClean.
-func cleanAllTables(ctx context.Context, db *database.DB, sel *cleanSelection) error {
+func cleanAllTables(ctx context.Context, cmd *cobra.Command, db *database.DB, sel *cleanSelection) error {
 	del := database.NewDeleteBuilder(db, database.QueryFilters{})
 	counts, err := del.DeleteAllTables(ctx, true)
 	if err != nil {
@@ -235,12 +325,19 @@ func cleanAllTables(ctx context.Context, db *database.DB, sel *cleanSelection) e
 	}
 
 	var total int64
-	for _, c := range counts {
-		total += c
+	items := []dbCleanView{}
+	for _, tbl := range database.AllTablesDeleteOrder() {
+		if c := counts[tbl]; c > 0 {
+			total += c
+			items = append(items, dbCleanView{Table: tbl, Rows: c})
+		}
 	}
 
 	if total == 0 {
 		fmt.Fprintf(os.Stderr, "%s All data tables are already empty.\n", terminal.InfoSymbol())
+		if globalJSON {
+			return emitDBClean(cmd, sel, items, 0, 0, false)
+		}
 		return nil
 	}
 
@@ -255,12 +352,18 @@ func cleanAllTables(ctx context.Context, db *database.DB, sel *cleanSelection) e
 
 	if cleanDryRun {
 		fmt.Fprintf(os.Stderr, "\n%s Dry-run: nothing was deleted.\n", terminal.InfoSymbol())
+		if globalJSON {
+			return emitDBClean(cmd, sel, items, total, 0, false)
+		}
 		return nil
 	}
 
 	// resolveCleanSelection already required --force for --all, so this cannot
 	// prompt; the call is kept so every delete path goes through one gate.
 	if done, err := handleConfirmation(sel.describeAction(total)); done {
+		if err == nil && globalJSON {
+			return emitDBClean(cmd, sel, items, total, 0, true)
+		}
 		return err
 	}
 
@@ -272,6 +375,9 @@ func cleanAllTables(ctx context.Context, db *database.DB, sel *cleanSelection) e
 		terminal.Green(fmt.Sprintf("Deleted %d row(s) from all data tables.", total)))
 
 	runVacuum(ctx, db)
+	if globalJSON {
+		return emitDBClean(cmd, sel, items, total, total, false)
+	}
 	return nil
 }
 
@@ -280,16 +386,16 @@ func runVacuum(ctx context.Context, db *database.DB) {
 	if db.Driver() != "sqlite" {
 		return
 	}
-	fmt.Printf("%s Running VACUUM to reclaim disk space...\n", terminal.InfoSymbol())
+	_, _ = fmt.Fprintf(humanOut(), "%s Running VACUUM to reclaim disk space...\n", terminal.InfoSymbol())
 	if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
 		zap.L().Warn("VACUUM failed", zap.Error(err))
 		return
 	}
-	fmt.Printf("%s %s\n", terminal.SuccessSymbol(), terminal.Green("VACUUM completed."))
+	_, _ = fmt.Fprintf(humanOut(), "%s %s\n", terminal.SuccessSymbol(), terminal.Green("VACUUM completed."))
 }
 
 // resetDatabase deletes the SQLite database file and recreates it with a fresh schema.
-func resetDatabase() error {
+func resetDatabase() (dbResetView, error) {
 	// config.LoadSettings directly, and ANY error refuses — not the clicommon
 	// helper, which degrades a merely-discovered broken config to defaults.
 	//
@@ -300,7 +406,7 @@ func resetDatabase() error {
 	// at that.
 	settings, err := config.LoadSettings(globalConfig)
 	if err != nil {
-		return fmt.Errorf("cannot determine which database to reset: %w", err)
+		return dbResetView{}, fmt.Errorf("cannot determine which database to reset: %w", err)
 	}
 
 	if !settings.Database.Enabled && settings.Database.Driver == "" {
@@ -314,7 +420,7 @@ func resetDatabase() error {
 	}
 
 	if settings.Database.Driver != "sqlite" {
-		return fmt.Errorf("database reset is only supported for SQLite (current driver: %s)", settings.Database.Driver)
+		return dbResetView{}, fmt.Errorf("database reset is only supported for SQLite (current driver: %s)", settings.Database.Driver)
 	}
 
 	dbPath := config.ExpandPath(settings.Database.SQLite.Path)
@@ -328,29 +434,29 @@ func resetDatabase() error {
 		p := dbPath + suffix
 		if _, err := os.Stat(p); err == nil {
 			if err := os.Remove(p); err != nil {
-				return fmt.Errorf("failed to remove %s: %w", p, err)
+				return dbResetView{}, fmt.Errorf("failed to remove %s: %w", p, err)
 			}
 			removed++
 		}
 	}
 
 	if removed == 0 {
-		fmt.Printf("%s No database file found at %s\n", terminal.InfoSymbol(), terminal.Cyan(dbPath))
+		_, _ = fmt.Fprintf(humanOut(), "%s No database file found at %s\n", terminal.InfoSymbol(), terminal.Cyan(dbPath))
 	} else {
-		fmt.Printf("%s Deleted database file: %s\n", terminal.SuccessSymbol(), terminal.Cyan(dbPath))
+		_, _ = fmt.Fprintf(humanOut(), "%s Deleted database file: %s\n", terminal.SuccessSymbol(), terminal.Cyan(dbPath))
 	}
 
 	// Recreate with fresh schema
 	db, err := database.NewDB(&settings.Database)
 	if err != nil {
-		return fmt.Errorf("failed to create new database: %w", err)
+		return dbResetView{}, fmt.Errorf("failed to create new database: %w", err)
 	}
 	clicommon.SetDBCache(db)
 
-	if err := db.CreateSchema(context.Background()); err != nil {
-		return fmt.Errorf("failed to create schema: %w", err)
+	if err := db.EnsureSchemaReady(context.Background()); err != nil {
+		return dbResetView{}, fmt.Errorf("failed to create schema: %w", err)
 	}
 
-	fmt.Printf("%s %s %s\n", terminal.SuccessSymbol(), terminal.Green("Database recreated at"), terminal.Cyan(dbPath))
-	return nil
+	_, _ = fmt.Fprintf(humanOut(), "%s %s %s\n", terminal.SuccessSymbol(), terminal.Green("Database recreated at"), terminal.Cyan(dbPath))
+	return dbResetView{Path: dbPath, FilesRemoved: removed}, nil
 }

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/agent/agenttypes"
@@ -43,6 +42,10 @@ type Engine struct {
 	// populate SwarmResult.TokenUsage for cost / telemetry.
 	tokenUsageMu sync.Mutex
 	tokenUsage   agenttypes.TokenUsage
+
+	// budget is the run-wide cap installed by SetRunBudget (swarm's
+	// --max-commands / --token-budget / --max-cost-usd); see budget.go.
+	budget budgetState
 
 	// runtime is the AI-dispatch seam. It defaults to the olium-backed runtime;
 	// tests may inject a fake. All AI calls go through it so the engine depends
@@ -212,6 +215,22 @@ func (e *Engine) runOnSession(ctx context.Context, opts Options, sess AgentSessi
 			}
 			out, runErr = e.rt().RunOnSession(ctx, oliumCfg, skillSess, runPrompt, opts.StreamWriter, thinkingSink.writer(), opts.Verbose)
 			_ = skillSess.Close()
+		case opts.OfflineTools:
+			// Offline path: a per-call session whose only tools read local
+			// files, so the agent cannot reach the target (no bash, no
+			// web_fetch, no browser).
+			rec := RecordSpec{SessionDir: opts.SessionDir, Template: opts.PromptTemplate}
+			offSess, sErr := e.rt().NewSessionWithSpec(oliumCfg, SessionSpec{
+				SourcePath:   opts.SourcePath,
+				IncludeTools: true,
+				OfflineTools: true,
+				Record:       rec,
+			})
+			if sErr != nil {
+				return oliumRunOutput{}, sErr
+			}
+			out, runErr = e.rt().RunOnSession(ctx, oliumCfg, offSess, runPrompt, opts.StreamWriter, thinkingSink.writer(), opts.Verbose)
+			_ = offSess.Close()
 		default:
 			// Fresh-per-call path: record a per-phase transcript when a session
 			// dir is wired, named by template so concurrent phases don't clash.
@@ -233,6 +252,7 @@ func (e *Engine) runOnSession(ctx context.Context, opts Options, sess AgentSessi
 	// Accumulate usage even on error — partial token cost still counts toward
 	// the run's total spend.
 	e.addTokenUsage(runOut.Usage)
+	e.chargeRunBudget(runOut.Usage, runOut.ToolCalls)
 
 	// Ensure streamed output ends with a newline so subsequent console lines
 	// (e.g. session dir, phase banners) don't start on the same line.
@@ -325,50 +345,6 @@ func (e *Engine) runOnSession(ctx context.Context, opts Options, sess AgentSessi
 	}
 
 	return result, nil
-}
-
-// Preflight verifies the olium provider is resolvable AND that
-// credentials actually work by issuing a tiny ping prompt. Call this
-// before starting a multi-phase pipeline so credential / network problems
-// fail fast (within ~5 seconds) instead of after a minute of normalize +
-// discovery work. agentName is retained for call-site compatibility; it
-// no longer affects dispatch.
-//
-// The ping is bounded by a hard 5s timeout; transient ping failures are
-// returned as errors so the caller can decide whether to bail or continue
-// (CLI usually bails, server endpoints typically continue and let the
-// real first-call failure surface in the run record).
-func (e *Engine) Preflight(agentName string) error {
-	if e.settings == nil {
-		return fmt.Errorf("agent settings are nil")
-	}
-	cfg := e.settings.Agent.Olium
-	if cfg.Provider == "" && cfg.Model == "" {
-		return fmt.Errorf("agent.olium config is empty — set agent.olium.provider in ~/.vigolium/vigolium-configs.yaml")
-	}
-
-	// Build a one-shot engine and issue a minimal ping. We use a fresh
-	// 5s context so a hung provider (TCP black hole) doesn't block the
-	// whole startup. Ping prompt asks for a single token to keep the
-	// cost effectively zero.
-	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	sess, err := e.rt().NewSession(&cfg, "")
-	if err != nil {
-		return fmt.Errorf("preflight: cannot build olium engine (check agent.olium.provider / credentials): %w", err)
-	}
-	defer func() { _ = sess.Close() }()
-
-	out, err := e.rt().RunOnSession(pingCtx, &cfg, sess, "Reply with the single word OK.", nil, nil, false)
-	if err != nil {
-		// Wrap so the caller can identify auth vs network vs other.
-		return fmt.Errorf("preflight: provider %q failed (model=%q): %w", cfg.Provider, cfg.Model, err)
-	}
-	if strings.TrimSpace(out.Text) == "" {
-		return fmt.Errorf("preflight: provider %q returned no tokens for ping (likely silent auth failure)", cfg.Provider)
-	}
-	return nil
 }
 
 // RunWithExtra executes an agent run with additional extra template data injected.

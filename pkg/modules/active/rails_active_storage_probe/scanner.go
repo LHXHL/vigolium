@@ -217,7 +217,7 @@ func (m *Module) probeEndpoint(
 	//   blocked        rate-limit / vendor challenge pages (429/408/425/451, …)
 	// None of these confirm the endpoint exists.
 	if status == 404 || status == 405 || status == 401 || status == 403 ||
-		status >= 500 || isBlockedOrThrottled(resp) {
+		status >= 500 || infra.IsBlockedOrThrottled(resp) {
 		return nil
 	}
 
@@ -338,29 +338,6 @@ func (m *Module) probeEndpoint(
 			Reference:   []string{"https://guides.rubyonrails.org/active_storage_overview.html", "https://guides.rubyonrails.org/action_mailbox_basics.html"},
 		},
 	}
-}
-
-// isBlockedOrThrottled reports whether a probe response came from a rate
-// limiter, WAF/CDN edge, or server error rather than the Rails application.
-// Such responses never exercised the route, so their bodies (often error pages
-// that reflect the requested path) cannot confirm exposure.
-func isBlockedOrThrottled(resp *httputil.ResponseChain) bool {
-	if resp == nil || resp.Response() == nil {
-		return false
-	}
-	// Vendor-aware detector (Cloudflare, Akamai, CloudFront, Incapsula, AWS ELB)
-	// plus the generic rate-limit cases.
-	if infra.GetBlockDetectionValidator().Validate(resp) != nil {
-		return true
-	}
-	switch resp.Response().StatusCode {
-	case 408, // request timeout
-		425, // too early
-		429, // too many requests
-		451: // unavailable for legal reasons (edge block)
-		return true
-	}
-	return false
 }
 
 // isCORSPreflightResponse reports whether resp is a generic CORS preflight reply

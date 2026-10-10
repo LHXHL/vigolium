@@ -207,6 +207,7 @@ var TerminalAgenticScanStatuses = []string{
 	"failed",
 	"cancelled",
 	"timeout",
+	"budget_exhausted",
 	"error",
 }
 
@@ -230,6 +231,58 @@ func CompletedAgenticScanStatus(degraded bool) string {
 		return "completed_with_warnings"
 	}
 	return "completed"
+}
+
+// Agentic-run statuses beyond the completed set. "timeout" and
+// "budget_exhausted" are runs that ran but stopped at a limit (the CLI exits 5
+// for them); "cancelled" is an interrupt; "failed" an error.
+const (
+	AgenticScanStatusTimeout         = "timeout"
+	AgenticScanStatusBudgetExhausted = "budget_exhausted"
+	AgenticScanStatusCancelled       = "cancelled"
+	AgenticScanStatusFailed          = "failed"
+)
+
+// AgenticRunEnd describes how an agentic run ended, for AgenticRunStatus.
+type AgenticRunEnd struct {
+	// Err is the run's error, nil on a clean finish. A time or budget stop
+	// still counts as that stop when Err is set: the loop often reports the
+	// cancellation it caused as an error.
+	Err error
+	// TimedOut: the wall-clock budget (--max-duration) fired.
+	TimedOut bool
+	// BudgetExhausted: a command, token or cost budget fired.
+	BudgetExhausted bool
+	// Cancelled: an interrupt (Ctrl-C, SIGTERM) stopped the run.
+	Cancelled bool
+	// Degraded: the run finished but with warnings (see CompletedAgenticScanStatus).
+	Degraded bool
+	// FailedDrivers/TotalDrivers: a multi-driver run (audit), see
+	// MultiDriverAgenticScanStatus. Zero TotalDrivers means single-driver.
+	FailedDrivers, TotalDrivers int
+}
+
+// AgenticRunStatus is the agentic_scans.status for a finished run. It is the
+// one place that decides it, for the CLI finalizers and the swarm runner alike,
+// so a timed-out run is "timeout" whichever path wrote it (it used to be
+// "failed" in the database while the JSON said "timed_out").
+func AgenticRunStatus(e AgenticRunEnd) string {
+	switch {
+	case e.Cancelled:
+		return AgenticScanStatusCancelled
+	case e.TimedOut:
+		return AgenticScanStatusTimeout
+	case e.BudgetExhausted:
+		return AgenticScanStatusBudgetExhausted
+	case e.TotalDrivers > 0:
+		if e.Err != nil && e.FailedDrivers == 0 {
+			return AgenticScanStatusFailed
+		}
+		return MultiDriverAgenticScanStatus(e.FailedDrivers, e.TotalDrivers)
+	case e.Err != nil:
+		return AgenticScanStatusFailed
+	}
+	return CompletedAgenticScanStatus(e.Degraded)
 }
 
 // MultiDriverAgenticScanStatus is the parent status of a run made of several

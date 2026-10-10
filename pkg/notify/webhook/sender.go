@@ -1,7 +1,9 @@
 // Package webhook fires a single HTTP POST when a scan reaches a terminal
-// state (completed or failed). Unlike the per-finding notify backends, this
-// is a one-shot scan-completion hook: project-scoped, retried up to 5 times
-// on 5xx/network errors, fire-and-forget so it never blocks the scan.
+// state (completed, failed or cancelled). Unlike the per-finding notify
+// backends, this is a one-shot scan-completion hook: project-scoped, retried
+// up to 5 times on 5xx/network errors, and asynchronous so it never blocks the
+// scan. A short-lived process (the CLI) calls Drain before it exits so the POST
+// is not lost with the process; a long-lived one (the server) never needs to.
 package webhook
 
 import (
@@ -13,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
@@ -31,18 +34,27 @@ type FindingCounts struct {
 	BySeverity map[string]int `json:"by_severity"`
 }
 
-// ScanCompletedPayload is the JSON body POSTed to the webhook URL.
+// ScanCompletedPayload is the JSON body POSTed to the webhook URL. The name
+// predates the failed/cancelled events; every terminal outcome uses it.
 type ScanCompletedPayload struct {
-	Event       string        `json:"event"`
-	ProjectUUID string        `json:"project_uuid"`
-	ScanUUID    string        `json:"scan_uuid"`
-	ScanType    string        `json:"scan_type"`
-	Target      string        `json:"target"`
-	Status      string        `json:"status"`
-	StartedAt   time.Time     `json:"started_at"`
-	FinishedAt  time.Time     `json:"finished_at"`
-	Findings    FindingCounts `json:"findings"`
-	ResultURL   string        `json:"result_url"`
+	// Event is scan.completed, scan.failed or scan.cancelled (see EventFor*).
+	Event       string `json:"event"`
+	ProjectUUID string `json:"project_uuid"`
+	ScanUUID    string `json:"scan_uuid"`
+	ScanType    string `json:"scan_type"`
+	Target      string `json:"target"`
+	Status      string `json:"status"`
+	// Completeness is "complete" or "partial" when the run knows (a curtailed
+	// scan is still scan.completed, with completeness "partial"); StopReason
+	// names why it stopped short. Both empty when unknown.
+	Completeness string `json:"completeness,omitempty"`
+	StopReason   string `json:"stop_reason,omitempty"`
+	// Error is the failure message on scan.failed.
+	Error      string        `json:"error,omitempty"`
+	StartedAt  time.Time     `json:"started_at"`
+	FinishedAt time.Time     `json:"finished_at"`
+	Findings   FindingCounts `json:"findings"`
+	ResultURL  string        `json:"result_url"`
 }
 
 // Sender posts ScanCompletedPayload to a configured URL with retry on 5xx.
@@ -151,10 +163,22 @@ func redactURL(raw string) string {
 	return u.String()
 }
 
+// inflight counts PostAsync deliveries not yet finished, so Drain can wait for
+// them and say how many it gave up on. A counter rather than a WaitGroup: the
+// server fires while other goroutines may be draining in tests, and a
+// WaitGroup's Add-from-zero must not race a Wait.
+var inflight atomic.Int64
+
+// drainPoll is how often Drain re-checks the in-flight count.
+const drainPoll = 10 * time.Millisecond
+
 // PostAsync fires the POST in a goroutine and logs failures. Use this from
-// scan-completion paths so the scan does not block on webhook delivery.
+// scan-completion paths so the scan does not block on webhook delivery. The
+// delivery is tracked for Drain.
 func (s *Sender) PostAsync(payload ScanCompletedPayload) {
+	inflight.Add(1)
 	go func() {
+		defer inflight.Add(-1)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if err := s.Post(ctx, payload); err != nil {
@@ -168,4 +192,22 @@ func (s *Sender) PostAsync(payload ScanCompletedPayload) {
 			zap.String("scan_uuid", payload.ScanUUID),
 			zap.String("scan_type", payload.ScanType))
 	}()
+}
+
+// Drain waits up to timeout for every PostAsync delivery started so far to
+// finish (delivered, or failed after its retries) and returns how many were
+// still in flight when it gave up. A process that is about to exit calls it so
+// its webhooks are not killed mid-POST; 0 means nothing was left behind.
+func Drain(timeout time.Duration) (undelivered int) {
+	deadline := time.Now().Add(timeout)
+	for {
+		n := inflight.Load()
+		if n <= 0 {
+			return 0
+		}
+		if !time.Now().Before(deadline) {
+			return int(n)
+		}
+		time.Sleep(min(drainPoll, time.Until(deadline)))
+	}
 }

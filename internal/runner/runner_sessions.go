@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/vigolium/vigolium/pkg/authentication"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
 	"go.uber.org/zap"
@@ -58,11 +59,23 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 		}
 	}
 
+	// scanning_strategy.session.{validate_url, reauth_on_status,
+	// reauth_interval} fill the check values each session leaves unset.
+	defaults, err := sessionCfg.SessionDefaults()
+	if err != nil {
+		return err
+	}
+	for _, s := range sessions {
+		s.ApplyDefaults(defaults)
+	}
+
 	mgr, err := authentication.NewManager(sessions,
 		authentication.WithSessionDir(sessionCfg.SessionDir),
 		// A login goes to the host the scan is about to attack, so it follows the
-		// same proxy and TLS policy as every other request to that host.
-		authentication.WithLoginTransport(http.LoginTransport(opts)),
+		// same proxy and TLS policy as every other request to that host, and the
+		// same egress gate (rate, host slot, quarantine, count) on the priority
+		// lane, so it never waits behind the requests that are waiting for it.
+		authentication.WithLoginTransport(http.GatedLoginTransport(opts, infra.svc.EgressGate())),
 	)
 	if err != nil {
 		return err
@@ -81,9 +94,29 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 		r.persistSessionsToDB(ctx, mgr.AllSessions())
 	}
 
+	// Sessions with a check block are kept live for the scan: their
+	// responses are watched for logged-out signs and an expired session is
+	// logged in again (runner_live_sessions.go). The operator's own -H names
+	// are pinned: a live session never overrides them, and its frozen copy
+	// is left out of the headers below so the explicit value is the one sent.
+	pinned := headerNames(baseHeaders)
+	live := &liveSessions{}
+	liveFor := func(s *authentication.Session) *authentication.LiveSession {
+		ls := r.newLiveSession(ctx, mgr, s, pinned)
+		if ls != nil {
+			live.all = append(live.all, ls)
+		}
+		return ls
+	}
+	live.primary = liveFor(mgr.Primary())
+	infra.sessions = live
+
 	primaryHeaders := mgr.PrimaryHeaders()
+	if live.primary != nil {
+		primaryHeaders = withoutHeaders(primaryHeaders, pinned)
+	}
 	switch {
-	case len(primaryHeaders) == 0:
+	case len(primaryHeaders) == 0 && live.primary == nil:
 		// Nothing to apply (static-header sessions with no primary headers, or a
 		// login that produced none).
 	case sessionCfg.UseInDiscovery:
@@ -95,6 +128,9 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 		if err != nil {
 			return fmt.Errorf("failed to rebuild requester with session headers: %w", err)
 		}
+		if live.primary != nil {
+			httpRequester = httpRequester.WithLiveSession(live.primary)
+		}
 		infra.httpRequester = httpRequester
 	default:
 		// use_in_discovery: false — keep the credentials OFF the shared requester
@@ -103,6 +139,12 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 		// used to be resolved here and then discarded, so the whole scan ran
 		// unauthenticated.
 		infra.assessmentHeaders = primaryHeaders
+		live.assessment = live.primary
+	}
+	if len(live.all) > 0 && r.options.SpideringEnabled {
+		// The browser crawl applies the session's headers itself at launch
+		// and is not refreshed by a re-login (v1 limit).
+		zap.L().Info("Session re-login does not reach the spidering browser: it keeps the credentials it started with")
 	}
 
 	// Create separate requesters for compare sessions (IDOR/BOLA testing)
@@ -120,12 +162,21 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 	for _, cs := range cmpSessions {
 		// Clone options, merge the operator's own headers with THIS session's auth
 		// headers — from baseHeaders, so the primary session's credentials (which
-		// may have been appended to opts.Headers above) are not included.
+		// may have been appended to opts.Headers above) are not included. A
+		// compare session with a check block gets its own live owner.
+		csLive := liveFor(cs)
+		csHeaders := cs.HeaderSlice()
+		if csLive != nil {
+			csHeaders = withoutHeaders(csHeaders, pinned)
+		}
 		compareOpts := *opts
-		compareOpts.Headers = append(slices.Clone(baseHeaders), cs.HeaderSlice()...)
+		compareOpts.Headers = append(slices.Clone(baseHeaders), csHeaders...)
 		compareRequester, err := http.NewRequester(&compareOpts, infra.svc)
 		if err != nil {
 			return fmt.Errorf("failed to create requester for session %q: %w", cs.Name, err)
+		}
+		if csLive != nil {
+			compareRequester = compareRequester.WithLiveSession(csLive)
 		}
 		cmpEntry := compareSession{
 			Name:   cs.Name,
@@ -158,6 +209,8 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 // the honest attribution — the logins were not slow, the scan ran out of time.
 func authFailureReason(parent context.Context, err error) string {
 	switch {
+	case egress.BudgetCause(parent) != nil:
+		return database.ReasonRequestBudget
 	case errors.Is(err, context.Canceled):
 		return database.ReasonCancelled
 	case errors.Is(err, context.DeadlineExceeded):
@@ -184,10 +237,11 @@ func (r *Runner) assessmentRequester(infra *phaseInfra) (*http.Requester, error)
 	if infra == nil {
 		return nil, fmt.Errorf("no phase infrastructure")
 	}
-	if len(infra.assessmentHeaders) == 0 {
+	live := infra.sessions.assessmentLive()
+	if len(infra.assessmentHeaders) == 0 && live == nil {
 		return infra.httpRequester, nil
 	}
-	view, err := infra.httpRequester.WithAdditionalHeaders(infra.assessmentHeaders)
+	view, err := infra.httpRequester.WithSessionCredentials(infra.assessmentHeaders, live)
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply session headers to the assessment requester: %w", err)
 	}
@@ -206,6 +260,11 @@ func (r *Runner) assessmentHeaderSlice(infra *phaseInfra) []string {
 	headers := slices.Clone(r.options.Headers)
 	if infra != nil {
 		headers = append(headers, infra.assessmentHeaders...)
+		// A live primary session may have logged in again since setup: the
+		// snapshot carries its current credentials (taken at phase start, so
+		// known-issue-scan, which runs after dynamic assessment, gets the
+		// latest; nuclei cannot be refreshed mid-phase).
+		headers = overlayCredentials(headers, infra.sessions.primaryLive().Credentials())
 	}
 	return headers
 }

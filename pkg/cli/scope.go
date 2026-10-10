@@ -17,7 +17,7 @@ var scopeCmd = &cobra.Command{
 	Short:   "Manage scan scope rules",
 	Long:    "Inspect and edit scope rules that control which hosts, paths, status codes, and content types are in-scope for scanning. Running 'vigolium scope' without a subcommand is equivalent to 'scope view'.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runScopeView(cmd, args)
+		return runScopeView(scopeViewCmd, args)
 	},
 }
 
@@ -83,7 +83,7 @@ func runScopeView(cmd *cobra.Command, args []string) error {
 	// fails for a reason the exit code says nothing about. An empty result is an
 	// empty array, never a warning line.
 	if globalJSON {
-		env := newAgentEnvelope("scope view", "entries", matched, int64(len(matched)), 0, len(matched))
+		env := newMachineEnvelope(cmd, kindRead, "entries", matched, int64(len(matched)), 0, len(matched))
 		env.With("config_path", config.ContractPath(effectiveConfigPath()))
 		if len(args) > 0 {
 			env.With("component_filter", args[0])

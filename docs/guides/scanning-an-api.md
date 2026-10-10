@@ -78,7 +78,13 @@ Export your Postman collection as JSON (v2.1 format) and pass it directly:
 vigolium scan --input collection.json -I postman -t https://api.example.com
 ```
 
-Environment variables in the collection are resolved where possible. For variables that reference a specific environment, set the target flag to the correct base URL.
+Collection variables are resolved where possible. `-t` supplies `{{baseUrl}}` / `{{url}}`, and `--spec-var name=value` (repeatable) fills any other `{{name}}` an environment would have set, for `scan`, `run` and `ingest` alike:
+
+```bash
+vigolium scan -i collection.json -I postman -t https://api.example.com --spec-var userId=42
+```
+
+Collection-, folder- and request-level `auth` blocks are applied with Postman's inheritance rules (`bearer`, `basic`, `apikey` in a header or the query string; `noauth` stops inheritance), and an explicit header on the request wins. Body modes `raw` (Content-Type from the raw language), `urlencoded`, `formdata` (multipart; file fields become empty placeholder parts) and `graphql` (sent as JSON) are all rebuilt. A request whose URL still contains an unresolved `{{variable}}` is skipped, and each unresolved variable is reported once as a warning with the number of requests it skipped.
 
 ## From curl Commands
 
@@ -88,7 +94,7 @@ Pipe one or more curl commands into Vigolium:
 echo 'curl https://api.example.com/users' | vigolium scan -I curl -t https://api.example.com
 ```
 
-You can also pass a file containing multiple curl commands (one per line):
+You can also pass a file containing multiple curl commands. A command may span several lines (backslash continuations, or a quoted body containing newlines), and commands are separated by newlines or `;`. Bash ANSI-C strings (`$'...'`, which Chrome's "Copy as cURL (bash)" emits) are decoded, `#` comments are skipped, and a command with an unterminated quote is reported as a warning rather than silently dropped:
 
 ```bash
 vigolium scan --input curls.txt -I curl -t https://api.example.com

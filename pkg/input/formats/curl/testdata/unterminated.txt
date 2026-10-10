@@ -1,0 +1,2 @@
+curl -d 'oops https://app.example.test/broken
+curl https://app.example.test/after-broken

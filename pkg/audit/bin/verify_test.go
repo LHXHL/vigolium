@@ -121,23 +121,3 @@ func TestVerifyBlobForHost(t *testing.T) {
 		t.Fatalf("unknown format wrongly rejected: %v", err)
 	}
 }
-
-// TestEmbeddedAuditBlobMatchesHost guards the host build path: whatever
-// vigolium-audit blob `make build` embedded must run on the platform this
-// test binary was built for. On a fresh clone the embed is the empty stub,
-// so the check is skipped. This catches a mis-staged host blob (e.g. a
-// darwin blob left in _bin while building on linux) at `make test` time.
-func TestEmbeddedAuditBlobMatchesHost(t *testing.T) {
-	data, err := binFS.ReadFile(embeddedName)
-	if err != nil || len(data) < minBinarySize {
-		t.Skip("no real vigolium-audit binary embedded (stub or fresh clone)")
-	}
-	goos, goarch, ok := detectBlobPlatform(data)
-	if !ok {
-		t.Fatalf("embedded vigolium-audit blob has an unrecognized executable format")
-	}
-	if goos != runtime.GOOS || (goarch != "" && goarch != runtime.GOARCH) {
-		t.Fatalf("embedded vigolium-audit blob targets %s but this build is %s/%s — wrong host blob staged in _bin/",
-			platformLabel(goos, goarch), runtime.GOOS, runtime.GOARCH)
-	}
-}

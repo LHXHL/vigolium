@@ -7,7 +7,6 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
-	"github.com/vigolium/vigolium/pkg/mutation"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -154,12 +153,6 @@ type OASTProvider interface {
 	Enabled() bool
 }
 
-// MutationGenerator provides value-aware mutation capabilities.
-type MutationGenerator interface {
-	Classify(value string, hint *mutation.SchemaHint) mutation.ValueType
-	Generate(value string, vtype mutation.ValueType, opts *mutation.GenerateOptions) mutation.MutationSet
-}
-
 // InsertionPointProvider retrieves cached insertion points for a request,
 // avoiding redundant parsing across modules.
 type InsertionPointProvider interface {
@@ -191,7 +184,6 @@ type ScanContext struct {
 	RequestUUIDResolver RequestUUIDResolver
 	Scope               ScopeChecker
 	OASTProvider        OASTProvider
-	MutationGen         MutationGenerator
 	RequestFeeder       RequestFeeder
 	ScopeExpander       ScopeExpander // Optional: add discovered hosts to runtime scope (--follow-subdomains)
 	InsertionPoints     InsertionPointProvider
@@ -208,10 +200,21 @@ type ScanContext struct {
 	// and feeds them for scanning. Off by default (recon-only).
 	FollowSubdomains bool
 
+	// NoParamDedup mirrors --no-param-dedup: when true, modules sharing a vuln
+	// class no longer skip a parameter another module already reported, so an
+	// audit run gets every (param, technique) hit. See ParamDedupEnabled.
+	NoParamDedup bool
+
 	// DeepScan mirrors --intensity=deep: modules may use it to unlock heavier,
 	// broader probing (e.g. dashboard_exposure's full mount-path sweep). Off by
 	// default so normal scans stay bounded.
 	DeepScan bool
+
+	// AllowRiskyPayloads is the operator's opt-in (--allow-risky-payloads or
+	// config dynamic-assessment.allow_risky_payloads) to payloads that can
+	// multiply work per row or append statements to a write query, below deep.
+	// Modules should read RiskyPayloadsAllowed, which also honors DeepScan.
+	AllowRiskyPayloads bool
 
 	baselineOnce   sync.Once
 	baselineCache  *lru.Cache[string, *BaselineEntry]
@@ -245,6 +248,12 @@ type ScanContext struct {
 	measurementOnce   sync.Once
 	measurementCache  *lru.Cache[string, int]
 	measurementFlight singleflight.Group
+
+	// Named per-host artifacts a module derives once per host (a JWKS key set,
+	// a discovered metadata document). See HostMemo.
+	hostMemoOnce   sync.Once
+	hostMemoCache  *lru.Cache[string, any]
+	hostMemoFlight singleflight.Group
 }
 
 func (sc *ScanContext) cookiePolicies() *CookiePolicyRegistry {
@@ -278,6 +287,13 @@ func (sc *ScanContext) DedupMgr() *dedup.Manager {
 		return nil
 	}
 	return sc.DedupManager
+}
+
+// RiskyPayloadsAllowed reports whether modules may send payloads marked
+// risk:high (per-row OR delays, stacked statements): true at --intensity deep
+// or when the operator opted in via AllowRiskyPayloads. nil-safe (false).
+func (sc *ScanContext) RiskyPayloadsAllowed() bool {
+	return sc != nil && (sc.DeepScan || sc.AllowRiskyPayloads)
 }
 
 // OASTProv returns the OASTProvider or nil safely.
@@ -390,23 +406,4 @@ func (sc *ScanContext) DetectedWAF(host string) string {
 		return ""
 	}
 	return sc.WAFStack.Get(host)
-}
-
-// MutGen returns the MutationGenerator or a default implementation if nil.
-func (sc *ScanContext) MutGen() MutationGenerator {
-	if sc == nil || sc.MutationGen == nil {
-		return &defaultMutationGen{}
-	}
-	return sc.MutationGen
-}
-
-// defaultMutationGen is the fallback implementation using the mutation package directly.
-type defaultMutationGen struct{}
-
-func (d *defaultMutationGen) Classify(value string, hint *mutation.SchemaHint) mutation.ValueType {
-	return mutation.Classify(value, hint)
-}
-
-func (d *defaultMutationGen) Generate(value string, vtype mutation.ValueType, opts *mutation.GenerateOptions) mutation.MutationSet {
-	return mutation.Generate(value, vtype, opts)
 }

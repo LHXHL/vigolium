@@ -1,6 +1,7 @@
 package jsext
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -18,6 +19,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "get",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".get(url: string, opts?: {headers})",
 			Returns:     "{status, headers, body, raw}",
@@ -33,6 +35,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "post",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".post(url: string, body: string, opts?: {headers})",
 			Returns:     "{status, headers, body, raw}",
@@ -49,6 +52,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "request",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".request({method, url, headers, body})",
 			Returns:     "{status, headers, body, raw}",
@@ -75,13 +79,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 						body = v.String()
 					}
 
-					headers := make(map[string]string)
-					if v := o.Get("headers"); v != nil && !sobek.IsUndefined(v) {
-						headersObj := v.ToObject(vm)
-						for _, key := range headersObj.Keys() {
-							headers[key] = headersObj.Get(key).String()
-						}
-					}
+					headers := headersArg(vm, o.Get("headers"))
 
 					return doRequest(vm, opts.HTTPClient, method, urlStr, body, headers)
 				}
@@ -90,6 +88,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "send",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".send(rawRequest: string)",
 			Returns:     "{status, headers, body, raw}",
@@ -105,6 +104,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "buildRequest",
+			Effect:      EffectPure,
 			Category:    CatHTTP,
 			Signature:   ".buildRequest(rawRequest: string, overrides: {method?, path?, headers?, body?, query?})",
 			Returns:     "string",
@@ -125,19 +125,11 @@ func httpCoreFuncDefs() []JSFuncDef {
 }
 
 func doSimpleRequest(vm *sobek.Runtime, httpClient *http.Requester, method, urlStr, body string, optsVal sobek.Value) sobek.Value {
-	headers := make(map[string]string)
-
+	var headersVal sobek.Value
 	if optsVal != nil && !sobek.IsUndefined(optsVal) && !sobek.IsNull(optsVal) {
-		opts := optsVal.ToObject(vm)
-		if v := opts.Get("headers"); v != nil && !sobek.IsUndefined(v) {
-			headersObj := v.ToObject(vm)
-			for _, key := range headersObj.Keys() {
-				headers[key] = headersObj.Get(key).String()
-			}
-		}
+		headersVal = optsVal.ToObject(vm).Get("headers")
 	}
-
-	return doRequest(vm, httpClient, method, urlStr, body, headers)
+	return doRequest(vm, httpClient, method, urlStr, body, headersArg(vm, headersVal))
 }
 
 func doRequest(vm *sobek.Runtime, httpClient *http.Requester, method, urlStr, body string, headers map[string]string) sobek.Value {
@@ -156,7 +148,7 @@ func doRequest(vm *sobek.Runtime, httpClient *http.Requester, method, urlStr, bo
 		fmt.Fprintf(&sb, "%s: %s\r\n", k, v)
 	}
 
-	if body != "" && headers["Content-Length"] == "" {
+	if body != "" && !mapHasHeader(headers, "Content-Length") {
 		fmt.Fprintf(&sb, "Content-Length: %d\r\n", len(body))
 	}
 	sb.WriteString("\r\n")
@@ -186,6 +178,12 @@ func doRawRequest(vm *sobek.Runtime, httpClient *http.Requester, rawReq string) 
 	elapsedMs := elapsed.Milliseconds()
 
 	if err != nil {
+		// An offline requester (ext eval without --allow-network) throws, so
+		// the extension and its author see why there is no response instead
+		// of a silent undefined.
+		if errors.Is(err, http.ErrNetworkDisabled) {
+			panic(vm.NewGoError(err))
+		}
 		zap.L().Debug("JS HTTP request failed", zap.Error(err))
 		return sobek.Undefined()
 	}
@@ -203,12 +201,7 @@ func doRawRequest(vm *sobek.Runtime, httpClient *http.Requester, rawReq string) 
 	_ = result.Set("raw", string(rawResponseCopy))
 	_ = result.Set("elapsed_ms", elapsedMs)
 
-	// Parse response headers into JS object
-	headersObj := vm.NewObject()
-	for _, h := range httpResp.Headers() {
-		_ = headersObj.Set(strings.ToLower(h.Name), h.Value)
-	}
-	_ = result.Set("headers", headersObj)
+	_ = result.Set("headers", newHeadersObject(vm, httpResp.Headers()))
 
 	return result
 }

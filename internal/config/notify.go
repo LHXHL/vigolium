@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Notification provider identifiers used by NotifyConfig.Provider to select
 // which channel is active. An empty value means "all configured providers
@@ -38,12 +41,64 @@ type DiscordConfig struct {
 }
 
 // WebhookConfig configures the per-project scan-completion webhook. It fires
-// one POST per scan when the scan reaches a terminal state (completed/failed),
-// regardless of severity.
+// one POST per scan when the scan reaches a terminal state (completed, failed
+// or cancelled), regardless of severity.
 type WebhookConfig struct {
 	URL           string `yaml:"url,omitempty"`
 	Authorization string `yaml:"authorization,omitempty"`
 	TimeoutSec    int    `yaml:"timeout_sec,omitempty"`
+	// Events limits which terminal outcomes POST: any of "completed",
+	// "failed", "cancelled" (the "scan." prefix is accepted too). Empty means
+	// DefaultWebhookEvents, i.e. every outcome.
+	Events []string `yaml:"events,omitempty"`
+}
+
+// Webhook outcome names accepted in notify.webhook.events. Each one is the
+// suffix of the payload's `event` value (scan.completed, scan.failed,
+// scan.cancelled).
+const (
+	WebhookEventCompleted = "completed"
+	WebhookEventFailed    = "failed"
+	WebhookEventCancelled = "cancelled"
+)
+
+// DefaultWebhookEvents is what an unset notify.webhook.events means.
+var DefaultWebhookEvents = []string{WebhookEventCompleted, WebhookEventFailed, WebhookEventCancelled}
+
+// normalizeWebhookEvent folds "scan.completed" / " Completed " to "completed".
+func normalizeWebhookEvent(e string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(e)), "scan.")
+}
+
+// AllowsEvent reports whether a payload whose `event` is event (for example
+// "scan.failed") should be posted under notify.webhook.events.
+func (w *WebhookConfig) AllowsEvent(event string) bool {
+	if w == nil || len(w.Events) == 0 {
+		return true
+	}
+	want := normalizeWebhookEvent(event)
+	for _, e := range w.Events {
+		if n := normalizeWebhookEvent(e); n == want || n == "all" || n == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// Validate rejects an events entry that names no outcome, which would
+// otherwise silently filter that outcome's POSTs away.
+func (w *WebhookConfig) Validate() error {
+	if w == nil {
+		return nil
+	}
+	for _, e := range w.Events {
+		switch normalizeWebhookEvent(e) {
+		case WebhookEventCompleted, WebhookEventFailed, WebhookEventCancelled, "all", "*":
+		default:
+			return fmt.Errorf("notify.webhook.events: unknown event %q (valid: %s)", e, strings.Join(DefaultWebhookEvents, ", "))
+		}
+	}
+	return nil
 }
 
 // EffectiveTimeout returns the configured timeout in seconds, falling back to

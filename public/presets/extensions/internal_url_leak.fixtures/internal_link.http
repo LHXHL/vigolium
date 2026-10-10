@@ -1,0 +1,8 @@
+// expect: {"findings": [{"name~": "internal url leak", "severity": "low", "confidence": "tentative"}]}
+GET /status HTTP/1.1
+Host: www.example.com
+
+HTTP/1.1 200 OK
+Content-Type: text/html
+
+<a href="http://db.internal/admin">database</a>

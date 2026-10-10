@@ -35,7 +35,7 @@ func runStorageResults(cmd *cobra.Command, args []string) error {
 	}
 	scanUUID := args[0]
 	if _, err := storage.ValidateKey(scanUUID); err != nil {
-		return fmt.Errorf("invalid scan UUID: %w", err)
+		return usageErrorf("invalid scan UUID: %w", err)
 	}
 
 	output, _ := cmd.Flags().GetString("output")
@@ -72,6 +72,18 @@ func runStorageResults(cmd *cobra.Command, args []string) error {
 		abs, _ := filepath.Abs(output)
 		fmt.Fprintf(os.Stderr, "%s Downloaded %s → %s\n",
 			terminal.SuccessSymbol(), terminal.Cyan(key), terminal.Gray(abs))
+		if globalJSON {
+			view := storageObjectView{Key: key, Path: abs}
+			if fi, statErr := os.Stat(abs); statErr == nil {
+				view.Size = fi.Size()
+			}
+			return emitMutation(cmd, "", mutationResult{
+				Changed: true,
+				Action:  "download",
+				Items:   []storageObjectView{view},
+				Extra:   map[string]any{"scan_uuid": scanUUID},
+			}, withProjectScope(projectUUID))
+		}
 		return nil
 	}
 

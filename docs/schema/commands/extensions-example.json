@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cli.extExampleView": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "filename": {
+          "type": "string"
+        },
+        "save_as": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "key",
+        "lang",
+        "type",
+        "title",
+        "filename",
+        "save_as"
+      ]
+    },
+    "contract.GlobSkipped": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "file",
+        "error"
+      ]
+    },
+    "contract.GlobSources": {
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        },
+        "loaded": {
+          "type": "integer"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/contract.GlobSkipped"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parse_errors": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pattern",
+        "matched",
+        "loaded",
+        "skipped",
+        "parse_errors"
+      ]
+    },
+    "contract.OutputBudget": {
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "returned": {
+          "type": "integer"
+        },
+        "omitted": {
+          "type": "integer"
+        },
+        "next_offset": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_bytes",
+        "returned",
+        "omitted",
+        "next_offset"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "command": {
+      "type": "string",
+      "const": "extensions example"
+    },
+    "kind": {
+      "type": "string",
+      "const": "read"
+    },
+    "ok": {
+      "type": "boolean",
+      "const": true
+    },
+    "project_uuid": {
+      "type": "string"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/cli.extExampleView"
+      },
+      "type": "array"
+    },
+    "query": {
+      "type": "string"
+    },
+    "query_argv": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "generated_at_ms": {
+      "type": "integer"
+    },
+    "project_source": {
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "active_file",
+        "default"
+      ]
+    },
+    "project_scoped": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "glob_sources": {
+      "$ref": "#/$defs/contract.GlobSources"
+    },
+    "output_budget": {
+      "$ref": "#/$defs/contract.OutputBudget"
+    },
+    "filter": {
+      "type": "string"
+    },
+    "lang": {
+      "type": "string"
+    },
+    "list_only": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "total",
+    "offset",
+    "limit",
+    "items",
+    "project_source",
+    "kind"
+  ],
+  "title": "vigolium extensions example -j",
+  "description": "Copy-pasteable example extensions; code is omitted under --list."
+}

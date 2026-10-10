@@ -47,66 +47,89 @@ func withLoginJar(client *http.Client, jar http.CookieJar) *http.Client {
 // per-request timeout. client supplies the transport (proxy, target TLS) and is
 // never mutated — each flow takes a copy with its own cookie jar.
 func executeLogin(ctx context.Context, sess *Session, client *http.Client) error {
+	return runLogin(ctx, sess, client, nil)
+}
+
+// runLogin is executeLogin with an optional trace that records what the flow
+// saw (status, final URL, final body, which step) for CheckLogin. A nil trace
+// records nothing; the error messages are the same either way.
+func runLogin(ctx context.Context, sess *Session, client *http.Client, tr *loginTrace) error {
 	if sess.Login == nil {
-		return fmt.Errorf("session %q: no login flow defined", sess.Name)
+		return loginFailf(LoginReasonInvalidFlow, "session %q: no login flow defined", sess.Name)
 	}
 
 	// Expand shorthand type/token_path into extract rules.
 	NormalizeLoginFlow(sess.Login)
 
+	// OAuth2 token endpoints (oauth.go).
+	if sess.Login.Type.IsOAuth2() {
+		return executeOAuth2Login(ctx, sess, client, tr)
+	}
+
 	// Multi-step login flows.
 	if len(sess.Login.Steps) > 0 {
-		return executeMultiStepLogin(ctx, sess, client)
+		return executeMultiStepLogin(ctx, sess, client, tr)
 	}
 
 	login := sess.Login
 
 	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	if err != nil {
-		return fmt.Errorf("session %q: failed to create cookie jar: %w", sess.Name, err)
+		return loginFailf(LoginReasonInvalidFlow, "session %q: failed to create cookie jar: %w", sess.Name, err)
 	}
+	// Templates ({{env:…}}, {{totp:…}}) are evaluated per login, so a
+	// re-login gets a fresh TOTP code.
+	loginURL, err := substituteVars(login.URL, nil)
+	if err != nil {
+		return loginFailf(LoginReasonInvalidFlow, "session %q: login.url: %w", sess.Name, err)
+	}
+	loginBody, err := substituteVars(login.Body, nil)
+	if err != nil {
+		return loginFailf(LoginReasonInvalidFlow, "session %q: login.body: %w", sess.Name, err)
+	}
+	extraHeaders, err := substituteHeaders(login.Headers, nil)
+	if err != nil {
+		return loginFailf(LoginReasonInvalidFlow, "session %q: login.headers: %w", sess.Name, err)
+	}
+	tr.begin(-1, loginURL)
 
 	client = withLoginJar(client, jar)
 
 	var body io.Reader
-	if login.Body != "" {
-		body = strings.NewReader(login.Body)
+	if loginBody != "" {
+		body = strings.NewReader(loginBody)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(login.Method), login.URL, body)
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(login.Method), loginURL, body)
 	if err != nil {
-		return fmt.Errorf("session %q: failed to create login request: %w", sess.Name, err)
+		return loginFailf(LoginReasonInvalidFlow, "session %q: failed to create login request: %w", sess.Name, err)
 	}
 
-	if login.ContentType != "" {
-		req.Header.Set("Content-Type", login.ContentType)
-	} else if login.Body != "" {
-		// Auto-detect content type
-		if strings.HasPrefix(strings.TrimSpace(login.Body), "{") {
-			req.Header.Set("Content-Type", "application/json")
-		} else {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
+	for k, v := range login.rawHeaders {
+		req.Header.Set(k, v)
 	}
+	setContentType(req, login.ContentType, loginBody)
+	applyRequestHeaders(req, extraHeaders)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("session %q: login request failed: %w", sess.Name, err)
+		return loginFailf(LoginReasonNetworkError, "session %q: login request failed: %w", sess.Name, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024)) // 1MB limit
 	if err != nil {
-		return fmt.Errorf("session %q: failed to read login response: %w", sess.Name, err)
+		return loginFailf(LoginReasonNetworkError, "session %q: failed to read login response: %w", sess.Name, err)
 	}
+	tr.observe(resp, respBody)
 
 	// Validate expect constraints before checking status.
 	if login.Expect != nil {
-		if err := ValidateExpect(login.Expect, resp.StatusCode, respBody); err != nil {
-			return fmt.Errorf("session %q: login expect failed: %w", sess.Name, err)
+		if reason, err := checkExpect(login.Expect, resp.StatusCode, respBody); err != nil {
+			return loginFailf(reason, "session %q: login expect failed: %w", sess.Name, err)
 		}
 	} else if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return fmt.Errorf("session %q: login returned status %d", sess.Name, resp.StatusCode)
+		return loginFailf(LoginReasonUnexpectedStatus, "session %q: login returned status %d", sess.Name, resp.StatusCode)
 	}
 
 	// Initialize headers map if nil
@@ -114,10 +137,22 @@ func executeLogin(ctx context.Context, sess *Session, client *http.Client) error
 		sess.Headers = make(map[string]string)
 	}
 
-	// Extract credentials from response
-	for _, rule := range login.Extract {
+	// Extract credentials from response. A flow converted from login_request
+	// has no configured rules: discover them from this response.
+	rules := login.Extract
+	if login.discoverTokens && len(rules) == 0 {
+		cookies := jar.Cookies(req.URL)
+		if len(cookies) == 0 {
+			cookies = resp.Cookies()
+		}
+		rules, _, _ = discoverTokenRules(resp, respBody, cookies)
+		if len(rules) == 0 {
+			return loginFailf(LoginReasonExtractFailed, "session %q: no auth tokens found in login response (status %d)", sess.Name, resp.StatusCode)
+		}
+	}
+	for _, rule := range rules {
 		if err := applyExtractRule(sess, resp, respBody, jar, req, rule); err != nil {
-			return fmt.Errorf("session %q: extraction failed: %w", sess.Name, err)
+			return loginFailf(LoginReasonExtractFailed, "session %q: extraction failed: %w", sess.Name, err)
 		}
 	}
 
@@ -131,10 +166,10 @@ func executeLogin(ctx context.Context, sess *Session, client *http.Client) error
 // ctx bounds every step AND the sequence: the manager's total login budget is on
 // it, so a three-step flow that would outlast the budget fails at the step the
 // budget ran out on rather than at the end.
-func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Client) error {
+func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Client, tr *loginTrace) error {
 	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	if err != nil {
-		return fmt.Errorf("session %q: failed to create cookie jar: %w", sess.Name, err)
+		return loginFailf(LoginReasonInvalidFlow, "session %q: failed to create cookie jar: %w", sess.Name, err)
 	}
 
 	client = withLoginJar(client, jar)
@@ -151,12 +186,27 @@ func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Clie
 		// mid-sequence reports the step it stopped at instead of sending a
 		// request that is already doomed.
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("session %q: step[%d] not attempted: %w", sess.Name, i, err)
+			return loginFailf(LoginReasonNetworkError, "session %q: step[%d] not attempted: %w", sess.Name, i, err)
 		}
 
-		// Substitute variables in URL and body.
-		stepURL := substituteVars(step.URL, vars)
-		stepBody := substituteVars(step.Body, vars)
+		// Substitute templates and variables in URL, body and headers.
+		stepURL, err := substituteVars(step.URL, vars)
+		if err != nil {
+			return loginFailf(LoginReasonInvalidFlow, "session %q: step[%d].url: %w", sess.Name, i, err)
+		}
+		stepBody, err := substituteVars(step.Body, vars)
+		if err != nil {
+			return loginFailf(LoginReasonInvalidFlow, "session %q: step[%d].body: %w", sess.Name, i, err)
+		}
+		flowHeaders, err := substituteHeaders(sess.Login.Headers, vars)
+		if err != nil {
+			return loginFailf(LoginReasonInvalidFlow, "session %q: login.headers: %w", sess.Name, err)
+		}
+		stepHeaders, err := substituteHeaders(step.Headers, vars)
+		if err != nil {
+			return loginFailf(LoginReasonInvalidFlow, "session %q: step[%d].headers: %w", sess.Name, i, err)
+		}
+		tr.begin(i, stepURL)
 
 		var body io.Reader
 		if stepBody != "" {
@@ -165,37 +215,32 @@ func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Clie
 
 		req, err := http.NewRequestWithContext(ctx, strings.ToUpper(step.Method), stepURL, body)
 		if err != nil {
-			return fmt.Errorf("session %q: step[%d] failed to create request: %w", sess.Name, i, err)
+			return loginFailf(LoginReasonInvalidFlow, "session %q: step[%d] failed to create request: %w", sess.Name, i, err)
 		}
 
-		if step.ContentType != "" {
-			req.Header.Set("Content-Type", step.ContentType)
-		} else if stepBody != "" {
-			if strings.HasPrefix(strings.TrimSpace(stepBody), "{") {
-				req.Header.Set("Content-Type", "application/json")
-			} else {
-				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			}
-		}
+		setContentType(req, step.ContentType, stepBody)
+		applyRequestHeaders(req, flowHeaders)
+		applyRequestHeaders(req, stepHeaders)
 
 		resp, err := client.Do(req)
 		if err != nil {
-			return fmt.Errorf("session %q: step[%d] request failed: %w", sess.Name, i, err)
+			return loginFailf(LoginReasonNetworkError, "session %q: step[%d] request failed: %w", sess.Name, i, err)
 		}
 
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		_ = resp.Body.Close()
 		if err != nil {
-			return fmt.Errorf("session %q: step[%d] failed to read response: %w", sess.Name, i, err)
+			return loginFailf(LoginReasonNetworkError, "session %q: step[%d] failed to read response: %w", sess.Name, i, err)
 		}
+		tr.observe(resp, respBody)
 
 		// Validate expect if present.
 		if step.Expect != nil {
-			if err := ValidateExpect(step.Expect, resp.StatusCode, respBody); err != nil {
-				return fmt.Errorf("session %q: step[%d] expect failed: %w", sess.Name, i, err)
+			if reason, err := checkExpect(step.Expect, resp.StatusCode, respBody); err != nil {
+				return loginFailf(reason, "session %q: step[%d] expect failed: %w", sess.Name, i, err)
 			}
 		} else if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-			return fmt.Errorf("session %q: step[%d] returned status %d", sess.Name, i, resp.StatusCode)
+			return loginFailf(LoginReasonUnexpectedStatus, "session %q: step[%d] returned status %d", sess.Name, i, resp.StatusCode)
 		}
 
 		// Extract rules for this step — may produce variables or session headers.
@@ -205,13 +250,13 @@ func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Clie
 				varName := strings.TrimPrefix(rule.ApplyAs, "var:")
 				val, extractErr := extractValue(resp, respBody, jar, req, rule)
 				if extractErr != nil {
-					return fmt.Errorf("session %q: step[%d] extraction failed: %w", sess.Name, i, extractErr)
+					return loginFailf(LoginReasonExtractFailed, "session %q: step[%d] extraction failed: %w", sess.Name, i, extractErr)
 				}
 				vars[varName] = val
 			} else {
 				// Normal extraction — sets session headers.
 				if extractErr := applyExtractRule(sess, resp, respBody, jar, req, rule); extractErr != nil {
-					return fmt.Errorf("session %q: step[%d] extraction failed: %w", sess.Name, i, extractErr)
+					return loginFailf(LoginReasonExtractFailed, "session %q: step[%d] extraction failed: %w", sess.Name, i, extractErr)
 				}
 			}
 		}
@@ -221,12 +266,30 @@ func executeMultiStepLogin(ctx context.Context, sess *Session, client *http.Clie
 	return nil
 }
 
-// substituteVars replaces {varname} placeholders in a string with values from vars.
-func substituteVars(s string, vars map[string]string) string {
-	for k, v := range vars {
-		s = strings.ReplaceAll(s, "{"+k+"}", v)
+// setContentType sets the request's Content-Type: the configured one, else
+// JSON for a body that starts with "{", else a form for any other body.
+func setContentType(req *http.Request, contentType, body string) {
+	switch {
+	case contentType != "":
+		req.Header.Set("Content-Type", contentType)
+	case body == "":
+	case strings.HasPrefix(strings.TrimSpace(body), "{"):
+		req.Header.Set("Content-Type", "application/json")
+	default:
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-	return s
+}
+
+// applyRequestHeaders sets the configured login headers on req, last so they
+// win over the derived ones (Content-Type). Host sets the request's Host.
+func applyRequestHeaders(req *http.Request, h map[string]string) {
+	for k, v := range h {
+		if strings.EqualFold(k, "Host") {
+			req.Host = v
+			continue
+		}
+		req.Header.Set(k, v)
+	}
 }
 
 // extractValue extracts a raw string value from the response without applying it as a header.
@@ -467,88 +530,6 @@ func extractRegexValue(body []byte, rule ExtractRule) (string, error) {
 		return "", fmt.Errorf("regex pattern %q: group %d matched empty value", rule.Pattern, group)
 	}
 	return value, nil
-}
-
-// ProbeLogin sends the login request on a background context with no transport
-// of its own. It is the convenience wrapper for the interactive `session`
-// commands; a scan should use ProbeLoginContext so the probe follows the scan's
-// proxy and cancellation.
-func ProbeLogin(sess *Session) (statusCode int, err error) {
-	return ProbeLoginContext(context.Background(), sess, nil)
-}
-
-// ProbeLoginContext sends the login request and returns the HTTP status code.
-// Unlike executeLogin, it does not fail on non-2xx status codes — it returns
-// the status code and lets the caller decide. If extract rules are present and
-// the status is 2xx/3xx, it also runs extraction to populate session headers.
-// Returns an error only on network/request-building failures.
-//
-// ctx bounds the probe; client supplies the transport (proxy, target TLS) and is
-// copied, never mutated. A nil client keeps Go's default transport.
-func ProbeLoginContext(ctx context.Context, sess *Session, client *http.Client) (statusCode int, err error) {
-	if sess.Login == nil {
-		return 0, fmt.Errorf("session %q: no login flow defined", sess.Name)
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	// Expand shorthand type/token_path into extract rules.
-	NormalizeLoginFlow(sess.Login)
-	login := sess.Login
-
-	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
-	if err != nil {
-		return 0, fmt.Errorf("session %q: failed to create cookie jar: %w", sess.Name, err)
-	}
-
-	client = withLoginJar(client, jar)
-
-	var body io.Reader
-	if login.Body != "" {
-		body = strings.NewReader(login.Body)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(login.Method), login.URL, body)
-	if err != nil {
-		return 0, fmt.Errorf("session %q: failed to create login request: %w", sess.Name, err)
-	}
-
-	if login.ContentType != "" {
-		req.Header.Set("Content-Type", login.ContentType)
-	} else if login.Body != "" {
-		if strings.HasPrefix(strings.TrimSpace(login.Body), "{") {
-			req.Header.Set("Content-Type", "application/json")
-		} else {
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		}
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("session %q: login request failed: %w", sess.Name, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
-	if err != nil {
-		return resp.StatusCode, fmt.Errorf("session %q: failed to read login response: %w", sess.Name, err)
-	}
-
-	// If status is OK and extract rules exist, run extraction.
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 && len(login.Extract) > 0 {
-		if sess.Headers == nil {
-			sess.Headers = make(map[string]string)
-		}
-		for _, rule := range login.Extract {
-			if extractErr := applyExtractRule(sess, resp, respBody, jar, req, rule); extractErr != nil {
-				return resp.StatusCode, fmt.Errorf("session %q: extraction failed: %w", sess.Name, extractErr)
-			}
-		}
-		sess.hydrated = true
-	}
-
-	return resp.StatusCode, nil
 }
 
 // normalizeJSONPath strips leading prefixes so all path formats converge:

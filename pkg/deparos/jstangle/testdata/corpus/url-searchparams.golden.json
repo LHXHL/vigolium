@@ -1,0 +1,74 @@
+{
+  "status": "complete",
+  "counts": {
+    "flow": 2,
+    "httpRequest": 6
+  },
+  "facts": [
+    {
+      "kind": "browserSecurityFlow",
+      "confidence": "medium",
+      "flow": "clientRequestInjection: window.location.href -> network.fetch"
+    },
+    {
+      "kind": "domFlow",
+      "confidence": "medium",
+      "flow": "window.location.href -> network.fetch"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v6/login",
+      "method": "POST",
+      "bodyKind": "form",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v6/lookup",
+      "method": "GET",
+      "query": [
+        "sku"
+      ],
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v6/orders",
+      "method": "GET",
+      "query": [
+        "status",
+        "limit",
+        "sort"
+      ],
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v6/reports",
+      "method": "GET",
+      "query": [
+        "kind"
+      ],
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v6/search",
+      "method": "GET",
+      "query": [
+        "q",
+        "page"
+      ],
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "https://api.example.test/v1/suggest",
+      "method": "GET",
+      "query": [
+        "prefix"
+      ],
+      "confidence": "high"
+    }
+  ]
+}

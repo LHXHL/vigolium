@@ -19,7 +19,7 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize Vigolium with default configuration and preset data",
 	Long: `Create the ~/.vigolium directory with a default config file, database schema,
-scanning profiles, prompt templates, extensions, and SAST rules.
+scanning profiles, prompt templates, and extensions.
 
 Safe to run on an existing installation — skips components that already exist
 unless --force is passed, which regenerates the config (with a new API key)
@@ -45,6 +45,12 @@ func runInitCmd(cmd *cobra.Command, args []string) error {
 	if _, err := os.Stat(settingsPath); err == nil && !globalForce {
 		fmt.Fprintf(os.Stderr, "%s Already initialized (%s exists). Use --force to reinitialize.\n",
 			terminal.InfoSymbol(), terminal.Cyan(config.ContractPath(settingsPath)))
+		if globalJSON {
+			return emitMutation(cmd, "", mutationResult{
+				Action: "noop",
+				Extra:  map[string]any{"already_initialized": true, "config_path": config.ContractPath(settingsPath)},
+			})
+		}
 		return nil
 	}
 
@@ -74,7 +80,7 @@ func runInitCmd(cmd *cobra.Command, args []string) error {
 		defer func() { _ = db.Close() }()
 
 		ctx := context.Background()
-		if err := db.CreateSchema(ctx); err != nil {
+		if err := db.EnsureSchemaReady(ctx); err != nil {
 			return fmt.Errorf("failed to create database schema: %w", err)
 		}
 		if err := db.SeedDefaults(ctx); err != nil {
@@ -100,16 +106,39 @@ func runInitCmd(cmd *cobra.Command, args []string) error {
 	bootstrapPrompts(vigoliumDir)
 	bootstrapSkills()
 
-	// Trigger the core dep install (chromium + nuclei templates) inline so
-	// explicit `vigolium init` is a complete first-run setup. Without --force
-	// the marker may already exist and ensureCoreDeps short-circuits; under
-	// --force we wipe the marker first so the dep check re-runs on the same
-	// invocation (handy when --force is used to recover a broken setup).
+	// Install the core deps (chromium + nuclei templates) inline so explicit
+	// `vigolium init` is a complete setup — unlike a scan, which only checks and
+	// lets the phase that needs a dependency fetch it. Without --force the
+	// marker may already exist and installCoreDeps short-circuits; under --force
+	// we wipe the marker first so the check re-runs on the same invocation
+	// (handy when --force is used to recover a broken setup).
 	if globalForce {
 		_ = os.Remove(filepath.Join(vigoliumDir, initMarkerFileName))
 	}
-	if err := ensureCoreDeps(); err != nil {
+	if err := installCoreDeps(); err != nil {
 		return fmt.Errorf("core dependency install failed: %w", err)
+	}
+
+	if globalJSON {
+		dbPath := ""
+		if settings.Database.Enabled {
+			dbPath = config.ContractPath(config.ExpandPath(settings.Database.SQLite.Path))
+		}
+		items := []initPathView{{Kind: "config", Path: config.ContractPath(settingsPath)}}
+		if dbPath != "" {
+			items = append(items, initPathView{Kind: "database", Path: dbPath})
+		}
+		for _, sub := range []string{"profiles", "extensions", "prompts"} {
+			items = append(items, initPathView{Kind: sub, Path: config.ContractPath(filepath.Join(vigoliumDir, sub))})
+		}
+		if sk := skill.UserSkillsDir(); sk != "" {
+			items = append(items, initPathView{Kind: "skills", Path: config.ContractPath(sk)})
+		}
+		action := "create"
+		if globalForce {
+			action = "reset"
+		}
+		return emitMutation(cmd, "", mutationResult{Changed: true, Action: action, Items: items})
 	}
 
 	fmt.Fprintf(os.Stderr, "%s %s\n", terminal.SuccessSymbol(), terminal.BoldGreen("Vigolium initialized successfully!"))
@@ -118,4 +147,10 @@ func runInitCmd(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "  %s Docs:     %s\n", terminal.InfoSymbol(), terminal.Cyan("https://docs.vigolium.com"))
 
 	return nil
+}
+
+// initPathView is one path `init -j` wrote or re-extracted.
+type initPathView struct {
+	Kind string `json:"kind"`
+	Path string `json:"path"`
 }

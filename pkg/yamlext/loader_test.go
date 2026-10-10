@@ -1,12 +1,14 @@
 package yamlext
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/internal/config"
 )
 
 func testdataDir() string {
@@ -19,7 +21,18 @@ func TestIsYAMLExtension(t *testing.T) {
 	assert.True(t, IsYAMLExtension("some/path/bar.vgm.yaml"))
 	assert.False(t, IsYAMLExtension("foo.yaml"))
 	assert.False(t, IsYAMLExtension("foo.js"))
-	assert.False(t, IsYAMLExtension("foo.vgm.yml"))
+	assert.True(t, IsYAMLExtension("foo.vgm.yml"))
+}
+
+func TestLoadFromConfig_ExplicitVgmYml(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "short_ext.vgm.yml")
+	require.NoError(t, os.WriteFile(path, []byte("type: passive\nseverity: low\n"), 0o644))
+
+	defs, err := LoadFromConfig(&config.ExtensionsConfig{CustomDir: []string{path}})
+	require.NoError(t, err)
+	require.Len(t, defs, 1)
+	assert.Equal(t, "short-ext", defs[0].ID, "ID derives from the file name minus .vgm.yml")
 }
 
 func TestLoadExtension_ActiveScanner(t *testing.T) {
@@ -100,12 +113,18 @@ func TestLoadExtension_FileNotFound(t *testing.T) {
 }
 
 func TestLoadFromDir(t *testing.T) {
-	defs, err := loadFromDir(testdataDir())
+	defs, failures, err := loadFromDir(testdataDir(), false)
 	require.NoError(t, err)
 	// Should load all valid .vgm.yaml files, skip invalid ones (with warnings)
 	// We have: active_scanner, passive_scanner, pre_hook, post_hook, skip_extensions_hook, drop_hook = 6 valid
-	// Plus 2 invalid files that get skipped
+	// Plus 2 invalid files that get skipped, and are reported as directory
+	// (not explicit) failures.
 	assert.GreaterOrEqual(t, len(defs), 6)
+	assert.GreaterOrEqual(t, len(failures), 2)
+	for _, f := range failures {
+		assert.False(t, f.Explicit, "%s", f.Path)
+		assert.NotEmpty(t, f.Stage, "%s", f.Path)
+	}
 
 	// Verify we have at least one of each type
 	types := map[string]bool{}

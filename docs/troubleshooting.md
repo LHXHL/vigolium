@@ -50,11 +50,11 @@ vigolium scan -t https://example.com --skip spidering
 
 ## Scope Mismatch (No Results)
 
-**Symptoms:** Scan completes but produces zero findings or skips all requests.
+**Symptoms:** The scan exits `1` with `no_targets_in_scope` and lists each target with the rule that refused it (`scope.host.include`, `scope.path.exclude`, `static_file`, …). Or it completes `partial` with reason `targets_out_of_scope`, or produces zero findings.
 
 **Solutions:**
 
-Verify the target URL matches the configured scope. The scanner only tests URLs that fall within the defined scope.
+Verify the target URL matches the configured scope. The scanner only tests URLs that fall within the defined scope, and checks every target against it before sending anything: when scope refuses all of them the scan stops there (nothing is sent, the scan row is `failed` with `stop_reason: no_targets_in_scope`); when it refuses some, the rest are scanned and the refused ones are listed in the banner and under the row's `preflight` outcome. `scan-url` and `scan-request` apply the same rules, with or without `-S`; pass `--ignore-scope` to scan a single target the scope refuses.
 
 Check the current scope configuration:
 
@@ -70,13 +70,21 @@ vigolium config set scope.host.include "*.example.com"
 
 Ensure the target URL scheme (http vs https) and hostname match what the scope expects. Subdomains are not included by default unless a wildcard pattern is used.
 
+Run `vigolium config validate` to catch scope rules that can never match (a host
+pattern with `https://` or a path, a `:port` suffix, quote or bracket residue
+from a JSON list split on commas) or that admit none of your recent scan targets.
+Each issue prints the exact `config set` that fixes it; `vigolium doctor` shows
+the same scope check.
+
 ## OAST Not Working
 
 **Symptoms:** No out-of-band findings are reported, even for vulnerabilities that typically produce OAST interactions (e.g., blind SSRF, blind XXE).
 
 **Solutions:**
 
-OAST requires outbound DNS and HTTP connectivity from the target application to the OAST callback server. Check that:
+If the scan printed `OAST unavailable (<server>: <reason>) — blind/out-of-band checks skipped` (event `oast.unavailable`, reason `oast_unavailable`), the scanner itself could not register with the interactsh server within 3s: check outbound https from the scanning host to `oast.server_url`, the `oast.token`, or point `server_url` at a reachable server.
+
+Otherwise, OAST requires outbound DNS and HTTP connectivity from the target application to the OAST callback server. Check that:
 
 1. The scanned application can make outbound DNS queries.
 2. The scanned application can make outbound HTTP requests.
@@ -190,9 +198,11 @@ vigolium config ls olium
 vigolium doctor --json
 ```
 
-2. **Check the provider endpoint and credentials.** The shipped default is an
-`openai-compatible` endpoint at local Ollama. Start that endpoint and choose a
-tool-capable model, or select another provider:
+2. **Check the provider endpoint and credentials.** The provider is
+auto-detected unless `agent.olium.provider` is set; the generated config sets
+`openai-compatible` pointing at a local Ollama. `vigolium agent --list-agents`
+shows which one a run would use. Start that endpoint and choose a tool-capable
+model, or select another provider:
 
 ```bash
 vigolium config set agent.olium.provider openai-codex-oauth
@@ -201,6 +211,13 @@ vigolium config set agent.olium.oauth_cred_path ~/.codex/auth.json
 
 For key providers, set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; the
 `anthropic-cli` provider is the one that requires a local `claude` binary.
+
+Before working, query, triage, swarm and autopilot ping the provider.
+`error.code: "provider_missing"` means no provider could be built from the
+configuration (unknown name, missing credentials); `preflight_failed` means it
+was built but did not answer. A local model that loads slowly may need a longer
+deadline: `--preflight-timeout 2m` or `agent.olium.preflight_timeout` (default
+`15s`, `60s` for a loopback endpoint). `--no-preflight` skips the ping.
 
 3. **Verify session directory permissions.** Agent sessions are stored under
 `~/.vigolium/agent-sessions/` by default. Ensure it is writable, then inspect a

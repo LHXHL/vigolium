@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -61,7 +62,7 @@ func oliumOptions(cfg *config.OliumConfig) (olium.Options, error) {
 		ReasoningEffort:     cfg.ReasoningEffort,
 		CustomBaseURL:       cfg.CustomProvider.BaseURL,
 		CustomModelID:       cfg.CustomProvider.ModelID,
-		CustomAPIKey:        firstNonEmpty(cfg.CustomProvider.APIKey, cfg.LLMAPIKey),
+		CustomAPIKey:        cmp.Or(cfg.CustomProvider.APIKey, cfg.LLMAPIKey),
 		CustomExtraHeaders:  cfg.CustomProvider.ExtraHeadersMap(),
 		CustomExtraBody:     effectiveExtraBody,
 	}, nil
@@ -83,7 +84,7 @@ func (c *oliumClient) Complete(ctx context.Context, req CompletionRequest) (*Com
 		system = appendJSONInstruction(system, req.JSONSchema)
 	}
 
-	model := firstNonEmpty(strings.TrimSpace(req.Model), c.model)
+	model := cmp.Or(strings.TrimSpace(req.Model), c.model)
 	eng := oengine.New(oengine.Config{
 		Provider: c.prov,
 		Model:    model,
@@ -165,13 +166,4 @@ func appendJSONInstruction(system, schema string) string {
 		return instr
 	}
 	return system + "\n\n" + instr
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

@@ -16,7 +16,12 @@ const DefaultKeyword = "FUZZ"
 // Selectors describe which positions in a request to fuzz. Resolution order:
 //  1. a literal Keyword present anywhere in the raw request wins (marker mode);
 //  2. explicit NamedPoints ("TYPE:name") / HeaderNames;
-//  3. Mode ("method"|"path"|"params"|"param-name"|"headers"|"cookies"|"all").
+//  3. Mode ("method"|"path"|"params"|"param-name"|"new-param[:query|body|json]"|
+//     "body"|"headers"|"cookies"|"all").
+//
+// param-name RENAMES an existing parameter (?id=1 → ?<payload>=1); new-param
+// (alias param-add) ADDS one (?id=1 → ?id=1&<payload>=<canary>), which is
+// parameter discovery; body replaces the entire request body.
 //
 // An empty Selectors defaults to "auto" = every discovered insertion point.
 type Selectors struct {
@@ -35,11 +40,6 @@ var paramValueTypes = map[httpmsg.InsertionPointType]bool{
 	httpmsg.INS_PARAM_XML_ATTR:       true,
 	httpmsg.INS_PARAM_MULTIPART_ATTR: true,
 	httpmsg.INS_PARAM_AMF:            true,
-}
-
-var paramNameTypes = map[httpmsg.InsertionPointType]bool{
-	httpmsg.INS_PARAM_NAME_URL:  true,
-	httpmsg.INS_PARAM_NAME_BODY: true,
 }
 
 var pathTypes = map[httpmsg.InsertionPointType]bool{
@@ -68,48 +68,104 @@ func ResolvePositions(raw []byte, sel Selectors) ([]Position, error) {
 		return []Position{{Name: "method", Label: "METHOD", kind: kindMethod}}, nil
 	}
 
-	ips, err := httpmsg.CreateAllInsertionPoints(raw, false)
+	// (2) Explicit named points / header names.
+	if len(sel.NamedPoints) > 0 || len(sel.HeaderNames) > 0 {
+		ips, err := httpmsg.CreateAllInsertionPoints(raw, false)
+		if err != nil {
+			return nil, fmt.Errorf("analyze request insertion points: %w", err)
+		}
+		return resolveNamed(ips, sel)
+	}
+
+	// (3) Mode-based selection. The opt-in point kinds (names, entire body, a
+	// new parameter) are only built when their selector asks for them, so the
+	// default "all" set is the scanner's set.
+	mode, arg, _ := strings.Cut(strings.ToLower(sel.Mode), ":")
+	var opts httpmsg.InsertionPointOptions
+	var want func(httpmsg.InsertionPoint) bool
+	byType := func(f func(httpmsg.InsertionPointType) bool) func(httpmsg.InsertionPoint) bool {
+		return func(ip httpmsg.InsertionPoint) bool { return f(ip.Type()) }
+	}
+	switch mode {
+	case "", "auto", "all":
+		want = func(httpmsg.InsertionPoint) bool { return true }
+	case "params", "param-value", "param", "values":
+		want = byType(func(t httpmsg.InsertionPointType) bool { return paramValueTypes[t] })
+	case "param-name", "names":
+		opts.ParamNames = true
+		want = func(ip httpmsg.InsertionPoint) bool {
+			_, isRename := ip.(*httpmsg.ParamNameInsertionPoint)
+			return isRename
+		}
+	case "new-param", "param-add":
+		loc, err := parseNewParamLocation(arg)
+		if err != nil {
+			return nil, err
+		}
+		opts.NewParam = &httpmsg.NewParamSpec{Location: loc}
+		want = func(ip httpmsg.InsertionPoint) bool {
+			_, isNew := ip.(*httpmsg.NewParamInsertionPoint)
+			return isNew
+		}
+	case "body", "entire-body":
+		opts.EntireBody = true
+		want = byType(func(t httpmsg.InsertionPointType) bool { return t == httpmsg.INS_ENTIRE_BODY })
+	case "headers", "header":
+		want = byType(func(t httpmsg.InsertionPointType) bool { return t == httpmsg.INS_HEADER })
+	case "cookies", "cookie":
+		want = byType(func(t httpmsg.InsertionPointType) bool { return t == httpmsg.INS_PARAM_COOKIE })
+	case "path":
+		want = byType(func(t httpmsg.InsertionPointType) bool { return pathTypes[t] })
+	default:
+		return nil, fmt.Errorf("unknown --fuzz selector %q (want %s)", sel.Mode, SelectorNames)
+	}
+	if arg != "" && opts.NewParam == nil {
+		return nil, fmt.Errorf("--fuzz %s takes no :%s qualifier (only new-param:query|body|json does)", mode, arg)
+	}
+
+	ips, err := httpmsg.CreateInsertionPoints(raw, opts)
 	if err != nil {
 		return nil, fmt.Errorf("analyze request insertion points: %w", err)
 	}
 
-	// (2) Explicit named points / header names.
-	if len(sel.NamedPoints) > 0 || len(sel.HeaderNames) > 0 {
-		return resolveNamed(ips, sel)
-	}
-
-	// (3) Mode-based selection.
-	var want func(httpmsg.InsertionPointType) bool
-	switch strings.ToLower(sel.Mode) {
-	case "", "auto", "all":
-		want = func(httpmsg.InsertionPointType) bool { return true }
-	case "params", "param-value", "param", "values":
-		want = func(t httpmsg.InsertionPointType) bool { return paramValueTypes[t] }
-	case "param-name", "names":
-		want = func(t httpmsg.InsertionPointType) bool { return paramNameTypes[t] }
-	case "headers", "header":
-		want = func(t httpmsg.InsertionPointType) bool { return t == httpmsg.INS_HEADER }
-	case "cookies", "cookie":
-		want = func(t httpmsg.InsertionPointType) bool { return t == httpmsg.INS_PARAM_COOKIE }
-	case "path":
-		want = func(t httpmsg.InsertionPointType) bool { return pathTypes[t] }
-	default:
-		return nil, fmt.Errorf("unknown --fuzz selector %q (want method|path|params|param-name|headers|cookies|all)", sel.Mode)
-	}
-
 	var positions []Position
 	for _, ip := range ips {
-		if want(ip.Type()) {
+		if want(ip) {
 			positions = append(positions, ipToPosition(ip))
 		}
 	}
 	if len(positions) == 0 {
-		if strings.EqualFold(sel.Mode, "path") {
+		switch mode {
+		case "path":
 			return nil, fmt.Errorf("no path insertion points in this request — put a %s marker in the path to fuzz it", keyword)
+		case "body", "entire-body":
+			return nil, fmt.Errorf("the request has no body to replace — set one with -d, or place a %s marker", keyword)
+		case "param-name", "names":
+			return nil, fmt.Errorf("no query or form-body parameters to rename — use --fuzz new-param to discover parameters the request does not carry")
 		}
 		return nil, fmt.Errorf("no insertion points matched selector %q; place a %s marker to fuzz an arbitrary position", sel.Mode, keyword)
 	}
 	return positions, nil
+}
+
+// SelectorNames lists the --fuzz selector grammar for help and error text.
+const SelectorNames = "method|path|params|param-name|new-param[:query|body|json]|body|headers|cookies|all"
+
+// parseNewParamLocation reads the new-param qualifier; empty means "infer from
+// the request" (JSON body → json, form body → body, else query).
+func parseNewParamLocation(arg string) (httpmsg.NewParamLocation, error) {
+	switch arg {
+	case "", "auto":
+		return httpmsg.NewParamAuto, nil
+	case "query", "url", "get":
+		return httpmsg.NewParamQuery, nil
+	case "body", "form", "post":
+		return httpmsg.NewParamBody, nil
+	case "json":
+		return httpmsg.NewParamJSON, nil
+	default:
+		return "", fmt.Errorf("unknown new-param location %q (want query|body|json)", arg)
+	}
 }
 
 // MaxMarkers bounds how many numbered markers are looked for. Past a handful
@@ -151,17 +207,11 @@ func resolveNamed(ips []httpmsg.InsertionPoint, sel Selectors) ([]Position, erro
 		if !ok {
 			return nil, fmt.Errorf("bad --point %q (want TYPE:name, e.g. URL_PARAM:id)", np)
 		}
-		found := false
-		for _, ip := range ips {
-			if strings.EqualFold(ip.Type().String(), typeName) && ip.Name() == name {
-				positions = append(positions, ipToPosition(ip))
-				found = true
-				break
-			}
-		}
-		if !found {
+		ip := httpmsg.FindInsertionPoint(ips, typeName, name)
+		if ip == nil {
 			return nil, fmt.Errorf("--point %q not found; available: %s", np, availablePoints(ips))
 		}
+		positions = append(positions, ipToPosition(ip))
 	}
 	for _, h := range sel.HeaderNames {
 		found := false
@@ -181,9 +231,15 @@ func resolveNamed(ips []httpmsg.InsertionPoint, sel Selectors) ([]Position, erro
 }
 
 func ipToPosition(ip httpmsg.InsertionPoint) Position {
+	label := ip.Type().String()
+	// A new parameter shares its INS_* type with a renamed one; label it by
+	// what it does so a result reads "NEW_PARAM_QUERY <new> = debug".
+	if np, ok := ip.(*httpmsg.NewParamInsertionPoint); ok {
+		label = "NEW_PARAM_" + strings.ToUpper(string(np.Location()))
+	}
 	return Position{
 		Name:  ip.Name(),
-		Label: ip.Type().String(),
+		Label: label,
 		Base:  ip.BaseValue(),
 		kind:  kindInsertionPoint,
 		ip:    ip,

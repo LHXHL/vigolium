@@ -135,7 +135,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 	for _, lp := range leakPatterns {
 		match := lp.pattern.FindString(body)
 		if match != "" {
-			matches = append(matches, fmt.Sprintf("%s: %s", lp.name, truncate(match, 150)))
+			matches = append(matches, fmt.Sprintf("%s: %s", lp.name, modkit.Truncate(match, 150)))
 		}
 	}
 
@@ -162,11 +162,4 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 			},
 		},
 	}, nil
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

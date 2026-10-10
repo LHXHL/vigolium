@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/vigolium/vigolium/internal/config"
@@ -15,6 +17,28 @@ func base(p string) string {
 		return ""
 	}
 	return filepath.Base(p)
+}
+
+// bases maps base over a path list (the resolved fuzz wordlists).
+func bases(ps []string) []string {
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, base(p))
+	}
+	return out
+}
+
+// baseOne returns the basename of the single path in ps, or a marker when ps
+// does not hold exactly one path.
+func baseOne(ps []string) string {
+	switch len(ps) {
+	case 0:
+		return ""
+	case 1:
+		return base(ps[0])
+	default:
+		return fmt.Sprintf("<%d paths>", len(ps))
+	}
 }
 
 func newWordlistRunner(opts *types.Options, settings *config.Settings) *Runner {
@@ -33,22 +57,25 @@ func TestResolveDiscoveryWordlists_EmbeddedDefaults(t *testing.T) {
 		if base(w.shortFile) != "file-short.txt" || base(w.shortDir) != "dir-short.txt" {
 			t.Errorf("short lists: file=%q dir=%q", base(w.shortFile), base(w.shortDir))
 		}
-		if w.longFile != "" || w.longDir != "" || w.fuzz != "" {
+		if w.longFile != "" || w.longDir != "" || len(w.fuzz) != 0 {
 			t.Errorf("long/fuzz should be empty on balanced: long=%q,%q fuzz=%q", w.longFile, w.longDir, w.fuzz)
+		}
+		if w.tier != config.WordlistTierShort {
+			t.Errorf("auto tier at balanced = %q, want short", w.tier)
 		}
 		if !w.usingEmbedded || w.usingConfigured {
 			t.Errorf("flags: usingEmbedded=%v usingConfigured=%v (want true,false)", w.usingEmbedded, w.usingConfigured)
 		}
 	})
 
-	t.Run("deep adds long lists and fuzz", func(t *testing.T) {
+	t.Run("deep adds the large tier and fuzz", func(t *testing.T) {
 		r := newWordlistRunner(&types.Options{Intensity: "deep"}, settings)
 		w := r.resolveDiscoveryWordlists()
 
-		if base(w.shortFile) != "file-short.txt" || base(w.longFile) != "file-long.txt" ||
-			base(w.shortDir) != "dir-short.txt" || base(w.longDir) != "dir-long.txt" ||
-			base(w.fuzz) != "fuzz.txt" {
-			t.Errorf("deep lists: %q %q %q %q %q", base(w.shortFile), base(w.longFile), base(w.shortDir), base(w.longDir), base(w.fuzz))
+		if base(w.shortFile) != "file-short.txt" || base(w.longFile) != "file-large.txt" ||
+			base(w.shortDir) != "dir-short.txt" || base(w.longDir) != "dir-large.txt" ||
+			baseOne(w.fuzz) != "fuzz.txt" {
+			t.Errorf("deep lists: %q %q %q %q %q", base(w.shortFile), base(w.longFile), base(w.shortDir), base(w.longDir), baseOne(w.fuzz))
 		}
 		if !w.usingEmbedded {
 			t.Error("usingEmbedded should be true at deep")
@@ -65,8 +92,8 @@ func TestResolveDiscoveryWordlists_DiscoveryOnlyEnablesFuzz(t *testing.T) {
 	r := newWordlistRunner(&types.Options{OnlyPhase: "discovery"}, settings)
 	w := r.resolveDiscoveryWordlists()
 
-	if base(w.fuzz) != "fuzz.txt" {
-		t.Errorf("discovery-only run should default fuzz.txt: %q", base(w.fuzz))
+	if baseOne(w.fuzz) != "fuzz.txt" {
+		t.Errorf("discovery-only run should default fuzz.txt: %q", baseOne(w.fuzz))
 	}
 	// Long lists remain deep-only — discovery-only must not pull them in.
 	if w.longFile != "" || w.longDir != "" {
@@ -83,7 +110,7 @@ func TestDiscoveryFuzzingState(t *testing.T) {
 		{"balanced full scan off", &types.Options{}, false},
 		{"deep on", &types.Options{Intensity: "deep"}, true},
 		{"discovery-only on", &types.Options{OnlyPhase: "discovery"}, true},
-		{"fuzz-wordlist on", &types.Options{FuzzWordlistPath: "/x/f.txt"}, true},
+		{"fuzz-wordlist on", &types.Options{FuzzWordlistPaths: []string{"/x/f.txt"}}, true},
 		{"other phase off", &types.Options{OnlyPhase: "spidering"}, false},
 	}
 	for _, c := range cases {
@@ -212,7 +239,7 @@ func TestNoDiscoveryFuzzBeatsEveryAutoEnable(t *testing.T) {
 }
 
 // TestNoDiscoveryFuzzClearsConfiguredWordlist covers the path the flag could
-// have missed: deparos creates its FuzzTask from a non-empty FuzzWordlistPath,
+// have missed: deparos creates its FuzzTask from any configured fuzz wordlist,
 // so a fuzz list configured in YAML has to be cleared, not merely left
 // un-materialized — otherwise the host is brute-forced while the phase header
 // reports fuzzing as disabled.
@@ -224,12 +251,12 @@ func TestNoDiscoveryFuzzClearsConfiguredWordlist(t *testing.T) {
 
 	// Sanity: without the flag, a discovery-only run does route that list through.
 	on := newWordlistRunner(&types.Options{OnlyPhase: "discovery"}, settings)
-	if w := on.resolveDiscoveryWordlists(); base(w.fuzz) != "my-fuzz.txt" {
-		t.Fatalf("baseline: configured fuzz list should be used, got %q", base(w.fuzz))
+	if w := on.resolveDiscoveryWordlists(); baseOne(w.fuzz) != "my-fuzz.txt" {
+		t.Fatalf("baseline: configured fuzz list should be used, got %q", baseOne(w.fuzz))
 	}
 
 	off := newWordlistRunner(&types.Options{OnlyPhase: "discovery", NoDiscoveryFuzz: true}, settings)
-	if w := off.resolveDiscoveryWordlists(); w.fuzz != "" {
+	if w := off.resolveDiscoveryWordlists(); len(w.fuzz) != 0 {
 		t.Errorf("fuzz wordlist = %q under --no-discovery-fuzz, want empty", w.fuzz)
 	}
 }
@@ -338,13 +365,15 @@ func TestResolveDiscoveryWordlists_FuzzOverrideAppliesAtBalanced(t *testing.T) {
 	t.Setenv(wordlistDirEnv, t.TempDir())
 
 	settings := &config.Settings{Discovery: *config.DefaultDiscoveryConfig()}
-	r := newWordlistRunner(&types.Options{FuzzWordlistPath: "/custom/fuzz-list.txt"}, settings)
+	settings.Discovery.Wordlists.FuzzWordlistPath = "/custom/yaml-fuzz.txt"
+	r := newWordlistRunner(&types.Options{FuzzWordlistPaths: []string{"/custom/fuzz-list.txt", "/custom/more.txt"}}, settings)
 	w := r.resolveDiscoveryWordlists()
 
-	// --fuzz-wordlist is an explicit override, so it applies even on balanced
-	// where the embedded fuzz.txt would otherwise stay off.
-	if base(w.fuzz) != "fuzz-list.txt" {
-		t.Errorf("fuzz override should apply at balanced: %q", base(w.fuzz))
+	// --discovery-wordlist is an explicit override, so it applies even on
+	// balanced where the embedded fuzz.txt would otherwise stay off; every
+	// repeated value is kept, in order, and the YAML list is replaced.
+	if got := bases(w.fuzz); !reflect.DeepEqual(got, []string{"fuzz-list.txt", "more.txt"}) {
+		t.Errorf("fuzz override should apply at balanced: %q", got)
 	}
 	if !w.usingConfigured {
 		t.Error("usingConfigured should be true with --fuzz-wordlist")
@@ -362,4 +391,67 @@ func TestResolveDiscoveryWordlists_NilSettings(t *testing.T) {
 	if base(w.shortFile) != "file-short.txt" || base(w.shortDir) != "dir-short.txt" {
 		t.Errorf("nil settings should still get embedded short lists: file=%q dir=%q", base(w.shortFile), base(w.shortDir))
 	}
+}
+
+func TestAutoWordlistTier(t *testing.T) {
+	for intensity, want := range map[string]string{
+		"":         config.WordlistTierShort,
+		"quick":    config.WordlistTierShort,
+		"balanced": config.WordlistTierShort,
+		"deep":     config.WordlistTierLarge,
+		"DEEP":     config.WordlistTierLarge,
+	} {
+		if got := autoWordlistTier(intensity); got != want {
+			t.Errorf("autoWordlistTier(%q) = %q, want %q", intensity, got, want)
+		}
+	}
+}
+
+// The tier decides which embedded lists fill the long slot: auto follows
+// --intensity, an explicit tier wins over it, and an operator-configured path
+// still wins over the tier.
+func TestResolveDiscoveryWordlists_TierSelection(t *testing.T) {
+	t.Setenv(wordlistDirEnv, t.TempDir())
+
+	cases := []struct {
+		name                 string
+		tier                 string
+		intensity            string
+		wantTier             string
+		wantLongF, wantLongD string
+	}{
+		{"auto quick", "auto", "quick", "short", "", ""},
+		{"auto balanced", "", "balanced", "short", "", ""},
+		{"auto deep", "auto", "deep", "large", "file-large.txt", "dir-large.txt"},
+		{"explicit long at balanced", "long", "balanced", "long", "file-long.txt", "dir-long.txt"},
+		{"explicit large at quick", "LARGE", "quick", "large", "file-large.txt", "dir-large.txt"},
+		{"explicit short at deep", "short", "deep", "short", "", ""},
+		{"explicit long at deep", "long", "deep", "long", "file-long.txt", "dir-long.txt"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			settings := &config.Settings{Discovery: *config.DefaultDiscoveryConfig()}
+			settings.Discovery.Wordlists.Tier = c.tier
+			w := newWordlistRunner(&types.Options{Intensity: c.intensity}, settings).resolveDiscoveryWordlists()
+			if w.tier != c.wantTier {
+				t.Errorf("tier = %q, want %q", w.tier, c.wantTier)
+			}
+			if base(w.longFile) != c.wantLongF || base(w.longDir) != c.wantLongD {
+				t.Errorf("long slot = %q,%q, want %q,%q", base(w.longFile), base(w.longDir), c.wantLongF, c.wantLongD)
+			}
+			if base(w.shortFile) != "file-short.txt" || base(w.shortDir) != "dir-short.txt" {
+				t.Errorf("short lists must run at every tier: %q,%q", base(w.shortFile), base(w.shortDir))
+			}
+		})
+	}
+
+	t.Run("configured long path beats the tier", func(t *testing.T) {
+		settings := &config.Settings{Discovery: *config.DefaultDiscoveryConfig()}
+		settings.Discovery.Wordlists.Tier = "large"
+		settings.Discovery.Wordlists.LongDirPath = "/custom/dirs.txt"
+		w := newWordlistRunner(&types.Options{}, settings).resolveDiscoveryWordlists()
+		if base(w.longDir) != "dirs.txt" || base(w.longFile) != "file-large.txt" {
+			t.Errorf("long slot = %q,%q, want dirs.txt,file-large.txt", base(w.longDir), base(w.longFile))
+		}
+	})
 }

@@ -253,7 +253,7 @@ func TestProbeTargetUnfollowedRedirectNotSkipped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result := probeTarget(context.Background(), r, srv.URL+"/", "basic")
+	result := probeTarget(context.Background(), r, srv.URL+"/", "basic", nil)
 
 	if result.StatusCode != 302 {
 		t.Fatalf("expected the unfollowed 302 to surface, got status %d (content_type=%q)",

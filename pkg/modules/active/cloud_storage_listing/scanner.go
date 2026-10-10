@@ -170,7 +170,7 @@ func (m *Module) tryProbe(
 		URL:      target,
 		Matched:  target,
 		Request:  string(modifiedRaw),
-		Response: truncate(body, 2000),
+		Response: modkit.Truncate(body, 2000),
 		ExtractedResults: []string{
 			fmt.Sprintf("Probe: %s", probe.name),
 			fmt.Sprintf("Items found: %d", itemCount),
@@ -184,11 +184,4 @@ func (m *Module) tryProbe(
 			Reference:   []string{"https://owasp.org/www-project-web-security-testing-guide/"},
 		},
 	}, nil
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

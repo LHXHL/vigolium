@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"go.uber.org/zap"
 )
@@ -126,7 +127,7 @@ func (m *Module) ScanPerInsertionPoint(
 	for _, check := range checks {
 		// GenerateURL returns a unique OAST host (correlation baked into the
 		// subdomain); wrap it as an http:// callback for the external reference.
-		oastHost := oast.GenerateURL(urlx.String(), ip.Name(), check.injectionType, ModuleID, requestHash)
+		oastHost := modkit.OASTURLFor(oast, oastclass.XXE, urlx.String(), ip.Name(), check.injectionType, ModuleID, requestHash)
 		if oastHost == "" {
 			continue
 		}

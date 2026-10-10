@@ -15,6 +15,7 @@ func dbGroupedFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsDBRecords, Name: "grouped",
+			Effect:      EffectDBRead,
 			Category:    CatDBRecords,
 			Signature:   ".grouped(opts?: {hostname?, min_group_size?, methods?})",
 			Returns:     "RecordGroup[]",

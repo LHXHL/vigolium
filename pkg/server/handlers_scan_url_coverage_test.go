@@ -17,14 +17,15 @@ import (
 // -----------------------------------------------------------------------------
 
 func TestResolveAPIOutputFormats(t *testing.T) {
+	reports := []string{"html", "report"}
 	t.Run("empty returns nil", func(t *testing.T) {
-		got, err := resolveAPIOutputFormats(nil)
+		got, err := resolveAPIOutputFormats(nil, reports)
 		if err != nil || got != nil {
 			t.Errorf("got (%v,%v), want (nil,nil)", got, err)
 		}
 	})
 	t.Run("dedup + normalize", func(t *testing.T) {
-		got, err := resolveAPIOutputFormats([]string{"JSONL", " html ", "jsonl", ""})
+		got, err := resolveAPIOutputFormats([]string{"JSONL", " html ", "jsonl", ""}, reports)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -33,8 +34,32 @@ func TestResolveAPIOutputFormats(t *testing.T) {
 		}
 	})
 	t.Run("invalid format → error", func(t *testing.T) {
-		if _, err := resolveAPIOutputFormats([]string{"csv"}); err == nil {
+		if _, err := resolveAPIOutputFormats([]string{"csv"}, reports); err == nil {
 			t.Errorf("expected error for unsupported format")
+		}
+	})
+	t.Run("aliases resolve through the format table", func(t *testing.T) {
+		got, err := resolveAPIOutputFormats([]string{"MD", "markdown"}, []string{"markdown"})
+		if err != nil || len(got) != 1 || got[0] != "markdown" {
+			t.Errorf("got (%v,%v), want [markdown]", got, err)
+		}
+	})
+	t.Run("off-surface format → error", func(t *testing.T) {
+		// sqlite and bundle exist in the table but not on the REST surface.
+		for _, f := range []string{"sqlite", "bundle", "console"} {
+			if _, err := resolveAPIOutputFormats([]string{f}, []string{"html", "sqlite", "bundle", "console"}); err == nil {
+				t.Errorf("expected %s to be rejected on the REST surface", f)
+			}
+		}
+	})
+	t.Run("report format without a renderer → error", func(t *testing.T) {
+		// A server with no report renderer must reject html rather than accept it
+		// and never produce the file.
+		if _, err := resolveAPIOutputFormats([]string{"html"}, nil); err == nil {
+			t.Errorf("expected error for html with no renderer")
+		}
+		if got, err := resolveAPIOutputFormats([]string{"jsonl"}, nil); err != nil || len(got) != 1 {
+			t.Errorf("jsonl needs no renderer: got (%v,%v)", got, err)
 		}
 	})
 }

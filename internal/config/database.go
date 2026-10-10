@@ -11,6 +11,20 @@ type DatabaseConfig struct {
 	Driver   string         `yaml:"driver"` // sqlite or postgres
 	SQLite   SQLiteConfig   `yaml:"sqlite"`
 	Postgres PostgresConfig `yaml:"postgres"`
+
+	// AutoMigrateOnRead lets a read command (traffic, finding, log, db ls, …)
+	// bring a store written by an older vigolium up to date before reading it.
+	// When false, such a read fails with schema_outdated and the remedy
+	// `vigolium db migrate`. Default true for one release (decision D23), after
+	// which reads will require the explicit migrate.
+	AutoMigrateOnRead bool `yaml:"auto_migrate_on_read"`
+
+	// ReadIntent opens a read pool rather than the read-write store: SQLite gets
+	// query_only(1), deferred transactions, no journal-mode PRAGMA and no WAL
+	// checkpointing; Postgres sessions default to read-only transactions. Set
+	// per process by the CLI from the command's declared database intent, never
+	// persisted to YAML.
+	ReadIntent bool `yaml:"-"`
 }
 
 // SQLiteConfig holds SQLite-specific settings
@@ -52,8 +66,9 @@ type PostgresConfig struct {
 // DefaultDatabaseConfig returns default configuration
 func DefaultDatabaseConfig() *DatabaseConfig {
 	return &DatabaseConfig{
-		Enabled: true,
-		Driver:  "sqlite",
+		Enabled:           true,
+		Driver:            "sqlite",
+		AutoMigrateOnRead: true,
 		SQLite: SQLiteConfig{
 			Path:         "~/.vigolium/database-vgnm.sqlite",
 			BusyTimeout:  15000,

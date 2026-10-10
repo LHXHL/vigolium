@@ -100,3 +100,44 @@ func TestShouldTerminateContextCancel(t *testing.T) {
 		t.Fatal("shouldTerminate() = false with a cancelled context, want true")
 	}
 }
+
+// TestShouldTerminateDrainGrace: inside DrainGrace of the deadline — the
+// context's or MaxDuration's — the crawl schedules no new state, so in-flight
+// work drains inside the budget; outside it, the crawl continues.
+func TestShouldTerminateDrainGrace(t *testing.T) {
+	t.Run("context deadline within grace stops", func(t *testing.T) {
+		c := newTestCrawler(t, 0)
+		c.config.DrainGrace = 10 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if !c.shouldTerminate(ctx) {
+			t.Fatal("5s left with a 10s grace: want terminate")
+		}
+	})
+	t.Run("context deadline beyond grace continues", func(t *testing.T) {
+		c := newTestCrawler(t, 0)
+		c.config.DrainGrace = 10 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if c.shouldTerminate(ctx) {
+			t.Fatal("a minute left with a 10s grace: want continue")
+		}
+	})
+	t.Run("max duration minus grace stops", func(t *testing.T) {
+		c := newTestCrawler(t, time.Minute)
+		c.config.DrainGrace = 10 * time.Second
+		c.stats.StartTime = time.Now().Add(-55 * time.Second)
+		if !c.shouldTerminate(context.Background()) {
+			t.Fatal("55s into a 1m budget with a 10s grace: want terminate")
+		}
+	})
+	t.Run("no grace runs to the deadline", func(t *testing.T) {
+		c := newTestCrawler(t, time.Minute)
+		c.stats.StartTime = time.Now().Add(-55 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if c.shouldTerminate(ctx) {
+			t.Fatal("without a grace the crawl runs to its deadline")
+		}
+	})
+}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -9,8 +10,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ErrUnknownKey marks a SetField key that does not name a setting. It is a
+// mistake on the caller's command line, not a failure to write the config, so
+// `config set` reports it as a usage error (exit 2).
+var ErrUnknownKey = errors.New("unknown config key")
+
+// ErrInvalidValue marks a SetField value that cannot be stored under its key: a
+// list or map that does not parse, an element of the wrong type, an empty or
+// JSON-residue list element, or a value that would introduce an error-level
+// validation issue (see ValidateSettings). Like ErrUnknownKey it is a mistake on
+// the caller's command line, so `config set` reports it as a usage error.
+var ErrInvalidValue = errors.New("invalid config value")
+
 // SetField updates a field in the Settings struct using dot-notation key and string value.
 // It round-trips through a map[string]any to handle arbitrary nesting.
+//
+// List and map fields accept a JSON or YAML flow value (`["a","b"]`, `[a, b]`,
+// `{"k":"v"}`), decoded against the field's declared type so `[1,2]` into a list
+// of strings is refused rather than stringified. The legacy comma form (`a,b`)
+// still works for lists, with every element checked. A value that would add an
+// error-level ValidateSettings issue at key is refused and settings is left
+// untouched.
 func SetField(settings *Settings, key string, value string) error {
 	// Marshal settings to YAML, then unmarshal into generic map
 	data, err := yaml.Marshal(settings)
@@ -26,27 +46,34 @@ func SetField(settings *Settings, key string, value string) error {
 	// Split key into parts and navigate to the leaf
 	parts := strings.Split(key, ".")
 	if len(parts) == 0 {
-		return fmt.Errorf("empty key")
+		return fmt.Errorf("empty key: %w", ErrUnknownKey)
 	}
 
 	// List-op suffix: `<list_path>.add <value>` appends; `<list_path>.clear`
 	// resets to an empty list. Only fires when the parent path resolves to a
-	// list (`[]any`) — otherwise fall through to normal scalar handling so a
-	// legitimate scalar field literally named `add` or `clear` still works.
+	// list — otherwise fall through to normal scalar handling so a legitimate
+	// scalar field literally named `add` or `clear` still works.
 	if len(parts) >= 2 {
 		last := parts[len(parts)-1]
 		if last == "add" || last == "clear" {
 			parentPath := parts[:len(parts)-1]
+			listPath := strings.Join(parentPath, ".")
 			parentMap, listKey, err := navigateToParent(raw, parentPath)
 			if err == nil {
-				if list, isList := parentMap[listKey].([]any); isList || parentMap[listKey] == nil {
+				declared, _ := resolveSettingType(listPath)
+				list, isList := parentMap[listKey].([]any)
+				if isList || (parentMap[listKey] == nil && isListType(declared)) {
 					switch last {
 					case "add":
-						parentMap[listKey] = append(list, value)
+						items, err := parseListAddition(listPath, value, declared)
+						if err != nil {
+							return err
+						}
+						parentMap[listKey] = append(list, items...)
 					case "clear":
 						parentMap[listKey] = []any{}
 					}
-					return marshalBack(raw, settings)
+					return commitRaw(raw, settings, listPath)
 				}
 			}
 		}
@@ -61,7 +88,7 @@ func SetField(settings *Settings, key string, value string) error {
 		child, ok := current[parts[i]]
 		if !ok {
 			if _, valid := resolveSettingKind(key); !valid {
-				return fmt.Errorf("key %q not found (unknown segment %q)", key, parts[i])
+				return fmt.Errorf("key %q not found (unknown segment %q): %w", key, parts[i], ErrUnknownKey)
 			}
 			newMap := map[string]any{}
 			current[parts[i]] = newMap
@@ -70,35 +97,117 @@ func SetField(settings *Settings, key string, value string) error {
 		}
 		childMap, ok := child.(map[string]any)
 		if !ok {
-			return fmt.Errorf("key %q is not a map (at segment %q)", key, parts[i])
+			return fmt.Errorf("key %q is not a map (at segment %q): %w", key, parts[i], ErrUnknownKey)
 		}
 		current = childMap
 	}
 
-	// Set the leaf. When it already exists in the round-tripped map, coerce
-	// against its present value; when it was dropped by omitempty, coerce
-	// against the field's declared kind (validating the key on the way).
+	// Set the leaf. Lists and maps are parsed against the field's declared
+	// type. Scalars that already exist in the round-tripped map coerce against
+	// their present value; ones dropped by omitempty coerce against the field's
+	// declared kind (validating the key on the way).
 	leafKey := parts[len(parts)-1]
-	if existing, ok := current[leafKey]; ok {
-		current[leafKey] = coerceValue(value, existing)
-	} else {
-		kind, valid := resolveSettingKind(key)
-		if !valid {
-			return fmt.Errorf("key %q not found (unknown segment %q)", key, leafKey)
+	declared, valid := resolveSettingType(key)
+	existing, exists := current[leafKey]
+	if !exists && !valid {
+		return fmt.Errorf("key %q not found (unknown segment %q): %w", key, leafKey, ErrUnknownKey)
+	}
+	switch {
+	case isContainerType(declared) || isContainerValue(existing):
+		v, err := parseContainerValue(key, value, declared, existing)
+		if err != nil {
+			return err
 		}
-		current[leafKey] = coerceValueForKind(value, kind)
+		current[leafKey] = v
+	case exists:
+		current[leafKey] = coerceValue(value, existing)
+	default:
+		current[leafKey] = coerceValueForKind(value, declared.Kind())
 	}
 
-	return marshalBack(raw, settings)
+	return commitRaw(raw, settings, key)
 }
 
-// resolveSettingKind walks the Settings struct type along the dot-notation key,
-// following yaml tag names, and returns the reflect.Kind of the leaf value.
-// ok is false when any segment names a field that does not exist (a typo).
-// Descending through a map[string]X consumes one segment as a dynamic key and
-// continues into X, so arbitrary keys under maps (e.g.
+// commitRaw decodes the mutated raw map into a scratch Settings, refuses the
+// write when it introduces an error-level validation issue at key, and only
+// then replaces *settings. Decoding into a fresh value rather than on top of
+// settings also means a replaced map is replaced: yaml.v3 merges a mapping into
+// an existing map, so `{"x":"high"}` would otherwise keep every old entry.
+func commitRaw(raw map[string]any, settings *Settings, key string) error {
+	newData, err := yaml.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated config: %w", err)
+	}
+	var candidate Settings
+	if err := yaml.Unmarshal(newData, &candidate); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrInvalidValue, key, err)
+	}
+	if introduced := introducedErrors(ValidateSettings(settings), ValidateSettings(&candidate), key); len(introduced) > 0 {
+		msgs := make([]string, 0, len(introduced))
+		for _, is := range introduced {
+			m := is.Message
+			if is.Fix != "" {
+				m += " (fix: " + is.Fix + ")"
+			}
+			msgs = append(msgs, m)
+		}
+		return fmt.Errorf("%w: %s", ErrInvalidValue, strings.Join(msgs, "; "))
+	}
+	carryUnserialized(reflect.ValueOf(&candidate).Elem(), reflect.ValueOf(settings).Elem())
+	*settings = candidate
+	return nil
+}
+
+// introducedErrors returns the error-level issues in after that were not in
+// before and that concern key (the key itself, or something beneath it). A
+// pre-existing problem elsewhere must not block an unrelated edit — that edit
+// may be the first step of fixing it — and neither may a section-level rule
+// that only a later `config set` can satisfy (storage.enabled before
+// storage.bucket).
+func introducedErrors(before, after []Issue, key string) []Issue {
+	seen := make(map[Issue]bool, len(before))
+	for _, is := range before {
+		seen[is] = true
+	}
+	var out []Issue
+	for _, is := range after {
+		if is.Severity != SeverityError || seen[is] {
+			continue
+		}
+		if is.Key == key || strings.HasPrefix(is.Key, key+".") || strings.HasPrefix(is.Key, key+"[") {
+			out = append(out, is)
+		}
+	}
+	return out
+}
+
+// carryUnserialized copies every `yaml:"-"` field from src into dst, walking
+// nested structs. Those fields are runtime state (DatabaseConfig.ReadIntent)
+// that the YAML round-trip cannot carry, and replacing *settings wholesale must
+// not reset them.
+func carryUnserialized(dst, src reflect.Value) {
+	for i := 0; i < dst.NumField(); i++ {
+		f := dst.Type().Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if f.Tag.Get("yaml") == "-" {
+			dst.Field(i).Set(src.Field(i))
+			continue
+		}
+		if f.Type.Kind() == reflect.Struct {
+			carryUnserialized(dst.Field(i), src.Field(i))
+		}
+	}
+}
+
+// resolveSettingType walks the Settings struct type along the dot-notation key,
+// following yaml tag names, and returns the declared type of the leaf (pointers
+// stripped). ok is false when any segment names a field that does not exist (a
+// typo). Descending through a map[string]X consumes one segment as a dynamic
+// key and continues into X, so arbitrary keys under maps (e.g.
 // known_issue_scan.severity_overrides.<code>) validate.
-func resolveSettingKind(key string) (reflect.Kind, bool) {
+func resolveSettingType(key string) (reflect.Type, bool) {
 	t := reflect.TypeOf(Settings{})
 	for _, seg := range strings.Split(key, ".") {
 		for t.Kind() == reflect.Pointer {
@@ -108,7 +217,7 @@ func resolveSettingKind(key string) (reflect.Kind, bool) {
 		case reflect.Struct:
 			ft, ok := yamlFieldType(t, seg)
 			if !ok {
-				return reflect.Invalid, false
+				return nil, false
 			}
 			t = ft
 		case reflect.Map:
@@ -116,11 +225,20 @@ func resolveSettingKind(key string) (reflect.Kind, bool) {
 			t = t.Elem()
 		default:
 			// More segments remain but the current type is a scalar/slice.
-			return reflect.Invalid, false
+			return nil, false
 		}
 	}
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	return t, true
+}
+
+// resolveSettingKind is resolveSettingType reduced to the leaf's reflect.Kind.
+func resolveSettingKind(key string) (reflect.Kind, bool) {
+	t, ok := resolveSettingType(key)
+	if !ok {
+		return reflect.Invalid, false
 	}
 	return t.Kind(), true
 }
@@ -164,13 +282,6 @@ func coerceValueForKind(value string, kind reflect.Kind) any {
 			return n
 		}
 		return value
-	case reflect.Slice, reflect.Array:
-		parts := strings.Split(value, ",")
-		result := make([]any, len(parts))
-		for i, p := range parts {
-			result[i] = strings.TrimSpace(p)
-		}
-		return result
 	default:
 		return value
 	}
@@ -198,18 +309,6 @@ func navigateToParent(raw map[string]any, parts []string) (map[string]any, strin
 	return current, parts[len(parts)-1], nil
 }
 
-// marshalBack writes the mutated `raw` map back into `settings` via YAML.
-func marshalBack(raw map[string]any, settings *Settings) error {
-	newData, err := yaml.Marshal(raw)
-	if err != nil {
-		return fmt.Errorf("failed to marshal updated config: %w", err)
-	}
-	if err := yaml.Unmarshal(newData, settings); err != nil {
-		return fmt.Errorf("failed to unmarshal updated config: %w", err)
-	}
-	return nil
-}
-
 // coerceValue converts a string value to match the type of the existing value.
 // When existing is nil — which happens for pointer fields (e.g. *bool) whose
 // initial value marshals to YAML null — the value's shape is sniffed:
@@ -230,14 +329,6 @@ func coerceValue(value string, existing any) any {
 			return n
 		}
 		return value
-	case []any:
-		// Split comma-separated values
-		parts := strings.Split(value, ",")
-		result := make([]any, len(parts))
-		for i, p := range parts {
-			result[i] = strings.TrimSpace(p)
-		}
-		return result
 	case nil:
 		// Pointer field (e.g. *bool) whose initial value is nil — round-tripped
 		// through YAML as null. Infer the type from the value's shape.

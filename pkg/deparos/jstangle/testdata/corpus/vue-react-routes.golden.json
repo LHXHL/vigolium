@@ -1,0 +1,53 @@
+{
+  "status": "complete",
+  "counts": {
+    "clientRoute": 7,
+    "httpRequest": 1
+  },
+  "facts": [
+    {
+      "kind": "clientRoute",
+      "url": "/checkout/step-1",
+      "confidence": "medium"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "/checkout/step-2",
+      "confidence": "medium"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "/orders",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "/orders/new",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "/user-search",
+      "fullPath": "/user-search",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": "/users",
+      "fullPath": "/users",
+      "confidence": "high"
+    },
+    {
+      "kind": "clientRoute",
+      "url": ":id/edit",
+      "fullPath": "/users/:id/edit",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/checkout/step-2",
+      "method": "GET",
+      "confidence": "low"
+    }
+  ]
+}

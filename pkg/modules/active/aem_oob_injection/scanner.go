@@ -19,6 +19,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	aem "github.com/vigolium/vigolium/pkg/modules/infra/aem"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
@@ -113,7 +114,7 @@ func (m *Module) fireAccessTokenSSRF(
 	if !endpointExists(ctx, httpClient, accessTokenBase) {
 		return // the AccessTokenServlet is not present — do not fire a blind SSRF
 	}
-	oastHost := oast.GenerateURL(target, "auth_url", "aem-accesstoken-ssrf", ModuleID, ctx.Request().ID())
+	oastHost := modkit.OASTURLFor(oast, oastclass.SSRF, target, "auth_url", "aem-accesstoken-ssrf", ModuleID, ctx.Request().ID())
 	if oastHost == "" {
 		return
 	}
@@ -135,7 +136,7 @@ func (m *Module) firePackmgrXXE(
 	if !endpointExists(ctx, httpClient, packmgrBase) {
 		return // the CRX Package Manager service is not present — do not upload the XXE package
 	}
-	oastHost := oast.GenerateURL(target, "package", "aem-packmgr-xxe", ModuleID, ctx.Request().ID())
+	oastHost := modkit.OASTURLFor(oast, oastclass.XXE, target, "package", "aem-packmgr-xxe", ModuleID, ctx.Request().ID())
 	if oastHost == "" {
 		return
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -92,14 +93,14 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	// Only test parameters that look like they might accept URLs
-	if !looksLikeURLParam(ip.Name(), ip.BaseValue()) {
+	if !looksLikeURLParam(ip.Type(), ip.Name(), ip.BaseValue()) {
 		return nil, nil
 	}
 
 	requestHash := ctx.Request().ID()
 
 	for _, p := range payloads {
-		oastURL := oast.GenerateURL(urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}
@@ -131,6 +132,6 @@ func (m *Module) ScanPerInsertionPoint(
 // Origin / Upgrade-Insecure-Requests / … are never fetch sinks) stays consistent
 // across the SSRF family — this local copy previously mis-scoped OAST probes onto
 // those standard headers.
-func looksLikeURLParam(name, value string) bool {
-	return infra.LooksLikeURLParam(name, value)
+func looksLikeURLParam(typ httpmsg.InsertionPointType, name, value string) bool {
+	return infra.LooksLikeURLParamAt(typ, name, value)
 }

@@ -29,33 +29,6 @@ func paceEnabledPhases(opts *types.Options) []string {
 	return out
 }
 
-// applyStrategyPace narrows the invocation-wide pace to the strategy's ceiling.
-// Only values the operator did NOT type on the command line are narrowed: an
-// explicit --concurrency 40 alongside --strategy lite is an operator overruling
-// the preset, which is the whole point of having both.
-func applyStrategyPace(settings *config.Settings, phases config.StrategyPhases, opts *types.Options) {
-	ceiling := phases.Pace
-	if ceiling == (config.StrategyPace{}) {
-		return
-	}
-	pace := &settings.ScanningPace
-	// globalChanged, not cmd.Flags().Changed — see paceKnob.globalChanged. A
-	// phase-qualified value is not an operator overruling the preset's
-	// invocation-wide ceiling, and reading it as one skipped the ceiling entirely.
-	if !concurrencyKnob.globalChanged() {
-		pace.Concurrency = config.NarrowPace(pace.Concurrency, ceiling.Concurrency)
-		opts.Concurrency = pace.Concurrency
-	}
-	if !rateLimitKnob.globalChanged() {
-		pace.RateLimit = config.NarrowPace(pace.RateLimit, ceiling.RateLimit)
-		opts.RateLimit = pace.RateLimit
-	}
-	if !maxPerHostKnob.globalChanged() {
-		pace.MaxPerHost = config.NarrowPace(pace.MaxPerHost, ceiling.MaxPerHost)
-		opts.MaxPerHost = pace.MaxPerHost
-	}
-}
-
 // applyPhasePaceOverrides copies every `--flag phase=N` qualifier into the
 // matching scanning_pace section, so one invocation can run two phases at
 // different rates.

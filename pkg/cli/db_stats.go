@@ -74,11 +74,11 @@ func runDBStats(cmd *cobra.Command, args []string) error {
 			// it emitted its raw stats struct with no envelope, so a consumer had
 			// to special-case it forever. A contract with a hole in it is not a
 			// contract, so the struct now rides under `items` like every other
-			// command's payload.
-			env := newAgentEnvelope("db stats", "stats", stats, 1, 0, 1)
-			env.DBPath = resolvedReadDBPath()
-			env.WithQuery("finding", "--json", "--min-severity", "high")
-			if err := writeAgentJSON(env); err != nil {
+			// command's payload: one object, so items:[stats]. The legacy alias
+			// `stats` (--json-legacy-keys) still renders the object itself.
+			if err := emitObject(cmd, "stats", stats,
+				withDBPath(resolvedReadDBPath()),
+				withQuery("finding", "--json", "--min-severity", "high")); err != nil {
 				return fmt.Errorf("failed to encode JSON: %w", err)
 			}
 		} else {

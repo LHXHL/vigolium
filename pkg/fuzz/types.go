@@ -273,6 +273,12 @@ type Job struct {
 
 	Concurrency int
 	DelayMs     int
+	// RateLimit caps the whole run at this many requests per second across
+	// every worker, 0 = unlimited. It covers every send the run makes —
+	// baseline samples and calibration probes as well as payloads — because a
+	// WAF or a fragile target counts all of them. Smooth (burst 1), so a
+	// limit of 20 never means "20 at once, then wait".
+	RateLimit float64
 
 	// OnResult, if set, is called once per send as results complete. It is
 	// invoked from multiple goroutines; the callback must be safe to call

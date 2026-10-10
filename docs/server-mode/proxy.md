@@ -13,9 +13,32 @@ export VIGOLIUM_API_KEY=my-secret-key
 vigolium server --ingest-proxy-port 9003
 ```
 
-This starts two listeners:
-- **REST API** on port `9002` (default)
-- **HTTP proxy** on port `9003`
+This starts two listeners, both on `127.0.0.1` by default:
+- **REST API** on port `9002` (default; `--host`)
+- **HTTP proxy** on port `9003` (`--ingest-proxy-host`)
+
+## Access Control
+
+The proxy is an open forward proxy that writes into your database, so it binds
+loopback unless told otherwise, independently of the API's `--host`. Binding it
+to a routable address requires a gate; without one the server exits 2 before it
+listens:
+
+```bash
+# Token (or config server.ingest_proxy_token)
+vigolium server --ingest-proxy-port 9003 --ingest-proxy-host 0.0.0.0 --proxy-token "$PROXY_TOKEN"
+
+# Client allow-list, repeatable (or config server.ingest_proxy_allow)
+vigolium server --ingest-proxy-port 9003 --ingest-proxy-host 0.0.0.0 --proxy-allow 10.0.0.0/8
+```
+
+Clients send the token as `Proxy-Authorization`: `Basic` with any username and
+the token as password (what `http://user:token@host:port` proxy URLs produce), or
+`Bearer <token>`. A missing or wrong token gets `407 Proxy Authentication
+Required` with `Proxy-Authenticate: Basic realm="vigolium"`; a client outside the
+allow-list gets `403`; with both set, both must pass. The header is stripped
+before the request is forwarded or recorded, so the token never reaches the
+target or the database.
 
 ## How It Works
 
@@ -25,10 +48,24 @@ HTTPS `CONNECT` tunnels pass through without recording by default. Enable
 explicit MITM mode when you control the client and target environment:
 
 ```bash
-# Write the generated CA certificate, trust it in the client, then start MITM
-vigolium server --export-ca ./vigolium-proxy-ca.pem
+# Trust the generated CA on this machine (prints the commands; --yes runs them),
+# or write it out for a client: vigolium server ca print --out ./vigolium-proxy-ca.pem
+vigolium server ca install
 vigolium server --ingest-proxy-port 9003 --proxy-mitm
 ```
+
+`vigolium server ca` manages the CA (`~/.vigolium/ca`, created on first use):
+
+| Command | Does |
+|---|---|
+| `server ca path` | Print the certificate path |
+| `server ca print [--out FILE]` | PEM to stdout or a file; `-j` gives `path`, `sha256`, `subject`, `not_after` |
+| `server ca install [--yes]` | macOS login keychain, Debian/Ubuntu `update-ca-certificates`, Fedora/RHEL `update-ca-trust`, Windows `certutil -user`; prints the commands unless `--yes` |
+| `server ca uninstall [--yes]` | Remove that trust again |
+
+Firefox (and Chrome on Linux) keep their own NSS store; `install` prints the
+command for it as a note. `--export-ca FILE` remains as a hidden alias of
+`server ca print --out FILE`.
 
 `--proxy-insecure` skips verification of the upstream server certificate and
 should be reserved for authorized test systems with self-signed TLS.
@@ -123,8 +160,9 @@ Response:
 {
   "version": "0.1.0",
   "uptime": "2h15m30s",
-  "service_addr": "0.0.0.0:9002",
-  "proxy_addr": "0.0.0.0:9003",
+  "service_addr": "127.0.0.1:9002",
+  "proxy_addr": "127.0.0.1:9003",
+  "proxy_auth": "none",
   "queue_depth": 0,
   "total_records": 1542,
   "total_findings": 23

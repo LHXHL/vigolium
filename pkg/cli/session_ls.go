@@ -38,16 +38,13 @@ func runSessionLs(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 	defer closeDatabaseOnExit()
 
+	// Read intent (declared in db_intent.go): no schema DDL on the read path.
 	db, err := getDB()
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
 	ctx := context.Background()
-	if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-		return fmt.Errorf("failed to create schema: %w", schemaErr)
-	}
-
 	repo := database.NewRepository(db)
 	projectUUID, err := resolveProjectUUID()
 	if err != nil {
@@ -73,7 +70,7 @@ func runSessionLs(cmd *cobra.Command, args []string) error {
 	views := newAuthSessionViews(rows, sessionLsShowSecrets)
 
 	if globalJSON {
-		env := newAgentEnvelope("auth list", "sessions", views, int64(len(views)), 0, len(views))
+		env := newMachineEnvelope(cmd, kindRead, "sessions", views, int64(len(views)), 0, len(views))
 		env.DBPath = resolvedReadDBPath()
 		env.WithProjectScope(projectUUID)
 		env.With("redacted", !sessionLsShowSecrets)

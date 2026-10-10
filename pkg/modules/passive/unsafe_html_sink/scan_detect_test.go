@@ -1,13 +1,12 @@
 package unsafe_html_sink
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
@@ -19,25 +18,13 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, ModuleName, m.Name())
 }
 
-// makeHTTPCtx builds a request/response pair with the given path, content type, and body.
-func makeHTTPCtx(path, contentType, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", path))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n%s", contentType, body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
-
 // TestScanPerRequest_DangerouslySetInnerHTML drives a React dangerouslySetInnerHTML
 // sink, which should be flagged as a framework XSS sink.
 func TestScanPerRequest_DangerouslySetInnerHTML(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `function C(){ return <div dangerouslySetInnerHTML={{__html: data}} />; }`
-	ctx := makeHTTPCtx("/app/component.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/component.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -58,7 +45,7 @@ func TestScanPerRequest_DangerouslySetInnerHTML(t *testing.T) {
 func TestScanPerRequest_NewFunctionSuppressedInTestFile(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("/app/compiler.spec.js", "application/javascript", `new Function("return 1")();`)
+	ctx := modtest.HTTPCtx("/app/compiler.spec.js", "application/javascript", `new Function("return 1")();`)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	assert.Empty(t, results)
@@ -70,7 +57,7 @@ func TestScanPerRequest_InnerHTMLAndEval(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `el.innerHTML = userInput; eval(userCode);`
-	ctx := makeHTTPCtx("/app/main.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/main.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -84,7 +71,7 @@ func TestScanPerRequest_EvalSuppressedInTestFile(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `eval(payload);`
-	ctx := makeHTTPCtx("/app/main.test.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/main.test.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -99,7 +86,7 @@ func TestScanPerRequest_ReactRuntimePropFilter_NoFinding(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `function f(r,n){for(var a in r)if(r.hasOwnProperty(a)&&"children"!==a&&"dangerouslySetInnerHTML"!==a&&void 0!==r[a]){}}`
-	ctx := makeHTTPCtx("/_next/static/chunks/main-93dbaebda72da021.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/_next/static/chunks/main-93dbaebda72da021.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -112,7 +99,7 @@ func TestScanPerRequest_MinifiedDangerousProp_Firing(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `e.createElement("div",{dangerouslySetInnerHTML:{__html:a}})`
-	ctx := makeHTTPCtx("/app/chunk.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/chunk.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -125,7 +112,7 @@ func TestScanPerRequest_EmptyClearingWrites_NoFinding(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `el.innerHTML = ""; frame.document.write('');`
-	ctx := makeHTTPCtx("/WebResource.axd", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/WebResource.axd", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -138,7 +125,7 @@ func TestScanPerRequest_NonEmptyInnerHTML_Firing(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `el.innerHTML = buildRow(userInput);`
-	ctx := makeHTTPCtx("/app/render.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/render.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -150,7 +137,7 @@ func TestScanPerRequest_CleanCode(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `function add(a, b) { return a + b; }`
-	ctx := makeHTTPCtx("/app/util.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/util.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

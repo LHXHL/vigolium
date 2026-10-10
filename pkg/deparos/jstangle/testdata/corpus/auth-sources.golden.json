@@ -1,0 +1,50 @@
+{
+  "status": "complete",
+  "counts": {
+    "httpRequest": 6
+  },
+  "facts": [
+    {
+      "kind": "httpRequest",
+      "url": "/api/v4/cart",
+      "method": "GET",
+      "confidence": "high",
+      "auth": "apikey-header:cookie:api_key"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v4/csrf",
+      "method": "POST",
+      "confidence": "high",
+      "auth": "custom:cookie:XSRF-TOKEN"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v4/legacy",
+      "method": "GET",
+      "confidence": "high",
+      "auth": "basic:literal"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v4/me",
+      "method": "GET",
+      "confidence": "high",
+      "auth": "bearer:localStorage:jwt"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v4/orders",
+      "method": "GET",
+      "confidence": "high",
+      "auth": "bearer:sessionStorage:access_token"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v4/state",
+      "method": "GET",
+      "confidence": "high",
+      "auth": "bearer:state:auth.token"
+    }
+  ]
+}

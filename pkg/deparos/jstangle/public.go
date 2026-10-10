@@ -1,14 +1,40 @@
 package jstangle
 
-import deparospresets "github.com/vigolium/vigolium/internal/resources/deparos"
+import (
+	"sync"
 
-var embeddedBinary = deparospresets.JSTangleBinary
-var binaryName = deparospresets.JSTangleBinaryName
+	"github.com/vigolium/vigolium/internal/helperblob"
+	deparospresets "github.com/vigolium/vigolium/internal/resources/deparos"
+)
 
-// isEmbeddedBinaryValid returns true only when the embedded binary is a real
-// executable. It rejects both empty slices (unsupported platform) and tiny
-// payloads (< 1024 bytes) which are Git LFS pointer files rather than real
-// binaries.
+// embeddedBlob is the zstd-compressed helper and embeddedPinData its pin
+// (sha256 and size of the uncompressed executable). Tests swap both through
+// setEmbeddedForTest.
+var (
+	embeddedBlob    = deparospresets.JSTangleBinaryZst
+	embeddedPinData = deparospresets.JSTangleBinaryPin
+	binaryName      = deparospresets.JSTangleBinaryName
+
+	embeddedPinOnce sync.Once
+	embeddedPinVal  helperblob.Pin
+	embeddedPinErr  error
+)
+
+// embeddedPin parses the embedded pin once.
+func embeddedPin() (helperblob.Pin, error) {
+	embeddedPinOnce.Do(func() {
+		embeddedPinVal, embeddedPinErr = helperblob.ParsePin(embeddedPinData)
+	})
+	return embeddedPinVal, embeddedPinErr
+}
+
+// isEmbeddedBinaryValid returns true only when a real helper was embedded: a
+// non-trivial compressed payload (the stub embeds nothing; a Git LFS pointer is
+// a few hundred bytes) and a pin that parses.
 func isEmbeddedBinaryValid() bool {
-	return len(embeddedBinary) > 1024
+	if len(embeddedBlob) <= 1024 {
+		return false
+	}
+	_, err := embeddedPin()
+	return err == nil
 }

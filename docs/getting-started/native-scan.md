@@ -20,8 +20,9 @@ extended recipe book see [Stateless Scanning](../guides/stateless-scan.md).
 | `scan` | Yes (`~/.vigolium/...sqlite`) | full pipeline | Persistent projects |
 
 The default direct paths for `scan-url` and `scan-request` run in memory. Phase
-flags, persisted file formats, or `-S/--stateless` route them through the full
-Runner, so those invocations may use the active or a temporary database.
+flags, persisted file formats, `-S/--stateless`, `--auth`/`--auth-file` or
+`--intensity` route them through the full Runner, so those invocations may use
+the active or a temporary database.
 `scan --stateless` creates a temporary SQLite database, runs every requested
 phase, exports results, and deletes the database on exit.
 
@@ -89,6 +90,20 @@ Override the host when the request file has only a path:
 
 ```bash
 vigolium scan-request -i request.txt --target https://staging.example.com
+```
+
+`-H` overrides the captured request: it replaces every captured header of the
+same name, or is appended when the capture has none.
+
+```bash
+vigolium scan-request -i request.txt -H 'Cookie: session=fresh'
+```
+
+Both commands share `scan`'s tuning flags: `--auth`/`--auth-file`,
+`--intensity`, `--scanning-max-duration`, `--oast-url` and `--scope-origin`.
+
+```bash
+vigolium scan-url https://example.com/api/me --auth-file admin.yaml --intensity quick
 ```
 
 ## Piping from stdin

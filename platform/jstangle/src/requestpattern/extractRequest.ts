@@ -10,6 +10,7 @@ import {
 import type { ExtractedRequest, TrackedVariableMap } from "./types";
 import { isURLLike } from "./utils";
 import { getEngineState } from "../context/engine-state";
+import { isUrlModelReference, resolveUrlConstructor, urlConstructorKind } from "./urlModel";
 
 function reportResolutionLimit(code: string, message: string): void {
   const state = getEngineState();
@@ -502,8 +503,25 @@ export function resolveValue(
     return [`\${${propertyName || "unknown"}}`];
   }
 
+  // Case 4b: new URL(...) / new URLSearchParams(...), folded with any later
+  // searchParams mutations when the pre-pass modelled its binding.
+  if (t.isNewExpression(node)) {
+    const modelled = resolveUrlConstructor(node, trackedVars, context);
+    if (modelled) return modelled;
+  }
+
   // Case 5: Call expression - return placeholder with function name
   if (t.isCallExpression(node)) {
+    // u.toString() on a modelled URL/URLSearchParams is the model itself.
+    if (
+      node.arguments.length === 0 &&
+      t.isMemberExpression(node.callee) &&
+      t.isIdentifier(node.callee.property, { name: "toString" }) &&
+      (isUrlModelReference(node.callee.object) || urlConstructorKind(node.callee.object))
+    ) {
+      return resolveValue(node.callee.object, trackedVars, context);
+    }
+
     // Special case: Object({...}) - treat as ObjectExpression
     // This handles Vue.js/webpack environment config patterns like:
     // Object({VUE_APP_PROD_API: "https://...", VUE_APP_DEV_API: "https://..."})
@@ -725,9 +743,17 @@ export function isValidUrlNode(node: t.Node | null | undefined): boolean {
     return node.value.includes("/");
   }
 
-  // Template literal containing /
+  // Template literal containing /, or interpolating a modelled URL (`${u}`)
   if (t.isTemplateLiteral(node)) {
-    return node.quasis.some((quasi) => quasi.value.raw.includes("/"));
+    return node.quasis.some((quasi) => quasi.value.raw.includes("/")) ||
+      node.expressions.some((expression) => isUrlModelReference(expression));
+  }
+
+  // A URL/URLSearchParams binding or constructor modelled by the pre-pass
+  if (isUrlModelReference(node)) return true;
+  if (urlConstructorKind(node) === "url") {
+    const first = (node as t.NewExpression).arguments[0];
+    return Boolean(first) && !t.isSpreadElement(first) && isValidUrlNode(first as t.Node);
   }
 
   // Binary expression (string concatenation): a + b

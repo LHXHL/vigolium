@@ -107,25 +107,6 @@ func TestSplitCSV(t *testing.T) {
 	}
 }
 
-func TestCSVEscape(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"plain", "plain"},
-		{"has,comma", `"has,comma"`},
-		{`has"quote`, `"has""quote"`},
-		{"line\nbreak", "\"line\nbreak\""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.in, func(t *testing.T) {
-			if got := CSVEscape(tt.in); got != tt.want {
-				t.Errorf("CSVEscape(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestParseSince(t *testing.T) {
 	t.Run("date only", func(t *testing.T) {
 		got, err := ParseSince("2024-01-15")

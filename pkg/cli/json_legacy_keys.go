@@ -52,7 +52,7 @@ const jsonLegacyKeysEnv = "VIGOLIUM_JSON_LEGACY_KEYS"
 // environment.
 func registerJSONLegacyKeysFlag(cmd *cobra.Command) {
 	cmd.PersistentFlags().BoolVar(&globalJSONLegacyKeys, "json-legacy-keys", envBool(jsonLegacyKeysEnv),
-		"DEPRECATED: also emit the pre-envelope row alias (records/findings/scans/rows) beside `items`, doubling the payload. For callers still migrating to `items`; will be removed.")
+		"DEPRECATED: also emit the pre-envelope row alias (records/findings/scans/rows) beside 'items', doubling the payload. For callers still migrating to 'items'; will be removed.")
 	_ = cmd.PersistentFlags().MarkHidden("json-legacy-keys")
 }
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/audit/bin"
 	"github.com/vigolium/vigolium/pkg/cftbrowser"
 	"github.com/vigolium/vigolium/pkg/piolium"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -21,9 +22,9 @@ import (
 // that is the whole point.
 //
 // This package is reached two ways. Interactively it is `vigolium doctor --fix`,
-// where the chatter is the user's feedback. Silently it is ensureCoreDeps — the
-// FIRST scan on a machine, which installs nuclei templates and Chrome for
-// Testing before the scan starts. That scan may be running under `--events
+// where the chatter is the user's feedback. It is also `vigolium init`, which
+// installs nuclei templates and Chrome for Testing as part of setup (scans
+// themselves fetch them lazily, per phase). That may be running under `--events
 // ndjson`, whose contract is that stdout carries the event stream and nothing
 // else, or it may be `doctor --fix --json`, which prints one JSON document.
 // Every line below was a bare fmt.Printf and every subprocess inherited
@@ -103,10 +104,12 @@ func ResolveFixKey(name string) string {
 //  1. nuclei-templates / chromium — Native scan dependencies, surfaced first.
 //  2. bun — installed only when no npm is present (npm-equipped hosts use
 //     npm for the global installs); `--only bun` force-installs regardless.
-//  3. claude — Audit Path A (claude+audit).
-//  4. agent-browser — Olium-based modes (autopilot + swarm).
-//  5. pi — the runtime piolium loads into; Audit Path B.
-//  6. piolium — Audit Path B. Installs the @vigolium/piolium Pi extension
+//  3. vigolium-audit — prefetches the pinned helper (audit_external builds
+//     only; embedded builds never report it as fixable).
+//  4. claude — Audit Path A (claude+audit).
+//  5. agent-browser — Olium-based modes (autopilot + swarm).
+//  6. pi — the runtime piolium loads into; Audit Path B.
+//  7. piolium — Audit Path B. Installs the @vigolium/piolium Pi extension
 //     via `pi install npm:@vigolium/piolium`, self-resolving pi if missing.
 func fixRegistry() []fixableItem {
 	return []fixableItem{
@@ -132,6 +135,19 @@ func fixRegistry() []fixableItem {
 			Source:  "curl -fsSL https://bun.sh/install | bash",
 			ToolKey: "bun",
 			Fix:     fixBun,
+		},
+		{
+			// Only an audit_external build has anything to fix here: it
+			// downloads the pinned helper, and --fix prefetches it so the
+			// first audit run does not. Embedded builds extract at check time.
+			Key:    "vigolium-audit",
+			Label:  "vigolium-audit helper",
+			Source: "download the pinned helper from " + bin.BaseURLEnv + " (audit_external builds)",
+			IsFailing: func(r *Report) bool {
+				c := r.EmbeddedBinaries["vigolium-audit"]
+				return bin.External() && c != nil && c.Status != StatusOK
+			},
+			Fix: fixAuditHelper,
 		},
 		{
 			Key:     "claude",
@@ -388,7 +404,7 @@ func fixChromium(ctx context.Context, _ *config.Settings) error {
 	if !cftbrowser.IsSupported() {
 		return fmt.Errorf("chrome for Testing not available for %s/%s — install Chromium manually", runtime.GOOS, runtime.GOARCH)
 	}
-	binPath, err := cftbrowser.EnsureBrowser(ctx)
+	binPath, err := cftbrowser.EnsureBrowser(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("chrome for Testing download failed: %w", err)
 	}
@@ -570,5 +586,16 @@ func fixPiolium(ctx context.Context, settings *config.Settings) error {
 	if err := piolium.Diagnose(); err != nil {
 		return fmt.Errorf("piolium installed but verification failed: %w", err)
 	}
+	return nil
+}
+
+// fixAuditHelper downloads, verifies and caches the pinned vigolium-audit
+// helper of an audit_external build.
+func fixAuditHelper(ctx context.Context, _ *config.Settings) error {
+	path, err := bin.PathContext(ctx)
+	if err != nil {
+		return err
+	}
+	fixf("    %s %s\n", terminal.Gray("installed"), terminal.Gray(config.ContractPath(path)))
 	return nil
 }

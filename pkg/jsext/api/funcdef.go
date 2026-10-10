@@ -44,6 +44,10 @@ type JSFuncDef struct {
 	Returns     string
 	Description string
 	Example     string
+	// Effect is what the function does outside the VM. Required: EffectUnset
+	// fails the registry contract test. ModeLoad runs EffectPure handlers for
+	// real and stubs every other effect (see Effect).
+	Effect      Effect
 	MakeHandler HandlerFactory // nil for metadata-only entries
 }
 

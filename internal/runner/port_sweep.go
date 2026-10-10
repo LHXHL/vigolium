@@ -3,12 +3,16 @@ package runner
 import (
 	"context"
 	"fmt"
+	nethttp "net/http"
 	neturl "net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/core/egress"
+	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/portsweep"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
@@ -29,7 +33,7 @@ const maxHostSweepConcurrency = 8
 // appended to r.options.Targets before the ingestion/scan phases run, so they
 // flow through the normal native pipeline. Hosts that look like all-ports-open
 // honeypots are discarded.
-func (r *Runner) runPortSweepPhase(ctx context.Context, _ *phaseInfra) error {
+func (r *Runner) runPortSweepPhase(ctx context.Context, infra *phaseInfra) error {
 	phaseStart := time.Now()
 
 	hosts, existing, truncated := r.collectSweepHosts()
@@ -64,7 +68,24 @@ func (r *Runner) runPortSweepPhase(ctx context.Context, _ *phaseInfra) error {
 		DialTimeout:   time.Duration(cfg.DialTimeoutMs) * time.Millisecond,
 		HTTPTimeout:   time.Duration(cfg.HTTPTimeoutMs) * time.Millisecond,
 		HoneypotRatio: cfg.HoneypotRatio,
+		// The HTTP confirm step honours --proxy; the TCP pre-filter cannot and
+		// dials each port directly (see the portsweep package doc).
+		ProxyURL: r.options.ProxyURL,
 	}
+	// The confirm requests go through the scan's egress gate (rate token, host
+	// slot, quarantine); the TCP dials are counted but not paced. Both add to the
+	// phase's own requests_sent through the phase counter.
+	var sweepSent atomic.Int64
+	var svc *services.Services
+	if infra != nil {
+		svc = infra.svc
+	}
+	gate := svc.EgressGate().WithPhaseCounter(&sweepSent)
+	opts.WrapTransport = func(next nethttp.RoundTripper) nethttp.RoundTripper {
+		return gate.RoundTripper(next, egress.LaneNormal)
+	}
+	opts.OnDial = func() { gate.Count(1) }
+	r.currentPhase.Load().addCounter(sweepSent.Load)
 
 	results := r.sweepHosts(ctx, hosts, opts)
 
@@ -138,6 +159,7 @@ func (r *Runner) sweepHosts(ctx context.Context, hosts []string, opts portsweep.
 	}
 	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
+	progress := r.currentPhase.Load().trackTargets(len(hosts))
 	for i, host := range hosts {
 		select {
 		case <-ctx.Done():
@@ -150,6 +172,7 @@ func (r *Runner) sweepHosts(ctx context.Context, hosts []string, opts portsweep.
 			defer wg.Done()
 			defer func() { <-sem }()
 			results[i] = portsweep.Sweep(ctx, host, opts)
+			progress.Add(1)
 		}(i, host)
 	}
 	wg.Wait()

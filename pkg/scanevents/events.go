@@ -33,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/scanplan"
 )
 
 // SchemaVersion is the event-schema version carried on every line as "v".
@@ -59,7 +61,66 @@ const (
 	TypeFindingNew       = "finding.new"
 	TypeImportSummary    = "import.summary"
 	TypeError            = "error"
+
+	// The types below are part of the vocabulary before anything emits them, so
+	// consumers and `vigolium schema event` can be written against one list.
+	// Each comment names the plan unit that adds the emitter.
+
+	// TypeScanPlan carries the resolved scan plan, second on every stream (C3).
+	TypeScanPlan = "scan.plan"
+	// TypeScanSetup reports a lazy first-run install step (Chrome for Testing
+	// before spidering, nuclei-templates before known-issue-scan): Component +
+	// State started|finished|failed, Bytes, DurationMS, Phase.
+	TypeScanSetup = "scan.setup"
+	// TypeOASTUnavailable says OAST registration failed or timed out; out-of-band
+	// checks do not run and the scan is partial with oast_unavailable (A7).
+	TypeOASTUnavailable = "oast.unavailable"
+	// TypeHostQuarantined / TypeHostRecovered / TypeHostDead track the per-host
+	// breaker: Host, plus Detail for the cause (E5).
+	TypeHostQuarantined = "host.quarantined"
+	TypeHostRecovered   = "host.recovered"
+	TypeHostDead        = "host.dead"
+	// TypeAuthSessionSuspect says scan responses (or the proactive check probe)
+	// look logged out: Session, Gen (the suspected credential generation),
+	// Detail (status, redirect, body, interval). TypeAuthRelogin reports how a
+	// re-login cycle ended: Session, Gen (the new generation when OK), OK,
+	// Count (logins tried), Message on failure.
+	TypeAuthSessionSuspect = "auth.session_suspect"
+	TypeAuthRelogin        = "auth.relogin"
+	// TypeModuleError reports module failures, rate-limited: ModuleID, Phase, URL,
+	// ErrorKind (exception|timeout|panic|load), Message, Count (F6).
+	TypeModuleError = "module.error"
+	// TypeExtensionFailed reports an extension that failed to load or run:
+	// ModuleID (when its metadata loaded), Path, Stage, Explicit, Message.
+	TypeExtensionFailed = "extension.failed"
 )
+
+// Types lists every event type exactly once, so a consumer (and the schema
+// command) can enumerate the vocabulary. A drift test keeps it in step with the
+// Type* constants above. Add to it; never rename or remove an entry.
+var Types = []string{
+	TypeScanStarted,
+	TypeScanInterrupting,
+	TypeScanFinished,
+	TypePhaseStarted,
+	TypePhaseProgress,
+	TypePhaseFinished,
+	TypeWAFBlock,
+	TypeWAFPacing,
+	TypeFindingNew,
+	TypeImportSummary,
+	TypeError,
+	TypeScanPlan,
+	TypeScanSetup,
+	TypeOASTUnavailable,
+	TypeHostQuarantined,
+	TypeHostRecovered,
+	TypeHostDead,
+	TypeAuthSessionSuspect,
+	TypeAuthRelogin,
+	TypeModuleError,
+	TypeExtensionFailed,
+}
 
 // Terminal scan statuses.
 const (
@@ -99,6 +160,11 @@ type Event struct {
 	// Keyed by canonical phase id.
 	PhasePace map[string]Pace `json:"phase_pace,omitempty"`
 
+	// Plan is the resolved scan plan (scan.plan): phases enabled and disabled
+	// with the reason, budgets, modules, scope, auth session names, target
+	// admission and a rough request estimate. Same object as `scan --dry-run`.
+	Plan *scanplan.Plan `json:"plan,omitempty"`
+
 	// Phase lifecycle.
 	Phase      string `json:"phase,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
@@ -119,8 +185,86 @@ type Event struct {
 	// dropped by omitempty — "0 requests sent" is a meaningful reading.
 	RequestsSent   *int64 `json:"requests_sent,omitempty"`
 	Findings       *int64 `json:"findings,omitempty"`
-	Total          *int64 `json:"total,omitempty"`
 	RecordsWritten *int64 `json:"records_written,omitempty"`
+	// RequestsInScope is the in-scope share of RequestsSent, for phases whose
+	// count includes third-party traffic (the browser crawl).
+	RequestsInScope *int64 `json:"requests_in_scope,omitempty"`
+	// RecordsBasis says how RecordsWritten was counted: absent means records
+	// stamped with this scan's uuid; "time_window" means records created since
+	// the scan started (an approximation on a shared database).
+	RecordsBasis string `json:"records_basis,omitempty"`
+
+	// Target admission (scan.started) and reachability (scan.finished). Pointers
+	// so "0 admitted" is reported rather than dropped.
+	TargetsAdmitted    *int `json:"targets_admitted,omitempty"`
+	TargetsRejected    *int `json:"targets_rejected,omitempty"`
+	TargetsReached     *int `json:"targets_reached,omitempty"`
+	TargetsUnreachable *int `json:"targets_unreachable,omitempty"`
+
+	// Budgets are the request budgets in force (scan.started).
+	Budgets *Budgets `json:"budgets,omitempty"`
+	// RequestCapEnforcement says, per planned phase, how strictly the request
+	// budgets hold for its traffic: "hard" (every request is gated), "soft"
+	// (some is counted and the scan stopped within 500ms of passing the cap) or
+	// "partial" (some is neither gated nor counted). On scan.started.
+	RequestCapEnforcement map[string]string `json:"request_cap_enforcement,omitempty"`
+	// BudgetExhaustedHosts are the hosts that used their whole
+	// --max-requests-per-host (scan.finished; the phases carry the
+	// host_request_budget limit).
+	BudgetExhaustedHosts []string `json:"budget_exhausted_hosts,omitempty"`
+	// Egress lists which outbound paths go through the shared rate/host gate and
+	// which do not, with the reason (scan.started).
+	Egress *Egress `json:"egress,omitempty"`
+	// Exports lists the files the scan wrote (scan.finished).
+	Exports []Export `json:"exports,omitempty"`
+	// ModuleErrors counts errors per module id; ExtensionsFailed names the
+	// extensions that failed to load (scan.finished).
+	ModuleErrors     map[string]int64 `json:"module_errors,omitempty"`
+	ExtensionsFailed []string         `json:"extensions_failed,omitempty"`
+	// Extension load failures (extension.failed): Path is the extension file,
+	// Stage the load step that failed (read, transpile, compile, metadata,
+	// schema, unknown_type, module), and Explicit whether it was named with
+	// --ext / custom_dir — an explicit failure aborts the scan before any
+	// traffic unless --ext-allow-failures is set.
+	Path     string `json:"path,omitempty"`
+	Stage    string `json:"stage,omitempty"`
+	Explicit *bool  `json:"explicit,omitempty"`
+	// ErrorKind classifies a module.error: exception, timeout, panic or load.
+	ErrorKind string `json:"error_kind,omitempty"`
+	// Count is the module's running error total on a module.error line (rate-
+	// limited, so a line can stand for many occurrences); auth.relogin uses it
+	// for the logins tried.
+	Count *int64 `json:"count,omitempty"`
+
+	// Live sessions (auth.session_suspect, auth.relogin): which session, the
+	// credential generation (from 1; each successful re-login adds one), and
+	// whether the re-login worked.
+	Session string `json:"session,omitempty"`
+	Gen     uint64 `json:"gen,omitempty"`
+	OK      *bool  `json:"ok,omitempty"`
+
+	// Setup steps (scan.setup): what is being installed, and where it got to
+	// (started, finished, failed). Bytes is the download size when known.
+	Component string `json:"component,omitempty"`
+	State     string `json:"state,omitempty"`
+	Bytes     *int64 `json:"bytes,omitempty"`
+
+	// Work-item progress on phase.progress and phase.finished: Done items of
+	// Total have been handled, counted in Unit ("records", "targets", …).
+	//
+	// Total is a NON-DECREASING UPPER BOUND, not a fixed denominator: a phase
+	// may learn of more work as it runs (a dynamic-assessment feedback round
+	// adds the records the previous round produced; a live database source sees
+	// records arrive), so Total can grow between heartbeats but never shrinks,
+	// and never reads below Done. It is omitted while the phase does not yet
+	// know any bound. Done/Total/Unit are absent on phases that have no work-item
+	// count to report.
+	//
+	// Total is shared with import.summary, where it is the number of items the
+	// import will write (see Source/Matched below).
+	Done  *int64 `json:"done,omitempty"`
+	Total *int64 `json:"total,omitempty"`
+	Unit  string `json:"unit,omitempty"`
 
 	// WAF / edge.
 	Host            string `json:"host,omitempty"`
@@ -162,6 +306,30 @@ type Pace struct {
 	RateLimit   int `json:"rate_limit"`
 	Concurrency int `json:"concurrency"`
 	MaxPerHost  int `json:"max_per_host"`
+}
+
+// Budgets are the request budgets a scan runs under. Zero means unlimited.
+type Budgets struct {
+	MaxRequests        int64 `json:"max_requests"`
+	MaxRequestsPerHost int64 `json:"max_requests_per_host"`
+}
+
+// Egress describes which outbound paths share the scan's rate and host limits.
+type Egress struct {
+	Gated  []string          `json:"gated"`
+	Exempt []EgressExemption `json:"exempt"`
+}
+
+// EgressExemption is one outbound path that bypasses the shared gate.
+type EgressExemption struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+// Export is one file a scan wrote.
+type Export struct {
+	Format string `json:"format"`
+	Path   string `json:"path"`
 }
 
 // Emitter writes events. The nil Emitter is a valid no-op emitter, so every call
@@ -334,3 +502,6 @@ func EpochMillis(t time.Time) int64 { return t.UTC().UnixMilli() }
 // Int64 is a helper for the *int64 progress counters, so a call site can write
 // scanevents.Int64(n) instead of taking the address of a temporary.
 func Int64(v int64) *int64 { return &v }
+
+// Int is the *int counterpart of Int64, for the target counters.
+func Int(v int) *int { return &v }

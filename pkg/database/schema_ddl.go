@@ -1,32 +1,175 @@
 package database
 
-// Schema DDL, hoisted out of CreateSchema so the names in it can be READ without
-// executing it.
+// Schema DDL: one source, rendered per dialect.
 //
-// SchemaReady needs to know which tables and indexes a current database is
+// Hoisted out of CreateSchema so the names in it can be READ without executing
+// it. SchemaReady needs to know which tables and indexes a current database is
 // supposed to have, and the only trustworthy source for that is the same list
 // CreateSchema applies. Keeping a second list beside it would drift on the first
 // schema change and turn a missing table into a silently accepted one, which is
 // exactly the failure the readiness check exists to prevent.
 //
-// Entries stay driver-neutral SQLite DDL; adaptDDL rewrites them for Postgres at
-// execution time.
+// Every statement is a TEMPLATE: a column whose spelling differs between SQLite
+// and Postgres names its type with a token ({{AUTOINC_PK}}, {{BLOB}}, {{BOOL}},
+// {{TRUE}}/{{FALSE}}, {{TIMESTAMP}}, {{JSON}}, {{FLOAT}}) and renderDDL spells it
+// for the driver. This replaced string-rewriting SQLite DDL into Postgres, which
+// matched column declarations by their exact text: a bool column whose
+// declaration did not match a rewrite pattern reached Postgres as INTEGER, and
+// every bool write to it failed there (chain_truncated did, for a while). With
+// explicit tokens a column's dialect-sensitive type is declared at the column,
+// and tests render both dialects (no server needed) to check that no
+// SQLite-only token reaches Postgres and that both create the same catalog.
+//
+// Tables, column migrations and indexes all render through renderDDL — see
+// schemaDDLStatements, the full ordered list CreateSchema issues.
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+	"sync"
+)
+
+// ddlTokens is every type token a schema template may use and how each dialect
+// spells it. A token missing here would reach the server verbatim; the render
+// tests reject any "{{" left in either dialect's output.
+//
+// Choices worth knowing before changing one:
+//   - {{AUTOINC_PK}} is SERIAL (int4), not BIGSERIAL: existing Postgres stores
+//     have int4 ids and INTEGER finding_id references, and a new store should
+//     not get a different catalog from an old one.
+//   - {{JSON}} is TEXT in both: queries compare JSON columns with the empty string and LIKE,
+//     and cast to jsonb where they need JSON semantics; a jsonb column would
+//     reject the empty string bun writes for a zero value. The token records
+//     intent (and is cross-checked against the models' type:jsonb fields).
+//   - {{FLOAT}} is DOUBLE PRECISION: Postgres REAL is 4 bytes, SQLite REAL is 8.
+//   - {{BOOL}} is INTEGER 0/1 in SQLite (its only boolean) and BOOLEAN in
+//     Postgres, which refuses to write a Go bool into an INTEGER column.
+var ddlTokens = []struct{ token, sqlite, postgres string }{
+	{"{{AUTOINC_PK}}", "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"},
+	{"{{BLOB}}", "BLOB", "BYTEA"},
+	{"{{BOOL}}", "INTEGER", "BOOLEAN"},
+	{"{{TRUE}}", "1", "TRUE"},
+	{"{{FALSE}}", "0", "FALSE"},
+	{"{{TIMESTAMP}}", "TIMESTAMP", "TIMESTAMP"},
+	{"{{JSON}}", "TEXT", "TEXT"},
+	{"{{FLOAT}}", "REAL", "DOUBLE PRECISION"},
+}
+
+// ddlRenderers holds one replacer per dialect, built once from ddlTokens.
+var ddlRenderers = sync.OnceValue(func() map[string]*strings.Replacer {
+	lite := make([]string, 0, 2*len(ddlTokens))
+	pg := make([]string, 0, 2*len(ddlTokens))
+	for _, t := range ddlTokens {
+		lite = append(lite, t.token, t.sqlite)
+		pg = append(pg, t.token, t.postgres)
+	}
+	return map[string]*strings.Replacer{
+		driverSQLite:   strings.NewReplacer(lite...),
+		driverPostgres: strings.NewReplacer(pg...),
+	}
+})
+
+// renderDDL spells one schema template for driver. Any driver other than
+// Postgres gets the SQLite spelling, as every non-Postgres handle is SQLite.
+func renderDDL(driver, tmpl string) string {
+	if driver != driverPostgres {
+		driver = driverSQLite
+	}
+	return ddlRenderers()[driver].Replace(tmpl)
+}
+
+// columnMigrationDDL is the template that adds one migrated column.
+func columnMigrationDDL(m columnMigration) string {
+	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", m.Table, m.Column, m.Def)
+}
+
+// schemaDDLStatements renders, for driver, every DDL statement CreateSchema
+// issues, in the order it issues them: tables, column migrations, indexes, then
+// the deferrable http_records indexes.
+func schemaDDLStatements(driver string) []string {
+	out := make([]string, 0, len(schemaTables)+len(columnMigrations)+len(schemaIndexes)+len(recordSecondaryIndexes))
+	for _, ddl := range schemaTables {
+		out = append(out, renderDDL(driver, ddl))
+	}
+	for _, m := range columnMigrations {
+		out = append(out, renderDDL(driver, columnMigrationDDL(m)))
+	}
+	for _, ddl := range schemaIndexes {
+		out = append(out, renderDDL(driver, ddl))
+	}
+	for _, ddl := range recordSecondaryIndexes {
+		out = append(out, renderDDL(driver, ddl))
+	}
+	return out
+}
+
+// boolColumn is a column the templates declare {{BOOL}}, with its default.
+type boolColumn struct {
+	Table, Column string
+	Default       bool
+}
+
+// boolColumnLine matches a {{BOOL}} column declaration inside a CREATE TABLE
+// template; boolDefault reads its default.
+var (
+	boolColumnLine = regexp.MustCompile(`(?m)^\s*([A-Za-z0-9_]+) \{\{BOOL\}\}(.*)$`)
+	boolDefault    = regexp.MustCompile(`DEFAULT \{\{(TRUE|FALSE)\}\}`)
+)
+
+// schemaBoolColumns lists every {{BOOL}} column, parsed from the templates so
+// the legacy Postgres conversion (convertLegacyBoolColumns) can never miss one
+// the schema declares. Tables first, then column migrations; each column once.
+var schemaBoolColumns = sync.OnceValue(func() []boolColumn {
+	var out []boolColumn
+	seen := map[string]bool{}
+	add := func(table, column, rest string) {
+		if seen[table+"."+column] {
+			return
+		}
+		seen[table+"."+column] = true
+		m := boolDefault.FindStringSubmatch(rest)
+		out = append(out, boolColumn{Table: table, Column: column, Default: m != nil && m[1] == "TRUE"})
+	}
+	pattern := regexp.MustCompile(ddlObjectPattern)
+	for _, ddl := range schemaTables {
+		name := pattern.FindStringSubmatch(ddl)
+		if name == nil {
+			continue
+		}
+		for _, m := range boolColumnLine.FindAllStringSubmatch(ddl, -1) {
+			add(name[1], m[1], m[2])
+		}
+	}
+	for _, m := range columnMigrations {
+		if rest, ok := strings.CutPrefix(m.Def, "{{BOOL}}"); ok {
+			add(m.Table, m.Column, rest)
+		}
+	}
+	return out
+})
 
 // schemaTables is every CREATE TABLE this binary expects, in dependency order.
 var schemaTables = []string{
 	// Schema versioning: lets CreateSchema skip one-time O(rows) backfills once
-	// a database is current (see currentSchemaVersion). Single row, id always 1.
+	// a database is current (see currentSchemaVersion), and carries the
+	// compatibility guard's reader floor (see schema_guard.go). Single row, id
+	// always 1.
 	`CREATE TABLE IF NOT EXISTS schema_meta (
 		id INTEGER PRIMARY KEY,
-		version INTEGER NOT NULL DEFAULT 0
+		version INTEGER NOT NULL DEFAULT 0,
+		min_reader_version INTEGER NOT NULL DEFAULT 1,
+		written_by TEXT,
+		updated_at {{TIMESTAMP}},
+		observation_history_since {{TIMESTAMP}}
 	)`,
 	// Multi-tenancy: users and projects
 	`CREATE TABLE IF NOT EXISTS users (
 		uuid TEXT PRIMARY KEY NOT NULL,
 		email TEXT,
 		name TEXT,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS projects (
 		uuid TEXT PRIMARY KEY NOT NULL,
@@ -34,11 +177,11 @@ var schemaTables = []string{
 		description TEXT,
 		owner_uuid TEXT,
 		config_path TEXT,
-		tags TEXT,
+		tags {{JSON}},
 		default_target TEXT,
-		last_scan_at TIMESTAMP,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		last_scan_at {{TIMESTAMP}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS scans (
 		uuid TEXT PRIMARY KEY NOT NULL,
@@ -53,19 +196,19 @@ var schemaTables = []string{
 		profile TEXT,
 		source_path TEXT,
 		source_type TEXT,
-		tags TEXT,
+		tags {{JSON}},
 		triggered_by TEXT,
 		agentic_scan_uuid TEXT,
 		http_record_uuid TEXT,
 		scan_source TEXT,
 		scan_mode TEXT,
-		start_cursor_at TIMESTAMP,
+		start_cursor_at {{TIMESTAMP}},
 		start_cursor_uuid TEXT,
-		cursor_at TIMESTAMP,
+		cursor_at {{TIMESTAMP}},
 		cursor_uuid TEXT,
 		processed_count INTEGER DEFAULT 0,
-		started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		finished_at TIMESTAMP,
+		started_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		finished_at {{TIMESTAMP}},
 		duration_ms INTEGER DEFAULT 0,
 		total_requests INTEGER DEFAULT 0,
 		total_findings INTEGER DEFAULT 0,
@@ -79,9 +222,16 @@ var schemaTables = []string{
 		storage_url TEXT,
 		completeness TEXT,
 		stop_reason TEXT,
-		phase_outcomes TEXT,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		phase_outcomes {{JSON}},
+		plan {{JSON}},
+		heartbeat_at {{TIMESTAMP}},
+		current_phase TEXT,
+		pid INTEGER,
+		runner_host TEXT,
+		module_errors {{JSON}},
+		extensions_failed {{JSON}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS http_records (
 		uuid TEXT PRIMARY KEY NOT NULL,
@@ -97,7 +247,7 @@ var schemaTables = []string{
 		http_version TEXT NOT NULL,
 		request_content_type TEXT,
 		request_content_length INTEGER DEFAULT 0,
-		raw_request BLOB,
+		raw_request {{BLOB}},
 		request_hash TEXT NOT NULL,
 		request_authorization TEXT,
 		status_code INTEGER DEFAULT 0,
@@ -105,33 +255,33 @@ var schemaTables = []string{
 		response_http_version TEXT,
 		response_content_type TEXT,
 		response_content_length INTEGER DEFAULT 0,
-		raw_response BLOB,
+		raw_response {{BLOB}},
 		response_hash TEXT,
 		response_norm_hash TEXT,
 		response_time_ms INTEGER DEFAULT 0,
 		response_words INTEGER DEFAULT 0,
-		has_response INTEGER NOT NULL DEFAULT 0,
+		has_response {{BOOL}} NOT NULL DEFAULT {{FALSE}},
 		response_title TEXT,
 		response_location TEXT,
-		parameters TEXT,
-		sent_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		received_at TIMESTAMP,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		parameters {{JSON}},
+		sent_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		received_at {{TIMESTAMP}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		source TEXT DEFAULT '',
-		technology TEXT,
+		technology {{JSON}},
 		content_hash TEXT,
-		is_authenticated INTEGER NOT NULL DEFAULT 0,
+		is_authenticated {{BOOL}} NOT NULL DEFAULT {{FALSE}},
 		parent_uuid TEXT,
 		target TEXT,
 		root_uuid TEXT,
-		chain_truncated INTEGER NOT NULL DEFAULT 0,
-		remarks TEXT,
+		chain_truncated {{BOOL}} NOT NULL DEFAULT {{FALSE}},
+		remarks {{JSON}},
 		risk_score INTEGER DEFAULT 0,
 		surface_score INTEGER DEFAULT 0,
-		body_compaction TEXT
+		body_compaction {{JSON}}
 	)`,
 	`CREATE TABLE IF NOT EXISTS analysis_artifacts (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		project_uuid TEXT NOT NULL,
 		scan_uuid TEXT,
 		http_record_uuid TEXT NOT NULL,
@@ -140,14 +290,14 @@ var schemaTables = []string{
 		media_type TEXT,
 		sha256 TEXT NOT NULL,
 		byte_length INTEGER NOT NULL,
-		content BLOB NOT NULL,
-		metadata TEXT,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		content {{BLOB}} NOT NULL,
+		metadata {{JSON}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS findings (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		project_uuid TEXT NOT NULL,
-		http_record_uuids TEXT NOT NULL,
+		http_record_uuids {{JSON}} NOT NULL,
 		scan_uuid TEXT,
 		agentic_scan_uuid TEXT,
 		url TEXT,
@@ -162,29 +312,68 @@ var schemaTables = []string{
 		description TEXT,
 		severity TEXT NOT NULL,
 		confidence TEXT NOT NULL DEFAULT 'firm',
-		tags TEXT,
+		tags {{JSON}},
 		status TEXT DEFAULT 'triaged',
+		status_note TEXT,
+		status_actor TEXT,
+		status_updated_at {{TIMESTAMP}},
 		remediation TEXT,
 		cwe_id TEXT,
-		cvss_score REAL DEFAULT 0,
+		cvss_score {{FLOAT}} DEFAULT 0,
 		source_file TEXT,
 		repo_name TEXT,
-		matched_at TEXT,
-		extracted_results TEXT,
-		additional_evidence TEXT,
+		matched_at {{JSON}},
+		extracted_results {{JSON}},
+		additional_evidence {{JSON}},
 		request TEXT,
 		response TEXT,
+		origin_record_uuid TEXT,
+		insertion_point {{JSON}},
+		payload TEXT,
+		verification {{JSON}},
+		verified_at {{TIMESTAMP}},
 		finding_hash TEXT NOT NULL,
-		found_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		found_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS finding_records (
 		finding_id INTEGER NOT NULL,
 		record_uuid TEXT NOT NULL,
 		PRIMARY KEY (finding_id, record_uuid)
 	)`,
+	// One row per (finding, scan that observed it). findings.scan_uuid only
+	// names the MOST RECENT observer — a re-detection overwrites it — so "was
+	// this finding seen by scan A" and "which findings are new in scan B" are
+	// unanswerable from the findings row alone. Written in the same transaction
+	// as the finding save (insert and re-detection alike); keyed so a repeat
+	// within one scan is idempotent. finding_hash is denormalized so a diff can
+	// compare two scans by hash without joining back through ids that differ
+	// across merged stores. Rows from before schema v3 are a one-time backfill
+	// of (scan_uuid, found_at); schema_meta.observation_history_since marks
+	// where complete history starts.
+	`CREATE TABLE IF NOT EXISTS finding_observations (
+		project_uuid TEXT NOT NULL,
+		finding_id INTEGER NOT NULL,
+		finding_hash TEXT NOT NULL,
+		scan_uuid TEXT NOT NULL,
+		observed_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (finding_id, scan_uuid)
+	)`,
+	// Append-only lifecycle history: one row per status change. The findings
+	// row carries the CURRENT verdict (status, status_note, status_actor,
+	// status_updated_at); this table is the provenance behind it.
+	`CREATE TABLE IF NOT EXISTS finding_status_events (
+		id {{AUTOINC_PK}},
+		finding_id INTEGER NOT NULL,
+		project_uuid TEXT NOT NULL,
+		from_status TEXT,
+		to_status TEXT NOT NULL,
+		note TEXT,
+		actor TEXT,
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
 	`CREATE TABLE IF NOT EXISTS scopes (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		project_uuid TEXT NOT NULL,
 		name TEXT NOT NULL,
 		description TEXT,
@@ -192,18 +381,18 @@ var schemaTables = []string{
 		host_pattern TEXT,
 		path_pattern TEXT,
 		content_type_pattern TEXT,
-		methods TEXT,
-		ports TEXT,
-		schemes TEXT,
+		methods {{JSON}},
+		ports {{JSON}},
+		schemes {{JSON}},
 		priority INTEGER NOT NULL DEFAULT 100,
-		enabled INTEGER NOT NULL DEFAULT 1,
+		enabled {{BOOL}} NOT NULL DEFAULT {{TRUE}},
 		hit_count INTEGER DEFAULT 0,
-		last_matched_at TIMESTAMP,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		last_matched_at {{TIMESTAMP}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS oast_interactions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		project_uuid TEXT NOT NULL,
 		scan_uuid TEXT,
 		unique_id TEXT NOT NULL,
@@ -213,17 +402,33 @@ var schemaTables = []string{
 		raw_request TEXT,
 		raw_response TEXT,
 		remote_address TEXT,
-		interacted_at TIMESTAMP NOT NULL,
+		interacted_at {{TIMESTAMP}} NOT NULL,
 		target_url TEXT,
 		parameter_name TEXT,
 		injection_type TEXT,
 		module_id TEXT,
 		finding_id INTEGER,
 		payload TEXT,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
+	// OAST payload context, keyed by the locally minted nonce. Lets a callback
+	// that arrives out of band (a fixed OAST URL, `oast ingest`) be attributed
+	// to the scan, module, target and parameter that planted it, after the
+	// in-memory tracker of the planting process is gone.
+	`CREATE TABLE IF NOT EXISTS oast_payloads (
+		nonce TEXT PRIMARY KEY NOT NULL,
+		project_uuid TEXT NOT NULL,
+		scan_uuid TEXT,
+		class TEXT,
+		module_id TEXT,
+		target_url TEXT,
+		param TEXT,
+		request_hash TEXT,
+		payload TEXT,
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS agentic_scans (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		uuid TEXT NOT NULL UNIQUE,
 		project_uuid TEXT NOT NULL,
 		scan_uuid TEXT,
@@ -233,17 +438,17 @@ var schemaTables = []string{
 		input_type TEXT,
 		target_url TEXT,
 		vuln_type TEXT,
-		module_names TEXT,
+		module_names {{JSON}},
 		template_id TEXT,
 		status TEXT NOT NULL DEFAULT 'pending',
 		current_phase TEXT,
-		phases_run TEXT,
+		phases_run {{JSON}},
 		finding_count INTEGER DEFAULT 0,
 		record_count INTEGER DEFAULT 0,
 		saved_count INTEGER DEFAULT 0,
 		source_path TEXT,
 		source_type TEXT,
-		token_usage TEXT,
+		token_usage {{JSON}},
 		retry_count INTEGER DEFAULT 0,
 		parent_run_uuid TEXT,
 		input_record_count INTEGER DEFAULT 0,
@@ -256,13 +461,13 @@ var schemaTables = []string{
 		storage_url TEXT,
 		session_id TEXT,
 		session_dir TEXT,
-		started_at TIMESTAMP,
-		completed_at TIMESTAMP,
+		started_at {{TIMESTAMP}},
+		completed_at {{TIMESTAMP}},
 		duration_ms INTEGER DEFAULT 0,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE TABLE IF NOT EXISTS authentication_hostnames (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		project_uuid TEXT NOT NULL,
 		scan_uuid TEXT,
 		hostname TEXT NOT NULL,
@@ -270,18 +475,18 @@ var schemaTables = []string{
 		session_role TEXT DEFAULT '',
 		position INTEGER DEFAULT 0,
 		session_token TEXT,
-		headers TEXT,
+		headers {{JSON}},
 		login_url TEXT,
 		login_method TEXT,
 		login_content_type TEXT,
 		login_body TEXT,
 		login_request TEXT,
 		login_response TEXT,
-		extract_rules TEXT,
+		extract_rules {{JSON}},
 		source TEXT DEFAULT '',
-		hydrated_at TIMESTAMP,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		hydrated_at {{TIMESTAMP}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	// One row per (run, endpoint): what this scan observed about a HOST, as
 	// opposed to about one exchange with it.
@@ -307,34 +512,34 @@ var schemaTables = []string{
 	// it an empty answer is unreadable: "this host has no AAAA record" and
 	// "we never got to this host" are different facts about the scan.
 	`CREATE TABLE IF NOT EXISTS host_observations (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		project_uuid TEXT NOT NULL,
 		scan_uuid TEXT,
 		hostname TEXT NOT NULL,
 		port INTEGER NOT NULL DEFAULT 0,
-		observed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		dns_a TEXT,
-		dns_aaaa TEXT,
-		dns_cname TEXT,
-		tls TEXT,
-		complete INTEGER NOT NULL DEFAULT 0,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		observed_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		dns_a {{JSON}},
+		dns_aaaa {{JSON}},
+		dns_cname {{JSON}},
+		tls {{JSON}},
+		complete {{BOOL}} NOT NULL DEFAULT {{FALSE}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(scan_uuid, hostname, port)
 	)`,
 	`CREATE TABLE IF NOT EXISTS scan_logs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		project_uuid TEXT NOT NULL,
 		scan_uuid TEXT NOT NULL,
 		level TEXT NOT NULL,
 		phase TEXT,
 		message TEXT NOT NULL,
 		metadata TEXT,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	// Durable autopilot: one row per bounded operator section (a Reset() +
 	// reconstructed-brief cycle). Only written when autopilot_mode != legacy.
 	`CREATE TABLE IF NOT EXISTS agent_sections (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		uuid TEXT NOT NULL UNIQUE,
 		agentic_scan_uuid TEXT,
 		project_uuid TEXT,
@@ -348,9 +553,9 @@ var schemaTables = []string{
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
 		error_message TEXT,
-		started_at TIMESTAMP,
-		ended_at TIMESTAMP,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		started_at {{TIMESTAMP}},
+		ended_at {{TIMESTAMP}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	// Durable autopilot: verify-before-promote candidates. Each proposed
 	// finding lands here first (status=proposed), a fresh-context verifier
@@ -358,7 +563,7 @@ var schemaTables = []string{
 	// written when autopilot_mode != legacy. UNIQUE(agentic_scan_uuid,
 	// dedup_hash) backs the ON CONFLICT dedup on SaveCandidate.
 	`CREATE TABLE IF NOT EXISTS agent_finding_candidates (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id {{AUTOINC_PK}},
 		uuid TEXT NOT NULL UNIQUE,
 		agentic_scan_uuid TEXT,
 		project_uuid TEXT,
@@ -376,15 +581,15 @@ var schemaTables = []string{
 		status TEXT NOT NULL DEFAULT 'proposed',
 		verdict_reason TEXT,
 		evidence_grade TEXT,
-		record_uuids TEXT,
-		oast_ids TEXT,
+		record_uuids {{JSON}},
+		oast_ids {{JSON}},
 		request TEXT,
 		response TEXT,
 		dedup_hash TEXT NOT NULL DEFAULT '',
 		promoted_finding_id INTEGER NOT NULL DEFAULT 0,
-		tags TEXT,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		verified_at TIMESTAMP
+		tags {{JSON}},
+		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		verified_at {{TIMESTAMP}}
 	)`,
 }
 
@@ -446,6 +651,17 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_finding_records_record_uuid ON finding_records(record_uuid)",
 	"CREATE INDEX IF NOT EXISTS idx_finding_records_finding_id ON finding_records(finding_id)",
 
+	// -- finding_observations --
+	// Lookups by finding_id ride the (finding_id, scan_uuid) primary key.
+	// "Which findings did scan X observe" and "which scans observed hash H"
+	// are the two diff-side reads, both project-scoped.
+	"CREATE INDEX IF NOT EXISTS idx_finding_obs_project_scan ON finding_observations(project_uuid, scan_uuid)",
+	"CREATE INDEX IF NOT EXISTS idx_finding_obs_project_hash ON finding_observations(project_uuid, finding_hash)",
+
+	// -- finding_status_events --
+	"CREATE INDEX IF NOT EXISTS idx_finding_status_events_finding ON finding_status_events(finding_id, id)",
+	"CREATE INDEX IF NOT EXISTS idx_finding_status_events_project_created ON finding_status_events(project_uuid, created_at)",
+
 	// -- scans --
 	"CREATE INDEX IF NOT EXISTS idx_scans_project_status ON scans(project_uuid, status)",
 	"CREATE INDEX IF NOT EXISTS idx_scans_project_created ON scans(project_uuid, created_at)",
@@ -456,6 +672,9 @@ var schemaIndexes = []string{
 	// -- oast_interactions --
 	"CREATE INDEX IF NOT EXISTS idx_oast_project_scan ON oast_interactions(project_uuid, scan_uuid)",
 	"CREATE INDEX IF NOT EXISTS idx_oast_interactions_unique_id ON oast_interactions(unique_id)",
+
+	// -- oast_payloads -- (nonce lookups ride the primary key)
+	"CREATE INDEX IF NOT EXISTS idx_oast_payloads_project_scan ON oast_payloads(project_uuid, scan_uuid)",
 
 	// -- agentic_scans --
 	"CREATE INDEX IF NOT EXISTS idx_agentic_scans_uuid ON agentic_scans(uuid)",
@@ -526,4 +745,152 @@ var recordSecondaryIndexes = []string{
 	// Supports WHERE source IN (...) AND created_at > cursor filters in
 	// DBInputSource.fetchNextBatch and Repository.CountRecordsAfterCursorBySource.
 	"CREATE INDEX IF NOT EXISTS idx_records_project_source_created ON http_records(project_uuid, source, created_at, uuid)",
+}
+
+// columnMigration is one additive column an existing database may be missing.
+type columnMigration struct{ Table, Column, Def string }
+
+// columnMigrations is the SINGLE list of columns this binary expects on an
+// existing database. Data rather than a sequence of method calls, because it has
+// two consumers that must never disagree: CreateSchema APPLIES it, and
+// missingColumns ASKS it. Expressing "ask instead of apply" as a mode flag on
+// the mutating method meant a field on the shared *DB handle that silently
+// turned every addColumn into a no-op for whoever else held that handle.
+//
+// Notes that used to sit on individual calls:
+//   - surface_score is separate from risk_score deliberately: risk_score holds
+//     anomaly_ranking's batch percentile, a different scale from different
+//     inputs, and one column cannot carry both without the later writer silently
+//     erasing the other. DEFAULT 0 reads as "no surface signals", the correct
+//     floor for every row that predates the column.
+//   - The project_uuid entries are appended at init from
+//     projectUUIDMigrationTables, which is narrower than projectOwnedTables: the
+//     newer project-scoped tables declare the column in their own CREATE TABLE
+//     and need neither the ALTER nor the O(rows) backfill.
+var columnMigrations = []columnMigration{
+	{"findings", "request", "TEXT"},
+	{"findings", "response", "TEXT"},
+	{"http_records", "request_authorization", "TEXT"},
+	{"http_records", "response_title", "TEXT"},
+	{"http_records", "response_words", "INTEGER DEFAULT 0"},
+	{"http_records", "response_norm_hash", "TEXT"},
+	{"http_records", "response_location", "TEXT"},
+	{"http_records", "source", "TEXT DEFAULT ''"},
+	{"http_records", "remarks", "{{JSON}}"},
+	{"http_records", "risk_score", "INTEGER DEFAULT 0"},
+	{"http_records", "surface_score", "INTEGER DEFAULT 0"},
+	{"findings", "confidence", "TEXT NOT NULL DEFAULT 'firm'"},
+	{"findings", "scan_uuid", "TEXT"},
+	{"findings", "module_type", "TEXT DEFAULT ''"},
+	{"findings", "finding_source", "TEXT DEFAULT ''"},
+	{"findings", "record_kind", "TEXT NOT NULL DEFAULT 'finding'"},
+	{"findings", "evidence_grade", "TEXT DEFAULT ''"},
+	{"findings", "module_short", "TEXT DEFAULT ''"},
+	{"scans", "scan_source", "TEXT"},
+	{"scans", "scan_mode", "TEXT"},
+	{"scans", "start_cursor_at", "{{TIMESTAMP}}"},
+	{"scans", "start_cursor_uuid", "TEXT"},
+	{"scans", "cursor_at", "{{TIMESTAMP}}"},
+	{"scans", "cursor_uuid", "TEXT"},
+	{"scans", "processed_count", "INTEGER DEFAULT 0"},
+	{"agentic_scans", "session_id", "TEXT"},
+	{"projects", "tags", "{{JSON}}"},
+	{"projects", "default_target", "TEXT"},
+	{"projects", "last_scan_at", "{{TIMESTAMP}}"},
+	{"scans", "profile", "TEXT"},
+	{"scans", "source_path", "TEXT"},
+	{"scans", "source_type", "TEXT"},
+	{"scans", "http_record_uuid", "TEXT"},
+	{"scans", "tags", "{{JSON}}"},
+	{"scans", "triggered_by", "TEXT"},
+	{"scans", "agentic_scan_uuid", "TEXT"},
+	{"http_records", "scan_uuid", "TEXT"},
+	{"http_records", "technology", "{{JSON}}"},
+	{"http_records", "content_hash", "TEXT"},
+	{"http_records", "is_authenticated", "{{BOOL}} NOT NULL DEFAULT {{FALSE}}"},
+	{"http_records", "parent_uuid", "TEXT"},
+	{"http_records", "target", "TEXT"},
+	{"http_records", "root_uuid", "TEXT"},
+	{"http_records", "chain_truncated", "{{BOOL}} NOT NULL DEFAULT {{FALSE}}"},
+	{"findings", "agentic_scan_uuid", "TEXT"},
+	{"findings", "url", "TEXT"},
+	{"findings", "hostname", "TEXT"},
+	{"findings", "status", "TEXT DEFAULT 'triaged'"},
+	{"findings", "remediation", "TEXT"},
+	{"findings", "cwe_id", "TEXT"},
+	{"findings", "cvss_score", "{{FLOAT}} DEFAULT 0"},
+	{"findings", "source_file", "TEXT"},
+	{"findings", "repo_name", "TEXT"},
+	{"agentic_scans", "source_path", "TEXT"},
+	{"agentic_scans", "token_usage", "{{JSON}}"},
+	{"agentic_scans", "retry_count", "INTEGER DEFAULT 0"},
+	{"agentic_scans", "parent_run_uuid", "TEXT"},
+	{"agentic_scans", "input_record_count", "INTEGER DEFAULT 0"},
+	{"agentic_scans", "session_dir", "TEXT"},
+	{"agentic_scans", "protocol", "TEXT"},
+	{"agentic_scans", "model", "TEXT"},
+	{"agentic_scans", "total_input_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"agentic_scans", "total_output_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"agentic_scans", "estimated_cost_usd", "{{FLOAT}} NOT NULL DEFAULT 0"},
+	{"scans", "storage_url", "TEXT"},
+	{"scans", "scope_origin_mode", "TEXT"},
+	{"agentic_scans", "storage_url", "TEXT"},
+	{"oast_interactions", "finding_id", "INTEGER"},
+	{"oast_interactions", "payload", "TEXT"},
+	{"scopes", "content_type_pattern", "TEXT"},
+	{"scopes", "hit_count", "INTEGER DEFAULT 0"},
+	{"scopes", "last_matched_at", "{{TIMESTAMP}}"},
+	{"authentication_hostnames", "session_token", "TEXT"},
+	{"authentication_hostnames", "hydrated_at", "{{TIMESTAMP}}"},
+	// Scan completeness. Nullable with NO default on purpose: an empty value
+	// means "unknown", which is what a row written by an older binary — or by a
+	// caller that has no outcome data — honestly is. A DEFAULT of 'complete'
+	// would retroactively declare every historical scan fully covered.
+	{"scans", "completeness", "TEXT"},
+	{"scans", "stop_reason", "TEXT"},
+	{"scans", "phase_outcomes", "{{JSON}}"},
+	// Body compaction marker (`db compact`). Nullable with no default: NULL
+	// means the stored bodies are the bodies as captured, which is what every
+	// row written before this column existed honestly holds.
+	{"http_records", "body_compaction", "{{JSON}}"},
+	// Schema v2: the compatibility guard (schema_guard.go). min_reader_version
+	// defaults to 1, which backfills every existing row with the floor a v1
+	// store has always had.
+	{"schema_meta", "min_reader_version", "INTEGER NOT NULL DEFAULT 1"},
+	{"schema_meta", "written_by", "TEXT"},
+	{"schema_meta", "updated_at", "{{TIMESTAMP}}"},
+	// Schema v3. Every column nullable with no default: NULL honestly means
+	// "not recorded" for every row an older binary wrote.
+	//   - findings: the current verdict's provenance (the full history is
+	//     finding_status_events), what `finding verify` needs to replay a
+	//     finding (the baseline record, insertion point and payload), and the
+	//     last verification result (JSON) kept apart from status.
+	//   - scans: run liveness (heartbeat, phase, pid, host), the resolved plan
+	//     (JSON), and the per-module error / failed-extension tallies (JSON)
+	//     that scan.finished reads back from the row.
+	{"findings", "status_note", "TEXT"},
+	{"findings", "status_actor", "TEXT"},
+	{"findings", "status_updated_at", "{{TIMESTAMP}}"},
+	{"findings", "origin_record_uuid", "TEXT"},
+	{"findings", "insertion_point", "{{JSON}}"},
+	{"findings", "payload", "TEXT"},
+	{"findings", "verification", "{{JSON}}"},
+	{"findings", "verified_at", "{{TIMESTAMP}}"},
+	{"scans", "plan", "{{JSON}}"},
+	{"scans", "heartbeat_at", "{{TIMESTAMP}}"},
+	{"scans", "current_phase", "TEXT"},
+	{"scans", "pid", "INTEGER"},
+	{"scans", "runner_host", "TEXT"},
+	{"scans", "module_errors", "{{JSON}}"},
+	{"scans", "extensions_failed", "{{JSON}}"},
+	{"schema_meta", "observation_history_since", "{{TIMESTAMP}}"},
+}
+
+func init() {
+	for _, table := range projectUUIDMigrationTables {
+		columnMigrations = append(columnMigrations, columnMigration{
+			Table: table, Column: "project_uuid",
+			Def: fmt.Sprintf("TEXT NOT NULL DEFAULT '%s'", DefaultProjectUUID),
+		})
+	}
 }

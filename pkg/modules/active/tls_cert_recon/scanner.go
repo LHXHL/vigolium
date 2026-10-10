@@ -108,7 +108,14 @@ func (m *Module) ScanPerHost(
 		return nil, nil
 	}
 
+	// One gated attempt (rate token, host slot, quarantine) for the handshake:
+	// this dial bypasses the requester, so it would otherwise go out unpaced.
+	release, err := httpClient.AcquireDial(host, port)
+	if err != nil {
+		return nil, nil // host quarantined or the scan is stopping
+	}
 	cert, resolvedIP, err := fetchLeafCert(host, port, dialTimeout)
+	release()
 	if err != nil || cert == nil {
 		return nil, nil // host down, not TLS, or no cert — nothing to report
 	}

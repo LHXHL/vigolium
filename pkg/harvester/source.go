@@ -13,6 +13,11 @@ type Result struct {
 	// so it gets its own field: folding it into Source as a synthetic name
 	// would break the invariant that every Result.Source is some Source.Name().
 	Mined bool
+
+	// Limit, when set, carries no URL: it reports that the source stopped at a
+	// configured bound (a phase limit code such as LimitCDXMaxRows), so the
+	// caller can say the harvest is incomplete instead of looking finished.
+	Limit string
 }
 
 // Source is the interface that all harvester sources must implement.

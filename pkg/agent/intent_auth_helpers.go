@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/agent/agenttypes"
+	"github.com/vigolium/vigolium/pkg/authentication"
 	"gopkg.in/yaml.v3"
 )
 
@@ -140,6 +141,34 @@ func WriteAuthConfigYAML(sessionDir string, cfg *AgentSessionConfig) (string, er
 	}
 	authPath := filepath.Join(sessionDir, "auth-config.yaml")
 	if err := os.WriteFile(authPath, yamlData, 0o644); err != nil {
+		return "", fmt.Errorf("failed to write auth config: %w", err)
+	}
+	return authPath, nil
+}
+
+// WriteSessionsAuthConfigYAML writes native sessions as a `sessions:` bundle
+// to <sessionDir>/auth-config.yaml (0600), the slot the swarm's native phases
+// load with --auth-file. Unlike WriteAuthConfigYAML it is lossless: steps,
+// OAuth2 fields, login headers, check and reauth are kept. Pass sessions
+// parsed with ParseOptions.KeepEnvRefs so ${ENV} is expanded once, when the
+// file is loaded.
+func WriteSessionsAuthConfigYAML(sessionDir string, sessions []*authentication.Session) (string, error) {
+	if sessionDir == "" {
+		return "", fmt.Errorf("session dir is required")
+	}
+	if len(sessions) == 0 {
+		return "", nil
+	}
+	bundle := authentication.SessionConfig{Sessions: make([]authentication.Session, 0, len(sessions))}
+	for _, s := range sessions {
+		bundle.Sessions = append(bundle.Sessions, *s)
+	}
+	yamlData, err := yaml.Marshal(bundle)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal session config: %w", err)
+	}
+	authPath := filepath.Join(sessionDir, "auth-config.yaml")
+	if err := os.WriteFile(authPath, yamlData, 0o600); err != nil {
 		return "", fmt.Errorf("failed to write auth config: %w", err)
 	}
 	return authPath, nil

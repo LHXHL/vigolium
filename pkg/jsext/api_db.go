@@ -20,6 +20,7 @@ func dbFuncDefs() []JSFuncDef {
 
 		{
 			Namespace: NsDBRecords, Name: "query",
+			Effect:      EffectDBRead,
 			Category:    CatDBRecords,
 			Signature:   ".query(filters?: {hostname?, path?, methods?, status_codes?, limit?, offset?, sort_by?, sort_asc?})",
 			Returns:     "DBRecord[]",
@@ -41,6 +42,7 @@ func dbFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsDBRecords, Name: "get",
+			Effect:      EffectDBRead,
 			Category:    CatDBRecords,
 			Signature:   ".get(uuid: string)",
 			Returns:     "DBRecord | null",
@@ -60,6 +62,7 @@ func dbFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsDBRecords, Name: "getRelated",
+			Effect:      EffectDBRead,
 			Category:    CatDBRecords,
 			Signature:   ".getRelated(uuid: string, opts?: {limit?: number})",
 			Returns:     "DBRecord[]",
@@ -88,6 +91,7 @@ func dbFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsDBRecords, Name: "annotate",
+			Effect:      EffectDBWrite,
 			Category:    CatDBRecords,
 			Signature:   ".annotate(uuid: string, patch: {risk_score?, remarks?})",
 			Returns:     "bool",
@@ -131,6 +135,7 @@ func dbFuncDefs() []JSFuncDef {
 
 		{
 			Namespace: NsDBFindings, Name: "query",
+			Effect:      EffectDBRead,
 			Category:    CatDBFindings,
 			Signature:   ".query(filters?: {severity?, module_name?, scan_uuid?, limit?, offset?})",
 			Returns:     "DBFinding[]",
@@ -152,6 +157,7 @@ func dbFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsDBFindings, Name: "get",
+			Effect:      EffectDBRead,
 			Category:    CatDBFindings,
 			Signature:   ".get(id: number)",
 			Returns:     "DBFinding | null",
@@ -171,6 +177,7 @@ func dbFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsDBFindings, Name: "getByRecord",
+			Effect:      EffectDBRead,
 			Category:    CatDBFindings,
 			Signature:   ".getByRecord(uuid: string)",
 			Returns:     "DBFinding[]",
@@ -191,6 +198,7 @@ func dbFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsDBFindings, Name: "create",
+			Effect:      EffectDBWrite,
 			Category:    CatDBFindings,
 			Signature:   ".create(finding: {module_id, module_name, severity?, confidence?, description?, ...})",
 			Returns:     "bool",
@@ -220,6 +228,7 @@ func dbFuncDefs() []JSFuncDef {
 
 		{
 			Namespace: NsDB, Name: "compareResponses",
+			Effect:      EffectPure,
 			Category:    CatDBAnalysis,
 			Signature:   ".compareResponses(records: object[])",
 			Returns:     "{all_similar, scores, variant_count, summary}",

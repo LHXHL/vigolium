@@ -25,6 +25,14 @@ type DiskQueue struct {
 	baseDir          string
 	maxRecordsPerSeg int
 
+	// discardBefore drops (acks without delivering) any task created before
+	// it. Zero = deliver everything. Set from DiscardOlderThan at open, so it
+	// only ever catches tasks a previous run left behind.
+	discardBefore time.Time
+	// recovered is how many pending tasks were on disk at open.
+	recovered int64
+	discarded atomic.Int64
+
 	segments      []*Segment // Ordered by ID (oldest first)
 	activeSegment *Segment   // Current segment for writing
 	nextSegmentID uint64
@@ -59,6 +67,11 @@ type DiskQueueConfig struct {
 	// MaxRecordsPerSegment is the maximum tasks per segment before rotation.
 	// Default: 10000
 	MaxRecordsPerSegment int
+
+	// DiscardOlderThan, when > 0, drops recovered tasks older than this at
+	// dequeue instead of replaying them: a task a crashed server left behind
+	// days ago targets a world that has moved on.
+	DiscardOlderThan time.Duration
 }
 
 // DefaultDiskQueueConfig returns sensible defaults.
@@ -79,7 +92,8 @@ func NewDiskQueue(cfg DiskQueueConfig) (*DiskQueue, error) {
 	}
 
 	// Ensure base directory exists
-	if err := os.MkdirAll(cfg.BaseDir, 0755); err != nil {
+	// 0700: queued tasks carry raw requests (cookies, tokens, bodies).
+	if err := os.MkdirAll(cfg.BaseDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create base directory: %w", err)
 	}
 
@@ -89,10 +103,16 @@ func NewDiskQueue(cfg DiskQueueConfig) (*DiskQueue, error) {
 		closeChan:        make(chan struct{}),
 		notify:           make(chan struct{}, 1),
 	}
+	if cfg.DiscardOlderThan > 0 {
+		q.discardBefore = time.Now().Add(-cfg.DiscardOlderThan)
+	}
 
 	// Load existing segments or create first one
 	if err := q.loadOrCreateSegments(); err != nil {
 		return nil, err
+	}
+	for _, seg := range q.segments {
+		q.recovered += seg.PendingTasks()
 	}
 
 	// Start background cleanup goroutine
@@ -433,7 +453,7 @@ func (q *DiskQueue) tryDequeue() (*ScanTask, error) {
 		if seg.IsClosed() {
 			continue
 		}
-		task, err := seg.GetNextPending()
+		task, err := q.nextFreshPending(seg)
 		if err != nil {
 			zap.L().Warn("Error getting pending task from segment",
 				zap.Uint64("segment_id", seg.ID()),
@@ -449,6 +469,33 @@ func (q *DiskQueue) tryDequeue() (*ScanTask, error) {
 
 	return nil, nil
 }
+
+// nextFreshPending returns seg's next pending task, acking (dropping) any that
+// are older than the discard cutoff on the way.
+func (q *DiskQueue) nextFreshPending(seg *Segment) (*ScanTask, error) {
+	for {
+		task, err := seg.GetNextPending()
+		if err != nil || task == nil {
+			return task, err
+		}
+		if q.discardBefore.IsZero() || !task.CreatedAt.Before(q.discardBefore) {
+			return task, nil
+		}
+		if err := seg.AckTask(task.ID); err != nil && !errors.Is(err, ErrTaskNotFound) {
+			return nil, err
+		}
+		if n := q.discarded.Add(1); n == 1 {
+			zap.L().Warn("Discarding stale queued tasks left by a previous run",
+				zap.Time("created_before", q.discardBefore))
+		}
+	}
+}
+
+// RecoveredTasks is how many pending tasks were on disk when the queue opened.
+func (q *DiskQueue) RecoveredTasks() int64 { return q.recovered }
+
+// DiscardedTasks is how many recovered tasks were dropped as stale so far.
+func (q *DiskQueue) DiscardedTasks() int64 { return q.discarded.Load() }
 
 // Ack marks a task as completed. It first tries the segment recorded for this
 // task at dequeue (O(1)); if that mapping is missing or stale, it falls back to

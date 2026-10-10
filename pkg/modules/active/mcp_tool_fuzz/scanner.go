@@ -12,6 +12,7 @@ import (
 	mcpinfra "github.com/vigolium/vigolium/pkg/modules/infra/mcp"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/modules/shared/filesig"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 	"github.com/vigolium/vigolium/pkg/utils"
@@ -394,7 +395,7 @@ func buildPayloads(scanCtx *modkit.ScanContext, targetURL, argName string) []pay
 	// one metacharacter is still caught. Confirmation is emitted out-of-band by
 	// the global OAST poller — no in-band finding and no sleep wait here.
 	if oast := scanCtx.OASTProv(); oast != nil && oast.Enabled() {
-		if cb := oast.GenerateURL(targetURL, argName, "mcp-tool-arg", ModuleID, ""); cb != "" {
+		if cb := modkit.OASTURLFor(oast, oastclass.MCPArg, targetURL, argName, "mcp-tool-arg", ModuleID, ""); cb != "" {
 			out = append(out, payload{
 				name:     "Server-Side Request Forgery (OAST)",
 				vulnTag:  "ssrf",
@@ -403,7 +404,7 @@ func buildPayloads(scanCtx *modkit.ScanContext, targetURL, argName string) []pay
 			})
 		}
 		for _, sep := range cmdSeparators {
-			cb := oast.GenerateURL(targetURL, argName, "mcp-tool-arg-rce-"+sep.name, ModuleID, "")
+			cb := modkit.OASTURLFor(oast, oastclass.MCPArg, targetURL, argName, "mcp-tool-arg-rce-"+sep.name, ModuleID, "")
 			if cb == "" {
 				continue
 			}

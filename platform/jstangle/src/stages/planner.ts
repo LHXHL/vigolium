@@ -12,6 +12,8 @@ export type StageName =
   | 'capabilityPacks'
   | 'requestClients'
   | 'requestFallbacks'
+  | 'requestAuth'
+  | 'pathLiterals'
   | 'bundleModuleScan'
   | 'generateCode'
   | 'beautify';
@@ -29,11 +31,11 @@ export interface PlannedStage {
 type CapabilitySet = ReadonlySet<AnalysisCapability>;
 
 const needsAst = (capabilities: CapabilitySet) =>
-  capabilities.has('endpoints') || capabilities.has('domFlows') || capabilities.has('transformedCode') ||
+  capabilities.has('endpoints') || capabilities.has('pathLiterals') || capabilities.has('domFlows') || capabilities.has('transformedCode') ||
   capabilities.has('assetReferences') || capabilities.has('graphqlOperations') ||
   capabilities.has('realtimeProtocols') || capabilities.has('clientRoutes') || capabilities.has('browserSecurityFlows');
 const needsTransforms = (capabilities: CapabilitySet) =>
-  capabilities.has('endpoints') || capabilities.has('transformedCode') || capabilities.has('assetReferences') ||
+  capabilities.has('endpoints') || capabilities.has('pathLiterals') || capabilities.has('transformedCode') || capabilities.has('assetReferences') ||
   capabilities.has('graphqlOperations') || capabilities.has('realtimeProtocols') || capabilities.has('clientRoutes');
 
 export function buildStagePlan(capabilities: CapabilitySet): PlannedStage[] {
@@ -85,6 +87,16 @@ export function buildStagePlan(capabilities: CapabilitySet): PlannedStage[] {
     {
       name: 'requestFallbacks', enabled: endpoints, fatal: false,
       requires: ['transformedAst', 'requestCandidates'], produces: ['requestCandidates'], mutatesAst: false, costClass: 'heavy',
+    },
+    {
+      name: 'requestAuth', enabled: endpoints, fatal: false,
+      requires: ['transformedAst', 'requestCandidates'], produces: ['requestAuth'], mutatesAst: false, costClass: 'light',
+    },
+    {
+      // Path-shaped literals not consumed by a request or route. Runs after
+      // both so it can skip the spans they already claimed.
+      name: 'pathLiterals', enabled: capabilities.has('pathLiterals'), fatal: false,
+      requires: ['transformedAst'], produces: ['pathLiterals'], mutatesAst: false, costClass: 'light',
     },
     {
       // Opt-in (gated on the unpackModules option in index.ts). Unpacks the

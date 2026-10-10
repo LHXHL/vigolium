@@ -239,5 +239,5 @@ func registerPaceFlags(flags *pflag.FlagSet) {
 const (
 	defaultConcurrency = types.DefaultConcurrency
 	defaultRateLimit   = 100
-	defaultMaxPerHost  = 50
+	defaultMaxPerHost  = types.DefaultMaxPerHost
 )

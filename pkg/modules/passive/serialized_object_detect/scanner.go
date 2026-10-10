@@ -99,7 +99,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 			ExtractedResults: []string{
 				fmt.Sprintf("Format: %s", formatName),
 				fmt.Sprintf("Parameter: %s", param.Name()),
-				fmt.Sprintf("Value (truncated): %s", truncate(value, 80)),
+				fmt.Sprintf("Value (truncated): %s", modkit.Truncate(value, 80)),
 			},
 			Info: output.Info{
 				Name:        fmt.Sprintf("Serialized %s Object in Parameter", formatName),
@@ -201,12 +201,4 @@ func tryBase64Decode(value string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// truncate returns the first n characters of s, appending "..." if truncated.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }

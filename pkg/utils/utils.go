@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math/rand"
+	randv2 "math/rand/v2"
 	"net"
 	"net/url"
 	"os"
@@ -139,6 +140,30 @@ func RandomNumberInRange(from, to int) string {
 		from, to = to, from
 	}
 	return strconv.Itoa(rand.Intn(to-from+1) + from)
+}
+
+// ALNUM_CHARSET is the mixed-case alphanumeric alphabet used by RandomAlnum.
+const ALNUM_CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+// RandomOf returns n characters drawn uniformly from charset using the
+// auto-seeded math/rand/v2 global source, which is safe for concurrent use and
+// never repeats just because two calls land in the same clock tick (unlike
+// RandomFromChoices). It returns "" for n <= 0 or an empty charset. Not for
+// secrets: use crypto/rand for anything security-sensitive.
+func RandomOf(n int, charset string) string {
+	if n <= 0 || charset == "" {
+		return ""
+	}
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = charset[randv2.IntN(len(charset))]
+	}
+	return string(b)
+}
+
+// RandomAlnum returns n random mixed-case alphanumeric characters (see RandomOf).
+func RandomAlnum(n int) string {
+	return RandomOf(n, ALNUM_CHARSET)
 }
 
 func RandomString(length int) string {

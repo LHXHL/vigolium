@@ -21,8 +21,7 @@ func EffectiveConfigPath(configFlag string) string {
 // ConfigWarn prints one configuration diagnostic. The default writes to stderr;
 // pkg/cli replaces it so --silent and the machine-output modes are honoured.
 //
-// A package var rather than a parameter for the same reason ReadOnlyRequested is
-// one: LoadSettings is reached from ~35 call sites, none of which decides output
+// A package var rather than a parameter for the same reason Policy is one: LoadSettings is reached from ~35 call sites, none of which decides output
 // policy, and threading a writer through all of them to answer a question only
 // the root command knows is worse than one assignment at startup.
 var ConfigWarn = func(msg string) {
@@ -87,6 +86,27 @@ func LoadSettings(configPath string) (*config.Settings, error) {
 	}
 	for _, w := range warnings {
 		WarnConfigOnce(w)
+	}
+	return settings, nil
+}
+
+// LoadProjectSettings is LoadSettings plus the project layer: the global config
+// (with LoadSettings' explicit-vs-discovered failure policy and warnings), then
+// projectUUID's overlay from config.ProjectConfigPath — the file `scope set
+// --project` and `project config` write. An empty projectUUID is global-only.
+//
+// Every command that runs a scan or judges scope under a resolved project loads
+// through here, so the documented precedence (global → project → scanning
+// profile → CLI) holds: the profile and CLI layers are applied afterwards by
+// the scan-options resolver. A broken overlay is fatal for the same reason a
+// broken --config is: it was written on purpose, usually to narrow scope.
+func LoadProjectSettings(configPath, projectUUID string) (*config.Settings, error) {
+	settings, err := LoadSettings(configPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := config.ApplyProjectOverlay(settings, projectUUID); err != nil {
+		return nil, err
 	}
 	return settings, nil
 }

@@ -7,7 +7,7 @@
 > - [data-and-storage.md](data-and-storage.md) — multi-tenancy, the database model, and cloud storage
 > - [server-and-api.md](server-and-api.md) — the REST server, traffic ingestion, and the API surface
 
-Vigolium is a high-fidelity web vulnerability scanner written in Go. It combines deterministic, module-based scanning with AI-driven agentic analysis to provide broad and deep coverage of web application security issues. The scanner ships 324 modules (208 active, 117 passive) covering injection flaws, misconfigurations, information disclosure, authentication issues, and more.
+Vigolium is a high-fidelity web vulnerability scanner written in Go. It combines deterministic, module-based scanning with AI-driven agentic analysis to provide broad and deep coverage of web application security issues. The scanner ships 331 modules (213 active, 118 passive) covering injection flaws, misconfigurations, information disclosure, authentication issues, and more.
 
 Vigolium can operate as a CLI tool for one-off scans, as a persistent REST API server that ingests live traffic, or as a traffic-forwarding ingestor client (`vigolium ingest`) that pushes traffic to a running server. All scan data is project-scoped for multi-tenancy support. Module: `github.com/vigolium/vigolium`, requires Go 1.27+.
 
@@ -29,17 +29,23 @@ The native scan pipeline is fully deterministic -- pure Go, no AI involvement. R
 
 ```
 Heuristics -> optional Port Sweep -> External Harvesting -> Spidering
--> Discovery / Input Ingestion -> targeted Re-spider -> DynamicAssessment
--> KnownIssueScan
+-> optional Probe -> Discovery / Input Ingestion -> targeted Re-spider
+-> Seed -> DynamicAssessment -> KnownIssueScan
 ```
+
+Only the enabled phases run; the order and each phase's gate live in
+`BuildNativeScanPlan` (`internal/runner/native_plan.go`).
 
 | Phase | Purpose |
 |-------|---------|
-| Heuristics | Lightweight fingerprinting and technology detection |
+| Heuristics | Fetches each target's root page and classifies it (blank vs content, JSON/XML API, SPA) to decide whether spidering it is worthwhile; not technology fingerprinting |
 | Port Sweep | Optional alternate-port HTTP(S) discovery for deep/subdomain-following runs |
 | External Harvesting | Wayback Machine and other passive source enumeration |
 | Spidering | Active crawling, JS analysis, link and form extraction |
+| Probe | Opt-in host sweep (`--only probe`): one request per target, passive modules only, no content discovery |
 | Discovery | Endpoint and content discovery via wordlists |
+| Targeted Re-spider | Re-crawls rich/SPA routes that discovery surfaced after the first browser crawl (needs spidering, discovery and dynamic assessment enabled) |
+| Seed | When ingestion/discovery is skipped (e.g. `--only dynamic-assessment`), stores the CLI targets as records so assessment has input |
 | DynamicAssessment | Core vulnerability testing -- injection, XSS, SSRF, etc. (CLI aliases: `audit`, `dast`, `assessment`) |
 | KnownIssueScan | Checks for known CVEs and common misconfigurations |
 
@@ -62,9 +68,9 @@ exceptions it runs with, is one reported policy; see
 
 | Strategy | Behavior |
 |----------|----------|
-| Lite | Fast surface-level scan; skips heavy crawling and discovery |
-| Balanced | Default. Runs all phases with sensible limits |
-| Deep | Exhaustive scanning with higher limits, broader wordlists, and external harvesting |
+| Lite | Fast surface-level scan: dynamic assessment only (no spidering, discovery, external harvest, or known-issue scan), under a pace ceiling |
+| Balanced | Default. Spidering, discovery, dynamic assessment and known-issue scan; no external harvest, and discovery's `/FUZZ` brute-force is off |
+| Deep | Everything in balanced plus external harvesting. The `--intensity deep` preset (which selects this strategy through a scanning profile) also turns on the alternate-port sweep, subdomain following, discovery fuzzing, and the large wordlist tier |
 
 ### Agentic Scan
 

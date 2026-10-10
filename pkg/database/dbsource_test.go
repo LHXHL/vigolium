@@ -709,6 +709,59 @@ func TestRiskPrioritizedDBInputSource_ParamShapeCoalescing(t *testing.T) {
 	}
 }
 
+// TestRiskPrioritizedDBInputSource_PathShapeCoalescing verifies that path-only
+// GET records differing only in a normalized id segment (/users/{int}) are
+// coalesced to the sample cap, while literal routes (/users/me, /blog/my-post)
+// survive, and the cursor still advances past every record.
+func TestRiskPrioritizedDBInputSource_PathShapeCoalescing(t *testing.T) {
+	db := newTestDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+	scanUUID := createTestScan(t, repo)
+
+	host := "pathshape.example.com"
+	for i := 1; i <= 6; i++ {
+		insertQueryRecord(t, repo, host, fmt.Sprintf("https://%s/users/%d", host, i))
+	}
+	insertQueryRecord(t, repo, host, fmt.Sprintf("https://%s/users/me", host))
+	insertQueryRecord(t, repo, host, fmt.Sprintf("https://%s/blog/my-post", host))
+
+	const maxSamples = 2
+	source := NewRiskPrioritizedDBInputSource(db, repo, scanUUID).
+		WithHostScopes([]HostTarget{{Hostname: host}}).
+		WithParamShapeCoalescing(maxSamples)
+
+	var got int
+	for {
+		item, err := source.Next(ctx)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next(): %v", err)
+		}
+		got++
+		item.Complete()
+	}
+
+	// Expect: 2 of /users/{int} (cap) + /users/me + /blog/my-post = 4.
+	if got != 4 {
+		t.Fatalf("scanned %d records, want 4 (path ids coalesced)", got)
+	}
+	if dropped := source.CoalescedDropped(); dropped != 4 {
+		t.Fatalf("CoalescedDropped()=%d, want 4", dropped)
+	}
+
+	scan, _ := repo.GetScanByUUID(ctx, scanUUID)
+	remaining, err := repo.CountRecordsAfterCursor(ctx, DefaultProjectUUID, scan.CursorAt, scan.CursorUUID, HostTarget{Hostname: host})
+	if err != nil {
+		t.Fatalf("CountRecordsAfterCursor: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("remaining=%d, want 0 (coalesced records must not be left for a later round)", remaining)
+	}
+}
+
 // TestRecordToHttpRequestResponse_PreservesScheme guards against the bug where
 // scan-on-receive re-parsed raw HTTP bytes and defaulted the scheme to http,
 // causing https targets to be probed over plain http and producing false

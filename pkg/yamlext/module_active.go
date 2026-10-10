@@ -28,7 +28,7 @@ func NewYAMLActiveModule(def *ExtensionDef, configVars map[string]string, httpCl
 		"YAML extension: "+def.Name,
 		def.ConfirmationCriteria,
 		sev,
-		severity.Firm,
+		ParseConfidence(def.Confidence, severity.Firm),
 		scanTypes,
 		modkit.AllInsertionPointTypes,
 	)
@@ -209,7 +209,7 @@ func (m *YAMLActiveModule) buildRuleFinding(
 	} else {
 		result.Info.Severity = m.Severity()
 	}
-	result.Info.Confidence = severity.Firm
+	result.Info.Confidence = ParseConfidence(finding.Confidence, m.Confidence())
 
 	matchedStr := Render(finding.Matched, tctx)
 	if matchedStr != "" {

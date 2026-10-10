@@ -146,8 +146,13 @@ func TestRunDBCompactJSONContract(t *testing.T) {
 	docs := decodeStdoutDocuments(t, out)
 	require.Len(t, docs, 1)
 	require.Equal(t, "db compact", docs[0]["command"])
-	items, ok := docs[0]["items"].(map[string]any)
-	require.True(t, ok, "items must be the summary object: %v", docs[0])
+	require.Equal(t, "mutation", docs[0]["kind"])
+	require.Equal(t, true, docs[0]["changed"])
+	require.Equal(t, "compact", docs[0]["action"])
+	rows, ok := docs[0]["items"].([]any)
+	require.True(t, ok && len(rows) == 1, "items must be a one-element array holding the summary: %v", docs[0])
+	items, ok := rows[0].(map[string]any)
+	require.True(t, ok, "items[0] must be the summary object: %v", docs[0])
 	for _, key := range []string{
 		"dry_run", "records_compacted", "response_bodies_compacted", "request_bodies_compacted",
 		"body_bytes_before", "body_bytes_after", "db_bytes_before", "db_bytes_after",

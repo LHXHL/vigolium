@@ -43,10 +43,10 @@ func TestCodingAgentDocEnvelopeExample(t *testing.T) {
 			"docs/coding-agent.md documents envelope key %q, which no -j command emits", key)
 	}
 
-	// The three that make the document usable at all: the version a consumer
-	// gates on, the row array it parses, and the scope flag that tells it
-	// whether a filter was applied.
-	for _, must := range []string{"schema_version", "items", "project_scoped"} {
+	// The ones that make the document usable at all: the version a consumer
+	// gates on, the success branch and document shape, the row array it parses,
+	// and the scope flag that tells it whether a filter was applied.
+	for _, must := range []string{"schema_version", "ok", "kind", "items", "project_scoped"} {
 		assert.Contains(t, documented, must,
 			"the documented envelope must show %q", must)
 	}
@@ -109,7 +109,7 @@ func fencedJSONUnder(t *testing.T, doc, heading string) string {
 // from the document.
 func producedEnvelopeKeys(t *testing.T) map[string]bool {
 	t.Helper()
-	env := newAgentEnvelope("finding", "findings", []map[string]any{{"id": 1}}, 39, 0, 100).
+	env := newMachineEnvelope(findingCmd, kindRead, "findings", []map[string]any{{"id": 1}}, 39, 0, 100).
 		WithProjectScope("00000000-0000-0000-defa-c01001000001").
 		WithQuery("finding", "--id", "1")
 	env.DBPath = "/tmp/db.sqlite"

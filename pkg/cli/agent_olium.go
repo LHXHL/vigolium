@@ -69,6 +69,9 @@ var oliumCmd = &cobra.Command{
 }
 
 func runAgentOlium(cmd *cobra.Command, args []string) error {
+	// The bash tool's children run against this process's binary, database,
+	// project and config (agent_child_env.go).
+	installAgentChildEnv()
 	// Load settings so yaml-level olium defaults (agent.olium.*) can back
 	// the CLI flags. A load failure is non-fatal: flags alone still work,
 	// matching the pre-config behavior.

@@ -708,9 +708,10 @@ func ParseTriageResult(raw string) (*agenttypes.TriageResult, error) {
 }
 
 // ParseTriageConfirmResult extracts a TriageConfirmResult from raw agent output.
-// Accepted verdicts are "confirmed" and "false_positive". Verdict values are
-// trimmed and lowercased before validation; aliases like "fp" or
-// "false-positive" are normalized to "false_positive".
+// Accepted verdicts are "confirmed", "false_positive" and "inconclusive".
+// Verdict values are trimmed and lowercased before validation; aliases like
+// "fp" or "false-positive" are normalized to "false_positive", and "unknown" /
+// "needs_more_info" to "inconclusive".
 func ParseTriageConfirmResult(raw string) (*agenttypes.TriageConfirmResult, error) {
 	jsonStr, err := ExtractJSON(raw)
 	if err != nil {
@@ -728,9 +729,11 @@ func ParseTriageConfirmResult(raw string) (*agenttypes.TriageConfirmResult, erro
 		result.Verdict = agenttypes.TriageVerdictConfirmed
 	case "false_positive", "false-positive", "fp", "false":
 		result.Verdict = agenttypes.TriageVerdictFalsePositive
+	case "inconclusive", "unknown", "needs_more_info", "needs-more-info", "undetermined":
+		result.Verdict = agenttypes.TriageVerdictInconclusive
 	default:
-		return nil, fmt.Errorf("triage confirm result has invalid verdict %q (want %q or %q)",
-			result.Verdict, agenttypes.TriageVerdictConfirmed, agenttypes.TriageVerdictFalsePositive)
+		return nil, fmt.Errorf("triage confirm result has invalid verdict %q (want %q, %q or %q)",
+			result.Verdict, agenttypes.TriageVerdictConfirmed, agenttypes.TriageVerdictFalsePositive, agenttypes.TriageVerdictInconclusive)
 	}
 	return &result, nil
 }

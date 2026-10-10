@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/authsig"
+	"github.com/vigolium/vigolium/pkg/deparos/jstangle/clientroute"
 	"github.com/vigolium/vigolium/pkg/deparos/tag"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 )
@@ -243,6 +244,19 @@ func canonicalRoute(u *url.URL) string {
 		sort.Strings(keys)
 		route += "?" + strings.Join(keys, "&")
 	}
+
+	// A hash-routed client route lives in the fragment; each is its own view.
+	if prefix, path, ok := clientroute.HashRoute(u.Fragment); ok {
+		fsegs := strings.Split(strings.Trim(path, "/"), "/")
+		for i, s := range fsegs {
+			if idLikeSegment(s) {
+				fsegs[i] = "*"
+			} else {
+				fsegs[i] = strings.ToLower(s)
+			}
+		}
+		route += "#" + prefix + "/" + strings.Join(fsegs, "/")
+	}
 	return route
 }
 
@@ -313,6 +327,10 @@ func scoreCandidate(u *url.URL, reason string) int {
 		score += 4
 	case "interactive":
 		score += 2
+	case routeSeedSource:
+		// A route the app's own router declares but no page links to: worth a
+		// browser, though unverified (nothing fetched it yet).
+		score += 3
 	}
 	segs := 0
 	for _, s := range strings.Split(strings.Trim(p, "/"), "/") {

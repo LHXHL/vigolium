@@ -3,28 +3,33 @@ package database
 import (
 	"regexp"
 	"strings"
+
+	"github.com/vigolium/vigolium/pkg/httpmsg/pathshape"
 )
 
 var (
-	reNumeric   = regexp.MustCompile(`^\d+$`)
-	reUUID      = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	reHexLong   = regexp.MustCompile(`(?i)^[0-9a-f]{8,}$`)
 	reTokenLong = regexp.MustCompile(`^[A-Za-z0-9_-]{20,}$`)
 	reVersion   = regexp.MustCompile(`(?i)^v\d+$`)
 )
 
+// templateSegmentIsDynamic reports whether PathToTemplate wildcards seg. It is
+// pathshape's classification (ints, UUIDs, hex ≥8, dates, timestamps, emails,
+// JWTs, base64 ≥16) plus this package's legacy long-token rule (≥20 chars of
+// [A-Za-z0-9_-]), kept so the related-record LIKE patterns never get narrower
+// than they were. Version segments (v1, v2, v10) are never dynamic.
+func templateSegmentIsDynamic(seg string) bool {
+	if seg == "" || reVersion.MatchString(seg) {
+		return false
+	}
+	return pathshape.Kind(seg).Dynamic() || reTokenLong.MatchString(seg)
+}
+
 // HasDynamicSegment returns true if the path contains at least one dynamic
-// segment — a numeric ID, UUID, long hex string, or long alphanumeric token.
+// segment — one PathToTemplate would replace with "*".
 // Version-like segments (v1, v2, v10) are not considered dynamic.
 func HasDynamicSegment(path string) bool {
 	for _, seg := range strings.Split(path, "/") {
-		if seg == "" || reVersion.MatchString(seg) {
-			continue
-		}
-		if reNumeric.MatchString(seg) ||
-			reUUID.MatchString(seg) ||
-			reHexLong.MatchString(seg) ||
-			reTokenLong.MatchString(seg) {
+		if templateSegmentIsDynamic(seg) {
 			return true
 		}
 	}
@@ -36,10 +41,10 @@ func HasDynamicSegment(path string) bool {
 // Static segments and version segments (v1, v2, v10) are preserved.
 // The resulting template uses "*" which callers can replace with "%" for SQL LIKE.
 //
-// Segments are replaced if they match any of:
-//   - Pure numeric: `^\d+$`
-//   - UUID: `^[0-9a-f]{8}-...-[0-9a-f]{12}$` (case-insensitive)
-//   - All-hex ≥ 8 chars: `^[0-9a-f]{8,}$` (case-insensitive)
+// It is a thin wrapper over pkg/httpmsg/pathshape (whose "{kind}" placeholders
+// all become "*") plus the legacy long-token rule:
+//   - pathshape kinds: integers, UUIDs, all-hex ≥ 8 chars, ISO dates and
+//     timestamps, emails, JWTs, base64 ≥ 16 chars
 //   - Long alphanumeric ≥ 20 chars (token-like): `^[A-Za-z0-9_-]{20,}$`
 //
 // Version-like segments (v1, v2, v10) are always kept as-is.
@@ -50,17 +55,7 @@ func PathToTemplate(path string) string {
 
 	segments := strings.Split(path, "/")
 	for i, seg := range segments {
-		if seg == "" {
-			continue
-		}
-		// Keep version-like segments (v1, v2, v10) as-is
-		if reVersion.MatchString(seg) {
-			continue
-		}
-		if reNumeric.MatchString(seg) ||
-			reUUID.MatchString(seg) ||
-			reHexLong.MatchString(seg) ||
-			reTokenLong.MatchString(seg) {
+		if templateSegmentIsDynamic(seg) {
 			segments[i] = "*"
 		}
 	}

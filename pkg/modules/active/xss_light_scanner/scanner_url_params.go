@@ -160,6 +160,9 @@ func (m *URLParamsModule) scanConvertedRequest(
 
 	// Scan each URL parameter
 	for _, ip := range urlPoints {
+		if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
+			continue // another xss module already reported this param here
+		}
 		result, err := m.scanInsertionPointWithPrefixes(parsedReq, ip, baseBody, httpClient)
 		if err != nil {
 			if errors.Is(err, hosterrors.ErrUnresponsiveHost) {
@@ -227,6 +230,9 @@ func (m *URLParamsModule) scanURLParameters(
 
 	// Scan each URL parameter
 	for _, ip := range urlPoints {
+		if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
+			continue // another xss module already reported this param here
+		}
 		result, err := m.scanInsertionPointWithPrefixes(ctx, ip, baseBody, httpClient)
 		if err != nil {
 			if errors.Is(err, hosterrors.ErrUnresponsiveHost) {

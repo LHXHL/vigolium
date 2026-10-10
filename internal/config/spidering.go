@@ -14,13 +14,28 @@ type SpideringConfig struct {
 	MaxDuration         string `yaml:"max_duration"`          // default: "30m"
 	MaxConsecutiveFails int    `yaml:"max_consecutive_fails"` // default: 100
 	Headless            bool   `yaml:"headless"`              // default: true
-	BrowserCount        int    `yaml:"browser_count"`         // default: 1
+	BrowserCount        int    `yaml:"browser_count"`         // default: 1 (>1 is clamped; parallelism comes from tabs)
+	Tabs                int    `yaml:"tabs"`                  // default: 1; tabs of the one browser crawling a shared state graph (max SpideringMaxTabs)
+	TabIsolation        string `yaml:"tab_isolation"`         // default: "shared"; "context" gives each extra tab its own cookie jar
 	Strategy            string `yaml:"strategy"`              // default: "adaptive"
 	IncludeResponseBody bool   `yaml:"include_response_body"` // default: true
 	BrowserEngine       string `yaml:"browser_engine"`        // "chromium" (default), "ungoogled", or "fingerprint"
 	BrowserPath         string `yaml:"browser_path"`          // explicit path to browser binary (overrides auto-detection)
 	NoCDP               bool   `yaml:"no_cdp"`                // disable CDP event listener detection
 	NoForms             bool   `yaml:"no_forms"`              // disable automatic form filling
+
+	// MaxListenerProbeNodes caps, per crawl state, the listener-bearing nodes
+	// the CDP listener pass turns into click candidates (each costs several CDP
+	// round trips to build). 0 means the default (2000); -1 removes the cap.
+	MaxListenerProbeNodes int `yaml:"max_listener_probe_nodes"`
+
+	// Stealth drops the browser's automation markers (enable-automation,
+	// navigator.webdriver, the HeadlessChrome client-hint brand, an empty plugin
+	// list) so a trivial bot wall does not hand the crawl a challenge page. Not
+	// an evasion feature. "auto" (default, also "") is on for the chromium
+	// engine and off for ungoogled/fingerprint, which carry their own
+	// fingerprint flags; "on" and "off" force it.
+	Stealth string `yaml:"stealth,omitempty"`
 
 	// SelfRegister lets the crawl complete a public signup form and continue as
 	// the account it creates. On an app with open registration this is the
@@ -72,6 +87,34 @@ type SpideringConfig struct {
 	// (password/hidden field values, sensitive URL parameters, value/data-*
 	// attributes). Off by default: the graph is redacted and records that it is.
 	GraphIncludeValues bool `yaml:"graph_include_values"`
+
+	// RouteSeeds feeds client-side routes from the target's JavaScript (the
+	// jstangle route facts discovery stores) to the browser as crawl entry
+	// points: the initial crawl takes routes earlier runs of the project
+	// stored, and the targeted re-spider takes the ones this scan's discovery
+	// found. nil = default (true).
+	RouteSeeds *bool `yaml:"route_seeds,omitempty"`
+
+	// MaxExtraSeeds caps the route seeds one target's crawl browses, after
+	// scope filtering and dedup. 0 = default (50).
+	MaxExtraSeeds int `yaml:"max_extra_seeds"`
+}
+
+// DefaultMaxExtraSeeds is spidering.max_extra_seeds when unset.
+const DefaultMaxExtraSeeds = 50
+
+// RouteSeedsEnabled reports whether client routes seed the browser crawl
+// (default on).
+func (c *SpideringConfig) RouteSeedsEnabled() bool {
+	return c.RouteSeeds == nil || *c.RouteSeeds
+}
+
+// ExtraSeedsCap returns max_extra_seeds with the default applied.
+func (c *SpideringConfig) ExtraSeedsCap() int {
+	if c.MaxExtraSeeds <= 0 {
+		return DefaultMaxExtraSeeds
+	}
+	return c.MaxExtraSeeds
 }
 
 // SpideringInteractionConfig is what the browser crawl is permitted to change.
@@ -108,6 +151,19 @@ func (c *SpideringBrowserCompatConfig) SetAll(v bool) {
 // the two together; config cannot import the browser package).
 var SpideringDialogPolicies = []string{"record-dismiss", "accept-all"}
 
+// SpideringStealthModes lists the accepted spidering.stealth values, default
+// first. Mirrors spitolas.StealthModes (pinned by a spitolas test; config
+// cannot import the browser package).
+var SpideringStealthModes = []string{"auto", "on", "off"}
+
+// SpideringTabIsolationModes lists the accepted spidering.tab_isolation
+// values, default first. Mirrors spitolas.TabIsolationModes (pinned by a
+// spitolas test; config cannot import the browser package).
+var SpideringTabIsolationModes = []string{"shared", "context"}
+
+// SpideringMaxTabs caps spidering.tabs. Mirrors spitolas.MaxTabs.
+const SpideringMaxTabs = 16
+
 // DefaultSpideringConfig returns sensible defaults for spidering.
 func DefaultSpideringConfig() *SpideringConfig {
 	return &SpideringConfig{
@@ -122,11 +178,17 @@ func DefaultSpideringConfig() *SpideringConfig {
 		MaxConsecutiveFails: 100,
 		Headless:            true,
 		BrowserCount:        1,
+		// One tab at every intensity until a multi-tab soak has passed.
+		Tabs:                1,
+		TabIsolation:        "shared",
 		Strategy:            "adaptive",
 		IncludeResponseBody: true,
 		BrowserEngine:       "chromium",
+		Stealth:             "auto",
 		NoCDP:               false,
 		NoForms:             false,
+
+		MaxListenerProbeNodes: 2000,
 	}
 }
 
@@ -154,11 +216,20 @@ func (c *SpideringConfig) Validate() error {
 	if c.MaxStates < 0 {
 		return fmt.Errorf("spidering.max_states must be >= 0")
 	}
+	if c.MaxListenerProbeNodes < -1 {
+		return fmt.Errorf("spidering.max_listener_probe_nodes must be >= -1 (-1 = no cap)")
+	}
 	if c.MaxConsecutiveFails < 0 {
 		return fmt.Errorf("spidering.max_consecutive_fails must be >= 0")
 	}
 	if c.BrowserCount < 0 {
 		return fmt.Errorf("spidering.browser_count must be >= 0")
+	}
+	if c.Tabs < 0 || c.Tabs > SpideringMaxTabs {
+		return fmt.Errorf("spidering.tabs must be 0-%d (0 = 1), got: %d", SpideringMaxTabs, c.Tabs)
+	}
+	if c.TabIsolation != "" && !slices.Contains(SpideringTabIsolationModes, c.TabIsolation) {
+		return fmt.Errorf("spidering.tab_isolation must be one of %s, got: %s", strings.Join(SpideringTabIsolationModes, ", "), c.TabIsolation)
 	}
 	if err := validateNonNegDuration("spidering.max_duration", c.MaxDuration); err != nil {
 		return err
@@ -174,6 +245,12 @@ func (c *SpideringConfig) Validate() error {
 	}
 	if !validEngines[c.BrowserEngine] {
 		return fmt.Errorf("spidering.browser_engine must be 'chromium', 'ungoogled', or 'fingerprint', got: %s", c.BrowserEngine)
+	}
+	if c.Stealth != "" && !slices.Contains(SpideringStealthModes, c.Stealth) {
+		return fmt.Errorf("spidering.stealth must be one of %s, got: %s", strings.Join(SpideringStealthModes, ", "), c.Stealth)
+	}
+	if c.MaxExtraSeeds < 0 {
+		return fmt.Errorf("spidering.max_extra_seeds must be >= 0 (0 = default %d), got: %d", DefaultMaxExtraSeeds, c.MaxExtraSeeds)
 	}
 	if c.MaxCaptureBodyBytes < -1 {
 		return fmt.Errorf("spidering.max_capture_body_bytes must be 0 (default), -1 (no ceiling) or a positive byte count, got: %d", c.MaxCaptureBodyBytes)

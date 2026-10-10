@@ -29,17 +29,26 @@ type RequestTemplateRegistry interface {
 	All() []ExtractedRequestTemplate
 	Len() int
 	PendingLen() int
+	// NoteOutcome records what became of a template (see TemplateOutcome). A
+	// template seen through several variants or flush rounds keeps its most
+	// informative note. Returns false when the template is unknown.
+	NoteOutcome(sourceURL, id string, note ReplayNote) bool
+	// Outcomes reports every template with its final note. A template that was
+	// never noted is classified by whether it was ever claimed for replay.
+	Outcomes() []TemplateOutcome
 }
 
 type requestTemplateRegistry struct {
-	mu      sync.Mutex
-	items   map[string]ExtractedRequestTemplate
-	pending map[string]struct{}
+	mu       sync.Mutex
+	items    map[string]ExtractedRequestTemplate
+	pending  map[string]struct{}
+	outcomes map[string]ReplayNote
 }
 
 func NewRequestTemplateRegistry() RequestTemplateRegistry {
 	return &requestTemplateRegistry{
 		items: make(map[string]ExtractedRequestTemplate), pending: make(map[string]struct{}),
+		outcomes: make(map[string]ReplayNote),
 	}
 }
 
@@ -181,6 +190,52 @@ func (r *requestTemplateRegistry) PendingLen() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.pending)
+}
+
+func (r *requestTemplateRegistry) NoteOutcome(sourceURL, id string, note ReplayNote) bool {
+	if id == "" || note.Outcome == "" {
+		return false
+	}
+	key := sourceURL + "\x00" + id
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.items[key]; !ok {
+		return false
+	}
+	if existing, ok := r.outcomes[key]; ok && !note.supersedes(existing) {
+		return true
+	}
+	r.outcomes[key] = note
+	return true
+}
+
+func (r *requestTemplateRegistry) Outcomes() []TemplateOutcome {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]TemplateOutcome, 0, len(r.items))
+	for key, template := range r.items {
+		note, ok := r.outcomes[key]
+		if !ok {
+			if _, pending := r.pending[key]; pending {
+				// Never claimed: the end-of-scan flush cap or the target's
+				// deadline arrived first.
+				note = ReplayNote{Outcome: TemplateWithheldFlushCap, Reason: ReasonUnreplayed}
+			} else {
+				// Claimed but nothing was sent and nothing was noted: no
+				// candidate URL resolved to something replayable.
+				note = ReplayNote{Outcome: TemplateUnresolvable, Reason: "no-variant"}
+			}
+		}
+		result = append(result, TemplateOutcome{Template: cloneTemplate(template), ReplayNote: note})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		a, b := result[i].Template, result[j].Template
+		if a.SourceURL == b.SourceURL {
+			return a.ID < b.ID
+		}
+		return a.SourceURL < b.SourceURL
+	})
+	return result
 }
 
 func sortTemplates(templates []ExtractedRequestTemplate) {

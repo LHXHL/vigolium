@@ -16,7 +16,9 @@ type EngineOptions struct {
 	ScopeMatcher *config.ScopeMatcher
 	ScopeConfig  *config.ScopeConfig
 	ScanUUID     string
-	Repository   *database.Repository
+	// ProjectUUID scopes what the script stores (vigolium.ingest) to a project.
+	ProjectUUID string
+	Repository  *database.Repository
 
 	// LLMClient enables vigolium.agent.* API (nil = disabled)
 	LLMClient llm.Client

@@ -3,6 +3,7 @@ package graphql_scan
 import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 )
 
@@ -82,7 +83,7 @@ func (m *Module) send(
 
 	out := &gqlResp{
 		body:    resp.BodyString(),
-		blocked: isBlockedResponse(resp),
+		blocked: infra.IsBlockedResponse(resp),
 	}
 	if r := resp.Response(); r != nil {
 		out.status = r.StatusCode

@@ -85,6 +85,8 @@ type Report struct {
 	Status           Status                  `json:"status"` // "ready", "degraded", "not_ready"
 	Timestamp        string                  `json:"timestamp"`
 	Config           *CheckResult            `json:"config"`
+	Scope            *CheckResult            `json:"scope"`
+	OAST             *CheckResult            `json:"oast"`
 	Database         *CheckResult            `json:"database"`
 	Initialized      *CheckResult            `json:"initialized"`
 	Queue            *CheckResult            `json:"queue,omitempty"`
@@ -97,6 +99,11 @@ type Report struct {
 	Tools            map[string]*ToolCheck   `json:"tools"`
 	TemplatesDir     *CheckResult            `json:"templates_dir"`
 	NucleiTemplates  *CheckResult            `json:"nuclei_templates"`
+	// Skill is the coding-agent skill install check. The CLI fills it in after
+	// Run (it needs the binary's version and embedded bundle), so the server's
+	// /diagnostics leaves it nil. It never moves Status: a stale skill does
+	// not stop a scan.
+	Skill *CheckResult `json:"skill,omitempty"`
 }
 
 // Deps provides the dependencies needed to run diagnostics.
@@ -124,6 +131,11 @@ type Deps struct {
 	// one-shot CLI paths (doctor, first-run init) enable it; the server
 	// /diagnostics endpoint leaves it off to stay a cheap, poll-safe readout.
 	ProbeBrowserLaunch bool
+	// ProbeNetwork, when set, lets the OAST check resolve the interactsh server
+	// and open one TLS connection to it (3s budget, no registration). Like
+	// ProbeBrowserLaunch it is set by the CLI doctor only; the server
+	// /diagnostics endpoint leaves it off so a poll never touches the network.
+	ProbeNetwork bool
 }
 
 // AuditPathStatus describes one of the two driver paths under "Audit mode"
@@ -181,6 +193,8 @@ func Run(deps Deps) *Report {
 	}
 
 	r.Config = checkConfig(deps.ConfigPath, deps.ConfigErr)
+	r.Scope = checkScope(settings)
+	r.OAST = checkOAST(settings, deps.ProbeNetwork)
 	r.Database = checkDatabase(deps.DB, deps.DBErr)
 	r.Initialized = checkInitMarker()
 	r.Queue = checkQueue(deps.Queue)
@@ -315,6 +329,22 @@ func checkConfig(configPath string, cfgErr error) *CheckResult {
 
 func checkDatabase(db *database.DB, dbErr error) *CheckResult {
 	if db == nil {
+		if errors.Is(dbErr, database.ErrSchemaTooNew) {
+			return &CheckResult{
+				Status:  StatusError,
+				Message: "schema_too_new",
+				Details: []string{dbErr.Error(), fmt.Sprintf("this binary: schema v%d", database.CurrentSchemaVersion())},
+				Tip:     "A newer vigolium migrated this database. Upgrade vigolium (`vigolium update`) to read or write it.",
+			}
+		}
+		if errors.Is(dbErr, database.ErrSchemaOutdated) {
+			return &CheckResult{
+				Status:  StatusError,
+				Message: "schema_outdated",
+				Details: []string{dbErr.Error()},
+				Tip:     "Run `vigolium db migrate`, or set database.auto_migrate_on_read: true.",
+			}
+		}
 		if dbErr != nil {
 			return &CheckResult{
 				Status:  StatusError,
@@ -380,6 +410,35 @@ func checkDatabase(db *database.DB, dbErr error) *CheckResult {
 	}
 	details = append(details, fmt.Sprintf("schema: %d tables present", len(tables)))
 
+	// Schema compatibility (schema_meta): which revision the store is at, the
+	// oldest reader it admits, and which build last migrated it.
+	metaCtx, metaCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer metaCancel()
+	if info, err := db.SchemaInfo(metaCtx); err == nil {
+		line := fmt.Sprintf("schema version: v%d (min reader v%d; this binary v%d)",
+			info.Version, info.MinReaderVersion, database.CurrentSchemaVersion())
+		if info.WrittenBy != "" {
+			line += ", written by " + info.WrittenBy
+		}
+		details = append(details, line)
+		if info.Version > database.CurrentSchemaVersion() {
+			return &CheckResult{
+				Status:  StatusWarning,
+				Message: fmt.Sprintf("driver=%s, schema=newer (v%d > v%d)", driver, info.Version, database.CurrentSchemaVersion()),
+				Details: append(details, "reads work; writes (scans, ingest, imports) are refused with schema_too_new"),
+				Tip:     "A newer vigolium migrated this database. Upgrade vigolium (`vigolium update`) before scanning into it.",
+			}
+		}
+		if info.Version < database.CurrentSchemaVersion() {
+			return &CheckResult{
+				Status:  StatusWarning,
+				Message: fmt.Sprintf("driver=%s, schema=outdated (v%d < v%d)", driver, info.Version, database.CurrentSchemaVersion()),
+				Details: details,
+				Tip:     "Run `vigolium db migrate` to upgrade it.",
+			}
+		}
+	}
+
 	return &CheckResult{
 		Status:  StatusOK,
 		Message: fmt.Sprintf("driver=%s, schema=ok", driver),
@@ -387,9 +446,9 @@ func checkDatabase(db *database.DB, dbErr error) *CheckResult {
 	}
 }
 
-// checkInitMarker inspects ~/.vigolium/initialized, the sentinel written by
-// ensureCoreDeps after the first-run dependency setup (chromium + nuclei
-// templates) completes. The marker is a status/debugging surface — its
+// checkInitMarker inspects ~/.vigolium/initialized, the sentinel written once
+// chromium and nuclei templates have both been seen present (by the scan
+// bootstrap's check, doctor, or `vigolium init`). The marker is a status/debugging surface — its
 // absence here just means the user has not yet run a scan-touching command,
 // not that anything is broken — so the result is StatusWarning at worst and
 // never affects overall readiness.
@@ -411,7 +470,7 @@ func checkInitMarker() *CheckResult {
 				Status:  StatusWarning,
 				Message: "first-run dep setup not yet completed",
 				Details: details,
-				Tip:     "Run any scan command (e.g. `vigolium scan-url <target>`) or `vigolium init` to trigger the chromium + nuclei-templates install and stamp the marker.",
+				Tip:     "Run `vigolium doctor --fix --only chrome,nuclei` (or `vigolium init`) to install chromium + nuclei-templates and stamp the marker; otherwise the first --spider / known-issue scan fetches them.",
 			}
 		}
 		return &CheckResult{
@@ -889,17 +948,50 @@ func shortDigest(value string) string {
 }
 
 func checkAuditBinary() *CheckResult {
+	st := bin.Status()
 	details := []string{
 		fmt.Sprintf("runtime: %s/%s", runtime.GOOS, runtime.GOARCH),
-		"extracting embedded vigolium-audit and validating executable platform",
+		fmt.Sprintf("source: %s", st.Source),
+	}
+	if st.SHA256 != "" {
+		details = append(details, fmt.Sprintf("pinned sha256: %s (%d bytes uncompressed)", st.SHA256, st.Size))
+	}
+	if st.Source == bin.SourceDownload && st.Origin != "" {
+		details = append(details, fmt.Sprintf("download: %s", st.Origin))
+	}
+	if st.Path != "" {
+		details = append(details, fmt.Sprintf("cache: %s (installed=%t)", config.ContractPath(st.Path), st.Cached))
+	}
+
+	// An audit_external build fetches the helper on first use. A plain doctor
+	// run reports that without downloading; `--fix` prefetches it.
+	if st.Source == bin.SourceDownload && st.Err == nil && !st.Cached {
+		return &CheckResult{
+			Status:  StatusWarning,
+			Message: "vigolium-audit helper not downloaded yet",
+			Details: details,
+			Tip:     "It is fetched on first audit use. Prefetch it now with `vigolium doctor --fix --only vigolium-audit`, or set " + bin.BinaryEnv + "=/path/to/vigolium-audit for an offline install.",
+		}
+	}
+	if st.Source == bin.SourceDownload && st.Err != nil {
+		return &CheckResult{
+			Status:  StatusError,
+			Message: fmt.Sprintf("vigolium-audit helper unavailable: %v", st.Err),
+			Details: details,
+			Tip:     "This build downloads vigolium-audit instead of embedding it. Set " + bin.BaseURLEnv + " to an https mirror of the pinned helper, or " + bin.BinaryEnv + "=/path/to/vigolium-audit.",
+		}
 	}
 
 	if !bin.Available() {
+		msg, tip := "vigolium-audit binary not embedded", "This installed Vigolium binary does not contain vigolium-audit. Reinstall the latest release; source builds should use `make build` or `make release`, not raw `go build`."
+		if st.Source == bin.SourceOverride {
+			msg, tip = fmt.Sprintf("%s is not usable: %v", bin.BinaryEnv, st.Err), "Point "+bin.BinaryEnv+" at an executable vigolium-audit, or unset it to use the built-in helper."
+		}
 		return &CheckResult{
 			Status:  StatusError,
-			Message: "vigolium-audit binary not embedded",
+			Message: msg,
 			Details: details,
-			Tip:     "This installed Vigolium binary does not contain vigolium-audit. Reinstall the latest release; source builds should use `make build` or `make release`, not raw `go build`.",
+			Tip:     tip,
 		}
 	}
 
@@ -911,6 +1003,9 @@ func checkAuditBinary() *CheckResult {
 		}
 		if errors.Is(err, bin.ErrBinaryPlatformMismatch) {
 			tip = "The installed Vigolium package embedded a vigolium-audit binary for the wrong OS/arch. Reinstall the latest release; if it persists, report this as a packaging bug."
+		}
+		if errors.Is(err, bin.ErrChecksumMismatch) {
+			tip = "The vigolium-audit helper did not match its pinned sha256 and was not installed. Reinstall Vigolium; if it persists, report this doctor output."
 		}
 		return &CheckResult{
 			Status:  StatusError,
@@ -1171,6 +1266,12 @@ func computeOverallStatus(r *Report) Status {
 	// Degraded, not not_ready: vigolium runs on defaults without a config file,
 	// so an unreadable one is a real problem that is not a hard stop.
 	if r.Config != nil && r.Config.Status != StatusOK {
+		return "degraded"
+	}
+	// A scope error does not stop vigolium from starting, but every scan drops
+	// the requests the broken rule touches (often all of them). Warnings do not
+	// change the verdict; neither does OAST, whose loss is reported per scan.
+	if r.Scope != nil && r.Scope.Status == StatusError {
 		return "degraded"
 	}
 

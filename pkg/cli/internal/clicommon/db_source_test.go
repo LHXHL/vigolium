@@ -18,8 +18,8 @@ func TestCheckSourceExists_MissingIsRefusedAndCreatesNothing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "typo.sqlite")
 
-	t.Cleanup(func() { RequireExistingSource = "" })
-	RequireExistingSource = path
+	t.Cleanup(func() { Policy.MustExist = "" })
+	Policy.MustExist = path
 
 	err := checkSourceExists()
 	if err == nil {
@@ -50,8 +50,8 @@ func TestCheckSourceExists_ExistingPasses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Cleanup(func() { RequireExistingSource = "" })
-	RequireExistingSource = path
+	t.Cleanup(func() { Policy.MustExist = "" })
+	Policy.MustExist = path
 
 	// Present is all this check decides. Whether the file is a vigolium store is
 	// a separate question with its own code (source_incompatible).
@@ -63,8 +63,8 @@ func TestCheckSourceExists_ExistingPasses(t *testing.T) {
 func TestCheckSourceExists_DirectoryIsRefusedButNotAsMissing(t *testing.T) {
 	dir := t.TempDir()
 
-	t.Cleanup(func() { RequireExistingSource = "" })
-	RequireExistingSource = dir
+	t.Cleanup(func() { Policy.MustExist = "" })
+	Policy.MustExist = dir
 
 	err := checkSourceExists()
 	if err == nil {
@@ -78,8 +78,8 @@ func TestCheckSourceExists_DirectoryIsRefusedButNotAsMissing(t *testing.T) {
 }
 
 func TestCheckSourceExists_UnarmedIsNoop(t *testing.T) {
-	t.Cleanup(func() { RequireExistingSource = "" })
-	RequireExistingSource = ""
+	t.Cleanup(func() { Policy.MustExist = "" })
+	Policy.MustExist = ""
 
 	// The default database is still created on first use: a fresh install's first
 	// `vigolium traffic` legitimately has nothing to read yet.

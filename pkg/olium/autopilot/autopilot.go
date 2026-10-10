@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/audit/claudecost"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/olium"
 	"github.com/vigolium/vigolium/pkg/olium/engine"
@@ -214,6 +215,13 @@ type Options struct {
 	// threshold. Zero means no token cap.
 	TokenBudget int64
 
+	// MaxCostUSD is the hard ceiling on the run's estimated spend in USD,
+	// priced per turn from the provider's usage (claudecost pricing for
+	// Model, cache tokens included). When > 0, the loop trips a halt once the
+	// running cost crosses it. Zero means no cost cap. Like TokenBudget it is
+	// checked after each turn, so the last turn can overshoot by its own cost.
+	MaxCostUSD float64
+
 	// Out is where streaming assistant text is written. Default: stdout.
 	Out io.Writer
 
@@ -328,11 +336,37 @@ type Result struct {
 	// with text-only turns after the empty-turn nudges were spent.
 	Stalled bool
 
+	// BudgetStop names the budget that ended the run, "" when none did:
+	// BudgetWallTime, BudgetTokens, BudgetCost or BudgetCommands. A halt the
+	// model chose (halt_scan) or a context-window stop is not a budget stop.
+	BudgetStop string
+	// CostUSD is the running cost estimate the MaxCostUSD check compared.
+	CostUSD float64
+
 	// Reentries counts how many times the post-halt coverage verification
 	// loop re-prompted the agent. 0 = no verification re-entry fired (most
 	// runs); ≥1 = the coverage probe surfaced enough new endpoints that
 	// the loop nudged the model to continue. Capped at maxPostHaltReentries.
 	Reentries int
+}
+
+// Budget stop kinds reported in Result.BudgetStop.
+const (
+	BudgetWallTime = "wall_time"
+	BudgetTokens   = "tokens"
+	BudgetCost     = "cost"
+	BudgetCommands = "commands"
+)
+
+// runCostUSD prices cumulative usage for model with the shared claudecost
+// table (unknown models price at the table's default).
+func runCostUSD(model string, in, out, cacheRead, cacheCreate int64) float64 {
+	return claudecost.Usage{
+		InputTokens:       in,
+		OutputTokens:      out,
+		CacheReadTokens:   cacheRead,
+		CacheCreateTokens: cacheCreate,
+	}.Price(model)
 }
 
 // skillTag is the muted "❯ autopilot │" phase prefix shared by the skill log
@@ -862,6 +896,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	var usage struct {
 		in, out, cacheRead, cacheCreate int64
 	}
+	// budgetStop records the first budget that tripped (Result.BudgetStop).
+	var budgetStop string
+	noteBudget := func(kind string) {
+		if budgetStop == "" {
+			budgetStop = kind
+		}
+	}
 	// Narration goes through a quoted-block writer so each line of the
 	// planning text is rendered `│ <text>`, while the planning header,
 	// tool calls, and [turn done] line keep writing directly to opts.Out
@@ -1027,6 +1068,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 					reason := fmt.Sprintf("wall-time budget exhausted after %s (cap=%s)",
 						time.Since(started).Round(time.Second), opts.MaxWallTime)
 					halt.SetByBudget(reason)
+					noteBudget(BudgetWallTime)
 					_, _ = fmt.Fprintf(opts.ToolLog, "[%s]\n", reason)
 					iterCancel()
 				}
@@ -1034,8 +1076,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 					reason := fmt.Sprintf("token budget exhausted (used=%d, cap=%d)",
 						usage.in+usage.out, opts.TokenBudget)
 					halt.SetByBudget(reason)
+					noteBudget(BudgetTokens)
 					_, _ = fmt.Fprintf(opts.ToolLog, "[%s]\n", reason)
 					iterCancel()
+				}
+				if opts.MaxCostUSD > 0 {
+					if cost := runCostUSD(opts.Model, usage.in, usage.out, usage.cacheRead, usage.cacheCreate); cost > opts.MaxCostUSD {
+						reason := fmt.Sprintf("cost budget exhausted (est. $%.4f, cap=$%.4f)", cost, opts.MaxCostUSD)
+						halt.SetByBudget(reason)
+						noteBudget(BudgetCost)
+						_, _ = fmt.Fprintf(opts.ToolLog, "[%s]\n", reason)
+						iterCancel()
+					}
 				}
 
 				// Durable-autopilot rotation check. Runs after budget/halt
@@ -1099,6 +1151,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				if ev.BudgetExhausted {
 					reason := fmt.Sprintf("budget exhausted (%s)", ev.Err)
 					halt.SetByBudget(reason)
+					noteBudget(BudgetCommands)
 					_, _ = fmt.Fprintf(opts.ToolLog, "[%s]\n", reason)
 					iterCancel()
 				}
@@ -1279,6 +1332,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		Reentries:         reentries,
 		ToolCalls:         eng.ToolCallCount(),
 		Stalled:           stalled,
+		BudgetStop:        budgetStop,
+		CostUSD:           runCostUSD(opts.Model, usage.in, usage.out, usage.cacheRead, usage.cacheCreate),
 	}, fatalErr
 }
 

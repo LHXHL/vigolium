@@ -1,13 +1,12 @@
 package firebase_fingerprint
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
 
 func TestNew(t *testing.T) {
@@ -16,17 +15,6 @@ func TestNew(t *testing.T) {
 	require.NotNil(t, m)
 	assert.Equal(t, ModuleID, m.ID())
 	assert.Equal(t, ModuleName, m.Name())
-}
-
-func makeHTTPCtx(path, contentType, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", path))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n%s", contentType, body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
 }
 
 // TestScanPerRequest_FirebaseConfig drives a JS response carrying a full
@@ -44,7 +32,7 @@ func TestScanPerRequest_FirebaseConfig(t *testing.T) {
 		"appId": "1:1234567890:web:abcdef123456"
 	};
 	firebase.initializeApp(firebaseConfig);`
-	ctx := makeHTTPCtx("/app.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -68,7 +56,7 @@ func TestScanPerRequest_DevProject(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `firebaseConfig = {"projectId":"myapp-staging", "databaseURL":"https://myapp-staging.firebaseio.com"};`
-	ctx := makeHTTPCtx("/index.html", "text/html", body)
+	ctx := modtest.HTTPCtx("/index.html", "text/html", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -89,7 +77,7 @@ func TestScanPerRequest_DevProject(t *testing.T) {
 func TestScanPerRequest_NoFirebase(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("/", "text/html", `<html><body>Hello World</body></html>`)
+	ctx := modtest.HTTPCtx("/", "text/html", `<html><body>Hello World</body></html>`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -101,7 +89,7 @@ func TestScanPerRequest_NoFirebase(t *testing.T) {
 func TestScanPerRequest_NonHTMLJS(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("/data.txt", "text/plain", `firebase.initializeApp({projectId:"x"})`)
+	ctx := modtest.HTTPCtx("/data.txt", "text/plain", `firebase.initializeApp({projectId:"x"})`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

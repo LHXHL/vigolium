@@ -150,12 +150,14 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	// update so that count reflects rows that actually landed.
 	var probeRecordWriter *database.RecordWriter
 	if r.repository != nil {
-		probeRecordWriter = database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
+		probeRecordWriter = r.newScanRecordWriter()
 	}
 
 	authWalls := newAuthWallCollector()
 
 	executorCfg := core.ExecutorConfig{
+		OnModuleError: r.noteModuleError,
+		Phase:         string(PhaseProbe),
 		Workers:       pace.Concurrency,
 		Services:      infra.svc,
 		HTTPRequester: infra.httpRequester,

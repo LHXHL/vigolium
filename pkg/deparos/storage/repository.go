@@ -563,6 +563,52 @@ func (r *Repository) WalkAllNodes(ctx context.Context, fn func(*NodeModel) error
 	})
 }
 
+// WalkNodesSince streams every node with a response whose id is above afterID,
+// in id order, and returns the highest id it read (afterID when nothing is
+// newer). Rows the callback is not shown still advance the returned id, so a
+// caller resuming from it never re-reads them.
+//
+// id is the insertion order: the nodes table is AUTOINCREMENT (ids are never
+// reused) and SiteMap.Store serializes inserts, so a row committed after a walk
+// always carries a higher id than anything that walk returned. That is what
+// makes the returned id a resumable cursor for a crawl still writing.
+//
+// Paged on the primary key; see walkPageSize.
+func (r *Repository) WalkNodesSince(ctx context.Context, afterID int64, fn func(*NodeModel) error) (int64, error) {
+	last := afterID
+	for {
+		var nodes []NodeModel
+		err := r.db.NewSelect().Model(&nodes).
+			Where("id > ?", last).
+			OrderExpr("id").
+			Limit(walkPageSize).
+			Scan(ctx)
+		if err != nil {
+			return last, err
+		}
+		for i := range nodes {
+			if nodes[i].RespStatus.Valid {
+				if err := fn(&nodes[i]); err != nil {
+					return last, err
+				}
+			}
+			last = nodes[i].ID
+		}
+		if len(nodes) < walkPageSize {
+			return last, nil
+		}
+	}
+}
+
+// MaxNodeID returns the highest node id stored, 0 for an empty table.
+func (r *Repository) MaxNodeID(ctx context.Context) (int64, error) {
+	var result sql.NullInt64
+	err := r.db.NewSelect().Model((*NodeModel)(nil)).
+		ColumnExpr("MAX(id)").
+		Scan(ctx, &result)
+	return result.Int64, err
+}
+
 // WalkNodesFiltered streams nodes with optional session filter.
 // If sessionName is empty, streams all nodes with resp_status.
 // Calls fn for each node; return error to stop iteration.

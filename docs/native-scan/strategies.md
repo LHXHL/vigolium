@@ -102,6 +102,12 @@ vigolium scan -t https://example.com --strategy deep
 
 Sources: Wayback Machine, CommonCrawl, AlienVault OTX, URLScan, VirusTotal. API keys for URLScan and VirusTotal can be configured in `vigolium-configs.yaml` under `external_harvester.sources`.
 
+The harvest itself never contacts the target. When a later phase does, the
+`harvest-probe` step checks the harvested URLs first (one liveness request per
+host, then one GET per URL) and drops dead hosts, `404`/`410` and soft-404 answers
+before anything scans them. `--skip harvest-probe` or `external_harvester.probe:
+false` turns that off; see [native scan phases](../guides/native-scan-phases.md#external-harvest).
+
 ### Content Discovery
 
 Brute-force directory and file discovery using the deparos engine. Enabled by `--strategy balanced`/`deep` or `--discover`.
@@ -188,7 +194,7 @@ vigolium scan -t https://example.com --oast-url https://your-oast.example.com/ca
 | `-c` / `--concurrency` | 25 | Number of concurrent scan workers |
 | `--max-per-host` | 40 | Max concurrent requests per host |
 | `-r` / `--rate-limit` | 100 | Max request submissions per second |
-| `--max-host-error` | 30 | Skip host after N consecutive errors |
+| `--max-host-error` | 30 | Quarantine a host:port after N consecutive transport errors; it is re-probed after `scanning_strategy.http.host_errors.cooldown` (30s, doubling to `max_cooldown` 5m) and dropped for the scan after `max_trips` (5) failed probes |
 | `--max-findings-per-module` | 10 | Suppress findings after this many per module (0 = unlimited) |
 | `--no-waf-pacing` | off | Disable proactive CDN/WAF-edge throttling (reactive backoff still applies) |
 | `--timeout` | 15s | Per-request HTTP timeout |
@@ -448,8 +454,9 @@ vigolium scan -t https://example.com --strategy deep \
 # Quick CI check with JSON output
 vigolium scan -t https://staging.example.com --strategy lite -j
 
-# Rescan existing database records
-vigolium scan
+# Rescan every HTTP record already in the active project
+# (--all-records is required; a bare `vigolium scan` with no target is exit 2)
+vigolium scan --all-records
 
 # Scan with proxy (Burp, ZAP)
 vigolium scan -t https://example.com --proxy http://127.0.0.1:8080

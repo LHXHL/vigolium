@@ -5,22 +5,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
-
-// makeHTTPCtx builds a request/response pair from the given path, response
-// headers, and body.
-func makeHTTPCtx(path, headers, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte("GET " + path + " HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := "HTTP/1.1 200 OK\r\n" + headers + "\r\n" + body
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -36,7 +23,7 @@ func TestScanPerRequest_PoweredByPHP(t *testing.T) {
 	t.Parallel()
 	m := New()
 	headers := "Content-Type: text/html\r\nX-Powered-By: PHP/8.2.1\r\n"
-	ctx := makeHTTPCtx("/", headers, `<html></html>`)
+	ctx := modtest.HTTPCtxHeaders("/", headers, `<html></html>`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -51,7 +38,7 @@ func TestScanPerRequest_PHPSessIDCookie(t *testing.T) {
 	t.Parallel()
 	m := New()
 	headers := "Content-Type: text/html\r\nSet-Cookie: PHPSESSID=abc123; path=/\r\n"
-	ctx := makeHTTPCtx("/", headers, `<html></html>`)
+	ctx := modtest.HTTPCtxHeaders("/", headers, `<html></html>`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -63,7 +50,7 @@ func TestScanPerRequest_PHPSessIDCookie(t *testing.T) {
 func TestScanPerRequest_DotPHPAlone(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("/index.php", "Content-Type: text/html\r\n", `<html></html>`)
+	ctx := modtest.HTTPCtxHeaders("/index.php", "Content-Type: text/html\r\n", `<html></html>`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -74,7 +61,7 @@ func TestScanPerRequest_DotPHPAlone(t *testing.T) {
 func TestScanPerRequest_Benign(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("/", "Content-Type: text/html\r\nServer: nginx\r\n", `<html></html>`)
+	ctx := modtest.HTTPCtxHeaders("/", "Content-Type: text/html\r\nServer: nginx\r\n", `<html></html>`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

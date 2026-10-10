@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,7 +40,6 @@ var (
 	replayTargetURL      string
 	replayTimeout        time.Duration
 	replayOutputPath     string
-	replayPretty         bool
 	replayBurpBridgeURL  string
 	replaySaveToBurp     bool
 	replaySendViaBurp    bool
@@ -102,8 +100,10 @@ For payload / insertion-point fuzzing (wordlists, --class, matchers, calibration
 use 'vigolium fuzz' — replay is for re-sending and confirming, not fuzzing.
 
 The same engine that powers the autopilot's in-process replay_request tool. Use this
-to drive vigolium externally (Claude Code, Cursor, Pi, CI scripts) — the JSON output
-shape is stable so an agent can confirm a finding without parsing terminal output.
+to drive vigolium externally (Claude Code, Cursor, Pi, CI scripts). Output is a human
+summary by default; -j gives one JSON envelope (the result in items[0]) and
+--format jsonl one compact object per line, so an agent can confirm a finding
+without parsing terminal output.
 
 Cookies set by one replay persist to the next when --session-id is provided. Routes
 through HTTP_PROXY / HTTPS_PROXY (or --proxy) for Burp-style inspection.
@@ -124,7 +124,9 @@ stored record instead of a single source. The selection surface mirrors
 --search (AND-combined), --header-search, --body, --from/--to date range,
 --exclude-search/--exclude-header-search/--exclude-body, and
 --sort/--asc/--offset. Each matched record is re-sent verbatim through the diff
-engine and results stream as JSONL (one object per record). Throttle with
+engine. Results stream as JSONL (one object per record) by default for one more
+release, with a notice on stderr; pass --format jsonl to keep the stream, -j for
+one JSON document, or --format console for per-record tables. Throttle with
 -c/--concurrency and read a standalone export with -S --db. 'vigolium traffic
 --replay' is a shortcut for this mode.
 
@@ -174,8 +176,7 @@ func init() {
 	// Result handling.
 	f.BoolVar(&replayInReplace, "in-replace", false,
 		"When the source is a stored record, update its stored response with the replay")
-	f.StringVarP(&replayOutputPath, "output", "o", "", "Write JSON result to this file (default: stdout)")
-	f.BoolVar(&replayPretty, "pretty", false, "Human-readable summary instead of JSON")
+	f.StringVarP(&replayOutputPath, "output", "o", "", "Write the JSONL result stream (one object per record) to this file; stdout keeps the human summary, or the -j envelope")
 	registerBridgeURLFlag(replayCmd, &replayBurpBridgeURL,
 		"Loopback Burp/Caido bridge URL used by --save-to-burp / --send-via-burp / --to-repeater / --to-organizer")
 	f.BoolVar(
@@ -210,7 +211,7 @@ func init() {
 	f.StringArrayVar(&replayBulkSearch, "search", nil, "Bulk: search across URL, path, and the raw request/response (headers + body); repeatable, AND-combined")
 	// Named --header-search, not --header: -H/--header is the override flag on
 	// this command, so the traffic filter of the same name can't keep its spelling.
-	f.StringVar(&replayBulkHeaderSearch, "header-search", "", "Bulk: filter records by text in HTTP header names/values (the search filter `traffic --header` applies; -H/--header overrides headers instead)")
+	f.StringVar(&replayBulkHeaderSearch, "header-search", "", "Bulk: filter records by text in HTTP header names/values (the search filter 'traffic --header' applies; -H/--header overrides headers instead)")
 	f.StringVar(&replayBulkBody, "body", "", "Bulk: filter records whose request/response body contains this text")
 	f.StringArrayVar(&replayBulkExclude, "exclude-search", nil, "Bulk: drop records where the term appears in the URL, path, or raw request/response (repeatable; dropped if ANY term matches — inverse of --search)")
 	f.StringVar(&replayBulkExcludeHeader, "exclude-header-search", "", "Bulk: drop records whose HTTP header names/values contain the term (inverse of --header-search)")
@@ -244,9 +245,20 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	if err := validateReplayFlags(); err != nil {
 		return err
 	}
+	// Decided before anything is sent: a contradictory output request is a
+	// usage error, not a surprise after the traffic went out. A single source
+	// prints the human summary by default; the bulk form keeps its JSONL
+	// default for one more release (--format console or the old --pretty
+	// select its tables; see streamOutputPlan).
+	bulk := replayBulkRequested(bulkFuzzy)
+	warnLegacyPretty(cmd, bulk)
+	plan, err := resolveReplayOutputPlan(cmd, !bulk || (flagChanged(cmd, "pretty") && !globalJSON))
+	if err != nil {
+		return err
+	}
 	httpMode, err := burpbridge.ParseHTTPMode(replayHTTPMode)
 	if err != nil {
-		return fmt.Errorf("--http-mode: %w", err)
+		return usageErrorf("--http-mode: %w", err)
 	}
 	if replayHTTPMode != "" && !replaySendViaBurp {
 		fmt.Fprintf(os.Stderr, "%s --http-mode only applies with --send-via-burp; ignoring\n", terminal.WarningSymbol())
@@ -255,7 +267,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	if replayBurpBridgeURL != "" {
 		validated, verr := burpbridge.ValidateURL(replayBurpBridgeURL)
 		if verr != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", verr)
+			return usageErrorf("--burp-bridge-url: %w", verr)
 		}
 		replayBurpBridgeURL = validated
 		bridgeClient, verr = burpbridge.New(validated)
@@ -279,12 +291,12 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	rr.sendOpts = burpbridge.SendOptions{Mode: httpMode, Timeout: replaySendTimeout}
 
 	// Bulk mode: iterate every matching stored record through the same engine.
-	if replayBulkRequested(bulkFuzzy) {
+	if bulk {
 		filters, ferr := buildReplayBulkFilters(bulkFuzzy)
 		if ferr != nil {
 			return ferr
 		}
-		return runReplayBulk(ctx, rr, filters)
+		return runReplayBulk(ctx, cmd, rr, filters, plan)
 	}
 
 	src, err := resolveReplaySource(ctx)
@@ -310,10 +322,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 
 	saveReplayJar(rr.pj)
 
-	if replayPretty {
-		return emitReplayPretty(os.Stdout, out)
-	}
-	return emitReplayJSON(out)
+	return emitReplayResult(cmd, plan, out)
 }
 
 // validateReplayFlags rejects flag combinations that can't be honored, so the
@@ -323,7 +332,7 @@ func validateReplayFlags() error {
 	// Any Burp write target needs the loopback bridge URL.
 	if replaySaveToBurp || replaySendViaBurp || replayToRepeater || replayToOrganizer {
 		if strings.TrimSpace(replayBurpBridgeURL) == "" {
-			return fmt.Errorf("--save-to-burp/--send-via-burp/--to-repeater/--to-organizer require --burp-bridge-url")
+			return usageErrorf("--save-to-burp/--send-via-burp/--to-repeater/--to-organizer require --burp-bridge-url")
 		}
 	}
 
@@ -338,7 +347,7 @@ func validateReplayFlags() error {
 	// --glob-db it would write into the throwaway merge DB and vanish. -S is
 	// fine: the update lands in the standalone export being read.
 	if replayInReplace && globalGlobDB != "" {
-		return fmt.Errorf("--in-replace cannot be combined with --glob-db: the merged database is temporary, so the updated responses would be discarded")
+		return usageErrorf("--in-replace cannot be combined with --glob-db: the merged database is temporary, so the updated responses would be discarded")
 	}
 
 	// The browser path navigates a URL; it produces no response bytes and does
@@ -358,7 +367,7 @@ func validateReplayFlags() error {
 			{replayRawRequest != "" || replayRawRequestFile != "", "--raw-request/--raw-request-file", "a navigation cannot send arbitrary request bytes"},
 		} {
 			if conflict.set {
-				return fmt.Errorf("--with-browser cannot be combined with %s: %s", conflict.flag, conflict.why)
+				return usageErrorf("--with-browser cannot be combined with %s: %s", conflict.flag, conflict.why)
 			}
 		}
 		if globalProxy == "" {
@@ -551,7 +560,7 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 		set++
 	}
 	if set > 1 {
-		return nil, fmt.Errorf("--record-uuid, --finding-id and --input/--input-file are mutually exclusive")
+		return nil, usageErrorf("--record-uuid, --finding-id and --input/--input-file are mutually exclusive")
 	}
 
 	// openReadDB honors -S/--stateless: a standalone .sqlite/.jsonl export via
@@ -566,12 +575,14 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 	switch {
 	case replayRecordUUID != "":
 		if repo == nil {
+			//vigolium:not-usage database open failure
 			return nil, fmt.Errorf("--record-uuid requires database access: %w", dbErr)
 		}
 		return sourceFromRecord(ctx, repo, replayRecordUUID)
 
 	case replayFindingID > 0:
 		if repo == nil {
+			//vigolium:not-usage database open failure
 			return nil, fmt.Errorf("--finding-id requires database access: %w", dbErr)
 		}
 		return sourceFromFinding(ctx, repo, replayFindingID)
@@ -580,10 +591,14 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 		return sourceFromInput(ctx, repo, replayInput, replayInputFile)
 
 	default:
-		if data, ok := readStdinIfPiped(); ok {
+		data, ok, err := readStdinIfPiped()
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			return sourceFromInputString(ctx, repo, data, "")
 		}
-		return nil, fmt.Errorf("no source specified: pass one of --record-uuid, --finding-id, --input, or pipe a request on stdin")
+		return nil, usageErrorf("no source specified: pass one of --record-uuid, --finding-id, --input, or pipe a request on stdin")
 	}
 }
 
@@ -733,7 +748,7 @@ func sourceFromRawRequest(rawReq, rawResp []byte, urlStr string) (*replaySource,
 func applyTargetOverride(src *replaySource, target string) error {
 	u, err := url.Parse(target)
 	if err != nil || u == nil || u.Hostname() == "" {
-		return fmt.Errorf("invalid --target %q: %w", target, err)
+		return usageErrorf("invalid --target %q: %w", target, err)
 	}
 	src.Scheme = u.Scheme
 	src.Hostname = u.Hostname()
@@ -759,7 +774,7 @@ func portFromURL(u *url.URL) int {
 func loadReplayRawOverride() ([]byte, error) {
 	switch {
 	case replayRawRequest != "" && replayRawRequestFile != "":
-		return nil, fmt.Errorf("--raw-request and --raw-request-file are mutually exclusive")
+		return nil, usageErrorf("--raw-request and --raw-request-file are mutually exclusive")
 	case replayRawRequestFile != "":
 		b, err := os.ReadFile(replayRawRequestFile)
 		if err != nil {
@@ -806,6 +821,7 @@ func buildReplayOverlay(ctx context.Context, src *replaySource) (map[string]stri
 func resolveAuthSessionHeaders(ctx context.Context, sessionName, hostname string) (map[string]string, error) {
 	db, err := openReadDB(globDBSkipSet{})
 	if err != nil {
+		//vigolium:not-usage database open failure
 		return nil, fmt.Errorf("--auth-session requires database access: %w", err)
 	}
 	repo := database.NewRepository(db)
@@ -830,7 +846,7 @@ func parseReplayHeaderFlags() (map[string]string, error) {
 	for i, h := range replayHeaders {
 		name, value, err := replay.ParseHeaderFlag(h)
 		if err != nil {
-			return nil, fmt.Errorf("--header[%d]: %w", i, err)
+			return nil, usageErrorf("--header[%d]: %w", i, err)
 		}
 		overlay[name] = value
 	}
@@ -857,14 +873,17 @@ func openSessionJar(sessionID string) (*jar.PersistentJar, int, error) {
 
 func persistReplayResponse(ctx context.Context, src *replaySource, result *replay.Result) error {
 	if src.RecordUUID == "" {
+		//vigolium:not-usage reached after the replay was sent
 		return fmt.Errorf("--in-replace requires a stored record (got %s)", src.OriginLabel)
 	}
 	// Records merged in from a live Burp bridge have no row to update: they
 	// exist only in Burp's proxy history for the duration of the query.
 	if burpbridge.IsBridgeUUID(src.RecordUUID) {
+		//vigolium:not-usage reached after the replay was sent
 		return fmt.Errorf("--in-replace skipped: live Burp records are read-only")
 	}
 	if result.Replay == nil || result.Replay.Error != "" {
+		//vigolium:not-usage reached after the replay was sent
 		return fmt.Errorf("--in-replace skipped: replay had no usable response")
 	}
 	body := result.Replay.RawBody
@@ -872,6 +891,7 @@ func persistReplayResponse(ctx context.Context, src *replaySource, result *repla
 		// Defensive: the engine populates RawBody on every successful
 		// send. If we ever stop doing that, refuse rather than write
 		// the clipped excerpt back as the canonical body.
+		//vigolium:not-usage reached after the replay was sent
 		return fmt.Errorf("--in-replace skipped: engine did not return body bytes")
 	}
 	// Write back to the same store the record was read from — openReadDB, not
@@ -1032,33 +1052,6 @@ func buildReplayOutput(src *replaySource, result *replay.Result, jarLoaded int, 
 		out.CookiesPreloaded = jarLoaded
 	}
 	return out
-}
-
-// openReplayOutputWriter returns the JSON sink for replay output: stdout, or
-// --output if set. The returned close func is a no-op for stdout. Shared by the
-// single-source (indented object) and bulk (JSONL stream) paths.
-func openReplayOutputWriter() (io.Writer, func(), error) {
-	if replayOutputPath == "" {
-		return os.Stdout, func() {}, nil
-	}
-	f, err := os.Create(replayOutputPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create --output %q: %w", replayOutputPath, err)
-	}
-	return f, func() { _ = f.Close() }, nil
-}
-
-// emitReplayJSON pretty-prints the result. Agents that want compact
-// JSON should pipe through `jq -c .`.
-func emitReplayJSON(out *replayOutput) error {
-	w, closeOut, err := openReplayOutputWriter()
-	if err != nil {
-		return err
-	}
-	defer closeOut()
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
 }
 
 // emitReplayPretty renders one result to w, dispatching to the browser renderer

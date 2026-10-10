@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -199,5 +200,31 @@ func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// A body containing ``` must not close the ```http block early: the fence
+// grows past the longest backtick run in the message.
+func TestWriteHTTPSectionFenceOutgrowsBody(t *testing.T) {
+	var buf strings.Builder
+	ew := &errWriter{w: &buf}
+	writeHTTPSection(ew, "Response", "HTTP/1.1 200 OK\r\n\r\n```js\nalert(1)\n```\n", false, nil, 0)
+	got := buf.String()
+	if !strings.Contains(got, "````http\nHTTP/1.1 200 OK") {
+		t.Fatalf("expected a four-backtick opening fence, got %q", got)
+	}
+	if !strings.HasSuffix(got, "```\n````\n\n") {
+		t.Fatalf("expected the block closed by a four-backtick fence, got %q", got)
+	}
+}
+
+func TestCapBodyTextKeepsUTF8Valid(t *testing.T) {
+	body := strings.Repeat("日", 100) // 3 bytes per rune
+	got := capBodyText(body, nil, 10)
+	if !utf8.ValidString(got) {
+		t.Fatalf("capBodyText split a rune: %q", got)
+	}
+	if !strings.HasPrefix(got, "日日日\n… (291 more bytes truncated)") {
+		t.Fatalf("unexpected cap output: %q", got)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/diagnostics"
 	"github.com/vigolium/vigolium/pkg/olium/skill"
+	"github.com/vigolium/vigolium/pkg/spitolas"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/public"
 	"go.uber.org/zap"
@@ -27,9 +28,9 @@ const (
 )
 
 // writeInitMarker stamps ~/.vigolium/initialized with the binary version and
-// current timestamp. The marker means "first-run dependency setup is
-// complete" — written by ensureCoreDeps after the core native-scan tooling
-// (chromium + nuclei templates) is confirmed present. Once stamped, scan
+// current timestamp. The marker means "the core native-scan tooling (chromium +
+// nuclei templates) was seen present" — written by ensureCoreDeps, doctor and
+// init only when both are, or by --skip-dependency-check. Once stamped, scan
 // commands fast-path past the dep check on every invocation.
 func writeInitMarker(vigoliumDir string) error {
 	path := filepath.Join(vigoliumDir, initMarkerFileName)
@@ -107,7 +108,7 @@ func initializeVigolium(createDefaultDB bool) error {
 		defer func() { _ = db.Close() }()
 
 		ctx := context.Background()
-		if err := db.CreateSchema(ctx); err != nil {
+		if err := db.EnsureSchemaReady(ctx); err != nil {
 			return fmt.Errorf("failed to create database schema: %w", err)
 		}
 
@@ -275,50 +276,93 @@ func copyEmbeddedDir(targetDir, embedPath string) {
 	}
 }
 
-// coreDepCommands lists the leaf cobra command names (cmd.Name()) that drive
-// a native scan and therefore need chromium + nuclei templates available
-// before they run. The set deliberately excludes:
+// coreDepCommands lists the command paths (not leaf names: `oast ingest` is not
+// `ingest`) whose first run checks for chromium + nuclei templates and, when
+// either is missing, says so in one stderr line. Nothing is installed here: the
+// spidering and known-issue-scan phases provision what they need when they run
+// (scan.setup).
+// The set deliberately excludes:
+//   - scan-url / scan-request: the direct path neither crawls nor runs nuclei
+//     unless asked, and then the phase provisions lazily like any other scan
 //   - informational commands (version, doctor, config, help, examples, license, log)
 //   - data-management commands (project, scope, source, traffic, finding, db, …)
 //   - the olium TUI and the agent query/olium/audit subcommands (LLM-only, no native scan)
-//
-// Adding a new scan command? List its leaf name here.
 var coreDepCommands = map[string]bool{
-	"scan":         true,
-	"scan-url":     true,
-	"scan-request": true,
-	"run":          true,
-	"autopilot":    true, // `vigolium agent autopilot` — uses chromium for spidering
-	"swarm":        true, // `vigolium agent swarm`     — drives the native scan pipeline
-	"server":       true, // long-running API server that hosts scan endpoints
-	"ingest":       true, // populates the queue feeding scan workers
+	"scan":            true,
+	"run":             true,
+	"agent autopilot": true, // uses chromium for spidering
+	"agent swarm":     true, // drives the native scan pipeline
+	"server":          true, // long-running API server that hosts scan endpoints
+	"ingest":          true, // populates the queue feeding scan workers
 }
 
-// needsCoreDeps reports whether the given command should trigger the
-// first-run chromium + nuclei-templates install.
+// needsCoreDeps reports whether the given command should run the first-run
+// chromium + nuclei-templates check.
 func needsCoreDeps(cmd *cobra.Command) bool {
-	return coreDepCommands[cmd.Name()]
+	return coreDepCommands[commandPathWithoutRoot(cmd)]
 }
 
-// coreDepInstallTimeout caps the per-invocation budget for the chromium +
-// nuclei-templates installation step. Both are network-bound (template git
-// clone, Chrome for Testing download) so we allow generous headroom; the
-// marker write happens regardless of fix success so a flaky first run does
-// not block every subsequent scan.
-const coreDepInstallTimeout = 10 * time.Minute
+// coreDepState is what the first-run check found missing.
+type coreDepState struct {
+	chromeMissing bool // spidering would have to download Chrome for Testing
+	nucleiMissing bool // known-issue-scan would have to clone nuclei-templates
+}
 
-// ensureCoreDeps guarantees the two native-scan dependencies — chromium and
-// nuclei templates — are present before a scan-touching command runs. On the
-// first invocation it shells out to the doctor's `--fix --only nuclei,chrome`
-// path and stamps ~/.vigolium/initialized; on subsequent invocations the
-// marker short-circuits the diagnostic to a single os.Stat.
-//
-// The marker is written even when one of the two installs fails — re-running
-// the dep check on every command would punish users behind flaky networks or
-// on hosts without internet access. The doctor's "Initialized" row + a
-// printed warning here make the partial state visible, and the user can
-// re-run `vigolium doctor --fix --only nuclei,chrome` to retry explicitly.
-func ensureCoreDeps() error {
+func (s coreDepState) missing() bool { return s.chromeMissing || s.nucleiMissing }
+
+// notice is the single stderr line ensureCoreDeps prints when something is
+// missing: what will happen lazily, and how to do it now instead.
+func (s coreDepState) notice() string {
+	const fix = "run 'vigolium doctor --fix' to pre-install"
+	switch {
+	case s.chromeMissing && s.nucleiMissing:
+		return "chromium and nuclei-templates not found — chromium is downloaded on first --spider (~150 MB), templates are cloned on first known-issue scan; " + fix
+	case s.chromeMissing:
+		return "chromium not found — will be downloaded on first --spider (~150 MB); " + fix
+	default:
+		return "nuclei-templates not found — will be cloned on first known-issue scan; " + fix
+	}
+}
+
+// checkCoreDeps reports which core native-scan dependencies are missing. No
+// network, no install: "chromium" is missing exactly when a crawl would have to
+// download Chrome for Testing (no configured, embedded, system or cached
+// browser), and templates are missing when their directory does not exist. A
+// var so tests can stage either state.
+var checkCoreDeps = func(settings *config.Settings) coreDepState {
+	var st coreDepState
+	st.chromeMissing = spitolas.BrowserNeedsDownload(settings.Spidering.BrowserEngine, settings.Spidering.BrowserPath)
+	info, err := os.Stat(diagnostics.NucleiTemplatesDir(settings))
+	st.nucleiMissing = err != nil || !info.IsDir()
+	return st
+}
+
+// runCoreDepFixes installs the core dependencies. Only `vigolium init` (an
+// explicit setup command) calls it; the scan bootstrap never does. A var so
+// tests can prove that.
+var runCoreDepFixes = diagnostics.RunFixes
+
+// coreDepNoticeQuiet reports whether the first-run notice must stay off stderr:
+// a machine reader (-j, --events) or nobody at a terminal. Those callers learn
+// about a lazy install from the scan.setup event instead.
+func coreDepNoticeQuiet(cmd *cobra.Command) bool {
+	if globalJSON || globalSilent || !terminal.StderrIsTerminal() {
+		return true
+	}
+	if f := cmd.Flags().Lookup("events"); f != nil && f.Value.String() != "" {
+		return true
+	}
+	return false
+}
+
+// ensureCoreDeps is the scan bootstrap's first-run check. It is check-only: it
+// never installs and never blocks. When chromium and nuclei-templates are both
+// present it stamps ~/.vigolium/initialized so later runs skip the check with
+// one os.Stat. When either is missing it leaves the marker unwritten (the next
+// run checks again), prints one stderr line unless quiet, and returns: the
+// spidering and known-issue-scan phases provision what they need lazily,
+// outside their time budgets, and announce it with scan.setup events.
+func ensureCoreDeps(quiet bool) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil // Silently fail; downstream command will surface the real issue.
@@ -334,39 +378,49 @@ func ensureCoreDeps() error {
 		return err
 	}
 
-	// DB intentionally omitted — neither the chromium nor nuclei-templates
-	// check touches the database, and opening it here would either trigger
-	// a redundant connection or surface a misleading "db unavailable" tip
-	// inside the dep flow.
-	//
-	// diagnostics.Run sweeps the PATH for chromium/nuclei and friends, which
-	// can take a couple of seconds on a cold first run — announce it so the
-	// terminal doesn't look frozen while the sweep runs.
-	fmt.Fprintf(os.Stderr, "%s %s\n",
-		terminal.InfoSymbol(),
-		"First-time scan detected — checking mandatory dependencies first...")
-	report := diagnostics.Run(diagnostics.Deps{Settings: settings, ProbeBrowserLaunch: true})
-
-	chromiumMissing := report.Tools["chromium"] == nil || report.Tools["chromium"].Status != diagnostics.StatusOK
-	nucleiMissing := report.NucleiTemplates == nil || report.NucleiTemplates.Status != diagnostics.StatusOK
-
-	if !chromiumMissing && !nucleiMissing {
-		// Both already present — backfill the marker so subsequent runs
-		// skip the diagnostic entirely. No need to invoke RunFixes.
-		fmt.Fprintf(os.Stderr, "%s %s\n", terminal.SuccessSymbol(), terminal.Green("All mandatory dependencies present"))
-		if err := writeInitMarker(vigoliumDir); err != nil {
-			zap.L().Debug("Failed to write init marker", zap.Error(err))
+	st := checkCoreDeps(settings)
+	if st.missing() {
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(), st.notice())
 		}
+		return nil
+	}
+	stampInitMarker(vigoliumDir)
+	return nil
+}
+
+// installCoreDeps is `vigolium init`'s explicit setup: it installs chromium and
+// nuclei-templates when missing (doctor's `--fix --only nuclei,chrome`) and
+// stamps the marker once both are present. The scan bootstrap does not call it.
+func installCoreDeps() error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	vigoliumDir := filepath.Join(homeDir, ".vigolium")
+	if _, err := os.Stat(filepath.Join(vigoliumDir, initMarkerFileName)); err == nil {
+		return nil
+	}
+
+	settings, err := clicommon.LoadSettings(globalConfig)
+	if err != nil {
+		return err
+	}
+	if !checkCoreDeps(settings).missing() {
+		stampInitMarker(vigoliumDir)
 		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "%s %s\n",
 		terminal.InfoSymbol(),
-		terminal.BoldCyan("First-run setup: installing core scan dependencies (chromium, nuclei-templates)..."))
+		terminal.BoldCyan("Installing core scan dependencies (chromium, nuclei-templates)..."))
 
+	// DB intentionally omitted — neither the chromium nor nuclei-templates
+	// check touches the database.
+	report := diagnostics.Run(diagnostics.Deps{Settings: settings, ProbeBrowserLaunch: true})
 	ctx, cancel := context.WithTimeout(context.Background(), coreDepInstallTimeout)
 	defer cancel()
-	results := diagnostics.RunFixes(ctx, report, settings, []string{"nuclei", "chrome"})
+	results := runCoreDepFixes(ctx, report, settings, []string{"nuclei", "chrome"})
 
 	for _, r := range results {
 		if r.Success {
@@ -376,10 +430,26 @@ func ensureCoreDeps() error {
 		}
 	}
 
-	if err := writeInitMarker(vigoliumDir); err != nil {
-		zap.L().Debug("Failed to write init marker after dep install", zap.Error(err))
+	if !checkCoreDeps(settings).missing() {
+		stampInitMarker(vigoliumDir)
 	}
 	return nil
+}
+
+// coreDepInstallTimeout caps `vigolium init`'s chromium + nuclei-templates
+// install. Both are network-bound (template git clone, Chrome for Testing
+// download), so the headroom is generous.
+const coreDepInstallTimeout = 10 * time.Minute
+
+// stampInitMarker writes the marker (best-effort, dir created if needed).
+func stampInitMarker(vigoliumDir string) {
+	if err := os.MkdirAll(vigoliumDir, 0755); err != nil {
+		zap.L().Debug("Failed to create .vigolium dir for init marker", zap.Error(err))
+		return
+	}
+	if err := writeInitMarker(vigoliumDir); err != nil {
+		zap.L().Debug("Failed to write init marker", zap.Error(err))
+	}
 }
 
 // ensureInitMarkerIfDepsPresent stamps ~/.vigolium/initialized (best-effort,
@@ -391,8 +461,9 @@ func ensureCoreDeps() error {
 //
 // The deps-present gate is the whole point: a read-only `vigolium doctor` on a
 // machine that is MISSING chromium/nuclei must NOT stamp the marker, otherwise
-// it would suppress the first-run auto-install that the next scan relies on. The
-// existence guard preserves the original timestamp on repeat doctor runs.
+// it would silence the first-run notice that tells the operator the next
+// --spider or known-issue scan will download them. The existence guard
+// preserves the original timestamp on repeat doctor runs.
 func ensureInitMarkerIfDepsPresent(report *diagnostics.Report) {
 	if report == nil {
 		return
@@ -424,7 +495,8 @@ func ensureInitMarkerIfDepsPresent(report *diagnostics.Report) {
 // skipCoreDepCheck honors the --skip-dependency-check flag: it stamps
 // ~/.vigolium/initialized immediately without probing for chromium or nuclei
 // templates, so this run and every future scan fast-path past the first-run
-// dependency check. Best-effort — a failed mkdir/write just means the check may
+// dependency check. Since the check no longer installs anything, the flag only
+// silences the one-line notice; kept for compatibility. Best-effort — a failed mkdir/write just means the check may
 // run on a later invocation. Returns true when it actually wrote the marker.
 func skipCoreDepCheck() bool {
 	homeDir, err := os.UserHomeDir()
@@ -502,7 +574,7 @@ var bootstrapExemptCommands = map[string]bool{
 // The root command with no subcommand only prints usage, and the `completion`
 // subtree only writes a shell script to stdout — neither touches a database or
 // a profile, and both are reached by users who have not yet decided to use
-// vigolium at all.
+// vigolium at all. The `schema` subtree prints compiled-in schemas, the same.
 func shouldBootstrap(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
@@ -514,7 +586,7 @@ func shouldBootstrap(cmd *cobra.Command) bool {
 		return false
 	}
 	for c := cmd; c != nil; c = c.Parent() {
-		if c.Name() == "completion" {
+		if c.Name() == "completion" || (c.Name() == "schema" && c.Parent() == cmd.Root()) {
 			return false
 		}
 	}

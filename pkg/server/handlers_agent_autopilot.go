@@ -28,19 +28,17 @@ import (
 func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 	var req AgentAutopilotRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	// Natural language prompt: resolve when explicit fields are empty
 	if req.Prompt != "" && req.Target == "" && req.Input == "" && req.SourcePath == "" && req.Diff == "" && req.LastCommits == 0 {
-		if refused := h.refuseIfGuardrailBlocks(c, req.Prompt); refused != nil {
-			return refused
+		if refused, err := h.refuseIfGuardrailBlocks(c, req.Prompt); refused {
+			return err
 		}
-		resolved, resolveErr := h.resolvePromptIntent(c, req.Prompt)
-		if resolveErr != nil {
-			return resolveErr // already sent HTTP response
+		resolved, answered, resolveErr := h.resolvePromptIntent(c, req.Prompt)
+		if answered {
+			return resolveErr // error response already written
 		}
 		if req.DryRun {
 			return c.Status(fiber.StatusOK).JSON(fiber.Map{"intent": resolved})
@@ -65,6 +63,9 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 				} else {
 					req.AuditDriverMode = app.Audit
 				}
+			}
+			if app.Piolium != "" && req.Piolium == "" {
+				req.Piolium = app.Piolium
 			}
 			if app.Diff != "" && req.Diff == "" {
 				req.Diff = app.Diff
@@ -109,38 +110,42 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 	if req.Target == "" && req.Input != "" {
 		targetURL, err := agent.TargetURLFromInput(context.Background(), req.Input, "", h.repo)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "could not extract target URL from input: " + err.Error(),
-			})
+			return respondError(c, fiber.StatusBadRequest, fmt.Errorf("could not extract target URL from input: %w", err))
 		}
 		req.Target = targetURL
 	}
 
 	if req.Target == "" && req.SourcePath == "" && req.Diff == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "target, source, or diff is required (use target, input, source, diff, or prompt field)",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "target, source, or diff is required (use target, input, source, diff, or prompt field)")
 	}
 
 	// Validate audit_mode if provided
 	if mode := req.ResolvedAuditDriverMode(); mode != "lite" && mode != "balanced" && mode != "scan" && mode != "deep" && mode != "mock" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: fmt.Sprintf("invalid audit_mode %q: must be lite, balanced, deep, or mock", mode),
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("invalid audit_mode %q: must be lite, balanced, deep, or mock", mode))
+	}
+
+	// The nested audit harness (a claude/codex or pi CLI run before the
+	// operator) is off unless the request asks for one — audit / audit_mode /
+	// piolium, or the prompt's intent — as `vigolium agent autopilot` has it
+	// (--audit defaults off). Neither the intensity preset nor an installed
+	// piolium turns it on.
+	if !autopilotAuditRequested(req) {
+		req.NoAudit = true
 	}
 
 	// Resolve intensity preset
 	intensity, intensityErr := agent.ValidateIntensity(req.Intensity)
 	if intensityErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: intensityErr.Error()})
+		return respondError(c, fiber.StatusBadRequest, intensityErr)
 	}
 	{
 		changed := map[string]bool{
 			"max-commands": req.MaxCommands != 0,
 			"timeout":      req.Timeout != "",
-			"audit-mode":   req.AuditDriverMode != "",
-			"no-audit":     req.NoAudit || req.Audit == "off",
-			"browser":      req.Browser || req.RequiresBrowser,
+			// The preset's audit mode is never applied (see above).
+			"audit-mode": true,
+			"no-audit":   req.NoAudit || req.Audit == "off",
+			"browser":    req.Browser || req.RequiresBrowser,
 		}
 		result := agent.ResolveAutopilotIntensity(intensity, agent.AutopilotIntensityPreset{
 			MaxCommands:     req.MaxCommands,
@@ -154,9 +159,6 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 		if req.Timeout == "" {
 			req.Timeout = result.Timeout.String()
 		}
-		if req.AuditDriverMode == "" && req.Audit == "" {
-			req.AuditDriverMode = result.AuditDriverMode
-		}
 		if !req.Browser {
 			req.Browser = result.Browser
 		}
@@ -166,9 +168,7 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 
 	eng, cleanup, byokErr := h.engineForRequest(req.AgentBYOK)
 	if byokErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "byok: " + byokErr.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("byok: %w", byokErr))
 	}
 
 	return h.startAutopilotRun(c, req, timeout, eng, cleanup)
@@ -223,31 +223,34 @@ func (h *Handlers) startAutopilotRun(c fiber.Ctx, req AgentAutopilotRequest, tim
 	})
 }
 
-// resolveAutopilotAuditCfgServer mirrors the CLI's audit-harness auto-pick
-// for the server's autopilot endpoint. When the request leaves both `audit`
-// and `piolium` empty, piolium wins if the server has pi+piolium installed,
-// otherwise audit's existing auto-on-source default applies. An explicit
-// `piolium` value disables audit (one harness per scan).
-func (h *Handlers) resolveAutopilotAuditCfgServer(req AgentAutopilotRequest, sourcePath string) (*config.AuditAgentConfig, agent.HarnessSpec) {
-	pioliumMode := req.Piolium
-	if sourcePath != "" && pioliumMode == "" {
-		auditExplicit := req.Audit != "" || req.AuditDriverMode != "" || req.NoAudit
-		if !auditExplicit && h.pioliumAvailableCached() {
-			pioliumMode = req.ResolvedAuditDriverMode()
-		}
+// autopilotAuditRequested reports whether an autopilot request asks for a
+// nested audit harness: an audit / audit_mode other than "off", or a piolium
+// mode.
+func autopilotAuditRequested(req AgentAutopilotRequest) bool {
+	if req.Piolium != "" && req.Piolium != "off" {
+		return true
 	}
-	return agent.PickAuditHarness(pioliumMode, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit(), sourcePath, h.settings.Agent.Audit)
+	if req.Audit == "off" {
+		return false
+	}
+	return req.AuditDriverMode != "" || req.Audit != ""
 }
 
-// resolveSwarmAuditCfgServer is the swarm counterpart. Swarm audit is opt-in
-// (empty = nothing), so auto-pick fires only when both `audit` and `piolium`
-// are empty AND a source path is set.
+// resolveAutopilotAuditCfgServer picks the audit harness for the server's
+// autopilot endpoint: piolium when the request names a piolium mode, else
+// vigolium-audit when it names an audit mode, else none (off by default, as
+// on the CLI). An explicit piolium without an audit mode keeps audit off, so
+// the two harnesses never double-run.
+func (h *Handlers) resolveAutopilotAuditCfgServer(req AgentAutopilotRequest, sourcePath string) (*config.AuditAgentConfig, agent.HarnessSpec) {
+	auditMode := req.AuditDriverMode != "" || (req.Audit != "" && req.Audit != "off")
+	return agent.PickAuditHarness(req.Piolium, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit() || !auditMode, sourcePath, h.settings.Agent.Audit)
+}
+
+// resolveSwarmAuditCfgServer is the swarm counterpart. Swarm audit is opt-in:
+// with `audit` and `piolium` both empty/"off" nothing runs, even when pi is
+// installed and a source path is set.
 func (h *Handlers) resolveSwarmAuditCfgServer(req AgentSwarmRequest, sourcePath string) (*config.AuditAgentConfig, agent.HarnessSpec) {
-	pioliumMode := req.Piolium
-	if pioliumMode == "" && req.Audit == "" && sourcePath != "" && h.pioliumAvailableCached() {
-		pioliumMode = "lite"
-	}
-	return agent.PickAuditHarness(pioliumMode, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit(), sourcePath, h.settings.Agent.Audit)
+	return agent.PickAuditHarness(req.Piolium, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit(), sourcePath, h.settings.Agent.Audit)
 }
 
 // buildAutopilotPipelineConfig creates an AutopilotPipelineConfig from an autopilot request.

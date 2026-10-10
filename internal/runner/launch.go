@@ -20,8 +20,10 @@ type LaunchParams struct {
 	// Targets lists URLs / file paths the scan should ingest. Required.
 	Targets []string
 
-	// ProjectUUID scopes the scan. Empty leaves it unscoped — the same
-	// behavior as `vigolium scan-url` without --project.
+	// ProjectUUID scopes the scan and selects the project config overlay
+	// layered over the global settings. Empty leaves it unscoped (global
+	// settings only) — the same behavior as `vigolium scan-url` without
+	// --project.
 	ProjectUUID string
 
 	// Modules optionally narrows the active-module set. Empty = no
@@ -87,6 +89,11 @@ type LaunchParams struct {
 	// against them, set this true and the runner will scan existing records
 	// instead of crawling new ones.
 	SkipIngestion bool
+
+	// AuthFiles are native session files, as `vigolium scan --auth-file`
+	// takes: the scan logs them in and sends the primary session's
+	// credentials (and persists the sessions for the project's targets).
+	AuthFiles []string
 }
 
 // LaunchResult summarizes a completed scan. Populated from the Scan DB row
@@ -117,7 +124,7 @@ func LaunchScan(ctx context.Context, params LaunchParams) (*LaunchResult, error)
 		return nil, fmt.Errorf("LaunchScan: at least one target is required")
 	}
 
-	settings, err := loadLaunchSettings(params.ConfigPath)
+	settings, err := loadLaunchSettings(params.ConfigPath, params.ProjectUUID)
 	if err != nil {
 		return nil, fmt.Errorf("LaunchScan: load settings: %w", err)
 	}
@@ -125,14 +132,9 @@ func LaunchScan(ctx context.Context, params LaunchParams) (*LaunchResult, error)
 		return nil, fmt.Errorf("LaunchScan: extensions: %w", err)
 	}
 
-	opts := buildLaunchOptions(params)
-
-	if opts.OnlyPhase != "" || len(opts.SkipPhases) > 0 {
-		if err := ApplyNativePhaseSelection(opts, func() {
-			settings.DynamicAssessment.Extensions.Enabled = true
-		}); err != nil {
-			return nil, fmt.Errorf("LaunchScan: %w", err)
-		}
+	opts, err := resolveLaunchOptions(settings, params)
+	if err != nil {
+		return nil, fmt.Errorf("LaunchScan: %w", err)
 	}
 
 	r, err := New(opts)
@@ -197,17 +199,23 @@ func LaunchScan(ctx context.Context, params LaunchParams) (*LaunchResult, error)
 	return res, runErr
 }
 
-// loadLaunchSettings resolves the settings the runner will use. We prefer
-// the same precedence as the CLI: explicit ConfigPath, else default search.
-func loadLaunchSettings(configPath string) (*config.Settings, error) {
-	settings, err := config.LoadSettings(configPath)
+// loadLaunchSettings resolves the settings the runner will use, with the same
+// precedence as the CLI: explicit ConfigPath, else default search, then the
+// scanned project's overlay (config.ApplyProjectOverlay) — so an agent's
+// run_scan honours the scope `scope set --project` wrote, exactly as `vigolium
+// scan` does under that project. The profile/strategy layers follow in
+// resolveLaunchOptions. An empty projectUUID is global-only.
+func loadLaunchSettings(configPath, projectUUID string) (*config.Settings, error) {
+	settings, err := config.LoadSettingsWithProject(configPath, projectUUID)
 	if err != nil {
 		return nil, err
 	}
 	if settings == nil {
 		// LoadSettings returns defaults when no file exists — but be
-		// defensive.
-		settings = &config.Settings{}
+		// defensive, and with the defaults: a zero Settings has no pace,
+		// rate limit or phase defaults at all, which is how an agent-launched
+		// scan once ran with parallel_passive off.
+		settings = config.DefaultSettings()
 	}
 	return settings, nil
 }
@@ -233,6 +241,48 @@ func applyExtensionOverrides(settings *config.Settings, paths []string) error {
 	return nil
 }
 
+// resolveLaunchOptions builds the options for a launch and runs them through
+// the same scan-options resolution the CLI and REST use (strategy_apply.go), so
+// an agent's `scanning_strategy: lite` gets lite's pace ceiling rather than
+// being recorded and ignored.
+//
+// Launch keeps two of its own semantics on top of the shared resolver:
+//   - EnableDiscovery / EnableSpidering are the agent's explicit phase toggles
+//     (default off), so they win over the strategy's discovery/spidering.
+//   - No strategy named means no strategy phases: an agent scan stays
+//     dynamic-assessment-centric instead of inheriting default_strategy's
+//     known-issue-scan. The pace still resolves from scanning_pace.
+//
+// Heuristics stay off: the check only decides whether spidering is worth it,
+// and launch callers choose spidering explicitly.
+func resolveLaunchOptions(settings *config.Settings, params LaunchParams) (*types.Options, error) {
+	opts := buildLaunchOptions(params)
+	explicit := ExplicitPace{Concurrency: params.Concurrency > 0}
+	ApplyScanSettingOverrides(settings, opts)
+	if params.ScanningStrategy != "" {
+		if _, err := ApplyScanStrategy(settings, opts, StrategyRequest{
+			Name:           params.ScanningStrategy,
+			SkipHeuristics: true,
+			Explicit:       explicit,
+		}); err != nil {
+			return nil, err
+		}
+		opts.DiscoverEnabled = params.EnableDiscovery
+		opts.SpideringEnabled = params.EnableSpidering
+	}
+	if opts.OnlyPhase != "" || len(opts.SkipPhases) > 0 {
+		if err := ApplyNativePhaseSelection(opts, func(enabled bool) {
+			settings.DynamicAssessment.Extensions.Enabled = enabled
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if err := ApplyScanPace(settings, opts, explicit); err != nil {
+		return nil, err
+	}
+	return opts, nil
+}
+
 // buildLaunchOptions constructs the *types.Options the runner expects from
 // the flat LaunchParams. Sets a fresh ScanUUID so callers always have a
 // stable correlation key.
@@ -253,6 +303,7 @@ func buildLaunchOptions(params LaunchParams) *types.Options {
 		opts.ScanMaxDuration = params.ScanMaxDuration
 	}
 	opts.OnlyPhase = params.OnlyPhase
+	opts.AuthFiles = append([]string(nil), params.AuthFiles...)
 	if len(params.SkipPhases) > 0 {
 		opts.SkipPhases = append(opts.SkipPhases, params.SkipPhases...)
 	}

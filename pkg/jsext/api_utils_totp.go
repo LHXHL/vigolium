@@ -14,6 +14,7 @@ func totpUtilsFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsUtils, Name: "totpCode",
+			Effect:   EffectPure,
 			Category: CatEncoding, Signature: ".totpCode(secret: string)", Returns: "TOTPResult",
 			Description: "Generate a TOTP code from a base32-encoded secret (RFC 6238). Returns {code, expires_in}.",
 			Example:     exTOTPCode,

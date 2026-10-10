@@ -9,9 +9,9 @@ This guide covers how to start Vigolium in server mode and ingest HTTP traffic i
 export VIGOLIUM_API_KEY=my-secret-key
 vigolium server
 
-# Custom host and port
+# Expose the API beyond this machine, on a custom port
 export VIGOLIUM_API_KEY=my-secret-key
-vigolium server --host 127.0.0.1 --service-port 9002
+vigolium server --host 0.0.0.0 --service-port 9002
 
 # With transparent HTTP proxy for recording traffic
 export VIGOLIUM_API_KEY=my-secret-key
@@ -21,7 +21,10 @@ vigolium server --ingest-proxy-port 9003
 vigolium server -A
 ```
 
-The server listens on `0.0.0.0:9002` by default.
+The server listens on `127.0.0.1:9002` by default. Pass `--host 0.0.0.0` (or set
+`VIGOLIUM_SERVER_HOST=0.0.0.0`, as the Docker images do) to accept remote
+connections; the ingest proxy keeps its own `--ingest-proxy-host` (also
+loopback by default).
 
 ## CORS Configuration
 
@@ -41,13 +44,14 @@ server:
 
 ## Project Scoping
 
-All server operations are scoped to a project via the `X-Project-UUID` request header. If omitted, the default project is used.
+All server operations are scoped to a project via the `X-Project-UUID` request header. If omitted, the default project is used. A UUID that names no project answers `404 project_not_found`; send `X-Project-Create: 1` to create it on first use (or set `server.auto_create_projects: true`).
 
 ```bash
 # Ingest into a specific project
 curl -X POST http://localhost:9002/api/ingest-http \
   -H "Authorization: Bearer my-secret-key" \
   -H "X-Project-UUID: a1b2c3d4-..." \
+  -H "X-Project-Create: 1" \
   -H "Content-Type: application/json" \
   -d '{"input_mode": "url", "content": "https://example.com"}'
 ```
@@ -331,12 +335,17 @@ echo "https://example.com" | httpx -proxy http://localhost:9003
 nuclei -u https://example.com -proxy http://localhost:9003
 ```
 
+The proxy binds `127.0.0.1` (`--ingest-proxy-host`). To accept clients from
+other machines, bind a routable address and gate it with `--proxy-token` and/or
+`--proxy-allow <cidr>`; the server refuses to start an ungated proxy on a
+non-loopback address. See [Transparent Proxy](server-mode/proxy.md#access-control).
+
 Plain HTTP traffic is recorded. HTTPS `CONNECT` is an opaque tunnel by
-default. To capture authorized HTTPS traffic, export and trust the generated
-CA, then enable MITM:
+default. To capture authorized HTTPS traffic, trust the generated CA, then
+enable MITM:
 
 ```bash
-vigolium server --export-ca ./vigolium-proxy-ca.pem
+vigolium server ca install          # prints the trust commands; --yes runs them
 vigolium server --ingest-proxy-port 9003 --proxy-mitm
 ```
 
@@ -426,8 +435,9 @@ Response:
 {
   "version": "0.1.0",
   "uptime": "2h15m30s",
-  "service_addr": "0.0.0.0:9002",
-  "proxy_addr": "0.0.0.0:9003",
+  "service_addr": "127.0.0.1:9002",
+  "proxy_addr": "127.0.0.1:9003",
+  "proxy_auth": "none",
   "queue_depth": 0,
   "total_records": 1542,
   "total_findings": 23
@@ -556,6 +566,10 @@ See [Agent Mode](agentic-scan/agent-mode.md) for the full agent documentation (i
 | `burp_base64` | `http_request_base64` | Base64-encoded raw HTTP request |
 | `openapi` / `swagger` | `content` or `content_base64` | OpenAPI/Swagger spec (JSON or YAML) |
 | `postman_collection` | `content` or `content_base64` | Postman Collection (JSON) |
+| `auto` | `content` or `content_base64` | Detect the format from the content (`detected_format` in the response) |
+| any `-I` format name | `content` or `content_base64` | `har`, `wsdl`, `burpxml`, `burpraw`, `burpscope`, `nuclei`, `deparos`, … — the same names and aliases the CLI's `-I` accepts |
+
+See the [ingestion API reference](api-references/ingestion.md) for `variables`, `skipped_reasons` and the full mode table.
 
 For `burp_base64` mode, you can also include `http_response_base64` to store the response alongside the request.
 

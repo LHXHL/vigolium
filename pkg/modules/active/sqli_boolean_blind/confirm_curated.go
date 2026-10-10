@@ -89,23 +89,27 @@ func (r operandRewriter) invalid(a, b string) string {
 
 // confirmRandomized re-derives the matched curated/bypass/WAF differential with
 // fresh random operands across confirmRounds rounds and requires it to reproduce,
-// then runs an invalid-syntax probe. isHeader raises the bar: a header pair whose
+// then runs an invalid-syntax probe. requireOperands raises the bar: a pair whose
 // operands cannot be re-derived is rejected outright rather than falling back to
-// repeat-only confirmation, because request headers are the highest-false-positive
-// boolean-blind surface.
+// repeat-only confirmation. Callers set it for request headers (the
+// highest-false-positive boolean-blind surface) and for status oracles (a
+// status flip proven only by re-sending the same literal is not a boolean
+// oracle). prof fixes each branch's status and the comparator, as in
+// confirmLogic.
 func (m *Module) confirmRandomized(
 	ctx *httpmsg.HttpRequestResponse,
 	httpClient *http.Requester,
 	ip httpmsg.InsertionPoint,
 	truePayload, falsePayload string,
-	isHeader bool,
+	requireOperands bool,
+	prof branchProfile,
 ) (bool, error) {
 	rw, ok := newOperandRewriter(truePayload)
 	if !ok {
-		if isHeader {
+		if requireOperands {
 			return false, nil
 		}
-		return m.confirmRepeat(ctx, httpClient, ip, truePayload, falsePayload)
+		return m.confirmRepeat(ctx, httpClient, ip, truePayload, falsePayload, prof)
 	}
 
 	var trueSigs, falseSigs []responseSignature
@@ -121,16 +125,14 @@ func (m *Module) confirmRandomized(
 			return false, err
 		}
 
-		// A blocked probe or a status flip is an edge/status artifact, not SQL.
+		// A blocked probe or a status drift is an edge/status artifact, not SQL.
 		if tBlocked || fBlocked {
 			return false, nil
 		}
-		if !statusOK(tSig) || !statusOK(fSig) {
-			return false, nil
-		}
 		// The differential must survive random operands; if TRUE and FALSE now look
-		// alike it was bound to the literal token, not boolean truth — reject.
-		if quickRatio(tSig, fSig) >= upperRatioBound {
+		// alike (or left their classified statuses) it was bound to the literal
+		// token, not boolean truth — reject.
+		if !prof.distinct(tSig, fSig) {
 			return false, nil
 		}
 		trueSigs = append(trueSigs, tSig)
@@ -139,7 +141,7 @@ func (m *Module) confirmRandomized(
 
 	// Each branch must be stable across rounds even though the operands changed —
 	// it is the boolean truth value, not the literal tokens, that decides the page.
-	if !roundsStable(trueSigs, falseSigs) {
+	if !roundsStable(trueSigs, falseSigs, prof.same) {
 		return false, nil
 	}
 
@@ -153,7 +155,7 @@ func (m *Module) confirmRandomized(
 	if invBlocked {
 		return false, nil
 	}
-	if ratioSimilar(invSig, trueSigs[0]) {
+	if prof.same(invSig, trueSigs[0]) {
 		return false, nil
 	}
 

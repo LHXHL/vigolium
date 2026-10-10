@@ -13,9 +13,11 @@ import (
 // given QueryFilters. ProjectUUID must already be set on filters by the caller.
 func expandProjectRecordsFromQuery(ctx context.Context, repo *database.Repository, filters database.QueryFilters) ([]string, error) {
 	if repo == nil {
+		//vigolium:not-usage internal invariant
 		return nil, fmt.Errorf("repository is required")
 	}
 	if filters.ProjectUUID == "" {
+		//vigolium:not-usage internal invariant
 		return nil, fmt.Errorf("project uuid is required")
 	}
 	qb := database.NewQueryBuilder(repo.DB(), filters)
@@ -48,12 +50,12 @@ func parseRecordsFromSpec(spec string, projectUUID string) (database.QueryFilter
 	for _, part := range splitSpecParts(spec) {
 		key, value, ok := strings.Cut(part, "=")
 		if !ok {
-			return filters, fmt.Errorf("invalid records-from entry %q: expected key=value", part)
+			return filters, usageErrorf("invalid records-from entry %q: expected key=value", part)
 		}
 		key = strings.ToLower(strings.TrimSpace(key))
 		value = strings.TrimSpace(value)
 		if value == "" {
-			return filters, fmt.Errorf("records-from key %q has no value", key)
+			return filters, usageErrorf("records-from key %q has no value", key)
 		}
 		switch key {
 		case "host":

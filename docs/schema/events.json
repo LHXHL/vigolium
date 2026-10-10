@@ -1,0 +1,2047 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "event.auth.relogin": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "auth.relogin"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "session": {
+          "type": "string"
+        },
+        "gen": {
+          "type": "integer"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "session",
+        "ok"
+      ],
+      "description": "How a re-login cycle ended: ok, the new generation when it worked, count of logins tried."
+    },
+    "event.auth.session_suspect": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "auth.session_suspect"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "gen": {
+          "type": "integer"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "session"
+      ],
+      "description": "Responses for a session look logged out; gen is the suspected credential generation."
+    },
+    "event.error": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "error"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "error_kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "message"
+      ],
+      "description": "A NON-fatal error. A failure that ends the run is scan.finished{status:failed}."
+    },
+    "event.extension.failed": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "extension.failed"
+        },
+        "path": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "explicit": {
+          "type": "boolean"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "path",
+        "stage",
+        "explicit",
+        "message"
+      ],
+      "description": "An extension failed to load: stage is the load step that failed; explicit says it was named with --ext (the scan then stops, exit 2 extension_load_failed, unless --ext-allow-failures)."
+    },
+    "event.finding.new": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "finding.new"
+        },
+        "host": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "A finding was reported. Metadata only: the evidence is in the database."
+    },
+    "event.host.dead": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "host.dead"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "A host failed every probe: no further requests go to it this scan."
+    },
+    "event.host.quarantined": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "host.quarantined"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "A host's breaker opened after consecutive errors; it is re-probed after a cooldown."
+    },
+    "event.host.recovered": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "host.recovered"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "A quarantined host answered its probe and is back in rotation."
+    },
+    "event.import.summary": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "import.summary"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "What a bridge import is about to write: total will cross, matched is what the source holds."
+    },
+    "event.module.error": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "module.error"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "error_kind": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "A module call failed (error_kind exception, timeout or panic). Rate-limited per module: the first 3, then every 100th; count is the module's running error total for the scan."
+    },
+    "event.oast.unavailable": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "oast.unavailable"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "OAST registration failed or timed out: out-of-band checks do not run (scan partial, oast_unavailable)."
+    },
+    "event.phase.finished": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "phase.finished"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requests_sent": {
+          "type": "integer"
+        },
+        "findings": {
+          "type": "integer"
+        },
+        "requests_in_scope": {
+          "type": "integer"
+        },
+        "done": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "phase",
+        "status"
+      ],
+      "description": "A phase ended. status: completed, curtailed or failed; reasons are defects, limits configured bounds reached."
+    },
+    "event.phase.progress": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "phase.progress"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "requests_sent": {
+          "type": "integer"
+        },
+        "findings": {
+          "type": "integer"
+        },
+        "requests_in_scope": {
+          "type": "integer"
+        },
+        "done": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "unit": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "phase"
+      ],
+      "description": "Heartbeat while a phase runs. total is a non-decreasing upper bound, absent until known."
+    },
+    "event.phase.started": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "phase.started"
+        },
+        "phase": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "phase"
+      ],
+      "description": "A phase began."
+    },
+    "event.scan.finished": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.finished"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stop_reason": {
+          "type": "string"
+        },
+        "requests_sent": {
+          "type": "integer"
+        },
+        "findings": {
+          "type": "integer"
+        },
+        "records_written": {
+          "type": "integer"
+        },
+        "records_basis": {
+          "type": "string"
+        },
+        "targets_admitted": {
+          "type": "integer"
+        },
+        "targets_rejected": {
+          "type": "integer"
+        },
+        "targets_reached": {
+          "type": "integer"
+        },
+        "targets_unreachable": {
+          "type": "integer"
+        },
+        "budget_exhausted_hosts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "exports": {
+          "items": {
+            "$ref": "#/$defs/scanevents.Export"
+          },
+          "type": "array"
+        },
+        "module_errors": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "extensions_failed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "findings_by_severity": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "status"
+      ],
+      "description": "The terminal line, on every reachable exit path. status: completed, curtailed, interrupted or failed."
+    },
+    "event.scan.interrupting": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.interrupting"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "A shutdown signal arrived and the graceful stop began. Nonterminal: scan.finished still follows."
+    },
+    "event.scan.plan": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.plan"
+        },
+        "plan": {
+          "$ref": "#/$defs/scanplan.Plan"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "plan"
+      ],
+      "description": "The resolved scan plan, second on every stream (the same object `scan --dry-run` prints)."
+    },
+    "event.scan.setup": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.setup"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "component": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "component",
+        "state"
+      ],
+      "description": "A lazy first-run install inside the phase that needs it, before that phase's clock starts: component chrome|nuclei (the `doctor --fix --only` id), state started|finished|failed. bytes is the download size when known; duration_ms and message (failed) ride on the terminal line."
+    },
+    "event.scan.started": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.started"
+        },
+        "target": {
+          "type": "string"
+        },
+        "targets": {
+          "type": "integer"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "phases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "project_uuid": {
+          "type": "string"
+        },
+        "pace": {
+          "$ref": "#/$defs/scanevents.Pace"
+        },
+        "phase_pace": {
+          "additionalProperties": {
+            "$ref": "#/$defs/scanevents.Pace"
+          },
+          "type": "object"
+        },
+        "targets_admitted": {
+          "type": "integer"
+        },
+        "targets_rejected": {
+          "type": "integer"
+        },
+        "budgets": {
+          "$ref": "#/$defs/scanevents.Budgets"
+        },
+        "request_cap_enforcement": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "egress": {
+          "$ref": "#/$defs/scanevents.Egress"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "pace",
+        "budgets"
+      ],
+      "description": "First line of every stream: what the scan will run, against what, at what pace and budget."
+    },
+    "event.waf.block": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "waf.block"
+        },
+        "host": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "The edge started filtering scan traffic for a host."
+    },
+    "event.waf.pacing": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "waf.pacing"
+        },
+        "host": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "concurrency_from": {
+          "type": "integer"
+        },
+        "concurrency_to": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "Proactive pacing armed for a host behind a CDN/WAF edge."
+    },
+    "scanevents.Budgets": {
+      "properties": {
+        "max_requests": {
+          "type": "integer"
+        },
+        "max_requests_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_requests",
+        "max_requests_per_host"
+      ]
+    },
+    "scanevents.Egress": {
+      "properties": {
+        "gated": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exempt": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanevents.EgressExemption"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "gated",
+        "exempt"
+      ]
+    },
+    "scanevents.EgressExemption": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "reason"
+      ]
+    },
+    "scanevents.Export": {
+      "properties": {
+        "format": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "format",
+        "path"
+      ]
+    },
+    "scanevents.Pace": {
+      "properties": {
+        "rate_limit": {
+          "type": "integer"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "max_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "rate_limit",
+        "concurrency",
+        "max_per_host"
+      ]
+    },
+    "scanplan.AuthSession": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "primary": {
+          "type": "boolean"
+        },
+        "login_host": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "role",
+        "kind",
+        "primary",
+        "source"
+      ]
+    },
+    "scanplan.Budgets": {
+      "properties": {
+        "scan_max_duration_ms": {
+          "type": "integer"
+        },
+        "max_requests": {
+          "type": "integer"
+        },
+        "max_requests_per_host": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "type": "integer"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "max_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "scan_max_duration_ms",
+        "max_requests",
+        "max_requests_per_host",
+        "rate_limit",
+        "concurrency",
+        "max_per_host"
+      ]
+    },
+    "scanplan.Discovery": {
+      "properties": {
+        "wordlist_tier": {
+          "type": "string"
+        },
+        "wordlists": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Wordlist"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fuzzing": {
+          "type": "boolean"
+        },
+        "fuzzing_reason": {
+          "type": "string"
+        },
+        "recursion_enabled": {
+          "type": "boolean"
+        },
+        "recursion_max_depth": {
+          "type": "integer"
+        },
+        "target_concurrency": {
+          "type": "integer"
+        },
+        "jstangle": {
+          "$ref": "#/$defs/scanplan.JSTangle"
+        },
+        "sitemap": {
+          "$ref": "#/$defs/scanplan.Sitemap"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "wordlist_tier",
+        "wordlists",
+        "fuzzing",
+        "fuzzing_reason",
+        "recursion_enabled",
+        "recursion_max_depth",
+        "target_concurrency"
+      ]
+    },
+    "scanplan.Egress": {
+      "properties": {
+        "gated": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exempt": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.EgressExemption"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "gated",
+        "exempt"
+      ]
+    },
+    "scanplan.EgressExemption": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "reason"
+      ]
+    },
+    "scanplan.Estimate": {
+      "properties": {
+        "low": {
+          "type": "integer"
+        },
+        "high": {
+          "type": "integer"
+        },
+        "ceiling_by_pace": {
+          "type": "integer"
+        },
+        "clamped_to": {
+          "type": "integer"
+        },
+        "hits_max_requests": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "by_phase": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/scanplan.PhaseEstimate"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "low",
+        "high",
+        "by_phase",
+        "basis",
+        "confidence"
+      ]
+    },
+    "scanplan.ExtensionSelection": {
+      "properties": {
+        "active": {
+          "type": "integer"
+        },
+        "passive": {
+          "type": "integer"
+        },
+        "skipped": {
+          "type": "integer"
+        },
+        "skipped_by": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "active",
+        "passive",
+        "skipped",
+        "summary"
+      ]
+    },
+    "scanplan.Harvest": {
+      "properties": {
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_urls": {
+          "type": "integer"
+        },
+        "per_shape": {
+          "type": "integer"
+        },
+        "cdx_max_rows": {
+          "type": "integer"
+        },
+        "probe": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "sources",
+        "max_urls",
+        "per_shape",
+        "cdx_max_rows",
+        "probe"
+      ]
+    },
+    "scanplan.JSTangle": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "workers": {
+          "type": "integer"
+        },
+        "memory_budget_mb": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled",
+        "workers",
+        "memory_budget_mb"
+      ]
+    },
+    "scanplan.Modules": {
+      "properties": {
+        "active": {
+          "type": "integer"
+        },
+        "passive": {
+          "type": "integer"
+        },
+        "extensions": {
+          "type": "integer"
+        },
+        "tier_ceiling": {
+          "type": "string"
+        },
+        "tier_filtered": {
+          "type": "integer"
+        },
+        "hygiene_suppressed": {
+          "type": "integer"
+        },
+        "risk_gated": {
+          "type": "integer"
+        },
+        "risky_payloads_allowed": {
+          "type": "boolean"
+        },
+        "payloads_gated": {
+          "items": {
+            "$ref": "#/$defs/scanplan.PayloadGate"
+          },
+          "type": "array"
+        },
+        "by_scope": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extension_selection": {
+          "$ref": "#/$defs/scanplan.ExtensionSelection"
+        },
+        "ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "active",
+        "passive",
+        "extensions",
+        "tier_ceiling",
+        "tier_filtered",
+        "hygiene_suppressed",
+        "risk_gated",
+        "risky_payloads_allowed",
+        "by_scope"
+      ]
+    },
+    "scanplan.Pace": {
+      "properties": {
+        "rate_limit": {
+          "type": "integer"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "max_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "rate_limit",
+        "concurrency",
+        "max_per_host"
+      ]
+    },
+    "scanplan.ParamMining": {
+      "properties": {
+        "endpoints_per_host": {
+          "type": "integer"
+        },
+        "requests_per_endpoint": {
+          "type": "integer"
+        },
+        "workers": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "endpoints_per_host",
+        "requests_per_endpoint",
+        "workers"
+      ]
+    },
+    "scanplan.PayloadGate": {
+      "properties": {
+        "module": {
+          "type": "string"
+        },
+        "gated": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "module",
+        "gated",
+        "total",
+        "reason"
+      ]
+    },
+    "scanplan.Phase": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "disabled_by": {
+          "type": "string"
+        },
+        "sends_target_traffic": {
+          "type": "boolean"
+        },
+        "budget": {
+          "$ref": "#/$defs/scanplan.PhaseBudget"
+        },
+        "pace": {
+          "$ref": "#/$defs/scanplan.Pace"
+        },
+        "request_cap_enforcement": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "enabled",
+        "sends_target_traffic"
+      ]
+    },
+    "scanplan.PhaseBudget": {
+      "properties": {
+        "per_target_ms": {
+          "type": "integer"
+        },
+        "phase_ceiling_ms": {
+          "type": "integer"
+        },
+        "duration_factor": {
+          "type": "number"
+        },
+        "grace_ms": {
+          "type": "integer"
+        },
+        "semantics": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "semantics",
+        "source"
+      ]
+    },
+    "scanplan.PhaseEstimate": {
+      "properties": {
+        "low": {
+          "type": "integer"
+        },
+        "high": {
+          "type": "integer"
+        },
+        "ceiling_by_pace": {
+          "type": "integer"
+        },
+        "basis": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "low",
+        "high",
+        "basis"
+      ]
+    },
+    "scanplan.Plan": {
+      "properties": {
+        "schema_version": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "intensity": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "heuristics_check": {
+          "type": "string"
+        },
+        "phases": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Phase"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "budgets": {
+          "$ref": "#/$defs/scanplan.Budgets"
+        },
+        "modules": {
+          "$ref": "#/$defs/scanplan.Modules"
+        },
+        "scope": {
+          "$ref": "#/$defs/scanplan.Scope"
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.AuthSession"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targets": {
+          "$ref": "#/$defs/scanplan.Targets"
+        },
+        "discovery": {
+          "$ref": "#/$defs/scanplan.Discovery"
+        },
+        "harvest": {
+          "$ref": "#/$defs/scanplan.Harvest"
+        },
+        "param_mining": {
+          "$ref": "#/$defs/scanplan.ParamMining"
+        },
+        "egress": {
+          "$ref": "#/$defs/scanplan.Egress"
+        },
+        "estimate": {
+          "$ref": "#/$defs/scanplan.Estimate"
+        },
+        "warnings": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Warning"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema_version",
+        "strategy",
+        "heuristics_check",
+        "phases",
+        "budgets",
+        "modules",
+        "scope",
+        "auth",
+        "targets",
+        "estimate",
+        "warnings"
+      ]
+    },
+    "scanplan.Rejection": {
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "target",
+        "reason"
+      ]
+    },
+    "scanplan.Scope": {
+      "properties": {
+        "origin_mode": {
+          "type": "string"
+        },
+        "ignore_static": {
+          "type": "boolean"
+        },
+        "host_include": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_exclude": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path_include": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path_exclude": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "origin_mode",
+        "ignore_static",
+        "host_include",
+        "host_exclude",
+        "path_include",
+        "path_exclude"
+      ]
+    },
+    "scanplan.Sitemap": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_urls": {
+          "type": "integer"
+        },
+        "per_shape": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled",
+        "max_urls",
+        "per_shape"
+      ]
+    },
+    "scanplan.Targets": {
+      "properties": {
+        "seeded": {
+          "type": "integer"
+        },
+        "from_files": {
+          "type": "integer"
+        },
+        "all_records": {
+          "type": "boolean"
+        },
+        "db_records_in_scope": {
+          "type": "integer"
+        },
+        "admitted": {
+          "type": "integer"
+        },
+        "rejected": {
+          "type": "integer"
+        },
+        "rejected_sample": {
+          "items": {
+            "$ref": "#/$defs/scanplan.Rejection"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "seeded",
+        "from_files",
+        "admitted",
+        "rejected"
+      ]
+    },
+    "scanplan.Warning": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "scanplan.Wordlist": {
+      "properties": {
+        "slot": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "slot",
+        "source",
+        "name"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/event.scan.started"
+    },
+    {
+      "$ref": "#/$defs/event.scan.interrupting"
+    },
+    {
+      "$ref": "#/$defs/event.scan.finished"
+    },
+    {
+      "$ref": "#/$defs/event.phase.started"
+    },
+    {
+      "$ref": "#/$defs/event.phase.progress"
+    },
+    {
+      "$ref": "#/$defs/event.phase.finished"
+    },
+    {
+      "$ref": "#/$defs/event.waf.block"
+    },
+    {
+      "$ref": "#/$defs/event.waf.pacing"
+    },
+    {
+      "$ref": "#/$defs/event.finding.new"
+    },
+    {
+      "$ref": "#/$defs/event.import.summary"
+    },
+    {
+      "$ref": "#/$defs/event.error"
+    },
+    {
+      "$ref": "#/$defs/event.scan.plan"
+    },
+    {
+      "$ref": "#/$defs/event.scan.setup"
+    },
+    {
+      "$ref": "#/$defs/event.oast.unavailable"
+    },
+    {
+      "$ref": "#/$defs/event.host.quarantined"
+    },
+    {
+      "$ref": "#/$defs/event.host.recovered"
+    },
+    {
+      "$ref": "#/$defs/event.host.dead"
+    },
+    {
+      "$ref": "#/$defs/event.auth.session_suspect"
+    },
+    {
+      "$ref": "#/$defs/event.auth.relogin"
+    },
+    {
+      "$ref": "#/$defs/event.module.error"
+    },
+    {
+      "$ref": "#/$defs/event.extension.failed"
+    }
+  ],
+  "title": "vigolium --events",
+  "description": "One line of `vigolium scan --events ndjson`; `type` selects the shape."
+}

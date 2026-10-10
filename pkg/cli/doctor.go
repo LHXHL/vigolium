@@ -10,35 +10,64 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/diagnostics"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
 var (
-	doctorFix  bool
-	doctorOnly []string
+	doctorFix    bool
+	doctorOnly   []string
+	doctorStrict bool
 )
+
+// doctorRunDiagnostics is diagnostics.Run, replaced in tests: a real run spawns
+// a browser and extracts embedded binaries.
+var doctorRunDiagnostics = diagnostics.Run
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check system readiness and diagnose configuration issues",
-	Long:  "Run diagnostic checks on database, agent backends, third-party tools, and other dependencies to verify the scanner is ready to operate.",
-	Args:  cobra.NoArgs,
-	RunE:  runDoctorCmd,
+	Long: "Run diagnostic checks on database, agent backends, third-party tools, scope rules, OAST reachability, and other dependencies to verify the scanner is ready to operate.\n\n" +
+		"Exits 1 (error.code not_ready) when the verdict is not_ready; with --strict also when it is degraded. " +
+		"The report is written first either way, so -j consumers always get it on stdout.",
+	Args: cobra.NoArgs,
+	RunE: runDoctorCmd,
 }
 
 func init() {
 	rootCmd.AddCommand(doctorCmd)
 	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false, "Auto-install/fix failing checks")
-	doctorCmd.Flags().StringSliceVar(&doctorOnly, "only", nil, "Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium)")
+	doctorCmd.Flags().StringSliceVar(&doctorOnly, "only", nil, "Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium,skill)")
+	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "Exit 1 when the verdict is degraded, not only when it is not_ready")
 }
 
-// doctorOutput is the JSON structure when --fix is used with --json.
-type doctorOutput struct {
-	Report  *diagnostics.Report     `json:"report"`
-	Fixes   []diagnostics.FixResult `json:"fixes,omitempty"`
-	Updated *diagnostics.Report     `json:"updated,omitempty"`
+// emitDoctorJSON writes the doctor -j document: items:[report], with the
+// verdict copied up as `status` so a caller can branch without indexing into
+// items. Under --fix, `fixes` and `updated` (the re-checked report) ride along
+// at the top level and `status` is the re-checked verdict — the one the exit
+// code follows.
+//
+// The legacy alias reproduces the pre-envelope shapes under
+// --json-legacy-keys: "." flattens the bare report a plain run printed, and
+// "report" renders the {report, fixes, updated} object --fix printed.
+func emitDoctorJSON(cmd *cobra.Command, report *diagnostics.Report, fixes []diagnostics.FixResult, updated *diagnostics.Report) error {
+	verdict := report
+	legacyKey := "."
+	var opts []envOpt
+	if updated != nil {
+		verdict = updated
+		legacyKey = "report"
+		if fixes == nil {
+			fixes = []diagnostics.FixResult{}
+		}
+		opts = append(opts, withExtra("fixes", fixes), withExtra("updated", updated))
+	}
+	if verdict != nil {
+		opts = append(opts, withExtra("status", verdict.Status))
+	}
+	return emitObject(cmd, legacyKey, report, opts...)
 }
 
 func runDoctorCmd(cmd *cobra.Command, args []string) error {
@@ -62,6 +91,11 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	settings, cfgErr := clicommon.LoadSettings(globalConfig)
 	if cfgErr != nil {
 		settings = config.DefaultSettings()
+	} else if project, perr := overlayProjectUUID(); perr == nil {
+		// The scope checks judge the scope a scan would run under, which
+		// includes the project's overlay. A broken overlay is reported as the
+		// config failure it is; the global settings stay in use for the rest.
+		cfgErr = config.ApplyProjectOverlay(settings, project)
 	}
 
 	deps := diagnostics.Deps{
@@ -69,6 +103,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 		ConfigErr:          cfgErr,
 		ConfigPath:         effectiveConfigPath(),
 		ProbeBrowserLaunch: true,
+		ProbeNetwork:       true,
 	}
 
 	// Try to open DB (optional — report error if it fails). The error is
@@ -82,22 +117,26 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 		deps.DBErr = dbErr
 	}
 
-	report := diagnostics.Run(deps)
+	report := doctorRunDiagnostics(deps)
+	attachDoctorSkillCheck(report)
 
 	// Backfill the first-run marker only when the mandatory native-scan deps are
 	// actually present (chromium + nuclei-templates). A read-only doctor on a
 	// machine missing them must NOT stamp it, or the next scan would skip the
-	// first-run auto-install. The --fix path re-checks below after RunFixes.
+	// first-run notice. The --fix path re-checks below after RunFixes.
 	ensureInitMarkerIfDepsPresent(report)
 
 	if !doctorFix {
 		if globalJSON {
 			// Through the shared writer so this counts as the invocation's one
 			// result document and the error path does not append a second.
-			return writeAgentJSON(report)
+			if err := emitDoctorJSON(cmd, report, nil, nil); err != nil {
+				return err
+			}
+			return doctorVerdictError(report)
 		}
 		printDoctorReport(report)
-		return nil
+		return doctorVerdictError(report)
 	}
 
 	// --fix mode: print initial report, fix, then recheck. When --only narrows
@@ -120,6 +159,11 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	fixes := diagnostics.RunFixes(ctx, report, settings, doctorOnly)
+	// The skill reinstall is CLI-side: it needs this binary's embedded bundle
+	// and version, which pkg/diagnostics cannot import.
+	if doctorSkillFixSelected(doctorOnly) {
+		fixes = append(fixes, fixStaleSkills(Version, Commit)...)
+	}
 
 	if !globalJSON && len(fixes) > 0 {
 		fmt.Println()
@@ -127,18 +171,18 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Re-run checks to show updated status.
-	updated := diagnostics.Run(deps)
+	updated := doctorRunDiagnostics(deps)
+	attachDoctorSkillCheck(updated)
 
 	// If --fix just installed chromium + nuclei-templates, backfill the marker
 	// so subsequent scans skip the redundant first-run check.
 	ensureInitMarkerIfDepsPresent(updated)
 
 	if globalJSON {
-		return writeAgentJSON(doctorOutput{
-			Report:  report,
-			Fixes:   fixes,
-			Updated: updated,
-		})
+		if err := emitDoctorJSON(cmd, report, fixes, updated); err != nil {
+			return err
+		}
+		return doctorVerdictError(updated)
 	}
 
 	fmt.Println()
@@ -160,7 +204,36 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 			fmt.Println()
 		}
 	}
+	return doctorVerdictError(updated)
+}
+
+// doctorVerdictError turns the report's verdict into the exit status, after
+// the report has been written: not_ready exits 1 (error.code not_ready), and
+// so does degraded under --strict. doctor always exited 0 before, so a script
+// gating on it could not tell a working install from one with no database.
+// Under --fix it is called with the re-checked report, so a fix that worked
+// exits 0.
+func doctorVerdictError(r *diagnostics.Report) error {
+	switch {
+	case r == nil:
+		return nil
+	case r.Status == "not_ready":
+		return clicommon.CodedErrorf(apicontract.CodeNotReady, "doctor: system not ready (%s)", doctorBlockers(r))
+	case doctorStrict && r.Status == "degraded":
+		return clicommon.CodedErrorf(apicontract.CodeNotReady, "doctor: system degraded (--strict)")
+	}
 	return nil
+}
+
+// doctorBlockers names the failing check behind a not_ready verdict.
+func doctorBlockers(r *diagnostics.Report) string {
+	if r.Database != nil && r.Database.Status == diagnostics.StatusError {
+		if r.Database.Message != "" {
+			return "database: " + r.Database.Message
+		}
+		return "database unavailable"
+	}
+	return "see the report"
 }
 
 func printFixResults(results []diagnostics.FixResult) {
@@ -214,6 +287,14 @@ func focusedCheck(r *diagnostics.Report, name string) (label string, c *diagnost
 	case "piolium":
 		if r.Piolium != nil {
 			return "Piolium", r.Piolium, true
+		}
+	case "vigolium-audit":
+		if c := r.EmbeddedBinaries["vigolium-audit"]; c != nil {
+			return "vigolium-audit helper", c, true
+		}
+	case doctorSkillFixKey, "skills":
+		if r.Skill != nil {
+			return "Agent skill", r.Skill, true
 		}
 	}
 	return "", nil, false
@@ -286,6 +367,11 @@ func printDoctorReport(r *diagnostics.Report) {
 		printDetails(detailsVisible(r.Config.Status), r.Config.Details)
 		printTip(r.Config.Tip)
 	}
+	if r.Scope != nil {
+		printCheck("Scope", r.Scope.Status, r.Scope.Message)
+		printDetails(detailsVisible(r.Scope.Status), r.Scope.Details)
+		printTip(r.Scope.Tip)
+	}
 	if r.Database != nil {
 		printCheck("Database", r.Database.Status, r.Database.Message)
 		printDetails(detailsVisible(r.Database.Status), r.Database.Details)
@@ -315,6 +401,12 @@ func printDoctorReport(r *diagnostics.Report) {
 		printCheck("Embedded jstangle", c.Status, c.Message)
 		printDetails(detailsVisible(c.Status), c.Details)
 		printTip(c.Tip)
+	}
+	if r.OAST != nil {
+		printCheck("OAST", r.OAST.Status, r.OAST.Message)
+		printDoctorPurpose(doctorDetailIndent, "callback channel for blind (out-of-band) checks")
+		printDetails(detailsVisible(r.OAST.Status), r.OAST.Details)
+		printTip(r.OAST.Tip)
 	}
 
 	// ── Agentic scan ──
@@ -354,18 +446,26 @@ func printDoctorReport(r *diagnostics.Report) {
 	printDoctorSubsection("Tools (informational)")
 	printInfoTools(r)
 
+	// ── Coding agent ──
+	if r.Skill != nil {
+		printDoctorSection("Coding agent", "vigolium skills install")
+		printCheck("Agent skill", r.Skill.Status, r.Skill.Message)
+		printDetails(detailsVisible(r.Skill.Status), r.Skill.Details)
+		printTip(r.Skill.Tip)
+	}
+
 	fmt.Println()
 	switch r.Status {
 	case "ready":
 		fmt.Printf("  %s %s\n", terminal.BoldGreen(terminal.SymbolSuccess), terminal.BoldGreen("All systems ready"))
 	case "degraded":
-		fmt.Printf("  %s %s\n", terminal.BoldYellow(terminal.SymbolWarning), terminal.BoldYellow("System degraded — some scan modes unavailable"))
+		fmt.Printf("  %s %s\n", terminal.BoldYellow(terminal.SymbolWarning), terminal.BoldYellow("System degraded — some scan modes unavailable or scope rules broken"))
 	default:
 		// "not_ready" can only mean Database failed under the new status
 		// rules; native and agentic checks degrade rather than block.
 		fmt.Printf("  %s %s\n", terminal.BoldRed(terminal.SymbolError), terminal.BoldRed("System not ready — database unavailable"))
 	}
-	if !doctorFix && diagnostics.HasFixableIssues(r) {
+	if !doctorFix && (diagnostics.HasFixableIssues(r) || doctorSkillStale()) {
 		fmt.Printf("  %s %s%s%s\n",
 			terminal.Yellow(terminal.SymbolTip),
 			terminal.White("re-run with "),

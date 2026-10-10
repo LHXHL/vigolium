@@ -605,6 +605,13 @@ func (f *Finding) FromResultEvent(event *output.ResultEvent) error {
 	// native results. Surface it so console/JSON/HTML/DB/API all carry it.
 	f.CWEID = cweFromMetadata(event.Metadata)
 
+	// Replay context for `finding verify` (see output.ResultEvent).
+	f.OriginRecordUUID = event.OriginRecordUUID
+	if event.InsertionPointType != "" || event.FuzzingParameter != "" {
+		f.InsertionPoint = &FindingInsertionPoint{Type: event.InsertionPointType, Name: event.FuzzingParameter}
+	}
+	f.Payload = event.Payload
+
 	f.FindingHash = event.ID()
 	f.FoundAt = time.Now()
 

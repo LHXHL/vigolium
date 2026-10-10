@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra/grpcweb"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
 
 func TestNew(t *testing.T) {
@@ -19,24 +19,14 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, ModuleName, m.Name())
 }
 
-func makeHTTPCtx(rawReq, rawResp string) *httpmsg.HttpRequestResponse {
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		[]byte(rawReq),
-	)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
-
 // TestScanPerRequest_ResponseContentType drives a response with a gRPC-Web
 // content type and expects an endpoint finding.
 func TestScanPerRequest_ResponseContentType(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx(
+	ctx := modtest.RawCtx(
 		"POST /svc.Service/Method HTTP/1.1\r\nHost: example.com\r\n\r\n",
-		"HTTP/1.1 200 OK\r\nContent-Type: application/grpc-web+proto\r\n\r\n",
-	)
+		"HTTP/1.1 200 OK\r\nContent-Type: application/grpc-web+proto\r\n\r\n")
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -50,10 +40,9 @@ func TestScanPerRequest_ResponseContentType(t *testing.T) {
 func TestScanPerRequest_GrpcStatusHeader(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx(
+	ctx := modtest.RawCtx(
 		"POST /svc.Service/Method HTTP/1.1\r\nHost: example.com\r\n\r\n",
-		"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\ngrpc-status: 0\r\n\r\n",
-	)
+		"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\ngrpc-status: 0\r\n\r\n")
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -65,10 +54,9 @@ func TestScanPerRequest_GrpcStatusHeader(t *testing.T) {
 func TestScanPerRequest_RequestContentType(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx(
+	ctx := modtest.RawCtx(
 		"POST /svc.Service/Method HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/grpc-web\r\n\r\n",
-		"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n",
-	)
+		"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n")
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -92,10 +80,9 @@ func TestScanPerRequest_MarksTechAndDecodesTrailer(t *testing.T) {
 		"HTTP/1.1 200 OK\r\nContent-Type: application/grpc-web+proto\r\nContent-Length: %d\r\n\r\n%s",
 		len(body), string(body),
 	)
-	ctx := makeHTTPCtx(
+	ctx := modtest.RawCtx(
 		"POST /pkg.Svc/GetThing HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/grpc-web+proto\r\n\r\n",
-		rawResp,
-	)
+		rawResp)
 
 	sc := &modkit.ScanContext{TechStack: modkit.NewTechRegistry()}
 	u, err := ctx.URL()
@@ -119,10 +106,9 @@ func TestScanPerRequest_MarksTechAndDecodesTrailer(t *testing.T) {
 func TestScanPerRequest_NoGrpc(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx(
+	ctx := modtest.RawCtx(
 		"GET /api HTTP/1.1\r\nHost: example.com\r\n\r\n",
-		"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}",
-	)
+		"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}")
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

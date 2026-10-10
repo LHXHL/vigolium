@@ -1,0 +1,898 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/cli.scanDryRunDocSchema",
+  "$defs": {
+    "cli.scanDryRunDocSchema": {
+      "properties": {
+        "schema_version": {
+          "type": "integer"
+        },
+        "command": {
+          "type": "string",
+          "enum": [
+            "scan",
+            "run"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "scan"
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "project_source": {
+          "type": "string"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "items": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Phase"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan": {
+          "$ref": "#/$defs/scanplan.Plan"
+        },
+        "generated_at": {
+          "type": "string"
+        },
+        "generated_at_ms": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema_version",
+        "command",
+        "kind",
+        "ok",
+        "dry_run",
+        "total",
+        "offset",
+        "limit",
+        "items",
+        "plan"
+      ]
+    },
+    "scanplan.AuthSession": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "primary": {
+          "type": "boolean"
+        },
+        "login_host": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "role",
+        "kind",
+        "primary",
+        "source"
+      ]
+    },
+    "scanplan.Budgets": {
+      "properties": {
+        "scan_max_duration_ms": {
+          "type": "integer"
+        },
+        "max_requests": {
+          "type": "integer"
+        },
+        "max_requests_per_host": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "type": "integer"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "max_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "scan_max_duration_ms",
+        "max_requests",
+        "max_requests_per_host",
+        "rate_limit",
+        "concurrency",
+        "max_per_host"
+      ]
+    },
+    "scanplan.Discovery": {
+      "properties": {
+        "wordlist_tier": {
+          "type": "string"
+        },
+        "wordlists": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Wordlist"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fuzzing": {
+          "type": "boolean"
+        },
+        "fuzzing_reason": {
+          "type": "string"
+        },
+        "recursion_enabled": {
+          "type": "boolean"
+        },
+        "recursion_max_depth": {
+          "type": "integer"
+        },
+        "target_concurrency": {
+          "type": "integer"
+        },
+        "jstangle": {
+          "$ref": "#/$defs/scanplan.JSTangle"
+        },
+        "sitemap": {
+          "$ref": "#/$defs/scanplan.Sitemap"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "wordlist_tier",
+        "wordlists",
+        "fuzzing",
+        "fuzzing_reason",
+        "recursion_enabled",
+        "recursion_max_depth",
+        "target_concurrency"
+      ]
+    },
+    "scanplan.Egress": {
+      "properties": {
+        "gated": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exempt": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.EgressExemption"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "gated",
+        "exempt"
+      ]
+    },
+    "scanplan.EgressExemption": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "reason"
+      ]
+    },
+    "scanplan.Estimate": {
+      "properties": {
+        "low": {
+          "type": "integer"
+        },
+        "high": {
+          "type": "integer"
+        },
+        "ceiling_by_pace": {
+          "type": "integer"
+        },
+        "clamped_to": {
+          "type": "integer"
+        },
+        "hits_max_requests": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "by_phase": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/scanplan.PhaseEstimate"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "low",
+        "high",
+        "by_phase",
+        "basis",
+        "confidence"
+      ]
+    },
+    "scanplan.ExtensionSelection": {
+      "properties": {
+        "active": {
+          "type": "integer"
+        },
+        "passive": {
+          "type": "integer"
+        },
+        "skipped": {
+          "type": "integer"
+        },
+        "skipped_by": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "active",
+        "passive",
+        "skipped",
+        "summary"
+      ]
+    },
+    "scanplan.Harvest": {
+      "properties": {
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_urls": {
+          "type": "integer"
+        },
+        "per_shape": {
+          "type": "integer"
+        },
+        "cdx_max_rows": {
+          "type": "integer"
+        },
+        "probe": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "sources",
+        "max_urls",
+        "per_shape",
+        "cdx_max_rows",
+        "probe"
+      ]
+    },
+    "scanplan.JSTangle": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "workers": {
+          "type": "integer"
+        },
+        "memory_budget_mb": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled",
+        "workers",
+        "memory_budget_mb"
+      ]
+    },
+    "scanplan.Modules": {
+      "properties": {
+        "active": {
+          "type": "integer"
+        },
+        "passive": {
+          "type": "integer"
+        },
+        "extensions": {
+          "type": "integer"
+        },
+        "tier_ceiling": {
+          "type": "string"
+        },
+        "tier_filtered": {
+          "type": "integer"
+        },
+        "hygiene_suppressed": {
+          "type": "integer"
+        },
+        "risk_gated": {
+          "type": "integer"
+        },
+        "risky_payloads_allowed": {
+          "type": "boolean"
+        },
+        "payloads_gated": {
+          "items": {
+            "$ref": "#/$defs/scanplan.PayloadGate"
+          },
+          "type": "array"
+        },
+        "by_scope": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extension_selection": {
+          "$ref": "#/$defs/scanplan.ExtensionSelection"
+        },
+        "ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "active",
+        "passive",
+        "extensions",
+        "tier_ceiling",
+        "tier_filtered",
+        "hygiene_suppressed",
+        "risk_gated",
+        "risky_payloads_allowed",
+        "by_scope"
+      ]
+    },
+    "scanplan.Pace": {
+      "properties": {
+        "rate_limit": {
+          "type": "integer"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "max_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "rate_limit",
+        "concurrency",
+        "max_per_host"
+      ]
+    },
+    "scanplan.ParamMining": {
+      "properties": {
+        "endpoints_per_host": {
+          "type": "integer"
+        },
+        "requests_per_endpoint": {
+          "type": "integer"
+        },
+        "workers": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "endpoints_per_host",
+        "requests_per_endpoint",
+        "workers"
+      ]
+    },
+    "scanplan.PayloadGate": {
+      "properties": {
+        "module": {
+          "type": "string"
+        },
+        "gated": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "module",
+        "gated",
+        "total",
+        "reason"
+      ]
+    },
+    "scanplan.Phase": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "disabled_by": {
+          "type": "string"
+        },
+        "sends_target_traffic": {
+          "type": "boolean"
+        },
+        "budget": {
+          "$ref": "#/$defs/scanplan.PhaseBudget"
+        },
+        "pace": {
+          "$ref": "#/$defs/scanplan.Pace"
+        },
+        "request_cap_enforcement": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "enabled",
+        "sends_target_traffic"
+      ]
+    },
+    "scanplan.PhaseBudget": {
+      "properties": {
+        "per_target_ms": {
+          "type": "integer"
+        },
+        "phase_ceiling_ms": {
+          "type": "integer"
+        },
+        "duration_factor": {
+          "type": "number"
+        },
+        "grace_ms": {
+          "type": "integer"
+        },
+        "semantics": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "semantics",
+        "source"
+      ]
+    },
+    "scanplan.PhaseEstimate": {
+      "properties": {
+        "low": {
+          "type": "integer"
+        },
+        "high": {
+          "type": "integer"
+        },
+        "ceiling_by_pace": {
+          "type": "integer"
+        },
+        "basis": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "low",
+        "high",
+        "basis"
+      ]
+    },
+    "scanplan.Plan": {
+      "properties": {
+        "schema_version": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "intensity": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "heuristics_check": {
+          "type": "string"
+        },
+        "phases": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Phase"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "budgets": {
+          "$ref": "#/$defs/scanplan.Budgets"
+        },
+        "modules": {
+          "$ref": "#/$defs/scanplan.Modules"
+        },
+        "scope": {
+          "$ref": "#/$defs/scanplan.Scope"
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.AuthSession"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targets": {
+          "$ref": "#/$defs/scanplan.Targets"
+        },
+        "discovery": {
+          "$ref": "#/$defs/scanplan.Discovery"
+        },
+        "harvest": {
+          "$ref": "#/$defs/scanplan.Harvest"
+        },
+        "param_mining": {
+          "$ref": "#/$defs/scanplan.ParamMining"
+        },
+        "egress": {
+          "$ref": "#/$defs/scanplan.Egress"
+        },
+        "estimate": {
+          "$ref": "#/$defs/scanplan.Estimate"
+        },
+        "warnings": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanplan.Warning"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema_version",
+        "strategy",
+        "heuristics_check",
+        "phases",
+        "budgets",
+        "modules",
+        "scope",
+        "auth",
+        "targets",
+        "estimate",
+        "warnings"
+      ]
+    },
+    "scanplan.Rejection": {
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "target",
+        "reason"
+      ]
+    },
+    "scanplan.Scope": {
+      "properties": {
+        "origin_mode": {
+          "type": "string"
+        },
+        "ignore_static": {
+          "type": "boolean"
+        },
+        "host_include": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_exclude": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path_include": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path_exclude": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "origin_mode",
+        "ignore_static",
+        "host_include",
+        "host_exclude",
+        "path_include",
+        "path_exclude"
+      ]
+    },
+    "scanplan.Sitemap": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_urls": {
+          "type": "integer"
+        },
+        "per_shape": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "enabled",
+        "max_urls",
+        "per_shape"
+      ]
+    },
+    "scanplan.Targets": {
+      "properties": {
+        "seeded": {
+          "type": "integer"
+        },
+        "from_files": {
+          "type": "integer"
+        },
+        "all_records": {
+          "type": "boolean"
+        },
+        "db_records_in_scope": {
+          "type": "integer"
+        },
+        "admitted": {
+          "type": "integer"
+        },
+        "rejected": {
+          "type": "integer"
+        },
+        "rejected_sample": {
+          "items": {
+            "$ref": "#/$defs/scanplan.Rejection"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "seeded",
+        "from_files",
+        "admitted",
+        "rejected"
+      ]
+    },
+    "scanplan.Warning": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "scanplan.Wordlist": {
+      "properties": {
+        "slot": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "slot",
+        "source",
+        "name"
+      ]
+    }
+  },
+  "title": "vigolium scan-dry-run",
+  "description": "The scan --dry-run / run \u003cphase\u003e --dry-run -j document: items are the plan's phases, plan the full plan, dry_run true."
+}

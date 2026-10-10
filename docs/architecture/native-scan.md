@@ -33,8 +33,8 @@ CLI invocation
          │
          ▼
 ┌─────────────────────┐
-│     Executor         │  pkg/core/executor.go
-│  Worker pool feeds   │  feedItems() → worker() → processItem()
+│     Executor         │  pkg/core/executor*.go
+│  Worker pool feeds   │  feedItems() → worker() → processItemDetached()
 │  items to modules    │
 └────────┬────────────┘
          │
@@ -288,7 +288,12 @@ RunNativeScan()
 │
 ├─── External Harvest              [guard: ExternalHarvestEnabled]
 │    Queries Wayback, CommonCrawl, AlienVault, URLScan, VirusTotal.
-│    Ingests discovered URLs into DB (no modules, pure ingestion).
+│    Stores harvested URLs as request-only stubs (source=harvest);
+│    never contacts the target.
+│
+├─── Harvest Probe                 [guard: harvest ran + a later phase reaches the target]
+│    One liveness request per origin, then one GET per harvested URL.
+│    Completes live stubs; deletes dead-host / 404 / 410 / soft-404 ones.
 │
 ├─── Spidering                     [guard: SpideringEnabled]
 │    Browser-based crawling (Chromium). Applies heuristics filter.
@@ -343,7 +348,7 @@ known-issue scan consume those records and can add findings or new traffic.
 
 ### Executor Struct — `pkg/core/executor.go`
 
-The Executor is the central dispatch engine. It receives work items, distributes them to a worker pool, and dispatches modules.
+The Executor is the central dispatch engine. It receives work items, distributes them to a worker pool, and dispatches modules. The code is split by stage: `executor.go` (struct, `NewExecutor`, `Execute`), `executor_worker.go` (feeder, worker loop, per-item pipeline), `executor_item_tracker.go` (per-item completion), `executor_active.go` / `executor_passive.go` (module dispatch), `executor_timeouts.go` (per-module watchdogs), `executor_fetch.go`, `executor_persist.go` and `executor_results.go`.
 
 ```go
 type Executor struct {
@@ -377,9 +382,9 @@ At construction time, `NewExecutor()` pre-groups all modules by their `ScanScope
 func (e *Executor) Execute(ctx context.Context) (bool, error)
 ```
 
-1. Spawns `Workers` goroutines reading from a buffered channel (`cap = Workers * 2`). Optional adaptive mode can add workers when the queue remains over 75% full, up to the configured ceiling.
+1. Spawns `Workers` goroutines reading from a buffered channel (`cap = Workers * 2`).
 2. Calls `feedItems()` on the calling goroutine (producer loop).
-3. After source EOF, drains module-fed requests until the executor is idle, then closes the channel and waits for workers with a bounded shutdown grace.
+3. After source EOF, drains module-fed requests until the executor is idle (no outstanding item and an empty feedback channel), then closes the channel and joins the workers and then every detached active task, both under one bounded shutdown grace (`WorkerExitGrace`, default 60s). Anything still running after the grace is leaked and reported as `WorkersAbandoned`.
 4. Flushes passive side effects (`Flusher`), deferred passive findings (`BatchFlusher`), corroboration observations, and the OAST service.
 5. Returns `(foundResults, nil)`.
 
@@ -389,24 +394,43 @@ For each item from `source.Next()`:
 
 1. **Static file filter**: if a path matches a static extension, skip it unless it looks like an object-storage asset. Storage candidates are retained as metadata-only items and fetched with `HEAD` (or a one-byte ranged `GET` fallback), never as full large/binary bodies.
 2. **Pre-request scope check**: `ScopeMatcher.InScopeRequest(host, path, "", "")` — host + path only, no HTTP round-trip. Rejects obviously out-of-scope items early.
-3. **Host error check**: if `HostErrors.Check(hostID)` returns true (host has been circuit-broken), skip.
+3. **Host error check**: if `HostErrors.Quarantined(host:port)` returns true (host has been circuit-broken), skip the item and count it as `skipped_quarantined`.
 4. Send item to the worker channel.
 
-### worker() — The Consumer
+### worker() — The Consumer: Dispatch, Then Detach
 
-Each worker goroutine loops on the channel:
+A worker does not wait for an item's active-module tasks. It fetches the baseline, runs the passive stage, persists, dispatches every active task, and goes straight back to the queue. The item stays **outstanding** until its last task returns:
 
 ```go
-for item := range itemCh {
-    e.processItem(item)
-    item.Complete()
-    e.statsTracker.Increment()
+for {
+    acquire an outstanding-item slot     // cap MaxOutstandingItems, default 4 x Workers
+    item := <-itemCh                     // inFlight++
+    t := newItemTracker(item)            // pending = 1 (the dispatcher's reference)
+    processItemDetached(t)               // fetch, passive, persist, dispatch: each task pending++
+    t.done()                             // drop the dispatcher's reference
 }
+
+// on the goroutine that drops the last reference (the worker or a task):
+t.complete():  return the pooled response buffer (unless an abandoned module call may still read it)
+               ack the item (finishItem), Processed()++, inFlight--, release the slot
 ```
+
+Before this, every item ran `g.Wait()` on its own tasks, so one slow task (up to the 5-minute module timeout) pinned its worker while the global task budget sat idle: with W workers, W slow items stopped all baseline fetching. A benchmark with 1000 items, 5% of them carrying a 2-second task and W=8 went from 71 to 245 items/s (`BenchmarkExecutorHeadOfLine`).
+
+Rules that keep this safe:
+
+- **Bounded open items.** The outstanding-item slot is taken *before* dequeue, so slow tasks turn into backpressure on the item channel and the feeder. Each outstanding item holds its live response buffer, so `MaxOutstandingItems` is also the buffer-memory bound (about 100 MB at W=25 with 1 MB bodies).
+- **`inFlight` counts outstanding items**, not busy workers. The feedback drain's idle test (`inFlight == 0` and an empty feedback channel) still holds because feedback comes from tasks of outstanding items, and the stall detector still keys on `inFlight` decreasing. `Executor.InFlight()` reports the same number.
+- **Acks arrive out of order.** `DBInputSource` acks through a contiguous-head drain of its cursor and the queue backends ack per task ID, so neither assumes order.
+- **Cancellation.** Tasks run under the phase context. `goActiveTask` skips the spawn when the context is done, and the "cancelled → don't ack" rule (`finishItem`) runs inside `complete()`, so an item interrupted by cancellation is counted `Unacked` and re-served by a durable source.
+- **Panics.** Each detached task recovers its own panic, releases its task slot if it still holds it, and marks the item so it is acknowledged anyway (a poison item must not freeze the cursor).
+- **Pause.** `PauseController` covers the worker's own part only: `Pause()` returns once no worker is mid-dispatch. Tasks already dispatched are not waited for and may still finish, send probes, record findings and ack their item while the scan is paused. No new item is dequeued or dispatched until `Resume()`.
+
+`processItem()` remains as a synchronous wrapper (dispatch, then wait for the item to complete) for tests.
 
 ## Stage 6: Processing an Item
 
-`processItem()` is the per-item hot path. Every item that passes `feedItems()` goes through these steps:
+`processItemDetached()` is the per-item hot path. Every item that passes `feedItems()` goes through these steps:
 
 ### Step 1: Baseline HTTP Fetch
 
@@ -486,7 +510,7 @@ The cached `baseEligible` result lets the executor skip calling `CanProcess()` o
 
 ### Step 9: Active Module Execution
 
-Host-, request-, and insertion-point-scoped tasks all share one `conc.WaitGroup` and one context-aware semaphore. The default task budget is `max(32, Workers*8)`, or `ExecutorConfig.ActiveTaskLimit` when set. There are no outer “three category” goroutines: each scope function submits its eligible module calls directly into the same bounded pool, and `runActiveStage()` waits for all of them.
+Host-, request-, and insertion-point-scoped tasks all go through `goActiveTask()`, which takes a slot on one global, context-aware semaphore and starts the task as a detached goroutine holding a reference on the item's tracker. The default task budget is `max(32, Workers*8)`, or `ExecutorConfig.ActiveTaskLimit` when set. There are no outer “three category” goroutines: each scope function submits its eligible module calls directly into the same bounded pool, and `runActiveStage()` returns once everything is dispatched (it blocks only while the semaphore is full). The scan-level `taskWG` joins the tasks at shutdown.
 
 For insertion-point modules, the loop is module-outer and insertion-point-inner so module-level gates are evaluated once. Every eligible `(module, insertion point)` pair is submitted as its own bounded task:
 
@@ -505,11 +529,12 @@ Per-host active and passive claims are keyed by `(module, canonical scheme://hos
 ```
 Execute()
 ├── feedItems()                              producer
-└── Workers goroutines                       record-level consumer pool
-    └── processItem()
-        ├── passive per-host                 ordered, run-once claim
-        ├── passive per-request              bounded global task pool (default)
-        └── active host/request/IP calls     one bounded global task pool
+├── Workers goroutines                       record-level consumer pool (≤ MaxOutstandingItems open items)
+│   └── processItemDetached()
+│       ├── passive per-host                 ordered, run-once claim
+│       ├── passive per-request              bounded global task pool (default)
+│       └── dispatch active tasks            returns without waiting
+└── detached active tasks                    one bounded global task pool; the last one completes the item
 ```
 
 Every module call also has a watchdog: passive calls default to 5 seconds and active calls to 300 seconds, with optional module `TimeoutHint()` overrides. Active whole-request timeouts scale for requests with many insertion points, up to the executor's configured ceiling.
@@ -639,7 +664,6 @@ type ScanContext struct {
     RequestUUIDResolver RequestUUIDResolver
     Scope               ScopeChecker
     OASTProvider        OASTProvider
-    MutationGen         MutationGenerator
     RequestFeeder       RequestFeeder
     ScopeExpander       ScopeExpander
     InsertionPoints     InsertionPointProvider
@@ -648,6 +672,7 @@ type ScanContext struct {
     WAFStack            *WAFRegistry
     ContentClass        *ContentClassRegistry
     FollowSubdomains    bool
+    NoParamDedup        bool
     DeepScan            bool
     // bounded baseline/wildcard caches and singleflight groups are private
 }
@@ -655,9 +680,8 @@ type ScanContext struct {
 
 - **DedupManager** — request-level deduplication.
 - **OASTProvider** — generates out-of-band callback URLs for blind vulnerability detection.
-- **MutationGenerator** — classifies parameter values and generates test mutations.
 - **RequestFeeder / ScopeExpander** — feed discovered requests back into the executor and, when allowed, expand exact-host scope.
-- **InsertionPoints / ParamFindings** — reuse parsed insertion points and suppress duplicate vulnerability-class work on the same parameter.
+- **InsertionPoints / ParamFindings** — reuse parsed insertion points and suppress duplicate vulnerability-class work on the same parameter. Modules use `ParamAlreadyFound` / `MarkParamFound`, keyed by `modkit.ParamFindingKey`, the same key the executor uses; `NoParamDedup` (`--no-param-dedup`) turns the skip off.
 - **TechStack / WAFStack / ContentClass** — per-host registries used for conservative module gating and pacing signals.
 - Private bounded caches plus `singleflight` coalesce baseline, wildcard, and decoy probes.
 
@@ -688,6 +712,11 @@ Module authors embed `BaseActiveModule` or `BasePassiveModule` to get default im
 ## Stage 9: Result Emission
 
 ### ResultEvent — `pkg/output/output.go`
+
+The JSON tags below are the nuclei-compatible **import and legacy** format
+(`finding load` accepts it; `--ci-output-format` still prints it this release).
+No `-j` document uses them: the scan document's `items` and `finding -j` render
+findings through the finding view (`findingViewFromEvent` for in-memory results).
 
 ```go
 type ResultEvent struct {
@@ -902,12 +931,18 @@ type RecordWriter struct {
 
 ### Host Error Circuit Breaker — `pkg/core/hosterrors/`
 
-`hosterrors.Cache` tracks consecutive errors per host:
+`hosterrors.Cache` is a per-`host:port` circuit breaker (key from `httpmsg.HostPortKey`, no method, so a GET failure also quarantines POSTs):
 
-- `MarkFailed()` increments the error counter (with regex-based error matching).
-- `Check()` returns true when the counter reaches `MaxHostError` (default 30).
-- `MarkSuccess()` resets the counter (but not if already at threshold).
-- The executor's `feedItems()` pre-checks this to skip items for quarantined hosts.
+- **Closed → Open:** `MarkFailed()` counts consecutive transport errors (regex-matched); at `--max-host-error` (default 30) the host is quarantined for the cooldown (default 30s).
+- **Open → HalfOpen:** after the cooldown, the first `Admit()` lets one probe request through (CAS on the state).
+- **HalfOpen → Closed:** the probe succeeds (`MarkSuccess()`); the counter and cooldown reset.
+- **HalfOpen → Open:** the probe fails; the cooldown doubles, up to the max (default 5m). A probe not reported within 2 × the request timeout is treated as lost and another caller may probe.
+- **Dead:** after `max_trips` failed probes (default 5) the host stays quarantined for the rest of the scan.
+- Config: `scanning_strategy.http.host_errors.{cooldown, max_cooldown, max_trips}`.
+- The API is split. `Quarantined()` is read-only, and the executor's `sendItem` uses it to drop items. `Admit()` is called by the requester just before the send. The executor never consumes the probe.
+- Dropped items are counted per host as `skipped_quarantined` (`ExecutionReport.SkippedQuarantined`/`QuarantinedHosts`). The phase becomes partial with `targets_unreachable`, and each host is listed on the phase outcome's `targets.unreachable`.
+- Transitions emit `host.quarantined`, `host.recovered` and `host.dead` events.
+- Open/HalfOpen/Dead entries live in a non-evicting map. Only healthy hosts' counters sit in the bounded ARC, so eviction can never silently un-quarantine a host.
 
 ### JS Extension Hooks — `pkg/jsext/hooks.go`
 
@@ -1000,7 +1035,7 @@ vigolium scan -t https://example.com
     │    source.Next() → static filter → scope check    │
     │    → host error check → send to worker channel    │
     │                                                   │
-    │  worker() → processItem():                        │
+    │  worker() → processItemDetached():                │
     │    1. Baseline HTTP fetch (or use DB response)    │
     │    2. Traffic callback                            │
     │    3. Pre-hooks (JS transform/filter)             │
@@ -1008,7 +1043,8 @@ vigolium scan -t https://example.com
     │    5. Passive host/request modules                │
     │    6. Body action + persistence/scope gate        │
     │    7. Eligibility pre-computation                 │
-    │    8. Active host/request/IP tasks (one pool)     │
+    │    8. Dispatch active tasks (one pool, detached;  │
+    │       the last task to finish acks the item)      │
     │                                                   │
     │  Post-processing:                                 │
     │    Flush passive side effects + batch findings    │
@@ -1048,9 +1084,9 @@ vigolium scan -t https://example.com
 | Input | `pkg/input/source/` | `InputSource.Next()` | URLs/files/stdin | `*work.WorkItem` |
 | HTTP Types | `pkg/httpmsg/` | `GetRawRequestFromURL()` | URL string | `*HttpRequestResponse` |
 | Runner | `internal/runner/runner.go` | `RunNativeScan()` | Options + Settings | Phase results |
-| Executor | `pkg/core/executor.go` | `Execute()` → `processItem()` | `InputSource` + modules | `bool` (found results) |
+| Executor | `pkg/core/executor.go`, `executor_worker.go` | `Execute()` → `worker()` → `processItemDetached()` | `InputSource` + modules | `bool` (found results) |
 | Insertion Points | `pkg/httpmsg/insertion_point.go` | `CreateAllInsertionPoints()` | Raw request bytes | `[]InsertionPoint` |
 | Module Dispatch | `pkg/modules/` | `ScanPer{Host,Request,InsertionPoint}()` | `*HttpRequestResponse` | `[]*ResultEvent` |
-| Result Emission | `pkg/core/executor.go` | `emitResult()` | `*ResultEvent` | DB write + output |
+| Result Emission | `pkg/core/executor_results.go` | `emitResult()` | `*ResultEvent` | DB write + output |
 | Output | `pkg/output/output.go` | `StandardWriter.Write()` | `*ResultEvent` | Console/JSON/HTML/file |
 | DB Persistence | `pkg/database/` | `SaveRecord()`, `SaveFinding()` | HTTP types / ResultEvent | `HTTPRecord`, `Finding` |

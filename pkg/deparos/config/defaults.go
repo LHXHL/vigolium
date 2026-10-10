@@ -4,6 +4,12 @@ import "time"
 
 // Default values for content discovery configuration.
 
+// Sitemap source budgets (see SitemapConfig).
+const (
+	DefaultSitemapMaxURLs  = 2000 // sampled sitemap locs spidered per target
+	DefaultSitemapPerShape = 3    // sampled locs per host + path shape
+)
+
 var (
 	// DefaultCustomExtensions lists commonly tested file extensions.
 	DefaultCustomExtensions = []string{
@@ -146,11 +152,17 @@ func NewDefaultConfig() *Config {
 		},
 		JSTangle: JSTangleConfig{
 			Enabled: true, ReplayMode: "exact", ReplaySafety: "read-only", SourceMaps: true, AssetGraph: true,
-			WorkerCount: 0, MemoryBudgetMB: 768, CacheMB: 128,
+			// WorkerCount and MemoryBudgetMB 0 = derived from CPUs and RAM by the
+			// jstangle service.
+			WorkerCount: 0, MemoryBudgetMB: 0, CacheMB: 128,
 			WorkerMaxJobs: 100, WorkerMaxRSSMB: 1024, JobTimeout: 60 * time.Second,
-			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 16, HardInputMB: 10, MaxRequestsPerFile: 500,
+			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 16, HardInputMB: 16, MaxRequestsPerFile: 500,
 			MaxASTNodes:   500_000,
 			MaxAssetDepth: 4, MaxAssetsPerParent: 64, MaxAssetsPerHost: 512, MaxAssetsTotal: 2048,
+			MaxChunksPerRuntime: 512,
+		},
+		Sitemap: SitemapConfig{
+			Enabled: true, MaxURLs: DefaultSitemapMaxURLs, PerShape: DefaultSitemapPerShape, FollowIndex: true,
 		},
 		Modules: DefaultModuleConfig(),
 	}

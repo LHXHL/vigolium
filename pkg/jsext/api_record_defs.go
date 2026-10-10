@@ -8,6 +8,7 @@ func recordFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsRecord,
 			Name:        "uuid",
+			Effect:      EffectPure,
 			Category:    CatRecord,
 			Signature:   ".uuid",
 			Returns:     "string",
@@ -18,6 +19,7 @@ func recordFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsRecord,
 			Name:        "annotate",
+			Effect:      EffectDBWrite,
 			Category:    CatRecord,
 			Signature:   ".annotate(patch: {risk_score?, remarks?})",
 			Returns:     "bool",
@@ -28,6 +30,7 @@ func recordFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsRecord,
 			Name:        "addRiskScore",
+			Effect:      EffectDBWrite,
 			Category:    CatRecord,
 			Signature:   ".addRiskScore(delta: number)",
 			Returns:     "bool",
@@ -38,6 +41,7 @@ func recordFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsRecord,
 			Name:        "addRemarks",
+			Effect:      EffectDBWrite,
 			Category:    CatRecord,
 			Signature:   ".addRemarks(remarks: string[])",
 			Returns:     "bool",
@@ -56,6 +60,7 @@ func configFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsConfig,
 			Name:        "<key>",
+			Effect:      EffectPure,
 			Category:    CatConfig,
 			Signature:   ".<key>",
 			Returns:     "string",

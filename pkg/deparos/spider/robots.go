@@ -185,7 +185,7 @@ func (p *RobotsTxtParser) createLink(baseURL *url.URL, dirType directiveType, pa
 	// Determine resource type based on directive
 	resourceType := ResourceHTML // Default for Allow/Disallow
 	if dirType == directiveSitemap {
-		resourceType = ResourceBinary // Sitemap files
+		resourceType = ResourceSitemap // parsed by discovery, not spidered as a file
 	}
 
 	// Report discovered link

@@ -2,9 +2,9 @@ package types
 
 import (
 	"maps"
-	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/output/formats"
 )
 
 type Options struct {
@@ -17,7 +17,17 @@ type Options struct {
 	// fan-out hint would offer -P to a -t-only run, where it degrades back to a
 	// single serial scan with a warning.
 	TargetsSeededFromFile bool
-	InputFileMode         string // json, jsonb, list
+	// TargetAdmission is the CLI's scope verdict over Targets, set when the
+	// targets ARE the scan's input (not a -i spec's base URL, a raw-request
+	// stdin, or a DB rescan). The CLI reads it for the banner and scan.started;
+	// non-nil also tells a runner built on a custom input source to admit
+	// Targets itself. The runner recomputes the verdict and owns the decision.
+	TargetAdmission *TargetAdmission
+	InputFileMode   string // json, jsonb, list
+	// InputFileModeExplicit: -I was given, so a URL-list InputFileMode is the
+	// operator's choice and the input file is not content-sniffed into another
+	// format (source.FileSourceConfig.FormatExplicit).
+	InputFileModeExplicit bool
 	Stream                bool
 	Stdin                 bool
 	// --input-read-timeout used to land here and go no further: nothing in the
@@ -98,6 +108,11 @@ type Options struct {
 	// progress ticker is suppressed (it's repetitive noise in a file). Set by the
 	// parent on each child via the hidden --captured-console flag; never user-set.
 	CapturedConsole bool
+	// StdoutDocument reserves stdout for the single -j scan document, written
+	// once the scan is over (pkg/cli scan_document.go). The live finding stream
+	// stays off stdout, as under --events: findings are echoed to stderr
+	// instead, and the document carries them.
+	StdoutDocument bool
 	// Events selects the machine event stream written to stdout ("ndjson", or ""
 	// for none). It is orthogonal to OutputFormats: formats decide what a scan
 	// LEAVES BEHIND, Events decides what it REPORTS WHILE RUNNING. The human
@@ -110,6 +125,12 @@ type Options struct {
 
 	Modules        []string
 	PassiveModules []string
+	// ModulePatterns and ModuleTags are the raw -m and --module-tag values.
+	// Modules already holds what they resolved to among the built-in modules;
+	// the runner re-applies them to the JS/YAML extensions it loads, which the
+	// CLI cannot see (so `-m csp` also selects ext-csp-check).
+	ModulePatterns []string
+	ModuleTags     []string
 
 	ProxyURL string
 
@@ -217,10 +238,18 @@ type Options struct {
 	// (all phases combined). 0 = unbounded. Sourced from --scanning-max-duration.
 	ScanMaxDuration time.Duration
 
+	// MaxRequests caps the wire attempts the whole scan may send, and
+	// MaxRequestsPerHost the attempts to any one target host (0 = unlimited).
+	// Sourced from --max-requests / --max-requests-per-host, else
+	// scanning_pace.max_requests / max_requests_per_host. Enforced by the egress
+	// gate's request budget (pkg/core/egress.Budget).
+	MaxRequests        int64
+	MaxRequestsPerHost int64
+
 	// Content discovery options
 	DiscoverEnabled     bool
 	DiscoverMaxDuration time.Duration
-	FuzzWordlistPath    string // CLI override for discovery fuzz wordlist (also enables fuzzing)
+	FuzzWordlistPaths   []string // CLI --discovery-wordlist (repeatable): discovery fuzz wordlists, streamed in order and deduplicated (also enables fuzzing)
 	// NoDiscoveryFuzz turns discovery's /FUZZ brute-force OFF unconditionally.
 	// It outranks every reason fuzzing would otherwise switch on (--intensity
 	// deep, a discovery-only run, the low-yield auto-enable), because it is the
@@ -228,6 +257,13 @@ type Options struct {
 	// preset quietly overruling that is the failure that matters.
 	NoDiscoveryFuzz bool
 	NoPrefixBreaker bool // Disable per-prefix circuit breaker (default: enabled)
+	// DiscoveryExtensions (--discovery-extensions) are extensions every
+	// discovered name is also tried with (ffuf's -e), swept without the
+	// confirmation gate. DiscoveryMaxDepth (--discovery-max-depth) overrides
+	// discovery.recursion.max_depth; 0 with the flag typed turns recursion off.
+	// Both are applied to the discovery settings by the CLI.
+	DiscoveryExtensions []string
+	DiscoveryMaxDepth   int
 
 	// FollowSubdomains, when set, lets the subdomain_harvest passive module pull
 	// the exact in-scope subdomains it discovers in responses into the scan:
@@ -276,11 +312,15 @@ type Options struct {
 	CarryBrowserSession bool
 
 	// Known Issue Scan options
-	KnownIssueScanEnabled      bool
-	KnownIssueScanTags         []string
-	KnownIssueScanExcludeTags  []string
-	KnownIssueScanSeverities   []string
-	KnownIssueScanTemplatesDir string
+	KnownIssueScanEnabled     bool
+	KnownIssueScanTags        []string
+	KnownIssueScanExcludeTags []string
+	KnownIssueScanSeverities  []string
+	// KnownIssueScanTemplatesDirs is the repeatable --known-issue-scan-templates-dir;
+	// KnownIssueScanTemplates the repeatable --known-issue-scan-templates (template
+	// files or IDs, nuclei's -t for a single template).
+	KnownIssueScanTemplatesDirs []string
+	KnownIssueScanTemplates     []string
 
 	// Pre-scan external intelligence harvesting
 	ExternalHarvestEnabled bool
@@ -304,9 +344,33 @@ type Options struct {
 	OnlyPhase string
 	// SkipPhases disables one or more phases while keeping all others enabled
 	SkipPhases []string
+	// PhaseSelection records what turned a phase off during scan-options
+	// resolution, keyed by canonical phase id: "strategy", "only", "skip",
+	// "module_selection" or "heuristics". The scan plan reads it for each
+	// phase's disabled_by; a phase absent here is off by default or by a gate.
+	PhaseSelection map[string]string
+	// SkipPortSweep disables the alternate-port sweep even where deep /
+	// --follow-subdomains would schedule it. Set by --skip port-sweep and by any
+	// --only that does not list port-sweep (see runner.ApplyNativePhaseSelection).
+	SkipPortSweep bool
+	// SkipTargetedRespider disables the targeted re-spider step (--skip
+	// targeted-respider) while keeping spidering itself.
+	SkipTargetedRespider bool
+	// SkipPreflight is set by --skip preflight: the runner does not send its
+	// reachability GET to each admitted CLI target before the phases, so a dead
+	// target is no longer reported as no_targets_reachable / targets_unreachable
+	// (scope admission still applies).
+	SkipPreflight bool
 
 	// OastURL is a fixed OAST callback URL (from --oast-url flag)
 	OastURL string
+
+	// SpideringMaxDurationSource is where SpideringMaxDuration came from:
+	// "flag" (typed --spider-max-time), a config.PaceSource value when the
+	// scanning_pace resolution supplied it ("factor", "phase", "common"), or ""
+	// (the flag default / not resolved). Only a "factor" value is subject to the
+	// spidering floor (runner.SpideringBudget).
+	SpideringMaxDurationSource string
 
 	// ConcurrencyExplicitlySet tracks whether the CLI -c/--concurrency flag was explicitly provided
 	ConcurrencyExplicitlySet bool
@@ -318,10 +382,11 @@ type Options struct {
 	// ask for this rate" can no longer be read off the value.
 	RateLimitExplicitlySet bool
 
-	// RateLimit is the global outbound requests-per-second cap for native scanning,
-	// set only when the operator explicitly passes --rate-limit (0 = unlimited, the
-	// default, preserves current throughput). When > 0 the scan's Services get a
-	// shared token-bucket rate limiter enforced at the request boundary.
+	// RateLimit is the global outbound requests-per-second cap for native scanning.
+	// It carries the documented 100 rps default when --rate-limit is not typed
+	// (see RateLimitExplicitlySet), so the cap is on by default; 0 means unlimited.
+	// When > 0 the scan's Services get a shared token-bucket rate limiter enforced
+	// at the request boundary.
 	RateLimit int
 
 	// ExtensionsOnly skips all built-in Go modules; runs only JS/YAML extension modules.
@@ -386,6 +451,22 @@ type Options struct {
 	// regardless of the host's detected stack. Set by --no-tech-filter and
 	// applied automatically when Intensity == "deep".
 	NoTechFilter bool
+
+	// AllowRiskyPayloads is the --allow-risky-payloads flag: nil when the flag
+	// was not passed (config dynamic-assessment.allow_risky_payloads decides),
+	// otherwise the explicit CLI value, which wins over config. When the resolved
+	// value is true (or Intensity == "deep"), risk:high payloads and modules run.
+	AllowRiskyPayloads *bool
+
+	// NoParamDedup is --no-param-dedup: turn off the cross-module (param,
+	// vuln-class) skip so every module of a class tests a parameter even after
+	// another one reported it. For audit runs that want every technique's hit.
+	NoParamDedup bool
+
+	// ParamMining is --param-mining: nil when the flag was not passed (the
+	// phase then follows the intensity: on at deep, off below it), otherwise
+	// the explicit value, which wins in both directions.
+	ParamMining *bool
 }
 
 // DefaultConcurrency is the built-in scan worker count, used wherever nobody
@@ -405,7 +486,7 @@ const DefaultConcurrency = 25
 func DefaultOptions() *Options {
 	return &Options{
 		Concurrency:          DefaultConcurrency,
-		MaxPerHost:           50,
+		MaxPerHost:           DefaultMaxPerHost,
 		Timeout:              15 * time.Second,
 		Retries:              1,
 		MaxHostError:         30,
@@ -448,67 +529,21 @@ func (options *Options) OutputPathForFormat(format string) string {
 	return FormatOutputPath(options.OutputBasePath(), format)
 }
 
-// multiPartFormatExtensions lists extensions filepath.Ext cannot recover on its
-// own: it sees only ".gz" of ".tar.gz", so stripping through it would leave a
-// dangling ".tar" on the base and derive sibling paths like "out.tar.html".
-// Checked before the single-part list below.
-//
-// ".report.html" is deliberately absent: StripFormatExtension strips only the
-// last extension by contract (TestStripFormatExtension), so a base that already
-// ends in ".report" keeps it.
-var multiPartFormatExtensions = []string{".tar.gz", ".tgz"}
-
 // StripFormatExtension removes a known format extension (.jsonl, .html, .json,
 // .md, .tar.gz, …) from a path, returning the base suitable for appending a new
-// extension.
+// extension. The extension set comes from the output format table
+// (pkg/output/formats); only the last extension is stripped.
 func StripFormatExtension(path string) string {
-	if path == "" {
-		return ""
-	}
-	lower := strings.ToLower(path)
-	for _, ext := range multiPartFormatExtensions {
-		if strings.HasSuffix(lower, ext) {
-			return path[:len(path)-len(ext)]
-		}
-	}
-	ext := filepath.Ext(path)
-	switch strings.ToLower(ext) {
-	case ".jsonl", ".html", ".json", ".pdf", ".sqlite", ".sqlite3", ".db", ".md", ".markdown", ".sarif":
-		return strings.TrimSuffix(path, ext)
-	default:
-		return path
-	}
+	return formats.StripExtension(path)
 }
 
-// FormatOutputPath appends the appropriate file extension for the given format.
-// It is the single source of truth for format→extension naming, shared by the
-// scan commands and `vigolium export`; markdown, bundle, and fs are export-only
-// formats. fs falls through to the default because it names a directory base
-// (<base>-traffic/, <base>-findings/) rather than a file.
+// FormatOutputPath appends the given format's file extension (aliases
+// accepted) to basePath. The format→extension mapping is the output format
+// table's (pkg/output/formats), shared by the scan commands, `vigolium export`
+// and the REST server. fs and console have no extension: fs names a directory
+// base (<base>-traffic/, <base>-findings/) and console's transcript is the base.
 func FormatOutputPath(basePath, format string) string {
-	if basePath == "" {
-		return ""
-	}
-	switch format {
-	case "jsonl":
-		return basePath + ".jsonl"
-	case "html":
-		return basePath + ".html"
-	case "report":
-		return basePath + ".report.html"
-	case "pdf":
-		return basePath + ".pdf"
-	case "sqlite":
-		return basePath + ".sqlite"
-	case "markdown", "md":
-		return basePath + ".md"
-	case "sarif":
-		return basePath + ".sarif"
-	case "bundle", "gz":
-		return basePath + ".tar.gz"
-	default:
-		return basePath
-	}
+	return formats.OutputPath(basePath, format)
 }
 
 // MarkSchemeAssumed merges assumed into TargetsSchemeAssumed, creating the map
@@ -525,4 +560,23 @@ func (o *Options) MarkSchemeAssumed(assumed map[string]struct{}) {
 		o.TargetsSchemeAssumed = make(map[string]struct{}, len(assumed))
 	}
 	maps.Copy(o.TargetsSchemeAssumed, assumed)
+}
+
+// NotePhaseDisabled records why phase was turned off (Options.PhaseSelection).
+// A --skip never relabels a phase the module selection already skipped: the
+// module selection is what added it to the skip list.
+func (o *Options) NotePhaseDisabled(phase, by string) {
+	if o.PhaseSelection == nil {
+		o.PhaseSelection = map[string]string{}
+	}
+	if by == "skip" && o.PhaseSelection[phase] == "module_selection" {
+		return
+	}
+	o.PhaseSelection[phase] = by
+}
+
+// NotePhaseEnabled clears a recorded reason once a later step turns the phase
+// back on (--only naming a phase the strategy turned off).
+func (o *Options) NotePhaseEnabled(phase string) {
+	delete(o.PhaseSelection, phase)
 }

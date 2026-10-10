@@ -2,12 +2,10 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,19 +15,11 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/ingestor"
 	"github.com/vigolium/vigolium/internal/runner"
-	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/core"
-	"github.com/vigolium/vigolium/pkg/core/network"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
-	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/dedup"
-	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
-	"github.com/vigolium/vigolium/pkg/input/formats/burpscope"
+	"github.com/vigolium/vigolium/pkg/httpstack"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
-	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
-	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -140,7 +130,7 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 	// and handed os.Stdin to the parser. That read has no --input-read-timeout
 	// behind it, so unlike the scan path it hung forever rather than for three
 	// minutes. A typed `-i -` still asks for stdin explicitly.
-	if !resolveStdinInput(hasStdin, cmd.Flags().Changed("input"), globalInput, len(globalTargets), len(globalTargetFiles)) {
+	if useStdin, _ := resolveStdinInput(hasStdin, cmd.Flags().Changed("input"), globalInput, len(globalTargets), len(globalTargetFiles)); !useStdin {
 		if ingestOpts.Input == "-" {
 			ingestOpts.Input = ""
 		}
@@ -148,7 +138,7 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 
 	// Validate mutual exclusivity: -t/--target and --spec-url cannot both be set
 	if ingestOpts.TargetURL != "" && ingestOpts.UseSpecServers {
-		return fmt.Errorf("--target/-t and --spec-url are mutually exclusive")
+		return usageErrorf("--target/-t and --spec-url are mutually exclusive")
 	}
 
 	// Resolve the full source list (repeated -i plus --dir). One process handles
@@ -164,7 +154,7 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 	run := runLocalIngest
 	if remote {
 		if globalScanOnReceive {
-			zap.L().Warn("--scan-on-receive/-S is ignored in remote mode; the server handles scanning independently")
+			zap.L().Warn("--scan-on-receive is ignored in remote mode; the server handles scanning independently")
 		}
 		run = runRemoteIngest
 	}
@@ -222,7 +212,8 @@ func reportIngest(out ingestOutcome, remote bool, failedSources, totalSources in
 		// items is [] rather than nil: the envelope's contract is that `items`
 		// is the canonical collection, and a JSON null breaks every consumer
 		// that iterates or measures it.
-		env := newAgentEnvelope("ingest", "", []any{}, out.Stored, 0, 0)
+		env := newAgentEnvelope("ingest", "", []any{}, out.Stored, 0, 0).
+			asMutation(out.Stored > 0, "ingest", false)
 		env.DBPath = resolvedReadDBPath()
 		env.With("records_ingested", out.Stored).
 			With("records_failed", out.Failed).
@@ -279,17 +270,16 @@ func ingestSummaryLine(out ingestOutcome, elapsed time.Duration) string {
 // emitting exactly one document for the whole invocation.
 func reportRemoteIngest(out ingestOutcome, failedSources, totalSources int, elapsed time.Duration) error {
 	if globalJSON {
-		doc := map[string]interface{}{
-			"records_submitted": out.Submitted,
-			"errors":            out.Errors,
-			"duration_ms":       elapsed.Milliseconds(),
-		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(doc); err != nil {
+		// The envelope around the counters remote mode always reported: total is
+		// the submissions, and changed says whether the server accepted any.
+		env := newAgentEnvelope("ingest", "", []any{}, out.Submitted, 0, 0).
+			asMutation(out.Submitted > 0, "submit", false)
+		env.With("records_submitted", out.Submitted).
+			With("errors", out.Errors).
+			With("duration_ms", elapsed.Milliseconds())
+		if err := writeAgentJSON(env); err != nil {
 			return err
 		}
-		jsonResultEmitted = true
 	} else {
 		rate := float64(0)
 		if secs := elapsed.Seconds(); secs > 0 {
@@ -335,8 +325,10 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 	var outcome ingestOutcome
 
 	// --- 1. Auto-detect format ---
+	// -I given: the operator's format stands (no sniffing, even for -I urls).
+	formatExplicit := cmd.Flags().Changed("input-mode")
 	inputFormat := ingestOpts.InputFormat
-	if inputFormat == "urls" && ingestOpts.Input != "-" {
+	if inputFormat == "urls" && ingestOpts.Input != "-" && !formatExplicit {
 		if detected := detectInputFormat(ingestOpts.Input); detected != "" {
 			inputFormat = detected
 			zap.L().Info("Auto-detected input format", zap.String("format", inputFormat))
@@ -395,12 +387,13 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 		inputSource = source.NewSliceSource(preloadedNeedFetch, ingestOpts.EnableModules)
 	} else {
 		built, err := source.NewInputSource(source.SourceConfig{
-			Targets:    globalTargets,
-			FilePath:   filePath,
-			FilePaths:  globalTargetFiles,
-			Format:     inputFormat,
-			UseStdin:   useStdin,
-			BufferSize: 100,
+			Targets:        globalTargets,
+			FilePath:       filePath,
+			FilePaths:      globalTargetFiles,
+			Format:         inputFormat,
+			FormatExplicit: formatExplicit,
+			UseStdin:       useStdin,
+			BufferSize:     100,
 		})
 		if err != nil {
 			return outcome, fmt.Errorf("failed to create input source: %w", err)
@@ -412,9 +405,10 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 	// (the preloaded branch above builds a slice source that ignores them).
 	if len(preloadedItems) > 0 && len(globalTargetFiles) > 0 {
 		tfSrc, tfErr := source.NewInputSource(source.SourceConfig{
-			FilePaths:  globalTargetFiles,
-			Format:     inputFormat,
-			BufferSize: 100,
+			FilePaths:      globalTargetFiles,
+			Format:         inputFormat,
+			FormatExplicit: formatExplicit,
+			BufferSize:     100,
 		})
 		if tfErr != nil {
 			return outcome, fmt.Errorf("failed to create target-file source: %w", tfErr)
@@ -423,30 +417,21 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 	}
 	defer func() { _ = inputSource.Close() }()
 
-	// Configure spec-format options on the file parser (same pattern as
-	// runner.go). FirstFileSource unwraps a MultiSource so the override lands even
-	// when -t/-T is combined with -i, and covers a content-sniffed .wsdl too.
-	if fs := source.FirstFileSource(inputSource); fs != nil {
-		switch parser := fs.Format().(type) {
-		case *openapi.Format:
-			parser.SetOpenAPIOptions(openapi.Options{
-				BaseURL:              ingestOpts.TargetURL,
-				UseSpecServers:       ingestOpts.UseSpecServers,
-				Headers:              ingestParseHeaders(ingestOpts.Headers),
-				Variables:            ingestParseVariables(ingestOpts.Variables),
-				DefaultFallbackValue: ingestOpts.DefaultParam,
-			})
-		case *wsdl.Format:
-			parser.SetWSDLOptions(wsdl.Options{
-				EndpointURL: ingestOpts.TargetURL,
-				Headers:     ingestParseHeaders(ingestOpts.Headers),
-				Variables:   ingestParseVariables(ingestOpts.Variables),
-			})
-		}
-	}
+	// Configure spec-format options (OpenAPI, WSDL, Postman) on the file
+	// parser — the same source.ApplySpecOptions scan and the runner use, so it
+	// lands even when -t/-T is combined with -i and covers a sniffed spec.
+	source.ApplySpecOptions(inputSource, source.SpecOptions{
+		BaseURL:              ingestOpts.TargetURL,
+		UseSpecServers:       ingestOpts.UseSpecServers,
+		Headers:              ingestParseHeaders(ingestOpts.Headers),
+		Variables:            ingestParseVariables(ingestOpts.Variables),
+		DefaultFallbackValue: ingestOpts.DefaultParam,
+	})
 
 	// --- 4. Initialize database ---
-	settings, err := clicommon.LoadSettings(globalConfig)
+	// Global → the resolved project's overlay: the scope judged below (static
+	// filtering, --scan-on-receive admission) is the project's, as for `scan`.
+	settings, err := loadProjectSettings(globalConfig)
 	if err != nil {
 		return outcome, err
 	}
@@ -483,40 +468,14 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 
 	// --- 5. Initialize HTTP stack ---
 	opts := types.DefaultOptions()
+	globalFlagsToOptions(opts)
 	opts.Concurrency = ingestOpts.Concurrency
-	opts.Timeout = globalTimeout
-	opts.ProxyURL = globalProxy
-	opts.Verbose = globalVerbose
-	opts.Debug = globalDebug
-	opts.DumpTraffic = globalDumpTraffic
-	opts.MaxPerHost = globalMaxPerHost
-	opts.NoWafPacing = globalNoWafPacing
-
-	if err := network.Init(opts); err != nil {
-		return outcome, fmt.Errorf("failed to initialize network: %w", err)
-	}
-
-	dedupMgr := dedup.NewManager()
-	defer dedupMgr.Close()
-
-	svc := &services.Services{
-		Options:      opts,
-		DedupManager: dedupMgr,
-	}
-
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:    opts.MaxPerHost,
-		MaxEntries:    1000,
-		EvictAfter:    30 * time.Second,
-		EvictInterval: 10 * time.Second,
-	})
-	defer func() { _ = hostLimiter.Close() }()
-	svc.HostLimiter = hostLimiter
-
-	httpRequester, err := http.NewRequester(opts, svc)
+	stack, err := httpstack.New(httpstack.Config{Options: opts})
 	if err != nil {
-		return outcome, fmt.Errorf("failed to create HTTP requester: %w", err)
+		return outcome, err
 	}
+	defer stack.Close()
+	svc, httpRequester := stack.Services, stack.Requester
 
 	// --- 6. Signal handling ---
 	sigChan := make(chan os.Signal, 1)
@@ -810,12 +769,20 @@ func formatIngestPreviewLine(idx int, rr *httpmsg.HttpRequestResponse) string {
 	return fmt.Sprintf("  [%d] %s %s  (request only, req cl=%d)", idx, method, url, reqLen)
 }
 
-// detectInputFormat auto-detects the input format from the file extension and content.
+// detectInputFormat names the format of an -i input given with the URL-list
+// default when the caller must know it before the source is built: OpenAPI
+// (--spec-url is auto-enabled without -t) and WSDL (including a WCF/ASMX URL).
+// Files are classified by source.DetectFormat, the one content detector.
+//
+// Every other format is left to NewFileSource, which runs the same detector
+// per file. Returning it here would pin the format for the -T target files
+// built alongside -i, and would bypass ingest's preload path that keeps the
+// response of a pasted Burp request/response pair.
 func detectInputFormat(input string) string {
 	// URL convenience: a bare WCF/ASMX service endpoint (or an explicit ?wsdl
 	// URL) is a WSDL source. The wsdl loader fetches ?singleWsdl / ?WSDL for the
-	// bare .svc/.asmx forms. A remote input can't be os.ReadFile'd for the
-	// content sniff below, so decide by URL shape here.
+	// bare .svc/.asmx forms. A remote input has no file head to sniff, so decide
+	// by URL shape here.
 	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
 		lower := strings.ToLower(input)
 		pathPart := lower
@@ -829,30 +796,13 @@ func detectInputFormat(input string) string {
 		return ""
 	}
 
-	ext := strings.ToLower(filepath.Ext(input))
-	if ext == ".json" || ext == ".yaml" || ext == ".yml" {
-		data, err := os.ReadFile(input)
-		if err != nil {
-			return ""
-		}
-		if openapi.IsOpenAPISpec(data) {
-			return "openapi"
-		}
-		if burpscope.Sniff(data) {
-			return "burpscope"
-		}
+	det, err := source.DetectFormat(input)
+	if err != nil {
 		return ""
 	}
-	// A .wsdl or .xml file may be a SOAP service description — content-sniff it so
-	// `vigolium scan -i service.wsdl` works without an explicit -I wsdl.
-	if ext == ".wsdl" || ext == ".xml" {
-		data, err := os.ReadFile(input)
-		if err != nil {
-			return ""
-		}
-		if wsdl.IsWSDL(data) {
-			return "wsdl"
-		}
+	switch det.Format {
+	case "openapi", "wsdl":
+		return det.Format
 	}
 	return ""
 }
@@ -890,23 +840,10 @@ func runLocalIngestScan(settings *config.Settings, db *database.DB, repo *databa
 
 	// Build scan options from global flags
 	opts := types.DefaultOptions()
-	opts.Concurrency = globalConcurrency
-	opts.Timeout = globalTimeout
-	opts.ProxyURL = globalProxy
-	opts.Verbose = globalVerbose
-	opts.Silent = globalSilent
-	opts.Debug = globalDebug
-	opts.DumpTraffic = globalDumpTraffic
-	opts.JSONOutput = globalJSON
-	opts.MaxPerHost = globalMaxPerHost
-	opts.NoWafPacing = globalNoWafPacing
-	opts.MaxHostError = globalMaxHostError
-	opts.MaxFindingsPerModule = globalMaxFindingsPerModule
-	opts.ConfigPath = globalConfig
+	globalScanFlagsToOptions(opts)
 
 	// Modules are already resolved via resolveModules()
 	opts.Modules = ingestOpts.EnableModules
-	opts.NoTechFilter = globalNoTechFilter
 
 	// Create a Scan record if none provided
 	ingestScanProjectUUID, err := resolveProjectUUID()

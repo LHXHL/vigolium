@@ -2,6 +2,7 @@ package sourcemap_detect
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -9,22 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
-
-func makeHTTPCtx(url, contentType, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", url))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n%s", contentType, body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func TestNew(t *testing.T) {
 	m := New()
@@ -48,7 +37,7 @@ func TestCanProcess_Nil(t *testing.T) {
 
 func TestCanProcess_EmptyBody(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/app.js", "application/javascript", "")
+	ctx := modtest.HTTPCtx("/app.js", "application/javascript", "")
 	assert.False(t, m.CanProcess(ctx))
 }
 
@@ -61,26 +50,26 @@ func TestCanProcess_JSContent(t *testing.T) {
 		"application/ecmascript",
 		"text/css",
 	} {
-		ctx := makeHTTPCtx("/app.js", ct, "var x = 1;")
+		ctx := modtest.HTTPCtx("/app.js", ct, "var x = 1;")
 		assert.True(t, m.CanProcess(ctx), "should accept %s", ct)
 	}
 }
 
 func TestCanProcess_MapURL(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/app.js.map", "application/json", `{"version":3}`)
+	ctx := modtest.HTTPCtx("/app.js.map", "application/json", `{"version":3}`)
 	assert.True(t, m.CanProcess(ctx))
 }
 
 func TestCanProcess_HTMLReject(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/index.html", "text/html", "<html></html>")
+	ctx := modtest.HTTPCtx("/index.html", "text/html", "<html></html>")
 	assert.False(t, m.CanProcess(ctx))
 }
 
 func TestCanProcess_ImageReject(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/logo.png", "image/png", "PNG data")
+	ctx := modtest.HTTPCtx("/logo.png", "image/png", "PNG data")
 	assert.False(t, m.CanProcess(ctx))
 }
 
@@ -88,7 +77,7 @@ func TestScanPerRequest_SourceMappingURL(t *testing.T) {
 	m := New()
 	body := `var x = 1;
 //# sourceMappingURL=app.js.map`
-	ctx := makeHTTPCtx("/app.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app.js", "application/javascript", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -111,7 +100,7 @@ func TestScanPerRequest_BlockCommentURL(t *testing.T) {
 	m := New()
 	body := `body { color: red; }
 /*# sourceMappingURL=styles.css.map */`
-	ctx := makeHTTPCtx("/styles.css", "text/css", body)
+	ctx := modtest.HTTPCtx("/styles.css", "text/css", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -124,7 +113,7 @@ func TestScanPerRequest_InlineDataURI(t *testing.T) {
 	m := New()
 	body := `var x = 1;
 //# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozfQ==`
-	ctx := makeHTTPCtx("/app.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app.js", "application/javascript", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -141,7 +130,7 @@ func TestScanPerRequest_ValidInlineMapIsCandidate(t *testing.T) {
 	mapJSON := `{"version":3,"sources":["src/app.ts"],"mappings":"AAAA","sourcesContent":["const x = 1;"]}`
 	encoded := base64.StdEncoding.EncodeToString([]byte(mapJSON))
 	body := "var x=1;\n//# sourceMappingURL=data:application/json;base64," + encoded
-	ctx := makeHTTPCtx("/app.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -154,7 +143,7 @@ func TestScanPerRequest_ValidInlineMapIsCandidate(t *testing.T) {
 func TestScanPerRequest_MapFileExposed(t *testing.T) {
 	m := New()
 	body := `{"version":3,"sources":["src/app.ts","src/utils.ts"],"mappings":"AAAA","names":[]}`
-	ctx := makeHTTPCtx("/app.js.map", "application/json", body)
+	ctx := modtest.HTTPCtx("/app.js.map", "application/json", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -177,7 +166,7 @@ func TestScanPerRequest_MapFileExposed(t *testing.T) {
 func TestScanPerRequest_MapFileWithSourcesContent(t *testing.T) {
 	m := New()
 	body := `{"version":3,"sources":["src/app.ts"],"mappings":"AAAA","sourcesContent":["const x = 1;"]}`
-	ctx := makeHTTPCtx("/app.js.map", "application/json", body)
+	ctx := modtest.HTTPCtx("/app.js.map", "application/json", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -192,7 +181,7 @@ func TestScanPerRequest_MapFileWithSourcesContent(t *testing.T) {
 
 func TestScanPerRequest_MapFileInvalidJSON(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/app.js.map", "application/json", "not json at all")
+	ctx := modtest.HTTPCtx("/app.js.map", "application/json", "not json at all")
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -216,7 +205,7 @@ func TestScanPerRequest_MapFileMissingFields(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := makeHTTPCtx("/app.js.map", "application/json", tc.body)
+			ctx := modtest.HTTPCtx("/app.js.map", "application/json", tc.body)
 			scanCtx := &modkit.ScanContext{}
 			results, err := m.ScanPerRequest(ctx, scanCtx)
 			require.NoError(t, err)
@@ -228,7 +217,7 @@ func TestScanPerRequest_MapFileMissingFields(t *testing.T) {
 func TestScanPerRequest_NoSourceMappingRef(t *testing.T) {
 	m := New()
 	body := `var x = 1; // just a normal comment`
-	ctx := makeHTTPCtx("/app.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app.js", "application/javascript", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -240,7 +229,7 @@ func TestScanPerRequest_Dedup(t *testing.T) {
 	m := New()
 	body := `var x = 1;
 //# sourceMappingURL=app.js.map`
-	ctx := makeHTTPCtx("/app.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app.js", "application/javascript", body)
 	scanCtx := &modkit.ScanContext{}
 
 	// First call should produce results
@@ -266,4 +255,30 @@ func TestIsJSOrCSSContentType(t *testing.T) {
 	assert.False(t, isJSOrCSSContentType("text/html"))
 	assert.False(t, isJSOrCSSContentType("application/json"))
 	assert.False(t, isJSOrCSSContentType(""))
+}
+
+// TestScanPerRequest_LargeMapFileIsReported pins the false-negative fix: a map
+// over the parser's source budget (common once node_modules is bundled) used
+// to be rejected whole, so no finding was produced.
+func TestScanPerRequest_LargeMapFileIsReported(t *testing.T) {
+	sources := []string{"src/app.ts"}
+	contents := []string{"const x = 1;"}
+	for i := range 1200 {
+		sources = append(sources, fmt.Sprintf("node_modules/pkg%04d/index.js", i))
+		contents = append(contents, fmt.Sprintf("module.exports = %d;", i))
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"version": 3, "sources": sources, "sourcesContent": contents, "mappings": "AAAA",
+	})
+	require.NoError(t, err)
+
+	results, err := New().ScanPerRequest(modtest.HTTPCtx("/app.js.map", "application/json", string(encoded)), &modkit.ScanContext{})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	r := results[0]
+	assert.Equal(t, severity.Medium, r.Info.Severity)
+	assert.Equal(t, true, r.Metadata["truncated"])
+	assert.Equal(t, 1201, r.Metadata["sources_total"])
+	assert.Equal(t, 512, r.Metadata["sources_recovered"])
+	assert.Contains(t, r.Info.Description, "truncated")
 }

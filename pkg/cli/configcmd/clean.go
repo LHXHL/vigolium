@@ -2,6 +2,7 @@ package configcmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -18,12 +19,12 @@ func newCleanCmd(deps Deps, example string) *cobra.Command {
 		Long:    "Remove the ~/.vigolium/ directory (config, database, extensions) and regenerate fresh defaults.",
 		Example: example,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigClean(deps)
+			return runConfigClean(cmd, deps)
 		},
 	}
 }
 
-func runConfigClean(deps Deps) error {
+func runConfigClean(cmd *cobra.Command, deps Deps) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
@@ -33,16 +34,36 @@ func runConfigClean(deps Deps) error {
 
 	displayDir := config.ContractPath(vigoliumDir)
 
+	asJSON := deps.mutationJSONRequested()
+	// Prose goes to stderr under -j, so stdout carries only the document.
+	out := io.Writer(os.Stdout)
+	if asJSON {
+		out = os.Stderr
+	}
+	result := func(changed bool, action string, extra map[string]any) error {
+		items := []configCleanResult{}
+		if changed {
+			items = append(items, configCleanResult{Path: displayDir, Reinitialized: true})
+		}
+		return deps.WriteMutation(cmd, items, changed, action, extra)
+	}
+
 	// Check if directory exists
 	if _, err := os.Stat(vigoliumDir); os.IsNotExist(err) {
-		fmt.Printf("%s Nothing to clean — %s does not exist.\n", terminal.InfoSymbol(), displayDir)
+		_, _ = fmt.Fprintf(out, "%s Nothing to clean — %s does not exist.\n", terminal.InfoSymbol(), displayDir)
+		if asJSON {
+			return result(false, "noop", map[string]any{"path": displayDir})
+		}
 		return nil
 	}
 
-	fmt.Printf("%s This will remove %s (config, database, and all local data)\n", terminal.BoldRed(terminal.SymbolFailed+" Warn:"), terminal.Cyan(displayDir))
+	_, _ = fmt.Fprintf(out, "%s This will remove %s (config, database, and all local data)\n", terminal.BoldRed(terminal.SymbolFailed+" Warn:"), terminal.Cyan(displayDir))
 
 	if done, err := clicommon.HandleConfirmation(
 		fmt.Sprintf("removing %s and every file under it", displayDir), deps.Force()); done {
+		if err == nil && asJSON {
+			return result(false, "noop", map[string]any{"path": displayDir, "aborted": true})
+		}
 		return err
 	}
 
@@ -50,12 +71,22 @@ func runConfigClean(deps Deps) error {
 		return fmt.Errorf("failed to remove %s: %w", vigoliumDir, err)
 	}
 
-	fmt.Printf("%s Removed %s\n", terminal.SuccessSymbol(), displayDir)
+	_, _ = fmt.Fprintf(out, "%s Removed %s\n", terminal.SuccessSymbol(), displayDir)
 
 	// Regenerate fresh defaults
 	if err := deps.Reinitialize(); err != nil {
 		return fmt.Errorf("failed to reinitialize: %w", err)
 	}
 
+	if asJSON {
+		return result(true, "delete", nil)
+	}
 	return nil
+}
+
+// configCleanResult is the `config clean -j` row: the directory removed and
+// regenerated with defaults.
+type configCleanResult struct {
+	Path          string `json:"path"`
+	Reinitialized bool   `json:"reinitialized"`
 }

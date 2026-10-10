@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -37,6 +41,20 @@ func applyGlobalExtFlagsToSettings(settings *config.Settings) {
 		settings.DynamicAssessment.Extensions.Enabled = true
 		settings.DynamicAssessment.Extensions.ExtensionDir = globalExtDir
 	}
+	if globalExtAllowFailures {
+		settings.DynamicAssessment.Extensions.AllowLoadFailures = true
+	}
+}
+
+// extensionLoadExitError maps the runner's *ExtensionLoadError — an extension
+// named with --ext failed to load, so the scan stopped before any traffic — to
+// exit 2 with error.code extension_load_failed. Other errors pass through.
+func extensionLoadExitError(err error) error {
+	var loadErr *runner.ExtensionLoadError
+	if !errors.As(err, &loadErr) {
+		return err
+	}
+	return clicommon.AsUsageError(clicommon.NewCodedError(apicontract.CodeExtensionLoadFailed, err))
 }
 
 // mergeAgentExtensionDir layers an agent-generated extension directory onto an
@@ -60,6 +78,7 @@ func mergeAgentExtensionDir(cfg *config.ExtensionsConfig, agentDir string) {
 		cfg.ExtensionDir = agentDir
 		return
 	}
+	appended := false
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -69,6 +88,14 @@ func mergeAgentExtensionDir(cfg *config.ExtensionsConfig, agentDir string) {
 			continue
 		}
 		cfg.CustomDir = append(cfg.CustomDir, filepath.Join(agentDir, name))
+		appended = true
+	}
+	// A custom_dir entry that fails to load stops the scan. Agent-generated
+	// files are best-effort, as they are when agentDir is the extension dir
+	// above, so one broken script must not stop the swarm's scan; the failure
+	// is still reported (extension.failed, scan.finished.extensions_failed).
+	if appended {
+		cfg.AllowLoadFailures = true
 	}
 }
 
@@ -100,13 +127,22 @@ var extensionsLsCmd = &cobra.Command{
 // runExtensionsLs backs both `extensions [filter]` and `extensions ls [filter]`.
 // One handler rather than two identical closures, so the -j branch cannot be
 // added to one spelling and forgotten on the other.
-func runExtensionsLs(_ *cobra.Command, args []string) error {
+func runExtensionsLs(cmd *cobra.Command, args []string) error {
+	// Bare `extensions` is the documented shorthand for `extensions ls`, so its
+	// document names `extensions ls`. (Looked up rather than named: naming
+	// extensionsLsCmd here would make its initializer cyclic.)
+	docCmd := cmd
+	if cmd != nil && cmd.HasSubCommands() {
+		if sub, _, err := cmd.Find([]string{"ls"}); err == nil && sub != cmd {
+			docCmd = sub
+		}
+	}
 	filter := ""
 	if len(args) > 0 {
 		filter = args[0]
 	}
 	if globalJSON {
-		return emitExtensionsJSON(extOpts, filter)
+		return emitExtensionsJSON(docCmd, extOpts, filter)
 	}
 	printExtensionsTable(extOpts, filter)
 	return nil
@@ -119,12 +155,15 @@ var extensionsDocsCmd = &cobra.Command{
 	Short:   "Show extension API reference with examples",
 	Long:    "Browse the vigolium.* JavaScript API surface. Without an argument, lists every namespace and function. Pass a function name (e.g. http.request) to show its signature; add --example for full usage snippets.",
 	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		filter := ""
 		if len(args) > 0 {
 			filter = args[0]
 		}
-		printExtensionDocs(filter)
+		if globalJSON {
+			return emitExtensionDocsJSON(cmd, filter)
+		}
+		return printExtensionDocs(filter)
 	},
 }
 
@@ -133,14 +172,35 @@ var extensionsPresetCmd = &cobra.Command{
 	Use:     "preset [name]",
 	Aliases: []string{"presets", "init"},
 	Short:   "Install example extension presets into extensions directory",
-	Long:    "Copies starter extension scripts to ~/.vigolium/extensions/. If a name is given, installs only that preset.",
+	Long:    "Copies starter extension scripts to ~/.vigolium/extensions/ and writes vigolium.d.ts (the API type declarations for this binary) beside them. If a name is given, installs only that preset.",
 	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		filter := ""
 		if len(args) > 0 {
 			filter = args[0]
 		}
-		installPresets(filter)
+		return installPresets(cmd, filter)
+	},
+}
+
+var extTypesOutput string
+
+// Subcommand: vigolium extensions types [-o path]
+var extensionsTypesCmd = &cobra.Command{
+	Use:   "types",
+	Short: "Print or write vigolium.d.ts, the extension API type declarations",
+	Long: "Print the TypeScript declarations for the vigolium.* extension API, matching this binary, to stdout. " +
+		"With -o, write them to a file; when -o names a directory, vigolium.d.ts is written inside it. " +
+		"Reference the file from an extension with: /// <reference path=\"./vigolium.d.ts\" />",
+	Args: cobra.NoArgs,
+	Example: FormatExamples(
+		"# Print the declarations",
+		"vigolium extensions types",
+		"# Write vigolium.d.ts into the extensions directory",
+		"vigolium extensions types -o ~/.vigolium/extensions/",
+	),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runExtensionsTypes(cmd, extTypesOutput)
 	},
 }
 
@@ -152,6 +212,9 @@ func init() {
 	extensionsCmd.AddCommand(extensionsExampleCmd)
 	extensionsCmd.AddCommand(extensionsEvalCmd)
 	extensionsCmd.AddCommand(extensionsLintCmd)
+	extensionsCmd.AddCommand(extensionsTypesCmd)
+	extensionsTypesCmd.Flags().StringVarP(&extTypesOutput, "output", "o", "",
+		"Write the declarations to this file, or to <dir>/vigolium.d.ts when it is a directory (default: stdout)")
 	extensionsLsCmd.Flags().StringVar(&extOpts.ExtType, "type", "all",
 		"Filter by type: all, active, passive, pre_hook, post_hook")
 	extensionsLsCmd.Flags().BoolVarP(&extOpts.Verbose, "verbose", "v", false,
@@ -540,13 +603,13 @@ func printExtensionsVerbose(scripts []*jsext.LoadedScript, yamlDefs []*yamlext.E
 // extensions docs
 // ──────────────────────────────────────────────────────────────
 
-func printExtensionDocs(filter string) {
-	registry := jsext.APIRegistry()
+// filterAPIFunctions fuzzy-matches the API registry against name, full name,
+// namespace, description, and return type. Shared by the table and -j views so
+// both answer the same query identically.
+func filterAPIFunctions(filter string) []jsext.APIFunction {
 	filterLower := strings.ToLower(filter)
-
-	// Fuzzy-match against name, full name, namespace, description, and returns
 	var filtered []jsext.APIFunction
-	for _, fn := range registry {
+	for _, fn := range jsext.APIRegistry() {
 		if filter == "" ||
 			strings.Contains(strings.ToLower(fn.Name), filterLower) ||
 			strings.Contains(strings.ToLower(fn.FullName()), filterLower) ||
@@ -556,14 +619,14 @@ func printExtensionDocs(filter string) {
 			filtered = append(filtered, fn)
 		}
 	}
+	return filtered
+}
+
+func printExtensionDocs(filter string) error {
+	filtered := filterAPIFunctions(filter)
 
 	if len(filtered) == 0 && filter != "" {
-		fmt.Printf("%s No API functions matching %q\n", terminal.WarningSymbol(), filter)
-		fmt.Printf("  Try: %s, %s, %s\n",
-			terminal.Gray("ext docs http"),
-			terminal.Gray("ext docs log"),
-			terminal.Gray("ext docs utils"))
-		return
+		return fmt.Errorf("no API functions matching %q; try: ext docs http, ext docs log, ext docs utils", filter)
 	}
 
 	if docsShowExamples {
@@ -619,6 +682,81 @@ func printExtensionDocs(filter string) {
 		printParseURLReference()
 		printModuleTemplates()
 	}
+	return nil
+}
+
+// apiFunctionView is one vigolium.* function in the `ext docs -j` catalog.
+type apiFunctionView struct {
+	FullName    string `json:"full_name"`
+	Namespace   string `json:"namespace"`
+	Name        string `json:"name"`
+	Category    string `json:"category,omitempty"`
+	Signature   string `json:"signature"`
+	Returns     string `json:"returns,omitempty"`
+	Description string `json:"description,omitempty"`
+	Example     string `json:"example,omitempty"`
+}
+
+// emitExtensionDocsJSON writes the API catalog (optionally filtered) as the
+// standard list envelope. An empty match is an empty list, not an error: the
+// caller asked a question and the answer is "none".
+func emitExtensionDocsJSON(cmd *cobra.Command, filter string) error {
+	filtered := filterAPIFunctions(filter)
+	views := make([]apiFunctionView, 0, len(filtered))
+	for _, fn := range filtered {
+		views = append(views, apiFunctionView{
+			FullName:    fn.FullName(),
+			Namespace:   fn.Namespace,
+			Name:        fn.Name,
+			Category:    fn.Category,
+			Signature:   fn.Signature,
+			Returns:     fn.Returns,
+			Description: fn.Description,
+			Example:     fn.Example,
+		})
+	}
+	env := newMachineEnvelope(cmd, kindRead, "", views, int64(len(views)), 0, len(views))
+	if filter != "" {
+		env.With("filter", filter)
+	}
+	return writeAgentJSON(env)
+}
+
+// extTypesView is `extensions types -j`: the declarations written to Path, or
+// (without -o) carried inline as Content, since the d.ts and a -j document
+// cannot share stdout.
+type extTypesView struct {
+	// Path is the file written; empty when the declarations are inline.
+	Path    string `json:"path,omitempty"`
+	Bytes   int    `json:"bytes"`
+	Content string `json:"content,omitempty"`
+}
+
+// runExtensionsTypes prints the embedded vigolium.d.ts, or writes it to dest
+// (a file, or a directory that receives vigolium.d.ts).
+func runExtensionsTypes(cmd *cobra.Command, dest string) error {
+	src := jsext.TypeDefinitions()
+	dest = strings.TrimSpace(dest)
+	if dest == "" || dest == "-" {
+		if globalJSON {
+			return emitObject(cmd, ".", extTypesView{Bytes: len(src), Content: src})
+		}
+		_, err := fmt.Fprint(os.Stdout, src)
+		return err
+	}
+	path := config.ExpandPath(dest)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		path = filepath.Join(path, jsext.TypeDefinitionsFileName)
+	}
+	if err := writeRequestedFile(path, []byte(src)); err != nil {
+		return err
+	}
+	if globalJSON {
+		// A receipt for the file written, as items:[{path, bytes}].
+		return emitObject(cmd, ".", extTypesView{Path: config.ContractPath(path), Bytes: len(src)})
+	}
+	fmt.Fprintf(os.Stderr, "%s Wrote %s\n", terminal.SuccessSymbol(), path)
+	return nil
 }
 
 func printDocsVerbose(functions []jsext.APIFunction) {
@@ -690,6 +828,8 @@ func printReturnContractReference() {
 	fmt.Println("    " + terminal.Yellow("active/passive") + " scanPerRequest(ctx) / scanPerInsertionPoint(ctx, insertion):")
 	fmt.Println("      return [{matched, url, name, description, severity}]   " + terminal.Gray("— array of findings"))
 	fmt.Println("      return null                                            " + terminal.Gray("— no findings"))
+	fmt.Println("      optional per-finding: confidence, tags, cwe,           " + terminal.Gray("— override module defaults"))
+	fmt.Println("        fuzzingParameter (or param), evidence[]")
 	fmt.Println()
 }
 
@@ -732,13 +872,17 @@ func printModuleTemplates() {
 	fmt.Println(terminal.Gray("    // Active module: send custom payloads per insertion point"))
 	fmt.Println(terminal.Gray("    module.exports = {"))
 	fmt.Println(terminal.Gray("      id: \"my-active\", name: \"My Active\", type: \"active\","))
-	fmt.Println(terminal.Gray("      severity: \"medium\", scanTypes: [\"per_insertion_point\"],"))
+	fmt.Println(terminal.Gray("      severity: \"medium\", confidence: \"firm\", scanTypes: [\"per_insertion_point\"],"))
+	fmt.Println(terminal.Gray("      confirmationCriteria: \"payload is reflected unencoded\","))
 	fmt.Println(terminal.Gray("      scanPerInsertionPoint: function(ctx, insertion) { return null; }"))
 	fmt.Println(terminal.Gray("    };"))
 	fmt.Println()
 	fmt.Printf("  %s Install working examples: %s\n",
 		terminal.InfoSymbol(),
 		terminal.Gray("vigolium extensions preset"))
+	fmt.Printf("  %s Editor types (vigolium.d.ts): %s\n",
+		terminal.InfoSymbol(),
+		terminal.Gray("vigolium extensions types -o <dir>"))
 	fmt.Println()
 }
 
@@ -746,11 +890,30 @@ func printModuleTemplates() {
 // extensions preset
 // ──────────────────────────────────────────────────────────────
 
-func installPresets(filter string) {
+// extPresetView is one file `extensions preset -j` considered.
+type extPresetView struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Status is installed, skipped (already present, left alone), updated
+	// (vigolium.d.ts rewritten with new content), current (vigolium.d.ts
+	// already matched) or failed.
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// extPresetExtras are the top-level keys of `extensions preset -j`.
+type extPresetExtras struct {
+	ExtensionDir      string `json:"extension_dir"`
+	ExtensionsEnabled bool   `json:"extensions_enabled"`
+	Installed         int    `json:"installed"`
+	Skipped           int    `json:"skipped"`
+	Failed            int    `json:"failed"`
+}
+
+func installPresets(cmd *cobra.Command, filter string) error {
 	settings, err := clicommon.LoadSettings(globalConfig)
 	if err != nil {
-		fmt.Printf("%s Failed to load settings: %v\n", terminal.ErrorSymbol(), err)
-		return
+		return fmt.Errorf("failed to load settings: %w", err)
 	}
 
 	targetDir := config.ExpandPath(settings.DynamicAssessment.Extensions.ExtensionDir)
@@ -759,25 +922,29 @@ func installPresets(filter string) {
 	}
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		fmt.Printf("%s Failed to create directory %s: %v\n", terminal.ErrorSymbol(), targetDir, err)
-		return
+		return fmt.Errorf("failed to create directory %s: %w", targetDir, err)
 	}
 
 	entries, err := public.StaticFS.ReadDir("presets/extensions")
 	if err != nil {
-		fmt.Printf("%s Failed to read embedded presets: %v\n", terminal.ErrorSymbol(), err)
-		return
+		return fmt.Errorf("failed to read embedded presets: %w", err)
 	}
+
+	// Progress is human text: stdout normally, stderr under -j, where stdout
+	// carries the one result document.
+	progress := humanOut()
 
 	filterLower := strings.ToLower(filter)
 	var installed, skipped int
+	var failed []string
+	views := []extPresetView{}
 
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".vgm.yaml") {
+		if !strings.HasSuffix(name, ".js") && !yamlext.IsYAMLExtension(name) {
 			continue
 		}
 
@@ -786,26 +953,80 @@ func installPresets(filter string) {
 		}
 
 		destPath := filepath.Join(targetDir, name)
+		view := extPresetView{Name: name, Path: config.ContractPath(destPath)}
 
 		if _, err := os.Stat(destPath); err == nil {
-			fmt.Printf("  %s %s %s\n", terminal.WarningSymbol(), name, terminal.Gray("(already exists, skipped)"))
+			_, _ = fmt.Fprintf(progress, "  %s %s %s\n", terminal.WarningSymbol(), name, terminal.Gray("(already exists, skipped)"))
 			skipped++
+			view.Status = "skipped"
+			views = append(views, view)
 			continue
 		}
 
 		data, err := public.StaticFS.ReadFile("presets/extensions/" + name)
+		if err == nil {
+			err = os.WriteFile(destPath, data, 0644)
+		}
 		if err != nil {
-			fmt.Printf("  %s Failed to read %s: %v\n", terminal.ErrorSymbol(), name, err)
+			_, _ = fmt.Fprintf(progress, "  %s Failed to install %s: %v\n", terminal.ErrorSymbol(), name, err)
+			failed = append(failed, name)
+			view.Status, view.Error = "failed", err.Error()
+			views = append(views, view)
 			continue
 		}
 
-		if err := os.WriteFile(destPath, data, 0644); err != nil {
-			fmt.Printf("  %s Failed to write %s: %v\n", terminal.ErrorSymbol(), name, err)
-			continue
-		}
-
-		fmt.Printf("  %s %s\n", terminal.SuccessSymbol(), name)
+		_, _ = fmt.Fprintf(progress, "  %s %s\n", terminal.SuccessSymbol(), name)
 		installed++
+		view.Status = "installed"
+		views = append(views, view)
+	}
+
+	if installed == 0 && skipped == 0 && len(failed) == 0 && filter != "" {
+		return codedErrorf(apicontract.CodeNotFound, "no presets matching %q", filter)
+	}
+
+	// The type declarations are generated from this binary, so they are always
+	// (re)written: a stale copy would advertise APIs the runtime lacks.
+	typesPath := filepath.Join(targetDir, jsext.TypeDefinitionsFileName)
+	typesSrc := []byte(jsext.TypeDefinitions())
+	typesView := extPresetView{Name: jsext.TypeDefinitionsFileName, Path: config.ContractPath(typesPath), Status: "updated"}
+	if prev, readErr := os.ReadFile(typesPath); readErr == nil && bytes.Equal(prev, typesSrc) {
+		typesView.Status = "current"
+	} else if err := os.WriteFile(typesPath, typesSrc, 0644); err != nil {
+		_, _ = fmt.Fprintf(progress, "  %s Failed to write %s: %v\n", terminal.ErrorSymbol(), jsext.TypeDefinitionsFileName, err)
+		failed = append(failed, jsext.TypeDefinitionsFileName)
+		typesView.Status, typesView.Error = "failed", err.Error()
+	}
+	if typesView.Status != "failed" {
+		_, _ = fmt.Fprintf(progress, "  %s %s %s\n", terminal.SuccessSymbol(), jsext.TypeDefinitionsFileName, terminal.Gray("(API type declarations)"))
+	}
+	views = append(views, typesView)
+
+	var failErr error
+	if len(failed) > 0 {
+		failErr = fmt.Errorf("failed to install %d file(s) into %s: %s", len(failed), targetDir, strings.Join(failed, ", "))
+	}
+
+	if globalJSON {
+		var opts []envOpt
+		if failErr != nil {
+			opts = append(opts, withResultFailure(failErr))
+		}
+		if err := emitMutation(cmd, "", mutationResult{
+			Changed: installed > 0 || typesView.Status == "updated",
+			Action:  "install",
+			Items:   views,
+			Extra: map[string]any{
+				"extension_dir":      config.ContractPath(targetDir),
+				"extensions_enabled": settings.DynamicAssessment.Extensions.Enabled,
+				"installed":          installed,
+				"skipped":            skipped,
+				"failed":             len(failed),
+			},
+		}, opts...); err != nil {
+			return err
+		}
+		return failErr
 	}
 
 	fmt.Println()
@@ -815,9 +1036,6 @@ func installPresets(filter string) {
 	if skipped > 0 {
 		fmt.Printf("%s %d preset(s) skipped (already exist)\n", terminal.InfoSymbol(), skipped)
 	}
-	if installed == 0 && skipped == 0 && filter != "" {
-		fmt.Printf("%s No presets matching %q\n", terminal.WarningSymbol(), filter)
-	}
 
 	if !settings.DynamicAssessment.Extensions.Enabled {
 		fmt.Println()
@@ -826,4 +1044,6 @@ func installPresets(filter string) {
 			terminal.Gray("vigolium config set dynamic-assessment.extensions.enabled true"))
 	}
 	fmt.Println()
+
+	return failErr
 }

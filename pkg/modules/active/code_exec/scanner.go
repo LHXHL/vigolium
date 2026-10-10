@@ -154,6 +154,10 @@ func New() *Module {
 	return m
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any code-injection module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassCodeInjection }
+
 func (m *Module) ScanPerRequest(
 	ctx *httpmsg.HttpRequestResponse,
 	httpClient *http.Requester,
@@ -190,6 +194,10 @@ func (m *Module) ScanPerRequest(
 
 ipScan:
 	for _, ip := range points {
+		// Another module of this vuln class already reported this param here.
+		if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
+			continue
+		}
 		// Build a baseline request (same shape, original parameter value)
 		// to detect "server is just slow today" cases. Built once per IP
 		// and reused across payload attempts.

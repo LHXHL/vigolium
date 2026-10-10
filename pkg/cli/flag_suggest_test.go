@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // parseErr runs the command's flag parser over args and returns whatever
@@ -91,26 +92,6 @@ func TestFlagErrorFuncIgnoresShorthand(t *testing.T) {
 	}
 }
 
-func TestLevenshtein(t *testing.T) {
-	cases := []struct {
-		a, b string
-		want int
-	}{
-		{"", "", 0},
-		{"module", "module", 0},
-		{"module", "modules", 1},
-		{"modul", "modules", 2},
-		{"", "abc", 3},
-		{"abc", "", 3},
-		{"kitten", "sitting", 3},
-	}
-	for _, tc := range cases {
-		if got := levenshtein(tc.a, tc.b); got != tc.want {
-			t.Errorf("levenshtein(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
-		}
-	}
-}
-
 // TestSuggestionBudgetRejectsUnrelatedShortFlags is the regression.
 //
 // `vigolium traffic --url https://…` was answered with "Did you mean --all?".
@@ -138,8 +119,8 @@ func TestSuggestionBudgetRejectsUnrelatedShortFlags(t *testing.T) {
 		}
 	}
 
-	// levenshtein("url", "all") is 2, which must now exceed the budget.
-	if d := levenshtein("url", "all"); d <= suggestionBudget("url") {
+	// Levenshtein("url", "all") is 2, which must now exceed the budget.
+	if d := textutil.Levenshtein("url", "all"); d <= suggestionBudget("url") {
 		t.Errorf("--url is still within suggestion range of --all (distance %d)", d)
 	}
 }

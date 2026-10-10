@@ -9,6 +9,7 @@ import (
 
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // This file renders findings and HTTP records as Markdown for the --markdown
@@ -220,7 +221,9 @@ func findingRequestResponse(f *database.Finding, records []*database.HTTPRecord)
 
 // writeHTTPSection writes a "### Title" heading followed by a ```http fenced
 // block. When compact is set the body is windowed (compactRawHTTP); otherwise
-// the raw message is emitted whole. A blank raw message writes nothing.
+// the raw message is emitted whole. A blank raw message writes nothing. The
+// fence is longer than any backtick run in the message (output.MarkdownFence),
+// so a body containing ``` cannot close the block early.
 func writeHTTPSection(ew *errWriter, title, raw string, compact bool, needles []string, bodyCap int) {
 	if strings.TrimSpace(raw) == "" {
 		return
@@ -229,11 +232,13 @@ func writeHTTPSection(ew *errWriter, title, raw string, compact bool, needles []
 	if compact {
 		body = compactRawHTTP(raw, needles, bodyCap)
 	}
+	body = strings.TrimRight(body, "\r\n")
+	open, closeFence := output.MarkdownFence(body, "http")
 	ew.println("### " + title)
 	ew.println()
-	ew.println("```http")
-	ew.println(strings.TrimRight(body, "\r\n"))
-	ew.println("```")
+	ew.println(open)
+	ew.println(body)
+	ew.println(closeFence)
 	ew.println()
 }
 
@@ -262,8 +267,10 @@ func capBodyText(bodyStr string, needles []string, bodyCap int) string {
 		return snip
 	}
 	if bodyCap > 0 && len(bodyStr) > bodyCap {
-		return bodyStr[:bodyCap] +
-			fmt.Sprintf("\n… (%d more bytes truncated)", len(bodyStr)-bodyCap)
+		// Cut on a rune boundary so a multibyte body never ends mid-character.
+		cut := textutil.CutIndex(bodyStr, bodyCap)
+		return bodyStr[:cut] +
+			fmt.Sprintf("\n… (%d more bytes truncated)", len(bodyStr)-cut)
 	}
 	return bodyStr
 }

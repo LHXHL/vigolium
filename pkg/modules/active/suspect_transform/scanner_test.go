@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"go.uber.org/goleak"
 )
 
@@ -28,8 +29,8 @@ func TestNew(t *testing.T) {
 }
 
 func TestRandomString(t *testing.T) {
-	s1 := randomString(6)
-	s2 := randomString(6)
+	s1 := modkit.RandomAlnum(6)
+	s2 := modkit.RandomAlnum(6)
 
 	if len(s1) != 6 {
 		t.Errorf("expected length 6, got %d", len(s1))

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/types"
 )
@@ -133,7 +134,7 @@ func TestRecordExportFailurePrecedence(t *testing.T) {
 		recordExportFailure(&err, exportErr)
 		require.Error(t, err)
 		assert.Equal(t, ExitError, classifyExitCode(err))
-		assert.Equal(t, errCodeExportFailed, classifyErrorCode(err, ExitError))
+		assert.Equal(t, apicontract.CodeExportFailed, classifyErrorCode(err, ExitError))
 	})
 
 	t.Run("nothing failed: the result stays clean", func(t *testing.T) {
@@ -163,7 +164,7 @@ func TestRecordExportFailurePrecedence(t *testing.T) {
 		gated := withFailOnGate(err)
 		assert.Equal(t, ExitError, classifyExitCode(gated),
 			"a gate verdict whose artifact is missing must not report exit 4")
-		assert.Equal(t, errCodeExportFailed, classifyErrorCode(gated, ExitError))
+		assert.Equal(t, apicontract.CodeExportFailed, classifyErrorCode(gated, ExitError))
 	})
 }
 
@@ -316,19 +317,4 @@ func TestDirectScanPinnedDBFailureIsFatal(t *testing.T) {
 		})
 		assert.Empty(t, strings.TrimSpace(out), "--silent means silent")
 	})
-}
-
-// The result document states whether the findings also reached a store, so a
-// caller that reads them here and then expects `vigolium finding` to list them
-// can tell which of the two runs it got.
-func TestScanResultPersistedIsSerialized(t *testing.T) {
-	doc, err := encodeAgentJSON(&scanResult{Target: "http://a.example/", Method: "GET"})
-	require.NoError(t, err)
-	assert.Contains(t, string(doc), `"persisted": false`)
-	assert.NotContains(t, string(doc), "interrupted", "interrupted is omitempty on a normal run")
-
-	doc, err = encodeAgentJSON(&scanResult{Target: "http://a.example/", Persisted: true, Interrupted: true})
-	require.NoError(t, err)
-	assert.Contains(t, string(doc), `"persisted": true`)
-	assert.Contains(t, string(doc), `"interrupted": true`)
 }

@@ -9,24 +9,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
-
-// makeHTTPCtx builds an HTTPS request/response pair from the given response
-// headers and body.
-func makeHTTPCtx(headers, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte("GET /api/auth/session HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := "HTTP/1.1 200 OK\r\n" + headers + "\r\n" + body
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -42,7 +29,7 @@ func TestScanPerRequest_InsecureCookie(t *testing.T) {
 	t.Parallel()
 	m := New()
 	headers := "Content-Type: application/json\r\nSet-Cookie: next-auth.session-token=abc123; Path=/\r\n"
-	ctx := makeHTTPCtx(headers, `{}`)
+	ctx := modtest.HTTPCtxHeaders("/api/auth/session", headers, `{}`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -63,7 +50,7 @@ func TestScanPerRequest_SameSiteOnlyIsLow(t *testing.T) {
 	t.Parallel()
 	m := New()
 	headers := "Content-Type: application/json\r\nSet-Cookie: next-auth.session-token=abc123; Path=/; Secure; HttpOnly\r\n"
-	ctx := makeHTTPCtx(headers, `{}`)
+	ctx := modtest.HTTPCtxHeaders("/api/auth/session", headers, `{}`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -79,7 +66,7 @@ func TestScanPerRequest_SecureCookie(t *testing.T) {
 	t.Parallel()
 	m := New()
 	headers := "Content-Type: application/json\r\nSet-Cookie: __Secure-next-auth.callback-url=https%3A%2F%2Fx; Path=/; Secure; HttpOnly; SameSite=Lax\r\n"
-	ctx := makeHTTPCtx(headers, `{}`)
+	ctx := modtest.HTTPCtxHeaders("/api/auth/session", headers, `{}`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -91,7 +78,7 @@ func TestScanPerRequest_NonNextAuthCookie(t *testing.T) {
 	t.Parallel()
 	m := New()
 	headers := "Content-Type: application/json\r\nSet-Cookie: sessionid=xyz; Path=/\r\n"
-	ctx := makeHTTPCtx(headers, `{}`)
+	ctx := modtest.HTTPCtxHeaders("/api/auth/session", headers, `{}`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -102,7 +89,7 @@ func TestScanPerRequest_HelperCookieIsNotSessionCookie(t *testing.T) {
 	t.Parallel()
 	m := New()
 	headers := "Content-Type: application/json\r\nSet-Cookie: next-auth.csrf-token=value12345; Path=/\r\n"
-	ctx := makeHTTPCtx(headers, `{}`)
+	ctx := modtest.HTTPCtxHeaders("/api/auth/session", headers, `{}`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -114,7 +101,7 @@ func TestScanPerRequest_JWTClaimNameOnlyIsObservation(t *testing.T) {
 	m := New()
 	token := testJWT(t, map[string]any{"sub": "user-1", "secret": nil})
 	headers := fmt.Sprintf("Content-Type: application/json\r\nSet-Cookie: next-auth.session-token=%s; Path=/; Secure; HttpOnly; SameSite=Lax\r\n", token)
-	ctx := makeHTTPCtx(headers, `{}`)
+	ctx := modtest.HTTPCtxHeaders("/api/auth/session", headers, `{}`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -129,7 +116,7 @@ func TestScanPerRequest_SubstantiveJWTClaimIsCandidate(t *testing.T) {
 	m := New()
 	token := testJWT(t, map[string]any{"sub": "user-1", "access_token": "tok_live_7" + "Jr9mQ2vXp8" + "sK4nL"})
 	headers := fmt.Sprintf("Content-Type: application/json\r\nSet-Cookie: next-auth.session-token=%s; Path=/; Secure; HttpOnly; SameSite=Lax\r\n", token)
-	ctx := makeHTTPCtx(headers, `{}`)
+	ctx := modtest.HTTPCtxHeaders("/api/auth/session", headers, `{}`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

@@ -11,6 +11,11 @@ type KnownIssueScanConfig struct {
 	ExcludeTags  []string `yaml:"exclude_tags"`  // tags to exclude
 	Severities   []string `yaml:"severities"`    // filter severities (empty = all)
 	TemplatesDir string   `yaml:"templates_dir"` // custom templates path
+	// Templates, when non-empty, are the only template sources run: template
+	// files, directories, or paths relative to TemplatesDir (nuclei's -t).
+	// TemplatesDir then only roots those relative paths. Set from the CLI's
+	// repeatable --known-issue-scan-templates(-dir).
+	Templates []string `yaml:"templates,omitempty"`
 	// SeverityOverrides remaps the severity a finding is recorded with, keyed by
 	// nuclei template ID (case-insensitive). The override is applied after a match
 	// but before output/persistence, so the finding, console output, and severity

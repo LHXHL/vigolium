@@ -48,6 +48,12 @@ type RecordLineage struct {
 	Target string
 	// ChainTruncated marks a row whose destination is not the row after it.
 	ChainTruncated bool
+	// ScanUUID is the scan that fetched this exchange. Stamped on a NEW row
+	// only, never on a dedup hit (AdoptRecord ignores it): records are shared
+	// across scans, so http_records.scan_uuid means "the first scan to store this
+	// exchange". That is what lets a scan-scoped export and records_written count
+	// what a run produced instead of the whole project.
+	ScanUUID string
 }
 
 // applyTo stamps the lineage onto a record.
@@ -67,6 +73,11 @@ func (l RecordLineage) applyTo(rec *HTTPRecord) {
 	rec.ChainTruncated = l.ChainTruncated
 	if l.RootUUID != "" {
 		rec.RootUUID = l.RootUUID
+	}
+	// Left alone when empty, like RootUUID: a writer-level stamp (RecordWriter's
+	// config) may already have set it, and an empty lineage says nothing.
+	if l.ScanUUID != "" {
+		rec.ScanUUID = l.ScanUUID
 	}
 }
 

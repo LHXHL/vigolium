@@ -10,6 +10,7 @@ func logFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsLog, Name: "info",
+			Effect:   EffectPure,
 			Category: CatLogging, Signature: ".info(msg: string)", Returns: "void",
 			Description: "Log an informational message.", Example: exLogInfo,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -22,6 +23,7 @@ func logFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsLog, Name: "warn",
+			Effect:   EffectPure,
 			Category: CatLogging, Signature: ".warn(msg: string)", Returns: "void",
 			Description: "Log a warning message.", Example: exLogWarn,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -34,6 +36,7 @@ func logFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsLog, Name: "error",
+			Effect:   EffectPure,
 			Category: CatLogging, Signature: ".error(msg: string)", Returns: "void",
 			Description: "Log an error message.", Example: exLogError,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -46,6 +49,7 @@ func logFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsLog, Name: "debug",
+			Effect:   EffectPure,
 			Category: CatLogging, Signature: ".debug(msg: string)", Returns: "void",
 			Description: "Log a debug message (only visible at debug log level).", Example: exLogDebug,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {

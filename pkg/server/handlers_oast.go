@@ -3,18 +3,17 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/vigolium/vigolium/pkg/database"
 )
 
 // HandleListOASTInteractions handles GET /api/oast-interactions
 func (h *Handlers) HandleListOASTInteractions(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	scanUUID := c.Query("scan_uuid")
@@ -40,15 +39,20 @@ func (h *Handlers) HandleListOASTInteractions(c fiber.Ctx) error {
 	}
 
 	projectUUID := getProjectUUID(c)
-	interactions, total, err := h.repo.ListOASTInteractions(c.Context(), projectUUID, scanUUID, protocol, moduleID, search, limit, offset)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "query failed: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+	var (
+		interactions []*database.OASTInteraction
+		total        int64
+	)
+	ctx := c.Context()
+	if err := retryRead(ctx, func() error {
+		var err error
+		interactions, total, err = h.readerRepo().ListOASTInteractions(ctx, projectUUID, scanUUID, protocol, moduleID, search, limit, offset)
+		return err
+	}); err != nil {
+		return respondQueryError(c, err)
 	}
 
-	return c.JSON(PaginatedResponse{
+	return respondList(c, PaginatedResponse{
 		ProjectUUID: projectUUID,
 		Data:        interactions,
 		Total:       total,
@@ -61,39 +65,24 @@ func (h *Handlers) HandleListOASTInteractions(c fiber.Ctx) error {
 // HandleGetOASTInteraction handles GET /api/oast-interactions/:id
 func (h *Handlers) HandleGetOASTInteraction(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	idStr := c.Params("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid OAST interaction ID: must be a number",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "invalid OAST interaction ID: must be a number")
 	}
 
 	interaction, err := h.repo.GetOASTInteractionByID(c.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrOASTInteractionNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrOASTInteractionNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve OAST interaction: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve OAST interaction: %w", err))
 	}
 	if !inRequestProject(c, interaction.ProjectUUID) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrOASTInteractionNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrOASTInteractionNotFound)
 	}
 
 	return c.JSON(interaction)
@@ -102,47 +91,29 @@ func (h *Handlers) HandleGetOASTInteraction(c fiber.Ctx) error {
 // HandleDeleteOASTInteraction handles DELETE /api/oast-interactions/:id
 func (h *Handlers) HandleDeleteOASTInteraction(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	idStr := c.Params("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid OAST interaction ID: must be a number",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "invalid OAST interaction ID: must be a number")
 	}
 
 	// Verify it exists and belongs to the request's project first
 	interaction, err := h.repo.GetOASTInteractionByID(c.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrOASTInteractionNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrOASTInteractionNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve OAST interaction: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve OAST interaction: %w", err))
 	}
 	if !inRequestProject(c, interaction.ProjectUUID) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrOASTInteractionNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrOASTInteractionNotFound)
 	}
 
 	if err := h.repo.DeleteOASTInteraction(c.Context(), id); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to delete OAST interaction: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to delete OAST interaction: %w", err))
 	}
 
 	return c.JSON(fiber.Map{"message": "OAST interaction deleted", "id": id})

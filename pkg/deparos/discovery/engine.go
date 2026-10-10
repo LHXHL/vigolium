@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -146,6 +147,7 @@ type Engine struct {
 	formStructureCounter *dedup.Counter // Dedup form submissions by structure (max N per endpoint+structure)
 	seenJSURLs           *dedup.DiskSet // Dedup JS URLs across batches
 	seenBodyHashes       *dedup.DiskSet // Dedup response body content for jstangle on script tags
+	fuzzWordsSeen        *dedup.DiskSet // Dedup words across the fuzz wordlists (created with the fuzz task)
 
 	// Tested directories/files tracking (centralized for deduplication)
 	testedDirectories *tracker.URLTracker
@@ -263,10 +265,29 @@ type Engine struct {
 	jsReplayFlushCount     int
 	jsReplayFlushCapLogged bool
 
+	// replayEvidenceBytes bounds the response bodies held for template outcomes
+	// until the crawl ends (see maxReplayEvidenceTotal).
+	replayEvidenceBytes atomic.Int64
+
+	// jsFacts collects the non-request jstangle facts per JS asset so the
+	// integrated source can persist them as one artifact per asset (see
+	// JSFactBundles). They otherwise live only in the ephemeral siteMap.
+	jsFactsMu sync.Mutex
+	jsFacts   map[string]*jsFactBundleState
+
 	// vendorJSFetched counts vendor/CDN/library JS bundles admitted for jstangle
 	// endpoint extraction, bounding them under a per-scan asset budget (see
 	// admitVendorJSFetch).
 	vendorJSFetched atomic.Int32
+
+	// sitemapCapped counts sitemap locs dropped by the sitemap budgets (see
+	// fetchSitemaps / SitemapCapped); above zero is the sitemap_cap limit.
+	sitemapCapped atomic.Int64
+
+	// seeding is true from Start until the sitemap source and the initial
+	// task wave have been queued; the engine never reports idle meanwhile, so
+	// a slow sitemap fetch cannot end discovery before it is seeded.
+	seeding atomic.Bool
 }
 
 // EngineMetrics tracks discovery statistics.
@@ -283,6 +304,12 @@ type EngineMetrics struct {
 	InFlightItems    int32
 	QueueSize        int
 	PrefixesBroken   int // Number of path prefixes tripped by the breaker
+
+	// Coordinator scheduling (see coordinator_expander.go).
+	InlineInFlight      int32  // inline tasks (JS replay/form/case-sense) queued for or running on the inline workers
+	ExpansionsInFlight  int32  // task expansions started and not finished, suspended ones included
+	SuspendedExpansions int32  // expansions parked on the suspended stack by a more urgent task
+	Preemptions         uint64 // times a running expansion was suspended for a more urgent task
 }
 
 // engineMiddleware builds the engine client's middleware chain.
@@ -296,13 +323,16 @@ type EngineMetrics struct {
 //     so a retry also has to take a token; a burst of 503s must not be allowed to
 //     outrun the configured rate.
 //  3. Retry — the engine's existing behaviour, unchanged.
-//  4. Counting — innermost, so it sees every physical attempt including each
+//  4. Egress — the caller's admission policy (vigolium's scan gate: host slot,
+//     quarantine, token). Inside retry, so each attempt is admitted on its own
+//     and the slot is not held through a retry's backoff.
+//  5. Counting — innermost, so it sees every physical attempt including each
 //     retry, which is what a server's access log would show.
 //
 // The optional rungs are omitted entirely when unconfigured rather than wrapping
 // with a no-op, so a run that uses none has the exact chain it had before.
 func engineMiddleware(eng *config.EngineConfig) []pkghttp.Middleware {
-	mw := make([]pkghttp.Middleware, 0, 4)
+	mw := make([]pkghttp.Middleware, 0, 5)
 	if eng.RequestFilter != nil {
 		mw = append(mw, pkghttp.FilterMiddleware(eng.RequestFilter))
 	}
@@ -317,6 +347,9 @@ func engineMiddleware(eng *config.EngineConfig) []pkghttp.Middleware {
 		}))
 	}
 	mw = append(mw, pkghttp.RetryMiddleware(pkghttp.DefaultRetryConfig()))
+	if eng.Egress != nil {
+		mw = append(mw, pkghttp.Middleware(eng.Egress))
+	}
 	if eng.RequestCounter != nil {
 		mw = append(mw, pkghttp.CountingMiddleware(eng.RequestCounter))
 	}
@@ -597,10 +630,7 @@ func NewEngineWithContext(parentCtx context.Context, cfg *config.Config, st stor
 		if cfg.JSTangle.CacheMB > 0 {
 			serviceConfig.CacheBytes = int64(cfg.JSTangle.CacheMB) * 1024 * 1024
 		}
-		serviceConfig.WorkerCount = cfg.JSTangle.WorkerCount
-		if serviceConfig.WorkerCount <= 0 && cfg.Engine.JSTangleConcurrency > 0 {
-			serviceConfig.WorkerCount = cfg.Engine.JSTangleConcurrency
-		}
+		serviceConfig.WorkerCount = cfg.JSTangleWorkerCount()
 		serviceConfig.WorkerMaxJobs = cfg.JSTangle.WorkerMaxJobs
 		if cfg.JSTangle.WorkerMaxRSSMB > 0 {
 			serviceConfig.WorkerMaxRSSBytes = int64(cfg.JSTangle.WorkerMaxRSSMB) * 1024 * 1024
@@ -728,11 +758,21 @@ func (e *Engine) Start() error {
 			return fmt.Errorf("invalid start URL: %w", err)
 		}
 
-		// Fetch and parse robots.txt for initial URL discovery
+		// Fetch and parse robots.txt for initial URL discovery. The sitemap
+		// source it names runs off the state lock, before the initial task
+		// wave (sitemap locs feed the observed-path wordlist those tasks use).
 		logger.Info("Fetching robots.txt")
-		e.fetchRobotsTxt(targetURL)
+		named := e.loadRobotsTxt(targetURL)
 
-		go e.generateInitialTasks()
+		// Tracked by e.wg so Stop's cleanup never races the seeding.
+		e.seeding.Store(true)
+		e.wg.Go(func() {
+			defer e.seeding.Store(false)
+			e.fetchSitemaps(targetURL, named)
+			if e.ctx.Err() == nil {
+				e.generateInitialTasks()
+			}
+		})
 
 		return nil
 
@@ -868,7 +908,7 @@ func (e *Engine) GetState() State {
 // IsIdle returns true if queue is empty and coordinator has no work pending.
 // Used by TUI to detect completion.
 func (e *Engine) IsIdle() bool {
-	return e.taskQueue.IsEmpty() && e.coordinator.IsIdle()
+	return !e.seeding.Load() && e.taskQueue.IsEmpty() && e.coordinator.IsIdle()
 }
 
 // Done returns a channel that is closed when the engine's context is cancelled.
@@ -910,6 +950,8 @@ func (e *Engine) newCallbacks() *Callbacks {
 		AddExtractedRequest:         e.AddExtractedRequest,
 		AddRequestFact:              e.AddRequestFact,
 		RequeueReplayTemplate:       e.RequeueReplayTemplate,
+		NoteReplayOutcome:           e.NoteReplayOutcome,
+		ReplayEvidenceSpent:         e.replayEvidenceSpent,
 		StoreJSTangleRequests:       e.storeJSTangleRequests,
 		StoreJSTangleFacts:          e.storeJSTangleFacts,
 		ProcessJSTangleCapabilities: e.processJSTangleCapabilityFacts,
@@ -1359,16 +1401,28 @@ func (e *Engine) PendingRequestTemplates() []ExtractedRequestTemplate {
 	//     safety policy forbids from being sent during discovery. Withheld
 	//     templates remain in the registry (items) for controlled consumers via
 	//     All(); they are simply not auto-replayed here.
+	//
+	// Every template filtered here is noted with the reason, so the integrated
+	// source can still persist it as a request stub (RequestTemplateOutcomes).
 	requireHigh := mode != "conservative"
 	policy := ParseReplaySafety(e.config.JSTangle.ReplaySafety)
+	reg := e.templateRegistry()
 	safe := templates[:0]
 	withheld := 0
 	for _, template := range templates {
-		if requireHigh && template.Confidence != "high" {
+		// Low confidence is a discovery hint in every mode; the variant
+		// generator would drop it anyway, so note it here where the reason is known.
+		if template.Confidence == "low" || (requireHigh && template.Confidence != "high") {
+			reg.NoteOutcome(template.SourceURL, template.ID, ReplayNote{
+				Outcome: TemplateWithheldConfidence, Reason: confidenceOrUnknown(template.Confidence),
+			})
 			continue
 		}
 		if !policy.AllowsFact(&template.Request) {
 			withheld++
+			reg.NoteOutcome(template.SourceURL, template.ID, ReplayNote{
+				Outcome: TemplateWithheldPolicy, Reason: withheldPolicyReason(policy, &template.Request),
+			})
 			continue
 		}
 		safe = append(safe, template)
@@ -1379,6 +1433,88 @@ func (e *Engine) PendingRequestTemplates() []ExtractedRequestTemplate {
 			zap.Int("withheld", withheld), zap.Int("allowed", len(safe)))
 	}
 	return safe
+}
+
+// NoteReplayOutcome records what a replay attempt (or a decision not to make
+// one) said about a template. Wired into Callbacks for the coordinator. The
+// response evidence is dropped once the engine's evidence budget is spent;
+// status and headers are kept regardless.
+func (e *Engine) NoteReplayOutcome(sourceURL, templateID string, note ReplayNote) {
+	if templateID == "" {
+		return
+	}
+	if note.Response != nil && len(note.Response.Body) > 0 {
+		if e.replayEvidenceBytes.Add(int64(len(note.Response.Body))) > maxReplayEvidenceTotal {
+			trimmed := *note.Response
+			trimmed.Body = nil
+			note.Response = &trimmed
+		}
+	}
+	e.templateRegistry().NoteOutcome(sourceURL, templateID, note)
+}
+
+// replayEvidenceSpent reports whether NoteReplayOutcome would drop a response
+// body anyway, letting the coordinator skip copying it.
+func (e *Engine) replayEvidenceSpent() bool {
+	return e.replayEvidenceBytes.Load() > maxReplayEvidenceTotal
+}
+
+// RequestTemplateOutcomes reports every JS-derived request template with its
+// final outcome. Read it after Stop() and before the siteMap closes: it is the
+// only place unreplayed, withheld and not-found templates survive the crawl.
+//
+// Templates that were never sent are resolved to the URL they stand for and
+// checked against the crawl scope here, because the coordinator's scope check
+// only ever saw the ones it replayed: a withheld POST to a third-party API
+// becomes out_of_scope and is never persisted.
+func (e *Engine) RequestTemplateOutcomes() []TemplateOutcome {
+	outcomes := e.templateRegistry().Outcomes()
+	replayOff := strings.EqualFold(strings.TrimSpace(e.config.JSTangle.ReplayMode), "off")
+	fallback, _ := url.Parse(e.config.Target.StartURL)
+	for i := range outcomes {
+		o := &outcomes[i]
+		if replayOff && o.Outcome == TemplateWithheldFlushCap && o.Reason == ReasonUnreplayed {
+			o.Outcome, o.Reason = TemplateWithheldPolicy, "replay-off"
+		}
+		if o.Replayed() || o.Outcome == TemplateOutOfScope {
+			continue
+		}
+		target := o.URL
+		if target == "" {
+			stub, ok := BuildTemplateStub(o.Template, fallback)
+			if !ok {
+				continue
+			}
+			target = stub.URL
+		}
+		if parsed, err := url.Parse(target); err == nil && e.spiderScope != nil && !e.spiderScope.IsInScope(parsed) {
+			o.Reason = o.Outcome
+			o.Outcome = TemplateOutOfScope
+		}
+	}
+	return outcomes
+}
+
+func confidenceOrUnknown(confidence string) string {
+	if confidence == "" {
+		return "unknown"
+	}
+	return confidence
+}
+
+// withheldPolicyReason names the replay-safety rule that withheld a fact.
+func withheldPolicyReason(policy ReplaySafety, fact *jstangle.HTTPRequestFact) string {
+	if policy == ReplaySafetyMetadataOnly {
+		return "metadata-only"
+	}
+	method := strings.ToUpper(strings.TrimSpace(fact.Method.Rendered))
+	if method == "" {
+		method = "GET"
+	}
+	if strings.EqualFold(fact.Client, "graphql") && isReplayableMethod(method) {
+		return "graphql-" + strings.ToLower(cmp.Or(fact.OperationType, "mutation"))
+	}
+	return "method:" + method
 }
 
 // RequeueReplayTemplate returns a claimed JS-replay template to the pending set
@@ -1406,10 +1542,11 @@ func (e *Engine) assetGraph() *JSAssetGraph {
 	e.jsAssetGraphOnce.Do(func() {
 		if e.jsAssetGraph == nil {
 			e.jsAssetGraph = NewJSAssetGraph(JSAssetGraphConfig{
-				MaxDepth:           e.config.JSTangle.MaxAssetDepth,
-				MaxAssetsPerParent: e.config.JSTangle.MaxAssetsPerParent,
-				MaxAssetsPerHost:   e.config.JSTangle.MaxAssetsPerHost,
-				MaxAssetsTotal:     e.config.JSTangle.MaxAssetsTotal,
+				MaxDepth:            e.config.JSTangle.MaxAssetDepth,
+				MaxAssetsPerParent:  e.config.JSTangle.MaxAssetsPerParent,
+				MaxChunksPerRuntime: e.config.JSTangle.MaxChunksPerRuntime,
+				MaxAssetsPerHost:    e.config.JSTangle.MaxAssetsPerHost,
+				MaxAssetsTotal:      e.config.JSTangle.MaxAssetsTotal,
 			})
 		}
 	})
@@ -1471,6 +1608,10 @@ func (e *Engine) GetMetrics() EngineMetrics {
 	metrics.InFlightItems = coordMetrics.InFlightItems.Load()
 	metrics.TasksCompleted = coordMetrics.TasksCompleted.Load()
 	metrics.RequestsSent = coordMetrics.RequestsSent.Load()
+	metrics.InlineInFlight = coordMetrics.InlineInFlight.Load()
+	metrics.ExpansionsInFlight = coordMetrics.ExpansionsInFlight.Load()
+	metrics.SuspendedExpansions = coordMetrics.SuspendedExpansions.Load()
+	metrics.Preemptions = coordMetrics.Preemptions.Load()
 
 	metrics.QueueSize = e.taskQueue.Size()
 	metrics.UniqueTaskHashes = int(e.taskHashes.Size())
@@ -1508,7 +1649,7 @@ func (e *Engine) WaitForQueues(ctx context.Context) error {
 			taskQueueEmpty := e.taskQueue.IsEmpty()
 			coordinatorIdle := e.coordinator.IsIdle()
 
-			allIdle := taskQueueEmpty && coordinatorIdle
+			allIdle := !e.seeding.Load() && taskQueueEmpty && coordinatorIdle
 
 			if allIdle {
 				if !idleDetected {
@@ -1722,6 +1863,11 @@ func (e *Engine) cleanup() {
 	if e.seenBodyHashes != nil {
 		if err := e.seenBodyHashes.Close(); err != nil {
 			logger.Warn("Failed to close seen body hashes", zap.Error(err))
+		}
+	}
+	if e.fuzzWordsSeen != nil {
+		if err := e.fuzzWordsSeen.Close(); err != nil {
+			logger.Warn("Failed to close fuzz word dedup", zap.Error(err))
 		}
 	}
 	if e.extractedRequestsDedup != nil {

@@ -33,7 +33,8 @@ import (
 // is now conditional on stdout actually being a terminal.
 
 // ErrWatchNotSupported marks a watch request the selected mode cannot honor.
-var ErrWatchNotSupported = errors.New("--watch is not supported here")
+// pkg/cli's isWatchUsageError classifies it as a usage error (exit 2).
+var ErrWatchNotSupported = errors.New("--watch is not supported here") //vigolium:not-usage sentinel, classified by isWatchUsageError
 
 // ErrWatchInterval marks an unparseable or non-positive --watch value. It is a
 // sentinel rather than a message the caller string-matches: pkg/cli classifies

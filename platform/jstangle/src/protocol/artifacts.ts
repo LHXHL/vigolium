@@ -1,6 +1,6 @@
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { basename, resolve, sep } from 'node:path';
-import type { AnalysisResultV2, ArtifactDescriptor, Diagnostic } from './types';
+import type { AnalysisResultV2, ArtifactDescriptor, Diagnostic, TruncationCounts } from './types';
 import { sha256 } from './result';
 
 export function safeArtifactName(filename: string, suffix: string): string {
@@ -53,7 +53,9 @@ export function fitEnvelope(envelope: AnalysisResultV2, maxBytes: number): { env
       }
     }
     if (index === -1) index = envelope.records.length - 1;
-    envelope.records.splice(index, 1);
+    const [removed] = envelope.records.splice(index, 1);
+    envelope.stats.truncated ??= {};
+    envelope.stats.truncated[removed.kind] = (envelope.stats.truncated[removed.kind] ?? 0) + 1;
     omitted++;
   }
   if (omitted > 0) {
@@ -76,4 +78,16 @@ export function artifactFailureDiagnostic(error: unknown): Diagnostic {
     type: 'diagnostic', severity: 'warning', stage: 'artifacts', code: 'artifact_write_failed',
     message: error instanceof Error ? error.message : String(error), recoverable: true,
   };
+}
+
+/**
+ * Completion reason for a run that lost records to a per-kind cap:
+ * `request_cap` when endpoint facts were dropped, else `fact_cap:<kind>`.
+ * Undefined when nothing was truncated.
+ */
+export function truncationReason(truncated: TruncationCounts | undefined): string | undefined {
+  if (!truncated) return undefined;
+  if ((truncated.httpRequest ?? 0) > 0) return 'request_cap';
+  const kind = Object.keys(truncated).sort().find((name) => truncated[name] > 0);
+  return kind ? `fact_cap:${kind}` : undefined;
 }

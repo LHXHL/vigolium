@@ -1,0 +1,39 @@
+{
+  "status": "complete",
+  "counts": {
+    "httpRequest": 5
+  },
+  "facts": [
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1",
+      "method": "GET",
+      "confidence": "low"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1/health",
+      "method": "GET",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1/posts/${postId}/comments",
+      "method": "POST",
+      "bodyKind": "json",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v1/users/${userId}",
+      "method": "GET",
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "https://api.example.test/v2/status",
+      "method": "GET",
+      "confidence": "high"
+    }
+  ]
+}

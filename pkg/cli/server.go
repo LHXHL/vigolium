@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -25,6 +26,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
+	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/queue"
 	"github.com/vigolium/vigolium/pkg/server"
 	"github.com/vigolium/vigolium/pkg/server/mitm"
@@ -41,8 +43,14 @@ type serverOptions struct {
 	ServicePort     int
 	BurpBridgeURL   string
 	IngestProxyPort int
-	APIKeys         []string
-	NoAuth          bool
+	// IngestProxyHost is the ingest proxy's bind address, independent of
+	// Host so exposing the API never exposes an open forward proxy with it.
+	IngestProxyHost string
+	// ProxyToken / ProxyAllow gate the ingest proxy (see server.ProxyAuth).
+	ProxyToken string
+	ProxyAllow []string
+	APIKeys    []string
+	NoAuth     bool
 
 	// Ingest-proxy TLS interception (MITM)
 	ProxyMITM     bool   // Intercept HTTPS via a generated CA (records + scans TLS traffic)
@@ -51,6 +59,9 @@ type serverOptions struct {
 
 	// Queue
 	MemBufferSize int
+	// DiscardQueued drops whatever a previous run left in the disk-spill
+	// queue instead of resuming it.
+	DiscardQueued bool
 
 	// Output
 	Output string
@@ -59,7 +70,7 @@ type serverOptions struct {
 	// as a live filesystem tree (in addition to the database).
 	MirrorFS string
 
-	// PassiveOnly, with -S/--scan-on-receive, restricts scanning to passive
+	// PassiveOnly, with --scan-on-receive, restricts scanning to passive
 	// modules only (no active scan traffic; includes secret detection).
 	PassiveOnly bool
 
@@ -84,7 +95,7 @@ type serverOptions struct {
 }
 
 var serverOpts = &serverOptions{
-	Host:        "0.0.0.0",
+	Host:        defaultServerHost,
 	ServicePort: 9002,
 }
 
@@ -94,12 +105,16 @@ var serverCmd = &cobra.Command{
 	Long: `Start the Vigolium REST API server (Fiber-based). Exposes scan endpoints, traffic ingestion, agent runs, and a Swagger UI.
 
 Common modes:
-  • Default: full API, requires the auto-generated key from config (see config ls server.api_key)
+  • Default: full API, requires the auto-generated key from config (see config ls server.auth_api_key --force)
   • --view-only: read-only — no scan, ingest, or agent endpoints
   • --burp-bridge-url (alias --caido-bridge-url): merge live Burp/Caido proxy history into the normal HTTP records API
   • --scan-on-receive: continuously scan ingested traffic as it arrives
-  • --ingest-proxy-port: enable a transparent HTTP ingest proxy on a separate port
-  • -A: disable auth (local development only)`,
+  • --ingest-proxy-port: enable a transparent HTTP ingest proxy on a separate port (binds --ingest-proxy-host, default 127.0.0.1)
+  • -A: disable auth (local development only)
+
+Both listeners bind 127.0.0.1 by default. --host 0.0.0.0 (or $VIGOLIUM_SERVER_HOST) exposes the API.
+A routable --ingest-proxy-host needs --proxy-token and/or --proxy-allow, or the server refuses to start.
+The MITM CA is managed with 'vigolium server ca print|path|install|uninstall'.`,
 	Args: cobra.NoArgs,
 	RunE: runServerCmd,
 }
@@ -112,22 +127,32 @@ func init() {
 	flags.DurationVar(&globalTimeout, "timeout", 15*time.Second, "HTTP request timeout for background scan workers (e.g. 30s, 1m)")
 
 	// Server group
-	flags.StringVar(&serverOpts.Host, "host", "0.0.0.0", "Bind address for the API server")
+	flags.StringVar(&serverOpts.Host, "host", defaultServerHost,
+		"Bind address for the API server ($"+serverHostEnv+" when unset; use 0.0.0.0 to expose it)")
 	flags.IntVar(&serverOpts.ServicePort, "service-port", 9002, "Port for the REST API server")
 	registerBridgeURLFlag(serverCmd, &serverOpts.BurpBridgeURL,
 		"Merge live proxy traffic from this loopback Burp/Caido bridge URL into /api/http-records")
 	flags.IntVar(&serverOpts.IngestProxyPort, "ingest-proxy-port", 0, "Transparent HTTP proxy port for recording traffic (0 = disabled)")
+	flags.StringVar(&serverOpts.IngestProxyHost, "ingest-proxy-host", server.DefaultIngestProxyHost,
+		"Bind address for the ingest proxy (config server.ingest_proxy_host). A non-loopback address needs --proxy-token or --proxy-allow")
+	flags.StringVar(&serverOpts.ProxyToken, "proxy-token", "",
+		"Require this secret on every ingest-proxy request as Proxy-Authorization (Basic with any username, or Bearer); config server.ingest_proxy_token")
+	flags.StringArrayVar(&serverOpts.ProxyAllow, "proxy-allow", nil,
+		"Accept ingest-proxy clients only from this CIDR or IP (repeatable; config server.ingest_proxy_allow)")
 	flags.BoolVar(&serverOpts.ProxyMITM, "proxy-mitm", false,
-		"Intercept HTTPS through --ingest-proxy-port using a generated CA so TLS traffic is recorded (and scanned with -S). Trust the CA printed at startup")
+		"Intercept HTTPS through --ingest-proxy-port using a generated CA so TLS traffic is recorded (and scanned with --scan-on-receive). Trust it with 'vigolium server ca install'")
 	flags.BoolVar(&serverOpts.ProxyInsecure, "proxy-insecure", false,
 		"When intercepting HTTPS (--proxy-mitm), skip verification of the upstream server's TLS certificate")
 	flags.StringVar(&serverOpts.ExportCA, "export-ca", "",
-		"Write the ingest-proxy MITM CA certificate to this path and exit (generates the CA if needed)")
+		"Write the ingest-proxy MITM CA certificate to this path and exit (alias of 'server ca print --out')")
+	_ = flags.MarkHidden("export-ca")
 	flags.StringSliceVar(&serverOpts.APIKeys, "alternative-ingest-key", nil, "Additional API key for ingestion endpoints (repeatable)")
 	flags.BoolVarP(&serverOpts.NoAuth, "no-auth", "A", false, "Run server without API key authentication")
 
 	// Queue group
 	flags.IntVar(&serverOpts.MemBufferSize, "mem-buffer", 10000, "In-memory queue capacity before spilling to disk")
+	flags.BoolVar(&serverOpts.DiscardQueued, "discard-queued", false,
+		"Drop tasks a previous run left in the disk-spill queue instead of resuming them (tasks older than 24h are always dropped)")
 
 	// Output group
 	flags.StringVarP(&serverOpts.Output, "output", "o", "", "Write findings to specified output file")
@@ -140,7 +165,7 @@ func init() {
 	flags.BoolVar(&globalFullNativeScanOnReceive, "full-native-scan-on-receive", false,
 		"Run the full native scan pipeline (discovery + spidering + dynamic-assessment) continuously on received records, instead of dynamic-assessment only")
 	flags.BoolVar(&serverOpts.PassiveOnly, "passive-only", false,
-		"With -S/--scan-on-receive, run passive modules only (no active scan traffic; includes secret detection)")
+		"With --scan-on-receive, run passive modules only (no active scan traffic; includes secret detection)")
 
 	// Catchup scan group (deprecated: catch-up is disabled — the live
 	// scan-on-receive scanner already covers post-cursor records; these flags are
@@ -205,8 +230,10 @@ func newServerRunnerOptions(so *serverOptions, concurrency, maxPerHost, maxHostE
 func proxyCADir() string { return config.ExpandPath(server.DefaultIngestProxyCADir) }
 
 // exportProxyCA loads-or-creates the MITM CA and writes its certificate to dst,
-// printing trust instructions. Backs the --export-ca flag.
-func exportProxyCA(dst string) error {
+// printing trust instructions. Backs the --export-ca flag. proxyPort is the
+// --ingest-proxy-port given alongside it; the hint uses it so the printed curl
+// line targets the proxy the operator actually runs.
+func exportProxyCA(dst string, proxyPort int) error {
 	ca, err := mitm.LoadOrCreateCA(proxyCADir())
 	if err != nil {
 		return fmt.Errorf("initialize MITM CA: %w", err)
@@ -218,9 +245,19 @@ func exportProxyCA(dst string) error {
 	if !globalSilent {
 		fmt.Printf("%s Ingest-proxy CA certificate written to %s\n",
 			terminal.InfoSymbol(), terminal.Cyan(dst))
-		fmt.Printf("  Trust it to capture HTTPS, e.g.:\n    curl --proxy http://127.0.0.1:9090 --cacert %s https://target/\n", dst)
+		fmt.Printf("  Trust it to capture HTTPS, e.g.:\n    %s\n", proxyCATrustHint(dst, proxyPort))
 	}
 	return nil
+}
+
+// proxyCATrustHint is the example curl line printed after --export-ca. With a
+// known --ingest-proxy-port it names that port; without one there is no real
+// port to name, so it says which flag sets it instead of inventing one.
+func proxyCATrustHint(caPath string, proxyPort int) string {
+	if proxyPort > 0 {
+		return fmt.Sprintf("curl --proxy http://127.0.0.1:%d --cacert %s https://target/", proxyPort, caPath)
+	}
+	return fmt.Sprintf("curl --proxy http://127.0.0.1:<port> --cacert %s https://target/   (<port> = the server's --ingest-proxy-port)", caPath)
 }
 
 // armForceQuit installs a last-resort escape hatch for a graceful shutdown that
@@ -303,7 +340,7 @@ func initServerDatabase(cfg *config.DatabaseConfig, silent bool) (*database.DB, 
 		zap.L().Warn("Failed to create database, results won't be persisted", zap.Error(err))
 		return nil, nil
 	}
-	if err := db.CreateSchema(context.Background()); err != nil {
+	if err := db.EnsureSchemaReady(context.Background()); err != nil {
 		zap.L().Error("Failed to create database schema; running without persistence", zap.Error(err))
 		if !silent {
 			fmt.Printf("  %s Database schema init failed: %v (running without persistence)\n",
@@ -324,7 +361,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 
 	// --export-ca: generate (if needed) and write the MITM CA cert, then exit.
 	if serverOpts.ExportCA != "" {
-		return exportProxyCA(serverOpts.ExportCA)
+		return exportProxyCA(serverOpts.ExportCA, serverOpts.IngestProxyPort)
 	}
 
 	// Load settings early so config values are available for API key resolution
@@ -345,9 +382,15 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	if serverOpts.BurpBridgeURL != "" {
 		validated, verr := burpbridge.ValidateURL(serverOpts.BurpBridgeURL)
 		if verr != nil {
-			return fmt.Errorf("--burp-bridge-url: %w", verr)
+			return usageErrorf("--burp-bridge-url: %w", verr)
 		}
 		serverOpts.BurpBridgeURL = validated
+	}
+
+	serverOpts.Host = resolveServerHost(cmd, serverOpts.Host)
+	proxyHost, proxyAuth, err := resolveIngestProxyAuth(cmd, serverOpts, &settings.Server)
+	if err != nil {
+		return err
 	}
 
 	// Override SQLite path if --db flag is set, matching scan/ingest/etc.
@@ -384,7 +427,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 			apiKeys = []string{settings.Server.AuthAPIKey}
 		}
 		if len(apiKeys) == 0 {
-			zap.L().Fatal("No API keys configured. Set auth_api_key in config, use VIGOLIUM_API_KEY env, or pass --alternative-ingest-key")
+			return asUsageError(errors.New("no API key configured: set server.auth_api_key (vigolium config set server.auth_api_key <key>), export VIGOLIUM_API_KEY, pass --alternative-ingest-key, or run with -A/--no-auth for local development"))
 		}
 		showAPIKeyHint = len(serverOpts.APIKeys) == 0
 	}
@@ -398,6 +441,10 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	if db != nil {
 		defer func() { _ = db.Close() }()
 	}
+
+	// Prune native-scan status.json heartbeat files past their retention
+	// (scanning_strategy.scan_logs.status_retention_days), off the start path.
+	pruneSessionStatusInBackground(settings)
 
 	// Load file-based users for role-based access control.
 	// Bootstrap from embedded default template on first run.
@@ -439,19 +486,14 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	// Task queue. Only scan-on-receive / full-native-on-receive actually run a
 	// consumer for it; every other server mode leaves it without a producer or
 	// consumer, so opening a LevelDB-backed hybrid queue there would only spawn
-	// idle drainer/cleanup goroutines and take an on-disk lock that blocks a second
-	// server instance on the same host. Use a zero-cost in-memory queue in that
-	// case, and give the durable queue a PID-scoped directory otherwise so two
-	// instances don't contend on the shared /tmp path.
+	// idle drainer/cleanup goroutines and take an on-disk lock. Use a zero-cost
+	// in-memory queue in that case. The durable queue lives in a stable directory
+	// keyed by the database (~/.vigolium/server-queue/<hash>), locked for this
+	// process, so a restart resumes what the last run left queued.
 	var taskQueue queue.Queue
+	var queueDir *queue.ServerQueueDir
 	if globalScanOnReceive || globalFullNativeScanOnReceive {
-		queueDir := filepath.Join(os.TempDir(), fmt.Sprintf("vigolium-server-queue-%d", os.Getpid()))
-		taskQueue, err = queue.NewQueue(queue.Config{
-			Type:          queue.QueueTypeHybrid,
-			DiskDir:       queueDir,
-			MaxPerSegment: 10000,
-			MemBufferSize: serverOpts.MemBufferSize,
-		})
+		taskQueue, queueDir, err = openServerQueue(&settings.Database, serverOpts.MemBufferSize, serverOpts.DiscardQueued)
 	} else {
 		taskQueue, err = queue.NewQueue(queue.Config{
 			Type:          queue.QueueTypeMemory,
@@ -466,7 +508,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	serviceAddr := fmt.Sprintf("%s:%d", serverOpts.Host, serverOpts.ServicePort)
 	var ingestProxyAddr string
 	if serverOpts.IngestProxyPort > 0 {
-		ingestProxyAddr = fmt.Sprintf("%s:%d", serverOpts.Host, serverOpts.IngestProxyPort)
+		ingestProxyAddr = joinHostPort(proxyHost, serverOpts.IngestProxyPort)
 	}
 
 	// Initialize HTTP requester for fetching responses during ingestion
@@ -516,6 +558,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 		IngestProxyAddr:      ingestProxyAddr,
 		IngestProxyMITM:      serverOpts.ProxyMITM,
 		IngestProxyInsecure:  serverOpts.ProxyInsecure,
+		IngestProxyAuth:      proxyAuth,
 		APIKeys:              apiKeys,
 		UserStore:            userStore,
 		NoAuth:               serverOpts.NoAuth,
@@ -547,6 +590,10 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 		Commit:             Commit,
 		BuildTime:          BuildTime,
 		ConfigPath:         clicommon.EffectiveConfigPath(globalConfig),
+		ReportFormats:      serverReportFormats(),
+		RenderReport:       renderServerReport,
+		APIVersionDefault:  settings.Server.APIVersionDefault,
+		AutoCreateProjects: settings.Server.AutoCreateProjects,
 	}, taskQueue, db, repo, settings, httpRequester, svc)
 
 	// Echo a friendly console line whenever the watcher hot-reloads config
@@ -598,9 +645,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 		if err := apiServer.Shutdown(shutdownCtx); err != nil {
 			zap.L().Error("API server shutdown error", zap.Error(err))
 		}
-		if err := taskQueue.Close(); err != nil {
-			zap.L().Error("Queue close error", zap.Error(err))
-		}
+		closeServerQueue(taskQueue, queueDir)
 		zap.L().Info("Server shutdown complete")
 		return nil
 	}
@@ -706,15 +751,19 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 		sep := terminal.Gray("│")
 		printServerEndpoints(serviceAddr, showAPIKeyHint)
 		if ingestProxyAddr != "" {
-			fmt.Printf("  %s Ingest proxy %s\n",
+			fmt.Printf("  %s Ingest proxy %s  %s auth %s\n",
 				terminal.InfoSymbol(),
-				terminal.Cyan(fmt.Sprintf("http://%s", ingestProxyAddr)))
+				terminal.Cyan(ingestProxyDisplayURL(ingestProxyAddr, proxyAuth)),
+				sep,
+				terminal.Cyan(ingestProxyAuthLabel(proxyAuth)))
 			if caPath := apiServer.ProxyCACertPath(); caPath != "" {
 				fmt.Printf("  %s HTTPS intercept %s  %s trust %s\n",
 					terminal.InfoSymbol(),
 					terminal.Cyan("on"),
 					sep,
-					terminal.Cyan(fmt.Sprintf("curl --cacert %s", caPath)))
+					terminal.Cyan("vigolium server ca install"))
+				fmt.Printf("    %s\n", terminal.Gray(fmt.Sprintf("curl --proxy %s --cacert %s https://target/",
+					ingestProxyDisplayURL(ingestProxyAddr, proxyAuth), caPath)))
 			}
 		} else if serverOpts.ProxyMITM {
 			fmt.Printf("  %s %s --proxy-mitm has no effect without --ingest-proxy-port\n",
@@ -826,9 +875,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Close queue last
-	if err := taskQueue.Close(); err != nil {
-		zap.L().Error("Queue close error", zap.Error(err))
-	}
+	closeServerQueue(taskQueue, queueDir)
 
 	zap.L().Info("Server shutdown complete")
 	return nil
@@ -845,4 +892,35 @@ func parseAgentQueueTimeout(s string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// serverReportEntries are the post-scan report formats REST `output_formats`
+// accepts beyond jsonl: the REST surface of the output format table.
+var serverReportEntries = reportFormatEntries(output.SurfaceREST)
+
+// serverReportFormats lists the names of serverReportEntries, the formats
+// renderServerReport can produce.
+func serverReportFormats() []string {
+	formats := make([]string, 0, len(serverReportEntries))
+	for _, rf := range serverReportEntries {
+		formats = append(formats, rf.format)
+	}
+	return formats
+}
+
+// renderServerReport renders one report file for a finished REST scan through
+// generateReportFromDB, the generator behind `scan --format html|report|…`,
+// scoped to the scan. Injected into the server (pkg/server cannot import
+// pkg/cli).
+func renderServerReport(ctx context.Context, db *database.DB, format, outputPath, projectUUID, scanUUID string) error {
+	for _, rf := range serverReportEntries {
+		if rf.format != format {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0o750); err != nil {
+			return fmt.Errorf("create report dir: %w", err)
+		}
+		return generateReportFromDB(ctx, db, outputPath, false, projectUUID, scanUUID, rf, nil)
+	}
+	return fmt.Errorf("no report renderer for format %q", format)
 }

@@ -8,14 +8,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	interactshclient "github.com/projectdiscovery/interactsh/pkg/client"
 	"github.com/projectdiscovery/interactsh/pkg/server"
-	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 	"go.uber.org/zap"
@@ -25,9 +26,16 @@ import (
 type PayloadContext struct {
 	TargetURL     string
 	ParameterName string
+	// InjectionType is the module's human label for the injection (shown in the
+	// finding description and stored on the interaction row). It does not drive
+	// rating; Class does.
 	InjectionType string
-	ModuleID      string
-	RequestHash   string
+	// Class is the vulnerability class the callback URL was minted for, fixed
+	// once at mint time (GenerateURLFor, or ClassFromLegacyLabel in
+	// GenerateURL). classifyInteraction switches on it.
+	Class       Class
+	ModuleID    string
+	RequestHash string
 	// CallbackURL is the unique OAST URL that was planted (the payload the target
 	// called back to). Retained so the finding can show exactly what was injected.
 	CallbackURL string
@@ -55,8 +63,29 @@ type PayloadContext struct {
 const oastTrackerCacheSize = 65536
 
 // Service wraps an interactsh client with payload tracking and result emission.
+//
+// Registration with the interactsh server runs in the background (see New and
+// registration.go): until it succeeds the service is "registering", Enabled()
+// is false and GenerateURL returns "".
 type Service struct {
-	client             *interactshclient.Client
+	// client is published by the registration goroutine once the server has
+	// accepted the registration; nil while registering, after a failed
+	// registration, and in fixed-URL mode.
+	client atomic.Pointer[interactshclient.Client]
+	// ready is closed when registration ends, successfully or not. Nil on a
+	// zero-value Service (tests) and in fixed-URL mode, which is ready at once.
+	ready chan struct{}
+	// regErr holds the *UnavailableError of a failed registration. Read it only
+	// after ready is closed.
+	regErr atomic.Pointer[UnavailableError]
+	// lifeMu serialises publishing the client against Close, so a registration
+	// that finishes after Close never leaves a polling client behind.
+	lifeMu sync.Mutex
+	closed bool
+	// minted counts callback URLs handed out since the last Flush, so Flush
+	// only waits out the grace period when a blind payload was planted.
+	minted atomic.Int64
+
 	trackerOnce        sync.Once
 	tracker            *lru.Cache[string, PayloadContext] // nonce → PayloadContext (bounded LRU)
 	emitResult         func(*output.ResultEvent)
@@ -70,6 +99,14 @@ type Service struct {
 	fixedURL           string // when set, skip interactsh and use this URL directly
 	blindXSSSrc        string // JS script src for blind XSS payloads
 	enabledBlindXSS    bool   // whether blind XSS probing is active
+
+	// template is the parsed fixedURL when it carries {nonce} (see fixed.go);
+	// nil for interactsh mode and for a fixed URL without the placeholder.
+	template *fixedTemplate
+	// payloadMu guards pendingPayloads, the payload contexts minted from a
+	// {nonce} template and not yet written to oast_payloads.
+	payloadMu       sync.Mutex
+	pendingPayloads []*database.OASTPayload
 
 	// emitMu guards emittedRank, the finding-coalescing state. A single planted
 	// payload typically produces several callbacks — DNS A + AAAA, multiple recursive
@@ -93,69 +130,12 @@ type Service struct {
 	resolverMu sync.RWMutex
 }
 
-// New creates a new OAST service. Returns (nil, nil) if the interactsh client
-// cannot be created — callers should treat nil as "OAST unavailable" and continue.
-// resolveRequestUUID is an optional function that maps a request hash to a database
-// record UUID, enabling Finding records to be linked to their originating HTTP records.
-func New(cfg *config.OASTConfig, emitResult func(*output.ResultEvent), repo *database.Repository, scanUUID string, projectUUID string, resolveRequestUUID func(string) string) (*Service, error) {
-	if cfg == nil || !cfg.Enabled {
-		return nil, nil
-	}
-
-	// Fixed URL mode: skip interactsh client entirely
-	if cfg.OastURL != "" {
-		return &Service{
-			fixedURL:           cfg.OastURL,
-			emitResult:         emitResult,
-			resolveRequestUUID: resolveRequestUUID,
-			repo:               repo,
-			scanUUID:           scanUUID,
-			projectUUID:        projectUUID,
-			blindXSSSrc:        cfg.BlindXSSSrc,
-			enabledBlindXSS:    cfg.EnabledBlindXSS,
-		}, nil
-	}
-
-	serverURL := cfg.ServerURL
-	if serverURL == "" {
-		serverURL = "oast.pro"
-	}
-
-	opts := &interactshclient.Options{
-		ServerURL: serverURL,
-		Token:     cfg.Token,
-	}
-
-	client, err := interactshclient.New(opts)
-	if err != nil {
-		zap.L().Warn("OAST: failed to create interactsh client, continuing without OAST",
-			zap.String("server", serverURL),
-			zap.Error(err))
-		return nil, nil
-	}
-
-	pollInterval := time.Duration(cfg.PollInterval) * time.Second
-	if pollInterval <= 0 {
-		pollInterval = 5 * time.Second
-	}
-	gracePeriod := time.Duration(cfg.GracePeriod) * time.Second
-	if gracePeriod <= 0 {
-		gracePeriod = 10 * time.Second
-	}
-
-	return &Service{
-		client:             client,
-		serverURL:          serverURL,
-		emitResult:         emitResult,
-		resolveRequestUUID: resolveRequestUUID,
-		repo:               repo,
-		scanUUID:           scanUUID,
-		projectUUID:        projectUUID,
-		pollInterval:       pollInterval,
-		gracePeriod:        gracePeriod,
-		blindXSSSrc:        cfg.BlindXSSSrc,
-		enabledBlindXSS:    cfg.EnabledBlindXSS,
-	}, nil
+// explicitCleartextServer reports whether the configured interactsh server_url
+// names the http:// scheme itself. Only then is a cleartext registration what
+// the operator asked for; a bare host (the default "oast.pro") or https:// must
+// never be silently downgraded.
+func explicitCleartextServer(serverURL string) bool {
+	return len(serverURL) >= len("http://") && strings.EqualFold(serverURL[:len("http://")], "http://")
 }
 
 // ServerURL returns the interactsh server hostname (e.g. "oast.pro").
@@ -169,21 +149,6 @@ func (s *Service) ServerURL() string {
 	return s.serverURL
 }
 
-// Start begins polling the interactsh server for interactions.
-func (s *Service) Start() {
-	if s == nil || s.client == nil {
-		return
-	}
-
-	if err := s.client.StartPolling(s.pollInterval, s.handleInteraction); err != nil {
-		zap.L().Warn("OAST: failed to start polling", zap.Error(err))
-	}
-
-	zap.L().Info("OAST: polling started",
-		zap.Duration("interval", s.pollInterval),
-		zap.Duration("grace_period", s.gracePeriod))
-}
-
 // trackerCache lazily initializes the bounded payload tracker so a zero-value
 // &Service{} (used by tests) stays safe.
 func (s *Service) trackerCache() *lru.Cache[string, PayloadContext] {
@@ -195,24 +160,53 @@ func (s *Service) trackerCache() *lru.Cache[string, PayloadContext] {
 }
 
 // GenerateURL creates a unique OAST callback URL and tracks the payload context.
+// The class is derived once from the free-form injectionType label via
+// ClassFromLegacyLabel; callers that know their class use GenerateURLFor.
 func (s *Service) GenerateURL(targetURL, paramName, injectionType, moduleID, requestHash string) string {
+	return s.GenerateURLFor(ClassFromLegacyLabel(injectionType), targetURL, paramName, injectionType, moduleID, requestHash)
+}
+
+// GenerateURLFor creates a unique OAST callback URL for a payload of class cls
+// and tracks the payload context. label is the human injection-type label shown
+// in the finding; it does not affect rating. An empty cls falls back to
+// ClassFromLegacyLabel(label).
+func (s *Service) GenerateURLFor(cls Class, targetURL, paramName, label, moduleID, requestHash string) string {
 	if s == nil {
 		return ""
 	}
-
-	// Fixed URL mode: return the configured URL directly (no nonce tracking)
-	if s.fixedURL != "" {
-		return s.fixedURL
+	if cls == "" {
+		cls = ClassFromLegacyLabel(label)
 	}
 
-	if s.client == nil {
+	// Fixed URL mode. A {nonce} template mints a per-probe nonce that is
+	// tracked and persisted for `oast ingest`; a plain URL is returned as it
+	// is, and its callbacks cannot be attributed (fixed-uncorrelated).
+	if s.fixedURL != "" {
+		if s.template == nil {
+			return s.fixedURL
+		}
+		return s.mintFixed(PayloadContext{
+			TargetURL:     targetURL,
+			ParameterName: paramName,
+			InjectionType: label,
+			Class:         cls,
+			ModuleID:      moduleID,
+			RequestHash:   requestHash,
+		})
+	}
+
+	// Still registering, or registration failed: no callback host exists yet.
+	// Callers treat "" as "OAST unavailable" for this probe.
+	client := s.client.Load()
+	if client == nil {
 		return ""
 	}
 
-	url := s.client.URL()
+	url := client.URL()
 	if url == "" {
 		return ""
 	}
+	s.minted.Add(1)
 
 	// Extract nonce from the URL: format is "correlationID+nonce.server.host"
 	// The nonce is everything before the first dot minus the correlation ID prefix.
@@ -222,7 +216,8 @@ func (s *Service) GenerateURL(targetURL, paramName, injectionType, moduleID, req
 		s.trackerCache().Add(nonce, PayloadContext{
 			TargetURL:     targetURL,
 			ParameterName: paramName,
-			InjectionType: injectionType,
+			InjectionType: label,
+			Class:         cls,
 			ModuleID:      moduleID,
 			RequestHash:   requestHash,
 			CallbackURL:   url,
@@ -239,7 +234,14 @@ func (s *Service) GenerateURL(targetURL, paramName, injectionType, moduleID, req
 // written at the injection point (header value, parameter value, …). A no-op
 // when OAST is in fixed-URL mode or the context has already been evicted.
 func (s *Service) RecordPayload(callbackURL, payload string) {
-	if s == nil || s.client == nil || callbackURL == "" || payload == "" {
+	if s == nil || callbackURL == "" || payload == "" {
+		return
+	}
+	if s.template != nil {
+		s.recordFixedPayload(callbackURL, payload)
+		return
+	}
+	if s.client.Load() == nil {
 		return
 	}
 	nonce := extractNonce(callbackURL)
@@ -253,11 +255,6 @@ func (s *Service) RecordPayload(callbackURL, payload string) {
 	}
 	pctx.Payload = payload
 	cache.Add(nonce, pctx)
-}
-
-// Enabled returns true if the OAST service is active.
-func (s *Service) Enabled() bool {
-	return s != nil && (s.client != nil || s.fixedURL != "")
 }
 
 // BlindXSSSrc returns the configured blind XSS script src URL.
@@ -285,28 +282,6 @@ func (s *Service) SetRequestUUIDResolver(fn func(string) string) {
 	s.resolverMu.Unlock()
 }
 
-// Flush waits for the grace period and then performs a final poll to catch late callbacks.
-func (s *Service) Flush() {
-	if s == nil || s.client == nil {
-		return
-	}
-
-	zap.L().Info("OAST: grace period started, waiting for late callbacks",
-		zap.Duration("grace_period", s.gracePeriod))
-	time.Sleep(s.gracePeriod)
-}
-
-// Close stops polling and deregisters from the interactsh server.
-func (s *Service) Close() {
-	if s == nil || s.client == nil {
-		return
-	}
-
-	if err := s.client.Close(); err != nil {
-		zap.L().Debug("OAST: error closing client", zap.Error(err))
-	}
-}
-
 // handleInteraction processes a single interaction from the interactsh server.
 func (s *Service) handleInteraction(interaction *server.Interaction) {
 	if interaction == nil {
@@ -326,7 +301,18 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 		zap.String("remote_addr", interaction.RemoteAddress),
 		zap.Bool("correlated", found))
 
-	// Save to database
+	s.recordInteraction(interaction, pctx)
+
+	// Only emit finding if we have correlation context
+	if !found {
+		return
+	}
+	s.reportCorrelated(interaction, nonce, pctx)
+}
+
+// recordInteraction stores one callback in oast_interactions, with the
+// correlated payload context when there is one (pctx may be zero).
+func (s *Service) recordInteraction(interaction *server.Interaction, pctx PayloadContext) {
 	if s.repo != nil {
 		record := &database.OASTInteraction{
 			ProjectUUID:   s.projectUUID,
@@ -349,12 +335,15 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 			zap.L().Warn("OAST: failed to save interaction", zap.Error(err))
 		}
 	}
+}
 
-	// Only emit finding if we have correlation context
-	if !found {
-		return
-	}
-
+// reportCorrelated turns a callback correlated to the payload context pctx
+// (planted with nonce) into a finding: it classifies, coalesces per emission
+// key, saves the finding to this service's scan and emits it. It is shared by
+// the live interactsh poller (handleInteraction) and `oast ingest`, which
+// passes a context restored from oast_payloads. It returns the finding, or nil
+// when the callback folded into one already reported.
+func (s *Service) reportCorrelated(interaction *server.Interaction, nonce string, pctx PayloadContext) *output.ResultEvent {
 	// Classify first (cheap, no I/O) so the emission key can depend on severity.
 	sev, conf, desc := classifyInteraction(interaction.Protocol, pctx)
 
@@ -385,7 +374,7 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 	// point), not a pile.
 	emit, upgrade := s.claimEmission(emitKey, interaction.Protocol)
 	if !emit {
-		return
+		return nil
 	}
 
 	// Recover the request that planted the payload so both the finding's trace
@@ -428,6 +417,7 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 		// description/severity that an upgrade changes.
 		DedupKey: "oast:" + emitKey,
 	}
+	result.SetSignal(output.SignalOAST)
 
 	// Attach the originating request and human-readable trace anchors so the
 	// finding answers "which request caused this callback?" on its own.
@@ -458,6 +448,7 @@ func (s *Service) handleInteraction(interaction *server.Interaction) {
 	if s.emitResult != nil {
 		s.emitResult(result)
 	}
+	return result
 }
 
 // oastProtocolRank ranks an OAST callback protocol by how strongly it proves the
@@ -841,7 +832,12 @@ func oneLinePayload(s string) string {
 // header (oast_probe, log4shell/command-injection header legs, internal-header
 // probe, …). The injection-type label carries "header" for every such module.
 func isHeaderInjection(pctx PayloadContext) bool {
-	return pctx.ParameterName != "" && strings.Contains(strings.ToLower(pctx.InjectionType), "header")
+	if pctx.ParameterName == "" {
+		return false
+	}
+	// A context restored from oast_payloads has no label; its class still
+	// names the header-planting probes.
+	return pctx.Class == oastclass.HeaderHarvest || strings.Contains(strings.ToLower(pctx.InjectionType), "header")
 }
 
 // callbackHost strips any scheme/path from a stored callback URL, returning the
@@ -919,39 +915,45 @@ func classifyInteraction(protocol string, pctx PayloadContext) (severity.Severit
 		injectionDesc += " via parameter " + pctx.ParameterName
 	}
 
-	// Command-injection OAST payloads (nslookup/ping/curl/wget of a unique,
-	// unguessable subdomain) carry a different meaning than the generic SSRF/XXE
-	// interpretation: an HTTP-fetch callback means a shell command actually ran.
-	// A DNS-only callback is weaker and, on client-IP/forwarding headers, an
-	// outright false positive — see classifyCommandInjection.
-	if strings.Contains(strings.ToLower(pctx.InjectionType), "command") {
+	// Rating switches on the class fixed when the URL was minted; the label is
+	// only description text.
+	cls := pctx.class()
+	switch cls {
+	case oastclass.CMDI:
+		// Command-injection OAST payloads (nslookup/ping/curl/wget of a unique,
+		// unguessable subdomain) carry a different meaning than the generic
+		// SSRF/XXE interpretation: an HTTP-fetch callback means a shell command
+		// actually ran. A DNS-only callback is weaker and, on client-IP/forwarding
+		// headers, an outright false positive — see classifyCommandInjection.
 		return classifyCommandInjection(proto, pctx, injectionDesc)
-	}
-
-	// XXE payloads (an external DTD / external entity pointing at a unique,
-	// unguessable OAST subdomain) mean the target's XML parser resolved the
-	// injected reference — unforgeable proof the parser loads external entities.
-	// A DNS-only hit is high-confidence here (unlike the generic SSRF case)
-	// because the per-payload subdomain rules out coincidental resolution.
-	if strings.Contains(strings.ToLower(pctx.InjectionType), "xxe") {
+	case oastclass.XXE:
+		// XXE payloads (an external DTD / external entity pointing at a unique,
+		// unguessable OAST subdomain) mean the target's XML parser resolved the
+		// injected reference — unforgeable proof the parser loads external
+		// entities. A DNS-only hit is high-confidence here (unlike the generic
+		// SSRF case) because the per-payload subdomain rules out coincidental
+		// resolution.
 		return classifyXXE(proto, injectionDesc)
-	}
-
-	// SQLi out-of-band payloads (MySQL LOAD_FILE of a UNC path, MSSQL xp_dirtree,
-	// Oracle UTL_INADDR/UTL_HTTP, PostgreSQL COPY ... TO PROGRAM) make the database
-	// itself resolve or fetch a unique, unguessable OAST subdomain. A correlated
-	// callback means the injected SQL executed inside the query — proof of blind SQL
-	// injection, not SSRF, so it gets its own classifier.
-	if strings.Contains(strings.ToLower(pctx.InjectionType), "sql") {
+	case oastclass.SQLi:
+		// SQLi out-of-band payloads (MySQL LOAD_FILE of a UNC path, MSSQL
+		// xp_dirtree, Oracle UTL_INADDR/UTL_HTTP, PostgreSQL COPY ... TO PROGRAM)
+		// make the database itself resolve or fetch a unique, unguessable OAST
+		// subdomain. A correlated callback means the injected SQL executed inside
+		// the query — proof of blind SQL injection, not SSRF.
 		return classifySQLi(proto, injectionDesc)
-	}
-
-	// JWT header key-URL injection (jku/x5u pointing at a unique OAST subdomain):
-	// a callback means the server dereferenced an attacker-controlled URL from the
-	// token header to fetch a verification key — the precursor to signing-key
-	// injection (full auth bypass), and at minimum a server-side request forgery.
-	if strings.Contains(strings.ToLower(pctx.InjectionType), "jwt") {
+	case oastclass.JWTKeyURL:
+		// JWT header key-URL injection (jku/x5u pointing at a unique OAST
+		// subdomain): a callback means the server dereferenced an attacker-
+		// controlled URL from the token header to fetch a verification key — the
+		// precursor to signing-key injection (full auth bypass), and at minimum a
+		// server-side request forgery.
 		return classifyJWT(proto, injectionDesc)
+	case oastclass.Text4Shell:
+		return classifyText4Shell(proto, injectionDesc)
+	case oastclass.ESI:
+		return classifyESI(proto, injectionDesc)
+	case oastclass.PasswordResetPoisoning:
+		return classifyResetPoisoning(proto, injectionDesc)
 	}
 
 	// Host-routing / host-reflection SSRF — request-line manipulation
@@ -965,9 +967,9 @@ func classifyInteraction(protocol string, pctx PayloadContext) (severity.Severit
 	// rather than high. Scoped narrowly via the shared isProxyReflectedHostHeader
 	// set: genuine parameter-based blind SSRF and the client-IP / non-reflected
 	// forwarding headers (X-Forwarded-For, Referer, Origin, …) stay high. The
-	// routing_ssrf module ID is matched as a string literal to avoid an import cycle
-	// (it imports this package); the header name is matched case-insensitively.
-	hostRoutingSSRF := pctx.ModuleID == "routing-ssrf" || isProxyReflectedHostHeader(pctx.ParameterName)
+	// request-line probe is identified by its class; the header name is matched
+	// case-insensitively.
+	hostRoutingSSRF := cls == oastclass.HostRouting || isProxyReflectedHostHeader(pctx.ParameterName)
 	if hostRoutingSSRF && (proto == "http" || proto == "https") {
 		return severity.Info, severity.Certain, "Blind SSRF / host-header reflection: an outbound HTTP request reached the OAST server for a value placed on the request line or a proxy-reflected host header (" + injectionDesc +
 			"). Reverse proxies commonly reflect these into a redirect Location / upstream URL that the proxy (or a redirect-following client) then fetches, so impact is usually low and this is often not a server-side SSRF — reported as informational."
@@ -984,7 +986,7 @@ func classifyInteraction(protocol string, pctx PayloadContext) (severity.Severit
 	// smuggle callback is an unconfirmed lead, not a confirmed smuggle. (An HTTP-leg
 	// callback still means an actual outbound fetch and keeps the generic-SSRF rating
 	// below.)
-	if proto == "dns" && strings.Contains(strings.ToLower(pctx.InjectionType), "smuggle") {
+	if proto == "dns" && cls == oastclass.SSRFSmuggle {
 		return severity.Info, severity.Tentative, "DNS-only OAST callback for an SSRF protocol-smuggling probe (" + injectionDesc +
 			"). DNS resolution alone cannot confirm cross-protocol smuggling, which requires a connection to the smuggled port (redis/smtp/memcached) that no OAST collector answers. The payload sits in a URL-like parameter, so the lookup is commonly a URL-scanning / preview / threat-intel pipeline resolving the reflected value rather than a server-side fetch — treat as an unconfirmed lead and confirm with an in-band signal or an HTTP-fetch callback."
 	}
@@ -1016,6 +1018,59 @@ func classifyXXE(proto, injectionDesc string) (severity.Severity, severity.Confi
 		return severity.High, severity.Firm, "Blind XXE likely: the injected external-entity OAST subdomain was resolved over DNS (" + injectionDesc + "). The unguessable per-payload subdomain rules out coincidental resolution; DNS-only (no outbound fetch observed) keeps confidence at Firm — confirm via the HTTP-fetch leg or an in-band file:// read."
 	default:
 		return severity.High, severity.Firm, "Blind XXE likely via out-of-band " + proto + " interaction (" + injectionDesc + ")"
+	}
+}
+
+// classifyText4Shell rates callbacks for an Apache Commons Text lookup
+// (${dns:<oast>} / ${url:UTF-8:http://<oast>/}). Only an interpolating
+// StringSubstitutor resolves those lookups, so a correlated HTTP fetch proves
+// the lookup ran — the same primitive whose ${script:} variant is RCE
+// (CVE-2022-42889). A DNS-only hit can also come from a resolver or log
+// pipeline that extracted the host, so it stays one notch lower.
+func classifyText4Shell(proto, injectionDesc string) (severity.Severity, severity.Confidence, string) {
+	switch proto {
+	case "http", "https":
+		return severity.Critical, severity.Certain, "Text4Shell confirmed: Apache Commons Text evaluated an injected ${url:} lookup and fetched the OAST URL over HTTP (" + injectionDesc + "). The same interpolation evaluates ${script:} lookups, which is remote code execution (CVE-2022-42889)."
+	case "dns":
+		return severity.High, severity.Firm, "Text4Shell likely: the OAST host in an injected Commons Text ${dns:}/${url:} lookup was resolved over DNS (" + injectionDesc + "). DNS-only (no HTTP fetch observed) keeps confidence at Firm — confirm via the ${url:} HTTP leg."
+	default:
+		return severity.High, severity.Firm, "Text4Shell likely via out-of-band " + proto + " interaction (" + injectionDesc + ")"
+	}
+}
+
+// classifyESI rates callbacks for an injected <esi:include src="http://<oast>/"/>.
+// An HTTP fetch means an edge/cache ESI processor evaluated the include, which
+// lets an attacker pull arbitrary fragments into the page (cache-poisoned XSS,
+// HttpOnly cookie theft via esi:vars, SSRF from the edge). A DNS-only hit
+// carries no evidence of evaluation — the reflected tag can be harvested and
+// resolved by a URL-scanning pipeline — so it is an informational lead.
+func classifyESI(proto, injectionDesc string) (severity.Severity, severity.Confidence, string) {
+	switch proto {
+	case "http", "https":
+		return severity.High, severity.Certain, "ESI injection confirmed: an edge ESI processor evaluated the injected esi:include and fetched the OAST URL over HTTP (" + injectionDesc + ")"
+	case "dns":
+		return severity.Info, severity.Tentative, "DNS-only OAST callback for an injected esi:include (" + injectionDesc + "). Resolution alone does not show an ESI processor evaluated the include; the reflected tag may have been harvested and resolved by a URL-scanning pipeline. Confirm via the HTTP-fetch leg or the in-band ESI check."
+	default:
+		return severity.Medium, severity.Firm, "Possible ESI injection via out-of-band " + proto + " interaction (" + injectionDesc + ")"
+	}
+}
+
+// classifyResetPoisoning rates callbacks for a password-reset request replayed
+// with a poisoned Host / X-Forwarded-Host. An HTTP fetch of the OAST host means
+// something followed a link built from the injected host — normally the emailed
+// reset link (opened by a mail link scanner or the recipient), which leaks the
+// reset token to the attacker's host. It stays Firm because a reverse proxy that
+// routes on the poisoned header can fetch the host itself. A DNS-only lookup is
+// what such a proxy (or a mail scanner that never fetched) produces, so it is a
+// Tentative lead.
+func classifyResetPoisoning(proto, injectionDesc string) (severity.Severity, severity.Confidence, string) {
+	switch proto {
+	case "http", "https":
+		return severity.High, severity.Firm, "Password reset poisoning likely: a link built from the poisoned host header on a password-reset request was fetched from the OAST server (" + injectionDesc + "). The emailed reset link (and its token) points at the injected host. Firm, not Certain: a reverse proxy that routes on this header can fetch the host itself — confirm the reset email's link host."
+	case "dns":
+		return severity.Medium, severity.Tentative, "Possible password reset poisoning: the OAST host injected into a password-reset request's host header was resolved over DNS (" + injectionDesc + "). Proxies resolve forwarded host headers for routing, so DNS alone does not show the reset link used it — confirm via the HTTP-fetch leg or the reset email."
+	default:
+		return severity.High, severity.Firm, "Password reset poisoning likely via out-of-band " + proto + " interaction (" + injectionDesc + ")"
 	}
 }
 
@@ -1068,10 +1123,10 @@ func refineOASTCallback(interaction *server.Interaction, pctx PayloadContext, se
 	raw, target := interaction.RawRequest, pctx.TargetURL
 
 	// Classes with a specific, non-browser out-of-band fetcher → aggressive check.
-	if label := harvestableFetchLabel(pctx.InjectionType); label != "" {
+	if label := harvestableFetchLabel(pctx.class()); label != "" {
 		if harvested, reason := looksLikeHarvestedURLFetch(raw, target); harvested {
 			return severity.Low, severity.Tentative, "Possible " + label + ", UNCONFIRMED: an out-of-band HTTP request reached the OAST server for the injected out-of-band URL, but " + reason +
-				". A crawler / URL-preview bot / site monitor / threat-intel pipeline that harvested the injected http://<oast> URL from request logs (or a feed) calls back identically without the vulnerability firing — this class's real out-of-band fetcher (XML parser / JWKS fetcher / database engine / curl-wget) is never a web browser or crawler. Confirm with an in-band signal, or a callback whose client is consistent with that fetcher (a library/tool User-Agent, no browser/h2c handshake), before treating this as confirmed."
+				". A crawler / URL-preview bot / site monitor / threat-intel pipeline that harvested the injected http://<oast> URL from request logs (or a feed) calls back identically without the vulnerability firing — this class's real out-of-band fetcher (XML parser / JWKS fetcher / database engine / curl-wget / Java URL fetcher) is never a web browser or crawler. Confirm with an in-band signal, or a callback whose client is consistent with that fetcher (a library/tool User-Agent, no browser/h2c handshake), before treating this as confirmed."
 		}
 		return sev, conf, desc
 	}
@@ -1087,23 +1142,28 @@ func refineOASTCallback(interaction *server.Interaction, pctx PayloadContext, se
 	return sev, conf, desc
 }
 
-// harvestableFetchLabel maps an OAST injection-type label to a human finding label
-// when the class has a SPECIFIC non-browser out-of-band fetcher (so a browser/
-// crawler callback is unambiguously a harvested-URL fetch, not the vuln). It
-// mirrors the same substrings classifyInteraction dispatches on, so the two stay in
-// lockstep. Returns "" for classes whose fetcher can legitimately be browser-like
-// (generic SSRF), which refineOASTCallback handles with the narrower monitor check.
-func harvestableFetchLabel(injectionType string) string {
-	switch inj := strings.ToLower(injectionType); {
-	case strings.Contains(inj, "xxe"):
+// harvestableFetchLabel maps an OAST class to a human finding label when the
+// class has a SPECIFIC non-browser out-of-band fetcher (so a browser/crawler
+// callback is unambiguously a harvested-URL fetch, not the vuln). Returns "" for
+// classes whose fetcher can legitimately be browser-like (generic SSRF), which
+// refineOASTCallback handles with the narrower monitor check.
+func harvestableFetchLabel(cls Class) string {
+	switch cls {
+	case oastclass.XXE:
 		return "XXE"
-	case strings.Contains(inj, "jwt"):
+	case oastclass.JWTKeyURL:
 		return "JWT key-URL dereference"
-	case strings.Contains(inj, "sql"):
+	case oastclass.SQLi:
 		return "SQL injection"
-	case strings.Contains(inj, "command"):
+	case oastclass.CMDI:
 		return "OS command injection"
+	case oastclass.Text4Shell:
+		// java.net.URL behind Commons Text's url lookup.
+		return "Text4Shell (Commons Text interpolation)"
 	default:
+		// ESI is deliberately absent: an ESI processor (Varnish in particular)
+		// forwards the client's own headers on include sub-requests, so a
+		// browser User-Agent on the callback is expected, not a harvest sign.
 		return ""
 	}
 }

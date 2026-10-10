@@ -2,14 +2,10 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
-	"strings"
 	"sync/atomic"
 	"testing"
 
-	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -103,24 +99,79 @@ func TestValidateStdoutProtocol(t *testing.T) {
 	})
 }
 
-// --json on the scan path becomes jsonl via reconcileOutputFormats, which is
-// what makes `scan --events --json` the same collision as the explicit form.
-// Checking before that mapping would miss it, so the call site order matters.
-func TestValidateStdoutProtocolCatchesJSONMappedToJSONL(t *testing.T) {
+// -j is the scan document: it reserves stdout and is no longer mapped onto
+// --format jsonl. Every other stdout writer next to it is a usage error naming
+// the conflict; the jsonl stream with a -o file is not a conflict.
+func TestValidateStdoutProtocolScanDocumentOwnsStdout(t *testing.T) {
 	withStdoutProtocolGlobals(t)
+	globalJSON = true
 
 	o := types.DefaultOptions()
-	o.Events = "ndjson"
-	// What `vigolium scan -j --events ndjson` arrives with: the default console
-	// format and nothing else.
 	o.OutputFormats = []string{"console"}
-	globalJSON = true
 	require.NoError(t, reconcileOutputFormats(o))
-	require.True(t, o.HasFormat("jsonl"), "reconcileOutputFormats maps --json to jsonl")
+	assert.False(t, o.HasFormat("jsonl"), "-j must not turn into --format jsonl")
+	assert.False(t, o.DeferredJSONLExport, "no jsonl export unless --format jsonl was given")
+	assert.True(t, o.StdoutDocument, "-j reserves stdout for the scan document")
+	require.NoError(t, validateStdoutProtocol(o), "-j alone is fine")
 
-	err := validateStdoutProtocol(o)
-	require.Error(t, err, "--events --json streams two different object shapes to stdout")
+	withJSONL := types.DefaultOptions()
+	withJSONL.OutputFormats = []string{"jsonl"}
+	withJSONL.Output = "run.jsonl"
+	require.NoError(t, reconcileOutputFormats(withJSONL))
+	assert.True(t, withJSONL.DeferredJSONLExport)
+	assert.NoError(t, validateStdoutProtocol(withJSONL), "the stream goes to the file, the document to stdout")
+
+	for name, mk := range map[string]func() *types.Options{
+		"--events": func() *types.Options {
+			o := types.DefaultOptions()
+			o.Events = "ndjson"
+			return o
+		},
+		"--format jsonl": func() *types.Options {
+			o := types.DefaultOptions()
+			o.OutputFormats = []string{"jsonl"}
+			return o
+		},
+		"--ci-output-format": func() *types.Options {
+			o := types.DefaultOptions()
+			o.CIOutput = true
+			return o
+		},
+	} {
+		t.Run("-j + "+name, func(t *testing.T) {
+			err := validateStdoutProtocol(mk())
+			require.Error(t, err)
+			assert.Equal(t, ExitUsageError, classifyExitCode(err))
+			assert.Contains(t, err.Error(), name)
+		})
+	}
+	for name, set := range map[string]func(){
+		"--print-finding":      func() { scanPrintFinding = true },
+		"--print-traffic":      func() { scanPrintTraffic = true },
+		"--print-traffic-tree": func() { scanPrintTrafficTree = true },
+	} {
+		t.Run("-j + "+name, func(t *testing.T) {
+			withStdoutProtocolGlobals(t)
+			globalJSON = true
+			set()
+			err := validateStdoutProtocol(types.DefaultOptions())
+			require.Error(t, err)
+			assert.Equal(t, ExitUsageError, classifyExitCode(err))
+			assert.Contains(t, err.Error(), name)
+		})
+	}
+}
+
+// A per-target fan-out has no single scan document to print: -j there is a
+// usage error rather than an empty stdout.
+func TestRejectFanOutJSON(t *testing.T) {
+	withStdoutProtocolGlobals(t)
+	assert.NoError(t, rejectFanOutJSON())
+	globalJSON = true
+	err := rejectFanOutJSON()
+	require.Error(t, err)
 	assert.Equal(t, ExitUsageError, classifyExitCode(err))
+	assert.Contains(t, err.Error(), "-P/--parallel")
 }
 
 // --events must reach the Runner, which is the only thing that emits it.
@@ -183,85 +234,6 @@ func TestScanInputsContinuesPastAFailure(t *testing.T) {
 	assert.Empty(t, notScanned)
 }
 
-// Several direct-path results must leave stdout holding ONE document. Two
-// top-level objects are a stream json.Unmarshal rejects, and the documented
-// contract does not allow it.
-func TestDirectMultiInputSingleDocument(t *testing.T) {
-	withMachineDocumentState(t)
-	globalJSON = true
-
-	cmd := &cobra.Command{Use: "scan-url"}
-	root := &cobra.Command{Use: "vigolium"}
-	root.AddCommand(cmd)
-
-	results := []*scanResult{
-		{Target: "http://a.example/", Method: "GET", Persisted: true},
-		{Target: "http://b.example/", Method: "GET"},
-	}
-
-	var writeErr error
-	out := captureStdout(t, func() {
-		writeErr = writeDirectScanBatch(commandPathWithoutRoot(cmd), results, []string{"http://c.example/"})
-	})
-	require.NoError(t, writeErr)
-
-	dec := json.NewDecoder(strings.NewReader(out))
-	var env map[string]any
-	require.NoError(t, dec.Decode(&env), "the batch document is not valid JSON:\n%s", out)
-
-	var trailing map[string]any
-	require.ErrorIs(t, dec.Decode(&trailing), io.EOF,
-		"stdout carries more than one top-level document:\n%s", out)
-
-	assert.Equal(t, "scan-url", env["command"])
-	assert.EqualValues(t, 2, env["total"])
-	items, ok := env["items"].([]any)
-	require.True(t, ok, "items missing: %v", env)
-	require.Len(t, items, 2)
-	assert.Equal(t, []any{"http://c.example/"}, env["targets_not_scanned"])
-}
-
-// The key is an array even when nothing was skipped, so a consumer reading it to
-// decide whether to re-run the remainder never has to special-case null.
-func TestDirectMultiInputNotScannedIsAlwaysAnArray(t *testing.T) {
-	withMachineDocumentState(t)
-	globalJSON = true
-
-	out := captureStdout(t, func() {
-		require.NoError(t, writeDirectScanBatch("scan-url", []*scanResult{{Target: "a"}}, nil))
-	})
-	var env map[string]any
-	require.NoError(t, json.Unmarshal([]byte(out), &env))
-	assert.Equal(t, []any{}, env["targets_not_scanned"])
-}
-
-// directBatchJSON decides when the aggregation applies. The Runner path writes
-// its own output and --ci-output-format is a line protocol, so neither qualifies.
-func TestDirectBatchJSON(t *testing.T) {
-	resetLightweightIOGlobals()
-	t.Cleanup(resetLightweightIOGlobals)
-	prevJSON, prevCI := globalJSON, globalCIOutput
-	t.Cleanup(func() { globalJSON, globalCIOutput = prevJSON, prevCI })
-
-	two := []scanInput{{target: "a"}, {target: "b"}}
-	one := []scanInput{{target: "a"}}
-
-	globalJSON, globalCIOutput = true, false
-	assert.True(t, directBatchJSON(two))
-	assert.False(t, directBatchJSON(one), "a single input keeps its existing document shape")
-
-	globalCIOutput = true
-	assert.False(t, directBatchJSON(two), "--ci-output-format is one finding per line, by design")
-	globalCIOutput = false
-
-	globalJSON = false
-	assert.False(t, directBatchJSON(two), "the human renderer prints per target")
-
-	globalJSON = true
-	scanOpts.Output = "out.jsonl" // routes to the Runner
-	assert.False(t, directBatchJSON(two), "the Runner path writes its own output")
-}
-
 // dispatchScanInputs must notice the interrupt between inputs: both the direct
 // and the Runner path go through it, and only the direct path's executor sees
 // the context itself.
@@ -271,6 +243,6 @@ func TestDispatchScanInputsStopsOnCancel(t *testing.T) {
 
 	// Nothing is dispatched at all, so no network or database is touched: an
 	// already-cancelled context means the operator stopped before this started.
-	err := dispatchScanInputs(ctx, []scanInput{{rr: &httpmsg.HttpRequestResponse{}, target: "a"}})
+	err := dispatchScanInputs(ctx, nil, []scanInput{{rr: &httpmsg.HttpRequestResponse{}, target: "a"}})
 	assert.NoError(t, err)
 }

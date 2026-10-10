@@ -18,6 +18,7 @@ func jwtUtilsFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsUtils, Name: "jwtDecode",
+			Effect:   EffectPure,
 			Category: "JWT", Signature: ".jwtDecode(token: string)", Returns: "{header, payload, signature} | null",
 			Description: "Decode a JWT token into its header, payload, and signature parts.", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -56,6 +57,7 @@ func jwtUtilsFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsUtils, Name: "jwtEncode",
+			Effect:   EffectPure,
 			Category: "JWT", Signature: ".jwtEncode(payload: object, opts?: {algorithm?: string, secret?: string})", Returns: "string",
 			Description: "Encode a payload as a JWT token.", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -119,6 +121,7 @@ func jwtUtilsFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsUtils, Name: "jwtExpired",
+			Effect:   EffectPure,
 			Category: "JWT", Signature: ".jwtExpired(token: string)", Returns: "bool",
 			Description: "Check if a JWT token is expired.", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {

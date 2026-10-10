@@ -12,7 +12,6 @@ import (
 )
 
 var (
-	MaxThreadsOnLowMemory          = env.GetEnvOrDefault("MEMGUARDIAN_THREADS", 30)
 	MaxBytesBufferAllocOnLowMemory = env.GetEnvOrDefault("MEMGUARDIAN_ALLOC", 200)
 
 	// memMu guards the guardian's lifecycle handles. They are package globals
@@ -85,20 +84,6 @@ func IsLowOnMemory() bool {
 		return true
 	}
 	return false
-}
-
-// GuardThreadsOrDefault returns reduced thread count when memory is low
-func GuardThreadsOrDefault(current int) int {
-	if MaxThreadsOnLowMemory > 0 {
-		return MaxThreadsOnLowMemory
-	}
-
-	fraction := int(current / 5)
-	if fraction > 0 {
-		return fraction
-	}
-
-	return 1
 }
 
 var muGlobalChange sync.Mutex

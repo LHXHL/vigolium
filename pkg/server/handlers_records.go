@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -15,10 +16,7 @@ import (
 // HandleListRecords handles GET /api/http-records
 func (h *Handlers) HandleListRecords(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	projectUUID := getProjectUUID(c)
@@ -135,17 +133,15 @@ func (h *Handlers) HandleListRecords(c fiber.Ctx) error {
 	// derives request_body/response_body/request_headers/response_headers from
 	// raw_request/raw_response, so dropping those columns implicitly drops the
 	// derived fields too. Detail endpoints select raw_* and get the full view.
-	qb := database.NewQueryBuilder(h.db, fetchFilters).OmitBodies()
-
-	query := qb.BuildRecordsQuery()
+	qb := database.NewQueryBuilder(h.readerDB(), fetchFilters).OmitBodies()
 
 	var records []*database.HTTPRecord
 	ctx := c.Context()
-	if err := query.Scan(ctx, &records); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "query failed: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+	if err := retryRead(ctx, func() error {
+		records = nil
+		return qb.BuildRecordsQuery().Scan(ctx, &records)
+	}); err != nil {
+		return respondQueryError(c, err)
 	}
 
 	// A discarded count error reported total=0 while rows were returned, which
@@ -199,7 +195,7 @@ func (h *Handlers) HandleListRecords(c fiber.Ctx) error {
 		total, hasMore = -1, filters.Limit > 0 && len(records) >= filters.Limit
 	}
 
-	return c.JSON(PaginatedResponse{
+	return respondList(c, PaginatedResponse{
 		ProjectUUID: projectUUID,
 		Data:        records,
 		Total:       total,
@@ -212,18 +208,12 @@ func (h *Handlers) HandleListRecords(c fiber.Ctx) error {
 // HandleDeleteRecord handles DELETE /api/http-records/:uuid — deletes a single HTTP record by UUID.
 func (h *Handlers) HandleDeleteRecord(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	uuid := c.Params("uuid")
 	if uuid == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	// Verify the record exists and belongs to the request's project. Only the
@@ -231,28 +221,16 @@ func (h *Handlers) HandleDeleteRecord(c fiber.Ctx) error {
 	recProject, err := h.repo.RecordProjectUUID(c.Context(), uuid)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrRecordNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrRecordNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve record: %w", err))
 	}
 	if !inRequestProject(c, recProject) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrRecordNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrRecordNotFound)
 	}
 
 	if err := h.repo.DeleteRecord(c.Context(), uuid); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to delete record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to delete record: %w", err))
 	}
 
 	return c.JSON(fiber.Map{
@@ -264,30 +242,24 @@ func (h *Handlers) HandleDeleteRecord(c fiber.Ctx) error {
 // HandleGetRecord handles GET /api/http-records/:uuid — returns a single HTTP record with full blob fields.
 func (h *Handlers) HandleGetRecord(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	uuid := c.Params("uuid")
 	if uuid == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 	if burpbridge.IsBridgeUUID(uuid) {
 		if h.config.BurpBridgeURL == "" {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: ErrRecordNotFound.Error()})
+			return respondError(c, fiber.StatusNotFound, ErrRecordNotFound)
 		}
 		client, err := burpbridge.New(h.config.BurpBridgeURL)
 		if err != nil {
-			return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: err.Error()})
+			return respondError(c, fiber.StatusBadGateway, err)
 		}
 		record, err := client.Inspect(c.Context(), uuid, getProjectUUID(c))
 		if err != nil {
-			return c.Status(fiber.StatusBadGateway).JSON(ErrorResponse{Error: err.Error()})
+			return respondError(c, fiber.StatusBadGateway, err)
 		}
 		return c.JSON(record)
 	}
@@ -295,21 +267,12 @@ func (h *Handlers) HandleGetRecord(c fiber.Ctx) error {
 	record, err := h.repo.GetRecordByUUID(c.Context(), uuid)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrRecordNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrRecordNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve record: %w", err))
 	}
 	if !inRequestProject(c, record.ProjectUUID) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrRecordNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrRecordNotFound)
 	}
 
 	return c.JSON(record)

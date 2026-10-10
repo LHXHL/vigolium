@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
@@ -15,7 +17,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
-	"github.com/vigolium/vigolium/pkg/piolium"
 	"github.com/vigolium/vigolium/pkg/spitolas"
 	"github.com/vigolium/vigolium/pkg/storage"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -46,6 +47,10 @@ var (
 	swarmShowPrompt          bool
 	swarmSourceAnalysisOnly  bool
 	swarmMaxDuration         time.Duration
+	swarmMaxCommands         int
+	swarmTokenBudget         int64
+	swarmMaxCostUSD          float64
+	swarmPreflight           agentPreflightFlags
 	swarmProfile             string
 	swarmOnlyPhase           string
 	swarmSkipPhases          []string
@@ -70,6 +75,7 @@ var (
 	swarmAuthHeaders         []string
 	swarmLoginCurl           string
 	swarmAuthConfigPath      string
+	swarmAuthFiles           []string
 	swarmCredentials         string
 	swarmCredentialSets      []agent.IntentCredentialSet
 	swarmBrowserAuthRequired bool
@@ -194,12 +200,15 @@ func init() {
 	f.StringArrayVar(&swarmAuthCookies, "cookie", nil, "Session cookie name=value pair (repeatable; e.g. --cookie 'session=abc123'). Injected into recon, discovery, and scan as Cookie: header. Commas are literal.")
 	f.StringArrayVarP(&swarmAuthHeaders, "header", "H", nil, "Inject HTTP header into recon, discovery, and scan (repeatable; e.g. -H 'Authorization: Bearer xxx'). Commas are literal.")
 	f.StringVar(&swarmLoginCurl, "login-curl", "", "Curl command for login flow; replayed by the auth runtime to capture a fresh session. Cookies/headers from a successful response are reused for the scan.")
-	f.StringVar(&swarmAuthConfigPath, "auth-config", "", "Path to an existing auth-config.yaml. Skips both browser auth and --cookie/--header/--login-curl synthesis.")
+	f.StringVar(&swarmAuthConfigPath, "auth-config", "", "Path to an existing agent-format auth-config.yaml (a native session file is detected and loaded as --auth-file). Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-file.")
+	f.StringArrayVar(&swarmAuthFiles, "auth-file", nil, authFileFlagUsage+" Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-config.")
+	addFlagAliases(agentSwarmCmd, authFileAliases)
 
-	// Background vigolium-audit
-	f.StringVar(&swarmAudit, "audit", "", "Run background vigolium-audit for parallel security auditing: 'lite' (3-phase, default), 'balanced' (9-phase), or 'deep' (12-phase). Requires --source")
+	// Nested audit harness: off unless asked for. Each one launches a separate
+	// coding-agent CLI (vigolium-audit drives claude/codex, piolium drives pi).
+	f.StringVar(&swarmAudit, "audit", "off", "Nested vigolium-audit harness run alongside the swarm (launches a claude/codex CLI; needs --source): lite (3-phase, bare --audit), balanced (9-phase), deep (12-phase), or off. Default off: the intensity preset never turns it on")
 	agentSwarmCmd.Flag("audit").NoOptDefVal = "lite" // bare --audit defaults to lite
-	f.StringVar(&swarmPiolium, "piolium", "", "Run background piolium audit (Pi runtime): lite, balanced, deep, longshot, etc. Requires --source. Empty triggers auto-pick when --audit is also empty (piolium when pi is installed, else nothing)")
+	f.StringVar(&swarmPiolium, "piolium", "", "Nested piolium audit harness (Pi runtime; launches a pi CLI; needs --source): lite, balanced, deep, longshot, etc. Default empty = off; an installed pi is never picked automatically")
 	agentSwarmCmd.Flag("piolium").NoOptDefVal = "lite"
 
 	// Diff context
@@ -215,9 +224,19 @@ func init() {
 	f.BoolVar(&swarmUploadResults, "upload-results", false, "Upload scan results to cloud storage after completion (requires storage config)")
 	f.BoolVar(&swarmDisableGuardrail, "disable-guardrail", false, "Skip the prompt-safety classifier on the natural-language prompt (use only when refusing a known-good prompt)")
 	f.BoolVarP(&swarmVerbose, "verbose", "v", false, "Show a per-tool head/tail preview of each tool result alongside the standard one-liner")
+
+	// Run budgets, charged after every agent call of the run. Hitting one
+	// stops the swarm: status budget_exhausted, exit 5.
+	f.IntVar(&swarmMaxCommands, "max-commands", 0, "Tool-call budget across every agent call of the run (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	f.Int64Var(&swarmTokenBudget, "token-budget", 0, "Cap on the run's cumulative input+output tokens across every agent call (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	f.Float64Var(&swarmMaxCostUSD, "max-cost-usd", 0, "Cap on the run's estimated spend in USD across every agent call (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5")
+	registerAgentPreflightFlags(agentSwarmCmd, &swarmPreflight)
 }
 
 func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
+	// The bash tool's children run against this process's binary, database,
+	// project and config (agent_child_env.go).
+	installAgentChildEnv()
 	defer syncLogger()
 	defer closeDatabaseOnExit()
 
@@ -252,12 +271,12 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	}
 
 	// Validate: at least one input source (stdin is checked later in buildSwarmInputs)
-	if swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && swarmSource == "" && len(swarmPlanInputs) == 0 && !stdinIsPiped() {
-		return fmt.Errorf("at least one input is required: --target, --input, --record-uuid, --all-records, --records-from, --source, --plan-file, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent swarm \"scan source at ~/src/app on localhost:3005\"")
+	if swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && swarmSource == "" && len(swarmPlanInputs) == 0 && !fileutil.HasStdin() {
+		return usageErrorf("at least one input is required: --target, --input, --record-uuid, --all-records, --records-from, --source, --plan-file, or pipe via stdin\n\nOr use a natural language prompt:\n  vigolium agent swarm \"scan source at ~/src/app on localhost:3005\"")
 	}
 
 	// Source-only mode: --source without any target/input is allowed but skips dynamic testing
-	sourceOnly := swarmSource != "" && swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && len(swarmPlanInputs) == 0 && !stdinIsPiped()
+	sourceOnly := swarmSource != "" && swarmTarget == "" && swarmInput == "" && len(swarmRecordUUIDs) == 0 && !swarmAllRecords && swarmRecordsFrom == "" && len(swarmPlanInputs) == 0 && !fileutil.HasStdin()
 	if sourceOnly {
 		fmt.Fprintf(os.Stderr, "%s No --target specified. Dynamic testing (discovery, scanning, triage) will be skipped.\n",
 			terminal.WarningSymbol())
@@ -271,7 +290,10 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 
 	// --source-analysis-only requires --source
 	if swarmSourceAnalysisOnly && swarmSource == "" {
-		return fmt.Errorf("--source-analysis-only requires --source")
+		return usageErrorf("--source-analysis-only requires --source")
+	}
+	if len(swarmAuthFiles) > 0 && swarmAuthConfigPath != "" {
+		return usageErrorf("--auth-file and --auth-config are mutually exclusive (--auth-file takes native session files, --auth-config an agent auth-config)")
 	}
 
 	// Resolve intensity preset — apply before other flag processing
@@ -281,11 +303,13 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	}
 	{
 		changed := map[string]bool{
-			"discover":          cmd.Flags().Changed("discover"),
-			"code-audit":        cmd.Flags().Changed("code-audit"),
-			"triage":            cmd.Flags().Changed("triage"),
-			"max-iterations":    cmd.Flags().Changed("max-iterations"),
-			"audit":             cmd.Flags().Changed("audit"),
+			"discover":       cmd.Flags().Changed("discover"),
+			"code-audit":     cmd.Flags().Changed("code-audit"),
+			"triage":         cmd.Flags().Changed("triage"),
+			"max-iterations": cmd.Flags().Changed("max-iterations"),
+			// The preset's audit mode is never applied: a nested agent CLI
+			// runs only when --audit/--piolium (or the prompt) asks for one.
+			"audit":             true,
 			"max-plan-records":  cmd.Flags().Changed("max-plan-records"),
 			"master-batch-size": cmd.Flags().Changed("master-batch-size"),
 			"batch-concurrency": cmd.Flags().Changed("batch-concurrency"),
@@ -319,23 +343,6 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		swarmProbeConcurrency = intensityResult.ProbeConcurrency
 		swarmBrowserAuth = intensityResult.Auth
 		swarmMaxDuration = intensityResult.SwarmDuration
-
-		// Same auto-pick rule as autopilot.
-		auditChanged := cmd.Flags().Changed("audit")
-		pioliumChanged := cmd.Flags().Changed("piolium")
-		switch {
-		case !auditChanged && !pioliumChanged && piolium.IsAvailable():
-			// Move whatever audit mode the intensity preset picked over to
-			// piolium; default to lite if audit was empty.
-			if swarmAudit != "" {
-				swarmPiolium = swarmAudit
-			} else {
-				swarmPiolium = "lite"
-			}
-			swarmAudit = ""
-		case pioliumChanged && !auditChanged:
-			swarmAudit = ""
-		}
 	}
 
 	// Enable code-audit by default when --source is provided (unless intensity already set it)
@@ -343,7 +350,8 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		swarmCodeAudit = true
 	}
 
-	settings, err := clicommon.LoadSettings(globalConfig)
+	// Global → project overlay; --scanning-profile is layered on below.
+	settings, err := loadProjectSettings(globalConfig)
 	if err != nil {
 		return err
 	}
@@ -354,6 +362,10 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	// Apply the shared olium provider overrides onto settings (the swarm pipeline
 	// reads settings.Agent.Olium directly), same as agent query/triage.
 	applyOliumOverrides(settings, &swarmOliumFlags)
+	swarmPreflight.apply(settings)
+	if err := validateAgentBudgets(swarmMaxCommands, swarmTokenBudget, swarmMaxCostUSD); err != nil {
+		return err
+	}
 
 	forceSwarmBrowserOn(settings)
 
@@ -480,14 +492,23 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	var generatedAuthConfig string
 	var reconExtraHeaders map[string]string
 
-	// Inline auth injection (--auth-config / --cookie / --header / --login-curl).
-	// Resolved before any phase so recon, discovery, and scan all see the
-	// session. When --auth-config is given, we use it verbatim; otherwise we
+	// Inline auth injection (--auth-file / --auth-config / --cookie / --header /
+	// --login-curl). Resolved before any phase so recon, discovery, and scan
+	// all see the session. --auth-file (native, validated like scan's) and
+	// --auth-config are used as given (resolveSwarmAuth); otherwise we
 	// synthesize an AgentSessionConfig from the inline flags.
+	authSrc, authErr := resolveSwarmAuth(settings, swarmAuthFiles, swarmAuthConfigPath, sessionDir)
+	if authErr != nil {
+		return authErr
+	}
 	switch {
-	case swarmAuthConfigPath != "":
-		generatedAuthConfig = swarmAuthConfigPath
-		zap.L().Info("Using operator-supplied auth-config", zap.String("path", generatedAuthConfig))
+	case authSrc != nil:
+		generatedAuthConfig = authSrc.Path
+		reconExtraHeaders = agent.ExtraHeadersFromAuth(authSrc.Config)
+		if swarmBrowserAuth {
+			zap.L().Info("Disabling --browser-auth because --auth-file/--auth-config was provided")
+			swarmBrowserAuth = false
+		}
 	case len(swarmAuthCookies) > 0 || len(swarmAuthHeaders) > 0 || swarmLoginCurl != "":
 		cfg, synthErr := agent.SynthesizeAuthConfig(swarmAuthCookies, swarmAuthHeaders, swarmLoginCurl)
 		if synthErr != nil {
@@ -576,18 +597,18 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		ProbeTimeout:       swarmProbeTimeout,
 		MaxProbeBodySize:   swarmMaxProbeBody,
 		ReconExtraHeaders:  reconExtraHeaders,
+		MaxCommands:        swarmMaxCommands,
+		TokenBudget:        swarmTokenBudget,
+		MaxCostUSD:         swarmMaxCostUSD,
+		SkipPreflight:      swarmPreflight.skip || swarmDryRun,
 	}
 
-	// Wire audit harness. Swarm is opt-in: empty/"off" audit means no
-	// audit unless --piolium opted in (or auto-pick moved a mode over).
-	swarmNoAudit := swarmAudit == "" || swarmAudit == "off"
-	swarmAuditDriverMode := swarmAudit
-	if swarmNoAudit {
-		swarmAuditDriverMode = ""
-	}
-	if auditCfg, harness := agent.PickAuditHarness(swarmPiolium, swarmAuditDriverMode, swarmNoAudit, swarmSource, settings.Agent.Audit); auditCfg != nil {
+	// Wire the nested audit harness: only an explicit --audit/--piolium (or a
+	// prompt that asks for one) launches it.
+	auditCfg, auditHarness, auditHarnessDoc := resolveSwarmAuditHarness(swarmAudit, swarmPiolium, swarmSource, settings.Agent.Audit)
+	if auditCfg != nil {
 		cfg.Audit = auditCfg
-		cfg.AuditHarness = harness
+		cfg.AuditHarness = auditHarness
 	}
 
 	// --start-from: build a synthetic checkpoint with all prior phases marked completed
@@ -602,7 +623,7 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		}
 	}
 
-	// Only stream raw agent output to stdout in verbose/debug mode.
+	// Only stream raw agent output in verbose/debug mode.
 	// In normal mode, phase progress lines (❯ phase │ ...) and output file
 	// paths are printed instead — the full LLM response is saved to the
 	// session directory.
@@ -804,26 +825,103 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	}
 
 	// Run swarm
+	startedAt := time.Now()
 	swarmRunner := agent.NewSwarmRunner(engine, repo)
-	result, err := swarmRunner.Run(ctx, cfg)
-	if err != nil {
+	result, runErr := swarmRunner.Run(ctx, cfg)
+
+	// A preflight failure is reported as itself (provider_missing /
+	// preflight_failed in the error envelope): nothing ran, so there is no run
+	// to describe.
+	var preflightErr *agent.PreflightError
+	if errors.As(runErr, &preflightErr) {
 		webhook.FireAgenticScan(settings, repo, swarmAgenticScanUUID)
-		return fmt.Errorf("agent swarm failed: %w", err)
+		return runErr
+	}
+
+	end := swarmRunEnd(ctx, runErr, result)
+	outcome := &agentRunOutcome{
+		Command:         "agent swarm",
+		Mode:            "swarm",
+		AgenticScanUUID: swarmAgenticScanUUID,
+		ProjectUUID:     projectUUID,
+		SessionDir:      sessionDir,
+		Provider:        settings.Agent.Olium.DisplayProvider(),
+		Model:           settings.Agent.Olium.Model,
+		Repo:            repo,
+		End:             end,
+		StartedAt:       startedAt,
+		Budget: agentRunBudget{
+			MaxCommands:   swarmMaxCommands,
+			TokenBudget:   swarmTokenBudget,
+			MaxCostUSD:    swarmMaxCostUSD,
+			MaxDurationMS: swarmMaxDuration.Milliseconds(),
+			Exhausted:     end.BudgetExhausted || end.TimedOut,
+		},
+		AuditHarness: auditHarnessDoc,
+	}
+	if sdErr != nil {
+		outcome.addError(fmt.Errorf("create session dir: %w", sdErr))
+	}
+	if result != nil {
+		outcome.FindingCount = int64(result.TotalFindings)
+		outcome.Budget.Stop = result.BudgetStop
+		if end.TimedOut && outcome.Budget.Stop == "" {
+			outcome.Budget.Stop = agent.BudgetStopWallTime
+		}
+		outcome.Warnings = append(outcome.Warnings, result.Warnings...)
+		_, cost := engine.RunBudgetUsage()
+		outcome.Usage = agentRunUsage{
+			InputTokens:  int64(result.TokenUsage.InputTokens),
+			OutputTokens: int64(result.TokenUsage.OutputTokens),
+			CostUSD:      cost,
+		}
+	}
+	if end.Err != nil {
+		outcome.addError(fmt.Errorf("agent swarm failed: %w", end.Err))
 	}
 
 	if globalJSON {
-		emitAgentScanJSONSummary(repo, projectUUID, swarmAgenticScanUUID, "completed", sessionDir)
-	} else {
+		if docErr := emitAgentRunDocument(outcome); docErr != nil && end.Err == nil {
+			return docErr
+		}
+	} else if result != nil && end.Err == nil {
 		printSwarmResult(result)
 	}
 
-	if swarmUploadResults {
+	if swarmUploadResults && end.Err == nil {
 		uploadAgenticScanResults(settings, projectUUID, swarmAgenticScanUUID, sessionDir, repo)
 	}
 
 	webhook.FireAgenticScan(settings, repo, swarmAgenticScanUUID)
 
-	return nil
+	if end.Err != nil {
+		return fmt.Errorf("agent swarm failed: %w", end.Err)
+	}
+	_, jsonStatus := agentRunStatus(end)
+	return agentRunExitError(jsonStatus, swarmAgenticScanUUID, outcome.Budget.Stop)
+}
+
+// swarmRunEnd classifies a finished swarm. A --max-duration deadline or a
+// run budget is a designed stop: the swarm's phases had produced their work up
+// to it, so it is reported (exit 5) rather than treated as a failure.
+func swarmRunEnd(ctx context.Context, runErr error, result *agent.SwarmResult) database.AgenticRunEnd {
+	end := database.AgenticRunEnd{}
+	if result != nil {
+		end.Degraded = result.Degraded
+		end.BudgetExhausted = result.BudgetStop != ""
+		end.TimedOut = result.TimedOut
+	}
+	if runErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		end.TimedOut = true
+	}
+	if end.TimedOut {
+		end.BudgetExhausted = false
+	}
+	if runErr != nil && !end.TimedOut && !end.BudgetExhausted {
+		end.Err = runErr
+		end.Cancelled = errors.Is(ctx.Err(), context.Canceled)
+	}
+	return end
 }
 
 func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUID string) ([]string, error) {
@@ -858,9 +956,11 @@ func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUI
 	if swarmAllRecords {
 		uuids, err := expandProjectRecordsFromQuery(ctx, repo, database.QueryFilters{ProjectUUID: projectUUID})
 		if err != nil {
+			//vigolium:not-usage database query failure
 			return nil, fmt.Errorf("--all-records: %w", err)
 		}
 		if len(uuids) == 0 {
+			//vigolium:not-usage project data state, not the command line
 			return nil, fmt.Errorf("--all-records: no HTTP records in project %s", projectUUID)
 		}
 		fmt.Fprintf(os.Stderr, "%s --all-records expanded to %d HTTP records from project\n",
@@ -871,13 +971,15 @@ func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUI
 	if swarmRecordsFrom != "" {
 		filters, err := parseRecordsFromSpec(swarmRecordsFrom, projectUUID)
 		if err != nil {
-			return nil, fmt.Errorf("--records-from: %w", err)
+			return nil, usageErrorf("--records-from: %w", err)
 		}
 		uuids, err := expandProjectRecordsFromQuery(ctx, repo, filters)
 		if err != nil {
+			//vigolium:not-usage database query failure
 			return nil, fmt.Errorf("--records-from: %w", err)
 		}
 		if len(uuids) == 0 {
+			//vigolium:not-usage project data state, not the command line
 			return nil, fmt.Errorf("--records-from %q matched 0 records in project %s", swarmRecordsFrom, projectUUID)
 		}
 		fmt.Fprintf(os.Stderr, "%s --records-from %q matched %d HTTP records\n",
@@ -887,7 +989,11 @@ func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUI
 
 	// Auto-detect stdin when no explicit input is provided
 	if len(inputs) == 0 {
-		if data, ok := readStdinIfPiped(); ok {
+		data, ok, err := readStdinIfPiped()
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			inputs = append(inputs, data)
 		}
 	}
@@ -1149,7 +1255,7 @@ func buildSyntheticCheckpoint(startFrom string) (*agent.SwarmCheckpoint, error) 
 	}
 
 	if !found {
-		return nil, fmt.Errorf("unknown --start-from phase %q; valid phases: %s",
+		return nil, usageErrorf("unknown --start-from phase %q; valid phases: %s",
 			startFrom, strings.Join(allPhases, ", "))
 	}
 	if len(completed) == 0 {
@@ -1256,6 +1362,21 @@ func forceSwarmBrowserOn(settings *config.Settings) {
 	settings.Agent.Browser.Enable = &enabled
 }
 
+// resolveSwarmAuditHarness picks the nested audit harness for a swarm run from
+// the resolved --audit / --piolium modes. Nothing runs unless one of them names
+// a mode (and --source is set): an installed pi is never picked automatically
+// and the intensity preset never turns one on. Piolium wins when both are set.
+// The third result is the run document's audit_harness echo.
+func resolveSwarmAuditHarness(auditMode, pioliumMode, source string, settingsAudit config.AuditAgentConfig) (*config.AuditAgentConfig, agent.HarnessSpec, *agentAuditHarness) {
+	noAudit := auditMode == "" || auditMode == "off"
+	auditDriverMode := auditMode
+	if noAudit {
+		auditDriverMode = ""
+	}
+	cfg, harness := agent.PickAuditHarness(pioliumMode, auditDriverMode, noAudit, source, settingsAudit)
+	return cfg, harness, newAgentAuditHarness(auditMode, pioliumMode, cfg, harness)
+}
+
 // applyIntentToSwarmFlags populates swarm package-level flags from an AppIntent.
 func applyIntentToSwarmFlags(cmd *cobra.Command, app agent.AppIntent) {
 	swarmIntentApplied = true // NL path owns auth extraction; skip the explicit-path parse
@@ -1270,13 +1391,12 @@ func applyIntentToSwarmFlags(cmd *cobra.Command, app agent.AppIntent) {
 	if app.Instruction != "" && swarmInstruction == "" {
 		swarmInstruction = app.Instruction
 	}
-	if app.Piolium != "" && swarmPiolium == "" {
+	// A nested audit harness runs only when the prompt explicitly asks for one
+	// (the parser leaves both fields empty otherwise); explicit flags win.
+	if app.Piolium != "" && !cmd.Flags().Changed("piolium") {
 		swarmPiolium = app.Piolium
-		if app.Audit == "" && swarmAudit == "" {
-			swarmAudit = "off"
-		}
 	}
-	if app.Audit != "" && swarmAudit == "" {
+	if app.Audit != "" && !cmd.Flags().Changed("audit") {
 		swarmAudit = app.Audit
 	}
 	if app.Diff != "" && swarmDiff == "" {

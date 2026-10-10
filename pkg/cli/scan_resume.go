@@ -370,27 +370,5 @@ func resumeCommandLine(argv []string) string {
 	if !hasResume {
 		parts = append(parts, "--resume")
 	}
-	for i, p := range parts {
-		parts[i] = shellQuoteArg(p)
-	}
-	return strings.Join(parts, " ")
-}
-
-// shellQuoteArg single-quotes an argument when it contains characters a shell
-// would otherwise split or interpret, so the rendered resume command pastes back
-// intact. Plain tokens (the common case) are returned untouched.
-func shellQuoteArg(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if strings.IndexFunc(s, func(r rune) bool {
-		switch r {
-		case ' ', '\t', '\n', '"', '\'', '\\', '$', '`', '&', '|', ';', '(', ')', '<', '>', '*', '?', '[', ']', '{', '}', '#', '~':
-			return true
-		}
-		return false
-	}) < 0 {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return quoteArgv(parts)
 }

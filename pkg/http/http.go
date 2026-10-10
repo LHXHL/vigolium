@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,7 +22,8 @@ import (
 	"github.com/projectdiscovery/rawhttp"
 	"github.com/projectdiscovery/retryablehttp-go"
 	httpUtils "github.com/projectdiscovery/utils/http"
-	"github.com/vigolium/vigolium/pkg/core/hosterrors"
+	"github.com/vigolium/vigolium/pkg/authentication"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/core/network"
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/deparos/waf"
@@ -154,8 +156,74 @@ type Requester struct {
 	// It is the numerator of the machine event stream's phase.progress: a
 	// consumer watching a 15-minute crawl learns it is moving from this slope and
 	// nothing else. Incremented on the executeDirectly path only, so a clusterer
-	// cache hit — which sends nothing — correctly does not count.
+	// cache hit — which sends nothing — correctly does not count. Counts wire
+	// attempts: a retry and a followed redirect hop each add one.
 	sent *atomic.Int64
+	// gate admits every wire attempt (rate token, host slot, quarantine). It is
+	// the Services' gate (Services.EgressGate), shared by every clone.
+	gate *egress.Gate
+	// lane is the host-slot lane this requester's traffic uses. LaneNormal for
+	// scan traffic; WithLane(egress.LanePriority) for traffic the scan waits on.
+	lane egress.Lane
+	// retries is how many times a request that failed at the transport level is
+	// re-sent (--retries). Retries run in executeDirectly through the gate, not
+	// inside retryablehttp, so each one pays a token and none holds the host slot
+	// through its backoff.
+	retries int
+	// retryBackoff overrides egress.DefaultBackoff (tests).
+	retryBackoff func(attempt int) time.Duration
+	// live is the scan-time owner of the session credentials this requester
+	// sends (nil: none, or a session without a check block). A pointer, so
+	// WithContext / WithLane / WithAdditionalHeaders views share it, as they
+	// share carried. Its headers are applied after customHeaders, every
+	// response is fed back to it (Observe), and a request waits (Wait) while
+	// it re-logs in. CloneWithoutCredentials drops it: a credential-stripped
+	// view must never sample, or trigger a re-login from, its own 401s.
+	live *authentication.LiveSession
+	// offline, when non-nil, is returned by every Execute before anything is
+	// admitted or dialed, and counted in refused. See NewOfflineRequester.
+	offline error
+	refused *atomic.Int64
+}
+
+// WithLiveSession returns a shallow clone that sends live's credentials and
+// reports its responses to live (see Requester.live). A nil live returns a
+// clone without one.
+func (r *Requester) WithLiveSession(live *authentication.LiveSession) *Requester {
+	if r == nil {
+		return nil
+	}
+	clone := *r
+	clone.live = live
+	return &clone
+}
+
+// WithSessionCredentials is WithAdditionalHeaders for a live session: a view
+// that adds headers AND sends live's current credentials, in its own cookie
+// jar and response-cache partition even when headers is empty (every header
+// the session owns may have been pinned by an explicit -H). A nil live is
+// exactly WithAdditionalHeaders.
+func (r *Requester) WithSessionCredentials(headers []string, live *authentication.LiveSession) (*Requester, error) {
+	view, err := r.WithAdditionalHeaders(headers)
+	if err != nil || live == nil {
+		return view, err
+	}
+	if view == r {
+		if view, err = r.cloneSharingTransport(); err != nil {
+			return nil, err
+		}
+		view.clusterScope = primarySessionClusterScope
+	}
+	view.live = live
+	return view, nil
+}
+
+// LiveSession is the live session this requester sends, or nil.
+func (r *Requester) LiveSession() *authentication.LiveSession {
+	if r == nil {
+		return nil
+	}
+	return r.live
 }
 
 // edgePacer fingerprints the CDN/WAF edge fronting a host from ordinary (non-block)
@@ -546,7 +614,8 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	// least MaxPerHost keep-alive connections warm — otherwise every request past
 	// MaxIdleConnsPerHost closes its connection on return and the next one pays a
 	// fresh TCP+TLS handshake (~50-150ms). The old hardcoded 10 throttled reuse
-	// badly: MaxPerHost defaults to 50, so 40 of every 50 connections churned.
+	// badly: MaxPerHost defaults to types.DefaultMaxPerHost (40), so 30 of every
+	// 40 connections churned.
 	//
 	// Sized from the per-host limiter's CEILING, not MaxPerHost: the limiter can
 	// ramp a healthy host above MaxPerHost, and a pool sized to the starting value
@@ -644,9 +713,7 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 		return nil, errors.Wrap(err, "could not create cookiejar")
 	}
 
-	retryOpts := retryablehttp.DefaultOptionsSpraying
-	retryOpts.RetryMax = options.Retries
-	retryOpts.RetryWaitMax = 10 * time.Second
+	retryOpts := scanRetryOptions()
 	// MUST be carried over from options: NewWithHTTPClient hands these options to
 	// retryablehttp.NewClient, which overwrites the supplied http.Client's Timeout
 	// with its own whenever retryOpts.Timeout > 0. DefaultOptionsSpraying carries
@@ -674,21 +741,32 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	// Sharing the transport means connections are reused across both client variants.
 	sharedTransport := makeTransport()
 
+	// One gate for every clone of this requester (see Services.EgressGate), and
+	// the attempt counter, both needed by the redirect policy below.
+	gate := services.EgressGate()
+	sent := &atomic.Int64{}
+
 	// Client with redirects
-	client := retryablehttp.NewWithHTTPClient(&http.Client{
+	client := newScanRetryClient(&http.Client{
 		Transport:     sharedTransport,
 		Timeout:       timeout,
 		Jar:           jar,
-		CheckRedirect: makeRedirectFunc(redirectMode, maxRedir),
+		CheckRedirect: gateRedirects(makeRedirectFunc(redirectMode, maxRedir), gate, sent),
 	}, retryOpts)
 
 	// Client without redirects
-	clientNoRedir := retryablehttp.NewWithHTTPClient(&http.Client{
+	clientNoRedir := newScanRetryClient(&http.Client{
 		Transport:     sharedTransport,
 		Timeout:       timeout,
 		Jar:           jar,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}, retryOpts)
+
+	// retryablehttp's HTTP/2 fallback client is built from its own defaults and
+	// ignored --proxy; both retry clients share one replacement that does not.
+	h2Fallback := newHTTP2FallbackTransport(poolStats.countDials(dialer.Dial), tlsConfig, options.ProxyURL, respHeaderTimeout)
+	pinHTTP2Fallback(client, h2Fallback)
+	pinHTTP2Fallback(clientNoRedir, h2Fallback)
 
 	// Raw HTTP clients. rawhttp.DefaultOptions is a shared package-level
 	// *Options; copy it by value so per-requester tuning stays local. The old
@@ -724,7 +802,9 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 		respObserver:     &responseObserver{},
 		edgePacer:        &edgePacer{},
 		poolStats:        poolStats,
-		sent:             &atomic.Int64{},
+		sent:             sent,
+		gate:             gate,
+		retries:          max(options.Retries, 0),
 	}
 
 	// Keep the edge-pacer's once-per-host dedup in sync with the limiter's entry
@@ -833,6 +913,7 @@ func (r *Requester) CloneWithoutCredentials() (*Requester, error) {
 		return nil, err
 	}
 	view.customHeaders = stripCredentialHeaderMap(r.customHeaders)
+	view.live = nil
 	// A CONSTANT, not a per-clone id: modules call CloneWithoutCredentials inside
 	// ScanPerRequest, i.e. once per record, so a unique-per-clone scope would give
 	// every probe its own partition and silently switch clustering off for that
@@ -960,9 +1041,7 @@ func (r *Requester) cloneSharingTransport() (*Requester, error) {
 		return nil, errors.Wrap(err, "could not create cookiejar")
 	}
 
-	retryOpts := retryablehttp.DefaultOptionsSpraying
-	retryOpts.RetryMax = r.services.Options.Retries
-	retryOpts.RetryWaitMax = 10 * time.Second
+	retryOpts := scanRetryOptions()
 
 	clone := *r
 	clone.client = cloneRetryClientWithJar(r.client, jar, retryOpts)
@@ -982,7 +1061,13 @@ func cloneRetryClientWithJar(src *retryablehttp.Client, jar http.CookieJar, opts
 	// Timeout" above true. Done at this single seam rather than at each caller:
 	// this is the only function that can drop it, so it cannot be forgotten.
 	opts.Timeout = base.Timeout
-	return retryablehttp.NewWithHTTPClient(&base, opts)
+	clone := newScanRetryClient(&base, opts)
+	// NewWithHTTPClient builds a fresh HTTP/2 fallback client from retryablehttp's
+	// defaults; carry src's proxy-aware one across instead.
+	if src.HTTPClient2 != nil {
+		pinHTTP2Fallback(clone, src.HTTPClient2.Transport)
+	}
+	return clone
 }
 
 // stripCredentialHeaderMap returns a copy of the header map with credential-bearing
@@ -1035,6 +1120,10 @@ func (r *Requester) ExecuteContext(ctx context.Context, input *httpmsg.HttpReque
 	// joins a singleflight group it would only abandon again.
 	if r.abandoned() {
 		return nil, 0, ErrRequestAbandoned
+	}
+	if r.offline != nil {
+		r.refused.Add(1)
+		return nil, 0, r.offline
 	}
 	// Verbatim bytes bypass the parsed request entirely, so the cluster key --
 	// computed from that request -- no longer describes what goes on the wire.
@@ -1096,71 +1185,80 @@ func (r *Requester) Clusterer() *RequestClusterer {
 	return r.clusterer
 }
 
-// executeDirectly sends HTTP request with rate limiting and host error tracking.
-// ctx is propagated to the outgoing request for cancellation.
+// executeDirectly sends one logical request through the egress gate, retrying
+// transport failures. ctx is propagated to the outgoing request for cancellation.
+//
+// Each wire attempt is a separate gate admission (egress.Gate.Do): a rate token,
+// a host slot, the quarantine check and Admit, then the send, then the slot
+// back and the outcome to the breaker. The backoff before a retry is slept
+// WITHOUT the slot. Retries used to run inside retryablehttp, which took no
+// token for them and held the slot through every 1–10s backoff sleep.
+//
+// Only the standard client retries. A raw request (framing attacks, request-line
+// tricks) is exactly one round trip by design — the response must belong to the
+// bytes that were sent — so it never did, and does not now.
 func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 	host := ""
-	if input.Service() != nil {
-		host = input.Service().Host()
+	hostPort := ""
+	if svc := input.Service(); svc != nil && svc.Host() != "" {
+		host = svc.Host()
+		hostPort = net.JoinHostPort(host, strconv.Itoa(svc.Port()))
 	}
 
-	// Quarantined-host short-circuit BEFORE acquiring a limiter slot, so a
-	// request already known to be unresponsive doesn't consume scarce per-host
-	// concurrency only to be rejected immediately after.
-	if r.services.HostErrors != nil && r.services.HostErrors.Check(input.ID()) {
-		return nil, 0, hosterrors.ErrUnresponsiveHost
+	policy := egress.RetryPolicy{
+		Retryable:     retryableTransportError,
+		Backoff:       r.retryBackoff,
+		IgnoreTimeout: opts.IgnoreTimeoutTracking,
+	}
+	if !opts.RawRequest {
+		policy.MaxRetries = r.retries
 	}
 
-	// Global requests-per-second cap (only when --rate-limit was set). Acquire a
-	// rate token BEFORE holding a scarce per-host concurrency slot so a throttled
-	// request doesn't occupy a slot while it waits. Wait honors ctx, so scan
-	// shutdown / phase deadline unblocks it promptly.
-	if r.services.RateLimiter != nil {
-		if err := r.services.RateLimiter.Wait(ctx); err != nil {
-			return nil, 0, err
-		}
-	}
-
-	// Per-host rate limiting (concurrency control)
-	if r.services.HostLimiter != nil && host != "" {
-		// Context-aware acquire: a scan shutdown or phase deadline unblocks a
-		// waiting acquire promptly instead of stranding the goroutine until the
-		// limiter's own acquire timeout elapses.
-		if err := r.services.HostLimiter.AcquireWithTimeoutContext(ctx, host); err != nil {
-			// Acquire timeout/cancellation is our own saturation or shutdown, not
-			// host distress — don't feed it back to the adaptive controller.
-			return nil, 0, err
-		}
-		defer r.services.HostLimiter.Release(host)
-	}
-
-	// The clock starts HERE — after the global rate token and the per-host
-	// permit have been acquired, immediately before the send. Queue time is
-	// vigolium's own saturation, not the target's latency, and folding it in
-	// would make every reported duration a function of --rate-limit and
-	// --concurrency rather than of the host. The returned duration covers the
-	// full logical operation from that point: retries, redirect hops and body
-	// capture included.
-	start := time.Now()
-	// Counted before the send, not after a successful one: a request that timed
-	// out or was refused still hit the network, and a progress counter that only
-	// moves on success reads as a stalled scan against a host that is failing —
-	// the exact case a consumer most needs to see moving.
-	r.sent.Add(1)
-	resp, err := r.doRequest(ctx, input, opts)
-	if err != nil {
-		if r.services.HostErrors != nil {
-			r.services.HostErrors.MarkFailed(input.ID(), err, opts.IgnoreTimeoutTracking)
-		}
-		// Feed transport failures (timeout/reset/refused) to the adaptive limiter
-		// so it can back the host off; a no-op in static mode.
-		r.reportHostFeedback(host, 0, err, false)
+	// A session re-login in progress parks the request here, BEFORE the gate:
+	// a parked request must not hold the host slot the re-login needs.
+	if err := r.live.Wait(ctx); err != nil {
 		return nil, 0, err
 	}
 
-	if r.services.HostErrors != nil {
-		r.services.HostErrors.MarkSuccess(input.ID())
+	var (
+		resp    *httpUtils.ResponseChain
+		elapsed time.Duration
+		creds   *authentication.Credentials
+	)
+	attempts, err := r.gate.Do(ctx, hostPort, r.lane, policy, func(int) error {
+		// The clock starts HERE — after the rate token and the host slot, right
+		// before the send. Queue time is vigolium's own saturation, not the
+		// target's latency. It covers this attempt only (redirect hops and body
+		// capture included): an earlier failed attempt and its backoff say
+		// nothing about how fast the host answered the request that succeeded.
+		start := time.Now()
+		// Counted before the send, not after a successful one: a request that
+		// timed out or was refused still hit the network, and a progress counter
+		// that only moves on success reads as a stalled scan against a failing
+		// host — the exact case a consumer most needs to see moving.
+		r.sent.Add(1)
+		// Read per attempt, so a retry after a re-login sends the new
+		// credentials and its response is attributed to their generation.
+		creds = r.live.Credentials()
+		var sendErr error
+		resp, sendErr = r.doRequest(ctx, input, opts, creds)
+		elapsed = time.Since(start)
+		if sendErr != nil {
+			// Feed transport failures (timeout/reset/refused) to the adaptive
+			// limiter so it can back the host off; a no-op in static mode.
+			r.reportHostFeedback(host, 0, sendErr, false)
+		}
+		return sendErr
+	})
+	if err != nil {
+		if attempts > 1 && ctx.Err() == nil {
+			// The message retryablehttp used to give a retried failure, so logs
+			// and transport-error classification read the same as before.
+			err = fmt.Errorf("%s giving up after %d attempts: %w", requestLabel(input), attempts, err)
+		}
+		return nil, 0, err
 	}
+
 	// Classify a WAF/CDN block once (cheap status pre-gate; only reads the body on a
 	// block-status response) and feed that single result to both consumers: the
 	// adaptive limiter (arms/backs-off WAF-auto-arm throttling) and the once-per-host
@@ -1174,6 +1272,15 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 	// through this shared requester (heuristics/discovery hit each host before the
 	// active phase), so the pre-arm lands ahead of the active-module fan-out.
 	r.maybePaceEdge(host, resp, block != nil)
+	// Feed the session's logged-out detector. Status and Location are O(1);
+	// the body is only read on the sampled responses (inside Observe).
+	if r.live != nil && creds != nil {
+		var hdr http.Header
+		if hr := resp.Response(); hr != nil {
+			hdr = hr.Header
+		}
+		r.live.Observe(creds.Gen, status, hdr, resp.BodyBytes())
+	}
 	// Forward server errors to the corroboration observer. Gate on 5xx here (not
 	// just inside report) so the URL string is materialized only for server errors,
 	// never on the 2xx/3xx/4xx hot path. No-op without an installed sink.
@@ -1184,7 +1291,121 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 		}
 		r.respObserver.report(host, urlStr, input.Request().Raw(), resp, status)
 	}
-	return resp, time.Since(start), nil
+	return resp, elapsed, nil
+}
+
+// requestLabel is "METHOD url" for error messages.
+func requestLabel(input *httpmsg.HttpRequestResponse) string {
+	method := ""
+	if req := input.Request(); req != nil {
+		method = req.Method()
+	}
+	if u, err := input.URL(); err == nil && u != nil {
+		return strings.TrimSpace(method + " " + u.String())
+	}
+	return method
+}
+
+// retryableTransportError is the retry decision retryablehttp made before
+// retries moved into executeDirectly (CheckRecoverableErrors): any transport
+// error (a client timeout included), except on a cancelled ctx, a redirect-limit or bad-scheme error, an
+// untrusted certificate, or a permanent network error. A gate refusal
+// (quarantine, slot timeout) never reaches it: Do stops on those itself.
+func retryableTransportError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	// CheckRecoverableErrors type-asserts *url.Error directly, so hand it the
+	// url.Error inside whatever wrapping doRequest added.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr
+	}
+	ok, _ := retryablehttp.CheckRecoverableErrors(ctx, nil, err)
+	return ok
+}
+
+// scanRetryOptions are the retryablehttp options every scan client uses. Its
+// own retry loop is OFF (RetryMax 0): executeDirectly retries through the
+// egress gate instead. The returned options still need Timeout set.
+func scanRetryOptions() retryablehttp.Options {
+	opts := retryablehttp.DefaultOptionsSpraying
+	opts.RetryMax = 0
+	opts.RetryWaitMax = 10 * time.Second
+	return opts
+}
+
+// newScanRetryClient wraps hc in a retryablehttp client with opts, and makes a
+// failed attempt return its own error rather than retryablehttp's "giving up
+// after 1 attempts" wrapper, which with retries off described nothing and hid
+// the *url.Error from the retry decision.
+func newScanRetryClient(hc *http.Client, opts retryablehttp.Options) *retryablehttp.Client {
+	c := retryablehttp.NewWithHTTPClient(hc, opts)
+	c.ErrorHandler = retryablehttp.PassthroughErrorHandler
+	return c
+}
+
+// gateRedirects wraps a redirect policy so every hop it follows takes a rate
+// token and counts as a wire attempt. The original request's host slot is held
+// through the hops (usually the same host; a cross-host hop holding the first
+// host's slot is accepted). A hop the policy refuses costs nothing.
+func gateRedirects(policy func(*http.Request, []*http.Request) error, gate *egress.Gate, sent *atomic.Int64) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if err := policy(req, via); err != nil {
+			return err
+		}
+		if err := gate.Token(req.Context()); err != nil {
+			return err
+		}
+		sent.Add(1)
+		return nil
+	}
+}
+
+// WithLane returns a shallow clone whose traffic uses lane's host slots. A
+// login, re-login or reachability preflight runs on egress.LanePriority so it
+// never queues behind the module requests that are waiting for it.
+func (r *Requester) WithLane(lane egress.Lane) *Requester {
+	if r == nil || r.lane == lane {
+		return r
+	}
+	clone := *r
+	clone.lane = lane
+	return &clone
+}
+
+// Gate returns the egress gate this requester sends through (nil-safe: a nil
+// requester returns a nil gate, which admits everything).
+func (r *Requester) Gate() *egress.Gate {
+	if r == nil {
+		return nil
+	}
+	return r.gate
+}
+
+// AcquireDial admits one connection a module opens itself (a TLS handshake for
+// certificate or cipher probing) through the scan's egress gate: a rate token,
+// a host slot, the quarantine check, one counted attempt. Call the returned
+// release when the connection is closed. The outcome is not reported to the
+// breaker: a probe that offers a cipher the server refuses says nothing about
+// whether the host is alive.
+//
+// It waits on the requester's task context (WithContext), so a module timeout
+// or scan shutdown unblocks it. Nil-safe: on a nil requester it admits
+// immediately.
+func (r *Requester) AcquireDial(host string, port int) (func(), error) {
+	if r == nil || r.gate == nil {
+		return func() {}, nil
+	}
+	ctx := r.defaultCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := r.gate.AcquireHost(ctx, host, port, r.lane)
+	if err != nil {
+		return nil, err
+	}
+	return func() { release(egress.Outcome{Neutral: true}) }, nil
 }
 
 // classifyWAFBlock returns the WAF/CDN block classification for resp, or nil if it is
@@ -1290,7 +1511,7 @@ var defaultHeaderTemplate = func() http.Header {
 	return h
 }()
 
-func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, error) {
+func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options, creds *authentication.Credentials) (*httpUtils.ResponseChain, error) {
 	start := time.Now()
 
 	// Attach connection-pool tracing so scan diagnostics can surface reuse ratio /
@@ -1342,6 +1563,15 @@ func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestRes
 	// Apply custom headers (after defaults to allow override)
 	for name, value := range r.customHeaders {
 		req.Header.Set(name, value)
+	}
+	// The live session's current credentials win over the copies frozen into
+	// customHeaders at setup. They never include a header the operator set
+	// explicitly with -H (the LiveSession was built with those names pinned),
+	// so an explicit -H still wins.
+	if creds != nil {
+		for name, value := range creds.Headers {
+			req.Header.Set(name, value)
+		}
 	}
 
 	if r.services.Options.Debug {

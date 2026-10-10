@@ -100,8 +100,27 @@ const (
 	ReasonInputIncomplete      = "input_incomplete"       // the executor stopped before its source was exhausted
 	ReasonAuthUnavailable      = "auth_unavailable"       // configured authentication could not be applied
 	ReasonLoginBudget          = "login_budget"           // the total login budget elapsed before every session hydrated
+	ReasonTargetsOutOfScope    = "targets_out_of_scope"   // one or more CLI targets were rejected by scope
+	ReasonTargetsUnreachable   = "targets_unreachable"    // one or more admitted targets got no HTTP answer
+	ReasonOASTUnavailable      = "oast_unavailable"       // OAST registration failed; out-of-band checks did not run (non-stopping)
+	ReasonRequestBudget        = "request_budget"         // the scan-wide request budget (--max-requests) ran out
+	ReasonAuthLost             = "auth_lost"              // the session expired mid-scan and re-login did not restore it
+	ReasonPhaseError           = "phase_error"            // a phase failed and the scan carried on without it
+	ReasonExtensionsAllFailed  = "extensions_all_failed"  // every requested extension failed to load or run
+	ReasonAbandoned            = "abandoned"              // the scan's process died without finalizing; set by `log ls --reap`
 
-	LimitTargetBudget = "target_budget" // informational: a target used its whole budget
+	// Stop reasons: the scan did nothing useful and ends with exit 1.
+	ReasonNoTargetsInScope   = "no_targets_in_scope"  // scope admitted zero targets
+	ReasonNoTargetsReachable = "no_targets_reachable" // zero admitted targets answered
+
+	LimitTargetBudget            = "target_budget"              // informational: a target used its whole budget
+	LimitHostRequestBudget       = "host_request_budget"        // a host used its whole request budget
+	LimitJSRequestCap            = "js_request_cap"             // JS analysis hit its per-target request cap
+	LimitJSInputOverHardLimit    = "js_input_over_hard_limit"   // a JS file exceeded the hard size limit and was not parsed
+	LimitJSTemplatePersistCap    = "js_template_persist_cap"    // JS-derived request templates hit the persist cap
+	LimitCDXMaxRows              = "cdx_max_rows"               // an archive (CDX) query hit its row cap
+	LimitSitemapCap              = "sitemap_cap"                // sitemap expansion hit its URL cap
+	LimitResponsesWhileLoggedOut = "responses_while_logged_out" // responses observed while the session was logged out
 )
 
 // OutcomeCodes lists every reason and limit code exactly once. It exists so a
@@ -125,7 +144,24 @@ var OutcomeCodes = []string{
 	ReasonInputIncomplete,
 	ReasonAuthUnavailable,
 	ReasonLoginBudget,
+	ReasonTargetsOutOfScope,
+	ReasonTargetsUnreachable,
+	ReasonOASTUnavailable,
+	ReasonRequestBudget,
+	ReasonAuthLost,
+	ReasonPhaseError,
+	ReasonExtensionsAllFailed,
+	ReasonAbandoned,
+	ReasonNoTargetsInScope,
+	ReasonNoTargetsReachable,
 	LimitTargetBudget,
+	LimitHostRequestBudget,
+	LimitJSRequestCap,
+	LimitJSInputOverHardLimit,
+	LimitJSTemplatePersistCap,
+	LimitCDXMaxRows,
+	LimitSitemapCap,
+	LimitResponsesWhileLoggedOut,
 }
 
 // ResolvePhaseState turns the three things a phase tracker observes into a state.
@@ -164,6 +200,16 @@ type PhaseOutcome struct {
 	Unprocessed int64               `json:"unprocessed,omitempty"`
 	DurationMS  int64               `json:"duration_ms"`
 	Persistence *PersistenceOutcome `json:"persistence,omitempty"`
+	// Targets is the CLI-target tally (scope admission, reachability); set only
+	// on the "preflight" pseudo-phase. See TargetTally.
+	Targets *TargetTally `json:"targets,omitempty"`
+	// Counts are phase-specific tallies keyed by a stable snake_case name (the
+	// harvest-probe step reports hosts_dead, kept, dropped_not_found, …). Only
+	// phases whose result is a set of numbers rather than records set it.
+	Counts map[string]int64 `json:"counts,omitempty"`
+	// BudgetExhaustedHosts are the hosts whose --max-requests-per-host ran out
+	// during the phase, sorted; set alongside the host_request_budget limit.
+	BudgetExhaustedHosts []string `json:"budget_exhausted_hosts,omitempty"`
 }
 
 // BenignSkip reports whether this phase was skipped for having nothing to do,
@@ -234,6 +280,19 @@ func (o *PhaseOutcome) Merge(b PhaseOutcome) {
 	default:
 		o.Persistence.Merge(*b.Persistence)
 	}
+	if b.Targets != nil {
+		if o.Targets == nil {
+			o.Targets = &TargetTally{}
+		}
+		o.Targets.Merge(*b.Targets)
+	}
+	for name, n := range b.Counts {
+		if o.Counts == nil {
+			o.Counts = make(map[string]int64, len(b.Counts))
+		}
+		o.Counts[name] += n
+	}
+	o.BudgetExhaustedHosts = mergeCodes(o.BudgetExhaustedHosts, b.BudgetExhaustedHosts)
 }
 
 // mergeCodes unions two code lists into one sorted, deduplicated list.

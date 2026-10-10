@@ -41,6 +41,13 @@ func New() *Module {
 	return m
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any cmdi module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassCmdi }
+
+// ClassPriority orders this module within its vuln class (lower runs first).
+func (m *Module) ClassPriority() int { return modkit.ClassCostInBand }
+
 // ScanPerRequest tests every insertion point for results-based command injection.
 func (m *Module) ScanPerRequest(
 	ctx *httpmsg.HttpRequestResponse,
@@ -75,6 +82,10 @@ func (m *Module) ScanPerRequest(
 
 ipScan:
 	for _, ip := range points {
+		// Another module of this vuln class already reported this param here.
+		if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
+			continue
+		}
 		baseValue := ip.BaseValue()
 
 		// Fetch the clean, unpayloaded response once per insertion point. Its body

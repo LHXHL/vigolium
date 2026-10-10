@@ -48,6 +48,11 @@ const (
 
 // ResultEvent is a wrapped result event for a single scan output.
 // The format is designed to be compatible with Nuclei's JSONL output.
+//
+// Its JSON tags (template-id, matched-at, info{}) are an IMPORT and LEGACY
+// format: `finding load` accepts them, and --ci-output-format still prints them
+// this release. No -j document carries them — a machine reads findings in the
+// finding-view shape (pkg/cli findingViewFromEvent / compactFindingView).
 type ResultEvent struct {
 	// Module identification (JSON tag kept as "template-id" for Nuclei output compatibility)
 	ModuleID string `json:"template-id"`
@@ -88,6 +93,17 @@ type ResultEvent struct {
 	// Fuzzing fields (kept for compatibility with fuzzing results)
 	IsFuzzingResult  bool   `json:"is_fuzzing_result,omitempty"`
 	FuzzingParameter string `json:"fuzzing_parameter,omitempty"`
+
+	// Replay context, set by the executor so `finding verify` can re-run the
+	// module exactly: OriginRecordUUID is the http_record of the item the
+	// module scanned (empty when the run stores nothing), InsertionPointType
+	// names the point it mutated (an httpmsg.InsertionPointType.String() value;
+	// the point's name is FuzzingParameter), and Payload is the value it
+	// injected there. Persisted as findings.origin_record_uuid,
+	// insertion_point and payload.
+	OriginRecordUUID   string `json:"origin_record_uuid,omitempty"`
+	InsertionPointType string `json:"insertion_point_type,omitempty"`
+	Payload            string `json:"payload,omitempty"`
 
 	// Error field for error reporting
 	Error string `json:"error,omitempty"`
@@ -303,7 +319,15 @@ func NewStandardWriter(options *types.Options) (*StandardWriter, error) {
 	// finding. The render is not lost: with stdout suppressed, ShowsFindingsOnStdout
 	// goes false and the runner's echoLiveFinding puts the same line on stderr,
 	// where the rest of the console already lives.
-	if options.Events != "" {
+	// -j reserves stdout for the scan document written after the run, under the
+	// same rule: one protocol on stdout, the live render on stderr.
+	if options.Events != "" || options.StdoutDocument {
+		disableStdout = true
+	}
+	// --format github without -o writes its workflow commands to stdout after
+	// the scan; the live finding lines go to stderr instead (as under --events),
+	// so the annotations are the only thing on stdout.
+	if options.HasFormat("github") && options.Output == "" {
 		disableStdout = true
 	}
 

@@ -44,8 +44,12 @@ func allFuncDefs() []JSFuncDef {
 
 // registerFuncs iterates over all JSFuncDefs, creates namespace objects as
 // needed, calls each MakeHandler, and registers the resulting function on
-// the appropriate namespace object. Namespaces are skipped when their
-// required dependencies are not available (see shouldRegisterNS).
+// the appropriate namespace object.
+//
+// In ModeRuntime, namespaces are skipped when their required dependencies are
+// not available (see shouldRegisterNS). In ModeLoad every namespace is
+// registered regardless, so top-level code sees the runtime's API shape: pure
+// handlers are real and every effectful one is a loadTimeStub.
 func registerFuncs(vm *sobek.Runtime, opts APIOptions, defs []JSFuncDef) {
 	nsCache := make(map[string]*sobek.Object)
 	nsCache[NsRoot] = vm.Get(NsRoot).ToObject(vm)
@@ -54,12 +58,65 @@ func registerFuncs(vm *sobek.Runtime, opts APIOptions, defs []JSFuncDef) {
 		if def.MakeHandler == nil {
 			continue // metadata-only
 		}
+		if opts.Mode == ModeLoad {
+			obj := getOrCreateNS(vm, nsCache, def.Namespace)
+			if def.Effect == EffectPure {
+				_ = obj.Set(def.Name, def.MakeHandler(vm, opts))
+			} else {
+				_ = obj.Set(def.Name, loadTimeStub(vm, def, opts.OnLoadEffect))
+			}
+			continue
+		}
 		if !shouldRegisterNS(def.Namespace, opts) {
 			continue
 		}
 		obj := getOrCreateNS(vm, nsCache, def.Namespace)
 		handler := def.MakeHandler(vm, opts)
 		_ = obj.Set(def.Name, handler)
+	}
+}
+
+// loadTimeStub stands in for an effectful API function while a script is
+// loaded or linted. It does nothing, returns an empty value of the declared
+// return type, and reports the call (with the calling line) to report.
+func loadTimeStub(vm *sobek.Runtime, def JSFuncDef, report func(EffectCall)) func(sobek.FunctionCall) sobek.Value {
+	name := def.FullName()
+	return func(sobek.FunctionCall) sobek.Value {
+		if report != nil {
+			c := EffectCall{API: name, Effect: def.Effect}
+			for _, f := range vm.CaptureCallStack(0, nil) {
+				if pos := f.Position(); pos.Line > 0 {
+					c.Line, c.Col = pos.Line, pos.Column
+					break
+				}
+			}
+			report(c)
+		}
+		return stubReturnValue(vm, def.Returns)
+	}
+}
+
+// stubReturnValue is the empty value of a declared return type: undefined for
+// void, null for a nullable type, [] for an array, false/""/0 for scalars, and
+// {} for any object type, so top-level code that reads a property of the result
+// keeps running.
+func stubReturnValue(vm *sobek.Runtime, returns string) sobek.Value {
+	r := strings.ToLower(strings.TrimSpace(returns))
+	switch {
+	case r == "" || r == "void":
+		return sobek.Undefined()
+	case strings.Contains(r, "null"):
+		return sobek.Null()
+	case strings.HasSuffix(r, "[]") || strings.HasPrefix(r, "["):
+		return vm.NewArray()
+	case r == "bool" || r == "boolean":
+		return vm.ToValue(false)
+	case r == "string":
+		return vm.ToValue("")
+	case r == "number":
+		return vm.ToValue(0)
+	default:
+		return vm.NewObject()
 	}
 }
 

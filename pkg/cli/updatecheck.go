@@ -1,18 +1,19 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/selfupdate"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/utils"
 	"go.uber.org/zap"
@@ -72,17 +73,29 @@ var (
 // PersistentPreRunE. It either schedules a (non-blocking) update notice or, when
 // VIGOLIUM_AUTO_UPDATE is set, synchronously updates and re-execs the new binary.
 func maybeCheckForUpdate(cmd *cobra.Command) {
+	if runtime.GOOS == "windows" {
+		// A Windows update leaves the replaced binary at <exe>.old because a
+		// running executable cannot be deleted; remove it on the next start.
+		if exe, err := selfupdate.ResolveExecutable(); err == nil {
+			selfupdate.CleanupOld(exe)
+		}
+	}
+
 	current := currentSemver()
 	if updateCheckHardDisabled(cmd, current) {
 		return
 	}
 
-	// Auto-update is an explicit opt-in: it runs regardless of TTY so it works in
-	// automation, but stays out of --json runs (a multi-minute install would be a
-	// nasty surprise for a programmatic caller).
-	if autoUpdateEnabled() && !globalJSON {
-		runAutoUpdate(current)
-		return
+	// Auto-update is an explicit opt-in, and even then only for a person at a
+	// terminal: swapping the binary under an agent, a CI job, an event stream
+	// or a long-running server mid-session is never what they asked for.
+	if autoUpdateEnabled() {
+		if reason := autoUpdateBlockedReason(currentAutoUpdateEnv(cmd)); reason != "" {
+			zap.L().Debug("auto-update skipped", zap.String("reason", reason))
+		} else {
+			runAutoUpdate(current)
+			return
+		}
 	}
 
 	// Notice flow — keep scripted/piped/CI output clean.
@@ -114,13 +127,91 @@ func updateCheckHardDisabled(cmd *cobra.Command, current string) bool {
 	return !semver.IsValid(current)
 }
 
+// autoUpdateEnv is everything the auto-update gate looks at, gathered in one
+// place so the gate itself is a pure function the tests can drive.
+type autoUpdateEnv struct {
+	command   string // command path without the root ("scan", "server", …)
+	jsonMode  bool   // -j/--json
+	ciOutput  bool   // --ci-output-format
+	events    bool   // --events set on the command
+	stdoutTTY bool
+	stderrTTY bool
+	getenv    func(string) string
+	exe       string // resolved running binary ("" when unknown)
+}
+
+// agentEnvVars mark a caller that is CI or a coding agent. Any of them set (to
+// anything but "", "0" or "false") keeps auto-update off.
+var agentEnvVars = []string{
+	"CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "JENKINS_URL",
+	"VIGOLIUM_AGENT", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI",
+}
+
+func currentAutoUpdateEnv(cmd *cobra.Command) autoUpdateEnv {
+	env := autoUpdateEnv{
+		command:   commandPathWithoutRoot(cmd),
+		jsonMode:  globalJSON,
+		ciOutput:  globalCIOutput,
+		stdoutTTY: terminal.IsTerminal(),
+		stderrTTY: terminal.StderrIsTerminal(),
+		getenv:    os.Getenv,
+	}
+	if f := cmd.Flags().Lookup("events"); f != nil && (f.Changed || f.Value.String() != "") {
+		env.events = true
+	}
+	if exe, err := selfupdate.ResolveExecutable(); err == nil {
+		env.exe = exe
+	}
+	return env
+}
+
+// autoUpdateBlockedReason returns why VIGOLIUM_AUTO_UPDATE must not act for
+// this invocation, or "" when it may.
+func autoUpdateBlockedReason(e autoUpdateEnv) string {
+	switch {
+	case e.jsonMode:
+		return "--json"
+	case e.ciOutput:
+		return "--ci-output-format"
+	case e.events:
+		return "--events"
+	case !e.stdoutTTY || !e.stderrTTY:
+		return "not a terminal"
+	case e.command == "server" || strings.HasPrefix(e.command, "server "):
+		return "long-running server"
+	}
+	if e.getenv != nil {
+		for _, name := range agentEnvVars {
+			if envSetTruthy(e.getenv(name)) {
+				return name + " is set"
+			}
+		}
+	}
+	if e.exe != "" {
+		if m := selfManagedChannel(e.exe); m != "" {
+			return "installed by " + m
+		}
+	}
+	return ""
+}
+
+// envSetTruthy treats any value except "", "0" and "false" as set: CI systems
+// export CI=true, CI=1 or CI=woodpecker alike.
+func envSetTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "false", "no", "off":
+		return false
+	}
+	return true
+}
+
 // scheduleUpdateNotice resolves the latest version (from cache when fresh, else a
 // background fetch) and arranges for a notice to print at the end of the run.
 func scheduleUpdateNotice(current string) {
 	cache, ok := readUpdateCache()
 	if ok && !cacheStale(cache) {
 		if cache.LatestVersion != "" && isVersionBehind(current, cache.LatestVersion) {
-			pendingUpdateNotice = formatUpdateNotice(current, normalizedSemver(cache.LatestVersion))
+			pendingUpdateNotice = formatUpdateNotice(current, selfupdate.NormalizeVersion(cache.LatestVersion))
 		}
 		return
 	}
@@ -142,7 +233,7 @@ func flushUpdateNotice() {
 		select {
 		case latest := <-updateFetch.ch:
 			if latest != "" && isVersionBehind(updateFetch.current, latest) {
-				pendingUpdateNotice = formatUpdateNotice(updateFetch.current, normalizedSemver(latest))
+				pendingUpdateNotice = formatUpdateNotice(updateFetch.current, selfupdate.NormalizeVersion(latest))
 			}
 		case <-time.After(updateCheckNetTimeout + 250*time.Millisecond):
 			// Still fetching — skip the notice this run; the cache will be warm
@@ -155,7 +246,7 @@ func flushUpdateNotice() {
 	fmt.Fprint(os.Stderr, "\n"+pendingUpdateNotice)
 }
 
-// runAutoUpdate updates the binary silently and re-execs it to continue the
+// runAutoUpdate updates the binary in place and re-execs it to continue the
 // current command. It is a no-op when already on (or ahead of) the latest.
 func runAutoUpdate(current string) {
 	latest := resolveLatestVersion(readUpdateCache())
@@ -168,60 +259,58 @@ func runAutoUpdate(current string) {
 		terminal.White("Auto-updating vigolium"),
 		terminal.Yellow(current),
 		terminal.Gray("→"),
-		terminal.BoldCyan(normalizedSemver(latest)),
+		terminal.BoldCyan(selfupdate.NormalizeVersion(latest)),
 	)
 
-	if err := updateBinarySilent(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), updateStepTimeout)
+	defer cancel()
+	res, err := selfUpdate(ctx, selfupdate.Options{
+		CurrentVersion: current,
+		Logf: func(format string, args ...any) {
+			zap.L().Debug("auto-update: " + fmt.Sprintf(format, args...))
+		},
+	})
+	if err != nil {
 		zap.L().Warn("auto-update failed; continuing with current binary", zap.Error(err))
 		fmt.Fprintf(os.Stderr, "%s %s\n",
 			terminal.WarningSymbol(),
-			terminal.Yellow("auto-update failed; continuing with the current version"))
+			terminal.Yellow("auto-update failed; continuing with the current version: "+err.Error()))
+		return
+	}
+	if !res.Changed {
 		return
 	}
 
 	// Warm the cache so the re-exec'd process doesn't immediately re-check, then
-	// hand off to the freshly installed binary with the original arguments.
-	writeUpdateCache(latest)
-	reexecAfterUpdate()
+	// hand off to the binary that was just replaced, with the original arguments.
+	writeUpdateCache(res.To)
+	reexecAfterUpdate(res.Path)
 }
 
-// reexecAfterUpdate replaces the current process with the freshly installed
-// binary (the install.sh target), preserving the original arguments. It only
-// returns if the exec fails, in which case the caller keeps running the old
-// process for this invocation.
-func reexecAfterUpdate() {
-	target := config.ExpandPath(installedBinaryPath)
-	if _, err := os.Stat(target); err != nil {
-		// Installer target missing (non-standard install location); fall back to
-		// the current executable. The loop guard below still prevents a cycle.
-		if exe, e := os.Executable(); e == nil {
+// selfUpdate and execReplaceFn are seams for tests: the in-process updater and
+// the exec(2) that hands the process over to the updated binary.
+var (
+	selfUpdate    = selfupdate.Update
+	execReplaceFn = execReplace
+)
+
+// reexecAfterUpdate replaces the current process with target — the binary the
+// update just replaced, i.e. the one that was running — preserving the original
+// arguments. It only returns if the exec fails, in which case the caller keeps
+// running the old process for this invocation. The env sentinel stops a
+// re-exec'd child from updating again.
+func reexecAfterUpdate(target string) {
+	if target == "" {
+		if exe, err := selfupdate.ResolveExecutable(); err == nil {
 			target = exe
 		} else {
 			target = os.Args[0]
 		}
 	}
-
 	env := append(os.Environ(), envAutoUpdateReexeced+"=1")
-	if err := execReplace(target, os.Args, env); err != nil {
+	if err := execReplaceFn(target, os.Args, env); err != nil {
 		zap.L().Warn("re-exec after auto-update failed; continuing with current process", zap.Error(err))
 	}
-}
-
-// updateBinarySilent runs the same installer as `vigolium update` but captures
-// its output instead of streaming it, so an auto-update stays quiet on the
-// console (the full output is still available at debug level).
-func updateBinarySilent() error {
-	ctx, cancel := context.WithTimeout(context.Background(), updateStepTimeout)
-	defer cancel()
-
-	var buf bytes.Buffer
-	err := runInstallScript(ctx, &buf)
-	level := "auto-update installer completed"
-	if err != nil {
-		level = "auto-update installer output"
-	}
-	zap.L().Debug(level, zap.String("output", buf.String()))
-	return err
 }
 
 // resolveLatestVersion returns the latest npm version given an already-read
@@ -329,27 +418,14 @@ func formatUpdateNotice(current, latest string) string {
 // currentSemver returns the running binary's version normalized for semver
 // comparison (leading "v" guaranteed).
 func currentSemver() string {
-	return normalizedSemver(getVersion())
-}
-
-// normalizedSemver ensures a leading "v" so the value can be fed to
-// golang.org/x/mod/semver (npm reports "0.1.42-beta"; we compare "v0.1.42-beta").
-func normalizedSemver(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return ""
-	}
-	if !strings.HasPrefix(v, "v") {
-		v = "v" + v
-	}
-	return v
+	return selfupdate.NormalizeVersion(getVersion())
 }
 
 // isVersionBehind reports whether current is strictly older than latest. Invalid
 // versions (e.g. a dev build) are treated as "not behind" so they never nag.
 func isVersionBehind(current, latest string) bool {
-	c := normalizedSemver(current)
-	l := normalizedSemver(latest)
+	c := selfupdate.NormalizeVersion(current)
+	l := selfupdate.NormalizeVersion(latest)
 	if !semver.IsValid(c) || !semver.IsValid(l) {
 		return false
 	}

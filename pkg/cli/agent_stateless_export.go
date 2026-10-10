@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/storage"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -87,7 +87,7 @@ func planAgentStateless(cmd *cobra.Command, cmdLabel string, stateless bool, out
 
 	if !stateless {
 		if formatRequested && wantsFiles {
-			return plan, fmt.Errorf("--format %s requires -S/--stateless on %s: a persisted run writes into the project database, so export it afterwards instead — `vigolium export --format %s -o <path>`",
+			return plan, usageErrorf("--format %s requires -S/--stateless on %s: a persisted run writes into the project database, so export it afterwards instead — `vigolium export --format %s -o <path>`",
 				strings.Join(plan.formats, ","), cmdLabel, strings.Join(plan.formats, ","))
 		}
 		if output != "" {
@@ -100,7 +100,7 @@ func planAgentStateless(cmd *cobra.Command, cmdLabel string, stateless bool, out
 	// -S is a write-into-a-throwaway-DB flag, so an explicit --db (a database the
 	// operator named and expects to keep) cannot also be the destination.
 	if strings.TrimSpace(globalDB) != "" {
-		return plan, fmt.Errorf("--stateless/-S cannot be combined with --db: -S runs into a throwaway temporary database, so the --db you named would never be written")
+		return plan, usageErrorf("--stateless/-S cannot be combined with --db: -S runs into a throwaway temporary database, so the --db you named would never be written")
 	}
 	// Ordered after the --db check above: a database the operator named by hand
 	// stays a hard conflict, while --db-isolate's destination is implicit and
@@ -145,6 +145,9 @@ func beginAgentStateless(prefix string) (string, error) {
 	_ = tmpFile.Close()
 
 	globalDB = dbPath
+	// Children of the operator's bash tool read this throwaway database
+	// unscoped (VIGOLIUM_DB_PATH), as the run itself does (agent_child_env.go).
+	agentChildDBUnscoped = true
 	if err := os.Setenv(dbPathEnvVar, dbPath); err != nil {
 		// Non-fatal: the in-process run still uses the temp DB via globalDB. Only
 		// `vigolium` subprocesses the agent shells out to would miss it.
@@ -152,14 +155,10 @@ func beginAgentStateless(prefix string) (string, error) {
 			zap.String("env", dbPathEnvVar), zap.Error(err))
 	}
 
-	db, err := getDB()
-	if err != nil {
+	// Write intent creates the schema in the fresh file as part of the open.
+	if _, err := getDBFor(clicommon.IntentWrite); err != nil {
 		removeAgentStatelessDB(dbPath)
 		return "", fmt.Errorf("open temporary database: %w", err)
-	}
-	if err := db.CreateSchema(context.Background()); err != nil {
-		removeAgentStatelessDB(dbPath)
-		return "", fmt.Errorf("create schema in temporary database: %w", err)
 	}
 	return dbPath, nil
 }

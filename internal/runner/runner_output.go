@@ -203,8 +203,12 @@ func (r *Runner) formatTargetCounts(ctx context.Context, cliCount int) string {
 	// caller's count wins when it is a phase-local target list the source can't
 	// know about.
 	seeded := int64(cliCount)
-	if n := source.GetTotal(r.inputSource); n > seeded {
-		seeded = n
+	// A database-backed input source (full-scan-on-receive) counts http_records,
+	// which dbCount already reports; adding it as "input" would count them twice.
+	if _, fromDB := r.inputSource.(*database.DBInputSource); !fromDB {
+		if n := source.GetTotal(r.inputSource); n > seeded {
+			seeded = n
+		}
 	}
 	return fmt.Sprintf("Targets: %s (%s input | %s HTTP Records)",
 		terminal.Orange(fmt.Sprintf("%d", seeded+dbCount)),
@@ -558,14 +562,12 @@ func (r *Runner) printScanConfig() {
 	// Extensions
 	extEnabled := settings != nil && settings.DynamicAssessment.Extensions.Enabled
 	if extEnabled {
-		extCount := 0
-		if r.sharedInfra != nil && r.sharedInfra.JSEngine != nil {
-			extCount = len(r.sharedInfra.JSEngine.ActiveModules()) + len(r.sharedInfra.JSEngine.PassiveModules())
-		}
-		fmt.Fprintf(os.Stderr, "  %s Extensions: %s | %s loaded\n",
+		// No count here: the extension engine is built later, in
+		// buildInfrastructure, so a "N loaded" figure printed now could only
+		// ever have said 0.
+		fmt.Fprintf(os.Stderr, "  %s Extensions: %s\n",
 			terminal.Purple(terminal.SymbolInfo),
-			terminal.HiGreen("enabled"),
-			terminal.HiTeal(fmt.Sprintf("%d", extCount)))
+			terminal.HiGreen("enabled"))
 	} else {
 		fmt.Fprintf(os.Stderr, "  %s Extensions: %s\n",
 			terminal.Purple(terminal.SymbolInfo),

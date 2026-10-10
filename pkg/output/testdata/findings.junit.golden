@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="Golden" tests="4" failures="3" errors="0" skipped="0" time="0">
+  <testsuite name="audit-hardcoded-secret" tests="1" failures="1" errors="0" skipped="0" time="0">
+    <properties>
+      <property name="fail_on" value="medium"></property>
+    </properties>
+    <testcase name="shop-api" classname="audit-hardcoded-secret" time="0">
+      <failure message="[medium] Hardcoded secret, in config: key at /src/shop-api/app/config.py:42 (finding_hash eeeeeeeeeeee)" type="medium">id: 16&#xA;finding_hash: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee&#xA;severity: medium&#xA;module_id: audit-hardcoded-secret&#xA;source_file: /src/shop-api/app/config.py:42</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="sqli-error" tests="2" failures="2" errors="0" skipped="0" time="0">
+    <properties>
+      <property name="fail_on" value="medium"></property>
+    </properties>
+    <testcase name="api.example" classname="sqli-error" time="0">
+      <failure message="[critical] Error-based SQL injection at https://api.example/v1/users (finding_hash bbbbbbbbbbbb)" type="critical">id: 13&#xA;finding_hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&#xA;severity: critical&#xA;confidence: certain&#xA;module_id: sqli-error&#xA;url: https://api.example/v1/users&#xA;hostname: api.example&#xA;scan_uuid: scan-1&#xA;status: confirmed</failure>
+    </testcase>
+    <testcase name="shop.example" classname="sqli-error" time="0">
+      <failure message="[high] Error-based SQL injection at https://shop.example/item?id=1&#39; (finding_hash aaaaaaaaaaaa)" type="high">id: 12&#xA;finding_hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&#xA;severity: high&#xA;confidence: firm&#xA;module_id: sqli-error&#xA;url: https://shop.example/item?id=1&#39;&#xA;hostname: shop.example&#xA;matched_at: https://shop.example/item?id=1&#39;, id&#xA;scan_uuid: scan-1&#xA;http_record_uuids: rec-1, rec-2&#xA;status: triaged&#xA;cwe_id: CWE-89</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="tech-detect" tests="1" failures="0" errors="0" skipped="0" time="0">
+    <properties>
+      <property name="fail_on" value="medium"></property>
+    </properties>
+    <testcase name="shop.example" classname="tech-detect" time="0">
+      <system-out>[medium] Technology at https://shop.example/admin (finding_hash dddddddddddd) [status false_positive]&#xA;[info] Technology =HYPERLINK(&#34;x&#34;) at https://shop.example/ (finding_hash cccccccccccc) [below threshold]</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>

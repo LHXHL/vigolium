@@ -8,9 +8,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
-	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
-	"github.com/vigolium/vigolium/pkg/agent"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
@@ -56,32 +54,20 @@ func newSelectiveScanRecord(scanID, projectUUID string, modules []string) *datab
 // HandleScanRecords handles POST /api/scan-records — starts a scan on specific HTTP records by UUID.
 func (h *Handlers) HandleScanRecords(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	var req ScanRecordsRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	if len(req.RecordUUIDs) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingRecordUUIDs.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingRecordUUIDs)
 	}
 	if len(req.RecordUUIDs) > maxSelectiveScanRecords {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: fmt.Sprintf("too many record_uuids: %d exceeds the limit of %d",
-				len(req.RecordUUIDs), maxSelectiveScanRecords),
-			Code: fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("too many record_uuids: %d exceeds the limit of %d",
+			len(req.RecordUUIDs), maxSelectiveScanRecords))
 	}
 
 	// Detached on purpose: registers a scan that runs in a background goroutine
@@ -95,16 +81,10 @@ func (h *Handlers) HandleScanRecords(c fiber.Ctx) error {
 	// caller-supplied list, so this must not load whole records.
 	validUUIDs, err := h.repo.ExistingRecordUUIDs(c.Context(), projectUUID, req.RecordUUIDs)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to validate record UUIDs: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to validate record UUIDs: %w", err))
 	}
 	if len(validUUIDs) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrNoValidRecords.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrNoValidRecords)
 	}
 
 	modules := []string{"all"}
@@ -137,17 +117,13 @@ func (h *Handlers) HandleScanRecords(c fiber.Ctx) error {
 	st := h.getProjectScanState(projectUUID)
 	if st.running {
 		h.scanMu.Unlock()
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-			Error: ErrScanAlreadyRunning.Error(),
-		})
+		return respondError(c, fiber.StatusConflict, ErrScanAlreadyRunning)
 	}
 
 	scanRunner, err := runner.NewWithInputSource(opts, dbSource)
 	if err != nil {
 		h.scanMu.Unlock()
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to create scan runner: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to create scan runner: %w", err))
 	}
 	scanRunner.SetSettings(forceNativePersistLogs(h.settings))
 	scanRunner.SetRepository(h.repo)
@@ -155,9 +131,7 @@ func (h *Handlers) HandleScanRecords(c fiber.Ctx) error {
 	if err := h.repo.CreateScan(ctx, newSelectiveScanRecord(scanID, projectUUID, modules)); err != nil {
 		h.scanMu.Unlock()
 		scanRunner.Discard()
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to create scan: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to create scan: %w", err))
 	}
 
 	st.runner = scanRunner
@@ -166,7 +140,7 @@ func (h *Handlers) HandleScanRecords(c fiber.Ctx) error {
 	h.scanMu.Unlock()
 
 	// Launch background scan
-	go h.runBackgroundScan(scanID, scanRunner, projectUUID, false)
+	go h.runBackgroundScan(scanID, scanRunner, projectUUID, false, scanOutputs{})
 
 	zap.L().Info("Selective scan started",
 		zap.String("scan_uuid", scanID),
@@ -192,6 +166,9 @@ func validateScanAllRecordsRequest(req ScanAllRecordsRequest) error {
 		if _, err := time.ParseDuration(req.ScanningMaxDuration); err != nil {
 			return fmt.Errorf("invalid scanning_max_duration %q: %w", req.ScanningMaxDuration, err)
 		}
+	}
+	if req.MaxRequests < 0 || req.MaxRequestsPerHost < 0 {
+		return fmt.Errorf("max_requests and max_requests_per_host must be >= 0 (0 = unlimited)")
 	}
 	if req.HeuristicsCheck != "" {
 		switch req.HeuristicsCheck {
@@ -231,15 +208,12 @@ func newAllRecordsScanRecord(scanID, projectUUID, scanMode, status string, modul
 // ScanResponse shape the non-dry path used to produce, so a caller sees no
 // difference; only the way records_to_scan is obtained changed, from
 // enumerating every matching UUID to counting them.
-func (h *Handlers) respondScanAllRecordsDryRun(c fiber.Ctx, projectUUID, scanMode string, modules []string, matchCount int64) error {
+func (h *Handlers) respondScanAllRecordsDryRun(c fiber.Ctx, projectUUID, scanMode string, modules []string, matchCount int64, resolved *ScanResolved) error {
 	scanID := uuid.New().String()
 	// Detached on purpose: the row outlives this request as scan history.
 	if err := h.repo.CreateScan(context.Background(),
 		newAllRecordsScanRecord(scanID, projectUUID, scanMode, "dry_run", modules)); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to create scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to create scan: %w", err))
 	}
 
 	return c.Status(fiber.StatusOK).JSON(ScanResponse{
@@ -249,6 +223,7 @@ func (h *Handlers) respondScanAllRecordsDryRun(c fiber.Ctx, projectUUID, scanMod
 		Message:       "scan record created (dry run)",
 		RecordsToScan: matchCount,
 		ScanMode:      scanMode,
+		Resolved:      resolved,
 	})
 }
 
@@ -256,34 +231,41 @@ func (h *Handlers) respondScanAllRecordsDryRun(c fiber.Ctx, projectUUID, scanMod
 // from the database with optional filtering by hostname, method, path, status code, etc.
 func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	// Parse request body (allow empty body → scan all records)
 	var req ScanAllRecordsRequest
 	if len(c.Body()) > 0 {
 		if err := c.Bind().JSON(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "invalid request body: " + err.Error(),
-				Code:  fiber.StatusBadRequest,
-			})
+			return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		}
 	}
 
 	if err := validateScanAllRecordsRequest(req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	projectUUID := getProjectUUID(c)
 
+	// A private copy of the project's settings (global → X-Project-UUID's
+	// overlay); the request's profile and fields are layered on below.
+	settings, err := h.settingsForProject(projectUUID)
+	if err != nil {
+		return respondError(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Same resolution as the CLI and POST /api/scans/run, before anything else
+	// so a dry run validates it too. A profile that cannot be loaded used to be
+	// swallowed here, so the scan ran without the profile the caller named; it
+	// is a 400 like every other client error.
+	opts, strategy, err := resolveScanAllRecordsOptions(settings, h.config.Concurrency, req, projectUUID)
+	if err != nil {
+		return respondError(c, fiber.StatusBadRequest, err)
+	}
+
 	// Both branches below describe the same run, so derive these once.
-	modules := resolveAPIModules(req.Modules, req.ModuleTags)
+	modules := opts.Modules
 	scanMode := "full"
 	if !req.Force {
 		scanMode = "incremental"
@@ -295,9 +277,7 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 	// below. Skipped for a dry run, which starts nothing and so conflicts with
 	// nothing.
 	if !req.DryRun && h.projectScanRunning(projectUUID) {
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-			Error: ErrScanAlreadyRunning.Error(),
-		})
+		return respondError(c, fiber.StatusConflict, ErrScanAlreadyRunning)
 	}
 
 	// Build query filters from request
@@ -325,113 +305,22 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 	if req.DryRun {
 		matchCount, err := qb.Count(ctx)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-				Error: "failed to query records: " + err.Error(),
-				Code:  fiber.StatusInternalServerError,
-			})
+			return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to query records: %w", err))
 		}
 		if matchCount == 0 {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "no records match the specified filters",
-				Code:  fiber.StatusBadRequest,
-			})
+			return respondErrorMsg(c, fiber.StatusBadRequest, "no records match the specified filters")
 		}
-		return h.respondScanAllRecordsDryRun(c, projectUUID, scanMode, modules, matchCount)
+		return h.respondScanAllRecordsDryRun(c, projectUUID, scanMode, modules, matchCount, newScanResolved(strategy.Name, opts))
 	}
 
 	var matchingUUIDs []string
 	if err := qb.BuildRecordsQuery().Column("r.uuid").Scan(ctx, &matchingUUIDs); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to query records: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to query records: %w", err))
 	}
 
 	if len(matchingUUIDs) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "no records match the specified filters",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "no records match the specified filters")
 	}
-
-	// Build runner options
-	opts := types.DefaultOptions()
-	opts.Modules = modules
-	opts.ProjectUUID = projectUUID
-	opts.SkipIngestion = true
-	opts.DiscoverEnabled = false
-	opts.ExternalHarvestEnabled = false
-	opts.SpideringEnabled = false
-	opts.KnownIssueScanEnabled = false
-	opts.SkipDynamicAssessment = false
-
-	concurrency := h.config.Concurrency
-	if concurrency <= 0 {
-		concurrency = types.DefaultConcurrency
-	}
-	if req.Concurrency > 0 {
-		concurrency = req.Concurrency
-	}
-	opts.Concurrency = concurrency
-
-	if req.MaxPerHost > 0 {
-		opts.MaxPerHost = req.MaxPerHost
-	}
-
-	if req.Timeout != "" {
-		d, _ := time.ParseDuration(req.Timeout) // already validated
-		opts.Timeout = d
-	}
-
-	if len(req.Headers) > 0 {
-		headers := make([]string, 0, len(req.Headers))
-		for k, v := range req.Headers {
-			headers = append(headers, k+": "+v)
-		}
-		opts.Headers = headers
-	}
-
-	// Resolve intensity to scanning profile
-	if req.Intensity != "" {
-		if profileName, resolvedIntensity, err := agent.ResolveNativeScanIntensity(req.Intensity); err == nil {
-			opts.Intensity = resolvedIntensity
-			if req.ScanningProfile == "" {
-				req.ScanningProfile = profileName
-			}
-		}
-	}
-
-	if req.ScanningProfile != "" {
-		opts.ScanningProfile = req.ScanningProfile
-	}
-
-	// Clone settings
-	var settings *config.Settings
-	if h.settings != nil {
-		clone := *h.settings
-		settings = &clone
-	} else {
-		settings = config.DefaultSettings()
-	}
-
-	// Load and apply scanning profile to settings
-	if opts.ScanningProfile != "" {
-		profilePath := settings.ScanningStrategy.ResolveProfilePath(opts.ScanningProfile)
-		if profile, profileErr := config.LoadProfile(profilePath); profileErr == nil {
-			_ = config.ApplyProfile(settings, profile)
-		}
-	}
-
-	if req.HeuristicsCheck != "" {
-		opts.HeuristicsCheck = req.HeuristicsCheck
-	}
-	if req.ScanningMaxDuration != "" {
-		settings.ScanningPace.MaxDuration = req.ScanningMaxDuration
-	}
-	applyRequestRateLimit(opts, &settings.ScanningPace, req.RateLimit)
-
-	// Resolve per-phase durations from scanning_pace (mirrors CLI behavior in scan.go)
-	applyResolvedPhaseDurations(opts, &settings.ScanningPace)
 
 	scanID := uuid.New().String()
 	dbSource := database.NewUUIDListDBInputSource(h.repo, matchingUUIDs)
@@ -445,18 +334,13 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 	st := h.getProjectScanState(projectUUID)
 	if st.running {
 		h.scanMu.Unlock()
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-			Error: ErrScanAlreadyRunning.Error(),
-		})
+		return respondError(c, fiber.StatusConflict, ErrScanAlreadyRunning)
 	}
 
 	scanRunner, err := runner.NewWithInputSource(opts, dbSource)
 	if err != nil {
 		h.scanMu.Unlock()
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to create scan runner: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to create scan runner: %w", err))
 	}
 	scanRunner.SetSettings(forceNativePersistLogs(settings))
 	scanRunner.SetRepository(h.repo)
@@ -466,10 +350,7 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 		newAllRecordsScanRecord(scanID, projectUUID, scanMode, "running", modules)); err != nil {
 		h.scanMu.Unlock()
 		scanRunner.Discard()
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to create scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to create scan: %w", err))
 	}
 
 	st.runner = scanRunner
@@ -477,7 +358,7 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 	st.scanID = scanID
 	h.scanMu.Unlock()
 
-	go h.runBackgroundScan(scanID, scanRunner, projectUUID, false)
+	go h.runBackgroundScan(scanID, scanRunner, projectUUID, false, scanOutputs{})
 
 	zap.L().Info("All-records scan started",
 		zap.String("scan_uuid", scanID),
@@ -491,5 +372,6 @@ func (h *Handlers) HandleScanAllRecords(c fiber.Ctx) error {
 		Message:       "all-records scan started",
 		RecordsToScan: int64(len(matchingUUIDs)),
 		ScanMode:      scanMode,
+		Resolved:      newScanResolved(strategy.Name, opts),
 	})
 }

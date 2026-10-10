@@ -33,6 +33,19 @@ var nativeScanFlagAliases = map[string]string{
 	// output; "no response" is what operators reach for, and on a host sweep
 	// (where the body is the bulk of every row) it is the flag most often typed.
 	"no-response": "omit-response",
+	// --session / --session-file: see authFlagAliases. Listed here too because
+	// addFlagAliases installs the command's normalize func, replacing the one
+	// registerAuthFlags set on the flag set — which left both spellings an
+	// unknown flag on scan and run.
+	"session":      "auth",
+	"session-file": "auth-file",
+}
+
+// authFlagAliases are the former names of --auth / --auth-file, shown in older
+// guides and copy-pasted commands.
+var authFlagAliases = map[string]string{
+	"session":      "auth",
+	"session-file": "auth-file",
 }
 
 func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
@@ -42,7 +55,7 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 
 	// Output group
 	flags.StringVarP(&scanOpts.Output, "output", "o", "", "Write findings to specified output file")
-	flags.StringVar(&scanFailOn, "fail-on", "", "Exit non-zero if a finding at or above this severity is present (info|low|medium|high|critical) — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child.")
+	flags.StringVar(&scanFailOn, "fail-on", "", failOnUsage("for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child."))
 	flags.BoolVar(&scanOpts.ShowStats, "stats", false, "Show live progress stats during scanning")
 	flags.BoolVar(&scanPrintFinding, "print-finding", false, "After the scan, print each finding to stdout as Markdown (description + matched evidence + request/response), like 'vigolium finding --markdown'. Pairs well with -S and --silent for a quick scan.")
 	flags.BoolVar(&scanPrintTrafficTree, "print-traffic-tree", false, "After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent.")
@@ -53,6 +66,7 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 		"Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field.")
 	flags.StringVar(&scanReportSharedURL, "report-url", "",
 		"URL for the \"Raw Report URL\" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL)")
+	registerReportFlags(flags)
 	registerEventsFlag(flags)
 
 	// Optimization group
@@ -73,9 +87,15 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	// relationship that does not exist, so the scan-phase knob is renamed and the
 	// old spelling kept as a deprecated alias (registered via addFlagAliases, so
 	// both spellings drive ONE flag and neither can silently overwrite the other).
-	flags.StringVar(&scanOpts.FuzzWordlistPath, "discovery-wordlist", "", "Custom wordlist path seeding the discovery phase (enables fuzzing on the fly). Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'.")
+	//
+	// It is a StringArray (repeatable, no comma splitting) so a path containing
+	// a comma stays one path; normalizeDiscoveryWordlists still splits a
+	// comma-joined value when every part is an existing file.
+	flags.StringArrayVar(&scanOpts.FuzzWordlistPaths, "discovery-wordlist", nil, "Custom wordlist file seeding the discovery phase's /FUZZ brute-force (enables fuzzing on the fly). Repeatable: the files are streamed in order and each word is tried once. A missing file is a usage error. Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'.")
 	flags.BoolVar(&scanOpts.NoDiscoveryFuzz, "no-discovery-fuzz", false, "Disable discovery's /FUZZ brute-force (alias --no-fuzz). Overrides every reason it would auto-enable — --intensity deep, a discovery-only run such as 'vigolium run discover', and the low-yield auto-enable. Link extraction, JS parsing, response-word harvesting and the short dir/file wordlists still run.")
 	flags.BoolVar(&scanOpts.NoPrefixBreaker, "no-prefix-breaker", false, "Disable per-prefix circuit breaker that stops discovery from recursing into trap directories")
+	flags.StringSliceVar(&scanOpts.DiscoveryExtensions, "discovery-extensions", nil, "Extensions discovery also tries on every wordlist name, e.g. php,bak (ffuf's -e; leading dots optional). Swept directly, without the confirm-before-fuzzing gate that otherwise guards server-side extensions. Overrides discovery.extensions.custom_list")
+	flags.IntVar(&scanOpts.DiscoveryMaxDepth, "discovery-max-depth", 0, "Maximum directory recursion depth for discovery (ffuf's -recursion-depth); 0 turns recursion off. Overrides discovery.recursion.max_depth (default 5)")
 	flags.BoolVar(&scanOpts.FollowSubdomains, "follow-subdomains", false, "Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep)")
 	flags.StringVar(&scanOpts.PortSweepPorts, "port-sweep-ports", "", "Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; sweep runs at --intensity deep or --follow-subdomains)")
 
@@ -89,7 +109,7 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	flags.BoolVar(&scanOpts.SpideringEnabled, "spider", false, "Enable browser-based spidering phase before scanning")
 	flags.DurationVar(&scanOpts.SpideringMaxDuration, "spider-max-time", 30*time.Minute, "Max time for spidering per target")
 	flags.StringVarP(&scanOpts.SpideringBrowserEngine, "browser-engine", "E", "chromium", "Browser engine: 'chromium', 'ungoogled', or 'fingerprint'")
-	flags.IntVarP(&scanOpts.SpideringBrowserCount, "browsers", "b", 1, "Browser instances to launch for spidering (currently clamped to 1 — the crawler is single-threaded)")
+	flags.IntVarP(&scanOpts.SpideringBrowserCount, "browsers", "b", 1, "Browser instances to launch for spidering (clamped to 1; for parallel crawling set spidering.tabs in the config, which runs N tabs of the one browser)")
 	flags.BoolVar(&scanOpts.SpideringHeadless, "headless", true, "Run browser in headless mode")
 	flags.BoolVar(&scanOpts.SpideringHeaded, "headed", false, "Show the browser window during spidering (sugar for --headless=false; wins when both are set)")
 	flags.BoolVar(&scanOpts.SpideringNoCDP, "no-cdp", false, "Disable Chrome DevTools Protocol event listener detection")
@@ -109,10 +129,11 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	// ~/nuclei-templates (see ensureTemplates). --templates-dir is the short
 	// spelling, registered as an alias rather than a second flag so both drive one
 	// value.
-	flags.StringVar(&scanOpts.KnownIssueScanTemplatesDir, "known-issue-scan-templates-dir", "", "Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates.")
+	flags.StringArrayVar(&scanOpts.KnownIssueScanTemplatesDirs, "known-issue-scan-templates-dir", nil, "Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded.")
+	flags.StringArrayVar(&scanOpts.KnownIssueScanTemplates, "known-issue-scan-templates", nil, "Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too.")
 
 	// OAST flags
-	flags.StringVar(&scanOpts.OastURL, "oast-url", "", "Fixed out-of-band callback URL (overrides auto-generated interactsh URL)")
+	registerOASTURLFlag(flags)
 
 	flags.BoolVar(&scanOpts.UploadResults, "upload-results", false, "Upload scan results to cloud storage after completion (requires storage config)")
 
@@ -132,26 +153,33 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	_ = flags.MarkHidden("captured-console")
 
 	if includeAuth {
-		flags.StringArrayVar(&scanOpts.AuthFiles, "auth-file", nil,
-			"Path to auth file (YAML/JSON, single session or sessions: bundle), "+
-				"or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal.")
-		flags.StringArrayVar(&scanOpts.AuthInline, "auth", nil,
-			"Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas).")
-
-		// Accept the former flag names (--session / --session-file) shown in older
-		// guides and copy-pasted commands as aliases for --auth / --auth-file. A
-		// normalize func routes them to the same flag so both spellings share one
-		// value list. Registering duplicate flags bound to the same slice would
-		// instead make `--auth X --session Y` silently drop X, because pflag tracks
-		// the "changed" state per flag and each flag's first Set replaces the slice.
-		flags.SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
-			switch name {
-			case "session":
-				name = "auth"
-			case "session-file":
-				name = "auth-file"
-			}
-			return pflag.NormalizedName(name)
-		})
+		registerAuthFlags(flags)
 	}
+}
+
+// registerAuthFlags declares --auth / --auth-file (with the --session /
+// --session-file spellings normalized onto them). One definition for scan,
+// run, scan-url and scan-request.
+func registerAuthFlags(flags *pflag.FlagSet) {
+	flags.StringArrayVar(&scanOpts.AuthFiles, "auth-file", nil,
+		"Path to auth file (YAML/JSON, single session or sessions: bundle), "+
+			"or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal.")
+	flags.StringArrayVar(&scanOpts.AuthInline, "auth", nil,
+		"Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas).")
+
+	// Accept the former flag names (--session / --session-file) shown in older
+	// guides and copy-pasted commands as aliases for --auth / --auth-file. A
+	// normalize func routes them to the same flag so both spellings share one
+	// value list. Registering duplicate flags bound to the same slice would
+	// instead make `--auth X --session Y` silently drop X, because pflag tracks
+	// the "changed" state per flag and each flag's first Set replaces the slice.
+	//
+	// A command that also calls addFlagAliases replaces this func with its own,
+	// so its alias table must carry these entries (nativeScanFlagAliases does).
+	flags.SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
+		if canonical, ok := authFlagAliases[name]; ok {
+			name = canonical
+		}
+		return pflag.NormalizedName(name)
+	})
 }

@@ -14,7 +14,17 @@
 //
 // The package is self-contained: it owns its own net.Dialer and http.Client
 // (TLS verification disabled, redirects not followed) rather than routing through
-// the vigolium request middleware, keeping the sweep fast and unit-testable.
+// the vigolium request middleware, keeping the sweep fast and unit-testable. The
+// scan still governs it through two hooks: WrapTransport puts the HTTP confirm
+// step behind the scan's egress gate (rate token, host slot, quarantine), and
+// OnDial counts each TCP pre-filter dial, which is counted but not paced.
+//
+// Proxy: the HTTP confirm step goes through Options.ProxyURL when one is set, so
+// an operator's --proxy sees every request the sweep sends. The TCP pre-filter
+// cannot: it is a bare connect with no HTTP to proxy, so it always dials the host
+// directly. A sweep run behind a proxy therefore still leaks one SYN per probed
+// port from this machine; an operator who must not touch the target directly
+// should skip the port-sweep phase.
 package portsweep
 
 import (
@@ -25,6 +35,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"sync"
@@ -61,6 +72,17 @@ type Options struct {
 	DialTimeout   time.Duration // per-port TCP connect timeout; default 1.5s
 	HTTPTimeout   time.Duration // per-port HTTP confirm timeout; default 4s
 	HoneypotRatio float64       // open/probed ratio at/above which the host is honeypot-suspect; default 0.7, <=0 disables the ratio gate
+	// ProxyURL routes the HTTP confirm requests through this proxy (the scan's
+	// --proxy). The TCP pre-filter always dials directly; see the package doc.
+	ProxyURL string
+	// WrapTransport, when set, wraps the confirm client's transport — the scan
+	// passes its egress gate here so every confirm request is admitted like any
+	// other target request. nil = ungated.
+	WrapTransport func(http.RoundTripper) http.RoundTripper
+	// OnDial, when set, is called once per TCP pre-filter dial attempt. A bare
+	// connect has no request to rate, but it reaches the host, so the scan
+	// counts it.
+	OnDial func()
 }
 
 func (o Options) normalize() Options {
@@ -120,15 +142,20 @@ func Sweep(ctx context.Context, host string, opts Options) Result {
 	}
 
 	dialer := &net.Dialer{Timeout: opts.DialTimeout}
+	var transport http.RoundTripper = &http.Transport{
+		Proxy:               proxyFunc(opts.ProxyURL),
+		DialContext:         dialer.DialContext,
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // sweep confirmation only; we never trust these endpoints
+		TLSHandshakeTimeout: opts.HTTPTimeout,
+		DisableKeepAlives:   true,
+	}
+	if opts.WrapTransport != nil {
+		transport = opts.WrapTransport(transport)
+	}
 	client := &http.Client{
 		Timeout:       opts.HTTPTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Transport: &http.Transport{
-			DialContext:         dialer.DialContext,
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // sweep confirmation only; we never trust these endpoints
-			TLSHandshakeTimeout: opts.HTTPTimeout,
-			DisableKeepAlives:   true,
-		},
+		Transport:     transport,
 	}
 
 	var (
@@ -156,6 +183,9 @@ func Sweep(ctx context.Context, host string, opts Options) Result {
 			// instead of waiting out the longer HTTP/TLS timeout, and the open
 			// count feeds the honeypot ratio. The follow-up HTTP confirm dials
 			// again — one extra handshake per open port, by design.
+			if opts.OnDial != nil {
+				opts.OnDial()
+			}
 			if !TCPReachable(ctx, dialer, host, port) {
 				return
 			}
@@ -175,6 +205,27 @@ func Sweep(ctx context.Context, host string, opts Options) Result {
 	wg.Wait()
 
 	return finalize(res, open, tcpOpen, opts.HoneypotRatio)
+}
+
+// proxyFunc returns the transport Proxy func for raw: nil (direct) when raw is
+// empty, otherwise a fixed proxy. An explicit URL rather than
+// ProxyFromEnvironment, which would bypass the proxy for a loopback target.
+//
+// An unparseable proxy fails every confirm request rather than falling back to a
+// direct connection: the operator asked for their traffic to go through a proxy,
+// and confirming ports around it is the one outcome they ruled out.
+func proxyFunc(raw string) func(*http.Request) (*url.URL, error) {
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		if err == nil {
+			err = fmt.Errorf("proxy URL %q has no host", raw)
+		}
+		return func(*http.Request) (*url.URL, error) { return nil, err }
+	}
+	return http.ProxyURL(parsed)
 }
 
 // finalize sorts confirmed ports, runs the honeypot guard, and returns the

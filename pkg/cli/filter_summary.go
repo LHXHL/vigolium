@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -106,13 +107,22 @@ func (s *filterSummary) String() string {
 	return strings.Join(s.parts, terminal.Gray(" · "))
 }
 
-// print emits the "Filtered by:" line to stdout, or nothing when no filter is
-// set. Callers gate this on text-mode output — JSON must stay clean on stdout.
-func (s *filterSummary) print() {
+// print emits the "Filtered by:" line, or nothing when no filter is set.
+//
+// It goes to stderr: it describes the result, it is not part of it. On stdout it
+// was the first line of every `finding --markdown > report.md` and of every
+// `--raw`/`--burp` document a tool then failed to parse. document marks those
+// outputs, where the line is also dropped when stdout is not a terminal: the
+// operator redirecting a document is the one case where even a stderr echo is
+// likely to be captured beside it (2>&1). Callers still skip it under -j.
+func (s *filterSummary) print(document bool) {
 	if len(s.parts) == 0 {
 		return
 	}
-	fmt.Printf("%s %s %s\n",
+	if document && !terminal.IsTerminal() {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s %s %s\n",
 		terminal.InfoSymbol(),
 		terminal.Bold("Filtered by:"),
 		s.String())

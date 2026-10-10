@@ -166,6 +166,6 @@ func TestScanPerHost_NoFalsePositive(t *testing.T) {
 // TestTruncate caps over-long bodies and leaves short ones intact.
 func TestTruncate(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "abc", truncate("abc", 5))
-	assert.Equal(t, "abcde...", truncate("abcdefghij", 5))
+	assert.Equal(t, "abc", modkit.Truncate("abc", 5))
+	assert.Equal(t, "abcde...", modkit.Truncate("abcdefghij", 5))
 }

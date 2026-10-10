@@ -28,6 +28,10 @@ type SpiderSession struct {
 	br      *browser.Browser
 	capture *network.Capture
 	closed  bool
+	// seeded is set once a Crawl has carried base.ExtraSeeds: the browser,
+	// capture and dedup are shared, so browsing them again on every seed of
+	// the host would only repeat the same navigations.
+	seeded bool
 }
 
 // NewSpiderSession launches one browser, starts browser-level capture bound to a
@@ -78,6 +82,7 @@ func NewSpiderSession(ctx context.Context, base SpiderConfig, repo RecordSaver) 
 	// filter/tab/search links) rather than collapsing them to one representative.
 	capture.SetMaxParamValueVariants(crawlerCfg.MaxParamValueVariants)
 	capture.SetMaxBodyBytes(crawlerCfg.MaxCaptureBodyBytes)
+	capture.AddRequestCounters(base.requestCounters())
 	if err := capture.Start(br.RodBrowser()); err != nil {
 		_ = pool.Close()
 		_ = writer.Close()
@@ -102,6 +107,10 @@ func (s *SpiderSession) Crawl(ctx context.Context, seedURL string) (*SpiderResul
 
 	seedCfg := s.base
 	seedCfg.TargetURL = seedURL
+	if s.seeded {
+		seedCfg.ExtraSeeds = nil
+	}
+	s.seeded = s.seeded || len(seedCfg.ExtraSeeds) > 0
 	crawlerCfg, err := buildCrawlerConfig(seedCfg)
 	if err != nil {
 		return nil, err
@@ -120,6 +129,7 @@ func (s *SpiderSession) Crawl(ctx context.Context, seedURL string) (*SpiderResul
 	// the running total exact, and later seeds pick up any lag.
 	before := s.writer.Count()
 	rBefore := s.writer.Receipt()
+	sentBefore, inScopeBefore := s.capture.RequestsSent(), s.capture.RequestsSentInScope()
 	result, err := c.RunOnBrowser(ctx, s.br, s.capture)
 	if err != nil {
 		return nil, err
@@ -129,6 +139,9 @@ func (s *SpiderSession) Crawl(ctx context.Context, seedURL string) (*SpiderResul
 		saved = 0
 	}
 	res := spiderResultFromCrawl(result, saved)
+	// Requests the shared browser sent during this seed.
+	res.RequestsSent = s.capture.RequestsSent() - sentBefore
+	res.RequestsInScope = s.capture.RequestsSentInScope() - inScopeBefore
 	// This seed's share of the shared writer. The writer is still open, so the
 	// receipt is a running delta (DrainComplete false); Receipt after Close is
 	// the session's final account.

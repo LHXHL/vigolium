@@ -33,14 +33,14 @@ func parseDateRangeFlags(from, to, fromFlag, toFlag string) (*time.Time, *time.T
 	if from != "" {
 		t, err := clicommon.ParseSince(from)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid %s: %w", fromFlag, err)
+			return nil, nil, usageErrorf("invalid %s: %w", fromFlag, err)
 		}
 		dateFrom = &t
 	}
 	if to != "" {
 		t, err := clicommon.ParseUntil(to)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid %s: %w", toFlag, err)
+			return nil, nil, usageErrorf("invalid %s: %w", toFlag, err)
 		}
 		dateTo = &t
 	}

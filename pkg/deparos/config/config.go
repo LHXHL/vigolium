@@ -1,9 +1,13 @@
 package config
 
 import (
+	nethttp "net/http"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Config represents all content discovery configuration.
@@ -13,7 +17,37 @@ type Config struct {
 	Extensions ExtensionConfig `json:"extensions"`
 	Engine     EngineConfig    `json:"engine"`
 	JSTangle   JSTangleConfig  `json:"jstangle" yaml:"jstangle"`
+	Sitemap    SitemapConfig   `json:"sitemap" yaml:"sitemap"`
 	Modules    ModuleConfig    `json:"modules"`
+}
+
+// SitemapConfig controls the sitemap source: at engine start, discovery fetches
+// the sitemaps robots.txt names (or probes /sitemap.xml and /sitemap_index.xml
+// when it names none), streams every <loc>, feeds each in-scope path to the
+// observed-path wordlist, and spiders a path-shape sample of them.
+//
+// The zero value is disabled; NewDefaultConfig turns it on.
+type SitemapConfig struct {
+	Enabled     bool `json:"enabled" yaml:"enabled"`
+	MaxURLs     int  `json:"max_urls" yaml:"max_urls"`         // sampled locs spidered per target; 0 = 2000. Hitting it notes the sitemap_cap limit
+	PerShape    int  `json:"per_shape" yaml:"per_shape"`       // sampled locs per host + path shape; 0 = 3
+	FollowIndex bool `json:"follow_index" yaml:"follow_index"` // fetch <sitemapindex> children (depth <= 2, <= 16 per index)
+}
+
+// EffectiveMaxURLs returns MaxURLs, or DefaultSitemapMaxURLs when it is unset.
+func (c SitemapConfig) EffectiveMaxURLs() int {
+	if c.MaxURLs > 0 {
+		return c.MaxURLs
+	}
+	return DefaultSitemapMaxURLs
+}
+
+// EffectivePerShape returns PerShape, or DefaultSitemapPerShape when it is unset.
+func (c SitemapConfig) EffectivePerShape() int {
+	if c.PerShape > 0 {
+		return c.PerShape
+	}
+	return DefaultSitemapPerShape
 }
 
 // JSTangleConfig exposes safe, high-level JavaScript intelligence controls.
@@ -44,6 +78,9 @@ type JSTangleConfig struct {
 	MaxAssetsPerParent int `json:"max_assets_per_parent" yaml:"max_assets_per_parent"`
 	MaxAssetsPerHost   int `json:"max_assets_per_host" yaml:"max_assets_per_host"`
 	MaxAssetsTotal     int `json:"max_assets_total" yaml:"max_assets_total"`
+	// MaxChunksPerRuntime bounds the loader-rendered chunks (webpack/Vite) one
+	// bundle may add to the asset graph, in place of MaxAssetsPerParent. 0 = 512.
+	MaxChunksPerRuntime int `json:"max_chunks_per_runtime" yaml:"max_chunks_per_runtime"`
 }
 
 // TargetConfig defines where and what to discover.
@@ -89,6 +126,11 @@ type WordlistConfig struct {
 	ShortDirPath     string `json:"short_dir_path" validate:"omitempty,file"`
 	LongDirPath      string `json:"long_dir_path" validate:"omitempty,file"`
 	FuzzWordlistPath string `json:"fuzz_wordlist_path" validate:"omitempty,file"`
+
+	// FuzzWordlistPaths are the /FUZZ wordlists, streamed one after another
+	// with each word tried once across all of them. When empty,
+	// FuzzWordlistPath (the single-file form) is used instead.
+	FuzzWordlistPaths []string `json:"fuzz_wordlist_paths,omitempty" validate:"omitempty,dive,file"`
 }
 
 // HasShortFiles returns true if short file wordlist is configured.
@@ -103,8 +145,23 @@ func (w *WordlistConfig) HasShortDirs() bool { return w.ShortDirPath != "" }
 // HasLongDirs returns true if long directory wordlist is configured.
 func (w *WordlistConfig) HasLongDirs() bool { return w.LongDirPath != "" }
 
-// HasFuzzWordlist returns true if fuzz wordlist is configured.
-func (w *WordlistConfig) HasFuzzWordlist() bool { return w.FuzzWordlistPath != "" }
+// FuzzWordlists returns the configured fuzz wordlist paths: FuzzWordlistPaths
+// when set (empty entries dropped), else the legacy single FuzzWordlistPath.
+func (w *WordlistConfig) FuzzWordlists() []string {
+	var out []string
+	for _, p := range w.FuzzWordlistPaths {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 && w.FuzzWordlistPath != "" {
+		out = append(out, w.FuzzWordlistPath)
+	}
+	return out
+}
+
+// HasFuzzWordlist returns true if at least one fuzz wordlist is configured.
+func (w *WordlistConfig) HasFuzzWordlist() bool { return len(w.FuzzWordlists()) > 0 }
 
 // ExtensionConfig controls file extension testing.
 type ExtensionConfig struct {
@@ -190,7 +247,7 @@ type EngineConfig struct {
 	DisableSecretScan       bool                `json:"disable_secret_scan"`                              // Disable native secret scanning during discovery
 	EnableCookieJar         bool                `json:"enable_cookie_jar"`                                // Enable cookie jar for session persistence
 	ProxyURL                string              `json:"proxy_url"`                                        // HTTP proxy URL for discovery requests
-	JSTangleConcurrency     int                 `yaml:"jstangle_concurrency" json:"jstangle_concurrency"` // Max concurrent jstangle analyses (0 = conservative default of 1)
+	JSTangleConcurrency     int                 `yaml:"jstangle_concurrency" json:"jstangle_concurrency"` // Deprecated: alias of jstangle.worker_count, used only when that is 0; see Config.JSTangleWorkerCount
 	PrefixBreaker           PrefixBreakerConfig `json:"prefix_breaker"`                                   // Per-prefix circuit breaker for soft-404 / trap directories
 
 	// RequestFilter is consulted before every request leaves the engine's HTTP
@@ -224,6 +281,17 @@ type EngineConfig struct {
 	// Not serialized: resolved from the caller's pace settings, which have their
 	// own config surface.
 	RequestsPerSecond int `json:"-"`
+
+	// Egress, when set, wraps the engine's transport INSIDE its retry middleware,
+	// so every physical attempt (each retry included) is admitted by the caller's
+	// egress policy before it goes out. Vigolium passes its scan gate here: the
+	// scan's host slots and dead-host quarantine, plus a discovery-wide token
+	// bucket shared by every concurrent discovery target. When the gate carries
+	// the rate, leave RequestsPerSecond at 0 so the request is not paced twice.
+	//
+	// A refusal it returns must not be retryable (see deparos/http.IsRetryable).
+	// Not serialized: a runtime hook, not configuration.
+	Egress func(nethttp.RoundTripper) nethttp.RoundTripper `json:"-"`
 }
 
 // PrefixBreakerConfig tunes the per-prefix discovery circuit breaker.
@@ -257,3 +325,21 @@ const (
 	CaseInsensitive CaseSensitivityMode = "insensitive"
 	CaseAutoDetect  CaseSensitivityMode = "auto_detect"
 )
+
+// warnJSTangleConcurrencyOnce keeps the deprecation warning to one line per
+// process: discovery builds an engine per target from the same config.
+var warnJSTangleConcurrencyOnce sync.Once
+
+// JSTangleWorkerCount resolves the jstangle worker count: jstangle.worker_count,
+// or the deprecated engine.jstangle_concurrency alias when worker_count is 0
+// (logging a deprecation warning once). 0 lets the service derive the count.
+func (c *Config) JSTangleWorkerCount() int {
+	if c.JSTangle.WorkerCount > 0 || c.Engine.JSTangleConcurrency <= 0 {
+		return c.JSTangle.WorkerCount
+	}
+	warnJSTangleConcurrencyOnce.Do(func() {
+		zap.L().Warn("deparos engine.jstangle_concurrency is deprecated; set jstangle.worker_count instead",
+			zap.Int("jstangle_concurrency", c.Engine.JSTangleConcurrency))
+	})
+	return c.Engine.JSTangleConcurrency
+}

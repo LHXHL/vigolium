@@ -5,11 +5,11 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"regexp"
 	"strings"
 
 	"github.com/pkg/errors"
+	"github.com/vigolium/vigolium/pkg/modules/modkit"
 )
 
 // XMLDocument represents a parsed XML document.
@@ -102,7 +102,7 @@ func InjectENTITY(doc *XMLDocument, decoded *DecodedSAML, systemURL string) (str
 	content := removeXMLDeclaration(doc.Content)
 
 	// Replace ID value with entity reference
-	placeholder := "PLACEHOLDER_UUID_" + randomString(8)
+	placeholder := "PLACEHOLDER_UUID_" + modkit.RandomAlnum(8)
 	modifiedContent := replaceIDValue(content, doc.IDAttrVal, placeholder)
 
 	// Declare an external entity pointing at the OAST callback URL.
@@ -142,13 +142,4 @@ func replaceIDValue(content, oldValue, newValue string) string {
 		}
 		return m
 	})
-}
-
-func randomString(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
-	}
-	return string(b)
 }

@@ -14,7 +14,35 @@ var (
 	resolveProjectOnce  sync.Once
 	resolveProjectErr   error
 	resolveProjectDone  bool
+	// resolvedProjectBranch records which step of the resolution order produced
+	// resolvedProjectUUID (see ProjectResolutionBranch).
+	resolvedProjectBranch ProjectBranch
 )
+
+// ProjectBranch names the step of the resolution order that produced the
+// project UUID. The CLI maps BranchSelection onto "flag" or "env" (it alone
+// knows whether the selection came from a flag or VIGOLIUM_PROJECT_*).
+type ProjectBranch string
+
+const (
+	// BranchSelection: an explicit --project-uuid/--project-name (or the env
+	// fallback folded into them), or a PinProjectUUID.
+	BranchSelection ProjectBranch = "selection"
+	// BranchActiveFile: ~/.vigolium/active-project, written by `project use`.
+	// It is global to the user, so two shells (or two agents) share it.
+	BranchActiveFile ProjectBranch = "active_file"
+	// BranchDefault: nothing selected a project; database.DefaultProjectUUID.
+	BranchDefault ProjectBranch = "default"
+)
+
+// ProjectResolutionBranch reports which step resolved this process's project,
+// and whether resolution has run (successfully) at all.
+func ProjectResolutionBranch() (ProjectBranch, bool) {
+	if !resolveProjectDone || resolveProjectErr != nil {
+		return "", false
+	}
+	return resolvedProjectBranch, true
+}
 
 // ResolvedProjectUUID returns the UUID this process already resolved, and
 // whether there is one to return. False means resolution has not run, or ran
@@ -47,6 +75,7 @@ func ResolveProjectUUID(getDB func() (*database.DB, error), projectUUID, project
 		switch {
 		case projectUUID != "":
 			resolvedProjectUUID = projectUUID
+			resolvedProjectBranch = BranchSelection
 		case projectName != "":
 			db, err := getDB()
 			if err != nil {
@@ -60,11 +89,14 @@ func ResolveProjectUUID(getDB func() (*database.DB, error), projectUUID, project
 				return
 			}
 			resolvedProjectUUID = project.UUID
+			resolvedProjectBranch = BranchSelection
 		default:
 			if persisted, err := config.ReadActiveProject(); err == nil && persisted != "" {
 				resolvedProjectUUID = persisted
+				resolvedProjectBranch = BranchActiveFile
 			} else {
 				resolvedProjectUUID = database.DefaultProjectUUID
+				resolvedProjectBranch = BranchDefault
 			}
 		}
 	})
@@ -83,6 +115,7 @@ func ResetProjectResolutionForTest() {
 	resolvedProjectUUID = ""
 	resolveProjectErr = nil
 	resolveProjectDone = false
+	resolvedProjectBranch = ""
 }
 
 // PinProjectUUID authoritatively fixes the resolved project UUID and seals the
@@ -97,6 +130,7 @@ func PinProjectUUID(projectUUID string) {
 	// still wins.
 	resolveProjectOnce.Do(func() {})
 	resolvedProjectUUID = projectUUID
+	resolvedProjectBranch = BranchSelection
 	resolveProjectErr = nil
 	resolveProjectDone = true
 }

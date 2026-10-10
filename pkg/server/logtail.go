@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -91,10 +92,7 @@ func readLogTail(path string, limit int64) (data []byte, size int64, err error) 
 func sendLogTail(c fiber.Ctx, path string, strip bool) error {
 	data, size, err := readLogTail(path, queryByteLimit(c, defaultLogTailBytes, maxLogTailBytes))
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to read runtime.log: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to read runtime.log: %w", err))
 	}
 	// Strip after the tail is taken, not before: stripping the whole file would
 	// reintroduce the allocation the tail read just avoided. An escape sequence

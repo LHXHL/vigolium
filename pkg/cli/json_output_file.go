@@ -91,7 +91,7 @@ func writeJSONResultToFile(dest string, doc []byte, paged bool) error {
 	if paged {
 		receipt["hint"] = "this file holds one page; pass -a/--all or raise -n/--limit for the whole result set"
 	}
-	return writeAgentJSONToStdout(receipt)
+	return writeReceiptFrame(receipt)
 }
 
 // resultIsPaged reports whether an envelope carries fewer rows than it matched,

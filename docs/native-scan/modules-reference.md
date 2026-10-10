@@ -1,6 +1,6 @@
 # Scanner Modules Reference
 
-Vigolium ships with **324 scanner modules** — 208 active and 117 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
+Vigolium ships with **331 scanner modules** — 213 active and 118 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
 
 ## Severity Scale
 
@@ -39,6 +39,22 @@ vigolium config set dynamic-assessment.hygiene_modules true    # every scan
 Full list: `security-headers-missing`, `permissions-policy-detect`, `cross-origin-isolation-audit`, `subresource-integrity-detect`, `password-autocomplete-detect`, `tls-protocol-cipher-audit`, `hsts-preload-audit`, `csp-weakness-audit`, `cors-vary-origin-missing`, `cookie-security-detect`, `mixed-content-detect`, `reverse-tabnabbing-detect`, `content-type-mismatch`.
 
 The Info-tier fingerprints, endpoint/param observers, and `surface-scoring` are not in this set — their output feeds tech tags, scoring, and active-module targeting, so they run at every intensity.
+
+## Risky Payloads (`risk:high`)
+
+Some probes can do more than measure: an `OR`-guarded delay runs once per scanned row (multiplying the sleep and holding row locks), and a stacked statement (`'; WAITFOR …`) runs after whatever query it lands in, including an `UPDATE` or `DELETE`. These are **off below `--intensity deep`**:
+
+- `sqli-time-blind` keeps running at quick/balanced with its AND-guarded MySQL payload and the PostgreSQL scalar `::text` form; the `OR`-per-row (MySQL `OR SLEEP`, Oracle `OR 1=DBMS_PIPE…`) and stacked (`; SELECT pg_sleep`, `; WAITFOR DELAY`) templates are withheld. MSSQL has no non-stacked `WAITFOR`, so **MSSQL time-blind is deep-only**, and so are Oracle and numeric-context PostgreSQL.
+- A whole module tagged `risk:high` (state-changing or target-degrading checks) is dropped from a broad selection. Naming it with `-m` / `--module-id` / `--module-tag` still runs it. Current `risk:high` modules: `password-reset-poisoning` (each replay sends a real reset email; one replay per endpoint per scan) and `redos-probe` (a vulnerable pattern pins a server worker per probe).
+
+To allow them without the rest of deep:
+
+```bash
+vigolium scan -t https://example.com --allow-risky-payloads
+vigolium config set dynamic-assessment.allow_risky_payloads true   # every scan
+```
+
+An explicit `--allow-risky-payloads=false` overrides a config `true`; deep always allows them.
 
 ---
 
@@ -92,6 +108,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `command-injection-oast` | OS Command Injection (Out-of-Band) | Detects blind OS command injection via out-of-band DNS/HTTP callbacks | Critical | Certain | `rce`, `command-injection`, `oast`, `moderate` |
 | `command-injection-timing` | OS Command Injection (Time-Based) | Detects blind OS command injection by confirming the response delay scales with the injected sleep duration | Critical | Tentative | `rce`, `command-injection`, `injection`, `heavy` |
 | `crlf-injection` | CRLF Injection | Detects CRLF injection | Medium | Firm | `crlf`, `injection`, `moderate` |
+| `esi-injection` | Edge Side Includes (ESI) Injection | Detects Edge Side Includes injection via an in-band ESI tag oracle and an out-of-band include | Medium | Firm | `injection`, `esi`, `ssrf`, `moderate` |
 | `xxe-generic` | XXE Generic | Detects XML external entity injection in generic XML endpoints | Critical | Certain | `injection`, `xxe`, `moderate` |
 | `insecure-deserialization` | Insecure Deserialization | Detects insecure deserialization via error-based detection | High | Firm | `deserialization`, `rce`, `moderate` |
 | `input-behavior-probe` | Input Behavior Probe | Detects behavior changes from header, path, debug param, and char probing | Info | Tentative | `injection`, `probe`, `moderate` |
@@ -111,6 +128,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `cors-misconfiguration` | CORS Misconfiguration | Detects permissive CORS policies allowing unauthorized cross-origin access | Low | Firm | `misconfiguration`, `auth-bypass`, `moderate` |
 | `spring-actuator-misconfig` | Spring Actuator Misconfiguration | Detects exposed Spring Boot actuator endpoints | High | Firm | `spring`, `java`, `misconfiguration`, `info-disclosure`, `light` |
 | `host-header-injection` | Host Header Injection | Detects host header injection and routing manipulation | Medium | Firm | `injection`, `misconfiguration`, `moderate` |
+| `password-reset-poisoning` | Password Reset Poisoning | Detects password-reset link poisoning by replaying recorded reset requests with OAST hosts in Host and forwarding headers | High | Firm | `authentication`, `host-header`, `oast`, `moderate`, `risk:high` |
 | `web-cache-poisoning` | Web Cache Poisoning | Detects web cache poisoning via unkeyed header injection | High | Tentative | `cache-poisoning`, `header-security`, `moderate` |
 
 ### Access Control
@@ -153,19 +171,25 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 |---|---|---|---|---|---|
 | `race-interference` | Race Interference Detection | Detects input storage, cross-contamination, and request interference races | Medium | Firm | `race-condition`, `heavy` |
 
+### Denial of Service
+
+| Module ID | Name | Description | Severity | Confidence | Tags |
+|---|---|---|---|---|---|
+| `redos-probe` | ReDoS Probe | Detects regular-expression denial of service by timing growing backtracking inputs against pattern-validated parameters | Medium | Tentative | `dos`, `redos`, `intrusive`, `risk:high` |
+
 ### XML, JWT & HTTP Protocol
 
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
 | `xml-saml-security` | XML SAML Security | SAML XML security checks (XXE + signature verification) | High | Firm | `injection`, `xxe`, `authentication`, `auth-bypass`, `moderate` |
 | `jwt-vulnerability` | JWT Vulnerability | Detects JWT algorithm confusion and weak signing vulnerabilities | Critical | Certain | `jwt`, `auth-bypass`, `moderate` |
-| `http-request-smuggling` | HTTP Request Smuggling | Detects HTTP request smuggling via CL.TE and TE.CL desync | Suspect | Tentative | `request-smuggling`, `heavy` |
+| `http-request-smuggling` | HTTP Request Smuggling | Detects HTTP request smuggling via CL.TE, TE.CL and CL.0 desync | Suspect | Tentative | `request-smuggling`, `heavy` |
 
 ### API & Endpoint Security
 
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
-| `graphql-scan` | GraphQL Security Scanner | Tests GraphQL endpoints for introspection, injection, and batching vulnerabilities | Medium | Certain | `graphql`, `injection`, `info-disclosure`, `idor`, `bola`, `xss`, `dos`, `batching`, `console`, `moderate` |
+| `graphql-scan` | GraphQL Security Scanner | Tests GraphQL endpoints for introspection, injection, and batching vulnerabilities | Medium | Certain | `graphql`, `injection`, `info-disclosure`, `idor`, `bola`, `xss`, `dos`, `batching`, `console`, `csrf`, `moderate` |
 | `file-upload-scan` | File Upload Scanner | Tests for arbitrary file upload and execution vulnerabilities | High | Certain | `rce`, `injection`, `heavy` |
 | `default-credentials` | Default Credentials | Tests for default or common credential pairs on login endpoints | High | Certain | `auth-bypass`, `probe`, `moderate` |
 | `sensitive-file-discovery` | Sensitive File Discovery | Probes for exposed sensitive files (.env, .git/config, dot files, log files, and more) | Medium | Tentative | `file-exposure`, `info-disclosure`, `moderate` |
@@ -187,6 +211,8 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | Module ID | Name | Description | Severity | Confidence | Tags |
 |---|---|---|---|---|---|
 | `sqli-time-blind` | Blind SQL Injection (Time-Based) | Detects time-based blind SQL injection vulnerabilities | Suspect | Tentative | `injection`, `sqli`, `heavy` |
+
+`OR`-per-row and stacked payloads (and so all MSSQL time-blind) need `--intensity deep` or `--allow-risky-payloads`; see [Risky Payloads](#risky-payloads-riskhigh).
 
 ### SSRF & SSTI (Blind)
 
@@ -223,6 +249,8 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `java-appserver-console` | Java App Server Console | Detects exposed admin consoles for WildFly/JBoss, WebLogic, and GlassFish/Payara | High | Firm | `java`, `tomcat`, `info-disclosure`, `probe`, `light` |
 | `java-sensitive-files` | Java Sensitive Files | Detects Java-specific sensitive files: application configs, WEB-INF, META-INF, and build artifacts | Medium | Tentative | `java`, `sensitive-file`, `probe`, `light` |
 | `tomcat-manager-exposure` | Tomcat Manager Exposure | Detects exposed Apache Tomcat Manager and Host Manager interfaces | High | Firm | `tomcat`, `java`, `misconfiguration`, `authentication`, `light` |
+| `spring4shell-probe` | Spring4Shell Probe | Detects Spring4Shell (CVE-2022-22965) ClassLoader data binding via a safe status differential | High | Firm | `spring`, `java`, `rce`, `moderate` |
+| `text4shell-probe` | Text4Shell Probe | Detects Text4Shell (CVE-2022-42889) Commons Text interpolation via OAST dns/url lookups | Critical | Certain | `java`, `rce`, `injection`, `oast`, `moderate` |
 
 #### Django / Flask / FastAPI (Python)
 
@@ -345,6 +373,7 @@ Passive modules analyze existing request/response pairs without sending new traf
 | `sql-syntax-detect` | SQL Syntax in Request Detection | Detects SQL syntax in HTTP request parameter values | Info | Firm | `sqli`, `injection`, `light` |
 | `serialized-object-detect` | Serialized Object Detection | Detects serialized Java/PHP/.NET/Python/Ruby/Node.js objects in request parameters (incl. base64-wrapped) | Low | Firm | `deserialization`, `light` |
 | `input-reflection-detect` | Input Reflection Detect | Detects request parameter values reflected in responses | Info | Tentative | `xss`, `injection`, `light` |
+| `csv-formula-injection` | CSV / Formula Injection | Detects unescaped formula cells in CSV and XLSX export responses | Medium | Tentative | `injection`, `csv-injection`, `light` |
 | `base64-data-detect` | Base64 Data Detect | Identifies interesting base64 encoded data like JSON, PHP Object in requests/responses | Info | Tentative | `info-disclosure`, `deserialization`, `light` |
 
 ### Information Disclosure

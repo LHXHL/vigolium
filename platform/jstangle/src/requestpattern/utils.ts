@@ -16,6 +16,28 @@ export interface RequestEmission {
     modulePath?: string;
     evidence?: string;
     resolutionSteps?: ResolutionStep[];
+    /**
+     * Other call nodes that shaped this request, e.g. the `axios.create` whose
+     * baseURL it was joined onto. They join the fact's suppression sites.
+     */
+    relatedNodes?: Array<t.Node | null | undefined>;
+}
+
+/**
+ * Stable id for a call expression: its source span, scoped by the recovered
+ * module when the node came from a per-module re-scan. Synthesized nodes carry
+ * no span and get no id, so they are never suppression candidates.
+ */
+export function callSiteId(node: t.Node | null | undefined, modulePath?: string): string | undefined {
+    if (!node || typeof node.start !== 'number' || typeof node.end !== 'number') return undefined;
+    return `cs-${createHash('sha256').update(`${modulePath ?? ''}:${node.start}:${node.end}`).digest('hex').slice(0, 16)}`;
+}
+
+function emissionSites(emission: RequestEmission | undefined): string[] {
+    if (!emission) return [];
+    return [emission.node, ...(emission.relatedNodes ?? [])]
+        .map((node) => callSiteId(node, emission.modulePath))
+        .filter((site): site is string => Boolean(site));
 }
 
 const CONFIDENCE_RANK: Record<Confidence, number> = {
@@ -32,8 +54,12 @@ function recordOrigin(
 ): void {
     const fallback = context.defaultOrigin();
     const node = emission?.node;
+    const callSite = callSiteId(node, emission?.modulePath);
     const origin = emission ? {
         client: emission.client,
+        ...(node ? { node } : {}),
+        ...(callSite ? { callSite } : {}),
+        sites: new Set(emissionSites(emission)),
         provenance: {
             extractor: emission.extractor,
             confidence: emission.confidence,
@@ -66,6 +92,7 @@ function recordOrigin(
         return;
     }
     existing.extractors = [...new Set([...existing.extractors, ...origin.extractors])];
+    for (const site of origin.sites) existing.sites.add(site);
     const canonical = context.requests[index];
     for (const field of ['url', 'method', 'params', 'body'] as const) {
         if (request[field] !== canonical[field] && !existing.alternatives[field].includes(request[field])) {
@@ -75,6 +102,8 @@ function recordOrigin(
     if (CONFIDENCE_RANK[origin.provenance.confidence] > CONFIDENCE_RANK[existing.provenance.confidence]) {
         existing.client = origin.client;
         existing.provenance = origin.provenance;
+        existing.node = origin.node;
+        existing.callSite = origin.callSite;
     }
 }
 
@@ -461,6 +490,7 @@ export function appendExtractedRequest(
         normalizeTemplateVars(request.body),
     ].join('|');
     const existingIndex = context.requestDedup.get(identity);
+    if (existingIndex === -1) return false;
     if (existingIndex !== undefined) {
         const existing = context.requests[existingIndex];
         existing.headers = [...new Set([...existing.headers, ...request.headers])];
@@ -470,15 +500,11 @@ export function appendExtractedRequest(
     }
 
     if (context.requests.length >= context.limits.maxRequests) {
-        context.partial = true;
-        context.addDiagnostic({
-            type: 'diagnostic',
-            severity: 'warning',
-            stage: 'endpoints',
-            code: 'request_limit_reached',
-            message: `Endpoint output limited to ${context.limits.maxRequests} records`,
-            recoverable: true,
-        });
+        // Remember the identity so a repeat of the same dropped request is not
+        // counted twice; the count is "distinct requests lost to the cap".
+        context.requestDedup.set(identity, -1);
+        context.noteTruncated('httpRequest', 'endpoints', 'request_limit_reached',
+            `Endpoint output limited to ${context.limits.maxRequests} records`);
         return false;
     }
     const index = context.requests.length;

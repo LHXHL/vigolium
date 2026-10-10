@@ -1,4 +1,4 @@
-// This stub provides an empty JSTangleBinary in two cases:
+// This stub provides an empty JSTangleBinaryZst / JSTangleBinaryPin in two cases:
 //   - platforms without a prebuilt jstangle binary, and
 //   - any build with `-tags jstangle_stub`, which lets contributors run
 //     `go test -tags=jstangle_stub ./...` without first building the large
@@ -8,6 +8,9 @@
 
 package deparos
 
-var JSTangleBinary []byte
+var (
+	JSTangleBinaryZst []byte
+	JSTangleBinaryPin []byte
+)
 
 const JSTangleBinaryName = ""

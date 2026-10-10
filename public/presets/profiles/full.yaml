@@ -55,9 +55,9 @@ spidering:
   max_duration: 1h
   max_consecutive_fails: 200
   headless: true
-  # The single-threaded crawler pins one browser regardless (it's the only path
-  # wired), so a second only wastes startup/memory. Bump this back up when a real
-  # multi-browser scheduler lands.
+  # The crawler pins one browser regardless, so a second only wastes
+  # startup/memory. Parallelism comes from spidering.tabs, kept at 1 until a
+  # multi-tab soak has passed.
   browser_count: 1
   strategy: adaptive
   browser_engine: chromium

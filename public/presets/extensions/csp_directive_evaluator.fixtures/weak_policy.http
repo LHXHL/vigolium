@@ -1,0 +1,9 @@
+// expect: {"findings": [{"name~": "weak content-security-policy", "severity": "medium", "confidence": "firm"}]}
+GET / HTTP/1.1
+Host: app.example.com
+
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Security-Policy: default-src *; script-src 'self' 'unsafe-inline'
+
+<html></html>

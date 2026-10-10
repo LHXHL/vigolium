@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	goruntime "runtime"
@@ -14,10 +13,14 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 	"go.uber.org/zap"
 )
 
-func (e *Executor) processResults(ctx context.Context, results []*output.ResultEvent, m modules.Module, item *httpmsg.HttpRequestResponse) {
+// processResults finalizes and emits one module call's results. ip is the
+// insertion point the call scanned (nil for host-, request-scope and passive
+// modules); it and item supply the replay context `finding verify` reads back.
+func (e *Executor) processResults(ctx context.Context, results []*output.ResultEvent, m modules.Module, item *httpmsg.HttpRequestResponse, ip httpmsg.InsertionPoint) {
 	moduleType := database.ModuleTypeActive
 	if _, ok := m.(modules.PassiveModule); ok {
 		moduleType = database.ModuleTypePassive
@@ -82,15 +85,17 @@ func (e *Executor) processResults(ctx context.Context, results []*output.ResultE
 			continue
 		}
 
+		e.setReplayContext(result, item, ip)
+
 		emitted := e.emitResult(ctx, result, baselineReq, baselineResp)
 
 		// Cross-module finding dedup: mark (URL, param, vuln_class) as found
 		// so that lower-priority modules with the same vuln class can skip.
 		if emitted.outcome == emissionFinding && emitted.event != nil {
-			if vc, ok := m.(modules.VulnClassifier); ok && e.scanCtx != nil && e.scanCtx.ParamFindings != nil {
+			if vc, ok := m.(modules.VulnClassifier); ok && e.scanCtx.ParamDedupEnabled() {
 				param := emitted.event.FuzzingParameter
-				if param != "" {
-					e.scanCtx.ParamFindings.MarkFound(paramFindingLocationKeyFromResult(emitted.event), param, vc.VulnClass())
+				if class := vc.VulnClass(); param != "" && class != "" {
+					e.scanCtx.ParamFindings.MarkFound(modkit.ParamFindingKeyFromResult(emitted.event), param, class)
 				}
 			}
 		}
@@ -99,8 +104,11 @@ func (e *Executor) processResults(ctx context.Context, results []*output.ResultE
 
 // reconfirmBodyDifferential re-confirms a candidate finding by replaying its
 // payload-applied request and comparing it against a clean (no-payload)
-// baseline, for modules that opt in via modules.BodyDifferentialConfirmable.
-// Returns true to keep (emit) the finding, false to drop it.
+// baseline, for modules that opt in via modules.BodyDifferentialConfirmable or,
+// per result, modules.ResultDifferentialConfirmable. Returns true to keep (emit)
+// the finding, false to drop it. The comparison itself is
+// modkit.ReconfirmFinding, the same call module tests use to predict this
+// decision.
 //
 // It fails OPEN on anything inconclusive — a module that didn't opt in, missing
 // request data, an identical payload/baseline (nothing to differentiate), or a
@@ -114,35 +122,14 @@ func (e *Executor) reconfirmBodyDifferential(
 	result *output.ResultEvent,
 	item *httpmsg.HttpRequestResponse,
 ) bool {
-	confirmable, ok := m.(modules.BodyDifferentialConfirmable)
-	if !ok || !confirmable.ConfirmsByBodyDifferential() {
-		return true // module did not opt in
+	if !modules.ConfirmsByBodyDifferential(m, result) {
+		return true // module (or this result) did not opt in
 	}
-	if item == nil || item.Request() == nil || result.Request == "" || e.httpClient == nil {
+	if e.httpClient == nil {
 		return true // not enough context to re-confirm
 	}
 
-	payloadRaw := []byte(result.Request)
-	baselineRaw := item.Request().Raw()
-	if bytes.Equal(payloadRaw, baselineRaw) {
-		return true // no payload differential to verify
-	}
-
-	cachedBody := ""
-	cachedStatus := 0
-	if item.HasResponse() && item.Response() != nil {
-		cachedBody = string(item.Response().Raw())
-		cachedStatus = item.Response().StatusCode()
-	}
-
-	res := modkit.ConfirmBodyDifferential(
-		e.httpClient.WithContext(ctx),
-		item.Service(),
-		payloadRaw, baselineRaw,
-		cachedBody, cachedStatus,
-		modkit.ReconfirmConfig{NoRedirects: true},
-	)
-
+	res := modkit.ReconfirmFinding(e.httpClient.WithContext(ctx), item, result.Request)
 	if !res.Ran {
 		zap.L().Debug("body-differential re-confirmation inconclusive; keeping finding",
 			zap.String("module", m.ID()),
@@ -161,6 +148,52 @@ func (e *Executor) reconfirmBodyDifferential(
 		zap.String("param", result.FuzzingParameter),
 		zap.String("reason", res.Reason))
 	return false
+}
+
+// maxStoredPayload bounds ResultEvent.Payload as derived by the executor: the
+// payload is a replay hint, and the full request is already on the finding.
+const maxStoredPayload = 4096
+
+// setReplayContext records what `finding verify` needs to re-run the module:
+// the stored record of the scanned item, the insertion point and the value
+// injected there. Values a module (or extension) set itself are kept.
+func (e *Executor) setReplayContext(result *output.ResultEvent, item *httpmsg.HttpRequestResponse, ip httpmsg.InsertionPoint) {
+	if item == nil || item.Request() == nil {
+		return
+	}
+	if result.OriginRecordUUID == "" && e.caches.requestUUIDs != nil {
+		result.OriginRecordUUID = e.ResolveRequestUUID(item.Request().ID())
+	}
+	if ip == nil {
+		return
+	}
+	if result.FuzzingParameter == "" {
+		result.FuzzingParameter = ip.Name()
+	}
+	if result.FuzzingParameter != ip.Name() {
+		return // the module reported another point; don't pair it with this one
+	}
+	if result.InsertionPointType == "" {
+		result.InsertionPointType = ip.Type().String()
+	}
+	if result.Payload == "" && result.Request != "" && result.Request != string(item.Request().Raw()) {
+		result.Payload = injectedValue(result.Request, ip)
+	}
+}
+
+// injectedValue reads the value at ip's position in the mutated raw request.
+// Empty when the request does not parse or no longer carries the point.
+func injectedValue(rawRequest string, ip httpmsg.InsertionPoint) string {
+	pts, err := httpmsg.CreateAllInsertionPoints([]byte(rawRequest), true)
+	if err != nil {
+		return ""
+	}
+	found := httpmsg.FindInsertionPoint(pts, ip.Type().String(), ip.Name())
+	if found == nil || found.BaseValue() == ip.BaseValue() {
+		return ""
+	}
+	v := found.BaseValue()
+	return v[:textutil.CutIndex(v, maxStoredPayload)]
 }
 
 // moduleFindingAllowed returns true if the module has not exceeded its finding cap.
@@ -467,7 +500,7 @@ func (e *Executor) reportPanic(label string, r any) {
 // happened through recovered.
 //
 // The flag is an out-parameter rather than a return value because this runs as a
-// deferred call, where a return value is discarded. Its one caller needs the
+// deferred call, where a return value is discarded. Its callers need the
 // fact: a work item whose processing panicked must still be acknowledged, or the
 // same poison item is re-served on every later run and the durable cursor never
 // moves past it.
@@ -482,8 +515,8 @@ func (e *Executor) recoverFromPanicInto(label string, recovered *bool) {
 
 // runScanFnGuarded runs a module scan function, converting a panic into an
 // error value instead of letting it unwind. The active/passive timeout wrappers
-// invoke scanFn from a raw goroutine that neither processItem's recover nor the
-// conc.WaitGroup boundary can reach, so an unrecovered panic there crashes the
+// invoke scanFn from a raw goroutine that neither the worker's nor the active
+// task's panic recovery can reach, so an unrecovered panic there crashes the
 // whole process. Recovering here keeps a single defective module (or a parser
 // panic on adversarial input) from taking down a long-running server, while
 // still surfacing the failure through the normal (nil, err) result path so the
@@ -497,7 +530,7 @@ func (e *Executor) runScanFnGuarded(
 		if r := recover(); r != nil {
 			e.reportPanic("module "+moduleID, r)
 			events = nil
-			err = fmt.Errorf("module %s panicked: %v", moduleID, r)
+			err = &modulePanicError{moduleID: moduleID, value: r}
 		}
 	}()
 	return fn(ctx)

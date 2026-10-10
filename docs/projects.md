@@ -15,11 +15,12 @@ Create and list projects:
 vigolium project create my-engagement \
   --description "Q3 application assessment"
 vigolium project list
-vigolium project ls --json
+vigolium project ls -j      # read envelope: items = projects {uuid, name, active, …}
 ```
 
 `project create` generates a UUID unless the global `--project-uuid` flag is
-set explicitly.
+set explicitly. With `-j` it prints a mutation document whose `items[0].uuid`
+is the new project's UUID.
 
 Select a project:
 
@@ -29,11 +30,27 @@ eval "$(vigolium project use a1b2c3d4-e5f6-7890-abcd-ef1234567890)"
 
 `project use` does two things:
 
-- prints an `export VIGOLIUM_PROJECT_UUID=...` command for the current shell;
-- persists the selection in `~/.vigolium/active-project` for future commands.
+- persists the selection in `~/.vigolium/active-project` for future commands
+  (written atomically);
+- when stdout is not a terminal (the `eval "$(...)"` case), prints an
+  `export VIGOLIUM_PROJECT_UUID=...` line for the current shell. On a terminal
+  it prints only the status on stderr. With `-j` it prints the mutation
+  document instead, never the `export` line.
 
-If the UUID is valid but unknown, `project use` creates it. Use `--name` and
-`--description` to customize an auto-created project.
+An unknown UUID is an error (exit 1, `error.code: "not_found"`) and nothing is
+created or activated. Pass `--create` to create the project with that UUID;
+`--name` and `--description` customize it:
+
+```bash
+vigolium project use a1b2c3d4-e5f6-7890-abcd-ef1234567890 --create --name acme -j
+# {"kind":"mutation","changed":true,"action":"create","items":[{"uuid":"a1b2…","name":"acme",…}],
+#  "env":{"VIGOLIUM_PROJECT_UUID":"a1b2…"},"activated_scope":"global",…}
+```
+
+`changed` is true when the project was created or the active-project file now
+names a different project; re-activating the active project is
+`"action":"noop"`. `VIGOLIUM_PROJECT_READONLY=true` refuses every activation,
+not only one that creates a project.
 
 Show the project configuration path:
 
@@ -51,9 +68,11 @@ vigolium project delete a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
   --keep-config --force
 ```
 
-The CLI refuses to delete the default project. Set
-`VIGOLIUM_PROJECT_READONLY=true` to disable mutating project commands in a
-shared or production environment.
+The CLI refuses to delete the default project. Deleting a project that does
+not exist is not an error: `project delete -j` reports `"changed": false,
+"found": false`. The confirmation preview goes to stderr. Set
+`VIGOLIUM_PROJECT_READONLY=true` to disable mutating project commands
+(`create`, `use`, `delete`) in a shared or production environment.
 
 ## Selecting a Project
 
@@ -69,6 +88,14 @@ The CLI resolves the active project in this order:
 `--project-uuid` and `--project-name` are mutually exclusive. Likewise,
 `VIGOLIUM_PROJECT_UUID` takes precedence over `VIGOLIUM_PROJECT_NAME` when both
 are set.
+
+`~/.vigolium/active-project` is global to the user: a `project use` in one
+shell (or by one agent) re-scopes every other shell that has not pinned a
+project. Every `-j` document therefore carries `project_source`: `flag`, `env`,
+`active_file` or `default`. When a command's project actually came from the
+active-project file, the document also carries a `warnings` entry telling you
+to pin `--project-uuid` or `VIGOLIUM_PROJECT_UUID`. Automation and parallel
+agents should always pin.
 
 ```bash
 # Scan by project name
@@ -88,7 +115,11 @@ curl http://localhost:9002/api/findings \
   -H 'X-Project-UUID: a1b2c3d4-e5f6-7890-abcd-ef1234567890'
 ```
 
-If the header is omitted, the server uses the default project. Project
+If the header is omitted, the server uses the default project. A UUID with no
+project answers `404 project_not_found` unless the request sends
+`X-Project-Create: 1` (or `?create=1`), or `server.auto_create_projects` is
+true; a value that is not a UUID answers `400 invalid_project_uuid`. See
+[API overview](api-references/overview.md#project-scoping). Project
 selection is data scoping; it is not an email-domain authorization mechanism.
 
 ## Per-Project Configuration
@@ -99,13 +130,15 @@ The project overlay lives at:
 ~/.vigolium/projects/<uuid>/config.yaml
 ```
 
-It uses the same partial YAML shape as a scanning profile. Only specified
-values override the global settings.
+It uses the same partial YAML shape as a scanning profile. Only the keys it
+sets override the global settings; every other key keeps its global value.
+`vigolium scope set --project <uuid> <key> <value>` writes one key into it.
 
 ```yaml
 scope:
-  hosts:
-    - "*.example.com"
+  host:
+    include:
+      - "*.example.com"
 
 scanning_pace:
   concurrency: 30
@@ -121,6 +154,28 @@ built-in defaults
   -> --scanning-profile
   -> CLI flags
 ```
+
+The project layer applies wherever a scan or a scope check runs under a
+project:
+
+- **CLI**: `scan`, `run`, `scan-url`/`scan-request` (runner path), `ingest`,
+  `agent swarm`, `doctor` and `config validate --project` use the resolved
+  project (`--project-uuid`/`--project-name`, their env vars, then
+  `project use`, then the default project).
+- **REST**: `POST /api/scans/run`, `POST /api/scan-all-records` and
+  `POST /api/agent/run/swarm` use the `X-Project-UUID` project. The overlay is
+  re-read when its file changes, so a `scope set --project` takes effect on
+  the next REST scan without restarting the server. Request fields still
+  outrank it.
+- **Agent tools**: an olium `run_native_scan`/`run_module`/`run_extension` launch uses
+  the project the agent runs in.
+
+A standalone database runs global-only unless you name a project: under
+`-S`/`--stateless`, `--glob-db`, or a shell pinned with `VIGOLIUM_DB_PATH`,
+the `project use` selection contributes no overlay, while an explicit
+`--project-uuid`/`--project-name` (or `VIGOLIUM_PROJECT_UUID`/`_NAME`) still
+applies it. An overlay that exists but does not parse fails the scan rather
+than running it with the wider global scope.
 
 ## Project REST API
 

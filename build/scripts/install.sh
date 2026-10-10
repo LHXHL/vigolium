@@ -22,8 +22,16 @@ VERSION="${VIGOLIUM_VERSION:-}"  # npm base version or CDN metadata version
 PLATFORM_TAG=""   # npm platform tag, e.g. darwin-arm64
 TARBALL_URL=""    # resolved per-platform tarball URL
 TARBALL_FILENAME=""
-TARBALL_SHA1=""   # dist.shasum (sha1) from the registry
+TARBALL_INTEGRITY="" # dist.integrity (SRI sha512) from the registry
 TARBALL_SHA256="" # sha256 from CDN checksums.txt
+
+# Release signing key (minisign) for CDN installs: checksums.txt is signed by
+# `make release-sign` and its signature is checked when `minisign` is on PATH.
+# TODO(release-key): set this to the second line of vigolium.pub, the same key
+# as pkg/selfupdate/keys.go. While empty the signature check is skipped (the
+# sha256 check against checksums.txt still runs and still fails closed).
+MINISIGN_PUBKEY=""
+MINISIGN_PUBKEY="${VIGOLIUM_MINISIGN_PUBKEY:-$MINISIGN_PUBKEY}"
 
 # Retry configuration
 MAX_RETRIES=6
@@ -82,8 +90,9 @@ need_cmd() {
 }
 
 JQ=""
-SHA1_CMD=""
+SHA512_CMD=""
 SHA256_CMD=""
+B64_DECODE=""
 
 # Check all prerequisite commands upfront
 check_prereqs() {
@@ -91,15 +100,27 @@ check_prereqs() {
 		need_cmd "$cmd"
 	done
 
-	# Check for sha1 checksum command (shasum on macOS/BSD, sha1sum on Linux)
-	# — npm publishes dist.shasum as a SHA-1 hex digest.
+	# npm tarballs are verified against the registry's dist.integrity, an SRI
+	# "sha512-<base64>" digest (dist.shasum is SHA-1, too weak to rely on).
 	if command_exists shasum; then
-		SHA1_CMD="shasum -a 1"
-	elif command_exists sha1sum; then
-		SHA1_CMD="sha1sum"
-	else
-		error "need 'shasum' or 'sha1sum' (command not found)"
+		SHA512_CMD="shasum -a 512"
+	elif command_exists sha512sum; then
+		SHA512_CMD="sha512sum"
+	elif [[ "$INSTALL_MODE" != "cdn" ]]; then
+		error "need 'shasum' or 'sha512sum' (command not found)"
 	fi
+	if printf 'QQ==' | base64 --decode >/dev/null 2>&1; then
+		B64_DECODE="base64 --decode"
+	elif printf 'QQ==' | base64 -d >/dev/null 2>&1; then
+		B64_DECODE="base64 -d"
+	elif printf 'QQ==' | base64 -D >/dev/null 2>&1; then
+		B64_DECODE="base64 -D"
+	elif command_exists openssl; then
+		B64_DECODE="openssl base64 -d -A"
+	elif [[ "$INSTALL_MODE" != "cdn" ]]; then
+		error "need 'base64' or 'openssl' to check the npm integrity digest (command not found)"
+	fi
+	need_cmd od
 
 	# CDN release artifacts are verified against checksums.txt SHA-256 values.
 	if command_exists shasum; then
@@ -290,7 +311,7 @@ fetch_latest_version() {
 	return 0
 }
 
-# Resolve the per-platform tarball URL + sha1 for VERSION/PLATFORM_TAG.
+# Resolve the per-platform tarball URL + SRI integrity for VERSION/PLATFORM_TAG.
 fetch_platform_manifest() {
 	local pkg_version="${VERSION}-${PLATFORM_TAG}"
 	local manifest_url="${NPM_REGISTRY}/${NPM_PKG_ENC}/${pkg_version}?t=$(date +%s)"
@@ -301,7 +322,7 @@ fetch_platform_manifest() {
 	downloader "$manifest_url" "$tmp_manifest"
 
 	TARBALL_URL=$(json_field "$tmp_manifest" '.dist.tarball' 'tarball')
-	TARBALL_SHA1=$(json_field "$tmp_manifest" '.dist.shasum' 'shasum')
+	TARBALL_INTEGRITY=$(json_field "$tmp_manifest" '.dist.integrity' 'integrity')
 	rm -f "$tmp_manifest"
 
 	if [[ -z "$TARBALL_URL" ]]; then
@@ -340,6 +361,38 @@ build_cdn_tarball_url() {
 	TARBALL_URL="${BASE_URL}/${TARBALL_FILENAME}"
 }
 
+# Verify checksums.txt against its minisign signature when a release key is
+# configured and `minisign` is installed. The trusted comment must name the
+# version being installed, so an older signed checksums.txt cannot stand in.
+# Any failure, including a missing .minisig, aborts the install.
+verify_checksums_signature() {
+	local checksums_file="$1"
+
+	if [[ -z "$MINISIGN_PUBKEY" ]]; then
+		return 0
+	fi
+	if ! command_exists minisign; then
+		warn "minisign not found; checksums.txt signature not verified (install minisign to verify releases end to end)"
+		return 0
+	fi
+
+	local sig_file="${checksums_file}.minisig"
+	log "Verifying checksums.txt signature (minisign)..."
+	downloader "${BASE_URL}/checksums.txt.minisig?t=$(date +%s)" "$sig_file"
+
+	local trusted=""
+	if ! trusted=$(minisign -V -Q -P "$MINISIGN_PUBKEY" -m "$checksums_file" -x "$sig_file" 2>/dev/null); then
+		rm -f "$sig_file"
+		error "checksums.txt signature verification failed; refusing to install"
+	fi
+	rm -f "$sig_file"
+	case " ${trusted} " in
+		*" v${VERSION#v} "* | *" ${VERSION#v} "*) ;;
+		*) error "checksums.txt is signed for '${trusted}', not ${VERSION}; refusing to install" ;;
+	esac
+	success "checksums.txt signature verified"
+}
+
 fetch_cdn_checksum() {
 	local checksum_url="${BASE_URL}/checksums.txt?t=$(date +%s)"
 	local tmp_checksums
@@ -347,6 +400,7 @@ fetch_cdn_checksum() {
 
 	log "Fetching checksums.txt..."
 	downloader "$checksum_url" "$tmp_checksums"
+	verify_checksums_signature "$tmp_checksums"
 
 	TARBALL_SHA256=$(grep -E "[[:space:]]${TARBALL_FILENAME}\$" "$tmp_checksums" \
 		| awk '{print $1}' \
@@ -381,26 +435,35 @@ download_file() {
 	mv "$temp_file" "$output_file"
 }
 
-# Verify SHA1 checksum against the registry's dist.shasum
-verify_checksum() {
+# Verify the tarball against the registry's dist.integrity (SRI). Only the
+# sha512 entry counts; a manifest without one is refused, never skipped.
+verify_integrity() {
 	local file="$1"
-	local expected_checksum="$2"
+	local integrity="$2"
 
-	if [[ -z "$expected_checksum" ]]; then
-		warn "Registry did not provide a checksum; skipping verification"
-		return
+	local token=""
+	local entry
+	for entry in $integrity; do
+		if [[ "$entry" == sha512-* ]]; then
+			token="${entry#sha512-}"
+			break
+		fi
+	done
+	if [[ -z "$token" ]]; then
+		error "Registry did not provide a sha512 integrity digest for this package; refusing to install unverified"
 	fi
 
-	log "Verifying checksum..."
+	log "Verifying integrity (SHA-512)..."
 
-	local actual_checksum
-	actual_checksum=$($SHA1_CMD "$file" | cut -d' ' -f1)
+	local expected_checksum actual_checksum
+	expected_checksum=$(printf '%s' "$token" | $B64_DECODE 2>/dev/null | od -An -vtx1 | tr -d ' \n' || true)
+	actual_checksum=$($SHA512_CMD "$file" | cut -d' ' -f1)
 
-	if [[ "$actual_checksum" != "$expected_checksum" ]]; then
-		error "Checksum verification failed!\nExpected: $expected_checksum\nActual: $actual_checksum"
+	if [[ ${#expected_checksum} -ne 128 || "$actual_checksum" != "$expected_checksum" ]]; then
+		error "Integrity verification failed!\nExpected: sha512-${token}\nActual (hex): $actual_checksum"
 	fi
 
-	success "Checksum verified"
+	success "Integrity verified"
 }
 
 verify_cdn_checksum() {
@@ -483,8 +546,8 @@ install_vigolium_binary() {
 	# Download tarball
 	download_file "$TARBALL_URL" "$tarball_path" "$VERSION"
 
-	# Verify checksum against the registry's dist.shasum
-	verify_checksum "$tarball_path" "$TARBALL_SHA1"
+	# Verify against the registry's dist.integrity (sha512)
+	verify_integrity "$tarball_path" "$TARBALL_INTEGRITY"
 
 	# Extract tarball (npm tarballs nest everything under package/)
 	log "Extracting tarball..."

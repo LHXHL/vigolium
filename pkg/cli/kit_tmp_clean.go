@@ -80,7 +80,11 @@ func runKitTmpClean(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		return writeAgentJSON(result)
+		return emitMutation(cmd, ".", mutationResult{
+			Changed: result.Total > 0,
+			Action:  "delete",
+			Items:   result,
+		})
 	}
 
 	fmt.Fprintf(os.Stderr, "  %s Removed %s scratch entr%s from %s %s\n",

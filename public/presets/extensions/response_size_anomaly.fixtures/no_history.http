@@ -1,0 +1,10 @@
+// Without vigolium.db (ext test opens no database) there is no baseline, so
+// the module must stay quiet rather than throw.
+// expect: {"findings": 0, "errors": 0}
+GET /api/report HTTP/1.1
+Host: api.example.com
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"rows": []}

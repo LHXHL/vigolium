@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,6 +62,69 @@ type phaseTracker struct {
 	hasPersist bool
 	unacked    int64
 	counters   []phaseCounter
+	// counts are the phase-specific tallies persisted on PhaseOutcome.Counts.
+	counts map[string]int64
+	// inScope are the counters behind requests_in_scope, for phases whose
+	// requests_sent includes third-party traffic (the browser crawl). Nil means
+	// the phase does not report the field.
+	inScope []phaseCounter
+
+	// Work-item progress (done/total/unit on phase.progress and phase.finished).
+	// progress is nil for a phase with no count to report; lastTotal is the
+	// largest total reported so far, the floor that keeps Total non-decreasing.
+	// Guarded by mu.
+	progressUnit string
+	progress     func() (done, total int64)
+	lastTotal    int64
+	executors    []*core.Executor
+
+	// quarantined are the hosts whose items the phase's executors dropped for
+	// the dead-host breaker, merged across runs. Guarded by mu.
+	quarantined map[string]core.QuarantinedHost
+
+	// budgetHosts are the hosts whose --max-requests-per-host ran out during
+	// the phase (see noteHostBudget). Guarded by mu.
+	budgetHosts map[string]struct{}
+
+	// finishers run in finish, before the outcome is read (see onFinish).
+	// Guarded by mu.
+	finishers []func(*phaseTracker)
+}
+
+// onFinish registers fn to run when the phase finishes, before its outcome is
+// snapshotted, so it can still mark reasons, limits and counts — for state
+// that lives outside the phase (a live session's logged-out tally).
+func (t *phaseTracker) onFinish(fn func(*phaseTracker)) {
+	if t == nil || fn == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.finishers = append(t.finishers, fn)
+}
+
+// Units for phase progress. One table so a consumer sees one spelling per kind.
+const (
+	progressUnitRecords = "records"
+	progressUnitTargets = "targets"
+)
+
+// executorProgressUnit names the phases whose progress is read off the
+// executors they run, and the unit each one counts. These phases feed an input
+// source through core.Executor, so done is the executors' processed count and
+// total is their sources' size.
+//
+// Phases that walk a target list themselves report through trackTargets
+// instead. Discovery is absent on purpose: its executor's input is the deparos
+// output stream, which has no size, and the honest figure is the coordinator's
+// tasks done/enqueued.
+//
+// TODO(plan D): wire discovery as progressUnit "tasks" from the deparos
+// coordinator's Progress() accessor once the discovery source exposes it.
+var executorProgressUnit = map[NativePhase]string{
+	PhaseDynamicAssessment: progressUnitRecords,
+	PhaseSeed:              progressUnitRecords,
+	PhaseProbe:             progressUnitTargets,
 }
 
 // phaseCounter is one additional request counter a phase contributes, with the
@@ -104,12 +166,15 @@ func (t *phaseTracker) heartbeat(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			scanevents.Emit(scanevents.Event{
+			ev := scanevents.Event{
 				Type:         scanevents.TypePhaseProgress,
 				Phase:        t.phase,
 				RequestsSent: scanevents.Int64(t.sentSoFar()),
 				Findings:     scanevents.Int64(t.findings.Load()),
-			})
+			}
+			t.fillInScope(&ev)
+			t.fillProgress(&ev)
+			scanevents.Emit(ev)
 		case <-t.stop:
 			return
 		case <-ctx.Done():
@@ -118,11 +183,39 @@ func (t *phaseTracker) heartbeat(ctx context.Context) {
 	}
 }
 
+// inScopeSoFar sums the in-scope counters; ok is false when none is registered.
+func (t *phaseTracker) inScopeSoFar() (n int64, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, c := range t.inScope {
+		n += c.read() - c.base
+	}
+	return n, len(t.inScope) > 0
+}
+
+// fillInScope sets requests_in_scope when the phase registered a counter for it.
+func (t *phaseTracker) fillInScope(ev *scanevents.Event) {
+	if n, ok := t.inScopeSoFar(); ok {
+		ev.RequestsInScope = scanevents.Int64(n)
+	}
+}
+
 func (t *phaseTracker) sentSoFar() int64 {
 	var total int64
 	if t.requester != nil {
 		total = t.requester.RequestsSent() - t.baseSent
 	}
+	return total + t.extraSentSoFar()
+}
+
+// extraSentSoFar sums only the counters registered with addCounter — the
+// requests this phase sent outside the shared requester. The liveness
+// heartbeat adds it to the requester's scan-wide count. Nil-safe.
+func (t *phaseTracker) extraSentSoFar() int64 {
+	if t == nil {
+		return 0
+	}
+	var total int64
 	t.mu.Lock()
 	for _, c := range t.counters {
 		total += c.read() - c.base
@@ -150,6 +243,156 @@ func (t *phaseTracker) addCounter(f func() int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.counters = append(t.counters, phaseCounter{read: f, base: base})
+}
+
+// addInScopeCounter registers a counter for requests_in_scope, the in-scope
+// share of the requests a counter given to addCounter reports. Read as a delta
+// from its value now, like addCounter.
+func (t *phaseTracker) addInScopeCounter(f func() int64) {
+	if t == nil || f == nil {
+		return
+	}
+	base := f()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.inScope = append(t.inScope, phaseCounter{read: f, base: base})
+}
+
+// setProgress installs the phase's work-item progress source: f reports how many
+// items are done and the current bound on how many there are, in unit. The last
+// call wins. Safe to call concurrently with the heartbeat that reads it.
+//
+// f may return a total that shrinks or reads below done (a live source's
+// snapshot, a coalesced round); the tracker clamps it, so f can report its raw
+// figures.
+func (t *phaseTracker) setProgress(unit string, f func() (done, total int64)) {
+	if t == nil || f == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.progressUnit = unit
+	t.progress = f
+}
+
+// observeExecutor is the core.ExecutorObserver for a phase whose progress is
+// read off its executors. Every executor the phase starts is summed, so a
+// multi-round phase reports cumulative done and a total that grows round by
+// round as each new round's source learns its size.
+func (t *phaseTracker) observeExecutor(e *core.Executor) {
+	if t == nil || e == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, seen := range t.executors {
+		if seen == e {
+			return
+		}
+	}
+	t.executors = append(t.executors, e)
+}
+
+// executorProgress sums done/total over the executors the phase has started.
+func (t *phaseTracker) executorProgress() (done, total int64) {
+	t.mu.Lock()
+	execs := append([]*core.Executor(nil), t.executors...)
+	t.mu.Unlock()
+	for _, e := range execs {
+		done += e.Processed()
+		total += e.KnownTotal()
+	}
+	return done, total
+}
+
+// targetProgress counts the targets a phase has finished against the number it
+// set out to cover. Nil-safe, so a phase can call it whether or not a tracker is
+// running.
+type targetProgress struct {
+	done  atomic.Int64
+	total atomic.Int64
+}
+
+// Add records n more targets finished.
+func (p *targetProgress) Add(n int) {
+	if p == nil {
+		return
+	}
+	p.done.Add(int64(n))
+}
+
+// Set records the number of targets finished so far, for a loop that already
+// keeps its own running count.
+func (p *targetProgress) Set(n int) {
+	if p == nil {
+		return
+	}
+	p.done.Store(int64(n))
+}
+
+// trackTargets makes the phase report done/total in targets, against total
+// targets. Returns the counter the phase advances as each target finishes.
+func (t *phaseTracker) trackTargets(total int) *targetProgress {
+	if t == nil {
+		return nil
+	}
+	p := &targetProgress{}
+	p.total.Store(int64(total))
+	t.setProgress(progressUnitTargets, func() (int64, int64) {
+		return p.done.Load(), p.total.Load()
+	})
+	return p
+}
+
+// fillProgress sets done/total/unit on ev from the phase's progress source, and
+// leaves them unset when the phase has none.
+//
+// Total is clamped to be non-decreasing and never below done, which is the
+// documented contract: an upper bound that may grow. A total of zero with no
+// earlier reading means "no bound known yet" and is omitted rather than
+// reported as 0, which would read as "nothing to do".
+func (t *phaseTracker) fillProgress(ev *scanevents.Event) {
+	p := t.progressSnapshot()
+	if p == nil {
+		return
+	}
+	ev.Done = scanevents.Int64(p.Done)
+	ev.Total = p.Total
+	ev.Unit = p.Unit
+}
+
+// progressSnapshot reads the phase's progress source once, applying the
+// clamp fillProgress documents. Nil when the phase has no source (or the
+// tracker is nil); Total is nil until a bound is known. Shared by the event
+// stream and the liveness heartbeat so both report the same numbers.
+func (t *phaseTracker) progressSnapshot() *SessionProgress {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	f, unit := t.progress, t.progressUnit
+	t.mu.Unlock()
+	if f == nil {
+		return nil
+	}
+	done, total := f()
+
+	t.mu.Lock()
+	known := total > 0 || t.lastTotal > 0
+	if total < t.lastTotal {
+		total = t.lastTotal
+	}
+	if known && total < done {
+		total = done
+	}
+	t.lastTotal = total
+	t.mu.Unlock()
+
+	p := &SessionProgress{Done: done, Unit: unit}
+	if known {
+		p.Total = scanevents.Int64(total)
+	}
+	return p
 }
 
 // recordFinding counts a finding against the running phase, so phase.finished
@@ -249,11 +492,35 @@ func (t *phaseTracker) noteExecution(rep core.ExecutionReport) {
 	if rep.DeferredFlushSkipped {
 		t.markPartial(database.ReasonDeferredFlushSkipped)
 	}
+	t.noteQuarantineSkips(rep)
+	// Every item scope looked at was refused and none got an answer: the
+	// executor ran and covered nothing. For CLI targets the preflight admission
+	// says so before the run; this is the same signal for input that is not a
+	// target list (-i specs, DB rescans, scan-on-receive), where scope only
+	// meets the records one by one.
+	if rep.ScopeRejected > 0 && rep.Responded == 0 {
+		t.markPartial(database.ReasonTargetsOutOfScope)
+	}
 	if rep.Unacked > 0 {
 		t.mu.Lock()
 		t.unacked += rep.Unacked
 		t.mu.Unlock()
 	}
+}
+
+// setCount records a phase-specific tally for PhaseOutcome.Counts. The last value
+// set for a name wins; zero values are kept, so a consumer can tell "probed 0"
+// from "did not report".
+func (t *phaseTracker) setCount(name string, n int64) {
+	if t == nil || name == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.counts == nil {
+		t.counts = make(map[string]int64)
+	}
+	t.counts[name] = n
 }
 
 // finish closes out the phase: it always computes the phase's outcome, and emits
@@ -270,17 +537,21 @@ func (t *phaseTracker) finish(ctx context.Context, err error) database.PhaseOutc
 	}
 	// recordError, not noteError: an error that reaches finish is the one the
 	// CALLER is returning, so it rides out on scan.finished. Emitting a non-fatal
-	// `error` event for it too would contradict that event's contract, and the
-	// arms that log-and-continue have already called noteError themselves.
+	// `error` event for it too would contradict that event's contract, and a
+	// failure the scan survives has already been through noteError (see
+	// executeNativePhase).
 	t.recordError(err)
 	// The context the phase ran under explains a curtailment the phase itself
-	// cannot see: the total scan budget, or an operator's Ctrl-C.
+	// cannot see: the total scan budget, the request budget, or an operator's
+	// Ctrl-C.
 	if ctx != nil && ctx.Err() != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			t.markPartial(database.ReasonScanBudget)
-		} else {
-			t.markPartial(database.ReasonCancelled)
-		}
+		t.markPartial(contextStopReason(ctx))
+	}
+	t.mu.Lock()
+	finishers := t.finishers
+	t.mu.Unlock()
+	for _, fn := range finishers {
+		fn(t)
 	}
 
 	out := t.outcome()
@@ -311,6 +582,8 @@ func (t *phaseTracker) finish(ctx context.Context, err error) database.PhaseOutc
 	if out.Message != "" {
 		ev.Message = out.Message
 	}
+	t.fillInScope(&ev)
+	t.fillProgress(&ev)
 	scanevents.Emit(ev)
 	return out
 }
@@ -332,23 +605,37 @@ func (t *phaseTracker) outcome() database.PhaseOutcome {
 		DurationMS:  time.Since(t.start).Milliseconds(),
 	}
 	out.State = database.ResolvePhaseState(out.Errors, out.Reasons, t.skipped)
+	out.BudgetExhaustedHosts = database.SortedCodes(t.budgetHosts)
+	t.fillQuarantined(&out)
 	if t.hasPersist {
 		p := t.persist
 		out.Persistence = &p
+	}
+	if len(t.counts) > 0 {
+		out.Counts = make(map[string]int64, len(t.counts))
+		for name, n := range t.counts {
+			out.Counts[name] = n
+		}
 	}
 	return out
 }
 
 // attachEventObserver routes every finding the output writer emits into the
-// machine event stream, and counts it against the phase that produced it. One
-// call, one seam: the runner has ~six OnResult callbacks and the writer is the
-// only thing all of them reach.
+// machine event stream, and counts it against the phase that produced it and
+// the scan's liveness heartbeat. One call, one seam: the runner has ~six
+// OnResult callbacks and the writer is the only thing all of them reach.
+//
+// Attached whether or not a stream is on (the heartbeat counts findings on
+// every run), and only once per writer: a Runner reused across agent rescans
+// calls this per run, and chaining a second wrapper would count and emit every
+// finding twice. The wrapper reads the current phase and heartbeat at call
+// time, so one attachment serves every run.
 func (r *Runner) attachEventObserver() {
-	if !scanevents.On() {
-		return
-	}
 	sw, ok := r.output.(*output.StandardWriter)
 	if !ok {
+		return
+	}
+	if !r.eventObserverAttached.CompareAndSwap(false, true) {
 		return
 	}
 	prior := sw.OnEvent
@@ -357,6 +644,9 @@ func (r *Runner) attachEventObserver() {
 			prior(ev)
 		}
 		r.currentPhase.Load().recordFinding()
+		if ev != nil {
+			r.liveness.Load().RecordFinding(ev.Info.Severity.String())
+		}
 		emitFindingEvent(ev)
 	}
 }
@@ -368,11 +658,10 @@ func (r *Runner) attachEventObserver() {
 // scan.finished instead.
 //
 // A method on the tracker rather than a free function taking a name: the tracker
-// owns the CANONICAL phase id, and the eight call sites sit next to
-// scanLogger.Error calls whose component labels are the short tags
-// ("heuristics", "harvest", "respider"). Hand-typing the label at each site had
-// already produced three phases that reported one spelling on phase.started and
-// another on error, which silently breaks a consumer correlating the two.
+// owns the CANONICAL phase id, while the scan log labels phases with the short
+// tags ("heuristics", "harvest", "respider"). Hand-typing the label had already
+// produced three phases that reported one spelling on phase.started and another
+// on error, which silently breaks a consumer correlating the two.
 func (t *phaseTracker) noteError(err error) {
 	if t == nil || err == nil {
 		return

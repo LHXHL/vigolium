@@ -16,10 +16,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/cli/tui"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/scanevents"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"go.uber.org/zap"
 )
 
 var (
@@ -28,6 +31,7 @@ var (
 	logFollow    bool
 	logStripANSI bool
 	logRaw       bool
+	logLsReap    bool
 )
 
 var logCmd = &cobra.Command{
@@ -57,8 +61,22 @@ Pass --tui to open the interactive picker.`,
 var logLsCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List native scan and agentic scan sessions",
-	Long:  "Print every native scan and agentic scan session that has a stored log, sorted by most recent first. Each row shows the session UUID, kind, start time, and source — pass the UUID to 'vigolium log <uuid>' to view its log.",
-	RunE:  runLogLs,
+	Long: `Print every native scan and agentic scan session that has a stored log, sorted by most recent first. Each row shows the session UUID, kind, start time, and source — pass the UUID to 'vigolium log <uuid>' to view its log.
+
+--reap cleans up after scans that died: every native scan row of the project
+that still says "running" but is abandoned (nothing has written for 2 minutes,
+or its process on this host is gone) is finalized as failed with
+stop_reason "abandoned", and status.json heartbeat files older than
+scanning_strategy.scan_logs.status_retention_days (default 30, 0 = keep) are
+removed. --reap writes the store, so it is refused under --read-only and on a
+-S/--glob-db read.`,
+	Example: FormatExamples(
+		"# Sessions, newest first, with liveness",
+		"vigolium log ls -j",
+		"# Finalize dead running rows and prune old status.json files",
+		"vigolium log ls --reap",
+	),
+	RunE: runLogLs,
 }
 
 func init() {
@@ -72,6 +90,15 @@ func init() {
 	logCmd.Flags().BoolVar(&logRaw, "raw", false, "For agentic sessions, print the raw transcript JSONL verbatim instead of the rendered replay")
 	tui.AddFlags(logCmd, &logLsTUI, &logLsNoTUI)
 	tui.AddFlags(logLsCmd, &logLsTUI, &logLsNoTUI)
+	logLsCmd.Flags().BoolVar(&logLsReap, "reap", false, "Finalize abandoned running scan rows as failed (stop_reason abandoned) and prune expired status.json files; writes the store")
+}
+
+// logLsExtras are the top-level keys `log ls -j --reap` adds.
+type logLsExtras struct {
+	// Reaped lists the scan UUIDs this run finalized as abandoned.
+	Reaped []string `json:"reaped,omitempty"`
+	// StatusFilesRemoved counts the expired status.json files pruned.
+	StatusFilesRemoved *int `json:"status_files_removed,omitempty"`
 }
 
 // sessionRow is a normalized view of a scan log session (native or agentic)
@@ -85,6 +112,68 @@ type sessionRow struct {
 	logPath   string // may be empty if no file on disk
 	logSize   int64
 	hasLog    bool // true when a runtime.log (or legacy run.log) file exists
+	// errorMessage is the row's error text, which tells a cancelled native scan
+	// (stored failed with "cancelled") from a failed one.
+	errorMessage string
+	// liveness is the shared verdict (sessionLiveness) on whether a "running"
+	// session is still writing.
+	liveness Liveness
+}
+
+// stale reports whether a session the store still calls running has stopped
+// writing. Always false for a terminal session: staleness only qualifies
+// "running".
+func (r sessionRow) stale() bool {
+	return r.status == "running" && r.liveness.Stale
+}
+
+// logRowView is one `log ls -j` row. status is the stored value, unchanged for
+// compatibility; effective_status is what to act on (abandoned when a running
+// row is stale). last_write_at is null when no liveness signal exists.
+type logRowView struct {
+	Kind            string    `json:"kind"`
+	UUID            string    `json:"uuid"`
+	Status          string    `json:"status"`
+	EffectiveStatus string    `json:"effective_status"`
+	Stale           bool      `json:"stale"`
+	LastWriteAt     *string   `json:"last_write_at"`
+	LivenessSources []string  `json:"liveness_sources"`
+	Target          string    `json:"target"`
+	CreatedAt       time.Time `json:"created_at"`
+	LogPath         string    `json:"log_path"`
+	LogSize         int64     `json:"log_size"`
+	HasLog          bool      `json:"has_log"`
+}
+
+func (r sessionRow) view() logRowView {
+	sources := r.liveness.Sources
+	if sources == nil {
+		sources = []string{}
+	}
+	return logRowView{
+		Kind:            r.kind,
+		UUID:            r.uuid,
+		Status:          r.status,
+		EffectiveStatus: effectiveStatus(r.status, r.errorMessage, r.liveness),
+		Stale:           r.stale(),
+		LastWriteAt:     formatLivenessTime(r.liveness.LastWriteAt),
+		LivenessSources: sources,
+		Target:          r.target,
+		CreatedAt:       r.createdAt,
+		LogPath:         r.logPath,
+		LogSize:         r.logSize,
+		HasLog:          r.hasLog,
+	}
+}
+
+// formatLivenessTime renders a liveness timestamp the way event lines do, nil
+// for an unknown (zero) time.
+func formatLivenessTime(t time.Time) *string {
+	if t.IsZero() {
+		return nil
+	}
+	s := scanevents.FormatTime(t)
+	return &s
 }
 
 func runLogLs(cmd *cobra.Command, args []string) error {
@@ -105,14 +194,27 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 	// Records:true because `log` reads scans, agentic_scans and scan_logs and
 	// never touches http_records; under --glob-db that skip is the difference
 	// between merging a session listing and copying every file's whole corpus.
-	db, err := openReadDB(globDBSkipSet{Records: true})
+	//
+	// No CreateSchema: `log` opens the read pool (db_intent.go), whose opener
+	// checks the schema with catalog reads and never takes the write lock — a
+	// listing must not queue behind the scan it is listing.
+	//
+	// --reap writes (dbWriteFlags flips the intent), so it opens the shared
+	// store itself: a -S/--glob-db read is a scratch copy nobody would see the
+	// finalized rows in.
+	var db *database.DB
+	if logLsReap {
+		if globalStateless || strings.TrimSpace(globalGlobDB) != "" {
+			return usageErrorf("--reap finalizes rows in the store; it cannot run on a -S/--glob-db read")
+		}
+		db, err = getDB()
+	} else {
+		db, err = openReadDB(globDBSkipSet{Records: true})
+	}
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 	ctx := context.Background()
-	if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-		return fmt.Errorf("failed to create schema: %w", schemaErr)
-	}
 	repo := database.NewRepository(db)
 
 	projectUUID, err := resolveProjectUUID()
@@ -120,7 +222,25 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	rows := collectNativeRows(ctx, repo, projectUUID, settings.ScanningStrategy.ScanLogs.EffectiveSessionsDir())
+	sessionsDir := settings.ScanningStrategy.ScanLogs.EffectiveSessionsDir()
+	var extras *logLsExtras
+	if logLsReap {
+		reaped, reapErr := reapAbandonedScans(ctx, repo, projectUUID, sessionsDir)
+		if reapErr != nil {
+			return fmt.Errorf("reap abandoned scans: %w", reapErr)
+		}
+		removed, pruneErr := pruneSessionStatusForSettings(settings)
+		if pruneErr != nil {
+			zap.L().Warn("Some expired status.json files could not be removed", zap.Error(pruneErr))
+		}
+		extras = &logLsExtras{Reaped: reaped, StatusFilesRemoved: &removed}
+		if !globalJSON && !globalSilent {
+			fmt.Fprintf(os.Stderr, "%s Reaped %d abandoned scan(s); removed %d expired status file(s)\n",
+				terminal.InfoSymbol(), len(reaped), removed)
+		}
+	}
+
+	rows := collectNativeRows(ctx, repo, projectUUID, sessionsDir)
 	rows = append(rows, collectAgenticRows(ctx, repo, projectUUID, settings.Agent.EffectiveSessionsDir())...)
 
 	sort.Slice(rows, func(i, j int) bool {
@@ -138,24 +258,21 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		out := make([]map[string]interface{}, 0, len(rows))
+		out := make([]logRowView, 0, len(rows))
 		for _, r := range rows {
-			out = append(out, map[string]interface{}{
-				"kind":       r.kind,
-				"uuid":       r.uuid,
-				"status":     r.status,
-				"target":     r.target,
-				"created_at": r.createdAt,
-				"log_path":   r.logPath,
-				"log_size":   r.logSize,
-				"has_log":    r.hasLog,
-			})
+			out = append(out, r.view())
 		}
 		// This used to emit a BARE ARRAY, the one -j surface that broke the
 		// "parse .items" rule the envelope exists to establish. A contract with a
 		// documented hole is one every consumer special-cases forever.
-		env := newAgentEnvelope("log ls", "rows", out, int64(len(out)), 0, len(out))
+		env := newMachineEnvelope(cmd, kindRead, "rows", out, int64(len(out)), 0, len(out))
 		env.DBPath = resolvedReadDBPath()
+		if extras != nil {
+			if extras.Reaped == nil {
+				extras.Reaped = []string{}
+			}
+			env.With("reaped", extras.Reaped).With("status_files_removed", *extras.StatusFilesRemoved)
+		}
 		if len(out) > 0 {
 			env.WithQuery("log", rows[0].uuid)
 		}
@@ -191,10 +308,15 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 			target = target[:37] + "..."
 		}
 
+		statusCol := colorRunStatus(r.status)
+		if r.stale() {
+			statusCol += terminal.Gray(fmt.Sprintf(" (stale %s)", fmtStaleAge(r.liveness.LastWriteAt)))
+		}
+
 		tbl.AddRow(
 			kindCol,
 			terminal.Gray(r.uuid),
-			colorRunStatus(r.status),
+			statusCol,
 			target,
 			logCol,
 			terminal.Gray(sizeCol),
@@ -216,14 +338,16 @@ func collectNativeRows(ctx context.Context, repo *database.Repository, projectUU
 	if err != nil {
 		return nil
 	}
+	lastLogs := lastScanLogTimes(ctx, repo, scans)
 	rows := make([]sessionRow, 0, len(scans))
 	for _, s := range scans {
 		row := sessionRow{
-			kind:      "native",
-			uuid:      s.UUID,
-			status:    s.Status,
-			target:    s.Target,
-			createdAt: s.StartedAt,
+			kind:         "native",
+			uuid:         s.UUID,
+			status:       s.Status,
+			target:       s.Target,
+			createdAt:    s.StartedAt,
+			errorMessage: s.ErrorMessage,
 		}
 		if logPath := resolveSessionLogPath(filepath.Join(sessionsDir, s.UUID)); logPath != "" {
 			if fi, statErr := os.Stat(logPath); statErr == nil {
@@ -232,9 +356,69 @@ func collectNativeRows(ctx context.Context, repo *database.Repository, projectUU
 				row.hasLog = true
 			}
 		}
+		row.liveness = sessionLiveness(s, runner.SessionStatusPath(sessionsDir, s.UUID), row.logPath, lastLogs[s.UUID])
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// lastScanLogTimes reads MAX(scan_logs.created_at) for every listed scan that
+// still says running, in one GROUP BY. Terminal rows are left out on purpose:
+// their liveness is moot, and scan_logs carries every trace line a scan ever
+// wrote, so reading it for a whole listing costs a pass over the project's
+// entire log history to answer a question nobody asked. A failed read is an
+// absent signal, not an error: the listing still has the others.
+func lastScanLogTimes(ctx context.Context, repo *database.Repository, scans []*database.Scan) map[string]time.Time {
+	var uuids, projects []string
+	seenProject := map[string]bool{}
+	for _, s := range scans {
+		if s == nil || s.Status != "running" {
+			continue
+		}
+		uuids = append(uuids, s.UUID)
+		if s.ProjectUUID != "" && !seenProject[s.ProjectUUID] {
+			seenProject[s.ProjectUUID] = true
+			projects = append(projects, s.ProjectUUID)
+		}
+	}
+	if len(uuids) == 0 || repo == nil {
+		return nil
+	}
+	out, err := repo.LastScanLogTimes(ctx, projects, uuids)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// agenticLiveness is the liveness of an agentic session, which has no
+// heartbeat: its runtime.log and transcript are the only signals. The row's
+// start time is deliberately not one — a long run that logs to the database
+// only would read as abandoned two minutes after it began.
+func agenticLiveness(logPath, transcriptPath string) Liveness {
+	var newest time.Time
+	for _, p := range []string{logPath, transcriptPath} {
+		if p == "" {
+			continue
+		}
+		if info, err := os.Stat(p); err == nil && info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	return livenessFromSignals(livenessSignals{logMTime: newest})
+}
+
+// fmtStaleAge renders how long ago a stale session last wrote ("14m"), or
+// "unknown" when no signal ever wrote.
+func fmtStaleAge(last time.Time) string {
+	if last.IsZero() {
+		return "no writes"
+	}
+	age := livenessNow().Sub(last).Round(time.Minute)
+	if age < time.Minute {
+		return "<1m"
+	}
+	return strings.TrimSuffix(age.String(), "0s")
 }
 
 func collectAgenticRows(ctx context.Context, repo *database.Repository, projectUUID, sessionsDir string) []sessionRow {
@@ -266,6 +450,7 @@ func collectAgenticRows(ctx context.Context, repo *database.Repository, projectU
 				row.hasLog = true
 			}
 		}
+		row.liveness = agenticLiveness(row.logPath, resolveTranscriptPath(sessionDir))
 		rows = append(rows, row)
 	}
 	return rows
@@ -292,14 +477,17 @@ func runLogShow(cmd *cobra.Command, args []string) error {
 	// TUI picker when --tui is set). Passing a UUID falls through to the
 	// streaming path below.
 	if len(args) == 0 {
-		return runLogLs(cmd, args)
+		return runLogLs(logLsCmd, args)
 	}
 
 	uuid := strings.TrimSpace(args[0])
 	if uuid == "" {
-		return errors.New("uuid argument is required")
+		return usageErrorf("uuid argument is required")
 	}
 
+	if globalJSON {
+		return emitLogJSON(cmd, uuid)
+	}
 	return showLogForUUID(uuid, cmd.Flags().Changed("follow"))
 }
 
@@ -326,10 +514,10 @@ func showLogForUUID(uuid string, followExplicit bool) error {
 	// bounded log read into a multi-minute stall on the sweeps that most needed
 	// reading. Two gates fix it: a non-TTY stdout (a pipe — i.e. a program, which
 	// wants the log and an exit) never auto-follows, and a row whose scan is no
-	// longer live (logSourceIsStale) is not treated as running even on a TTY.
+	// longer live (sessionLiveness) is not treated as running even on a TTY.
 	// An explicitly typed --follow still wins in both directions.
 	follow := logFollow
-	if !followExplicit && src.status == "running" && terminal.IsTerminal() && !globalJSON && !logSourceIsStale(src) {
+	if !followExplicit && src.status == "running" && terminal.IsTerminal() && !globalJSON && !src.liveness.Stale {
 		follow = true
 	}
 
@@ -363,11 +551,11 @@ type logSource struct {
 	transcriptPath string // absolute path to transcript.jsonl (agentic only, "" when absent)
 	fromDB         bool   // true when falling back to scan_logs table
 	scanUUID       string // UUID used for DB queries
-	// updatedAt is the row's own last-write time, the liveness signal used when
-	// there is no log file to stat. A status column alone cannot say whether a
-	// "running" scan is still running — a process killed by a deadline or SIGKILL
-	// leaves that column saying running forever. See logSourceIsStale.
-	updatedAt time.Time
+	// liveness says whether a "running" session is still writing. A status
+	// column alone cannot — a process killed by a deadline or SIGKILL leaves it
+	// saying running forever. Computed by sessionLiveness for every branch,
+	// including the file-less DB fallback, which used to have no signal at all.
+	liveness Liveness
 }
 
 func (s *logSource) originLabel() string {
@@ -391,43 +579,50 @@ func resolveLogSource(uuid string, settings *config.Settings) (*logSource, error
 	var repo *database.Repository
 	ctx := context.Background()
 	if dbErr == nil {
-		if schemaErr := db.CreateSchema(ctx); schemaErr != nil {
-			return nil, fmt.Errorf("failed to create schema: %w", schemaErr)
-		}
 		repo = database.NewRepository(db)
 	}
 
-	nativeStatus := func() (string, time.Time) {
+	statusFile := runner.SessionStatusPath(settings.ScanningStrategy.ScanLogs.EffectiveSessionsDir(), uuid)
+	// nativeLiveness is the shared verdict for a native scan, with or without a
+	// log file: the row's heartbeat, status.json, the log's mtime and the
+	// newest scan_logs line all count.
+	nativeLiveness := func(scan *database.Scan, logFile string) Liveness {
+		var lastLog time.Time
+		if repo != nil && scan != nil && scan.Status == "running" {
+			lastLog = lastScanLogTimes(ctx, repo, []*database.Scan{scan})[uuid]
+		}
+		return sessionLiveness(scan, statusFile, logFile, lastLog)
+	}
+	nativeRow := func() *database.Scan {
 		if repo == nil {
-			return "", time.Time{}
+			return nil
 		}
 		if scan, err := repo.GetScanByUUID(ctx, uuid); err == nil && scan != nil {
-			return scan.Status, scan.UpdatedAt
+			return scan
 		}
-		return "", time.Time{}
+		return nil
 	}
-	agenticStatus := func() (string, time.Time) {
+	agenticStatus := func() string {
 		if repo == nil {
-			return "", time.Time{}
+			return ""
 		}
 		if run, err := repo.GetAgenticScan(ctx, uuid); err == nil && run != nil {
-			// AgenticScan has no updated_at; StartedAt is the closest liveness
-			// anchor it carries. That makes the staleness window measure "how
-			// long since the run began" for a file-less agentic session, which
-			// is conservative in the right direction: it only ever declines to
-			// auto-follow, never forces one.
-			return run.Status, run.StartedAt
+			return run.Status
 		}
-		return "", time.Time{}
+		return ""
 	}
 
 	if nativeLog != "" {
-		status, updated := nativeStatus()
-		return &logSource{kind: "native", status: status, updatedAt: updated, filePath: nativeLog, scanUUID: uuid}, nil
+		scan := nativeRow()
+		status := ""
+		if scan != nil {
+			status = scan.Status
+		}
+		return &logSource{kind: "native", status: status, liveness: nativeLiveness(scan, nativeLog), filePath: nativeLog, scanUUID: uuid}, nil
 	}
 	if agenticLog != "" {
-		status, updated := agenticStatus()
-		return &logSource{kind: "agentic", status: status, updatedAt: updated, filePath: agenticLog, transcriptPath: resolveTranscriptPath(agenticDir), scanUUID: uuid}, nil
+		transcript := resolveTranscriptPath(agenticDir)
+		return &logSource{kind: "agentic", status: agenticStatus(), liveness: agenticLiveness(agenticLog, transcript), filePath: agenticLog, transcriptPath: transcript, scanUUID: uuid}, nil
 	}
 
 	// Neither convention path (~/.vigolium/agent-sessions/<uuid>/) has a
@@ -437,7 +632,8 @@ func resolveLogSource(uuid string, settings *config.Settings) (*logSource, error
 	if repo != nil {
 		if run, err := repo.GetAgenticScan(ctx, uuid); err == nil && run != nil && run.SessionDir != "" && run.SessionDir != agenticDir {
 			if altLog := resolveSessionLogPath(run.SessionDir); altLog != "" {
-				return &logSource{kind: "agentic", status: run.Status, filePath: altLog, transcriptPath: resolveTranscriptPath(run.SessionDir), scanUUID: uuid}, nil
+				transcript := resolveTranscriptPath(run.SessionDir)
+				return &logSource{kind: "agentic", status: run.Status, liveness: agenticLiveness(altLog, transcript), filePath: altLog, transcriptPath: transcript, scanUUID: uuid}, nil
 			}
 		}
 	}
@@ -451,8 +647,8 @@ func resolveLogSource(uuid string, settings *config.Settings) (*logSource, error
 		return nil, fmt.Errorf("no log file found at %s or %s; database fallback unavailable: %w",
 			terminal.ShortenHome(expectedNative), terminal.ShortenHome(expectedAgentic), dbErr)
 	}
-	if scan, err := repo.GetScanByUUID(ctx, uuid); err == nil && scan != nil {
-		return &logSource{kind: "native", status: scan.Status, fromDB: true, scanUUID: uuid}, nil
+	if scan := nativeRow(); scan != nil {
+		return &logSource{kind: "native", status: scan.Status, liveness: nativeLiveness(scan, ""), fromDB: true, scanUUID: uuid}, nil
 	}
 	if run, err := repo.GetAgenticScan(ctx, uuid); err == nil && run != nil {
 		// Prefer the DB-stored SessionDir (handles custom paths), fall back
@@ -636,39 +832,23 @@ func tailStartOffset(path string, lines int) int64 {
 	return 0
 }
 
-// isSQLiteBusy reports whether an error is a transient SQLITE_BUSY
-// ("database is locked") from the sqlite driver — expected when a scan is
-// actively writing to scan_logs while we poll it.
-func isSQLiteBusy(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "database is locked") ||
-		strings.Contains(s, "SQLITE_BUSY") ||
-		strings.Contains(s, "(5)")
-}
-
-// fetchScanLogsRetry calls ListScanLogs, retrying on SQLITE_BUSY with a
-// short backoff. Returns the first non-busy error.
+// fetchScanLogsRetry calls ListScanLogs under database.RetryBusy: a scan that
+// is writing scan_logs while we poll it can hold the lock past busy_timeout, and
+// that is worth a short, bounded wait rather than an error. When the budget runs
+// out the error is a *database.LockedError (database_locked).
 func fetchScanLogsRetry(ctx context.Context, repo *database.Repository, scanUUID string, limit, offset int, attempts int) ([]*database.ScanLog, error) {
-	backoff := 50 * time.Millisecond
-	var lastErr error
-	for i := 0; i < attempts; i++ {
-		logs, _, err := repo.ListScanLogs(ctx, scanUUID, "", "", limit, offset)
-		if err == nil {
-			return logs, nil
-		}
-		if !isSQLiteBusy(err) {
-			return nil, err
-		}
-		lastErr = err
-		time.Sleep(backoff)
-		if backoff < 500*time.Millisecond {
-			backoff *= 2
-		}
-	}
-	return nil, lastErr
+	var logs []*database.ScanLog
+	err := database.RetryBusy(ctx, func() error {
+		var err error
+		logs, _, err = repo.ListScanLogs(ctx, scanUUID, "", "", limit, offset)
+		return err
+	}, database.RetryPolicy{
+		Op:          "read scan logs",
+		MaxAttempts: attempts,
+		BaseDelay:   50 * time.Millisecond,
+		MaxDelay:    500 * time.Millisecond,
+	})
+	return logs, err
 }
 
 // streamLogFromDB replays scan_logs entries to stdout in the same raw-text
@@ -697,7 +877,7 @@ func streamLogFromDB(src *logSource, follow bool) error {
 	const pageLimit = 10000
 	logs, err := fetchScanLogsRetry(ctx, repo, src.scanUUID, pageLimit, 0, 10)
 	if err != nil {
-		if follow && isSQLiteBusy(err) {
+		if follow && database.IsBusy(err) {
 			// Proceed with empty snapshot; follow loop will pick up rows later.
 			logs = nil
 		} else {
@@ -741,7 +921,7 @@ func streamLogFromDB(src *logSource, follow bool) error {
 			newLogs, _, fetchErr := repo.ListScanLogs(ctx, src.scanUUID, "", "", pageLimit, totalSoFar)
 			if fetchErr != nil {
 				// Transient lock while the scan writes — wait for next tick.
-				if isSQLiteBusy(fetchErr) {
+				if database.IsBusy(fetchErr) {
 					continue
 				}
 				return fmt.Errorf("failed to fetch scan logs: %w", fetchErr)

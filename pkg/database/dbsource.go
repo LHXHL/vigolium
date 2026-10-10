@@ -26,9 +26,11 @@ const (
 	RecordSourceIngestCLI    = "ingest-cli"    // `vigolium ingest ...` command
 	RecordSourceScanner      = "scanner"       // executor feedback re-injection
 	RecordSourceProbe        = "probe"         // `vigolium run probe` host sweep (one request per target, no fuzzing)
+	RecordSourceHarvest      = "harvest"       // external-harvest archive URL; request-only until harvest-probe completes it
 	RecordSourceFinding      = "finding"       // request/response attached to a finding
 	RecordSourceBurp         = "burp"          // Burp Suite, via the loopback bridge or a push to /api/ingest-http
 	RecordSourceCaido        = "caido"         // Caido, via the loopback bridge or a push to /api/ingest-http
+	RecordSourceParamMining  = "param-mining"  // request carrying a hidden parameter the param-mining phase confirmed
 )
 
 // BridgeRecordSources lists the http_records.source values a loopback bridge
@@ -110,6 +112,9 @@ type DBInputSource struct {
 	nextSeq        uint64
 	nextAckSeq     uint64
 	pendingBySeq   map[uint64]*cursorAck
+
+	// count is the eligible-record snapshot taken on the first fetch; see Count.
+	count atomic.Int64
 }
 
 type cursorAck struct {
@@ -300,6 +305,7 @@ func (s *DBInputSource) fetchNextBatch(ctx context.Context) ([]*HTTPRecord, erro
 		s.readCursorUUID = scan.CursorUUID
 		s.projectUUID = scan.ProjectUUID
 		s.readCursorInit = true
+		s.captureCount(ctx)
 	}
 
 	// Select next records after cursor.
@@ -311,21 +317,8 @@ func (s *DBInputSource) fetchNextBatch(ctx context.Context) ([]*HTTPRecord, erro
 	// scalar columns per record. The hostname/source WHERE filters below don't
 	// require selecting those columns. Modules receive the reconstructed
 	// HttpRequestResponse, never the HTTPRecord, so no consumer reads the rest.
-	q := s.db.NewSelect().Model(&records).
-		Column(scanRecordColumns...)
-
-	if !s.readCursorAt.IsZero() {
-		cursorAt := dbTimestampString(s.db.Driver(), s.readCursorAt)
-		q = q.Where("(created_at > ? OR (created_at = ? AND uuid > ?))",
-			cursorAt, cursorAt, s.readCursorUUID)
-	}
-
-	q = applyHostScopeFilter(q, s.hostScopes)
-	q = applyProjectFilter(q, s.projectUUID)
-
-	if len(s.includeSources) > 0 {
-		q = q.Where("source IN (?)", bun.List(s.includeSources))
-	}
+	q := s.applyEligibility(s.db.NewSelect().Model(&records).
+		Column(scanRecordColumns...))
 
 	limit := s.pageSize
 	if limit <= 0 {
@@ -357,6 +350,54 @@ func (s *DBInputSource) fetchNextBatch(ctx context.Context) ([]*HTTPRecord, erro
 	}
 
 	return records, nil
+}
+
+// applyEligibility restricts q to the records this source will serve: after the
+// read cursor, in the in-scope origins, in the owning project, and from the
+// allowed sources. One builder for both the page query and the Count snapshot,
+// so the count is over exactly the rows iteration walks. Caller holds s.mu (it
+// reads the cursor).
+func (s *DBInputSource) applyEligibility(q *bun.SelectQuery) *bun.SelectQuery {
+	if !s.readCursorAt.IsZero() {
+		cursorAt := dbTimestampString(s.db.Driver(), s.readCursorAt)
+		q = q.Where("(created_at > ? OR (created_at = ? AND uuid > ?))",
+			cursorAt, cursorAt, s.readCursorUUID)
+	}
+
+	q = applyHostScopeFilter(q, s.hostScopes)
+	q = applyProjectFilter(q, s.projectUUID)
+
+	if len(s.includeSources) > 0 {
+		q = q.Where("source IN (?)", bun.List(s.includeSources))
+	}
+	return q
+}
+
+// captureCount snapshots how many records are eligible right now, once, on the
+// first fetch (when the cursor and project are first known). A failed count
+// leaves the figure at 0 — "unknown" — rather than failing the fetch: the count
+// is a progress reading, and the scan must not stop for the want of one. Caller
+// holds s.mu.
+func (s *DBInputSource) captureCount(ctx context.Context) {
+	n, err := s.applyEligibility(s.db.NewSelect().Model((*HTTPRecord)(nil))).Count(ctx)
+	if err != nil {
+		zap.L().Debug("DBInputSource: count eligible records", zap.Error(err))
+		return
+	}
+	s.count.Store(int64(n))
+}
+
+// Count implements source.Countable: the number of records that were eligible
+// when the source first read from the database, or 0 before its first Next.
+//
+// An upper bound at the moment it is taken, not a promise: a polling source
+// keeps serving records that arrive later, so Done can pass it, and a consumer
+// reporting progress must clamp (the phase tracker does). It is deliberately
+// NOT computed when the executor is built — callers size caches off a known
+// total at construction, and a database round-trip there would change that
+// behaviour for every DB-fed scan.
+func (s *DBInputSource) Count() int64 {
+	return s.count.Load()
 }
 
 func (s *DBInputSource) workItemFromRecord(record *HTTPRecord, seq uint64) (*work.WorkItem, error) {
@@ -552,6 +593,9 @@ type RiskPrioritizedDBInputSource struct {
 	streamsExhausted bool  // the stream is drained → total is final, so the commit can fire
 	commitErr        error // the last failed checkpoint attempt, cleared on success
 
+	// count is the snapshot window's size, taken once with the bound; see Count.
+	count atomic.Int64
+
 	// advanceCursor is the durable checkpoint write, injectable so the failure
 	// path is testable without a broken database. Defaults to the repository's
 	// AdvanceScanCursorBy.
@@ -576,10 +620,12 @@ func (s *RiskPrioritizedDBInputSource) WithHostScopes(hosts []HostTarget) *RiskP
 	return s
 }
 
-// WithParamShapeCoalescing enables param-shape coalescing of the snapshot: GET
-// records that share a (host, path, query-param-name-set) are reduced to at most
-// maxSamples value-distinct representatives, cutting redundant dynamic-assessment
-// fan-out over value-only-different URLs (e.g. /search?q=1..N). Records stay in
+// WithParamShapeCoalescing enables param-shape coalescing of the snapshot:
+// records that share a param shape (host + path shape + method +
+// query/form/JSON param-name-set; see paramShapeRepresentative) are reduced to
+// at most maxSamples value-distinct representatives, cutting redundant
+// dynamic-assessment fan-out over value-only-different requests (e.g.
+// /search?q=1..N, /users/1..N). Records stay in
 // the database; only this scan's iteration list is pruned. The scan cursor still
 // advances past every record, so coalesced-away records are not re-scanned in a
 // later feedback round. maxSamples <= 0 (the default) disables it.
@@ -726,7 +772,26 @@ func (s *RiskPrioritizedDBInputSource) captureBoundLocked(ctx context.Context) e
 	s.boundAt = rows[0].CreatedAt
 	s.boundID = rows[0].UUID
 	s.hasBound = true
+
+	// The round's eligible window is now fixed, so its size is too: count it
+	// with the same window and scope the page queries use. Coalescing can only
+	// drop records from it, which makes this an upper bound on what the round
+	// serves. A failed count is a missing progress reading, not a failed round.
+	cq := applyHostScopeFilter(s.applyResumeAndBound(s.db.NewSelect().Model((*HTTPRecord)(nil))), s.hostScopes)
+	if n, err := cq.Count(ctx); err == nil {
+		s.count.Store(int64(n))
+	} else {
+		zap.L().Debug("RiskPrioritizedDBInputSource: count eligible records", zap.Error(err))
+	}
 	return nil
+}
+
+// Count implements source.Countable: the number of records in this round's
+// snapshot window, or 0 before the first Next (and for an empty snapshot). An
+// upper bound on what the round serves, since param-shape coalescing removes
+// records from it as pages are read.
+func (s *RiskPrioritizedDBInputSource) Count() int64 {
+	return s.count.Load()
 }
 
 // pageColumns is the projection each lane page selects — coalescing columns are
@@ -826,21 +891,13 @@ func (s *RiskPrioritizedDBInputSource) fillNextPageLocked(ctx context.Context) (
 		// blocked. Next() has a single caller, so no other goroutine advances the
 		// lane state meanwhile.
 		var records []*HTTPRecord
-		var ferr error
-		for attempt := 0; attempt < 3; attempt++ {
+		ferr := RetryBusy(ctx, func() error {
 			s.mu.Unlock()
-			records, ferr = s.repo.GetScanRecordsByUUIDs(ctx, surviving)
-			if ferr != nil && ctx.Err() == nil && attempt < 2 {
-				select {
-				case <-ctx.Done():
-				case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
-				}
-			}
-			s.mu.Lock()
-			if ferr == nil {
-				break
-			}
-		}
+			defer s.mu.Lock()
+			var err error
+			records, err = s.repo.GetScanRecordsByUUIDs(ctx, surviving)
+			return err
+		}, s.pageRetryPolicy(ctx, "risk-prioritized page fetch"))
 		if ferr != nil {
 			// The keyset was NOT advanced, so re-pulling this page after the error is
 			// surfaced retries the exact same survivors — a transient failure becomes
@@ -971,28 +1028,43 @@ func (s *RiskPrioritizedDBInputSource) FlushCursor(ctx context.Context) error {
 		return s.commitErr
 	}
 
-	var err error
-	for attempt := 0; attempt < cursorFlushAttempts; attempt++ {
-		if err = s.writeCursorLocked(ctx); err == nil {
+	var lastErr error
+	err := RetryBusy(ctx, func() error {
+		// A concurrent ack may have succeeded while the lock was released for
+		// the previous wait.
+		if s.committed {
 			return nil
 		}
-		if ctx.Err() != nil {
-			return err
-		}
-		if attempt < cursorFlushAttempts-1 {
-			s.mu.Unlock()
-			select {
-			case <-ctx.Done():
-			case <-time.After(time.Duration(attempt+1) * cursorFlushBackoff):
-			}
-			s.mu.Lock()
-			// A concurrent ack may have succeeded while the lock was released.
-			if s.committed {
-				return nil
-			}
-		}
+		lastErr = s.writeCursorLocked(ctx)
+		return lastErr
+	}, s.pageRetryPolicy(ctx, "scan cursor checkpoint"))
+	if err != nil && ctx.Err() != nil && lastErr != nil {
+		// Cancelled mid-wait: report the write failure that was being retried,
+		// not the bare context error, which says nothing about the checkpoint.
+		return lastErr
 	}
 	return err
+}
+
+// pageRetryPolicy is the bounded retry both DB round-trips of this source share:
+// cursorFlushAttempts tries, backing off from cursorFlushBackoff. Unlike the
+// default policy it retries ANY error while ctx is live — a brief failover is as
+// transient as SQLITE_BUSY here, and the alternative is a silently dropped page
+// or an unacknowledged round. Callers hold s.mu, so the wait releases it: worker
+// ack callbacks must not stall behind a sleeping retry.
+func (s *RiskPrioritizedDBInputSource) pageRetryPolicy(ctx context.Context, op string) RetryPolicy {
+	return RetryPolicy{
+		Op:          op,
+		MaxAttempts: cursorFlushAttempts,
+		BaseDelay:   cursorFlushBackoff,
+		MaxDelay:    time.Duration(cursorFlushAttempts) * cursorFlushBackoff,
+		Retryable:   func(error) bool { return ctx.Err() == nil },
+		Wait: func(ctx context.Context, d time.Duration) error {
+			s.mu.Unlock()
+			defer s.mu.Lock()
+			return sleepCtx(ctx, d)
+		},
+	}
 }
 
 // Unresolved reports how many of this round's items ended neither acknowledged

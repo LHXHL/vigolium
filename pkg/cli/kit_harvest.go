@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
@@ -53,6 +54,38 @@ type kitHarvestResult struct {
 	Sources []string `json:"sources"`
 	Count   int      `json:"count"`
 	URLs    []string `json:"urls"`
+	// Stats says what the sources returned and why each dropped URL was
+	// dropped, so a short list is distinguishable from a capped one.
+	Stats kitHarvestStats `json:"stats"`
+	// Limits are the limit codes the run hit (cdx_max_rows, …); [] when none.
+	// Non-empty means the archive held more than was read.
+	Limits []string `json:"limits"`
+}
+
+// kitHarvestStats is harvester.Stats on the wire. Raw = invalid + static +
+// duplicate + over_shape + over_domain_cap + kept.
+type kitHarvestStats struct {
+	Raw           int `json:"raw"`
+	Kept          int `json:"kept"`
+	Invalid       int `json:"invalid"`
+	Static        int `json:"static"`
+	Duplicate     int `json:"duplicate"`
+	OverShape     int `json:"over_shape"`
+	OverDomainCap int `json:"over_domain_cap"`
+	SourceErrors  int `json:"source_errors"`
+}
+
+func newKitHarvestStats(st harvester.Stats) kitHarvestStats {
+	return kitHarvestStats{
+		Raw:           st.Raw,
+		Kept:          st.Kept,
+		Invalid:       st.Invalid,
+		Static:        st.Static,
+		Duplicate:     st.Duplicate,
+		OverShape:     st.OverShape,
+		OverDomainCap: st.OverDomainCap,
+		SourceErrors:  st.Errors,
+	}
 }
 
 func runKitHarvest(cmd *cobra.Command, args []string) error {
@@ -61,7 +94,7 @@ func runKitHarvest(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if len(domains) == 0 {
-		return fmt.Errorf("no domains given (pass domains as arguments or on stdin)")
+		return usageErrorf("no domains given (pass domains as arguments or on stdin)")
 	}
 
 	// Source list + API keys come from the user's config so the utility offers
@@ -98,7 +131,7 @@ func runKitHarvest(cmd *cobra.Command, args []string) error {
 			terminal.InfoSymbol(), len(domains), strings.Join(sourceNames, ", "))
 	}
 
-	h := harvester.New(sources, kitHarvestTimeout)
+	h := harvester.New(sources, kitHarvestTimeout).WithOptions(settings.ExternalHarvester.HarvesterOptions())
 	urls := []string{}
 	for u := range h.Harvest(ctx, domains) {
 		urls = append(urls, u)
@@ -107,16 +140,35 @@ func runKitHarvest(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	st := h.Stats()
+	limits := st.Limits
+	if limits == nil {
+		limits = []string{}
+	}
 	if globalJSON {
 		sort.Strings(urls) // only the JSON payload needs a stable order
-		return writeAgentJSON(kitHarvestResult{
+		env, err := envelopeFromStruct(cmd, kitHarvestResult{
 			Domains: domains,
 			Sources: sourceNames,
 			Count:   len(urls),
 			URLs:    urls,
-		})
+			Stats:   newKitHarvestStats(st),
+			Limits:  limits,
+		}, "urls")
+		if err != nil {
+			return err
+		}
+		return writeAgentJSON(env)
 	}
-	fmt.Fprintf(os.Stderr, "\n%s %d unique URL(s)\n", terminal.InfoSymbol(), len(urls))
+	fmt.Fprintf(os.Stderr, "\n%s %d unique URL(s)", terminal.InfoSymbol(), len(urls))
+	if dropped := st.Raw - st.Kept; dropped > 0 {
+		fmt.Fprintf(os.Stderr, " (%d raw, %d dropped)", st.Raw, dropped)
+	}
+	fmt.Fprintln(os.Stderr)
+	if len(limits) > 0 {
+		fmt.Fprintf(os.Stderr, "%s limit reached: %s — the archive holds more than was read\n",
+			terminal.WarningSymbol(), strings.Join(limits, ", "))
+	}
 	return nil
 }
 
@@ -132,8 +184,20 @@ func kitCollectDomains(args []string) ([]string, error) {
 		}
 		raw = append(raw, a)
 	}
+	// No arguments and an interactive stdin: nothing will arrive, so say so
+	// rather than wait out the read deadline.
+	if len(args) == 0 && stdinIsTerminal() {
+		stdinRequested = false
+	}
 	if stdinRequested {
-		sc := kitLineScanner(os.Stdin)
+		// Bounded: the shared reader enforces the size cap and
+		// --input-read-timeout, so a producer that never closes stdin cannot hang
+		// the command.
+		data, err := readStdin()
+		if err != nil {
+			return nil, fmt.Errorf("reading stdin: %w", err)
+		}
+		sc := kitLineScanner(bytes.NewReader(data))
 		for sc.Scan() {
 			raw = append(raw, sc.Text())
 		}
@@ -153,6 +217,12 @@ func kitCollectDomains(args []string) ([]string, error) {
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// stdinIsTerminal reports whether stdin is an interactive terminal.
+func stdinIsTerminal() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
 // kitNormalizeDomain reduces a raw token (bare domain, host:port, or full URL)

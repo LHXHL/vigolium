@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/httpmsg/pathshape"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/browser"
 	"go.uber.org/zap"
 )
@@ -131,6 +132,10 @@ const seedDiscoverScript = `(async () => {
 // settle, so only SeedMaxCrawlURLs of them are actually browsed into states —
 // enough to pull in link neighbourhoods the seed page never exposed, without
 // letting a 50,000-entry sitemap redefine the crawl.
+//
+// Caller-supplied seeds (Config.ExtraSeeds — client routes the target's own
+// JavaScript declares) join the same browse list after the declared ones, under
+// their own cap; see selectExtraSeeds.
 func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 	// shouldTerminate rather than a bare ctx check: seeding reads robots.txt and
 	// the sitemap from the page's OWN origin — which on a walled start is the
@@ -141,8 +146,17 @@ func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 	if page == nil || c.config == nil || c.shouldTerminate(ctx) {
 		return
 	}
+	declared := c.declaredSeedURLs(ctx, page)
+	extra := c.extraSeedURLs(page, declared)
+	c.crawlSeedURLs(ctx, page, declared, extra)
+}
+
+// declaredSeedURLs fetches robots.txt and the sitemap(s) in-page, records every
+// in-scope location they declare, and returns the bounded, shape-diverse slice
+// worth browsing.
+func (c *Crawler) declaredSeedURLs(ctx context.Context, page *browser.Page) []string {
 	if !c.config.SeedFromRobots && !c.config.SeedFromSitemap {
-		return
+		return nil
 	}
 
 	script := strings.NewReplacer(
@@ -153,15 +167,15 @@ func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 
 	raw, ok := evalAwaitCtx(ctx, page, script, seedDiscoverTimeout, "frontier-seed")
 	if !ok {
-		return
+		return nil
 	}
 	jsonStr, ok := raw.(string)
 	if !ok || jsonStr == "" || jsonStr == "<nil>" {
-		return
+		return nil
 	}
 	var discovered []string
 	if err := parseJSONLinks(jsonStr, &discovered); err != nil || len(discovered) == 0 {
-		return
+		return nil
 	}
 
 	// Early pruning only — fetchURLsInPage (admissibleFetchURLs) is the
@@ -169,7 +183,7 @@ func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 	// selection to in-scope locations.
 	inScope := c.filterInScope(discovered)
 	if len(inScope) == 0 {
-		return
+		return nil
 	}
 
 	c.mu.Lock()
@@ -180,23 +194,25 @@ func (c *Crawler) seedFrontier(ctx context.Context, page *browser.Page) {
 
 	// Record everything (cheap), then browse a bounded, shape-diverse slice.
 	c.fetchURLsInPage(ctx, page, inScope, "seed-url")
-	c.crawlSeedURLs(ctx, page, selectCrawlableSeeds(inScope, c.config.SeedMaxCrawlURLs))
+	return selectCrawlableSeeds(inScope, c.config.SeedMaxCrawlURLs)
 }
 
 // crawlSeedURLs navigates to each seed location and folds the resulting page
 // into the state graph, so its clickables join the frontier and the ordinary
-// crawl loop continues from there. Failures are skipped rather than fatal: a
-// sitemap routinely outlives the pages it lists.
-func (c *Crawler) crawlSeedURLs(ctx context.Context, page *browser.Page, urls []string) {
-	if len(urls) == 0 {
+// crawl loop continues from there. declared are the robots/sitemap locations,
+// extra the caller-supplied ones (already deduped against declared); both are
+// browsed the same way and counted apart. Failures are skipped rather than
+// fatal: a sitemap routinely outlives the pages it lists.
+func (c *Crawler) crawlSeedURLs(ctx context.Context, page *browser.Page, declared, extra []string) {
+	if len(declared) == 0 && len(extra) == 0 {
 		return
 	}
-	visited := 0
-	for _, u := range urls {
+	visited, extraVisited := 0, 0
+	for i, u := range append(append(make([]string, 0, len(declared)+len(extra)), declared...), extra...) {
 		if ctx.Err() != nil || c.shouldTerminate(ctx) {
 			break
 		}
-		previous := c.stateMachine.GetCurrentState()
+		previous := c.primary.stateMachine.GetCurrentState()
 		if err := page.NavigateCtx(ctx, u); err != nil {
 			zap.L().Debug("Seed navigation failed", zap.String("url", u), zap.Error(err))
 			continue
@@ -204,14 +220,20 @@ func (c *Crawler) crawlSeedURLs(ctx context.Context, page *browser.Page, urls []
 		if !c.isInScope(page) {
 			continue
 		}
-		c.checkOnURLState(ctx, page, previous, u)
-		visited++
+		c.checkOnURLState(ctx, c.primary, page, previous, u)
+		if i < len(declared) {
+			visited++
+		} else {
+			extraVisited++
+		}
 	}
-	if visited > 0 {
+	if visited > 0 || extraVisited > 0 {
 		c.mu.Lock()
 		c.stats.SeedURLsCrawled = visited
+		c.stats.ExtraSeedsCrawled = extraVisited
 		c.mu.Unlock()
-		zap.L().Info("Seed locations browsed into the crawl frontier", zap.Int("visited", visited))
+		zap.L().Info("Seed locations browsed into the crawl frontier",
+			zap.Int("visited", visited), zap.Int("extra_visited", extraVisited))
 	}
 }
 
@@ -291,31 +313,25 @@ func seedPathShape(path string) string {
 }
 
 // seedSegmentIsIdentifier reports whether a path segment looks like a per-record
-// identifier (a number, a hash, or a long slug) rather than a named section.
+// identifier rather than a named section: anything the shared pathshape
+// normalizer collapses (a number, uuid, hash, date, …), plus a long slug that
+// carries digits (2026-08-06-some-post-title). The slug rule is seed-sampling
+// specific — pathshape never collapses slugs — and only widens grouping, which
+// costs nothing here beyond seed diversity.
 func seedSegmentIsIdentifier(seg string) bool {
 	if seg == "" {
 		return false
 	}
-	digits, hexish := 0, 0
+	if pathshape.Kind(seg).Dynamic() {
+		return true
+	}
+	digits := 0
 	for _, r := range seg {
-		switch {
-		case r >= '0' && r <= '9':
+		if r >= '0' && r <= '9' {
 			digits++
-			hexish++
-		case (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F'):
-			hexish++
 		}
 	}
-	n := len([]rune(seg))
-	switch {
-	case digits == n: // 42
-		return true
-	case hexish == n && n >= 8: // 9f8ae1c2, a uuid chunk
-		return true
-	case digits > 0 && n >= 12: // 2026-08-06-some-post-title
-		return true
-	}
-	return false
+	return digits > 0 && len([]rune(seg)) >= 12 // dated slug
 }
 
 // seedIsDocument reports whether a path is worth rendering in a browser. A known

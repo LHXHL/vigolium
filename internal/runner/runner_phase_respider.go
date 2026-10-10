@@ -68,6 +68,7 @@ type respiderSeed struct {
 	url     string
 	hostKey string // hostname, for per-host capping and SSO skip
 	score   int
+	source  string // candidate record's source, or routeSeedSource
 }
 
 // runTargetedReSpiderPhase re-crawls the few rich/SPA routes discovery surfaced
@@ -100,6 +101,9 @@ func (r *Runner) runTargetedReSpiderPhase(ctx context.Context, infra *phaseInfra
 	if err != nil {
 		return fmt.Errorf("re-spider: failed to read candidates: %w", err)
 	}
+	// Client routes this scan's discovery found in the JavaScript: a route
+	// only the router knows becomes a browser navigation in the same scan.
+	evals = append(evals, r.collectReSpiderRoutes(ctx, infra.scanUUID)...)
 
 	// Select seeds: dedup against already-crawled shells, keep only rich/SPA/
 	// interactive non-login pages, rank, and apply per-host + total caps. Pure
@@ -111,9 +115,10 @@ func (r *Runner) runTargetedReSpiderPhase(ctx context.Context, infra *phaseInfra
 		return nil
 	}
 
-	r.printPhaseDetail(fmt.Sprintf("Selected %s rich routes to re-crawl (%s kept; skips: %s; budget %s/%d-states per seed, cap %d)",
+	r.printPhaseDetail(fmt.Sprintf("Selected %s rich routes to re-crawl (%s kept%s; skips: %s; budget %s/%d-states per seed, cap %d)",
 		terminal.Orange(fmt.Sprintf("%d", len(chosen))),
 		terminal.HiTeal(fmt.Sprintf("%d", kept)),
+		routeSeedNote(chosen),
 		formatRespiderSkips(skips),
 		rcfg.PerSeedDuration().String(),
 		rcfg.PerSeedStates(),
@@ -138,6 +143,7 @@ func (r *Runner) runTargetedReSpiderPhase(ctx context.Context, infra *phaseInfra
 	baseCfg.MaxDepth = rcfg.Depth()
 	baseCfg.MaxStates = rcfg.PerSeedStates()
 	baseCfg.Source = "respider"
+	r.trackBrowserRequests().wire(&baseCfg)
 
 	var totals reSpiderGroupResult
 	if spiderSessionReuseDisabled() {
@@ -216,7 +222,7 @@ func (r *Runner) crawlReSpiderPerSeed(ctx context.Context, chosen []respiderSeed
 		}
 		cfg := baseCfg
 		cfg.TargetURL = s.url
-		rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
+		rw := r.newScanRecordWriter()
 		seedCtx, cancel := context.WithTimeout(ctx, perSeed)
 		// Watchdog bounds RunSpider + rw.Close so a wedged browser can't hang the phase.
 		oc := runSpiderWatchdog(seedCtx, cfg, rw, perSeed, s.url)
@@ -256,7 +262,7 @@ func (r *Runner) crawlReSpiderHostGroup(ctx context.Context, group []respiderSee
 
 	base := baseCfg
 	base.TargetURL = group[0].url
-	rw := database.NewRecordWriter(r.repository, database.RecordWriterConfig{})
+	rw := r.newScanRecordWriter()
 	sess, serr := spitolas.NewSpiderSession(ctx, base, rw)
 	if serr != nil {
 		// The browser couldn't launch; a fresh-browser-per-seed attempt would fail
@@ -461,7 +467,9 @@ func selectReSpiderSeeds(rows []database.ReSpiderCandidate, perHost, total int) 
 // selectReSpiderSeedsFromEvaluated picks re-crawl seeds from body-free evaluated
 // candidates: it pre-seeds the shell-dedup set with already-crawled spidering
 // shells, then keeps non-duplicate rich/SPA/interactive candidates, ranks them
-// by score, and applies the per-host and total caps.
+// by score, and applies the per-host and total caps. Client-route candidates
+// (routeSeedSource) carry no shell and skip the shell dedup, but share the
+// route dedup and the caps with record-derived ones.
 func selectReSpiderSeedsFromEvaluated(evals []respiderEvaluated, perHost, total int) (chosen []respiderSeed, skips map[string]int, kept int) {
 	seenShells := make(map[string]struct{})
 	seenRoutes := make(map[string]struct{})
@@ -496,7 +504,9 @@ func selectReSpiderSeedsFromEvaluated(evals []respiderEvaluated, perHost, total 
 			skips[v.Reason]++
 			continue
 		}
-		if _, dup := seenShells[v.ShellHash]; dup {
+		// A client-route seed has no stored response, so no shell: routes of
+		// one SPA share a shell by design and each still renders its own view.
+		if _, dup := seenShells[v.ShellHash]; dup && v.ShellHash != "" {
 			skips["dup-shell"]++
 			continue
 		}
@@ -511,11 +521,13 @@ func selectReSpiderSeedsFromEvaluated(evals []respiderEvaluated, perHost, total 
 				continue
 			}
 		}
-		seenShells[v.ShellHash] = struct{}{}
+		if v.ShellHash != "" {
+			seenShells[v.ShellHash] = struct{}{}
+		}
 		if route != "" {
 			seenRoutes[route] = struct{}{}
 		}
-		seeds = append(seeds, respiderSeed{url: e.url, hostKey: e.hostname, score: v.Score})
+		seeds = append(seeds, respiderSeed{url: e.url, hostKey: e.hostname, score: v.Score, source: e.source})
 		kept++
 	}
 
@@ -549,6 +561,21 @@ func decodeReSpiderRow(row *database.ReSpiderCandidate) (respiderInput, bool) {
 		Location:    resp.Header("Location"),
 		Body:        resp.Body(),
 	}, true
+}
+
+// routeSeedNote is the "; N from JS client routes" part of the selection line,
+// empty when no client-route seed was chosen.
+func routeSeedNote(chosen []respiderSeed) string {
+	n := 0
+	for _, s := range chosen {
+		if s.source == routeSeedSource {
+			n++
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; %d chosen from JS client routes", n)
 }
 
 // formatRespiderSkips renders the skip-reason tally as a compact, stable string.

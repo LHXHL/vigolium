@@ -78,6 +78,44 @@ func IsCatastrophic(cmd string) bool {
 	return false
 }
 
+// BashEnvBuilder returns the complete environment ("KEY=value" entries) a bash
+// tool command runs with. See SetBashEnvBuilder.
+type BashEnvBuilder func() []string
+
+var (
+	bashEnvMu      sync.RWMutex
+	bashEnvBuilder BashEnvBuilder
+)
+
+// SetBashEnvBuilder installs the process-wide environment builder for the bash
+// tool; nil restores plain inheritance of the process environment.
+//
+// The CLI installs one that pins the commands the agent shells out to onto this
+// process's own context: `vigolium` on PATH resolves to the running binary (not
+// whatever install a login profile puts first), and the database, project and
+// config the parent resolved travel as VIGOLIUM_DB / VIGOLIUM_DB_PATH,
+// VIGOLIUM_PROJECT_UUID and VIGOLIUM_CONFIG. Without it a child `vigolium
+// finding` opened the default database and project and reported another
+// engagement's data. It is process-wide rather than per-tool because that
+// context is a property of the process, and every tool registry the agent
+// builds (autopilot, swarm phases, query) must agree on it.
+func SetBashEnvBuilder(b BashEnvBuilder) {
+	bashEnvMu.Lock()
+	bashEnvBuilder = b
+	bashEnvMu.Unlock()
+}
+
+// bashEnv returns the environment for the next command, nil to inherit.
+func bashEnv() []string {
+	bashEnvMu.RLock()
+	b := bashEnvBuilder
+	bashEnvMu.RUnlock()
+	if b == nil {
+		return nil
+	}
+	return b()
+}
+
 // NewBash constructs the bash tool. The tool runs commands without prompting
 // (yolo-by-default). Commands matching IsCatastrophic are rejected outright.
 // approve is retained in the signature for future use (e.g., plugin-installed
@@ -96,9 +134,14 @@ func (*bashTool) IsReadOnly() bool { return false }
 // Windows, where procutil.ShellArgv substitutes an installed POSIX bash or
 // PowerShell. The resolved shell is named in the description and schema so the
 // model writes for the dialect it will actually be run through.
+//
+// Not a login shell (-lc): a login shell sources the user's profile, which can
+// re-order PATH so `vigolium` resolves to a different install than the one
+// running the agent, defeating the pinning SetBashEnvBuilder does. A tool
+// that needs a version manager's shims (nvm, pyenv) can source it explicitly.
 const (
 	bashShell = "bash"
-	bashFlag  = "-lc"
+	bashFlag  = "-c"
 )
 
 func (*bashTool) Description() string {
@@ -160,6 +203,9 @@ func (*bashTool) Execute(ctx context.Context, args map[string]any, onUpdate Upda
 	// grace window to drain the pipe before Wait gives up on them.
 	procutil.SetupProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
+	if env := bashEnv(); env != nil {
+		cmd.Env = env
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

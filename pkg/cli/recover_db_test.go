@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vigolium/vigolium/internal/scratch"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 )
 
 // A SQLite database is the main file plus whatever is in its WAL. Moving only
@@ -82,7 +83,7 @@ func TestReleaseStatelessDBKeepsOnError(t *testing.T) {
 	t.Run("failure with the flag preserves and names the path", func(t *testing.T) {
 		globalKeepDBOnError = true
 		path := newWorkingDB(t)
-		runErr := codedErrorf(errCodeExportFailed, "write report.html: no such directory")
+		runErr := codedErrorf(apicontract.CodeExportFailed, "write report.html: no such directory")
 
 		got := releaseStatelessDB(path, runErr)
 		require.Error(t, got)
@@ -187,7 +188,7 @@ func TestDBIsolateMergeFailureKeepsScanError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "isolate.sqlite")
 	require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
 
-	scanErr := codedErrorf(errCodeExportFailed, "generate html report.html: denied")
+	scanErr := codedErrorf(apicontract.CodeExportFailed, "generate html report.html: denied")
 	got := dbIsolateMergeFailed(path, scanErr, errors.New("merge broke"))
 	require.Error(t, got)
 	assert.ErrorIs(t, got, scanErr)

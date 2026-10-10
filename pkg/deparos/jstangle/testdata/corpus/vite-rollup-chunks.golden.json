@@ -1,0 +1,65 @@
+{
+  "status": "complete",
+  "counts": {
+    "assetReference": 8
+  },
+  "facts": [
+    {
+      "kind": "assetReference",
+      "url": "./Admin-5d6e.js",
+      "confidence": "high",
+      "assetType": "dynamic-import"
+    },
+    {
+      "kind": "assetReference",
+      "url": "./chunk-settings-3f9a.js",
+      "confidence": "high",
+      "assetType": "dynamic-import"
+    },
+    {
+      "kind": "assetReference",
+      "url": "./i18n/${lang}.${LOCALE_CHUNKS[lang]}.js",
+      "confidence": "medium",
+      "assetType": "dynamic-import",
+      "loader": "template-import",
+      "alternatives": [
+        "./i18n/en.a1b2.js",
+        "./i18n/fr.c3d4.js"
+      ]
+    },
+    {
+      "kind": "assetReference",
+      "url": "./locales/chunk-${locale}.js",
+      "confidence": "high",
+      "assetType": "dynamic-import"
+    },
+    {
+      "kind": "assetReference",
+      "url": "/assets/Admin-5d6e.js",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "vite-preload"
+    },
+    {
+      "kind": "assetReference",
+      "url": "/assets/Admin-8f90.css",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "vite-preload"
+    },
+    {
+      "kind": "assetReference",
+      "url": "/assets/settings-77aa.css",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "vite-preload"
+    },
+    {
+      "kind": "assetReference",
+      "url": "/assets/vendor-12bc.js",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "vite-preload"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# Copied from Chrome DevTools: "Copy as cURL (bash)". Don't edit by hand.
+curl 'https://app.example.test/api/notes' \
+  -H 'accept: application/json' \
+  -H 'content-type: application/json' \
+  -b 'sid=abc123' \
+  --data-raw $'{"title":"it\'s here","body":"line1\\nline2","tab":"a\tb","snow":"☃","hex":"\x41"}' \
+  --compressed ;
+# A hand-written command with a multi-line JSON body (the comment's apostrophe is harmless).
+curl -X PUT https://app.example.test/api/notes/7 \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "title": "multi",
+  "tags": ["a", "b"]
+}'
+
+curl -s https://app.example.test/api/notes?limit=2 | jq .

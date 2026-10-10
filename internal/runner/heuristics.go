@@ -28,6 +28,15 @@ type HeuristicsResult struct {
 	IsSPA         bool // advanced only
 	SkipSpidering bool
 	Reason        string
+	// Reachable is true when the root answered with an HTTP response (any
+	// status). False with ErrClass set when it did not.
+	Reachable bool
+	// ErrClass is the transport error class (http.TransportErr*) when the root
+	// did not answer: dns, refused, timeout, tls, reset or other.
+	ErrClass string
+	// fromPreflight marks a result taken from the preflight answer, whose
+	// unreachable line was already printed.
+	fromPreflight bool
 }
 
 // maxHeuristicsProbeConcurrency caps how many target root pages are probed in
@@ -68,6 +77,7 @@ func (r *Runner) runHeuristicsCheckPhase(ctx context.Context, infra *phaseInfra)
 	results := make(map[string]*HeuristicsResult, len(r.options.Targets))
 	var resultsMu sync.Mutex
 	probePool := pool.New().WithMaxGoroutines(heuristicsProbeConcurrency(len(r.options.Targets)))
+	progress := r.currentPhase.Load().trackTargets(len(r.options.Targets))
 	for _, target := range r.options.Targets {
 		target := target
 		rootURL := normalizeToRoot(target)
@@ -75,10 +85,13 @@ func (r *Runner) runHeuristicsCheckPhase(ctx context.Context, infra *phaseInfra)
 			if ctx.Err() != nil {
 				return
 			}
-			result := probeTarget(ctx, infra.httpRequester, rootURL, level)
+			// A root preflight already fetched is classified from its bytes
+			// rather than requested again.
+			result := probeTarget(ctx, infra.httpRequester, rootURL, level, r.preflightFor(rootURL))
 			resultsMu.Lock()
 			results[target] = result
 			resultsMu.Unlock()
+			progress.Add(1)
 		})
 	}
 	probePool.Wait()
@@ -87,6 +100,18 @@ func (r *Runner) runHeuristicsCheckPhase(ctx context.Context, infra *phaseInfra)
 		result := results[target]
 		if result == nil {
 			continue // probe skipped due to cancellation
+		}
+		if !result.Reachable && result.ErrClass != "" {
+			zap.L().Warn("HeuristicsCheck: target unreachable",
+				zap.String("target", target),
+				zap.String("class", result.ErrClass))
+			if !r.options.Silent && !result.fromPreflight {
+				fmt.Fprintf(os.Stderr, "  %s %s — %s\n",
+					terminal.Orange(terminal.SymbolArrow),
+					terminal.Gray(target),
+					terminal.Orange(result.Reason))
+			}
+			continue
 		}
 		if result.SkipSpidering {
 			zap.L().Info("HeuristicsCheck: target flagged",
@@ -198,38 +223,78 @@ func normalizeToRoot(target string) string {
 	return u.String()
 }
 
-// probeTarget sends a GET request to the root URL and classifies the response.
-func probeTarget(_ context.Context, requester *http.Requester, rootURL string, level string) *HeuristicsResult {
+// probeTarget fetches the root URL and classifies the response. pre, when
+// non-nil, is the preflight answer for the same URL: its bytes are classified
+// instead of sending the GET again, and an unanswered preflight is reported as
+// unreachable without a second attempt.
+func probeTarget(ctx context.Context, requester *http.Requester, rootURL string, level string, pre *preflightProbe) *HeuristicsResult {
 	result := &HeuristicsResult{
 		Target: rootURL,
 	}
 
+	var fullResp []byte
+	switch {
+	case pre != nil && pre.reached:
+		fullResp = pre.resp
+	case pre != nil:
+		markUnreachable(result, pre.class)
+		result.fromPreflight = true
+		return result
+	default:
+		resp, class, err := fetchRoot(ctx, requester, rootURL)
+		if err != nil {
+			if class == "" {
+				zap.L().Warn("HeuristicsCheck: failed to build request",
+					zap.String("url", rootURL), zap.Error(err))
+				result.ContentType = "error"
+				result.Reason = "failed to build request"
+				// Don't skip on errors — let phases try
+				return result
+			}
+			zap.L().Warn("HeuristicsCheck: request failed",
+				zap.String("url", rootURL), zap.String("class", class), zap.Error(err))
+			markUnreachable(result, class)
+			return result
+		}
+		fullResp = resp
+	}
+	result.Reachable = true
+	classifyRootResponse(requester, rootURL, level, fullResp, result)
+	return result
+}
+
+// markUnreachable records a root that did not answer. Spidering is not skipped
+// on it — a transient failure must not cost the later phases their chance.
+func markUnreachable(result *HeuristicsResult, class string) {
+	result.ContentType = "error"
+	result.ErrClass = class
+	result.Reason = "unreachable (" + http.DescribeTransportClass(class) + ")"
+}
+
+// fetchRoot sends the root GET. class is the transport error class when the
+// request was sent and failed, "" when it could not be built.
+func fetchRoot(ctx context.Context, requester *http.Requester, rootURL string) (resp []byte, class string, err error) {
 	rr, err := httpmsg.GetRawRequestFromURL(rootURL)
 	if err != nil {
-		zap.L().Warn("HeuristicsCheck: failed to build request",
-			zap.String("url", rootURL), zap.Error(err))
-		result.ContentType = "error"
-		result.Reason = "failed to build request"
-		// Don't skip on errors — let phases try
-		return result
+		return nil, "", err
 	}
-
-	respChain, _, err := requester.Execute(rr, http.Options{DisableCompression: true})
+	respChain, _, err := requester.ExecuteContext(ctx, rr, http.Options{DisableCompression: true})
 	if err != nil {
-		zap.L().Warn("HeuristicsCheck: request failed",
-			zap.String("url", rootURL), zap.Error(err))
-		result.ContentType = "error"
-		result.Reason = "request failed"
-		// Don't skip on errors — let phases try
-		return result
+		return nil, http.ClassifyTransportError(err), err
 	}
+	defer respChain.Close()
+	return respChain.FullResponseBytes(), "", nil
+}
 
-	fullResp := respChain.FullResponseBytes()
+// classifyRootResponse classifies a root page's full response into result:
+// content type, status, and whether spidering is worthwhile. It may probe
+// secondary paths (confirmBlank) when the root is blank.
+func classifyRootResponse(requester *http.Requester, rootURL, level string, fullResp []byte, result *HeuristicsResult) {
 	if len(fullResp) == 0 {
 		result.ContentType = "blank"
 		result.SkipSpidering = true
 		result.Reason = "empty response"
-		return result
+		return
 	}
 
 	result.StatusCode = httpmsg.GetStatusCode(fullResp)
@@ -245,7 +310,7 @@ func probeTarget(_ context.Context, requester *http.Requester, rootURL string, l
 		result.ContentType = "redirect"
 		result.SkipSpidering = false
 		result.Reason = "root redirects (3xx) — spidering retained"
-		return result
+		return
 	}
 
 	// Classify using GetStartType
@@ -310,8 +375,6 @@ func probeTarget(_ context.Context, requester *http.Requester, rootURL string, l
 		body := fullResp[bodyOffset:]
 		classifyAdvanced(result, body)
 	}
-
-	return result
 }
 
 // htmlTagPrefixes lists lowercase HTML element prefixes that GetStartType

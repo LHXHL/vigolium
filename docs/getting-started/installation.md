@@ -13,8 +13,11 @@ curl -fsSL https://vigolium.com/install.sh | bash
 
 The installer:
 
-- resolves the latest release from the CDN, downloads the matching binary, and
-  **verifies its SHA-256 checksum** before installing;
+- resolves the latest release, downloads the matching binary, and **verifies
+  it** before installing: npm tarballs against the registry's sha512
+  `dist.integrity`, CDN archives against the SHA-256 in `checksums.txt` (and,
+  when [`minisign`](https://jedisct1.github.io/minisign/) is installed, that
+  file's release signature). A missing digest aborts the install;
 - installs to `~/.local/bin/vigolium`;
 - adds `~/.local/bin` to your `PATH` in the appropriate shell profile
   (`.zshrc`, `.bashrc`/`.bash_profile`, or `config.fish`).
@@ -108,7 +111,17 @@ docker run --rm j3ssie/vigolium:latest scan -h
 # Scan a target and write a report to the host
 docker run --rm -v "$PWD:/out" j3ssie/vigolium:latest \
   scan --stateless -t https://example.com --format jsonl -o /out/results
+
+# Run the REST server; publish the port to the host's loopback only
+docker run --rm -p 127.0.0.1:9002:9002 -e VIGOLIUM_API_KEY=change-me \
+  j3ssie/vigolium:latest server
 ```
+
+The images set `VIGOLIUM_SERVER_HOST=0.0.0.0`, because a server bound to the
+container's own loopback is unreachable through a published port; outside a
+container `vigolium server` binds `127.0.0.1` unless you pass `--host`. The
+ingest proxy is not covered by that variable: inside a container give it
+`--ingest-proxy-host 0.0.0.0` plus `--proxy-token` (or `--proxy-allow`).
 
 ## Verify the installation
 
@@ -134,32 +147,71 @@ vigolium doctor --fix --only chrome,nuclei   # fix only specific items
 
 `--fix` prints the report, installs what's missing, then re-checks and shows
 the updated status. `--only` accepts any of:
-`nuclei`, `chrome`, `bun`, `claude`, `agent-browser`, `pi`, `piolium`
-(it has no effect without `--fix`).
+`nuclei`, `chrome`, `bun`, `claude`, `agent-browser`, `pi`, `piolium`, `skill`
+(it has no effect without `--fix`). `skill` reinstalls the stale
+`vigolium-scanner` coding-agent skill copies that `doctor` found in
+`./.claude/skills`, `~/.claude/skills`, `./.agents/skills` or `~/.agents/skills`.
+
+### What happens if you skip it
+
+Nothing is installed before a scan starts. When chromium or the nuclei
+templates are missing, a scan prints one stderr line saying so, then the phase
+that needs a dependency fetches it the first time it runs:
+
+- the first spidering phase (`--spider`, or a full `scan`) downloads Chrome for
+  Testing (~150 MB) into `~/.cache/vigolium/` when no Chrome/Chromium is
+  installed;
+- the first known-issue scan clones nuclei-templates into `~/nuclei-templates`
+  (or `known_issue_scan.templates_dir`), typically 1-3 minutes.
+
+Each step prints an ETA line and emits a `scan.setup` event on `--events`
+streams, and its time is not charged to the phase's budget. If the download
+fails, only that phase fails, with a message pointing at
+`vigolium doctor --fix --only chrome` (or `--only nuclei`). `vigolium init`
+installs both up front, like `doctor --fix --only chrome,nuclei`.
+`--skip-dependency-check` silences the one-line notice.
 
 ## Updating
 
-`vigolium update` re-runs the official installer to fetch the latest release
+`vigolium update` replaces the running binary with the latest signed release
 and refreshes the local nuclei-templates checkout used by the known-issue scan:
 
 ```bash
 vigolium update                  # update binary + nuclei templates
-vigolium update --skip-templates # only reinstall the binary
+vigolium update --check          # is a newer release out? changes nothing
+vigolium update --dry-run        # verify the signed release, download nothing
+vigolium update --skip-templates # only update the binary
 vigolium update --skip-binary    # only refresh nuclei templates
-vigolium update --force          # skip the confirmation prompt
+vigolium update --install-dir ~/.local/bin   # install a copy there instead
 ```
 
-The binary update always installs to `~/.local/bin/vigolium`. If your running
-binary lives elsewhere (e.g. a `make install` build in `$GOPATH/bin` or a
-Docker image), `update` prints a warning — ensure `~/.local/bin` precedes the
-old location on your `PATH`, or upgrade that copy manually.
+The update runs inside the binary (no shell or curl). It reads `metadata.json`,
+`checksums.txt` and `checksums.txt.minisig` from one release prefix
+(`https://cdn.vigolium.com/vigolium-release`, or `$VIGOLIUM_UPDATE_BASE_URL`),
+verifies the [minisign](https://jedisct1.github.io/minisign/) signature
+against the release keys built into the binary, checks the archive's SHA-256,
+confirms the new binary's `version --json`, and only then renames it over the
+running binary (symlinks resolved, so a `$PATH` symlink keeps pointing at the
+updated file). Any failed check leaves the current binary untouched; re-running
+the install script is always a working recovery path.
+
+If the running binary's directory is not writable (for example
+`/usr/local/bin`), the update stops with an error: re-run it with `sudo`, or
+pass `--install-dir` to install a copy into a directory you own. `-j` prints a
+mutation document (`changed`, `action`, `dry_run`, `from`, `to`, `path`,
+`update_available`, and one item per step: `binary`, `templates`).
 
 Vigolium also checks npm for a newer release on startup at most once per day.
 Set `VIGOLIUM_DISABLE_UPDATE_CHECK=1` to suppress that notice, or
-`VIGOLIUM_AUTO_UPDATE=1` to install and re-exec the newer binary automatically.
+`VIGOLIUM_AUTO_UPDATE=1` to update and re-exec the newer binary automatically.
+Auto-update only acts for a person at a terminal: it stays off under `-j`,
+`--events`, `--ci-output-format`, when stdout or stderr is not a TTY, for
+`vigolium server`, and when `CI` or a coding-agent variable (`VIGOLIUM_AGENT`,
+`CLAUDECODE`, …) is set, so an agent never has its binary swapped mid-session.
 
-> npm and Docker installs are upgraded through their own tooling
-> (`npm update -g @vigolium/vigolium` / `docker pull`), not `vigolium update`.
+> npm, Homebrew and Docker installs are upgraded through their own tooling
+> (`npm install -g @vigolium/vigolium@latest` / `brew upgrade vigolium` /
+> `docker pull`); `vigolium update` refuses to replace those binaries in place.
 
 Packages produced by the additional distribution recipes record their package
 manager. Releases containing this support disable binary self-updates for those

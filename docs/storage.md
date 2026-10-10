@@ -88,7 +88,7 @@ All subcommands operate on the active project. Every subcommand fails with a cle
 vigolium storage ls                              # list all objects in the project
 vigolium storage ls --prefix ugc/                # filter by prefix
 vigolium storage ls --tree                       # render as a directory tree
-vigolium storage ls --json
+vigolium storage ls -j                           # read envelope: items = objects
 
 vigolium storage upload ./bundle.tar.gz                         # → ugc/bundle.tar.gz
 vigolium storage upload ./bundle.tar.gz --key imports/manual.tar.gz
@@ -103,7 +103,7 @@ vigolium storage results <run-uuid>  -o ./run.tar.gz
 
 vigolium storage presign --key ugc/foo.tar.gz                    # default: GET, 1h
 vigolium storage presign --key uploads/incoming.tar.gz --method PUT --expiry 30m
-vigolium storage presign --key ugc/foo.tar.gz --json
+vigolium storage presign --key ugc/foo.tar.gz -j                 # items:[{url,key,method,expiry_seconds}]
 
 vigolium storage rm imports/old.tar.gz                            # prompts for confirmation
 vigolium storage rm imports/a.tar.gz imports/b.tar.gz --force     # batch + force

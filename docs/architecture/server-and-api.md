@@ -58,9 +58,13 @@ Large payloads should use the `*_base64` fields to avoid JSON escaping. The same
 
 ### Transparent proxy
 
-`vigolium server --ingest-proxy-port 9003` opens a recording proxy. Plain HTTP
+`vigolium server --ingest-proxy-port 9003` opens a recording proxy on
+`--ingest-proxy-host` (default `127.0.0.1`, independent of the API's `--host`).
+A non-loopback bind requires `--proxy-token` and/or `--proxy-allow`; the check
+runs in `proxyHandler.ServeHTTP` before either the HTTP or the CONNECT path, and
+`Proxy-Authorization` is stripped before forwarding and recording. Plain HTTP
 is captured; HTTPS `CONNECT` is tunnelled without inspection by default. Add
-`--proxy-mitm`, trust the generated CA, and optionally use `--export-ca` to
+`--proxy-mitm` and trust the generated CA (`vigolium server ca install`) to
 record decrypted HTTPS. `--proxy-insecure` disables upstream TLS verification.
 
 ---
@@ -75,7 +79,7 @@ Endpoints group by concern; each group has a dedicated page under [api-reference
 | Auth/user | `POST /api/auth/login`, `GET /api/user/info` | Token issue, identity |
 | Ingestion | `POST /api/ingest-http` | Traffic in (see §2) |
 | HTTP records | `GET/DELETE /api/http-records[/:uuid]` | Query/inspect captured traffic |
-| Findings | `GET /api/findings`, `PATCH /api/findings/:id/status` | Query/triage results |
+| Findings | `GET /api/findings`, `PATCH /api/findings/:id/status`, `POST /api/findings/:id/verify` | Query/triage/verify results |
 | Scan control | `POST /api/scan-url`, `/api/scan-request`, `/api/scans/run`, `/api/scans/:uuid/{stop,pause,resume}` | Trigger & manage native scans |
 | Scope / config | `GET/POST /api/scope`, `/api/config` | Live scope & config |
 | Projects | `GET/POST/PUT/DELETE /api/projects[/:uuid]`, `GET /api/projects/:uuid/stats` | Multi-tenancy management |

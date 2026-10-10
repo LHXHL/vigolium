@@ -61,9 +61,7 @@ path is indistinguishable from an empty capture.
 
 > **A batch emits ONE document for the whole run.** `ingest -i a.har -i b.har -j`
 > prints a single envelope whose `records_ingested` covers every source, so
-> `... -j | jq .records_ingested` is the batch total. (It used to print one
-> object per source, which made that same `jq` read only the last source's count
-> and silently undercount.) The human console prints one "Ingestion completed"
+> `... -j | jq .records_ingested` is the batch total. The human console prints one "Ingestion completed"
 > line for the run, under the `ingesting N source(s) in one process` header.
 
 > Concurrent `vigolium ingest` processes against one SQLite file are safe (every
@@ -83,7 +81,7 @@ path is indistinguishable from an empty capture.
 | `--scan-on-receive` | After ingesting, scan the records (local mode only). `-S` is a **deprecated alias** here and warns — everywhere else `-S` means `--stateless`. |
 | `--spec-url` | Use server URLs from the OpenAPI/Swagger spec |
 | `--spec-header` | HTTP header(s) for OpenAPI/WSDL requests (repeatable) |
-| `--spec-var` | OpenAPI parameter / WSDL element values as `key=value` (repeatable) |
+| `--spec-var` | OpenAPI parameter / WSDL element / Postman `{{variable}}` values as `key=value` (repeatable) |
 | `--spec-default` | Default value for required parameters (default: `1`) |
 | `--disable-fetch-response` | Store request-only (don't fetch responses) |
 | `--scope-origin` | Origin scope mode for filtering |
@@ -104,8 +102,10 @@ path is indistinguishable from an empty capture.
 
 ## Input formats — one example each
 
-`-I` selects the parser. OpenAPI/Swagger and WSDL auto-detect from file content,
-so `-I` is optional for those.
+`-I` selects the parser. Without `-I`, every file format below is detected from
+its content (extension ignored; the detection is logged), so `-I` is optional.
+A file that is mostly not URLs and matches no format fails with
+`input_unparsed` naming the closest format instead of becoming junk targets.
 
 ```bash
 # urls (default) — a single target, or a file of targets.
@@ -163,7 +163,18 @@ vigolium ingest -I openapi -i spec.yaml -t https://api.target.example \
 # Supply concrete values for path/query parameters, with a fallback default.
 vigolium ingest -I openapi -i spec.yaml -t https://api.target.example \
   --spec-var userId=42 --spec-var status=active --spec-default 1
+
+# Credentials for the spec's security schemes: bearer (also oauth2 /
+# openIdConnect) and basic build the Authorization header; a value already
+# starting with "Bearer "/"Basic " is not prefixed twice.
+vigolium ingest -i spec.yaml -t https://api.target.example \
+  --spec-var bearer=$TOKEN --spec-var basic=user:pass
 ```
+
+Required parameters with no example, default or usable schema get a
+type-shaped placeholder (`1`, `true`, the zero UUID) instead of dropping their
+operation; operations that still produce no request are counted in a warning.
+Path values are escaped as one segment (`a/b` → `a%2Fb`).
 
 ### WSDL / SOAP
 
@@ -236,10 +247,7 @@ fields, not a row array):
 ```
 
 **`records_ingested` is what the database holds**, not what was attempted.
-`select count(*) from http_records` after the run equals it. It used to count
-items the executor *attempted*, so a capture replayed against a host that no
-longer resolved reported "30 records ingested" and exited `0` over an empty
-table.
+`select count(*) from http_records` after the run equals it.
 
 **`records_failed > 0` exits `1`** with `error.code: "ingest_incomplete"` — a
 record was read and could not be stored, either because the write was refused

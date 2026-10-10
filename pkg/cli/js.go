@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,14 +27,17 @@ var jsOpts struct {
 	codeFile string
 	target   string
 	timeout  time.Duration
-	format   string
 }
 
 var jsCmd = &cobra.Command{
 	Use:   "js",
 	Short: "Execute JavaScript with the full vigolium.* API",
 	Long: `Run JavaScript code with access to the full vigolium.* API surface.
-Reads from stdin by default, or use --code / --code-file for inline / file input.`,
+Reads from stdin by default, or use --code / --code-file for inline / file input.
+
+Without -j the script's return value is printed as JSON; --format text prints a
+string result unquoted (--format is the global flag: json, the default, or
+text). -j wraps the value in the envelope as items:[{"value": …}].`,
 	RunE: runJsCmd,
 }
 
@@ -45,11 +49,15 @@ func init() {
 	flags.StringVar(&jsOpts.codeFile, "code-file", "", "Path to JavaScript/TypeScript file to execute")
 	flags.StringVar(&jsOpts.target, "target", "", "Set TARGET variable in JS scope (URL)")
 	flags.DurationVar(&jsOpts.timeout, "timeout", 30*time.Second, "Execution timeout")
-	flags.StringVar(&jsOpts.format, "format", "json", "Output format: json or text")
 }
 
 func runJsCmd(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
+
+	format, err := jsOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
 
 	// Resolve JS source
 	source, err := resolveJsSource()
@@ -77,8 +85,12 @@ func runJsCmd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("js error: %w", result.Error)
 	}
 
+	if globalJSON {
+		return emitJSEvalResult(cmd, result.Value)
+	}
+
 	if result.Value != "" {
-		if jsOpts.format == "text" {
+		if format == "text" {
 			// Try to print as raw string (strip surrounding quotes for simple strings)
 			v := result.Value
 			if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
@@ -95,6 +107,49 @@ func runJsCmd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// jsOutputFormat reads the global --format for `js`: json (the default, also
+// when the flag is not typed — its global default is a scan format) or text. A
+// local --format would shadow the global flag, which the machine contract
+// forbids outside stream commands.
+func jsOutputFormat(cmd *cobra.Command) (string, error) {
+	if !flagChanged(cmd, "format") {
+		return "json", nil
+	}
+	switch f := strings.ToLower(strings.TrimSpace(globalFormat)); f {
+	case "json", "text":
+		return f, nil
+	default:
+		return "", usageErrorf("js supports --format json (default) or text, not %q", strings.TrimSpace(globalFormat))
+	}
+}
+
+// jsEvalItem is the -j result of `vigolium js`: the script's return value as
+// JSON (null when it returned undefined or null).
+type jsEvalItem struct {
+	Value json.RawMessage `json:"value"`
+}
+
+// emitJSEvalResult wraps the script's JSON-stringified return value as
+// items:[{"value": …}]. --format is the human/raw-pipe switch; under -j the
+// envelope is the contract, so the value is embedded as JSON, not as a string.
+func emitJSEvalResult(cmd *cobra.Command, value string) error {
+	raw := json.RawMessage("null")
+	if value != "" {
+		if json.Valid([]byte(value)) {
+			raw = json.RawMessage(value)
+		} else {
+			// JSON.stringify failed and the VM fell back to String(): keep it, as
+			// a string.
+			quoted, err := json.Marshal(value)
+			if err != nil {
+				return err
+			}
+			raw = quoted
+		}
+	}
+	return emitObject(cmd, "", jsEvalItem{Value: raw})
+}
+
 // resolveJsSource determines the JS source from --code, --code-file, or stdin (default).
 func resolveJsSource() (string, error) {
 	hasCode := jsOpts.code != ""
@@ -102,7 +157,7 @@ func resolveJsSource() (string, error) {
 
 	// Check for conflicting inputs
 	if hasCode && hasFile {
-		return "", fmt.Errorf("--code and --code-file are mutually exclusive")
+		return "", usageErrorf("--code and --code-file are mutually exclusive")
 	}
 
 	// --code: inline

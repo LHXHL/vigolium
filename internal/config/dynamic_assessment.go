@@ -8,10 +8,12 @@ type DynamicAssessmentConfig struct {
 	Extensions        ExtensionsConfig     `yaml:"extensions"`
 
 	// MaxParamShapeSamples caps how many value-distinct samples of the same
-	// param shape (host + path + method + query/form/JSON param-name-set) are
-	// scanned in the dynamic-assessment phase. It collapses redundant fan-out over
-	// requests that differ only in param values (e.g. /search?q=1..N, or repeated
-	// same-shape form/JSON POSTs) without touching stored records; a request whose
+	// param shape (host + path shape + method + query/form/JSON param-name-set,
+	// where the path shape normalizes id-like segments: /users/1 and /users/2
+	// share /users/{int}) are scanned in the dynamic-assessment phase. It
+	// collapses redundant fan-out over requests that differ only in param or
+	// path-id values (e.g. /search?q=1..N, /users/1..N, or repeated same-shape
+	// form/JSON POSTs) without touching stored records; a request whose
 	// body shape can't be seen (unseen or multipart body) is never coalesced.
 	// Following the MaxFeedbackRounds convention, 0 (or unset, including
 	// when a scanning profile overlays this section) means "use the built-in
@@ -34,6 +36,18 @@ type DynamicAssessmentConfig struct {
 	// explicitly (--module-tag hygiene, --module-id <id>) always wins, the same
 	// way an explicit selection already bypasses the intensity tier ceiling.
 	HygieneModules *bool `yaml:"hygiene_modules,omitempty"`
+
+	// AllowRiskyPayloads unlocks risk:high probes below --intensity deep: the
+	// OR-per-row and stacked time-blind SQLi payloads (which can multiply the
+	// delay per row or append a statement to an UPDATE/DELETE) and whole modules
+	// tagged risk:high. Deep scans always allow them. The --allow-risky-payloads
+	// flag overrides this value in either direction.
+	AllowRiskyPayloads bool `yaml:"allow_risky_payloads,omitempty"`
+
+	// ParamMining bounds the param-mining phase (hidden-parameter discovery),
+	// which runs before the assessment at --intensity deep or with
+	// --param-mining. See ParamMiningConfig.
+	ParamMining ParamMiningConfig `yaml:"param_mining,omitempty"`
 }
 
 func DefaultDynamicAssessmentConfig() *DynamicAssessmentConfig {

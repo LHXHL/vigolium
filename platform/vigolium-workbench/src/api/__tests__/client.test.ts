@@ -119,26 +119,140 @@ describe('apiGet — X-Project-UUID header injection', () => {
 });
 
 describe('ApiError', () => {
-  it('parses error body when the response is not ok', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
-      new Response(JSON.stringify({ error: 'forbidden', code: 403, details: 'no access' }), {
-        status: 403,
-      }),
-    );
+  beforeEach(() => {
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: new URL('http://localhost:3002/'),
     });
+  });
+
+  it('reads a v1 error body: status from the response, code from error_code', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ error: 'forbidden', code: 403, error_code: 'forbidden', details: 'no access' }), {
+        status: 403,
+      }),
+    );
     const { apiGet, ApiError } = await loadClient();
-    expect.assertions(3);
+    expect.assertions(5);
     try {
       await apiGet('/api/findings');
     } catch (e) {
       const err = e as InstanceType<typeof ApiError>;
       expect(err).toBeInstanceOf(ApiError);
-      expect(err.code).toBe(403);
+      expect(err.status).toBe(403);
+      expect(err.code).toBe('forbidden');
+      expect(err.message).toBe('forbidden');
       expect(err.details).toBe('no access');
     }
+  });
+
+  it('reads a v2 error body (error object)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({
+        schema_version: 2, ok: false,
+        error: { code: 'scan_not_found', message: 'scan not found', status: 404, details: 'gone' },
+      }), { status: 404 }),
+    );
+    const { apiGet, ApiError } = await loadClient();
+    expect.assertions(5);
+    try {
+      await apiGet('/api/scans/x');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ApiError);
+      const err = e as InstanceType<typeof ApiError>;
+      expect(err.status).toBe(404);
+      expect(err.code).toBe('scan_not_found');
+      expect(err.message).toBe('scan not found');
+      expect(err.details).toBe('gone');
+    }
+  });
+
+  it('falls back to the status text when the body is not JSON', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response('boom', { status: 502, statusText: 'Bad Gateway' }),
+    );
+    const { apiGet, ApiError } = await loadClient();
+    expect.assertions(4);
+    try {
+      await apiGet('/api/findings');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ApiError);
+      const err = e as InstanceType<typeof ApiError>;
+      expect(err.status).toBe(502);
+      expect(err.code).toBe('');
+      expect(err.message).toBe('Bad Gateway');
+    }
+  });
+});
+
+describe('project_not_found recovery', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: new URL('http://localhost:3002/'),
+    });
+  });
+
+  it('clears the stale UUID, notifies listeners, and retries once without the header', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: 'project not found', code: 404, error_code: 'project_not_found',
+      }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [1], total: 1 }), { status: 200 }));
+    const client = await loadClient();
+    client.setProjectUUID('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    const seen: Array<string | null> = [];
+    client.onProjectNotFound((stale) => seen.push(stale));
+
+    const out = await client.apiGet<{ data: number[] }>('/api/findings');
+
+    expect(out.data).toEqual([1]);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const first = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    const second = fetchSpy.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    expect(first['X-Project-UUID']).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(second['X-Project-UUID']).toBeUndefined();
+    expect(client.getProjectUUID()).toBe(null);
+    expect(seen).toEqual(['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee']);
+  });
+
+  it('does not retry other 404s', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'scan not found', code: 404, error_code: 'scan_not_found' }), { status: 404 }),
+    );
+    const client = await loadClient();
+    client.setProjectUUID('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    await expect(client.apiGet('/api/scans/x')).rejects.toMatchObject({ status: 404, code: 'scan_not_found' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(client.getProjectUUID()).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  });
+});
+
+describe('list unwrapping', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: new URL('http://localhost:3002/'),
+    });
+  });
+
+  it('aliases v2 items as data', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ schema_version: 2, ok: true, items: [{ id: 1 }], total: 1 }), { status: 200 }),
+    );
+    const { apiGet } = await loadClient();
+    const out = await apiGet<{ data: Array<{ id: number }>; total: number }>('/api/findings');
+    expect(out.data).toEqual([{ id: 1 }]);
+    expect(out.total).toBe(1);
+  });
+
+  it('leaves v1 data and bare arrays alone', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [2], total: 1 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ uuid: 'p' }]), { status: 200 }));
+    const { apiGet } = await loadClient();
+    expect(await apiGet('/api/findings')).toEqual({ data: [2], total: 1 });
+    expect(await apiGet('/api/projects')).toEqual([{ uuid: 'p' }]);
   });
 });
 

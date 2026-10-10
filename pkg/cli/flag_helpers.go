@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -69,16 +70,119 @@ const scopeOriginFlagUsage = "Host scope strictness: all, relaxed, balanced, str
 // registerScanPipelineFlags registers the phase/strategy/profile knobs that
 // only make sense for the full native scan pipeline (scan + run).
 func registerScanPipelineFlags(flags *pflag.FlagSet) {
-	flags.StringVar(&globalOnly, "only", "", "Run only these phases (comma-separated: "+runner.PhaseNamesDesc(false)+"; aliases accepted, see `vigolium run --help`)")
-	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see `vigolium run --help`)")
+	flags.StringVar(&globalOnly, "only", "", "Run only these phases (comma-separated: "+runner.PhaseNamesDesc(false)+"; aliases accepted, see 'vigolium run --help')")
+	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see 'vigolium run --help')")
 	flags.StringVar(&globalStrategy, "strategy", "", "Scanning strategy preset (lite, balanced, deep)")
 	flags.StringVar(&globalScanningProfile, "scanning-profile", "", "Scanning profile name or YAML file path")
-	flags.StringVar(&globalIntensity, "intensity", "", "Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy)")
-	flags.StringVar(&globalScopeOrigin, "scope-origin", "", scopeOriginFlagUsage)
-	flags.DurationVar(&globalScanningMaxDuration, "scanning-max-duration", 0, "Maximum total scan duration (overrides config, e.g. 1h, 30m)")
+	registerIntensityFlag(flags)
+	registerScopeOriginFlag(flags)
+	registerScanningMaxDurationFlag(flags)
 	flags.StringVar(&globalHeuristicsCheck, "heuristics-check", "", `Pre-scan heuristics level: none, basic, advanced (default: basic)`)
 	flags.BoolVar(&globalSkipHeuristics, "skip-heuristics", false, "Disable pre-scan heuristics (equivalent to --heuristics-check=none)")
+	registerAllowRiskyPayloadsFlag(flags)
+	registerNoParamDedupFlag(flags)
+	registerParamMiningFlag(flags)
+	registerRequestBudgetFlags(flags)
+	registerScanDocumentFlags(flags)
 }
+
+// registerIntensityFlag, registerScopeOriginFlag and
+// registerScanningMaxDurationFlag are the one definition of each flag, shared
+// by the full pipeline (registerScanPipelineFlags: scan, run) and the
+// lightweight single-request commands (registerLightweightScanTuningFlags:
+// scan-url, scan-request). They bind the same globals, so the resolver
+// (resolveNativeScanOptions / resolveLightweightScanOptions) reads one value
+// whichever command parsed it.
+func registerIntensityFlag(flags *pflag.FlagSet) {
+	flags.StringVar(&globalIntensity, "intensity", "", "Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy)")
+}
+
+func registerScopeOriginFlag(flags *pflag.FlagSet) {
+	flags.StringVar(&globalScopeOrigin, "scope-origin", "", scopeOriginFlagUsage)
+}
+
+func registerScanningMaxDurationFlag(flags *pflag.FlagSet) {
+	flags.DurationVar(&globalScanningMaxDuration, "scanning-max-duration", 0, "Maximum total scan duration (overrides config, e.g. 1h, 30m)")
+}
+
+// registerOASTURLFlag declares --oast-url for scan, run, scan-url and
+// scan-request.
+func registerOASTURLFlag(flags *pflag.FlagSet) {
+	flags.StringVar(&scanOpts.OastURL, "oast-url", "", "Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest'")
+}
+
+// registerLightweightScanTuningFlags registers the scan-tuning flags scan-url
+// and scan-request share with `vigolium scan`: --intensity,
+// --scanning-max-duration, --scope-origin, --oast-url and --auth/--auth-file.
+// Same globals, same usage strings (pinned by TestScanTuningFlagParity).
+//
+// Routing: --auth/--auth-file and --intensity need the runner (session
+// hydration, profile + module-tier resolution), so they send the request down
+// the Runner path (needsRunnerScan). --scanning-max-duration and --oast-url
+// are honoured on the direct path too (executor MaxDuration, fixed-URL OAST).
+// --scope-origin was read by both paths before it was registered here.
+func registerLightweightScanTuningFlags(flags *pflag.FlagSet) {
+	registerIntensityFlag(flags)
+	registerScanningMaxDurationFlag(flags)
+	registerScopeOriginFlag(flags)
+	registerOASTURLFlag(flags)
+	registerAuthFlags(flags)
+}
+
+// registerParamMiningFlag declares --param-mining for the full pipeline (scan,
+// run). It binds into scanOpts.ParamMining, left nil when absent so the phase
+// follows the intensity (on at deep); an explicit value wins either way.
+func registerParamMiningFlag(flags *pflag.FlagSet) {
+	f := flags.VarPF(optionalBoolFlag{target: &scanOpts.ParamMining}, "param-mining", "",
+		"Mine hidden parameters (Arjun-style) on this scan's dynamic endpoints before the assessment, so injection modules test them too. Default: on at --intensity deep, off below; --param-mining=false turns it off at deep. Budget: dynamic-assessment.param_mining in config")
+	f.NoOptDefVal = "true"
+}
+
+// registerAllowRiskyPayloadsFlag declares --allow-risky-payloads for the scan
+// commands (scan, run via registerScanPipelineFlags; scan-url, scan-request via
+// registerLightweightScanIOFlags). It binds straight into
+// scanOpts.AllowRiskyPayloads, left nil when the flag is absent so config
+// dynamic-assessment.allow_risky_payloads decides; an explicit value (including
+// =false) overrides config.
+func registerAllowRiskyPayloadsFlag(flags *pflag.FlagSet) {
+	f := flags.VarPF(optionalBoolFlag{target: &scanOpts.AllowRiskyPayloads}, "allow-risky-payloads", "",
+		"Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads")
+	f.NoOptDefVal = "true"
+}
+
+// registerNoParamDedupFlag declares --no-param-dedup for the same scan commands
+// as --allow-risky-payloads (scan, run, scan-url, scan-request). It binds into
+// scanOpts.NoParamDedup, which the executor mirrors into
+// ScanContext.NoParamDedup.
+func registerNoParamDedupFlag(flags *pflag.FlagSet) {
+	flags.BoolVar(&scanOpts.NoParamDedup, "no-param-dedup", false,
+		"Keep testing a parameter with every module of a vuln class after one already reported it (default: one finding per param and class, e.g. sqli-time-blind skips a param sqli-error-based confirmed). For audit runs")
+}
+
+// optionalBoolFlag is a bool flag that also records whether it was passed: the
+// target stays nil until Set, so an absent flag defers to config while an
+// explicit --flag=false still wins over a config true.
+type optionalBoolFlag struct{ target **bool }
+
+func (f optionalBoolFlag) String() string {
+	if f.target == nil || *f.target == nil {
+		return "false"
+	}
+	return strconv.FormatBool(**f.target)
+}
+
+func (f optionalBoolFlag) Set(s string) error {
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return err
+	}
+	*f.target = &v
+	return nil
+}
+
+func (f optionalBoolFlag) Type() string { return "bool" }
+
+func (f optionalBoolFlag) IsBoolFlag() bool { return true }
 
 // registerSpecFlags registers OpenAPI/Swagger spec options shared by scan
 // (when -i is an OpenAPI file) and ingest.
@@ -109,12 +213,17 @@ func registerLightweightScanIOFlags(flags *pflag.FlagSet) {
 	flags.StringVarP(&scanOpts.Output, "output", "o", "", "Write findings to this file (use with --format jsonl|html; pairs with -S/--stateless)")
 	flags.BoolVarP(&globalStateless, "stateless", "S", false, "Use a temporary database that is discarded after the scan (pass --output/--format to persist results)")
 	registerKeepDBOnErrorFlag(flags)
-	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see `vigolium run --help`)")
-	flags.StringVar(&scanFailOn, "fail-on", "", "Exit non-zero if a finding at or above this severity is present (info|low|medium|high|critical) — for CI/agent gating; --soft-fail overrides.")
+	registerAllowRiskyPayloadsFlag(flags)
+	registerNoParamDedupFlag(flags)
+	registerRequestBudgetFlags(flags)
+	registerScanDocumentFlags(flags)
+	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see 'vigolium run --help')")
+	flags.StringVar(&scanFailOn, "fail-on", "", failOnUsage("for CI/agent gating; --soft-fail overrides."))
 	flags.BoolVar(&scanPrintFinding, "print-finding", false, "After the scan, print each finding to stdout as Markdown (description + matched evidence + request/response), like 'vigolium finding --markdown'. Pairs well with -S and --silent for a quick single-target scan.")
 	flags.BoolVar(&scanPrintTrafficTree, "print-traffic-tree", false, "After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent.")
 	flags.BoolVar(&scanPrintTraffic, "print-traffic", false, "After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent.")
 	registerEventsFlag(flags)
+	registerReportFlags(flags)
 	// scan-url and scan-request read a request from stdin just as scan does,
 	// so they get the same deadline dial. Neither registers
 	// registerInputSourceFlags, so there is no double registration.

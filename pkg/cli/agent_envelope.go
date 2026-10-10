@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 )
 
@@ -19,7 +20,7 @@ import (
 // or `http_records` depending on where you asked, and drift was discovered as a
 // parse failure in production rather than as a version check at startup. There
 // is now one shape, one canonical name per field, and a number to check.
-const AgentSchemaVersion = 1
+const AgentSchemaVersion = apicontract.SchemaVersion
 
 // agentEnvelope is the single JSON shape every -j command emits.
 //
@@ -31,7 +32,23 @@ const AgentSchemaVersion = 1
 type agentEnvelope struct {
 	SchemaVersion int    `json:"schema_version"`
 	Command       string `json:"command"`
-	ProjectUUID   string `json:"project_uuid,omitempty"`
+	// Kind names the document's shape — "read", "mutation" or "scan" — so a
+	// consumer can tell a row list from a mutation receipt without knowing the
+	// command. Set by the builder from the command's machine declaration
+	// (newMachineEnvelope, asMutation); empty from the raw newAgentEnvelope.
+	Kind string `json:"kind,omitempty"`
+	// OK is always true on a result document. The error envelope carries
+	// ok:false (agent_error.go), so `.ok` is a valid branch on every document a
+	// -j invocation prints.
+	OK bool `json:"ok"`
+	// The mutation spine, set only by emitMutation. Changed is a pointer so a
+	// mutation that changed nothing still says `"changed": false` while a read
+	// carries no such key.
+	Changed *bool  `json:"changed,omitempty"`
+	Action  string `json:"action,omitempty"`
+	DryRun  bool   `json:"dry_run,omitempty"`
+
+	ProjectUUID string `json:"project_uuid,omitempty"`
 	// DBPath names the database this command actually opened. A consumer that
 	// pins $VIGOLIUM_DB_PATH and passes --db can then ASSERT the store it read
 	// rather than trusting that the pin survived a subprocess chain — the default
@@ -74,21 +91,38 @@ type agentEnvelope struct {
 	// `traffic -j -n 10000` that is tens of MB, and on any agent-driven read it is
 	// a doubled token bill for a field deprecated on arrival. So it is emitted
 	// only when jsonLegacyKeysEnabled() says a caller is still migrating.
+	//
+	// The special value "." flattens the single object result into the top
+	// level instead, which is the pre-envelope shape of a command that printed
+	// one bare object.
 	legacyKey string
+	// objectResult marks a single-object answer wrapped as items:[obj]. It has no
+	// record boundary, so the output budget leaves it whole and a page is never
+	// described; and its legacy alias renders the object, not the one-row array.
+	objectResult bool
 }
 
-// newAgentEnvelope builds the standard envelope. legacyKey is the pre-envelope
+// newAgentEnvelope builds the standard envelope with no kind; a command emits
+// through newMachineEnvelope (or emitRead/emitObject/emitMutation), which names
+// it from the cobra path and sets the kind. legacyKey is the pre-envelope
 // name this command used for its row array ("records", "findings", "scans", …);
 // pass "" for a command that had none.
+//
+// items is normalised: nil (or a nil slice) becomes [] and a single object
+// becomes [obj], because `items` is never null and never an object — a consumer
+// iterates it without asking which command produced it.
 func newAgentEnvelope(command, legacyKey string, items any, total int64, offset, limit int) *agentEnvelope {
 	now := time.Now()
+	items, object := normalizeEnvelopeItems(items)
 	env := &agentEnvelope{
 		SchemaVersion: AgentSchemaVersion,
 		Command:       command,
+		OK:            true,
 		Total:         total,
 		Offset:        offset,
 		Limit:         limit,
 		Items:         items,
+		objectResult:  object,
 		// One clock read for both: they are two representations of the SAME
 		// instant, and a schema whose selling point is that a consumer can compare
 		// them must not ship a pair sampled a millisecond apart.
@@ -97,7 +131,32 @@ func newAgentEnvelope(command, legacyKey string, items any, total int64, offset,
 		extra:         map[string]any{},
 	}
 	env.legacyKey = legacyKey
+	// Every envelope says where its project came from (project_source.go).
+	attachProjectSource(env)
 	return env
+}
+
+// normalizeEnvelopeItems enforces the `items` invariant: always a JSON array.
+// It reports whether the value was a single object that had to be wrapped.
+func normalizeEnvelopeItems(items any) (any, bool) {
+	if items == nil {
+		return []any{}, false
+	}
+	rv := reflect.ValueOf(items)
+	switch rv.Kind() {
+	case reflect.Slice:
+		if rv.IsNil() {
+			return reflect.MakeSlice(rv.Type(), 0, 0).Interface(), false
+		}
+		return items, false
+	case reflect.Array:
+		return items, false
+	case reflect.Pointer, reflect.Map, reflect.Interface:
+		if rv.IsNil() {
+			return []any{}, false
+		}
+	}
+	return []any{items}, true
 }
 
 // WithProjectScope records the project filter that was ACTUALLY applied.
@@ -148,7 +207,7 @@ func (e *agentEnvelope) WithQuery(tail ...string) *agentEnvelope {
 // Reflection rather than a type switch over the two shapes the read commands
 // happen to use today: the scan views are typed slices ([]scanRowView and
 // friends), and a switch missing them called every paged scan listing complete.
-// Anything that is not a slice (db stats emits an object) has no record
+// A single-object answer (db stats) has no record
 // boundary, which is the question both callers are really asking — resultIsPaged
 // to describe a page, applyOutputBudget to find somewhere to cut. One rule, so
 // the two cannot disagree about what counts as a row list.
@@ -156,6 +215,11 @@ func envelopeItemSlice(v any) (*agentEnvelope, reflect.Value, bool) {
 	env, ok := v.(*agentEnvelope)
 	if !ok {
 		return nil, reflect.Value{}, false
+	}
+	// A single object wrapped as items:[obj] (db stats, a receipt) is still one
+	// answer, not a page of one row: cutting it would ship an empty result.
+	if env.objectResult {
+		return env, reflect.Value{}, false
 	}
 	items := reflect.ValueOf(env.Items)
 	if !items.IsValid() || items.Kind() != reflect.Slice {
@@ -168,7 +232,9 @@ func envelopeItemSlice(v any) (*agentEnvelope, reflect.Value, bool) {
 // are dropped: `items` and `total` are the contract, and an alias shadowing one
 // would reintroduce exactly the ambiguity the envelope removes.
 var envelopeFields = map[string]bool{
-	"schema_version": true, "command": true, "project_uuid": true, "db_path": true,
+	"schema_version": true, "command": true, "kind": true, "ok": true,
+	"changed": true, "action": true, "dry_run": true,
+	"project_uuid": true, "db_path": true,
 	"total": true, "offset": true, "limit": true, "items": true, "query": true,
 	"query_argv": true, "generated_at": true, "generated_at_ms": true,
 }
@@ -184,7 +250,15 @@ var envelopeFields = map[string]bool{
 // field set above already answers.
 func (e *agentEnvelope) MarshalJSON() ([]byte, error) {
 	type alias agentEnvelope
-	base, err := jsonMarshalNoEscape((*alias)(e))
+	view := (*alias)(e)
+	// Items may have been reassigned after construction (the output budget
+	// slices it); a nil there must still render as [], never null.
+	if items, _ := normalizeEnvelopeItems(e.Items); !itemsIdentical(items, e.Items) {
+		cp := *view
+		cp.Items = items
+		view = &cp
+	}
+	base, err := jsonMarshalNoEscape(view)
 	if err != nil {
 		return nil, err
 	}
@@ -206,11 +280,9 @@ func (e *agentEnvelope) MarshalJSON() ([]byte, error) {
 	}
 
 	if renderLegacy {
-		itemsJSON, err := jsonMarshalNoEscape(e.Items)
-		if err != nil {
+		if err := e.appendLegacy(appendField); err != nil {
 			return nil, err
 		}
-		appendField(e.legacyKey, itemsJSON)
 	}
 	for _, key := range sortedExtraKeys(e.extra) {
 		raw, err := jsonMarshalNoEscape(e.extra[key])
@@ -220,6 +292,78 @@ func (e *agentEnvelope) MarshalJSON() ([]byte, error) {
 		appendField(key, raw)
 	}
 	return append(out, '}'), nil
+}
+
+// appendLegacy renders the --json-legacy-keys alias.
+//
+//   - a row list: the rows again under the old name;
+//   - an object result under a named key: the object itself (not the one-row
+//     array), which is the shape that name had before items was an array;
+//   - legacyKey ".": the object's own keys flattened to the top level — the
+//     pre-envelope shape of a command that printed one bare object. Envelope
+//     fields and the command's extras win a collision, so a flattened key can
+//     never shadow `items` or a counter the command states itself.
+func (e *agentEnvelope) appendLegacy(appendField func(string, []byte)) error {
+	single, hasSingle := e.singleItem()
+	if e.legacyKey == "." {
+		if !hasSingle {
+			return nil
+		}
+		raw, err := jsonMarshalNoEscape(single)
+		if err != nil {
+			return err
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil {
+			return nil // not an object: nothing to flatten
+		}
+		keys := make([]string, 0, len(fields))
+		for k := range fields {
+			if _, own := e.extra[k]; !own {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			appendField(k, fields[k])
+		}
+		return nil
+	}
+	value := e.Items
+	if e.objectResult && hasSingle {
+		value = single
+	}
+	raw, err := jsonMarshalNoEscape(value)
+	if err != nil {
+		return err
+	}
+	appendField(e.legacyKey, raw)
+	return nil
+}
+
+// singleItem returns items[0] when items holds exactly one element.
+func (e *agentEnvelope) singleItem() (any, bool) {
+	rv := reflect.ValueOf(e.Items)
+	if !rv.IsValid() || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) || rv.Len() != 1 {
+		return nil, false
+	}
+	return rv.Index(0).Interface(), true
+}
+
+// itemsIdentical reports whether normalisation left items untouched, without
+// comparing slice contents (which may not be comparable).
+func itemsIdentical(normalized, original any) bool {
+	if original == nil {
+		return false
+	}
+	a, b := reflect.ValueOf(normalized), reflect.ValueOf(original)
+	if a.Kind() != b.Kind() || a.Type() != b.Type() {
+		return false
+	}
+	if a.Kind() == reflect.Slice {
+		return a.IsNil() == b.IsNil() && a.Len() == b.Len() && (a.Len() == 0 || a.Pointer() == b.Pointer())
+	}
+	return true
 }
 
 // sortedExtraKeys keeps the appended fields in a stable order — map iteration is

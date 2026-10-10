@@ -35,6 +35,44 @@ func intensityTierCeiling(intensity string) int {
 	}
 }
 
+// resolveAllowRiskyPayloads resolves the operator's risky-payload opt-in.
+// Precedence follows the config chain: an explicit --allow-risky-payloads
+// (true or false) wins; otherwise dynamic-assessment.allow_risky_payloads from
+// the merged global → project → profile settings; otherwise off. Deep intensity
+// is applied separately (RiskyPayloadsAllowed), so this is the opt-in alone.
+func resolveAllowRiskyPayloads(opts *types.Options, settings *config.Settings) bool {
+	if opts != nil && opts.AllowRiskyPayloads != nil {
+		return *opts.AllowRiskyPayloads
+	}
+	return settings != nil && settings.DynamicAssessment.AllowRiskyPayloads
+}
+
+// RiskyPayloadsAllowed reports whether risk:high payloads and modules run for a
+// scan with these options and settings: always at --intensity deep, otherwise
+// only with the --allow-risky-payloads / config opt-in.
+func RiskyPayloadsAllowed(opts *types.Options, settings *config.Settings) bool {
+	if opts != nil && isDeepIntensity(opts.Intensity) {
+		return true
+	}
+	return resolveAllowRiskyPayloads(opts, settings)
+}
+
+// isDeepIntensity matches the deep preset and its profile-name alias.
+func isDeepIntensity(intensity string) bool {
+	switch strings.ToLower(strings.TrimSpace(intensity)) {
+	case "deep", "full":
+		return true
+	}
+	return false
+}
+
+func (r *Runner) riskyPayloadsAllowed() bool {
+	if r == nil {
+		return false
+	}
+	return RiskyPayloadsAllowed(r.options, r.settings)
+}
+
 // loginCredsPolicy resolves the spider's common-credential login pass for an
 // intensity in one place: enabled off at quick/lite (a fast pass never makes
 // active login attempts), on with the full documented list at deep/full, and on
@@ -180,13 +218,6 @@ func HygieneGateActive(opts *types.Options, settings *config.Settings) bool {
 		!selectsHygieneModule(opts.PassiveModules)
 }
 
-func (r *Runner) hygieneGateActive() bool {
-	if r == nil {
-		return false
-	}
-	return HygieneGateActive(r.options, r.settings)
-}
-
 // countHygieneModules returns how many of the given modules carry TagHygiene.
 func countHygieneModules[T modules.Module](mods []T) int {
 	n := 0
@@ -220,28 +251,48 @@ func HygieneBannerCounts(opts *types.Options, settings *config.Settings, active 
 		terminal.Gray(fmt.Sprintf("(%d hardening advisories off; %s)", activeHygiene+passiveHygiene, hint))
 }
 
-// filterHygieneModules drops modules tagged modules.TagHygiene and logs what was
-// suppressed. Shared by the active and passive filters; kind labels the log line.
-func filterHygieneModules[T modules.Module](r *Runner, mods []T, kind string) []T {
+// partitionModules splits mods into the ones drop keeps and the ids of the
+// ones it drops. The pure half of every module filter below: the runner's
+// filters log what they dropped, FilterModulesForRun (and so the scan plan)
+// only counts it.
+func partitionModules[T modules.Module](mods []T, drop func(T) bool) (kept []T, dropped []string) {
 	if len(mods) == 0 {
-		return mods
+		return mods, nil
 	}
-	kept := make([]T, 0, len(mods))
-	dropped := make([]string, 0)
+	kept = make([]T, 0, len(mods))
 	for _, m := range mods {
-		if modules.IsHygieneModule(m.Tags()) {
+		if drop(m) {
 			dropped = append(dropped, m.ID())
 			continue
 		}
 		kept = append(kept, m)
 	}
+	return kept, dropped
+}
+
+func isHygiene[T modules.Module](m T) bool { return modules.IsHygieneModule(m.Tags()) }
+
+func isRiskHigh[T modules.Module](m T) bool { return modules.IsRiskHighModule(m.Tags()) }
+
+func aboveTier[T modules.Module](ceiling int) func(T) bool {
+	return func(m T) bool { return modules.ModuleTierRank(m.Tags()) > ceiling }
+}
+
+// filterHygieneModules drops modules tagged modules.TagHygiene and logs what was
+// suppressed. Shared by the active and passive filters; kind labels the log line.
+func filterHygieneModules[T modules.Module](r *Runner, mods []T, kind string) []T {
+	kept, dropped := partitionModules(mods, isHygiene[T])
+	logHygieneSuppressed(r.intensityLabel(), kind, dropped)
+	return kept
+}
+
+func logHygieneSuppressed(intensity, kind string, dropped []string) {
 	if len(dropped) > 0 {
 		zap.L().Info(kind+" hardening-advisory modules suppressed (use --intensity deep, --module-tag hygiene, or dynamic-assessment.hygiene_modules)",
-			zap.String("intensity", r.intensityLabel()),
+			zap.String("intensity", intensity),
 			zap.Int("suppressed", len(dropped)),
 			zap.Strings("ids", dropped))
 	}
-	return kept
 }
 
 // intensityLabel returns the resolved intensity for logging, tolerating a nil
@@ -257,38 +308,41 @@ func (r *Runner) intensityLabel() string {
 // what was deferred. It is shared by the active and passive filters (both element
 // types embed modules.Module); kind labels the log line ("Active"/"Passive").
 func filterModulesByTier[T modules.Module](r *Runner, mods []T, ceiling int, kind string) []T {
-	if len(mods) == 0 {
-		return mods
-	}
-	kept := make([]T, 0, len(mods))
-	dropped := make([]string, 0)
-	for _, m := range mods {
-		if modules.ModuleTierRank(m.Tags()) <= ceiling {
-			kept = append(kept, m)
-		} else {
-			dropped = append(dropped, m.ID())
-		}
-	}
+	kept, dropped := partitionModules(mods, aboveTier[T](ceiling))
+	logTierDeferred(r.intensityLabel(), kind, ceiling, dropped)
+	return kept
+}
+
+func logTierDeferred(intensity, kind string, ceiling int, dropped []string) {
 	if len(dropped) > 0 {
 		zap.L().Info(kind+" modules deferred by intensity tier",
-			zap.String("intensity", r.intensityLabel()),
+			zap.String("intensity", intensity),
 			zap.Int("ceiling", ceiling),
 			zap.Int("deferred", len(dropped)),
 			zap.Strings("ids", dropped))
 	}
+}
+
+// filterRiskHighModules drops modules tagged modules.TagRiskHigh and logs what
+// was withheld. Shared by the active and passive filters; kind labels the log.
+func filterRiskHighModules[T modules.Module](r *Runner, mods []T, kind string) []T {
+	kept, dropped := partitionModules(mods, isRiskHigh[T])
+	logRiskWithheld(r.intensityLabel(), kind, dropped)
 	return kept
+}
+
+func logRiskWithheld(intensity, kind string, dropped []string) {
+	if len(dropped) > 0 {
+		zap.L().Info(kind+" risk:high modules withheld (use --intensity deep, --allow-risky-payloads, or -m <id>)",
+			zap.String("intensity", intensity),
+			zap.Int("withheld", len(dropped)),
+			zap.Strings("ids", dropped))
+	}
 }
 
 // filterActiveModulesByTier drops active modules whose tier rank exceeds the ceiling.
 func (r *Runner) filterActiveModulesByTier(mods []modules.ActiveModule, ceiling int) []modules.ActiveModule {
 	return filterModulesByTier(r, mods, ceiling, "Active")
-}
-
-// filterPassiveModulesByTier drops passive modules whose tier rank exceeds the
-// ceiling. Passive modules are almost all light/untagged, so this rarely fires,
-// but the gate is applied symmetrically for consistency.
-func (r *Runner) filterPassiveModulesByTier(mods []modules.PassiveModule, ceiling int) []modules.PassiveModule {
-	return filterModulesByTier(r, mods, ceiling, "Passive")
 }
 
 // filterActiveHygieneModules drops active hardening-advisory modules.

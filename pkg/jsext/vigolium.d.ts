@@ -240,8 +240,6 @@ declare namespace vigolium {
     function analyzeResponse(opts: AnalyzeResponseOpts): AnalyzeResponseResult;
     /** High-level: confirm whether a scanner finding is a true positive. */
     function confirmFinding(opts: ConfirmFindingOpts): ConfirmFindingResult;
-    /** Subprocess: run a full agent backend (claude, codex, gemini, etc.). */
-    function run(opts: AgentRunOpts): AgentRunResult;
   }
 
   namespace mcp {
@@ -282,6 +280,11 @@ declare namespace vigolium {
     function enabled(): boolean;
     /** Generate a unique OAST callback URL for out-of-band testing. Returns null if OAST is unavailable. */
     function payload(targetURL?: string, paramName?: string, injectionType?: string): OASTPayload | null;
+    /**
+     * Generate a unique OAST callback URL whose callbacks are rated as `class`
+     * (default "generic"). An unknown class throws. Returns null if OAST is unavailable.
+     */
+    function url(opts?: OASTURLOptions): string | null;
     /** Wait for the specified timeout then return all OAST interactions from the current scan. */
     function poll(timeoutMs?: number): OASTInteraction[];
   }
@@ -377,13 +380,71 @@ interface RequestOverrides {
   query?: Record<string, string>;
 }
 
+/**
+ * Methods of every header object the API hands out (ctx.request.headers,
+ * ctx.response.headers, HttpResponse.headers, session and MCP responses).
+ */
+interface HttpHeaderMethods {
+  /** Value for a name (case-insensitive); repeats joined with ", ", set-cookie = last value. null when absent. */
+  get(name: string): string | null;
+  /** Every value for a name (case-insensitive), in wire order. Use for set-cookie. */
+  getAll(name: string): string[];
+  /** True when the header is present (case-insensitive). */
+  has(name: string): boolean;
+  /** Every header as [name, value] with its original case, every occurrence, wire order. */
+  entries(): [string, string][];
+  /** Plain object keyed by original-case name, last value wins (the pre-0.7 shape). */
+  raw(): Record<string, string>;
+}
+
+/**
+ * Header object. Property access is case-insensitive (h["Content-Type"] === h["content-type"]);
+ * Object.keys / JSON.stringify see lowercase names in first-occurrence order; a repeated header
+ * reads as its values joined with ", " except set-cookie, which reads as the last value.
+ * Assigning or deleting changes only this JS view. A header named like a method (get, has, ...)
+ * is reachable only through get()/getAll()/entries().
+ */
+type HttpHeaders = HttpHeaderMethods & { [name: string]: string | undefined };
+
 interface HttpResponse {
   status: number;
   body: string;
   raw: string;
-  headers: Record<string, string>;
+  headers: HttpHeaders;
   /** Response time in milliseconds. */
   elapsed_ms: number;
+}
+
+/** Vulnerability class an OAST callback URL is minted for; decides how a callback is rated. */
+type OASTClass =
+  | "ssrf"
+  | "ssrf-smuggle"
+  | "xxe"
+  | "cmdi"
+  | "sqli"
+  | "jwt-key-url"
+  | "host-routing"
+  | "header-harvest"
+  | "password-reset-poisoning"
+  | "blind-xss"
+  | "ssti"
+  | "deserialization"
+  | "jndi"
+  | "text4shell"
+  | "esi"
+  | "smtp"
+  | "mcp-arg"
+  | "generic";
+
+interface OASTURLOptions {
+  /** Vulnerability class (default "generic"). */
+  class?: OASTClass;
+  /** URL being injected into, recorded for correlation. */
+  target?: string;
+  /** Parameter or header name carrying the payload. */
+  param?: string;
+  /** Human label shown in the finding (defaults to the class). */
+  label?: string;
 }
 
 interface OASTPayload {
@@ -592,20 +653,6 @@ interface ConfirmFindingResult {
   false_positive_indicators: string[];
 }
 
-interface AgentRunOpts {
-  /** Agent backend name (claude, codex, gemini, etc.) */
-  agent: string;
-  prompt: string;
-  /** Timeout in seconds. Default: 60. */
-  timeout?: number;
-}
-
-interface AgentRunResult {
-  output: string;
-  findings: any[];
-  http_records: any[];
-}
-
 // ── vigolium.db types ────────────────────────────────────────────────────────
 
 interface DBQueryFilters {
@@ -797,8 +844,8 @@ interface HttpSession {
   setHeader(name: string, value: string): void;
   /** Remove a default header by name (case-insensitive). */
   removeHeader(name: string): void;
-  /** Get all current default headers (including Cookie). */
-  getHeaders(): Record<string, string>;
+  /** Snapshot of the current default headers (including Cookie); edit with setHeader/removeHeader. */
+  getHeaders(): HttpHeaders;
   /** Get all cookies currently stored in this session. */
   getCookies(): Record<string, string>;
   /** Set or update a cookie in this session. */
@@ -1020,7 +1067,7 @@ interface DBGroupedOpts {
 }
 
 interface RecordGroup {
-  /** Path template with dynamic segments replaced by "*", e.g. "/api/users/*/profile". */
+  /** Path template with dynamic segments replaced by "*", e.g. "/api/users/*" for "/api/users/42". */
   template: string;
   method: string;
   records: DBRecord[];
@@ -1041,13 +1088,13 @@ interface ExtensionContext {
     port: number;
     /** "http" or "https". */
     scheme: string;
-    headers: Record<string, string>;
+    headers: HttpHeaders;
   };
   response: {
     status: number;
     body: string;
     raw: string;
-    headers: Record<string, string>;
+    headers: HttpHeaders;
   };
   /** Current HTTP record with UUID and annotate shortcut. */
   record: RecordContext;
@@ -1217,7 +1264,7 @@ interface MCPResponse {
   status: number;
   body: string;
   elapsed_ms: number;
-  headers: Record<string, string>;
+  headers: HttpHeaders;
   /** Decoded `result` field of the JSON-RPC envelope (any shape). */
   result?: unknown;
   /** Populated when the JSON-RPC envelope reports an error. */
@@ -1257,3 +1304,97 @@ interface MCPClient {
   /** Send a raw JSON-RPC body verbatim (e.g. batched arrays). */
   send(rawJSONRPC: string): MCPResponse;
 }
+
+// ── Extension module contract (module.exports) ────────────────────────────────
+
+type ExtensionSeverity = "critical" | "high" | "medium" | "low" | "info" | "suspect";
+type ExtensionConfidence = "tentative" | "firm" | "certain";
+
+/** Insertion point passed as the second argument to scanPerInsertionPoint(ctx, insertion). */
+interface InsertionPoint {
+  /** Parameter or header name, e.g. "id". */
+  name: string;
+  /** Original value at this insertion point. */
+  baseValue: string;
+  /** Insertion point type, e.g. "URL_PARAM", "BODY_PARAM", "HEADER". */
+  type: string;
+  /** Build the full raw request with `payload` substituted at this insertion point. */
+  buildRequest(payload: string): string;
+}
+
+/**
+ * A finding returned from scanPerRequest / scanPerHost / scanPerInsertionPoint.
+ * Return one object, an array of them, or null/undefined for no finding.
+ * Per-result fields override the module-level defaults in module.exports.
+ */
+interface ExtensionResult {
+  name?: string;
+  description?: string;
+  severity?: ExtensionSeverity;
+  /** Overrides module.exports.confidence for this finding. */
+  confidence?: ExtensionConfidence;
+  /** Overrides module.exports.tags for this finding. */
+  tags?: string[];
+  /** CWE identifier, e.g. "CWE-79". */
+  cwe?: string;
+  /** Parameter that triggered the finding (alias: `param`). */
+  fuzzingParameter?: string;
+  param?: string;
+  /** Extra evidence strings (or objects, stored as JSON) attached to the finding. */
+  evidence?: Array<string | { request?: string; response?: string; note?: string }>;
+  url?: string;
+  matched?: string;
+  request?: string;
+  response?: string;
+}
+
+/** Request object passed to a pre_hook's execute(request). */
+interface PreHookRequest {
+  raw: string;
+  method: string;
+  url: string;
+  /** Returning {headers: request.headers} applies only the headers the hook assigned or deleted. */
+  headers: HttpHeaders;
+}
+
+/** Finding object passed to a post_hook's execute(result). */
+interface PostHookResult {
+  moduleId: string;
+  /** @deprecated alias of moduleId. */
+  templateId: string;
+  url: string;
+  host: string;
+  matched: string;
+  request: string;
+  response: string;
+  info: { name: string; description: string; severity: string; confidence: string };
+}
+
+/** Shape of module.exports for a JS/TS extension. */
+interface ModuleExports {
+  /** Module ID (the runtime prefixes "ext-"). Defaults to the file name. */
+  id?: string;
+  name?: string;
+  description?: string;
+  type: "active" | "passive" | "pre_hook" | "post_hook";
+  /** Default severity for findings. */
+  severity?: ExtensionSeverity;
+  /** Default confidence for findings (default "firm"). Results may override it. */
+  confidence?: ExtensionConfidence;
+  /** How a finding from this module is confirmed; a string or lines joined with "\n". */
+  confirmationCriteria?: string | string[];
+  tags?: string[];
+  /** Active modules: which handlers run. Default ["per_request"]. */
+  scanTypes?: Array<"per_insertion_point" | "per_request" | "per_host">;
+  /** Passive modules: which part of the exchange is analysed. */
+  scope?: "request" | "response" | "both";
+
+  scanPerRequest?(ctx: ExtensionContext): ExtensionResult | ExtensionResult[] | null | undefined;
+  scanPerHost?(ctx: ExtensionContext): ExtensionResult | ExtensionResult[] | null | undefined;
+  scanPerInsertionPoint?(ctx: ExtensionContext, insertion: InsertionPoint): ExtensionResult | ExtensionResult[] | null | undefined;
+  /** pre_hook: return the (modified) request, or null to skip it. post_hook: return the (modified) finding, or null to drop it. */
+  execute?(input: any): any;
+}
+
+declare var module: { exports: ModuleExports };
+declare var exports: ModuleExports;

@@ -40,6 +40,13 @@ type AutopilotPipelineResult struct {
 	SessionDir            string
 	// Reentries counts how many post-halt coverage-verify re-prompts fired.
 	Reentries int
+	// BudgetStop names the budget that ended the operator loop ("wall_time",
+	// "tokens", "cost", "commands"), "" when none did.
+	BudgetStop string
+	// Operator-loop token usage and its estimated cost.
+	InputTokens  int64
+	OutputTokens int64
+	CostUSD      float64
 }
 
 // AutopilotPhase constants for the agent autopilot mode console output.

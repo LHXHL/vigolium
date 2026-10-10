@@ -1,32 +1,15 @@
-import { createHash } from 'node:crypto';
 import * as t from '@babel/types';
 import type { ParseResult } from '@babel/parser';
 import { traverse, type NodePath } from '../ast-utils/babel';
 import type { AnalysisContext } from '../context';
-import type { AssetReferenceFact, AssetType, Confidence, Provenance } from '../protocol';
+import type { AssetReferenceFact, AssetType, Confidence } from '../protocol';
 import { getTrackedVariablesMap } from '../requestpattern/globalVariableTracking';
 import { createResolutionContext, findContainingFunction, resolveValue } from '../requestpattern/extractRequest';
+import { memberPath, provenance, stableId } from './common';
+import { enumerateTemplateImport, extractRuntimeChunks } from './chunks';
 
 const SOURCE_MAP_REFERENCE = /\/\/[#@]\s*sourceMappingURL\s*=\s*([^\s*]+)/g;
 const FETCHED_ASSET = /\.(?:m?js|cjs|json|wasm|webmanifest)(?:[?#]|$)/i;
-
-function stableId(kind: AssetType, rendered: string, parent: string): string {
-  return `asset-${createHash('sha256').update(`${kind}\0${rendered}\0${parent}`).digest('hex').slice(0, 20)}`;
-}
-
-function memberPath(node: t.Node): string {
-  const parts: string[] = [];
-  let current: t.Node = node;
-  while (t.isMemberExpression(current) || t.isOptionalMemberExpression(current)) {
-    const property = current.property;
-    if (t.isIdentifier(property)) parts.unshift(property.name);
-    else if (t.isStringLiteral(property)) parts.unshift(property.value);
-    else return '';
-    current = current.object as t.Node;
-  }
-  if (t.isIdentifier(current)) parts.unshift(current.name);
-  return parts.join('.');
-}
 
 function directAssetArgument(node: t.Node | null | undefined): t.Node | undefined {
   if (!node) return undefined;
@@ -35,23 +18,6 @@ function directAssetArgument(node: t.Node | null | undefined): t.Node | undefine
     return first && !t.isSpreadElement(first) ? first : undefined;
   }
   return node;
-}
-
-function provenance(path: NodePath, extractor: string, confidence: Confidence, source: string): Provenance {
-  const node = path.node;
-  const start = node.loc?.start;
-  const end = node.loc?.end;
-  const evidence = typeof node.start === 'number' && typeof node.end === 'number'
-    ? source.slice(node.start, Math.min(node.end, node.start + 300))
-    : undefined;
-  const functionName = findContainingFunction(path);
-  return {
-    extractor, confidence,
-    ...(functionName ? { functionName } : {}),
-    ...(start ? { start: { line: start.line, column: start.column, offset: node.start ?? undefined } } : {}),
-    ...(end ? { end: { line: end.line, column: end.column, offset: node.end ?? undefined } } : {}),
-    ...(evidence ? { evidence } : {}),
-  };
 }
 
 function addResolved(
@@ -134,7 +100,9 @@ export function extractAssetReferences(
     CallExpression(path) {
       const callee = path.node.callee;
       if (t.isImport(callee)) {
-        addResolved(context, path, path.node.arguments[0] as t.Node, 'dynamic-import', false, 'dynamic-import', 'high');
+        const first = path.node.arguments[0];
+        if (t.isTemplateLiteral(first) && enumerateTemplateImport(context, path, first)) return;
+        addResolved(context, path, first as t.Node, 'dynamic-import', false, 'dynamic-import', 'high');
         return;
       }
       const name = t.isIdentifier(callee) ? callee.name : memberPath(callee);
@@ -170,5 +138,6 @@ export function extractAssetReferences(
       }
     },
   });
+  extractRuntimeChunks(ast, context);
   return context.assetReferences;
 }

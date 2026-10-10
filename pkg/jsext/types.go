@@ -36,6 +36,9 @@ type LoadedScript struct {
 	Path     string
 	Source   string
 	Metadata ScriptMetadata
+	// Explicit says the script was named directly (--ext or
+	// extensions.custom_dir) rather than found in the extension directory.
+	Explicit bool
 }
 
 // ParseSeverity converts a string severity to the severity type.

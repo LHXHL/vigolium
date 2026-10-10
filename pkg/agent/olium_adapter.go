@@ -28,6 +28,9 @@ import (
 type oliumRunOutput struct {
 	Text  string
 	Usage agenttypes.TokenUsage
+	// ToolCalls counts the tools the engine dispatched during the call, for
+	// the run-wide --max-commands budget (RunBudget).
+	ToolCalls int
 }
 
 // oliumProviderSem caps the number of in-flight olium provider calls
@@ -138,7 +141,11 @@ func buildOliumEngineWithSpec(cfg *config.OliumConfig, spec SessionSpec) (*oengi
 		// serves their bodies is registered below (requires IncludeTools).
 		Skills: spec.Skills,
 	}
-	if spec.IncludeTools {
+	if spec.IncludeTools && spec.OfflineTools {
+		reg := tool.NewRegistry()
+		tool.RegisterOfflineBuiltins(reg)
+		ecfg.Tools = reg
+	} else if spec.IncludeTools {
 		reg := tool.NewRegistry()
 		tool.RegisterBuiltins(reg, nil)
 		if spec.Skills != nil && spec.Skills.Len() > 0 {
@@ -255,6 +262,7 @@ func runOliumOnEngineWithThinking(ctx context.Context, cfg *config.OliumConfig, 
 
 	var captured strings.Builder
 	var usage agenttypes.TokenUsage
+	toolCalls := 0
 	// Surface tool exec start/end on streamWriter so swarm phases match the
 	// autopilot/headless format. Per-turn usage is *not* echoed here — swarm
 	// drives many short phases and a [turn done ...] line per phase is too
@@ -265,6 +273,9 @@ func runOliumOnEngineWithThinking(ctx context.Context, cfg *config.OliumConfig, 
 	tlog := toollog.NewWith(streamWriter, verbose).WithThinkingWriter(os.Stderr)
 	ch := eng.Run(ctx, prompt)
 	for ev := range ch {
+		if ev.Type == oengine.EventToolExecStart {
+			toolCalls++
+		}
 		if tlog.HandleTool(ev) {
 			continue
 		}
@@ -294,13 +305,13 @@ func runOliumOnEngineWithThinking(ctx context.Context, cfg *config.OliumConfig, 
 			}
 		case oengine.EventError:
 			tlog.FlushThinking()
-			return oliumRunOutput{Text: captured.String(), Usage: usage}, fmt.Errorf("olium: %w", classifyOliumError(ev.Err))
+			return oliumRunOutput{Text: captured.String(), Usage: usage, ToolCalls: toolCalls}, fmt.Errorf("olium: %w", classifyOliumError(ev.Err))
 		}
 	}
 	// Flush reasoning from a final turn that produced no assistant text and no
 	// tool card (otherwise it'd be silently dropped at phase end).
 	tlog.FlushThinking()
-	return oliumRunOutput{Text: captured.String(), Usage: usage}, nil
+	return oliumRunOutput{Text: captured.String(), Usage: usage, ToolCalls: toolCalls}, nil
 }
 
 // WrapProviderWithSemaphore returns a provider.Provider that gates each

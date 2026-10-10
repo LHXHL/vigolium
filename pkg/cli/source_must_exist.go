@@ -19,7 +19,7 @@ import (
 // 300-plus-KB file next to whatever the caller meant to read.
 //
 // Both halves are fixed by refusing: an explicitly pinned source that is not
-// there is a typo, and a typo deserves errCodeSourceMissing (exit 1), which -S
+// there is a typo, and a typo deserves apicontract.CodeSourceMissing (exit 1), which -S
 // and --read-only have always returned for the same input. The guarantee already
 // existed; it just was not the default.
 //
@@ -61,5 +61,5 @@ func applySourceMustExist(cmd *cobra.Command) {
 	// the same way the opener will. The two differ — config's form also expands
 	// ${VAR:-default} — so using the wrong one would stat one file and create
 	// another, which is the precise outcome this check exists to prevent.
-	clicommon.RequireExistingSource = database.ExpandPath(globalDB)
+	clicommon.Policy.MustExist = database.ExpandPath(globalDB)
 }

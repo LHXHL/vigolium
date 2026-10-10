@@ -5,6 +5,7 @@ import (
 
 	"github.com/grafana/sobek"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/jsext/jsheaders"
 	"github.com/vigolium/vigolium/pkg/output"
 	"go.uber.org/zap"
 )
@@ -61,11 +62,7 @@ func (h *PreHook) Execute(req *httpmsg.HttpRequestResponse) (*httpmsg.HttpReques
 		}
 		_ = reqObj.Set("url", url)
 
-		headersObj := vm.NewObject()
-		for _, hdr := range req.Request().Headers() {
-			_ = headersObj.Set(hdr.Name, hdr.Value)
-		}
-		_ = reqObj.Set("headers", headersObj)
+		_ = reqObj.Set("headers", newHeadersObject(vm, req.Request().Headers()))
 	}
 
 	// Call execute(request)
@@ -103,15 +100,31 @@ func (h *PreHook) Execute(req *httpmsg.HttpRequestResponse) (*httpmsg.HttpReques
 	headersVal := resultObj.Get("headers")
 	if headersVal != nil && !sobek.IsUndefined(headersVal) {
 		// Rebuild raw request with modified headers
-		headersObj := headersVal.ToObject(vm)
 		raw := make([]byte, len(req.Request().Raw()))
 		copy(raw, req.Request().Raw())
 
-		for _, key := range headersObj.Keys() {
-			val := headersObj.Get(key).String()
-			modified, err := httpmsg.AddOrReplaceHeader(raw, key, val)
-			if err == nil {
-				raw = modified
+		if store, ok := jsheaders.FromValue(headersVal); ok {
+			// The script handed back the request's own header object: apply
+			// only what it assigned or deleted, with the names it used.
+			set, deleted := store.Changes()
+			for _, name := range deleted {
+				if modified, err := httpmsg.RemoveHeader(raw, name); err == nil {
+					raw = modified
+				}
+			}
+			for _, h := range set {
+				if modified, err := httpmsg.AddOrReplaceHeader(raw, h.Name, h.Value); err == nil {
+					raw = modified
+				}
+			}
+		} else {
+			headersObj := headersVal.ToObject(vm)
+			for _, key := range headersObj.Keys() {
+				val := headersObj.Get(key).String()
+				modified, err := httpmsg.AddOrReplaceHeader(raw, key, val)
+				if err == nil {
+					raw = modified
+				}
 			}
 		}
 

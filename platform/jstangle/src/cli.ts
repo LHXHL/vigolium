@@ -13,8 +13,10 @@ import {
   PROTOCOL_VERSION,
   RESULT_SCHEMA_VERSION,
   safeArtifactName,
+  truncationReason,
   writeArtifact,
   type AnalysisProfile,
+  type TruncationCounts,
   type ArtifactDescriptor,
   type Diagnostic,
   type ScanCompletedRecord,
@@ -159,6 +161,7 @@ program
     let domFlows = 0;
     let diagnostics = 0;
     let artifacts = 0;
+    let truncated: TruncationCounts | undefined;
     let stageMetrics: ScanCompletedRecord['stageMetrics'];
 
     try {
@@ -240,8 +243,12 @@ program
       diagnostics = fitted.envelope.diagnostics.length;
       artifacts = fitted.envelope.artifacts.length;
       completionStatus = fitted.envelope.stats.status;
+      truncated = fitted.envelope.stats.truncated;
+      const capReason = truncationReason(truncated);
       completionReason = fitted.omitted > 0
         ? 'output_budget_exceeded'
+        : capReason
+          ? capReason
         : artifactDiagnostics.length > 0
           ? 'artifact_directory_unavailable'
           : result.status === 'failed'
@@ -267,7 +274,7 @@ program
       profile,
       status: completionStatus,
       ...(completionReason ? { reasonCode: completionReason } : {}),
-      counts: { requests, domFlows, diagnostics, artifacts },
+      counts: { requests, domFlows, diagnostics, artifacts, ...(truncated ? { truncated } : {}) },
       outputBytes: emitter.bytes,
       stageMetrics,
     };

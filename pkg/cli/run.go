@@ -87,6 +87,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	flags := runCmd.Flags()
 	registerInputSourceFlags(flags)
+	registerAllRecordsFlag(flags)
 	registerHTTPClientFlags(flags)
 	registerScanModuleFlags(flags)
 	registerScanPipelineFlags(flags)

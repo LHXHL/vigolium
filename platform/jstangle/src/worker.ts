@@ -8,6 +8,7 @@ import {
   PROTOCOL_VERSION,
   RESULT_SCHEMA_VERSION,
   safeArtifactName,
+  truncationReason,
   writeArtifact,
   FrameProtocolError,
   FrameReader,
@@ -99,13 +100,16 @@ async function analyzeJob(request: WorkerAnalyzeRequest, content: Buffer): Promi
   const fitted = fitEnvelope(envelope, maxOutputBytes);
   const requests = fitted.envelope.records.filter((record) => record.kind === 'httpRequest').length;
   const domFlows = fitted.envelope.records.filter((record) => record.kind === 'domFlow').length;
+  const truncated = fitted.envelope.stats.truncated;
+  const reasonCode = fitted.omitted > 0 ? 'output_budget_exceeded' : truncationReason(truncated);
   const completion: ScanCompletedRecord = {
     type: 'scanCompleted', protocolVersion: PROTOCOL_VERSION, schemaVersion: RESULT_SCHEMA_VERSION,
     scanId: request.id, profile: request.profile, status: fitted.envelope.stats.status,
-    ...(fitted.omitted > 0 ? { reasonCode: 'output_budget_exceeded' } : {}),
+    ...(reasonCode ? { reasonCode } : {}),
     counts: {
       requests, domFlows, diagnostics: fitted.envelope.diagnostics.length,
       artifacts: fitted.envelope.artifacts.length,
+      ...(truncated ? { truncated } : {}),
     },
     outputBytes: Buffer.byteLength(JSON.stringify(fitted.envelope)),
     stageMetrics: fitted.envelope.stats.stageMetrics,

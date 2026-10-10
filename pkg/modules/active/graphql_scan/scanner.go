@@ -7,13 +7,11 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	httputil "github.com/projectdiscovery/utils/http"
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/graphqlx"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
-	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
@@ -154,7 +152,13 @@ func (m *Module) ScanPerRequest(
 		results = append(results, s)
 	}
 
-	// Phase 10: Missing query-depth/complexity limit — deep scans only (heavier
+	// Phase 10: Cross-site request forgery — the cookie-authenticated operation
+	// replayed as GET ?query= and as form/text-plain POSTs.
+	if c := m.phaseCSRF(ctx, httpClient, scanCtx, endpointPath, schema, target); c != nil {
+		results = append(results, c)
+	}
+
+	// Phase 11: Missing query-depth/complexity limit — deep scans only (heavier
 	// than the default surface, though the probe itself is bounded).
 	if scanCtx != nil && scanCtx.DeepScan {
 		if d := m.phaseDoS(ctx, httpClient, endpointPath, schema, target); d != nil {
@@ -348,16 +352,6 @@ func (m *Module) sendGraphQLQueryEx(
 		return "", false, err
 	}
 	return r.body, r.blocked, nil
-}
-
-// isBlockedResponse reports whether resp came from a WAF/CDN challenge, auth gate,
-// rate limiter, or maintenance page rather than the GraphQL backend. Genuine
-// error-based SQLi leaks are emitted by the app stack, so a denied or challenged
-// response can only yield false matches. It combines the vendor-aware block
-// detector (Cloudflare, Akamai, Incapsula, …) with a plain status gate that also
-// catches generic WAFs the detector does not recognize.
-func isBlockedResponse(resp *httputil.ResponseChain) bool {
-	return infra.IsBlockedResponse(resp)
 }
 
 func graphQLGETPath(path, query string) string {

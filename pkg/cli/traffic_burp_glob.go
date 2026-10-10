@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/burpbridge"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -97,7 +98,7 @@ func (s *globBurpSelector) take(records []*database.HTTPRecord) []*database.HTTP
 // table afterwards would re-query the whole corpus a third time (and, with -B
 // set, pull Burp's entire proxy history to merge into it). The save summary is
 // the output.
-func saveGlobToBurp(ctx context.Context, pattern string, filters database.QueryFilters) error {
+func saveGlobToBurp(ctx context.Context, cmd *cobra.Command, pattern string, filters database.QueryFilters) error {
 	matches, err := globDBMatches(pattern)
 	if err != nil {
 		return err
@@ -151,6 +152,7 @@ func saveGlobToBurp(ctx context.Context, pattern string, filters database.QueryF
 	}
 
 	if read == 0 {
+		//vigolium:not-usage every source failed to read, after I/O
 		return fmt.Errorf("--glob-db %q: none of the %d matched file(s) could be read", pattern, len(matches))
 	}
 
@@ -163,14 +165,15 @@ func saveGlobToBurp(ctx context.Context, pattern string, filters database.QueryF
 	writeBurpSiteMapSaveResult(os.Stderr, aggregate)
 
 	if globalJSON {
-		if err := writeAgentJSON(map[string]any{
-			"pattern":     pattern,
-			"files":       len(matches),
-			"files_read":  read,
-			"unreadable":  unreadable,
-			"result":      aggregate,
-			"duration_ms": time.Since(started).Milliseconds(),
-		}); err != nil {
+		// items:[aggregate]; the per-run counters stay at the top level, and
+		// --json-legacy-keys renders the aggregate under its old name, `result`.
+		env := newMachineEnvelope(cmd, kindRead, "result", aggregate, 1, 0, 1).
+			With("pattern", pattern).
+			With("files", len(matches)).
+			With("files_read", read).
+			With("unreadable", unreadable).
+			With("duration_ms", time.Since(started).Milliseconds())
+		if err := writeAgentJSON(env); err != nil {
 			return err
 		}
 	}

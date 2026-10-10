@@ -178,7 +178,7 @@ func TestHandleUpdateScan(t *testing.T) {
 		app2.Use(ProjectUUIDMiddleware(nil))
 		app2.Post("/api/scans/:uuid/update", h.HandleUpdateScan)
 		if status, _ := doReq(t, app2, http.MethodPost, "/api/scans/"+scanUUID+"/update", `{"name":"x"}`,
-			map[string]string{"X-Project-UUID": "some-other-project"}); status != http.StatusNotFound {
+			map[string]string{"X-Project-UUID": "44444444-5555-6666-7777-888888888888"}); status != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", status)
 		}
 	})

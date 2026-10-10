@@ -262,7 +262,7 @@ func TestVAmPI_ImportPostman_NativeScan(t *testing.T) {
 }
 
 // runImportToDBScan mirrors the production `vigolium scan -i <spec> -t <baseURL>`
-// pipeline (pkg/cli/scan.go runScanWithIngest): it builds an OpenAPI input source,
+// pipeline (pkg/cli/scan_execute.go runScanWithIngest): it builds an OpenAPI input source,
 // ingests every parsed request into a real database, then runs the
 // dynamic-assessment phase over *all* ingested DB records. Unlike
 // runImportNativeScan — which scans an in-memory slice and never touches a DB —

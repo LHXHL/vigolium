@@ -10,12 +10,13 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
-// injectionType is recorded on every planted OAST payload. It contains "sql" so a
-// resulting callback is classified as blind SQL injection by oast.classifySQLi
-// (rather than the generic SSRF branch).
+// injectionType is the label recorded on every planted OAST payload. Callbacks
+// are rated as blind SQL injection because the URL is minted with
+// oastclass.SQLi, not because of the label's wording.
 const injectionType = "sql-injection (out-of-band)"
 
 // oobSQLShapeFns build the per-DBMS out-of-band SQL fragments. Each takes the
@@ -109,7 +110,7 @@ func (m *Module) ScanPerInsertionPoint(
 
 	requestHash := ctx.Request().ID()
 	for _, shape := range oobSQLShapeFns {
-		host := oast.GenerateURL(urlx.String(), ip.Name(), injectionType, ModuleID, requestHash)
+		host := modkit.OASTURLFor(oast, oastclass.SQLi, urlx.String(), ip.Name(), injectionType, ModuleID, requestHash)
 		if host == "" {
 			return nil, nil
 		}

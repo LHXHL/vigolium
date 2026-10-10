@@ -149,10 +149,14 @@ func runDBCompact(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		env := newAgentEnvelope("db compact", "compaction", sum, 1, 0, 1)
-		env.DBPath = clicommon.OpenedDBPath()
-		env.WithProjectScope(projectUUID)
-		return writeAgentJSON(env)
+		// The summary is the one affected object; the legacy alias
+		// `compaction` (--json-legacy-keys) still renders it bare.
+		return emitMutation(cmd, "compaction", mutationResult{
+			Changed: sum.RecordsCompacted > 0 || sum.Vacuumed,
+			Action:  "compact",
+			DryRun:  sum.DryRun,
+			Items:   sum,
+		}, withDBPath(clicommon.OpenedDBPath()), withProjectScope(projectUUID))
 	}
 	printCompactSummary(sum, projectUUID, time.Since(started))
 	return nil

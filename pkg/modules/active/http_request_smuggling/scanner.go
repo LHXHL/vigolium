@@ -173,12 +173,15 @@ func (m *Module) ScanPerHost(
 		return nil, nil
 	}
 
+	// CL.0 does not depend on the timing control below: it observes its own
+	// effect on a follow-up request, so a host whose captured path rejects the
+	// control POST can still have a static path that ignores Content-Length.
+	results := scanCL0(ctx)
+
 	control, ok := measureControl(ctx, httpClient)
 	if !ok {
-		return nil, nil
+		return results, nil
 	}
-
-	var results []*output.ResultEvent
 
 	for _, probe := range probes {
 		probeRaw, ok := buildRequest(ctx, probe)

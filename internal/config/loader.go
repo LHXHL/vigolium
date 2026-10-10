@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/vigolium/vigolium/internal/atomicfile"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"gopkg.in/yaml.v3"
 )
@@ -344,19 +346,32 @@ func unknownKeyWarning(path, content string) string {
 var unknownKeyCache sync.Map
 
 func computeUnknownKeyWarning(path, content string) string {
-	var throwaway Settings
-	dec := yaml.NewDecoder(strings.NewReader(content))
-	dec.KnownFields(true)
-	err := dec.Decode(&throwaway)
-	if err == nil || errors.Is(err, io.EOF) {
+	unknown := unknownKeyErrors(content, &Settings{})
+	if len(unknown) == 0 {
 		return ""
 	}
+	return fmt.Sprintf("config file %s has %d key(s) vigolium does not recognize (they have no effect): %s",
+		path, len(unknown), strings.Join(unknown, "; "))
+}
+
+// unknownKeyErrors decodes content into into with KnownFields on and returns
+// the decoder's "field X not found in type T" lines, one per unknown key. The
+// throwaway destination is a zero value rather than defaults: nothing is read
+// out of it. Shared by the load-time warning and `config validate`, so both
+// name the same keys.
+func unknownKeyErrors(content string, into any) []string {
+	dec := yaml.NewDecoder(strings.NewReader(content))
+	dec.KnownFields(true)
+	err := dec.Decode(into)
+	if err == nil || errors.Is(err, io.EOF) {
+		return nil
+	}
 	// A *yaml.TypeError lists every offending key at once. Anything else here is
-	// a parse failure the lenient decode above already accepted, so it is not an
+	// a parse failure the lenient decode already accepted, so it is not an
 	// unknown key and saying "unknown key" about it would be wrong.
 	var typeErr *yaml.TypeError
 	if !errors.As(err, &typeErr) {
-		return ""
+		return nil
 	}
 	var unknown []string
 	for _, e := range typeErr.Errors {
@@ -364,11 +379,7 @@ func computeUnknownKeyWarning(path, content string) string {
 			unknown = append(unknown, e)
 		}
 	}
-	if len(unknown) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("config file %s has %d key(s) vigolium does not recognize (they have no effect): %s",
-		path, len(unknown), strings.Join(unknown, "; "))
+	return unknown
 }
 
 // DefaultSettings returns default configuration
@@ -479,12 +490,20 @@ func ReadActiveProject() (string, error) {
 
 // WriteActiveProject persists the active project UUID to disk so that future
 // shells/commands resolve to it without needing VIGOLIUM_PROJECT_UUID.
+//
+// Atomic (temp file + rename): every command that resolves a project without a
+// flag or env pin reads this file, so a concurrent reader must see the old UUID
+// or the new one, never an empty or half-written file that silently resolves
+// to the default project.
 func WriteActiveProject(projectUUID string) error {
 	path := ActiveProjectFilePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("failed to create vigolium config dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(projectUUID+"\n"), 0600); err != nil {
+	if err := atomicfile.WriteFile(path, 0o600, func(w *bufio.Writer) error {
+		_, err := w.WriteString(projectUUID + "\n")
+		return err
+	}); err != nil {
 		return fmt.Errorf("failed to write active project file: %w", err)
 	}
 	return nil
@@ -509,30 +528,17 @@ func LoadProjectConfig(projectUUID string) (*ProfileSettings, error) {
 }
 
 // LoadSettingsWithProject loads global settings, then overlays project-specific
-// config on top. This implements the merge strategy: global → project → CLI flags.
-// CLI flag overrides happen after this function returns.
+// config on top (ApplyProjectOverlay). This implements the merge strategy:
+// global → project → scanning profile → CLI flags; the profile and CLI layers
+// are applied by the caller after this returns.
 func LoadSettingsWithProject(configPath string, projectUUID string) (*Settings, error) {
 	settings, err := LoadSettings(configPath)
 	if err != nil {
 		return nil, err
 	}
-
-	if projectUUID == "" {
-		return settings, nil
+	if err := ApplyProjectOverlay(settings, projectUUID); err != nil {
+		return nil, err
 	}
-
-	profile, err := LoadProjectConfig(projectUUID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load project config for %s: %w", projectUUID, err)
-	}
-	if profile == nil {
-		return settings, nil
-	}
-
-	if err := ApplyProfile(settings, profile); err != nil {
-		return nil, fmt.Errorf("failed to apply project config: %w", err)
-	}
-
 	return settings, nil
 }
 
@@ -552,6 +558,7 @@ func SaveProjectConfig(projectUUID string, profile *ProfileSettings) error {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write project config: %w", err)
 	}
+	InvalidateProjectOverlay(projectUUID)
 
 	return nil
 }
@@ -590,8 +597,12 @@ func SaveSettings(path string, settings *Settings) error {
 		return fmt.Errorf("failed to marshal settings: %w", err)
 	}
 
-	// Write to file
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	// Atomic: a crash or a full disk mid-write must not leave a truncated
+	// config, which the next load would reject (or, discovered, ignore).
+	if err := atomicfile.WriteFile(path, 0o600, func(w *bufio.Writer) error {
+		_, err := w.Write(data)
+		return err
+	}); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 

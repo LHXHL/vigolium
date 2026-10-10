@@ -399,6 +399,19 @@ export function getTrackedVariablesMap(): TrackedVariableMap {
     return map;
 }
 
+/**
+ * Copy of the tracked values as they stand, without the once-per-analysis
+ * cross-module finalization getTrackedVariablesMap performs. For pre-passes
+ * that run before request extraction and must not finalize early.
+ */
+export function snapshotTrackedVariables(): TrackedVariableMap {
+    const map: TrackedVariableMap = {};
+    for (const [key, values] of trackedVariables()) {
+        map[key] = [...values];
+    }
+    return map;
+}
+
 export function clearTrackedVariables(): void {
     const state = getEngineState();
     state.trackedVariables.clear();

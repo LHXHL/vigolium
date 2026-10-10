@@ -8,18 +8,29 @@ Vigolium has two related output contracts:
 
 ## Scan Formats
 
-Native scans accept these formats:
+Every command that takes `--format` reads one table of formats
+(`pkg/output/formats`), so a name or alias means the same thing everywhere,
+and `--help` lists exactly what that command accepts. A name the command does
+not accept is a usage error (exit 2) that lists the valid ones.
 
-| Format | Result |
-|---|---|
-| `console` | Live, colored terminal output (default) |
-| `jsonl` | Bulk `{ "type": ..., "data": ... }` records and findings |
-| `html` | Self-contained interactive grid report |
-| `report` | Self-contained document-style report |
-| `pdf` | PDF document rendered through headless Chrome |
-| `sarif` | SARIF 2.1.0 log for GitHub code scanning, DefectDojo, SARIF viewers |
-| `sqlite` | Standalone database that can be reopened by Vigolium |
-| `fs` | Flat, browsable request/response and finding tree (alias: `file-system`) |
+| Format | Result | scan | export | import | REST | db export |
+|---|---|---|---|---|---|---|
+| `console` | Live, colored terminal output (default) | ✓ | | | | |
+| `jsonl` | Bulk `{ "type": ..., "data": ... }` records and findings | ✓ | ✓ | | ✓ | ✓ |
+| `html` | Self-contained interactive grid report | ✓ | ✓ | ✓ | ✓ | |
+| `report` | Self-contained document-style report | ✓ | ✓ | ✓ | ✓ | |
+| `pdf` | PDF document rendered through headless Chrome | ✓ | ✓ | ✓ | ✓ | |
+| `markdown` (alias `md`) | One section per finding, with identifiers and follow-ups | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `sarif` | SARIF 2.1.0 log for GitHub code scanning, DefectDojo, SARIF viewers | ✓ | ✓ | ✓ | ✓ | |
+| `csv` | One row per finding (records on `db export`) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `junit` | JUnit XML for CI test reporters | ✓ | ✓ | ✓ | ✓ | |
+| `github` | GitHub Actions annotations (workflow commands) | ✓ | ✓ | ✓ | | |
+| `sqlite` (aliases `sqlite3`, `db`) | Standalone database that can be reopened by Vigolium (needs `-S`) | ✓ | | | | |
+| `bundle` (alias `gz`) | `.tar.gz` of the export, an HTML report and agent sessions | | ✓ | | | ✓ |
+| `fs` (alias `file-system`) | Flat, browsable request/response and finding tree | ✓ | ✓ | | | ✓ |
+
+`db export` also takes `json`, `raw` and `markdown-table` (alias `md-table`)
+record dumps. Names are case-insensitive.
 
 Comma-separate formats to generate several artifacts from one scan:
 
@@ -30,7 +41,8 @@ vigolium scan https://example.com \
 ```
 
 File-based report formats require `-o/--output`. For multi-format output,
-`-o` is a base path and Vigolium adds the relevant extension.
+`-o` is a base path and Vigolium adds the relevant extension (`.md`, `.csv`,
+`.junit.xml`, `.github.txt`, …).
 
 ### Console and JSONL
 
@@ -41,7 +53,11 @@ vigolium scan-url -j 'https://example.com/search?q=test'
 ```
 
 JSONL is the bulk stream contract and is suitable for `jq`, a SIEM, or
-line-oriented ingestion. Select finding envelopes before reading fields:
+line-oriented ingestion. The post-scan stream from `scan --format jsonl` (and
+`scan -j`) is scoped to that scan: its `scan` row, the findings it produced, and
+its HTTP records (the exchanges it stored first, `http_records.scan_uuid`, plus
+any record its findings cite as evidence). Use `vigolium export --format jsonl`
+to dump the whole project. Select finding envelopes before reading fields:
 
 ```bash
 vigolium scan https://example.com --format jsonl \
@@ -65,6 +81,32 @@ vigolium scan https://example.com --format pdf -o report.pdf
 
 Full native scans can produce HTML reports. When `--only` isolates a phase,
 HTML is supported for discovery and spidering output.
+
+PDF export runs headless Chrome with a throwaway profile directory, bounded by
+a 90-second timeout (`--pdf-timeout 3m`, or `VIGOLIUM_PDF_TIMEOUT`, changes
+it). A failed render exits 1 with error code `pdf_failed`. On
+timeout the whole Chrome process group is killed, and a failure carries the
+last 4 KB of Chrome's stderr. Chrome keeps its sandbox unless it cannot have
+one: running as root on Linux, inside a container, or with
+`VIGOLIUM_CHROME_NO_SANDBOX=1`.
+
+### Markdown Report
+
+`--format markdown` renders one section per finding. Each section has a
+`finding_id` / `finding_hash` / `scan_uuid` / `module_id` / `record_uuids`
+table and a follow-up command (`vigolium finding --id N`), pinned to the same
+`--db` and project as the run that wrote the report (a stateless scan's temp
+database is gone afterwards, so its report carries no follow-ups). The request
+and response share one cap, 4 KB each by default (`--max-body-bytes N`; `0`
+removes it). The cut never splits a UTF-8 character, and a cut message ends
+with a note naming the command that prints it whole:
+
+```text
+… [truncated, 4096 of 22000 bytes; full: vigolium traffic body --uuid <record_uuid>]
+```
+
+Code fences grow longer than any backtick run in the message. A captured
+response that contains three backticks therefore stays inside its block.
 
 ### SARIF (interchange with other tools)
 
@@ -113,6 +155,45 @@ gh api /repos/{owner}/{repo}/code-scanning/sarifs \
   -f sarif="$(gzip -c results.sarif | base64)"
 ```
 
+### CSV, JUnit and GitHub annotations (CI)
+
+`--format csv` writes one row per finding with the columns `id`,
+`finding_hash`, `severity`, `confidence`, `module_id`, `module_name`, `short`,
+`url`, `hostname`, `matched_at`, `scan_uuid`, `http_record_uuids`, `status`,
+`cwe_id`, `source_file`, `repo_name` and `found_at` (multi-valued cells are
+joined with `; `). Every column is a key of the finding view `vigolium finding
+-j` prints and holds the same value, so a column means the same thing in both. Cells are quoted by a standard CSV writer, and a cell that starts with
+`=`, `+`, `-`, `@`, TAB or CR gets a leading `'` so a spreadsheet shows it as
+text instead of evaluating it. `db export --format csv` (HTTP records) uses the
+same writer.
+
+`--format junit` writes JUnit XML: one `<testsuite>` per module, one
+`<testcase>` per (module, host), and one `<failure>` per finding at or above the
+`--fail-on` severity (`low` when `--fail-on` is not set; `export` and `import`
+always use `low`). Findings below the threshold are listed in the testcase's
+`system-out`, and a testcase whose findings are all `false_positive` or
+`accepted_risk` is `<skipped>`. Every failure names its `finding_hash`, so CI
+history tracks a finding across runs; its body lists the finding as
+`key: value` lines under the same finding view keys (`id`, `finding_hash`,
+`module_id`, `scan_uuid`, `http_record_uuids`, ...).
+
+`--format github` prints one GitHub Actions workflow command per finding:
+`::error` for critical/high, `::warning` for medium/low, `::notice` for
+info/suspect. Dismissed findings are left out. Code findings carry `file=` and
+`line=`; HTTP findings name their URL in the message. Without `-o` the commands
+go to stdout, where the Actions runner reads them (live finding lines move to
+stderr), so `--format github` cannot be combined with `-j` or
+`--ci-output-format` unless `-o FILE` sends the commands to a file. When
+`GITHUB_STEP_SUMMARY` is set, the Markdown report is appended to the job
+summary as well (only its summary when the full report would exceed GitHub's
+1 MiB limit).
+
+```bash
+# GitHub Actions step
+vigolium scan -S "$TARGET" --format github --fail-on high
+vigolium scan -S "$TARGET" --format junit,csv -o results/scan --fail-on medium
+```
+
 ### Standalone SQLite
 
 SQLite output requires stateless mode so the result is an explicit standalone
@@ -138,8 +219,8 @@ vigolium export --format fs -o project-export
 ## Export Existing Data
 
 `vigolium export` reads the active project database and supports `jsonl`,
-`html`, `report`, `pdf`, `markdown`, `sarif`, `bundle`, and `fs`
-(alias `file-system`):
+`html`, `report`, `pdf`, `markdown`, `sarif`, `csv`, `junit`, `github`,
+`bundle`, and `fs` (alias `file-system`):
 
 ```bash
 vigolium export --only findings,http --format jsonl -o export.jsonl

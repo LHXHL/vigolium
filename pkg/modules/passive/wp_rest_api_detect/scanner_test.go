@@ -1,13 +1,12 @@
 package wp_rest_api_detect
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
 
 func TestNew(t *testing.T) {
@@ -17,24 +16,13 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, ModuleName, m.Name())
 }
 
-func makeHTTPCtx(path, contentType, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", path))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n%s", contentType, body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
-
 func TestScanPerRequest_IndexWithCustomNamespaces(t *testing.T) {
 	m := New()
 	body := `{
 		"name": "Example Site",
 		"namespaces": ["wp/v2", "wp-site-health/v1", "oembed/1.0", "contact-form-7/v1", "yoast/v1"]
 	}`
-	ctx := makeHTTPCtx("/wp-json/", "application/json", body)
+	ctx := modtest.HTTPCtx("/wp-json/", "application/json", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -58,7 +46,7 @@ func TestScanPerRequest_IndexCoreOnly(t *testing.T) {
 		"name": "Example Site",
 		"namespaces": ["wp/v2", "wp-site-health/v1", "oembed/1.0"]
 	}`
-	ctx := makeHTTPCtx("/wp-json/", "application/json", body)
+	ctx := modtest.HTTPCtx("/wp-json/", "application/json", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -77,7 +65,7 @@ func TestScanPerRequest_UserExposure(t *testing.T) {
 		{"id": 1, "slug": "admin", "name": "Admin User"},
 		{"id": 2, "slug": "editor", "name": "Editor"}
 	]`
-	ctx := makeHTTPCtx("/wp-json/wp/v2/users", "application/json", body)
+	ctx := modtest.HTTPCtx("/wp-json/wp/v2/users", "application/json", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -98,7 +86,7 @@ func TestScanPerRequest_UserExposure(t *testing.T) {
 
 func TestScanPerRequest_NonWPJSON(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/api/v1/data", "application/json", `{"key": "value"}`)
+	ctx := modtest.HTTPCtx("/api/v1/data", "application/json", `{"key": "value"}`)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -108,7 +96,7 @@ func TestScanPerRequest_NonWPJSON(t *testing.T) {
 
 func TestScanPerRequest_NonJSON(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/wp-json/", "text/html", `<html>Not JSON</html>`)
+	ctx := modtest.HTTPCtx("/wp-json/", "text/html", `<html>Not JSON</html>`)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)

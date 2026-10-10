@@ -33,7 +33,7 @@ func validatePriorContextMode(mode string) (string, error) {
 	case priorCtxSummary, priorCtxOff:
 		return m, nil
 	default:
-		return "", fmt.Errorf("invalid --prior-context %q: want auto, summary, or off", mode)
+		return "", usageErrorf("invalid --prior-context %q: want auto, summary, or off", mode)
 	}
 }
 

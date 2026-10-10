@@ -112,25 +112,33 @@ func TestTrafficReplayShim_PreservesNoRedirects(t *testing.T) {
 	}
 }
 
-// traffic's default output is the comparison table; replay's is JSON. The
-// shortcut keeps traffic's default unless -j asked for the machine shape.
+// traffic's default output is the comparison table; -j is one envelope, not
+// the JSONL stream it used to switch to.
 func TestTrafficReplayShim_OutputShape(t *testing.T) {
-	t.Run("default is pretty", func(t *testing.T) {
+	t.Run("default is the human table", func(t *testing.T) {
 		resetTrafficReplayFlags(t)
 		resetReplayBulkFlags(t)
 		globalJSON = false
 		applyTrafficReplayFlags()
-		if !replayPretty {
-			t.Error("replayPretty = false, want true when -j is not set")
+		plan, err := resolveReplayOutputPlan(nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !plan.human || plan.envelope || plan.stream {
+			t.Errorf("plan = %+v, want the human table only", plan)
 		}
 	})
-	t.Run("-j yields JSONL", func(t *testing.T) {
+	t.Run("-j yields one envelope", func(t *testing.T) {
 		resetTrafficReplayFlags(t)
 		resetReplayBulkFlags(t)
 		globalJSON = true
 		applyTrafficReplayFlags()
-		if replayPretty {
-			t.Error("replayPretty = true, want false under -j")
+		plan, err := resolveReplayOutputPlan(nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.human || !plan.envelope || plan.stream {
+			t.Errorf("plan = %+v, want the envelope only", plan)
 		}
 	})
 }

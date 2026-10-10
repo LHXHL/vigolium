@@ -1,35 +1,39 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/authentication"
 	"github.com/vigolium/vigolium/pkg/terminal"
-	"gopkg.in/yaml.v3"
 )
 
 var sessionLintStdin bool
 
-// errSessionLintFailed is returned when lint finds errors, causing a non-zero exit without printing an error message.
-var errSessionLintFailed = errors.New("")
-
 var sessionLintCmd = &cobra.Command{
-	Use:   "lint [session-file]",
+	Use:   "lint [session-file...]",
 	Short: "Validate session auth config files for errors and warnings",
 	Long: `Lint session authentication configuration files for common issues:
+  - Unknown fields (a misspelt key such as "extarct"), with line and column
   - Missing or invalid fields (name, role, url, method)
   - Invalid extract rules (missing source, path, apply_as)
   - Unknown login types or extract sources
   - Multiple primary sessions, duplicate names
-  - Unreachable shorthand configurations`,
-	Args:          cobra.MaximumNArgs(1),
-	SilenceErrors: true,
-	RunE:          runSessionLint,
+  - Unreachable shorthand configurations
+
+Every form --auth-file and 'auth load' accept is linted: a sessions: bundle, a
+single session at the top level, and an agent session-config.json. The parser is
+the one those loaders use; where they warn about an unknown field, lint fails.
+
+Exits 1 (error code lint_failed) when any file has an error; warnings alone
+exit 0. With -j the issues are items: {file, field, line, column, severity,
+message}.`,
+	RunE: runSessionLint,
 }
 
 func init() {
@@ -37,111 +41,152 @@ func init() {
 	sessionLintCmd.Flags().BoolVar(&sessionLintStdin, "stdin", false, "Read session config from stdin")
 }
 
-func runSessionLint(_ *cobra.Command, args []string) error {
+// sessionLintItem is one issue in the -j document.
+type sessionLintItem struct {
+	File string `json:"file"`
+	authentication.LintIssue
+}
+
+func runSessionLint(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 
-	var data []byte
-	var err error
-	var filePath string
-
-	if sessionLintStdin {
+	type input struct {
+		name string
+		data []byte
+	}
+	var inputs []input
+	switch {
+	case sessionLintStdin:
 		if len(args) > 0 {
-			return fmt.Errorf("cannot use both --stdin and a file argument")
+			return usageErrorf("cannot use both --stdin and a file argument")
 		}
-		data, err = readStdin()
+		data, err := readStdin()
 		if err != nil {
 			return fmt.Errorf("failed to read stdin: %w", err)
 		}
-		filePath = "<stdin>"
-	} else if len(args) == 0 {
-		return fmt.Errorf("provide a session config file or use --stdin")
-	} else {
-		filePath = args[0]
-		data, err = os.ReadFile(filePath)
-		if err != nil {
-			return fmt.Errorf("failed to read %s: %w", filePath, err)
+		inputs = append(inputs, input{"<stdin>", data})
+	case len(args) == 0:
+		return usageErrorf("provide one or more session config files, or use --stdin")
+	default:
+		for _, path := range args {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("failed to read %s: %w", path, err)
+			}
+			inputs = append(inputs, input{path, data})
 		}
 	}
 
-	content := os.ExpandEnv(string(data))
-	lines := strings.Split(content, "\n")
+	w := humanOut()
 
-	// Parse the config.
-	var cfg authentication.SessionConfig
-	var parseErr error
-
-	trimmed := strings.TrimSpace(content)
-	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") || strings.HasSuffix(filePath, ".json") {
-		parseErr = json.Unmarshal([]byte(content), &cfg)
-	} else {
-		parseErr = yaml.Unmarshal([]byte(content), &cfg)
+	items := []sessionLintItem{}
+	errorsN, warningsN, filesWithErrors := 0, 0, 0
+	for _, in := range inputs {
+		issues := lintSessionFile(in.name, in.data)
+		fileErrors := 0
+		for _, is := range issues {
+			items = append(items, sessionLintItem{File: in.name, LintIssue: is})
+			switch is.Severity {
+			case "error":
+				errorsN++
+				fileErrors++
+			case "warning":
+				warningsN++
+			}
+		}
+		if fileErrors > 0 {
+			filesWithErrors++
+		}
+		if !globalJSON {
+			printSessionLintFile(w, in.name, issues)
+		}
+	}
+	if !globalJSON {
+		printSessionLintSummary(w, len(inputs), errorsN, warningsN)
 	}
 
-	if parseErr != nil {
-		fmt.Printf("\n%s %s\n", terminal.ErrorSymbol(), terminal.BoldRed(filePath))
-		fmt.Printf("  %s %s  failed to parse: %v\n\n", terminal.ErrorSymbol(), terminal.BoldRed("error"), parseErr)
-		return errSessionLintFailed
+	var lintErr error
+	if errorsN > 0 {
+		lintErr = codedErrorf(apicontract.CodeLintFailed, "auth lint: %d error(s), %d warning(s) in %d of %d file(s)",
+			errorsN, warningsN, filesWithErrors, len(inputs))
 	}
-
-	// Run lint.
-	issues := authentication.LintSessionConfig(&cfg)
-
-	// Print results.
-	hasErrors := printSessionLintResults(filePath, lines, issues)
-	if hasErrors {
-		return errSessionLintFailed
+	if globalJSON {
+		var opts []envOpt
+		if lintErr != nil {
+			opts = append(opts, withResultFailure(lintErr))
+		}
+		opts = append(opts,
+			withExtra("files", len(inputs)),
+			withExtra("errors", errorsN),
+			withExtra("warnings", warningsN))
+		if err := emitRead(cmd, "", items, int64(len(items)), 0, len(items), opts...); err != nil {
+			return err
+		}
 	}
-
-	return nil
+	return lintErr
 }
 
-// printSessionLintResults formats and prints lint issues. Returns true if any errors were found.
-func printSessionLintResults(filePath string, _ []string, issues []authentication.LintIssue) bool {
-	totalErrors := 0
-	totalWarnings := 0
-
-	if len(issues) == 0 {
-		fmt.Printf("%s %s\n", terminal.SuccessSymbol(), terminal.Green(filePath))
-		fmt.Printf("\n%s 1 file checked, all clean\n", terminal.SuccessSymbol())
-		return false
+// lintSessionFile parses one file strictly and returns every issue: unknown
+// fields, then semantic problems. A file that does not parse is one error
+// issue, positioned where the decoder said.
+func lintSessionFile(name string, data []byte) []authentication.LintIssue {
+	doc, err := authentication.ParseSessionDocument(data, name, authentication.ParseOptions{Strict: true})
+	if err != nil {
+		is := authentication.LintIssue{Severity: "error", Message: err.Error()}
+		var pe *authentication.ParseError
+		if errors.As(err, &pe) {
+			is.Message = "failed to parse: " + pe.Err.Error()
+			is.Line, is.Column = pe.Line, pe.Column
+		}
+		return []authentication.LintIssue{is}
 	}
+	return append(doc.Issues, doc.Lint()...)
+}
 
-	fmt.Printf("\n%s %s\n", terminal.ErrorSymbol(), terminal.BoldRed(filePath))
-
+func printSessionLintFile(w io.Writer, filePath string, issues []authentication.LintIssue) {
+	if len(issues) == 0 {
+		_, _ = fmt.Fprintf(w, "%s %s\n", terminal.SuccessSymbol(), terminal.Green(filePath))
+		return
+	}
+	_, _ = fmt.Fprintf(w, "\n%s %s\n", terminal.ErrorSymbol(), terminal.BoldRed(filePath))
 	for _, issue := range issues {
 		var symbol, sevLabel string
 		switch issue.Severity {
 		case "error":
 			symbol = terminal.ErrorSymbol()
 			sevLabel = terminal.BoldRed("error")
-			totalErrors++
 		case "warning":
 			symbol = terminal.WarningSymbol()
 			sevLabel = terminal.BoldYellow("warning")
-			totalWarnings++
 		default:
 			symbol = terminal.InfoSymbol()
 			sevLabel = "info"
 		}
 
+		loc := ""
+		if pos := issuePos(issue); pos != "" {
+			loc = terminal.Gray("line "+strings.TrimPrefix(pos, ":")) + "  "
+		}
 		fieldStr := ""
 		if issue.Field != "" {
 			fieldStr = terminal.Gray(issue.Field) + "  "
 		}
-
-		fmt.Printf("  %s %s%s  %s\n", symbol, fieldStr, sevLabel, issue.Message)
+		_, _ = fmt.Fprintf(w, "  %s %s%s%s  %s\n", symbol, loc, fieldStr, sevLabel, issue.Message)
 	}
+}
 
-	// Summary.
-	fmt.Println()
-	parts := []string{"1 file checked"}
-	if totalErrors > 0 {
-		parts = append(parts, terminal.BoldRed(fmt.Sprintf("%d error(s)", totalErrors)))
+func printSessionLintSummary(w io.Writer, files, errorsN, warningsN int) {
+	_, _ = fmt.Fprintln(w)
+	if errorsN == 0 && warningsN == 0 {
+		_, _ = fmt.Fprintf(w, "%s %d file(s) checked, all clean\n", terminal.SuccessSymbol(), files)
+		return
 	}
-	if totalWarnings > 0 {
-		parts = append(parts, terminal.BoldYellow(fmt.Sprintf("%d warning(s)", totalWarnings)))
+	parts := []string{fmt.Sprintf("%d file(s) checked", files)}
+	if errorsN > 0 {
+		parts = append(parts, terminal.BoldRed(fmt.Sprintf("%d error(s)", errorsN)))
 	}
-	fmt.Printf("%s %s\n", terminal.InfoSymbol(), strings.Join(parts, ", "))
-
-	return totalErrors > 0
+	if warningsN > 0 {
+		parts = append(parts, terminal.BoldYellow(fmt.Sprintf("%d warning(s)", warningsN)))
+	}
+	_, _ = fmt.Fprintf(w, "%s %s\n", terminal.InfoSymbol(), strings.Join(parts, ", "))
 }

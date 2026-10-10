@@ -149,3 +149,69 @@ func TestSpideringValidateRejectsNegativeDuration(t *testing.T) {
 		t.Errorf("zero must remain valid (it means the default), got %v", err)
 	}
 }
+
+func TestSpideringValidate_Stealth(t *testing.T) {
+	for _, v := range append([]string{""}, SpideringStealthModes...) {
+		c := DefaultSpideringConfig()
+		c.Stealth = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("stealth %q rejected: %v", v, err)
+		}
+	}
+	c := DefaultSpideringConfig()
+	c.Stealth = "max"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "spidering.stealth") {
+		t.Errorf("stealth \"max\" = %v, want a spidering.stealth error", err)
+	}
+}
+
+func TestSpideringValidate_Tabs(t *testing.T) {
+	for _, n := range []int{0, 1, 3, SpideringMaxTabs} {
+		c := DefaultSpideringConfig()
+		c.Tabs = n
+		if err := c.Validate(); err != nil {
+			t.Errorf("tabs %d rejected: %v", n, err)
+		}
+	}
+	for _, n := range []int{-1, SpideringMaxTabs + 1} {
+		c := DefaultSpideringConfig()
+		c.Tabs = n
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "spidering.tabs") {
+			t.Errorf("tabs %d = %v, want a spidering.tabs error", n, err)
+		}
+	}
+	for _, v := range append([]string{""}, SpideringTabIsolationModes...) {
+		c := DefaultSpideringConfig()
+		c.TabIsolation = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("tab_isolation %q rejected: %v", v, err)
+		}
+	}
+	c := DefaultSpideringConfig()
+	c.TabIsolation = "incognito"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "spidering.tab_isolation") {
+		t.Errorf("tab_isolation \"incognito\" = %v, want a spidering.tab_isolation error", err)
+	}
+}
+
+func TestSpideringRouteSeedKeys(t *testing.T) {
+	c := DefaultSpideringConfig()
+	if !c.RouteSeedsEnabled() || c.ExtraSeedsCap() != DefaultMaxExtraSeeds {
+		t.Fatalf("defaults: route_seeds=%v max_extra_seeds=%d", c.RouteSeedsEnabled(), c.ExtraSeedsCap())
+	}
+	c.MaxExtraSeeds = -1
+	if err := c.Validate(); err == nil {
+		t.Error("negative max_extra_seeds must fail validation")
+	}
+
+	settings := DefaultSettings()
+	if err := SetField(settings, "spidering.route_seeds", "false"); err != nil {
+		t.Fatalf("SetField route_seeds: %v", err)
+	}
+	if err := SetField(settings, "spidering.max_extra_seeds", "7"); err != nil {
+		t.Fatalf("SetField max_extra_seeds: %v", err)
+	}
+	if settings.Spidering.RouteSeedsEnabled() || settings.Spidering.ExtraSeedsCap() != 7 {
+		t.Errorf("after set: route_seeds=%v max_extra_seeds=%d", settings.Spidering.RouteSeedsEnabled(), settings.Spidering.ExtraSeedsCap())
+	}
+}

@@ -73,9 +73,19 @@ func (h *HttpRequestResponse) URL() (*urlutil.URL, error) {
 	return h.request.URL()
 }
 
+// sharedURL is URL without the per-call copy, for the read-only String()
+// callers below. See HttpRequest.sharedURL for what may be done with it.
+func (h *HttpRequestResponse) sharedURL() (*urlutil.URL, error) {
+	if h.request == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+	u, _, err := h.request.sharedURL()
+	return u, err
+}
+
 // Target returns the target URL as a string.
 func (h *HttpRequestResponse) Target() string {
-	urlx, err := h.URL()
+	urlx, err := h.sharedURL()
 	if err != nil {
 		return ""
 	}
@@ -102,9 +112,24 @@ func (h *HttpRequestResponse) ID() string {
 	return strconv.FormatUint(hash.Sum64(), 16)
 }
 
+// HostPortKey returns rr's lower-cased "host:port" (IPv6 hosts bracketed), or ""
+// when rr has no service. It is the dead-host breaker's key: unlike ID() it
+// carries no method, so a host that stopped answering GETs is quarantined for
+// POSTs too, and it is readable enough to report as-is.
+func HostPortKey(rr *HttpRequestResponse) string {
+	if rr == nil {
+		return ""
+	}
+	service := rr.Service()
+	if service == nil || service.Host() == "" {
+		return ""
+	}
+	return net.JoinHostPort(strings.ToLower(service.Host()), strconv.Itoa(service.Port()))
+}
+
 // GetScanHash returns a unique hash that represents a scan by hashing (URL + templateId).
 func (h *HttpRequestResponse) GetScanHash(templateId string) string {
-	urlx, err := h.URL()
+	urlx, err := h.sharedURL()
 	if err != nil {
 		return ""
 	}
@@ -137,6 +162,7 @@ func (h *HttpRequestResponse) WithService(service *Service) *HttpRequestResponse
 		h.request.service = service
 		// Invalidate the cached URL since it depends on the service.
 		h.request.cachedURL = nil
+		h.request.cachedURLParams = nil
 		h.request.cachedURLErr = nil
 		h.request.urlComputed = false
 		h.request.mu.Unlock()
@@ -160,13 +186,14 @@ func (h *HttpRequestResponse) BuildRetryableRequest() (*retryablehttp.Request, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to get URL: %w", err)
 	}
-	urlClone := urlx.Clone()
+	// URL() already returns this caller's own copy, so it can be handed to
+	// retryablehttp (which keeps and may mutate it) without another Clone.
 	body := h.request.Body()
 	var bodyReader io.Reader = nil
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
 	}
-	req, err := retryablehttp.NewRequestFromURL(h.request.Method(), urlClone, bodyReader)
+	req, err := retryablehttp.NewRequestFromURL(h.request.Method(), urlx, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("could not create request: %w", err)
 	}
@@ -206,7 +233,7 @@ func (h *HttpRequestResponse) CreateInsertionPoints(includeNested bool) ([]Inser
 
 // PrettyPrint returns a formatted string for display.
 func (h *HttpRequestResponse) PrettyPrint() string {
-	urlx, err := h.URL()
+	urlx, err := h.sharedURL()
 	if err != nil {
 		return ""
 	}
@@ -230,7 +257,7 @@ var jsonFast = jsoniter.ConfigFastest
 // Uses jsoniter with shadow structs for single-pass serialization,
 // eliminating the previous triple-marshal pattern.
 func (h *HttpRequestResponse) MarshalJSON() ([]byte, error) {
-	urlx, err := h.URL()
+	urlx, err := h.sharedURL()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get URL for marshaling: %w", err)
 	}

@@ -2,9 +2,12 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/uptrace/bun"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
 
@@ -99,4 +102,53 @@ func (r *Repository) BackfillRecordResponse(ctx context.Context, uuid string, rr
 		return fmt.Errorf("backfill record response: %w", err)
 	}
 	return nil
+}
+
+// DeleteRequestOnlyStubs removes request-only records that a check against the
+// live target found not worth scanning: a 404/410, a soft-404, or a host that
+// did not answer at all. Returns how many rows were deleted.
+//
+// Every row is guarded on project, source AND has_response = false, so the
+// delete can only ever take a stub the caller's own phase wrote. A harvested URL
+// that deduped onto an existing record adopts that row's UUID — which may be a
+// fully fetched record from another phase or an earlier scan — and the guard is
+// what keeps a dead archive URL from deleting real evidence that happens to
+// share its identity. finding_records junction rows go in the same transaction,
+// mirroring DeleteRecord.
+func (r *Repository) DeleteRequestOnlyStubs(ctx context.Context, projectUUID, source string, uuids []string) (int64, error) {
+	if len(uuids) == 0 {
+		return 0, nil
+	}
+	projectUUID = defaultProjectUUID(projectUUID)
+	var deleted int64
+	err := r.db.RunInTx(ctx, &sql.TxOptions{}, func(ctx context.Context, tx bun.Tx) error {
+		for chunk := range slices.Chunk(uuids, SQLChunkSize) {
+			stubs := tx.NewSelect().Model((*HTTPRecord)(nil)).Column("uuid").
+				Where("uuid IN (?)", bun.List(chunk)).
+				Where("project_uuid = ?", projectUUID).
+				Where("source = ?", source).
+				Where("has_response = ?", false)
+			if _, err := tx.NewDelete().TableExpr("finding_records").
+				Where("record_uuid IN (?)", stubs).Exec(ctx); err != nil {
+				return fmt.Errorf("delete stub finding_records: %w", err)
+			}
+			res, err := tx.NewDelete().Model((*HTTPRecord)(nil)).
+				Where("uuid IN (?)", bun.List(chunk)).
+				Where("project_uuid = ?", projectUUID).
+				Where("source = ?", source).
+				Where("has_response = ?", false).
+				Exec(ctx)
+			if err != nil {
+				return fmt.Errorf("delete request-only stubs: %w", err)
+			}
+			if n, err := res.RowsAffected(); err == nil {
+				deleted += n
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
 }

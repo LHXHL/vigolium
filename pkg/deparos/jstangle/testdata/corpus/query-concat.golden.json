@@ -1,0 +1,38 @@
+{
+  "status": "complete",
+  "counts": {
+    "httpRequest": 3
+  },
+  "facts": [
+    {
+      "kind": "httpRequest",
+      "url": "/api/v2/find",
+      "method": "GET",
+      "query": [
+        "q",
+        "page"
+      ],
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v2/items",
+      "method": "GET",
+      "query": [
+        "category",
+        "offset",
+        "format"
+      ],
+      "confidence": "high"
+    },
+    {
+      "kind": "httpRequest",
+      "url": "/api/v2/opaque",
+      "method": "GET",
+      "query": [
+        "${qs}"
+      ],
+      "confidence": "high"
+    }
+  ]
+}

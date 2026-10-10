@@ -42,6 +42,11 @@ var (
 	findingFindingSource string
 	findingRecordKind    string
 
+	// Lifecycle filters (see finding_lifecycle.go)
+	findingNewSince         string
+	findingVerdict          string
+	findingIncludeDismissed bool
+
 	// Display-only flags
 	findingRaw         bool
 	findingBurp        bool
@@ -168,6 +173,9 @@ func init() {
 	f.StringSliceVar(&findingColumns, "columns", nil, "Columns to show (comma-separated, e.g. ID,SEVERITY,MODULE)")
 	f.StringSliceVar(&findingExclude, "exclude-columns", nil, "Columns to hide (comma-separated)")
 	f.StringVar(&findingPick, "pick", "", "Select finding(s) by 1-based position in the result list (e.g. 2, 1,3, 2-4); applied after --search/filters and sort")
+	f.StringVar(&findingNewSince, "new-since", "", "Only findings new since a scan (UUID, 8+ char prefix, latest, previous: first observed by a later scan and not by it) or a time ("+clicommon.TimeFilterSyntax+": stored after it). Leaves out false_positive/accepted_risk unless --include-dismissed or --verdict")
+	f.StringVar(&findingVerdict, "verdict", "", "Filter by lifecycle status: "+strings.Join(database.FindingStatuses, ",")+" (comma-separated; set with 'finding mark')")
+	f.BoolVar(&findingIncludeDismissed, "include-dismissed", false, "With --new-since: keep findings marked false_positive or accepted_risk")
 
 	// Burp bridge push — hand a finding's evidence request to Burp for manual
 	// confirmation. Requires the extension's loopback listener.
@@ -240,6 +248,9 @@ func runFinding(cmd *cobra.Command, args []string) error {
 	if err := validateJSONOutputFlag(cmd); err != nil {
 		return err
 	}
+	if err := validateFindingCurlFlags(cmd); err != nil {
+		return err
+	}
 	var fuzzyTerm string
 	// Argument routing mirrors traffic: "tree" activates tree mode, "ls"/"list"
 	// are no-ops (default table view), anything else is a fuzzy search term.
@@ -282,6 +293,9 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		if findingAgenticScan != "" {
 			filters.AgenticScanUUIDs = resolveAgenticScanTree(ctx, db, findingAgenticScan)
 		}
+		if err := resolveNewSinceScan(ctx, db, &filters); err != nil {
+			return err
+		}
 		fqb := database.NewFindingsQueryBuilder(db, filters)
 		findings, total, err := fqb.ExecuteWithCount(ctx)
 		if err != nil {
@@ -307,7 +321,10 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		// Burp push is an action, not a display — hand the selected findings'
 		// evidence to Burp and return before any table/TUI/JSON render.
 		if findingPushToBurp || findingToRepeater {
-			return pushFindingsToBurp(ctx, db, findings)
+			return pushFindingsToBurp(ctx, cmd, db, findings)
+		}
+		if findingCurl || findingCurlAll {
+			return renderFindingCurl(ctx, cmd, db, findings, total, filters.ProjectUUID)
 		}
 
 		if active, tuiErr := tui.Active(findingTUIFlag, findingNoTUIFlag, globalJSON); tuiErr != nil {
@@ -321,7 +338,7 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		}
 
 		if globalJSON {
-			return displayFindingsJSON(ctx, db, findings, total, filters.ProjectUUID)
+			return displayFindingsJSON(ctx, cmd, db, findings, total, filters.ProjectUUID)
 		}
 
 		// Echo the active filter conditions (severity, search, host, …) so it's
@@ -395,6 +412,7 @@ func selectFindingsByPosition(findings []*database.Finding, spec string) ([]*dat
 			terminal.WarningSymbol(), summarizeInts(outOfRange, 10), n)
 	}
 	if len(picked) == 0 {
+		//vigolium:not-usage decided against the listed findings, after the query
 		return nil, fmt.Errorf("--pick %q selected no findings (valid range: 1-%d)", spec, n)
 	}
 	return picked, nil
@@ -433,17 +451,17 @@ func parsePositionSpec(spec string) ([]int, error) {
 		if lo, hi, isRange := strings.Cut(tok, "-"); isRange {
 			a, err := parsePos(lo)
 			if err != nil {
-				return nil, fmt.Errorf("invalid --pick range %q: %w", tok, err)
+				return nil, usageErrorf("invalid --pick range %q: %w", tok, err)
 			}
 			b, err := parsePos(hi)
 			if err != nil {
-				return nil, fmt.Errorf("invalid --pick range %q: %w", tok, err)
+				return nil, usageErrorf("invalid --pick range %q: %w", tok, err)
 			}
 			if a > b {
-				return nil, fmt.Errorf("invalid --pick range %q: start must be <= end", tok)
+				return nil, usageErrorf("invalid --pick range %q: start must be <= end", tok)
 			}
 			if b-a+1 > maxPickPositions {
-				return nil, fmt.Errorf("invalid --pick range %q: spans more than %d positions", tok, maxPickPositions)
+				return nil, usageErrorf("invalid --pick range %q: spans more than %d positions", tok, maxPickPositions)
 			}
 			for i := a; i <= b; i++ {
 				positions = append(positions, i)
@@ -451,16 +469,16 @@ func parsePositionSpec(spec string) ([]int, error) {
 		} else {
 			v, err := parsePos(tok)
 			if err != nil {
-				return nil, fmt.Errorf("invalid --pick position %q: %w", tok, err)
+				return nil, usageErrorf("invalid --pick position %q: %w", tok, err)
 			}
 			positions = append(positions, v)
 		}
 		if len(positions) > maxPickPositions {
-			return nil, fmt.Errorf("--pick: too many positions (max %d)", maxPickPositions)
+			return nil, usageErrorf("--pick: too many positions (max %d)", maxPickPositions)
 		}
 	}
 	if len(positions) == 0 {
-		return nil, fmt.Errorf("--pick: no positions given")
+		return nil, usageErrorf("--pick: no positions given")
 	}
 	return positions, nil
 }
@@ -507,7 +525,7 @@ func buildFindingFilters(fuzzyTerm string) (database.QueryFilters, error) {
 	} else if findingMinSeverity != "" {
 		severities = severitiesAtOrAbove(normalizeSeverity(findingMinSeverity))
 		if severities == nil {
-			return database.QueryFilters{}, fmt.Errorf("invalid --min-severity %q (want one of: %s)", findingMinSeverity, strings.Join(severityOrder, ", "))
+			return database.QueryFilters{}, usageErrorf("invalid --min-severity %q (want one of: %s)", findingMinSeverity, strings.Join(severityOrder, ", "))
 		}
 	}
 
@@ -530,6 +548,11 @@ func buildFindingFilters(fuzzyTerm string) (database.QueryFilters, error) {
 		return database.QueryFilters{}, err
 	}
 
+	verdicts, err := parseEnumCSV("--verdict", findingVerdict, database.FindingStatuses)
+	if err != nil {
+		return database.QueryFilters{}, err
+	}
+
 	return database.QueryFilters{
 		ProjectUUID:         projectUUID,
 		FindingID:           findingID,
@@ -544,6 +567,9 @@ func buildFindingFilters(fuzzyTerm string) (database.QueryFilters, error) {
 		ModuleType:          findingModuleType,
 		FindingSource:       findingFindingSource,
 		RecordKinds:         recordKinds,
+		Status:              verdicts,
+		ExcludeStatuses:     newSinceExcludedStatuses(verdicts),
+		CreatedAfter:        newSinceCreatedAfter(),
 		DateFrom:            dateFrom,
 		DateTo:              dateTo,
 		FuzzyTerm:           fuzzyTerm,
@@ -571,7 +597,7 @@ func parseRecordKinds(raw string) ([]string, error) {
 	for _, part := range strings.Split(raw, ",") {
 		kind := strings.ToLower(strings.TrimSpace(part))
 		if !allowed[kind] {
-			return nil, fmt.Errorf("invalid record kind %q (want finding, candidate, or observation)", part)
+			return nil, usageErrorf("invalid record kind %q (want finding, candidate, or observation)", part)
 		}
 		kinds = append(kinds, kind)
 	}
@@ -613,6 +639,8 @@ func printActiveFindingFilters(filters database.QueryFilters, fuzzyTerm string) 
 	s.add("agentic-scan", findingAgenticScan)
 	s.add("module-type", filters.ModuleType)
 	s.add("finding-source", filters.FindingSource)
+	s.add("verdict", strings.Join(filters.Status, ","))
+	s.add("new-since", findingNewSince)
 	if filters.FindingID != 0 {
 		s.add("id", strconv.Itoa(filters.FindingID))
 	}
@@ -622,12 +650,12 @@ func printActiveFindingFilters(filters database.QueryFilters, fuzzyTerm string) 
 	if filters.DateTo != nil {
 		s.add("to", clicommon.FormatTimeFilter(*filters.DateTo))
 	}
-	s.print()
+	s.print(findingMarkdown || findingBurp || findingRaw)
 }
 
-func displayFindingsJSON(ctx context.Context, db *database.DB, findings []*database.Finding, total int64, projectUUID string) error {
+func displayFindingsJSON(ctx context.Context, cmd *cobra.Command, db *database.DB, findings []*database.Finding, total int64, projectUUID string) error {
 	opts := agentViewOptionsFromFlags()
-	env := newAgentEnvelope("finding", "findings",
+	env := newMachineEnvelope(cmd, kindRead, "findings",
 		findingViews(ctx, db, findings, opts, findingWithRecords), total, findingOffset, findingLimit)
 	env.WithProjectScope(projectUUID)
 	env.DBPath = resolvedReadDBPath()

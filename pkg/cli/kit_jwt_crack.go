@@ -41,7 +41,7 @@ secret is printed in full (it is the whole point of the operation).`,
 
 func init() {
 	f := kitJWTCrackCmd.Flags()
-	f.StringVarP(&kitJWTWordlist, "wordlist", "w", "", "Wordlist: a built-in name (see `kit wordlist`) or a file path (default: embedded jwt.secrets.list)")
+	f.StringVarP(&kitJWTWordlist, "wordlist", "w", "", "Wordlist: a built-in name (see 'vigolium kit wordlist') or a file path (default: embedded jwt.secrets.list)")
 	f.StringArrayVarP(&kitJWTSecrets, "secret", "p", nil, "Additional inline candidate secret (repeatable)")
 	f.BoolVar(&kitJWTFailOnCrack, "fail-on-crack", false, "Exit 3 when the secret is recovered (for CI/agent gating)")
 	kitCmd.AddCommand(kitJWTCrackCmd)
@@ -97,7 +97,7 @@ func runKitJWTCrack(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		if err := writeAgentJSON(res); err != nil {
+		if err := emitObject(cmd, ".", res); err != nil {
 			return err
 		}
 	} else if ok {
@@ -144,7 +144,7 @@ func kitLoadJWTCandidates() (secrets [][]byte, label string, err error) {
 		data, err = wordlists.WordlistsFS.ReadFile("jwt.secrets.list")
 		label = "builtin:jwt.secrets.list"
 	} else if file, ok := resolveBuiltinWordlist(kitJWTWordlist); ok {
-		data, err = wordlists.WordlistsFS.ReadFile(file)
+		data, err = wordlists.ReadList(file)
 		label = "builtin:" + file
 	} else {
 		data, err = os.ReadFile(kitJWTWordlist)

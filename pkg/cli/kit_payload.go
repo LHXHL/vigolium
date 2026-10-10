@@ -43,9 +43,7 @@ func runKitPayload(cmd *cobra.Command, args []string) error {
 
 	if kitPayloadList || len(kitPayloadClasses) == 0 {
 		if globalJSON {
-			return writeAgentJSON(struct {
-				Classes []string `json:"classes"`
-			}{classes})
+			return emitRead(cmd, "classes", classes, int64(len(classes)), 0, len(classes))
 		}
 		fmt.Fprintf(os.Stderr, "%s %d payload classes:\n", terminal.InfoSymbol(), len(classes))
 		for _, c := range classes {
@@ -65,7 +63,7 @@ func runKitPayload(cmd *cobra.Command, args []string) error {
 		}
 		list, ok := payloads.ByClass(c)
 		if !ok {
-			return fmt.Errorf("unknown payload class %q (available: %s)", c, strings.Join(classes, ", "))
+			return usageErrorf("unknown payload class %q (available: %s)", c, strings.Join(classes, ", "))
 		}
 		used = append(used, c)
 		for _, p := range list {
@@ -78,11 +76,14 @@ func runKitPayload(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		return writeAgentJSON(struct {
+		if out == nil {
+			out = []string{}
+		}
+		return emitStructRead(cmd, struct {
 			Classes  []string `json:"classes"`
 			Count    int      `json:"count"`
 			Payloads []string `json:"payloads"`
-		}{used, len(out), out})
+		}{used, len(out), out}, "payloads")
 	}
 	for _, p := range out {
 		fmt.Println(p)

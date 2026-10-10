@@ -1,7 +1,6 @@
 package secret_detect
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -10,6 +9,7 @@ import (
 	pkghttp "github.com/vigolium/vigolium/pkg/deparos/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
 
@@ -24,19 +24,6 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, modkit.ScanScopeRequest, m.ScanScopes())
 }
 
-func makeHTTPCtx(contentType string, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte("GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n%s", contentType, body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
-
 func TestCanProcess_NilResponse(t *testing.T) {
 	m := New()
 
@@ -49,7 +36,7 @@ func TestCanProcess_NilResponse(t *testing.T) {
 
 func TestCanProcess_EmptyBody(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("text/html", "")
+	ctx := modtest.HTTPCtx("/test", "text/html", "")
 	assert.False(t, m.CanProcess(ctx))
 }
 
@@ -57,7 +44,7 @@ func TestCanProcess_MediaContentType(t *testing.T) {
 	m := New()
 
 	for _, ct := range []string{"image/png", "video/mp4", "audio/mpeg", "font/woff2"} {
-		ctx := makeHTTPCtx(ct, "some body content")
+		ctx := modtest.HTTPCtx("/test", ct, "some body content")
 		assert.False(t, m.CanProcess(ctx), "should reject media type %s", ct)
 	}
 }
@@ -66,7 +53,7 @@ func TestCanProcess_TextContent(t *testing.T) {
 	m := New()
 
 	for _, ct := range []string{"text/html", "application/json", "application/javascript", "text/xml"} {
-		ctx := makeHTTPCtx(ct, "some body content")
+		ctx := modtest.HTTPCtx("/test", ct, "some body content")
 		assert.True(t, m.CanProcess(ctx), "should accept text type %s", ct)
 	}
 }
@@ -74,7 +61,7 @@ func TestCanProcess_TextContent(t *testing.T) {
 func TestCanProcess_OversizedBody(t *testing.T) {
 	m := New()
 	bigBody := strings.Repeat("a", pkghttp.MaxSecretScanBodySize+1)
-	ctx := makeHTTPCtx("text/html", bigBody)
+	ctx := modtest.HTTPCtx("/test", "text/html", bigBody)
 	assert.False(t, m.CanProcess(ctx))
 }
 

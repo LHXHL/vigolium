@@ -221,7 +221,7 @@ module.exports = {
     var findings = [];
     var headers = ctx.response.headers;
 
-    var poweredBy = headers["X-Powered-By"] || headers["x-powered-by"];
+    var poweredBy = headers.get("x-powered-by");
     if (poweredBy) {
       findings.push({
         matched: "X-Powered-By: " + poweredBy,
@@ -241,7 +241,7 @@ module.exports = {
 
 ### Pre-Hook (JS)
 
-Pre-hooks run before each request is sent to a module. Return the modified request, a headers-only patch, or `null` to skip the request entirely.
+Pre-hooks run before each request is sent to a module. `execute(request)` receives `{raw, method, url, headers}` (there is no `path` field; parse it from `url`). Return the modified request, a headers-only patch, or `null` to skip the request entirely.
 
 ```javascript
 // File: ~/.vigolium/extensions/add_auth_header.js
@@ -285,7 +285,8 @@ module.exports = {
   type: "pre_hook",
 
   execute: function(request) {
-    var path = request.path || "";
+    var parsed = vigolium.parse.url(request.url || "");
+    var path = (parsed && parsed.path) || "";
     var skip = [".css", ".js", ".png", ".jpg", ".gif", ".svg", ".ico",
                 ".woff", ".woff2", ".ttf", ".map"];
     for (var i = 0; i < skip.length; i++) {
@@ -674,15 +675,33 @@ ctx.request.url        // "https://example.com/api/users?id=1"
 ctx.request.method     // "GET"
 ctx.request.path       // "/api/users"
 ctx.request.hostname   // "example.com"
-ctx.request.headers    // { "Content-Type": "application/json", ... }
+ctx.request.headers    // header object, see below
 ctx.request.raw        // full raw HTTP request string
 
 ctx.response.status    // 200
 ctx.response.body      // response body as string
-ctx.response.headers   // { "X-Powered-By": "PHP/8.1", ... }
+ctx.response.headers   // header object, see below
 ctx.response.raw       // full raw HTTP response string
 ctx.response.title     // HTML page title (if applicable)
 ```
+
+### Header objects
+
+`ctx.request.headers`, `ctx.response.headers`, the pre-hook `request.headers`, the `headers` of every `vigolium.http.*`/session/MCP response, and the YAML `js` matcher's `response.headers` all behave the same way:
+
+```javascript
+headers.get("x-powered-by")      // "PHP/8.1": case-insensitive, null when absent
+headers["X-Powered-By"]          // same value; property access is case-insensitive too
+headers.has("content-type")      // true
+headers.getAll("set-cookie")     // ["a=1; Path=/", "b=2; Path=/"]: every value, wire order
+headers["set-cookie"]            // "b=2; Path=/": set-cookie reads as the LAST value
+headers["cache-control"]         // "no-cache, no-store": other repeats join with ", "
+Object.keys(headers)             // ["content-type", "set-cookie", ...]: lowercase, first-occurrence order
+headers.entries()                // [["Set-Cookie", "a=1; Path=/"], ...]: original case, every occurrence
+headers.raw()                    // { "Set-Cookie": "b=2; Path=/", ... }: the pre-0.7 original-case object
+```
+
+Assigning or deleting a property changes only the JS view. In a pre-hook, returning `{headers: request.headers}` applies just the headers you assigned or deleted. A header whose name matches a method (`get`, `getAll`, `has`, `entries`, `raw`) or an `Object.prototype` member is not exposed as a property, so a server cannot shadow `headers.get`; read it with `headers.get(name)` or `headers.entries()`.
 
 ### `insertion` — second arg to `scanPerInsertionPoint`
 
@@ -946,7 +965,8 @@ Session objects expose: `get()`, `post()`, `request()`, `send()`, `setHeader()`,
 | Function | Description |
 |---|---|
 | `enabled()` | Check if OAST service is active |
-| `payload(targetURL?, paramName?, injectionType?)` | Generate unique OAST callback URL → `{url}` |
+| `payload(targetURL?, paramName?, injectionType?)` | Generate unique OAST callback URL → `{url}` (callbacks rated by a class guessed from `injectionType`) |
+| `url({class?, target?, param?, label?})` | Generate unique OAST callback URL → string, or `null` when OAST is unavailable. `class` sets how a callback is rated: `ssrf`, `ssrf-smuggle`, `xxe`, `cmdi`, `sqli`, `jwt-key-url`, `host-routing`, `header-harvest`, `password-reset-poisoning`, `blind-xss`, `ssti`, `deserialization`, `jndi`, `text4shell`, `esi`, `smtp`, `mcp-arg`, or `generic` (default). An unknown class throws, and `ext lint` reports a literal unknown class as an error |
 | `poll(timeoutMs?)` | Wait then return all OAST interactions → `[{protocol, unique_id, remote_address, target_url, parameter_name, module_id, interacted_at}]` |
 
 ### vigolium.db
@@ -1004,10 +1024,10 @@ The fastest way to test your extension against already-ingested traffic without 
 
 ```bash
 # Run only extensions against existing scan data
-vigolium scan --config vigolium-configs.yaml --only extension
+vigolium scan --all-records --config vigolium-configs.yaml --only extension
 
 # Alias: ext works too
-vigolium scan --config vigolium-configs.yaml --only ext
+vigolium scan --all-records --config vigolium-configs.yaml --only ext
 ```
 
 This skips discovery, spidering, and standard dynamic-assessment modules — only your extensions run against traffic already in the database.
@@ -1045,6 +1065,100 @@ dynamic-assessment:
       - ./my_extension.js
       - ./my_extension.vgm.yaml
 ```
+
+### Lint before you scan
+
+`vigolium ext lint` loads each file the way a scan does — the top-level code runs in
+the loader's own VM — and reports what would go wrong:
+
+```bash
+vigolium ext lint my_scanner.js            # exit 1 (error.code lint_failed) on errors
+vigolium ext lint ~/.vigolium/extensions/  # every .js/.ts/.vgm.yaml in the directory
+vigolium ext lint my_scanner.js --strict   # warnings fail too
+vigolium ext lint ./exts -j                # one JSON document (see below)
+cat check.vgm.yaml | vigolium ext lint --stdin   # sniffed as YAML; force with --stdin-kind js|ts|yaml
+```
+
+What lint checks, with the rule id each issue carries:
+
+| Rule | Severity | Meaning |
+|---|---|---|
+| `syntax`, `transpile` | error | The JavaScript does not parse, or the TypeScript does not transpile |
+| `metadata` | error | Top-level code threw, or `module.exports` lacks a `type` |
+| `no-exports` | error | The file exports nothing. A plain script meant for `vigolium js` can opt out with a `// vigolium:script` line |
+| `missing-handler` | error | A declared `scanTypes` entry (default `per_request`) or hook type has no matching function (`scanPerInsertionPoint`, `scanPerRequest`, `scanPerHost`, `execute`). The scan would load the extension and never call it |
+| `invalid-type`, `bad-confidence` | error | Unknown `type` or `confidence` value |
+| `top-level-effect` | warning | Top-level code calls an effectful API (`vigolium.http.*`, `utils.exec`, `utils.writeFile`, `db.*`, `agent.*`, …). At load time such calls are stubbed and return an empty value; at scan time they run for real in every VM. Move them into a handler |
+| `unknown-api`, `unknown-oast-class` | warning / error | A `vigolium.*` name, or a `vigolium.oast.url` class, that does not exist |
+| `missing-severity`, `bad-severity`, `bad-scan-type`, `bad-scope` | warning | Metadata values outside the known set |
+| `yaml-parse`, `yaml-schema`, `yaml-unknown-key` | error | YAML that does not parse or does not match the schema. Unknown keys name the closest real key: `unknown key "matchers_condtion" (did you mean "matchers_condition"?)` |
+| `payloads-unused` | warning | A YAML extension has `payloads` but `scan_types` lacks `per_insertion_point`, the only scan type that sends them |
+
+Pure APIs (`vigolium.parse.*`, `utils` encoding/hashing/regex helpers, `log.*`, `payloads()`, `config.*`) run for real at load time, so `var u = vigolium.parse.url("…")` at the top of a file is fine. Every namespace exists at load time, so feature detection such as `if (vigolium.db)` is always true there; check inside a handler instead.
+
+With `-j` the result is one document: `items` holds one entry per file
+(`{path, kind: js|ts|yaml, issues: [{severity, line, col, message, rule}]}`),
+`summary` holds `{files, errors, warnings}`, and `ok` is `false` exactly when there are errors.
+
+### Run it against one stored record
+
+`vigolium ext run` loads one extension the way a scan does and calls its handlers against a stored HTTP record. It sends nothing unless you allow it, and it never writes to the database. `ext eval --ext <file> --record-uuid <uuid>` is the same command.
+
+```bash
+vigolium traffic --compact --fields uuid,url -j                  # find a record
+vigolium ext run --ext my_scanner.js --record-uuid 3f2a9c1e      # a UUID or a unique prefix
+vigolium ext run --ext my_scanner.js --record-uuid 3f2a9c1e --handler scanPerInsertionPoint --insertion URL_PARAM:id
+vigolium ext run --ext my_scanner.js --record-uuid 3f2a9c1e --allow-network -j
+```
+
+- Without `--handler`, every handler the module's `scanTypes` select is called. `scanPerInsertionPoint` runs once per insertion point the module accepts, or only on `--insertion TYPE:name` (`URL_PARAM:id`, `BODY_PARAM:user`, `HEADER:X-Api-Key`). An unknown point exits `2` and lists the available ones.
+- **Offline by default.** Every request fails with `network disabled in ext eval; pass --allow-network`, and `vigolium.http.*` throws it, so the handler stops at the first call and you see where. Each refused request counts in `network_calls_blocked`. `--allow-network` sends them through the normal HTTP stack (`--proxy` applies).
+- **Read-only database.** `vigolium.db.*` reads work. `ctx.record.uuid` is the record, but `annotate`, `addRiskScore`, `addRemarks` and `vigolium.ingest.*` return `false`. `vigolium.oast` and `vigolium.agent` are not available.
+- **Exit codes.** A handler that threw exits `1`. An unknown record exits `2` (`record_not_found`), and an extension that does not load exits `2` (`extension_load_failed`).
+- **`-j` document.** `items` are the results, with the module's severity, confidence, name and tags filled in as a scan fills them. The top level carries `module_id`, `record_uuid`, `handler`, `handlers`, `calls`, `errors` (`[{handler, insertion, message}]`, where the message ends with the script position), `network_allowed`, `network_calls_blocked` and `duration_ms`.
+
+### Pin its behaviour with fixtures: `ext test`
+
+Fixture cases live next to the extension in `<name>.fixtures/`. `vigolium ext test <dir|file>` runs every case and reports TAP-like output. It exits `1` when any case fails, and `-j` prints one document whose items are the cases, with `passed`, `failed` and `skipped` counts.
+
+```text
+my-extensions/
+  my_scanner.js
+  my_scanner.fixtures/
+    weak.http                 # a raw request, a blank line, a raw response
+    weak.expect.json          # what the case must produce
+    clean.http                # the expectation can also be a leading "// expect:" line
+    reflected.http            # an active case
+    reflected.responses/      # canned responses for the extension's own requests
+      search.http
+```
+
+```http
+// expect: {"findings": [{"name~": "weak content-security-policy", "severity": "medium", "confidence": "firm"}]}
+GET / HTTP/1.1
+Host: app.example.com
+
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Security-Policy: default-src *; script-src 'unsafe-inline'
+
+<html></html>
+```
+
+- **Expectation** (`<case>.expect.json` or `// expect: {...}`). `findings` is a count, or a list of matchers that must all match distinct results, in any order, with equal counts. Matcher keys are `name~` (substring), `name` (whole name), `severity` and `confidence`, all case-insensitive. `errors` (handler calls allowed to fail) defaults to `0`. `network_calls_blocked`, `mock_requests`, `handler` and `insertion` are optional. An unknown key fails the case.
+- **Directives** go on leading `//` lines: `expect`, `handler`, `insertion` and `url` (the request's origin, default `http://<Host>`). LF line endings are accepted, and a declared `Content-Length` is corrected to the body in the file.
+- **Offline cases.** A case without a `.responses` directory runs offline, exactly like `ext run`: requests are refused and counted.
+- **Mock-backed cases.** A case with `<case>.responses/` is served by an in-process mock bound to 127.0.0.1, and the case's `Host` is pointed at it, so the full HTTP stack runs without leaving the machine. Each response file is a request line (`GET /search`, or `GET /search?q=x` to match the full target, `*` for any method), an optional `// match: <text>` line that the request target or body must contain (such routes are tried first), a blank line, and the raw response. A request no file matches gets a 404 and is listed in `unmatched_requests`.
+- `ext test` opens no database, so `vigolium.db` is undefined there. An extension with no fixtures, and a hook, is reported as skipped. A `.fixtures` directory with no matching extension fails.
+
+The bundled presets ship their fixtures in `public/presets/extensions/*.fixtures`, and `make test-unit` runs them. Read those fixtures for working examples.
+
+### When an extension fails to load
+
+- **Named with `--ext` (or listed in `custom_dir`)**: the scan stops before it sends any request, exits `2` with `error.code` `extension_load_failed`, and names the file and the stage that failed (`read`, `transpile`, `compile`, `metadata`, `schema`, `unknown_type`, `module`). Pass `--ext-allow-failures` (or set `allow_load_failures: true`) to scan without it.
+- **Found in the extension directory**: the scan continues without it.
+- Either way each failure prints a warning on stderr, emits an `extension.failed` event (`module_id`, `path`, `stage`, `explicit`, `message`) on `--events`, and is listed in `scan.finished.extensions_failed` and on the scan row.
+- **YAML unknown keys** are a warning at load time in this release. Set `yaml_strict: true` to make them a load failure (an explicit file then stops the scan); the default becomes `true` in the next minor release. `ext lint` always reports them as errors.
 
 ### Verify your extension loads
 
@@ -1128,6 +1242,15 @@ dynamic-assessment:
 
     # Restrict file I/O to this directory (readFile, writeFile, glob)
     sandbox_dir: /tmp/vigolium-sandbox
+
+    # Make an unknown key in a .vgm.yaml file a load failure instead of a
+    # warning. Default: false (becomes true in the next minor release)
+    yaml_strict: false
+
+    # Keep scanning when an extension named with --ext / custom_dir fails to
+    # load (same as --ext-allow-failures). Default: false — the scan stops
+    # before any traffic with exit 2, extension_load_failed
+    allow_load_failures: false
 ```
 
 ---

@@ -100,6 +100,17 @@ type Capture struct {
 	targetHost atomic.Pointer[string]
 	phaseTag   string // Phase label for console log prefix (e.g. "spider")
 	verbose    bool   // Show all traffic including static files
+
+	// sent / sentInScope count every http(s) requestWillBeSent (see
+	// RequestCounters); counterSinks are the caller's live counters, guarded by mu.
+	sent         atomic.Int64
+	sentInScope  atomic.Int64
+	counterSinks []RequestCounters
+	// extraParked holds requestWillBeSentExtraInfo that arrived before its
+	// requestWillBeSent (or for a later redirect hop). Guarded by mu.
+	extraParked extraPark
+	// Lazy request-body fetches (capture_extrainfo.go).
+	postDataState
 }
 
 // pendingEntry tracks an in-flight request waiting for response.
@@ -110,6 +121,12 @@ type pendingEntry struct {
 	// — the end of the response's latency, before any body is pulled over CDP.
 	responseAt time.Time
 	sessionID  proto.TargetSessionID // Track which page this request came from
+	// extraSeen is set once requestWillBeSentExtraInfo's wire headers were merged.
+	extraSeen bool
+	// inScope is the operator scope's verdict on the request URL.
+	inScope bool
+	// needPostData marks a request whose body requestWillBeSent left out.
+	needPostData bool
 }
 
 // New creates a new traffic capture instance with the given Writer.
@@ -212,6 +229,7 @@ func (c *Capture) Start(browser *rod.Browser) error {
 		zap.Bool("include_body", c.includeResponseBody),
 		zap.Bool("include_headers", c.includeResponseHeaders))
 
+	c.startPostDataWorkers()
 	go c.subscribeEvents(browser)
 	go c.cleanupLoop()
 
@@ -230,6 +248,11 @@ func (c *Capture) subscribeEvents(browser *rod.Browser) {
 	wait := browser.EachEvent(
 		func(e *proto.NetworkRequestWillBeSent, sessionID proto.TargetSessionID) bool {
 			c.onRequestWillBeSent(e, sessionID)
+			return c.isStopped()
+		},
+		// The wire headers, Cookie among them; see capture_extrainfo.go.
+		func(e *proto.NetworkRequestWillBeSentExtraInfo) bool {
+			c.onRequestWillBeSentExtraInfo(e)
 			return c.isStopped()
 		},
 		func(e *proto.NetworkResponseReceived, sessionID proto.TargetSessionID) bool {
@@ -412,6 +435,10 @@ func (c *Capture) onRequestWillBeSent(e *proto.NetworkRequestWillBeSent, session
 		c.noteLoginHost(e.Request.URL)
 	}
 
+	// Every request counts toward the network cost, in scope or not.
+	reqURL, _ := url.Parse(e.Request.URL)
+	inScope := c.countRequest(e.Request.URL, reqURL)
+
 	c.mu.Lock()
 
 	// A 3xx redirect reuses the same RequestID: CDP fires another requestWillBeSent
@@ -456,11 +483,16 @@ func (c *Capture) onRequestWillBeSent(e *proto.NetworkRequestWillBeSent, session
 		},
 	}
 
-	c.pending[e.RequestID] = &pendingEntry{
-		entry:     entry,
-		startTime: time.Now(),
-		sessionID: sessionID,
+	p := &pendingEntry{
+		entry:        entry,
+		startTime:    time.Now(),
+		sessionID:    sessionID,
+		inScope:      inScope,
+		needPostData: needsPostDataFetch(e.Request),
 	}
+	// ExtraInfo that ran ahead of this requestWillBeSent.
+	c.adoptParkedExtra(e.RequestID, p)
+	c.pending[e.RequestID] = p
 
 	c.mu.Unlock()
 
@@ -562,6 +594,7 @@ func (c *Capture) onLoadingFinished(e *proto.NetworkLoadingFinished, sessionID p
 		return
 	}
 	delete(c.pending, e.RequestID)
+	c.forgetRequest(e.RequestID)
 	includeBody := c.includeResponseBody
 	includeHeaders := c.includeResponseHeaders
 	maxBody := c.maxBodyBytes
@@ -645,6 +678,13 @@ func (c *Capture) onLoadingFinished(e *proto.NetworkLoadingFinished, sessionID p
 		}
 	}
 
+	// A body requestWillBeSent left out is fetched off the event loop, and only
+	// for an entry that will be stored: in scope and not a static asset.
+	if pending.needPostData && pending.inScope &&
+		!hasStaticExtension(pending.entry.Request.URL) && !isBinaryStaticContentType(pending.entry.ContentType) {
+		c.enqueuePostData(postDataJob{entry: pending.entry, sessionID: pending.sessionID, requestID: e.RequestID})
+		return
+	}
 	c.writeEntry(pending.entry)
 }
 
@@ -657,6 +697,7 @@ func (c *Capture) onLoadingFailed(e *proto.NetworkLoadingFailed) {
 		return
 	}
 	delete(c.pending, e.RequestID)
+	c.forgetRequest(e.RequestID)
 	c.mu.Unlock()
 
 	pending.entry.Error = e.ErrorText
@@ -1168,6 +1209,7 @@ func (c *Capture) cleanupStalePending() {
 	// Phase 1: Identify candidates by age (with lock)
 	c.mu.Lock()
 	now := time.Now()
+	c.extraParked.expire(now)
 	var candidates []struct {
 		id        proto.NetworkRequestID
 		sessionID proto.TargetSessionID
@@ -1315,6 +1357,9 @@ func convertHeaders(headers proto.NetworkHeaders) map[string]string {
 // Close stops capture and closes the writer.
 // Note: The capture goroutine exits automatically when browser closes.
 func (c *Capture) Close() error {
+	// Write what the body-fetch workers still hold while the writer is open.
+	c.stopPostDataWorkers()
+
 	c.mu.Lock()
 	c.stopped = true
 	writer := c.writer

@@ -25,6 +25,19 @@ server:
   # HTTPS CONNECT tunneling passes through without recording.
   ingest_proxy_port: 0
 
+  # Ingest proxy bind address (empty = 127.0.0.1). A non-loopback address
+  # requires ingest_proxy_token and/or ingest_proxy_allow, or the server
+  # refuses to start. Same as --ingest-proxy-host.
+  ingest_proxy_host: ""
+
+  # Secret required on every proxied request as Proxy-Authorization (Basic
+  # with any username and this as password, or Bearer). Same as --proxy-token.
+  ingest_proxy_token: ""
+
+  # Client CIDRs or IPs the ingest proxy accepts (empty = any). Same as
+  # --proxy-allow.
+  ingest_proxy_allow: []
+
   # CORS allowed origins for the API server.
   # Options:
   #   "reflect-origin" — echoes the requesting Origin back (allows credentials)
@@ -54,6 +67,19 @@ server:
   # Format: Go duration string (e.g., "30s", "1m", "5s").
   # Default: 30s
   agent_queue_timeout: 30s
+
+  # REST response version for requests that do not negotiate one with
+  # Accept: application/vnd.vigolium.v2+json, Vigolium-Api-Version: 2 or
+  # ?api_version=2. 1 = historical bodies (plus error_code/schema_version),
+  # 2 = the CLI envelope (items; error object with a string code).
+  # Default: 1
+  api_version_default: 1
+
+  # Create the project an unknown X-Project-UUID names on first use instead
+  # of answering 404 project_not_found. A client can opt in per request with
+  # X-Project-Create: 1 (or ?create=1) instead.
+  # Default: false
+  auto_create_projects: false
 
   # Optional license identifier surfaced in /server-info for the UI to display
   # (e.g., "community", "enterprise", or a customer/tenant tag).
@@ -215,14 +241,16 @@ scanning_strategy:
     # Default: true
     compare_enabled: true
 
-    # Reserved for future runtime reauthentication. Native scans currently
-    # hydrate login flows once during initialization and do not enforce this.
+    # Defaults for each session's `check` block (a session's own value wins).
+    # check.interval: proactive logged-in probe at most this often (e.g. "2m").
     reauth_interval: ""
 
-    # Reserved for future reactive reauthentication; currently not enforced.
+    # check.logged_out.status: statuses that mean "logged out" (e.g. [401, 440]).
     reauth_on_status: []
 
-    # Reserved for future post-login validation; currently not enforced.
+    # check.url: protected URL `vigolium auth check` probes when --url is not
+    # given; a path resolves against the target origin. In-scan re-login with
+    # these is not enforced yet (scans log in once).
     validate_url: ""
 
   # --------------------------------------------------------------------------
@@ -234,9 +262,10 @@ scanning_strategy:
   # Enable persist_logs when you want a tail-friendly file on disk that mirrors
   # what was printed to the terminal, retrievable via `vigolium log <scan-uuid>`.
   scan_logs:
-    # Directory for native scan session artifacts (currently: runtime.log only).
-    # Each scan creates a subdirectory under this path:
-    #   {sessions_dir}/{scan-uuid}/runtime.log
+    # Directory for native scan session artifacts. Each scan creates a
+    # subdirectory under this path:
+    #   {sessions_dir}/{scan-uuid}/status.json   (liveness heartbeat, always)
+    #   {sessions_dir}/{scan-uuid}/runtime.log   (only with persist_logs)
     # Supports ~ expansion.
     # Default: ~/.vigolium/native-sessions/
     sessions_dir: ~/.vigolium/native-sessions/
@@ -246,6 +275,12 @@ scanning_strategy:
     # table and `vigolium log <scan-uuid>` falls back to replaying DB entries.
     # Default: false
     persist_logs: false
+
+    # Days to keep a scan's status.json heartbeat file after its last write
+    # (the scan finished or died). Pruned at `vigolium server` start and by
+    # `vigolium log ls --reap`; runtime.log is never touched. 0 keeps them.
+    # Default: 30
+    status_retention_days: 30
 
   # --------------------------------------------------------------------------
   # Global HTTP
@@ -281,6 +316,18 @@ scanning_strategy:
     # 3am. And if any of this surprised you, that's a gentle hint to go read the
     # docs (we promise they're good): https://docs.vigolium.com/
     user_agent: "preset"
+
+    # Dead-host breaker. A host:port that hits --max-host-error consecutive
+    # transport errors (refused, reset, DNS, i/o timeout) is quarantined for
+    # `cooldown`; then one probe request is let through. A good probe restores
+    # the host; a failed one doubles the cooldown (capped at `max_cooldown`).
+    # After `max_trips` failed probes the host is skipped for the rest of the
+    # scan (negative = never give up). Items skipped meanwhile are reported as
+    # skipped_quarantined / targets_unreachable.
+    host_errors:
+      cooldown: 30s
+      max_cooldown: 5m
+      max_trips: 5
 
   lite:
     external_harvesting: false
@@ -320,6 +367,8 @@ scanning_pace:
   rate_limit: 100        # Requests/sec (applies to KnownIssueScan currently)
   max_per_host: 40        # Per-host concurrency cap
   max_duration: 1h       # Base duration for all phases (per-phase factors scale this)
+  max_requests: 0        # Stop the scan after N requests to the targets (0 = unlimited; --max-requests)
+  max_requests_per_host: 0  # At most N requests to any one target host (0 = unlimited; --max-requests-per-host)
   # NOTE: the --scanning-max-duration CLI flag additionally caps TOTAL scan
   # wall-clock time (all phases combined) at the value passed, so multi-phase
   # scans can't run past it; the per-phase factors then distribute that budget
@@ -398,12 +447,13 @@ notify:
     # Webhook URL (or set DISCORD_WEBHOOK_URL env)
     webhook_url: ${DISCORD_WEBHOOK_URL}
 
-  # Webhook on scan completion (one POST per scan, retried up to 5 times on
-  # 5xx + network errors with exponential backoff). The body includes
-  # project_uuid, scan_uuid, scan_type, target, status, started_at,
-  # finished_at, severity counts, and the storage URL of the result bundle
-  # (when --upload-results was used). See docs/configuration.md for the full
-  # payload schema.
+  # Webhook on scan completion (one POST per scan when it completes, fails or
+  # is cancelled; retried up to 5 times on 5xx + network errors with
+  # exponential backoff). The body includes event (scan.completed |
+  # scan.failed | scan.cancelled), project_uuid, scan_uuid, scan_type, target,
+  # status, completeness, stop_reason, started_at, finished_at, severity
+  # counts, and the storage URL of the result bundle (when --upload-results
+  # was used). See docs/configuration.md for the full payload schema.
   webhook:
     # Endpoint that receives the POST. Empty disables the webhook.
     url: ""
@@ -412,6 +462,9 @@ notify:
     authorization: ""
     # Per-request HTTP timeout in seconds. Default: 10.
     timeout_sec: 10
+    # Outcomes that POST: completed, failed, cancelled.
+    # Default: all three
+    # events: [completed, failed, cancelled]
 
 # ============================================================================
 # Dynamic Assessment Configuration
@@ -841,6 +894,27 @@ discovery:
   # Default: false
   enable_malformed_path_probe: false
 
+  # How many targets are discovered at once. Targets on the same host:port
+  # never run together, and the discovery engine threads
+  # (scanning_pace.discovery.concurrency) are split across the targets in
+  # flight: max(5, threads / active). discovery rate_limit applies per target.
+  # 0 = default (min(number of targets, 3)); 1 = one target at a time.
+  target_concurrency: 0
+
+  # How often a running target's results are saved and handed to the scan,
+  # instead of waiting for the target to finish (also after every 500 new
+  # discoveries). Covers JS-, form- and API-spec-derived requests and, with
+  # stream_fuzz, the wordlist/fuzz results.
+  # "0" = only when the target finishes. Default: 15s
+  flush_interval: 15s
+
+  # Stream wordlist/fuzz results with every flush too. Duplicates keep the
+  # first record seen and the near-identical cap (dedup_cluster_cap) keeps the
+  # first N of each cluster, so a killed scan keeps what was flushed. false =
+  # save them when the target finishes (duplicates keep the shorter path, the
+  # cap keeps the shortest paths). Default: true
+  stream_fuzz: true
+
   # Recursion settings for directory traversal.
   recursion:
     # Enable recursive directory discovery.
@@ -852,13 +926,27 @@ discovery:
     max_depth: 5
 
   # Wordlist paths for discovery.
-  # Empty path = wordlist disabled. Supports ~ expansion.
+  # Empty path = use the embedded default for that slot. Supports ~ expansion.
   wordlists:
+    # Which embedded dir/file lists fill the "long" slot when long_file_path /
+    # long_dir_path are unset. The short lists always run.
+    #   short — short lists only (a few hundred entries)
+    #   long  — adds dir-long.txt / file-long.txt (~5k entries each)
+    #   large — adds dir-large.txt / file-large.txt (~9.3k each: the long lists
+    #           plus the bare words of fuzz.txt, deduplicated)
+    #   auto  — derive from --intensity: deep → large; quick and balanced → short
+    # A curated larger list can be bundled by dropping dir-large.txt.gz /
+    # file-large.txt.gz into internal/resources/wordlists (gzip-embedded).
+    # Default: auto
+    tier: auto
+
     # short_file_path: ~/.vigolium/wordlists/file-short.txt
     # long_file_path: ~/.vigolium/wordlists/file-long.txt
     # short_dir_path: ~/.vigolium/wordlists/dir-short.txt
     # long_dir_path: ~/.vigolium/wordlists/dir-long.txt
     # fuzz_wordlist_path: ~/.vigolium/wordlists/fuzz.txt
+    # (--discovery-wordlist replaces fuzz_wordlist_path; repeat it to stream
+    # several files in order, each word tried once.)
 
     # Use filenames observed during spidering as wordlist entries.
     # Default: true
@@ -969,18 +1057,26 @@ discovery:
     # Attempt controlled WebSocket/SSE GET handshakes. Off by default.
     protocol_handshake: false
 
-    # 0 derives a conservative process count from the memory budget (capped small).
+    # 0 derives the worker count: clamp(CPUs/2, 2, memory_budget_mb/384), max 8.
+    # The worker pool is shared by the whole process; a discovery that asks for
+    # more workers or memory than it is running with grows it (never shrinks).
     worker_count: 0
-    memory_budget_mb: 768
+    # 0 derives the budget from usable RAM: min(2048, max(768, RAM/8)) MiB.
+    memory_budget_mb: 0
     cache_mb: 128
     worker_max_jobs: 100
     worker_max_rss_mb: 1024
     job_timeout: 60s
 
     # Tiered input policy: normal -> discovery-lite -> lexical fallback -> reject.
+    # Must satisfy normal <= max_ast <= max_unpack <= hard.
     normal_input_mb: 1
     max_ast_input_mb: 4
-    hard_input_mb: 10
+    # Above max_ast, beautify/inspect still unminify and unpack (no AST) up to
+    # this ceiling. 0 follows hard_input_mb.
+    max_unpack_input_mb: 16
+    # Larger scripts are skipped and counted as js_input_over_hard_limit.
+    hard_input_mb: 16
     max_requests_per_file: 500
     max_ast_nodes: 500000
 
@@ -989,6 +1085,43 @@ discovery:
     max_assets_per_parent: 64
     max_assets_per_host: 512
     max_assets_total: 2048
+    # Lazy chunks a bundle's loader runtime names (webpack chunk maps, Vite
+    # preload deps, template imports over a literal map) use this per-bundle
+    # budget instead of max_assets_per_parent. 0 = 512.
+    max_chunks_per_runtime: 512
+
+    # JS-derived requests the crawl did not confirm (404/soft-404 replays,
+    # medium-confidence or withheld templates) are still stored as
+    # source=jstangle http_records with jstangle:* remarks, so later phases and
+    # read commands see every endpoint the bundle references.
+    # Also store templates that were never sent (withheld by replay_mode or
+    # replay_safety, deduped, unresolved). Default: true.
+    persist_unreplayed: true
+    # Not-found replay statuses that still prove the route exists; these stubs
+    # are handed to later phases, every other stub is stored only.
+    # Default: [400, 405, 415, 422]
+    persist_not_found_emit_statuses: [400, 405, 415, 422]
+    # Per-target cap on stored templates; past it the run reports the
+    # js_template_persist_cap limit. 0 = default (2000).
+    max_persisted_js_templates: 2000
+
+  # Sitemap source. At discovery start, fetch the sitemaps robots.txt names (or
+  # probe /sitemap.xml and /sitemap_index.xml when it names none). XML urlset,
+  # sitemapindex, gzip (.gz or 1f8b magic, 50 MiB decompressed cap with a bomb
+  # guard) and plain-text sitemaps are streamed. Every in-scope <loc> path feeds
+  # the observed-path wordlist; a path-shape sample of them is spidered.
+  sitemap:
+    # Default: true
+    enabled: true
+    # Sampled URLs spidered per target, round-robin over path shapes. Past it the
+    # run reports the sitemap_cap limit. 0 = default (2000).
+    max_urls: 2000
+    # Sampled URLs per host + path shape (/product/{int} is one shape).
+    # 0 = default (3).
+    per_shape: 3
+    # Fetch <sitemapindex> children (depth <= 2, <= 16 children per index).
+    # Default: true
+    follow_index: true
 
 # ============================================================================
 # Browser-Based Spidering (Spitolas)
@@ -1026,11 +1159,26 @@ spidering:
   # Default: true
   headless: true
 
-  # Browser instances to launch. The crawler is single-threaded and drives one
-  # browser, so values above 1 are clamped to 1 (with a warning) and add no
-  # speed; crawl several targets at once by running separate processes.
+  # Browser instances to launch. The crawler drives one browser, so values
+  # above 1 are clamped to 1 (with a warning) and add no speed; use tabs below
+  # to crawl in parallel inside that browser.
   # Default: 1
   browser_count: 1
+
+  # Tabs of the browser that crawl the shared state graph at once (1-16). Each
+  # tab claims a state, reaches it and fires its actions while the others work
+  # elsewhere; the crawl ends when nothing is queued and no tab is busy. Every
+  # tab costs roughly 80-150 MB. Stays 1 at every intensity until a multi-tab
+  # soak has passed.
+  # Default: 1
+  tabs: 1
+
+  # How the tabs share browser state. "shared": one cookie jar and storage, so
+  # a logout fired in one tab logs the others out. "context": each extra tab
+  # gets a browser context of its own, seeded with the configured auth and the
+  # first tab's cookies (more memory, no shared session warmth).
+  # Default: shared
+  tab_isolation: shared
 
   # Crawl strategy for state exploration.
   # Options: "normal", "random", "oldest_first", "shallow_first", "adaptive"
@@ -1046,11 +1194,30 @@ spidering:
   # Default: chromium
   browser_engine: chromium
 
+  # Drop the browser's automation markers: the enable-automation switch,
+  # navigator.webdriver, an empty plugin list, a "HeadlessChrome" client-hint
+  # brand (Sec-CH-UA / navigator.userAgentData) and similar trivial checks. This
+  # reduces false negatives where a simple bot wall serves the crawler a
+  # challenge page instead of the application. It is not bot-detection evasion:
+  # anything that fingerprints harder still sees an automated browser.
+  # Also applies to module browser confirmations (XSS dialog probes).
+  # Options: "auto" (on for the chromium engine, off for ungoogled/fingerprint,
+  # which bring their own --fingerprint flags), "on", "off"
+  # Default: auto
+  stealth: auto
+
   # Disable CDP (Chrome DevTools Protocol) event listener detection.
   # When false (default), the crawler uses CDP to detect click handlers
   # on elements. Set to true to disable this detection.
   # Default: false
   no_cdp: false
+
+  # Most click-listener elements the CDP listener pass turns into click
+  # candidates per crawl state (document order; the rest are logged and
+  # dropped). Each candidate costs several CDP round trips, so this bounds the
+  # per-state cost on very large DOMs. 0 = default (2000), -1 = no cap.
+  # Default: 2000
+  max_listener_probe_nodes: 2000
 
   # Disable automatic form filling during crawling.
   # When false (default), the crawler automatically fills and submits
@@ -1147,6 +1314,19 @@ spidering:
   # Default: false (redacted)
   graph_include_values: false
 
+  # Browse client-side routes found in the target's JavaScript (the jstangle
+  # route facts discovery stores) as crawl entry points. The initial crawl
+  # takes routes earlier runs of the project stored; the targeted re-spider
+  # takes this scan's, under discovery.respider's caps. A route only the
+  # router knows is otherwise invisible to an interaction crawl.
+  # Default: true
+  route_seeds: true
+
+  # Route seeds one target's crawl browses, after scope filtering and dedup.
+  # Each costs a navigation and a settle. 0 = default.
+  # Default: 50
+  max_extra_seeds: 50
+
 # ============================================================================
 # Known Issue Scan
 # ============================================================================
@@ -1233,6 +1413,35 @@ external_harvester:
   api_keys:
     urlscan: ${URLSCAN_API_KEY}
     virustotal: ${VIRUSTOTAL_API_KEY}
+
+  # Shaping, applied before dedup. Every harvested URL is normalized (lowercase
+  # host, default port and fragment dropped, query keys sorted, utm_*/fbclid/
+  # gclid/_ga/mc_* tracking params removed) and static assets (images, fonts,
+  # css, media, archives) are dropped; .js and .map are kept for JS analysis.
+  # URLs are then grouped by shape — host + templated path (/users/{int}) +
+  # sorted query names — and sampled. 0 uses the default; -1 disables a cap.
+  # Default: 3
+  per_shape: 3
+  # URLs kept per harvested domain after shaping.
+  # Default: 5000
+  max_urls: 5000
+
+  # Wayback Machine CDX index paging (collapse=urlkey, 404s and image/font/
+  # video/audio rows filtered server side, resumeKey paging).
+  cdx:
+    # Rows per resumeKey page. Default: 10000
+    page_size: 10000
+    # Hard cap on index rows read per domain; hitting it is reported as the
+    # cdx_max_rows phase limit. -1 disables the cap. Default: 200000
+    max_rows: 200000
+
+  # harvest-probe: when a later phase reaches the target, check the harvested
+  # URLs first — one liveness request per host, then one GET per URL — and
+  # drop dead hosts, 404/410 and soft-404 answers before anything scans them.
+  # Never runs on a harvest-only run, which stays target-silent.
+  # false leaves every harvested URL for the later phases to fetch.
+  # Default: true
+  probe: true
 
 # ============================================================================
 # AI Agent Integration
@@ -1414,6 +1623,13 @@ agent:
     # (no enforced timeout).
     # Default: 600 (10 minutes)
     call_timeout_sec: 600
+
+    # Deadline of the agent preflight ping (a one-token request sent before
+    # query / triage / swarm / autopilot do any work), as a Go duration.
+    # Empty = auto: 15s, or 60s when the provider is a local endpoint
+    # (openai-/anthropic-compatible on loopback: Ollama, LM Studio).
+    # Per-run override: --preflight-timeout; skip it with --no-preflight.
+    # preflight_timeout: 15s
 
     # Skills always loaded in planner-filtered agentic runs (autopilot/swarm),
     # regardless of what the planner selects. General-purpose playbooks belong

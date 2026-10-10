@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/core"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
@@ -156,7 +158,13 @@ func targetBudgetExhausted(target, parent context.Context) bool {
 // lost a phase is not a complete scan, whatever the remaining phases managed.
 func (r *Runner) Completion() database.ScanCompletion {
 	phases, stopReason := r.scanOutcome.snapshot()
+	return completionOf(phases, stopReason)
+}
 
+// completionOf is the verdict rule behind Completion, over an explicit phase
+// list and stop reason, so a scan that never had a Runner (DirectScanCompletion)
+// is judged by exactly the same rule.
+func completionOf(phases []database.PhaseOutcome, stopReason string) database.ScanCompletion {
 	complete := stopReason == ""
 	for _, p := range phases {
 		switch p.State {
@@ -222,7 +230,11 @@ func firstPhaseReason(phases []database.PhaseOutcome) string {
 // partial — the coverage really is reduced — but it never stopped anything, so
 // it is a poor answer to "why did this scan stop".
 func nonStoppingReason(reason string) bool {
-	return reason == database.ReasonAuthUnavailable
+	switch reason {
+	case database.ReasonAuthUnavailable, database.ReasonOASTUnavailable:
+		return true
+	}
+	return false
 }
 
 // partialBannerSuffix renders the "— partial: …" tail of the terminal banner, or
@@ -258,13 +270,21 @@ func partialBannerSuffix(c database.ScanCompletion) string {
 }
 
 // scanStopReason names why the scan as a whole stopped launching work: the total
-// --scanning-max-duration elapsed, or the operator cancelled the run. budgetCtx
+// --scanning-max-duration elapsed, --max-requests ran out, or the operator
+// cancelled the run. budgetCtx
 // is the (possibly budget-bounded) context the phase loop runs under; runCtx is
 // the Runner's own, which carries only cancellation.
 func scanStopReason(budgetCtx, runCtx context.Context) string {
 	switch {
 	case runCtx != nil && runCtx.Err() != nil:
 		return database.ReasonCancelled
+	case egress.BudgetCause(budgetCtx) != nil:
+		// --max-requests ran out: the request budget cancelled the scan
+		// context with a *egress.BudgetError as its cause.
+		return database.ReasonRequestBudget
+	case authLostCause(budgetCtx) != nil:
+		// A session lost under reauth.on_failure: abort cancelled the scan.
+		return database.ReasonAuthLost
 	case budgetCtx != nil && errors.Is(budgetCtx.Err(), context.DeadlineExceeded):
 		return database.ReasonScanBudget
 	case budgetCtx != nil && budgetCtx.Err() != nil:
@@ -272,4 +292,145 @@ func scanStopReason(budgetCtx, runCtx context.Context) string {
 	default:
 		return ""
 	}
+}
+
+// DirectScanCompletion is the coverage verdict for a single-request scan that
+// ran one executor without a Runner: the scan-url / scan-request direct path in
+// the CLI and the REST /api/scan-url and /api/scan-request background scans.
+//
+// Those used to finish their row with CompleteScan, which writes "unknown", so a
+// cancelled run and a dead target were stored exactly like a clean scan. This
+// builds the two outcomes such a scan has — a preflight outcome carrying the
+// target tally, and one dynamic-assessment outcome from the executor's own
+// report — and judges them by the rule Runner.Completion uses, with the same
+// reason codes, so every surface stores the same verdict for the same run.
+//
+//   - rep is the executor's Report() after Execute returned.
+//   - reached says an admitted target answered (rep.Responded > 0 for one
+//     executor). A run that reached nothing, and was not interrupted, stops
+//     with no_targets_reachable; its assessment is marked skipped, because no
+//     module had a baseline to work on.
+//   - interrupted is an operator/caller cancellation; it outranks every other
+//     stop reason because it is the cause of whatever else went missing.
+//   - execErr is Execute's error, counted against the assessment.
+//   - tally is the CLI-target tally (see DirectTargetTally). A zero tally is
+//     "not counted" and adds no preflight outcome. Requested targets that scope
+//     admitted none of stop with no_targets_in_scope (hook for scope admission
+//     on this path, which does not filter yet).
+func DirectScanCompletion(rep core.ExecutionReport, reached, interrupted bool, execErr error, tally database.TargetTally) database.ScanCompletion {
+	var stopReason string
+	setStop := func(reason string) {
+		if stopReason == "" {
+			stopReason = reason
+		}
+	}
+	if interrupted {
+		setStop(database.ReasonCancelled)
+	}
+
+	counted := tally.Requested > 0
+	noneAdmitted := counted && tally.Admitted == 0
+	unreachable := !interrupted && !reached && !noneAdmitted
+
+	var phases []database.PhaseOutcome
+	if counted || unreachable {
+		pre := database.PhaseOutcome{Phase: string(PhasePreflight)}
+		if counted {
+			t := tally
+			pre.Targets = &t
+		}
+		reasons := map[string]struct{}{}
+		switch {
+		case noneAdmitted:
+			reasons[database.ReasonNoTargetsInScope] = struct{}{}
+			setStop(database.ReasonNoTargetsInScope)
+		case len(tally.Rejected) > 0:
+			reasons[database.ReasonTargetsOutOfScope] = struct{}{}
+		}
+		switch {
+		case unreachable:
+			reasons[database.ReasonNoTargetsReachable] = struct{}{}
+			setStop(database.ReasonNoTargetsReachable)
+		case counted && reached && tally.Reached < tally.Admitted:
+			reasons[database.ReasonTargetsUnreachable] = struct{}{}
+		}
+		pre.Reasons = database.SortedCodes(reasons)
+		pre.State = database.ResolvePhaseState(0, pre.Reasons, false)
+		phases = append(phases, pre)
+	}
+
+	da := database.PhaseOutcome{
+		Phase:       string(PhaseDynamicAssessment),
+		Unprocessed: rep.Unacked,
+	}
+	// The same flag → reason mapping phaseTracker.noteExecution applies.
+	reasons := map[string]struct{}{}
+	if rep.StoppedEarly {
+		reasons[database.ReasonInputIncomplete] = struct{}{}
+	}
+	if rep.DrainStalled {
+		reasons[database.ReasonDrainStalled] = struct{}{}
+	}
+	if rep.WorkersAbandoned {
+		reasons[database.ReasonWorkersAbandoned] = struct{}{}
+	}
+	if rep.DeferredFlushSkipped {
+		reasons[database.ReasonDeferredFlushSkipped] = struct{}{}
+	}
+	if interrupted {
+		reasons[database.ReasonCancelled] = struct{}{}
+	}
+	skipped := false
+	if noneAdmitted || unreachable {
+		skipped = true
+		reasons[stopReason] = struct{}{}
+	}
+	if execErr != nil {
+		da.Errors = 1
+		da.Message = database.TruncateOutcomeMessage(execErr.Error())
+	}
+	da.Reasons = database.SortedCodes(reasons)
+	da.State = database.ResolvePhaseState(da.Errors, da.Reasons, skipped)
+	phases = append(phases, da)
+
+	return completionOf(phases, stopReason)
+}
+
+// DirectScanErrorMessage is the error_message a single-request scan row is
+// completed with; non-empty marks the row failed.
+//
+// It follows the runner's finalizer: an execution error is reported as itself
+// and a cancelled run as "cancelled" (the runner, too, stores an interrupted
+// scan as failed with that message, its completeness partial). A run that
+// reached no target did nothing, which is a failure, not a clean completion.
+func DirectScanErrorMessage(execErr error, c database.ScanCompletion) string {
+	switch {
+	case execErr != nil:
+		return execErr.Error()
+	case c.StopReason == database.ReasonCancelled:
+		return "cancelled"
+	case c.StopReason == database.ReasonNoTargetsReachable:
+		return "no target answered (no_targets_reachable)"
+	case c.StopReason == database.ReasonNoTargetsInScope:
+		return "scope admitted no target (no_targets_in_scope)"
+	}
+	return ""
+}
+
+// DirectTargetTally is the target tally for one single-request executor run:
+// one requested target, admitted (a refused one never reaches the executor),
+// and reached when the executor got an HTTP answer — the executor's baseline is
+// the reachability check on this path, so the tally is always checked. An
+// unanswered target carries the first classified baseline failure, so the row
+// says why it did not answer.
+func DirectTargetTally(target string, rep core.ExecutionReport, failures []core.BaselineFailure) database.TargetTally {
+	t := database.TargetTally{Requested: 1, Admitted: 1, ReachabilityChecked: true}
+	if rep.Responded > 0 {
+		t.Reached = 1
+		return t
+	}
+	if len(failures) > 0 {
+		t.AddUnreachable(database.TargetIssue{Target: target, Code: failures[0].Class, Detail: failures[0].Detail})
+	}
+	return t
 }

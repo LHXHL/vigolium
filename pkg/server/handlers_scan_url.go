@@ -16,12 +16,16 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/requestscheme"
+	"github.com/vigolium/vigolium/pkg/spitolas"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 	"go.uber.org/zap"
@@ -237,22 +241,16 @@ func formatFindingLine(scanID string, result *output.ResultEvent) string {
 func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 	var req ScanURLRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	if req.URL == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingURL.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingURL)
 	}
 
 	// Validate URL
 	if _, err := url.ParseRequestURI(req.URL); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid URL: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid URL: %w", err))
 	}
 
 	// Default method to GET
@@ -264,9 +262,7 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 	// Build raw HTTP request from URL/method/body/headers
 	rr, err := buildRequestFromParams(req.URL, method, req.Body, req.Headers)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to build request: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to build request: %w", err))
 	}
 
 	// Parse module IDs
@@ -280,6 +276,17 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 		}
 	}
 
+	settings, err := h.scanSettings(c)
+	if err != nil {
+		return respondError(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Scope admission, synchronously: a target the configured scope refuses is
+	// a 422 now rather than a 202 for a scan that silently does nothing.
+	if refused := refuseOutOfScope(c, settings, req.URL); refused != nil {
+		return refused()
+	}
+
 	scanID := uuid.New().String()
 
 	projectUUID := getProjectUUID(c)
@@ -287,32 +294,19 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 	// Create scan record if database is available
 	if h.repo != nil {
 		ctx := context.Background()
-		scan := &database.Scan{
-			UUID:        scanID,
-			ProjectUUID: projectUUID,
-			Name:        "scan-url",
-			Status:      "running",
-			Target:      req.URL,
-			Modules:     req.Modules,
-			ScanSource:  "api",
-			ScanMode:    "single",
-			StartedAt:   time.Now(),
-		}
+		scan := database.NewSingleRequestScan(scanID, projectUUID, database.ScanNameScanURL, req.URL, req.Modules, "api")
 		if err := h.repo.CreateScan(ctx, scan); err != nil {
 			zap.L().Warn("Failed to create scan record", zap.Error(err))
 		}
 	}
 
 	if !h.tryStartNativeScan(func() {
-		h.runBackgroundURLScan(scanID, projectUUID, req.URL, rr, moduleIDs, req.NoPassive)
+		h.runBackgroundURLScan(scanID, projectUUID, req.URL, rr, moduleIDs, req.NoPassive, probeStealth(settings))
 	}) {
 		if h.repo != nil {
 			_ = h.repo.CompleteScan(context.Background(), scanID, "rejected: too many concurrent scans")
 		}
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: "too many concurrent scans; retry shortly",
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondErrorMsg(c, fiber.StatusServiceUnavailable, "too many concurrent scans; retry shortly")
 	}
 
 	return c.Status(fiber.StatusAccepted).JSON(ScanResponse{
@@ -325,33 +319,31 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 
 // HandleScanRequest handles POST /api/scan-request — scans a raw HTTP request asynchronously.
 func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
+	return h.handleScanRequest(c, h.tryStartNativeScan)
+}
+
+// handleScanRequest is HandleScanRequest with the background launcher
+// injected (tests answer the request without running a scan).
+func (h *Handlers) handleScanRequest(c fiber.Ctx, start func(func()) bool) error {
 	var req ScanRequestRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	reqB64 := req.ReqBase64()
 	if reqB64 == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingRawRequest.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingRawRequest)
 	}
 
 	// Base64-decode the raw request
 	rawBytes, err := base64.StdEncoding.DecodeString(reqB64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to decode raw_request: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to decode raw_request: %w", err))
 	}
 
 	rawStr := strings.TrimSpace(string(rawBytes))
 	if rawStr == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingRawRequest.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingRawRequest)
 	}
 
 	// Parse raw HTTP request
@@ -362,18 +354,41 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 		rr, err = httpmsg.ParseRawRequest(rawStr)
 	}
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrInvalidRawRequest.Error() + ": " + err.Error(),
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, ErrInvalidRawRequest.Error()+": "+err.Error())
+	}
+
+	settings, err := h.scanSettings(c)
+	if err != nil {
+		return respondError(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Scope admission on the inferred target first, so a refused target is
+	// never contacted by the scheme probe below (see HandleScanURL).
+	if refused := refuseOutOfScope(c, settings, rr.Target()); refused != nil {
+		return refused()
+	}
+
+	// No target_url and no scheme on the request line: settle the scheme the
+	// way `vigolium scan-request` does — the request's own signals, else a
+	// connect / TLS handshake — instead of assuming https. A probe that moved
+	// the target is admitted again over the URL that will be sent.
+	settled := requestscheme.Settle(c.Context(), rawStr, rr, requestscheme.Options{
+		Pinned:   req.TargetURL != "",
+		NoProbe:  req.NoSchemeProbe,
+		Resolver: scanRequestSchemeResolver,
+	})
+	if settled.Changed {
+		rr = settled.Request
+		if refused := refuseOutOfScope(c, settings, rr.Target()); refused != nil {
+			return refused()
+		}
 	}
 
 	// Attach paired response if provided (Burp-style request+response)
 	if respB64 := req.RespBase64(); respB64 != "" {
 		rawRespBytes, decErr := base64.StdEncoding.DecodeString(respB64)
 		if decErr != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "failed to decode http_response_base64: " + decErr.Error(),
-			})
+			return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to decode http_response_base64: %w", decErr))
 		}
 		if resp := httpmsg.NewHttpResponse(rawRespBytes); resp != nil {
 			rr = rr.WithResponse(resp)
@@ -391,47 +406,81 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 		}
 	}
 
-	scanID := uuid.New().String()
 	target := rr.Target()
+
+	scanID := uuid.New().String()
 	projectUUID := getProjectUUID(c)
 
 	// Create scan record if database is available
 	if h.repo != nil {
 		ctx := context.Background()
-		scan := &database.Scan{
-			UUID:        scanID,
-			ProjectUUID: projectUUID,
-			Name:        "scan-request",
-			Status:      "running",
-			Target:      target,
-			Modules:     req.Modules,
-			ScanSource:  "api",
-			ScanMode:    "single",
-			StartedAt:   time.Now(),
-		}
+		scan := database.NewSingleRequestScan(scanID, projectUUID, database.ScanNameScanRequest, target, req.Modules, "api")
 		if err := h.repo.CreateScan(ctx, scan); err != nil {
 			zap.L().Warn("Failed to create scan record", zap.Error(err))
 		}
 	}
 
-	if !h.tryStartNativeScan(func() {
-		h.runBackgroundURLScan(scanID, projectUUID, target, rr, moduleIDs, req.NoPassive)
+	if !start(func() {
+		h.runBackgroundURLScan(scanID, projectUUID, target, rr, moduleIDs, req.NoPassive, probeStealth(settings))
 	}) {
 		if h.repo != nil {
 			_ = h.repo.CompleteScan(context.Background(), scanID, "rejected: too many concurrent scans")
 		}
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: "too many concurrent scans; retry shortly",
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondErrorMsg(c, fiber.StatusServiceUnavailable, "too many concurrent scans; retry shortly")
 	}
 
 	return c.Status(fiber.StatusAccepted).JSON(ScanResponse{
-		ProjectUUID: projectUUID,
-		ScanUUID:    scanID,
-		Status:      "running",
-		Message:     fmt.Sprintf("scan-request started for %s", target),
+		ProjectUUID:  projectUUID,
+		ScanUUID:     scanID,
+		Status:       "running",
+		Message:      fmt.Sprintf("scan-request started for %s", target),
+		Target:       target,
+		SchemeSource: settled.Source,
 	})
+}
+
+// scanSettings resolves the request project's settings (the server's, plus
+// X-Project-UUID's overlay) once per scan request. nil, nil when the server
+// has no settings to judge by.
+func (h *Handlers) scanSettings(c fiber.Ctx) (*config.Settings, error) {
+	if h.settings == nil {
+		return nil, nil
+	}
+	return h.settingsForProject(getProjectUUID(c))
+}
+
+// probeStealth is the project's spidering.stealth ("" = auto, also when there
+// are no settings).
+func probeStealth(settings *config.Settings) string {
+	if settings == nil {
+		return ""
+	}
+	return settings.Spidering.Stealth
+}
+
+// scanRequestSchemeResolver replaces the scheme probe behind
+// POST /api/scan-request (tests); nil is portsweep.ResolveScheme.
+var scanRequestSchemeResolver requestscheme.Resolver
+
+// refuseOutOfScope admits target against the request project's scope
+// (scanSettings), the verdict the CLI direct path and the runner enforce. When
+// scope refuses it, it returns the responder for 422 with details
+// "no_targets_in_scope" (the apicontract code) and the rule in the message;
+// nothing is created or sent. nil means admitted, or no settings to judge by.
+func refuseOutOfScope(c fiber.Ctx, settings *config.Settings, target string) func() error {
+	if settings == nil {
+		return nil
+	}
+	adm := runner.AdmitTargets(settings.Scope, []string{target})
+	if !adm.NoneAdmitted() {
+		return nil
+	}
+	return func() error {
+		// details keeps carrying the code for clients written before error_code.
+		return respondErrorCode(c, fiber.StatusUnprocessableEntity, apicontract.CodeNoTargetsInScope,
+			fmt.Sprintf("target rejected by scope: %s; nothing was scanned (fix the scope config)",
+				runner.DescribeRejected(adm.Rejected, 0)), string(apicontract.CodeNoTargetsInScope))
+	}
 }
 
 // buildRequestFromParams constructs an HttpRequestResponse from URL, method, body, and headers.
@@ -513,7 +562,7 @@ func (h *Handlers) nativeScanContext() (context.Context, context.CancelFunc) {
 	return context.WithCancel(parent)
 }
 
-func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *httpmsg.HttpRequestResponse, moduleIDs []string, noPassive bool) {
+func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *httpmsg.HttpRequestResponse, moduleIDs []string, noPassive bool, stealth string) {
 	// Any panic escaping this goroutine (nil deref in a module, panic inside
 	// a goroutine spawned by a module, etc.) would otherwise take the entire
 	// server process down. Recover here, log the stack, and mark the scan as
@@ -526,9 +575,11 @@ func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *
 				zap.String("scan_uuid", scanID),
 				zap.Any("panic", r),
 				zap.ByteString("stack", stack[:n]))
-			if h.repo != nil {
-				_ = h.repo.CompleteScan(context.Background(), scanID, fmt.Sprintf("panic: %v", r))
-			}
+			// A panic is a failed assessment. Reachability is unknown here, so
+			// the verdict claims none (reached=true): partial, stop reason error.
+			panicErr := fmt.Errorf("panic: %v", r)
+			h.completeSingleRequestScan(scanID, panicErr,
+				runner.DirectScanCompletion(core.ExecutionReport{}, true, false, panicErr, database.TargetTally{}))
 		}
 	}()
 
@@ -536,6 +587,10 @@ func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *
 	zap.L().Info("Background URL scan started",
 		zap.String("scan_uuid", scanID),
 		zap.String("target", rr.Target()))
+
+	// Module browser confirmations follow the server's --proxy and the
+	// project's spidering.stealth, as on the CLI paths.
+	defer spitolas.SetProbeDefaults(h.serverProxyURL(), stealth)()
 
 	sl := openScanSessionLog(scanID, h.settings)
 	defer sl.close()
@@ -684,12 +739,27 @@ func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *
 		terminal.Gray(fmt.Sprintf("%d modules", modulesRun)),
 		terminal.BoldMagenta(elapsed.Round(time.Second).String())))
 
-	// Complete scan record
-	if h.repo != nil {
-		if err := h.repo.CompleteScan(context.Background(), scanID, errMsg); err != nil {
-			zap.L().Error("Failed to complete scan record",
-				zap.String("scan_uuid", scanID), zap.Error(err))
-		}
+	// Complete the scan row with the coverage verdict the CLI direct path
+	// computes for the same run: cancelled (server shutdown), unreachable target
+	// and executor shortfalls are recorded instead of a bare "completed".
+	rep := scanExecutor.Report()
+	completion := runner.DirectScanCompletion(rep, rep.Responded > 0, ctx.Err() != nil, execErr,
+		runner.DirectTargetTally(target, rep, scanExecutor.BaselineFailures()))
+	h.completeSingleRequestScan(scanID, execErr, completion)
+}
+
+// completeSingleRequestScan finalizes a scan-url / scan-request row on a
+// detached, bounded context: the scan's own context is already cancelled on a
+// server shutdown, and finalizing on it would leave the row "running" forever.
+func (h *Handlers) completeSingleRequestScan(scanID string, execErr error, c database.ScanCompletion) {
+	if h.repo == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := h.repo.CompleteScanWithOutcome(ctx, scanID, runner.DirectScanErrorMessage(execErr, c), c); err != nil {
+		zap.L().Error("Failed to complete scan record",
+			zap.String("scan_uuid", scanID), zap.Error(err))
 	}
 }
 

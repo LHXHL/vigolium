@@ -745,15 +745,16 @@ func (f *Factory) CreateMalformedPathProbeTask(schemeHost, path []byte, depth ui
 	})
 }
 
-// CreateFuzzTask creates a task that replaces FUZZ in the URL template with words from a wordlist.
-// urlTemplate is the full URL with FUZZ marker (e.g., "http://example.com/FUZZ").
-func (f *Factory) CreateFuzzTask(urlTemplate string, wordlistPath string, depth uint16) (Task, error) {
-	cached, err := f.wordlistCache.GetCustom(wordlistPath)
+// CreateFuzzTask creates a task that replaces FUZZ in the URL template with words from
+// one or more wordlists. urlTemplate is the full URL with FUZZ marker (e.g.,
+// "http://example.com/FUZZ"). The files are streamed in order rather than loaded,
+// and each word is tried once across all of them, deduplicated through seen (the
+// engine passes an on-disk set; nil falls back to an in-memory one).
+func (f *Factory) CreateFuzzTask(urlTemplate string, wordlistPaths []string, seen payload.SeenSet, depth uint16) (Task, error) {
+	provider, err := payload.NewStreamingFilesProvider("fuzz", wordlistPaths, seen)
 	if err != nil {
 		return nil, err
 	}
-
-	provider := payload.NewLazyCustomProvider(cached, "fuzz")
 
 	return NewFuzzTask(&FuzzTaskConfig{
 		URLTemplate: urlTemplate,

@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/types"
 )
 
@@ -45,4 +46,17 @@ func LoginTransport(opts *types.Options) http.RoundTripper {
 	t := &http.Transport{TLSClientConfig: targetTLSConfig(sni)}
 	applyExplicitProxy(t, cliProxy, "login")
 	return t
+}
+
+// GatedLoginTransport is LoginTransport admitted through the scan's egress gate
+// on the priority lane: a login pays a rate token and holds a host slot like
+// any target request, and is counted, but may use the host's reserved headroom
+// so a re-login is never stuck behind the module requests that are waiting for
+// it. A nil gate yields the plain LoginTransport.
+func GatedLoginTransport(opts *types.Options, gate *egress.Gate) http.RoundTripper {
+	t := LoginTransport(opts)
+	if gate == nil {
+		return t
+	}
+	return gate.RoundTripper(t, egress.LanePriority)
 }

@@ -77,7 +77,7 @@ type kitSecretReport struct {
 func runKitSecretScan(cmd *cobra.Command, args []string) error {
 	minRank, ok := confidenceRankFor(kitSecretMinConfidence)
 	if !ok {
-		return fmt.Errorf("--min-confidence: unknown value %q (want low, medium, or high)", kitSecretMinConfidence)
+		return usageErrorf("--min-confidence: unknown value %q (want low, medium, or high)", kitSecretMinConfidence)
 	}
 	ruleAllow := toSet(kitSecretRules)
 	ruleDeny := toSet(kitSecretExcludeRules)
@@ -165,7 +165,7 @@ func runKitSecretScan(cmd *cobra.Command, args []string) error {
 	})
 
 	if globalJSON {
-		if err := writeAgentJSON(report); err != nil {
+		if err := emitStructRead(cmd, report, "matches"); err != nil {
 			return err
 		}
 	} else {

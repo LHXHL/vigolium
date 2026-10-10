@@ -128,3 +128,53 @@ func TestEndpointMeasurement_FallsBackWithoutIdentity(t *testing.T) {
 		t.Fatalf("measured %d times, want 6 (no shared key in either fallback)", n)
 	}
 }
+
+func TestHostMemo_ComputesOncePerHost(t *testing.T) {
+	sc := &ScanContext{}
+	var calls atomic.Int32
+	compute := func() any {
+		calls.Add(1)
+		time.Sleep(5 * time.Millisecond) // widen the race window for the singleflight
+		return []string{"k1"}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, _ := sc.HostMemo("jwks", "Example.com:443", compute).([]string)
+			if len(got) != 1 || got[0] != "k1" {
+				t.Errorf("unexpected memo value %v", got)
+			}
+		}()
+	}
+	wg.Wait()
+	sc.HostMemo("jwks", "example.com:443", compute) // host is case-insensitive
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("computed %d times, want 1", n)
+	}
+
+	// A different host or name is a different artifact.
+	sc.HostMemo("jwks", "other.example:443", compute)
+	sc.HostMemo("oidc", "example.com:443", compute)
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("computed %d times, want 3", n)
+	}
+}
+
+func TestHostMemo_CachesEmptyResultAndNilContext(t *testing.T) {
+	sc := &ScanContext{}
+	var calls atomic.Int32
+	compute := func() any { calls.Add(1); return nil }
+	sc.HostMemo("jwks", "h", compute)
+	sc.HostMemo("jwks", "h", compute)
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("a nil result must be cached too; computed %d times", n)
+	}
+
+	var nilSC *ScanContext
+	if v := nilSC.HostMemo("jwks", "h", func() any { return 3 }); v != 3 {
+		t.Fatalf("nil ScanContext should compute directly, got %v", v)
+	}
+}

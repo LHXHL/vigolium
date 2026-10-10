@@ -39,10 +39,14 @@ type Options struct {
 	ProjectUUID string // project UUID for data scoping
 	// EnableBurpBridgeTools exposes only the live read-only Burp search and
 	// inspect tools on a fresh agent session. It does not enable replay tools.
-	EnableBurpBridgeTools bool      `json:"-"`
-	StreamWriter          io.Writer `json:"-"` // when non-nil, agent output is streamed here in real-time
-	SessionDir            string    `json:"-"` // session directory for artifacts (transcripts, generated extensions, etc.)
-	Verbose               bool      `json:"-"` // when true, the toollog renders a per-tool result preview alongside the standard one-liner
+	EnableBurpBridgeTools bool `json:"-"`
+	// OfflineTools restricts the run to tools that reach neither the network
+	// nor a shell (read_file, ls, grep, glob): the agent reasons over what the
+	// prompt carries and cannot contact the target. `agent triage --no-probe`.
+	OfflineTools bool      `json:"-"`
+	StreamWriter io.Writer `json:"-"` // when non-nil, agent output is streamed here in real-time
+	SessionDir   string    `json:"-"` // session directory for artifacts (transcripts, generated extensions, etc.)
+	Verbose      bool      `json:"-"` // when true, the toollog renders a per-tool result preview alongside the standard one-liner
 
 	// Extra template data (injected into {{.Extra}} in prompt templates)
 	Extra map[string]string `json:"-"`

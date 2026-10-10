@@ -33,11 +33,14 @@ type HttpRequest struct {
 	parsed     bool
 	cachedID   string // Cached SHA-256 hash (computed once by ID())
 
-	// Cached URL (computed once by URL()). Invalidated when the service
-	// changes via HttpRequestResponse.WithService.
-	cachedURL    *urlutil.URL
-	cachedURLErr error
-	urlComputed  bool
+	// Cached URL (computed once by sharedURL()). Invalidated when the service
+	// changes via HttpRequestResponse.WithService. cachedURL is private to this
+	// package and read-only once published: URL() hands callers copies built
+	// from cachedURLParams, never the cached value itself (see URL()).
+	cachedURL       *urlutil.URL
+	cachedURLParams []urlParam
+	cachedURLErr    error
+	urlComputed     bool
 
 	// Cached media/JS-path classification (computed once by IsMediaPath()).
 	// Derived from the URL path, which comes from the immutable raw request
@@ -134,22 +137,39 @@ func (r *HttpRequest) BodyToString() string {
 
 // URL constructs and returns the full URL.
 //
-// The parsed URL is computed once and cached for subsequent calls (raw bytes
-// are immutable; the cache is invalidated when the service changes via
-// HttpRequestResponse.WithService). The returned *urlutil.URL is SHARED across
-// callers and MUST be treated as read-only — callers that need to mutate it
-// (e.g. rewrite the path or params) must Clone() it first, as
-// BuildRetryableRequest already does.
+// The URL is parsed once and memoized (raw bytes are immutable; the cache is
+// invalidated when the service changes via HttpRequestResponse.WithService),
+// but every call returns the caller's OWN copy, which it may freely mutate.
+// Returning the cached *urlutil.URL itself was a data race: urlutil's
+// OrderedParams.Iterate — and URL.Clone, which iterates — write the ordered
+// map's internal iteration flag, so passive modules running in parallel over
+// one item (or detached active tasks) that merely iterated or cloned the
+// "read-only" shared URL raced each other. The copy is built from a param
+// snapshot taken before the cache is published, so it never iterates shared
+// state and needs no lock.
 func (r *HttpRequest) URL() (*urlutil.URL, error) {
+	u, params, err := r.sharedURL()
+	if u == nil {
+		return nil, err
+	}
+	return copyURL(u, params), err
+}
+
+// sharedURL returns the memoized parsed URL and its param snapshot. The
+// returned *urlutil.URL is shared by every caller: it must stay inside this
+// package and only be read through methods that do not touch OrderedParams'
+// iteration state (String, Path, Host, ...; never Params.Iterate, Clone,
+// Update or any setter).
+func (r *HttpRequest) sharedURL() (*urlutil.URL, []urlParam, error) {
 	if r.service == nil {
-		return nil, ErrNilService
+		return nil, nil, ErrNilService
 	}
 
 	r.mu.RLock()
 	if r.urlComputed {
-		u, err := r.cachedURL, r.cachedURLErr
+		u, params, err := r.cachedURL, r.cachedURLParams, r.cachedURLErr
 		r.mu.RUnlock()
-		return u, err
+		return u, params, err
 	}
 	r.mu.RUnlock()
 
@@ -161,13 +181,55 @@ func (r *HttpRequest) URL() (*urlutil.URL, error) {
 	// line parsers disagree on malformed empty-path request lines, and GetPath's
 	// is the one that yields the correct ("" -> "/") result for any raw source.
 	u, err := GetURLFromService(r.raw, r.service)
+	// u is still private to this goroutine, so iterating it here is safe.
+	params := snapshotURLParams(u)
 
 	r.mu.Lock()
 	r.cachedURL = u
+	r.cachedURLParams = params
 	r.cachedURLErr = err
 	r.urlComputed = true
 	r.mu.Unlock()
-	return u, err
+	return u, params, err
+}
+
+// urlParam is one query key with its values, in request order.
+type urlParam struct {
+	key    string
+	values []string
+}
+
+// snapshotURLParams captures u's ordered query params. It iterates u, so it
+// must only run before u is shared.
+func snapshotURLParams(u *urlutil.URL) []urlParam {
+	if u == nil || u.Params == nil {
+		return nil
+	}
+	var params []urlParam
+	u.Params.Iterate(func(key string, values []string) bool {
+		params = append(params, urlParam{key: key, values: append([]string(nil), values...)})
+		return true
+	})
+	return params
+}
+
+// copyURL returns an independent copy of the shared URL src whose query params
+// are rebuilt from the snapshot, so it reads src without iterating it.
+func copyURL(src *urlutil.URL, params []urlParam) *urlutil.URL {
+	dst := *src // shallow copy keeps urlutil's unexported parse flags
+	if src.URL != nil {
+		inner := *src.URL // url.Userinfo is immutable, so sharing User is safe
+		dst.URL = &inner
+	}
+	if src.Params != nil {
+		op := urlutil.NewOrderedParams()
+		op.IncludeEquals = src.Params.IncludeEquals
+		for _, p := range params {
+			op.Update(p.key, append([]string(nil), p.values...))
+		}
+		dst.Params = op
+	}
+	return &dst
 }
 
 // IsMediaPath reports whether the request targets a media or JS/static asset
@@ -185,9 +247,9 @@ func (r *HttpRequest) IsMediaPath() bool {
 	}
 	r.mu.RUnlock()
 
-	// Compute outside the lock: URL() takes r.mu itself.
+	// Compute outside the lock: sharedURL() takes r.mu itself.
 	var res bool
-	if u, err := r.URL(); err == nil && u != nil {
+	if u, _, err := r.sharedURL(); err == nil && u != nil {
 		res = utils.IsMediaAndJSURL(u.Path)
 	}
 

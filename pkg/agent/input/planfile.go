@@ -6,8 +6,8 @@ import (
 )
 
 // planRequestLinePattern matches a raw HTTP request start line anywhere in a
-// multi-line plan file. Unlike httpMethodPattern (which is anchored to the
-// start of a trimmed single input), this uses (?m) so ^ matches at every line
+// multi-line plan file. Unlike DetectInputType (which classifies the first line
+// of a trimmed single input), this uses (?m) so ^ matches at every line
 // boundary, and tolerates leading whitespace before the method.
 var planRequestLinePattern = regexp.MustCompile(`(?m)^[ \t]*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE|CONNECT)\s+\S+\s+HTTP/`)
 

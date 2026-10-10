@@ -63,6 +63,16 @@ func New() *Module {
 	return m
 }
 
+// ConfirmsByBodyDifferential opts this module into the executor's body-
+// differential safety net: a candidate finding is re-confirmed by replaying the
+// probe request and requiring the evaluated anchor+product+anchor output to
+// reappear as stable content absent from the clean baseline.
+func (m *Module) ConfirmsByBodyDifferential() bool { return true }
+
+// VulnClass enables cross-module (param, class) dedup: once any csti module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassCSTI }
+
 // ScanPerInsertionPoint tests a single insertion point for Angular template injection.
 func (m *Module) ScanPerInsertionPoint(
 	ctx *httpmsg.HttpRequestResponse,
@@ -122,8 +132,8 @@ func (m *Module) tryProbeTemplate(
 	baselineBody string,
 ) *output.ResultEvent {
 	for attempt := range confirmCount {
-		left := randomString(6)
-		right := randomString(6)
+		left := modkit.RandomAlnum(6)
+		right := modkit.RandomAlnum(6)
 		mathA := 1970 + rand.IntN(100)
 		mathB := 2024 + rand.IntN(100)
 		computed := strconv.Itoa(mathA * mathB)
@@ -177,14 +187,4 @@ func (m *Module) tryProbeTemplate(
 	}
 
 	return nil
-}
-
-// randomString generates a random alphanumeric string of the given length.
-func randomString(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[rand.IntN(len(charset))]
-	}
-	return string(b)
 }

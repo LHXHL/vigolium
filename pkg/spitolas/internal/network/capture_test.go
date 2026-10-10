@@ -370,7 +370,7 @@ func TestWriteEntryCloseRace(t *testing.T) {
 func TestCloseStatistics(t *testing.T) {
 	// Create zaptest logger to capture logs
 	logger := zaptest.NewLogger(t)
-	zap.ReplaceGlobals(logger)
+	t.Cleanup(zap.ReplaceGlobals(logger))
 
 	mock := &mockWriter{}
 	capture := &Capture{
@@ -417,7 +417,7 @@ func TestCloseStatistics(t *testing.T) {
 // TestCloseWithZeroDuplicates tests that Close() doesn't log when no duplicates.
 func TestCloseWithZeroDuplicates(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	zap.ReplaceGlobals(logger)
+	t.Cleanup(zap.ReplaceGlobals(logger))
 
 	mock := &mockWriter{}
 	capture := &Capture{

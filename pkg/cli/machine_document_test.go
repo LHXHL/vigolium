@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 )
 
 // The --json contract is "exactly one document on stdout". The tests here cover
@@ -85,7 +86,7 @@ func TestWriteAgentJSONFileFailureLeavesErrorEnvelope(t *testing.T) {
 	require.Equal(t, false, docs[0]["ok"])
 	errObj, ok := docs[0]["error"].(map[string]any)
 	require.True(t, ok, "error envelope has no error object: %v", docs[0])
-	require.Equal(t, errCodeExportFailed, errObj["code"],
+	require.Equal(t, string(apicontract.CodeExportFailed), errObj["code"],
 		"a failed -o write is a failed requested artifact, not a missing source")
 	require.Contains(t, errObj["message"], "write ")
 	require.Contains(t, errObj["message"], jsonOutputPath,
@@ -108,7 +109,7 @@ func TestWatchErrorFrameIsOneLine(t *testing.T) {
 			if calls > 1 {
 				return fnErr
 			}
-			return writeAgentJSONToStdout(newAgentEnvelope("db ls", "scans", []map[string]any{{"uuid": "a"}}, 1, 0, 100))
+			return writeAgentJSON(newAgentEnvelope("db ls", "scans", []map[string]any{{"uuid": "a"}}, 1, 0, 100))
 		})
 		// The root handler runs after the loop has returned, with jsonStreamMode
 		// already reset — jsonStreamFramed is what tells it the frame is NDJSON.
@@ -137,7 +138,7 @@ func TestNonStreamedErrorStillSuppressedAfterResult(t *testing.T) {
 	globalJSON = true
 
 	out := captureStdout(t, func() {
-		_ = writeAgentJSONToStdout(newAgentEnvelope("finding", "findings", []map[string]any{}, 0, 0, 100))
+		_ = writeAgentJSON(newAgentEnvelope("finding", "findings", []map[string]any{}, 0, 0, 100))
 		emitJSONError(errors.New("gate tripped"), ExitFailOnGate, nil)
 	})
 
@@ -153,7 +154,9 @@ func newImportTestCmd(t *testing.T) *cobra.Command {
 	cmd := &cobra.Command{Use: "import"}
 	cmd.Flags().Bool("upload", false, "")
 	cmd.Flags().String("upload-key", "", "")
-	cmd.Flags().String("format", "", "")
+	// --format is the global flag; runImport reads it through globalFormat.
+	swapGlobal(t, &globalFormat, globalFormat)
+	cmd.Flags().StringVar(&globalFormat, "format", "console", "")
 	cmd.Flags().StringP("output", "o", "", "")
 	cmd.Flags().String("report-title", "", "")
 	cmd.Flags().String("report-target", "", "")
@@ -227,6 +230,13 @@ func TestImportJSONEmitsSingleDocumentAfterReport(t *testing.T) {
 
 		docs := decodeStdoutDocuments(t, out)
 		require.Len(t, docs, 1, "import must emit exactly one document under -j")
+		require.Equal(t, "import", docs[0]["command"])
+		require.Equal(t, "mutation", docs[0]["kind"])
+		// The first subtest already stored this source's finding, so this run
+		// deduplicates it: a mutation that says so rather than claiming a write.
+		require.Equal(t, false, docs[0]["changed"], "the finding was already stored by the first run")
+		require.Equal(t, "import", docs[0]["action"])
+		require.Equal(t, []any{}, docs[0]["items"])
 		require.Equal(t, report, docs[0]["report_path"],
 			"report_path must name the file the caller can open")
 		uploaded, ok := docs[0]["uploaded_to"].([]any)

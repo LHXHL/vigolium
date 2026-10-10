@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/jsext"
@@ -41,7 +42,7 @@ type extensionView struct {
 }
 
 // emitExtensionsJSON writes the extension catalog.
-func emitExtensionsJSON(opts *extensionOptions, filter string) error {
+func emitExtensionsJSON(cmd *cobra.Command, opts *extensionOptions, filter string) error {
 	settings, err := clicommon.LoadSettings(globalConfig)
 	if err != nil {
 		return err
@@ -106,7 +107,7 @@ func emitExtensionsJSON(opts *extensionOptions, filter string) error {
 		}
 	}
 
-	env := newAgentEnvelope("extensions ls", "extensions", views, int64(len(views)), 0, len(views))
+	env := newMachineEnvelope(cmd, kindRead, "extensions", views, int64(len(views)), 0, len(views))
 	// The state that made the prose line necessary, as a field a caller can
 	// branch on instead of a sentence it has to match.
 	env.With("extensions_enabled", enabled)

@@ -26,6 +26,13 @@ const dbPathEnvVar = "VIGOLIUM_DB_PATH"
 // consults — rather than by a list of command names here.
 var dbPathEnvAutoStateless bool
 
+// dbPathEnvPinned records that dbPathEnvVar was honored as this invocation's
+// --db, whether or not the file exists yet. dbPathEnvAutoStateless is gated on
+// existence (a read of a missing file must not fail), so it cannot answer "is
+// this shell pinned to a session database" consistently from the first scan of
+// a session to the second; overlayProjectUUID needs exactly that answer.
+var dbPathEnvPinned bool
+
 // statelessWriteCommands are the commands whose -S/--stateless means "work in a
 // throwaway temporary database and discard it", the opposite of pinning a shell
 // to a session database. `scan`/`scan-url`/`scan-request`/`run` reject --db
@@ -40,26 +47,28 @@ var dbPathEnvAutoStateless bool
 // project-scoping-off (dbPathEnvAutoStateless) mid-run.
 //
 // Read commands need no such list: they express the same intent by asking
-// statelessReadRequested, and both `vigolium audit` and `vigolium agent audit`
-// land here on leaf name alone.
+// statelessReadRequested. Keyed by full command path, not leaf name: a leaf
+// name collides (`extensions run` is not `run`).
 var statelessWriteCommands = map[string]bool{
-	"scan":         true,
-	"scan-url":     true,
-	"scan-request": true,
-	"run":          true,
-	"audit":        true,
-	"autopilot":    true,
+	"scan":            true,
+	"scan-url":        true,
+	"scan-request":    true,
+	"run":             true,
+	"audit":           true,
+	"agent audit":     true,
+	"agent autopilot": true,
 }
 
 // statelessWriteRequested reports whether the user explicitly asked cmd for the
 // throwaway-database flavor of -S. It reads the flag rather than globalStateless
 // because that variable is only one of the bindings behind the name: `audit -S`
-// sets auditStateless and `ingest -S` is --scan-on-receive entirely.
+// sets auditStateless, and on server/ingest -S is the retired --scan-on-receive
+// tombstone (a usage error), not a stateless flag at all.
 // flagOn, not Changed: `scan --stateless=false VIGOLIUM_DB_PATH=…` means "I know
 // about -S and I do not want it", and reading Changed as enabled dropped the pin
 // and sent the scan's writes to the default database instead.
 func statelessWriteRequested(cmd *cobra.Command) bool {
-	if !statelessWriteCommands[cmd.Name()] {
+	if !statelessWriteCommands[commandPathWithoutRoot(cmd)] {
 		return false
 	}
 	return flagOn(cmd, "stateless")
@@ -80,6 +89,10 @@ func statelessWriteRequested(cmd *cobra.Command) bool {
 // quietly redirects an engagement's reads and writes into a store holding every
 // other target that ever landed there. Failing is the only safe answer.
 func applyDBPathEnv(cmd *cobra.Command) error {
+	applyConfigEnv()
+	if handled, err := applyDBEnv(cmd); handled || err != nil {
+		return err
+	}
 	raw := strings.TrimSpace(os.Getenv(dbPathEnvVar))
 	if raw == "" {
 		return nil
@@ -110,6 +123,7 @@ func applyDBPathEnv(cmd *cobra.Command) error {
 			dbPathEnvVar, raw, err, dbPathEnvVar)
 	}
 	globalDB = path
+	dbPathEnvPinned = true
 
 	notice := fmt.Sprintf("%s → %s",
 		terminal.BoldCyan(dbPathEnvVar), terminal.BoldYellow(terminal.ShortenHome(path)))
@@ -119,6 +133,52 @@ func applyDBPathEnv(cmd *cobra.Command) error {
 	}
 	dbPathEnvNotice(notice)
 	return nil
+}
+
+// applyConfigEnv is the env fallback for --config: VIGOLIUM_CONFIG names the
+// config file when the flag was not given. An agent's bash tool exports it so
+// the `vigolium` commands the agent runs load the parent's config.
+func applyConfigEnv() {
+	if strings.TrimSpace(globalConfig) != "" {
+		return
+	}
+	if v := strings.TrimSpace(os.Getenv(configEnvVar)); v != "" {
+		globalConfig = config.ExpandPath(v)
+	}
+}
+
+// applyDBEnv is the env fallback for --db: VIGOLIUM_DB is exactly "--db from
+// the environment". Unlike VIGOLIUM_DB_PATH it does NOT turn project scoping
+// off for reads, which is why an agent's bash tool exports it for a scoped
+// parent (a child of `--db X --project-uuid P` must read P, not every project
+// in X). Precedence: --db, then VIGOLIUM_DB, then VIGOLIUM_DB_PATH, then the
+// config's database, then the default.
+//
+// handled reports that VIGOLIUM_DB was set (and so VIGOLIUM_DB_PATH is not
+// consulted). Like VIGOLIUM_DB_PATH, a pin that cannot be honored is an
+// error, never a silent fall-through to the shared default database.
+func applyDBEnv(cmd *cobra.Command) (handled bool, err error) {
+	raw := strings.TrimSpace(os.Getenv(dbEnvVar))
+	if raw == "" {
+		return false, nil
+	}
+	if strings.TrimSpace(globalDB) != "" {
+		return true, nil
+	}
+	if statelessWriteRequested(cmd) {
+		dbPathEnvNotice(fmt.Sprintf("%s: ignoring %s (results go to a temporary database)",
+			terminal.BoldCyan("--stateless"), terminal.BoldCyan(dbEnvVar)))
+		return true, nil
+	}
+	path := config.ExpandPath(raw)
+	if err := dbPathEnvUsable(path); err != nil {
+		return true, fmt.Errorf("%s=%s is unusable (%w).\n"+
+			"Refusing to fall back to the default database. Fix the path or unset %s",
+			dbEnvVar, raw, err, dbEnvVar)
+	}
+	globalDB = path
+	dbPathEnvNotice(fmt.Sprintf("%s → %s", terminal.BoldCyan(dbEnvVar), terminal.BoldYellow(terminal.ShortenHome(path))))
+	return true, nil
 }
 
 // dbPathEnvUsable reports why the pinned path cannot back a database, or nil.

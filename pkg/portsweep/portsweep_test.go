@@ -206,3 +206,61 @@ func TestPortResultURL(t *testing.T) {
 		t.Errorf("IPv6 URL = %q", got)
 	}
 }
+
+// TestSweep_HTTPConfirmGoesThroughProxy: with ProxyURL set, the HTTP confirm
+// request must reach the proxy (absolute-form, naming the swept host:port) and
+// never the target's HTTP handler. The TCP pre-filter still connects to the
+// target directly, which is documented, so only HTTP-level hits are counted.
+func TestSweep_HTTPConfirmGoesThroughProxy(t *testing.T) {
+	var targetHits, proxyHits int64
+	var proxiedHost string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits++
+		_, _ = fmt.Fprint(w, "direct")
+	}))
+	defer target.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits++
+		proxiedHost = r.URL.Host
+		w.Header().Set("Server", "via-proxy")
+		_, _ = fmt.Fprint(w, "proxied")
+	}))
+	defer proxy.Close()
+
+	port := portOf(t, target.URL)
+	opts := fastOpts([]int{port})
+	opts.Concurrency = 1
+	opts.ProxyURL = proxy.URL
+	res := Sweep(context.Background(), "127.0.0.1", opts)
+
+	if targetHits != 0 {
+		t.Errorf("target HTTP handler hit %d time(s); the confirm must go through the proxy", targetHits)
+	}
+	if proxyHits == 0 {
+		t.Fatal("proxy saw no request")
+	}
+	if want := net.JoinHostPort("127.0.0.1", strconv.Itoa(port)); proxiedHost != want {
+		t.Errorf("proxied request host = %q, want %q", proxiedHost, want)
+	}
+	if len(res.Open) != 1 || res.Open[0].Server != "via-proxy" {
+		t.Errorf("open = %+v, want the one port confirmed via the proxy", res.Open)
+	}
+}
+
+// TestSweep_BadProxyFailsClosed: an unparseable proxy must not degrade to a
+// direct confirm request.
+func TestSweep_BadProxyFailsClosed(t *testing.T) {
+	var targetHits int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits++
+	}))
+	defer target.Close()
+
+	opts := fastOpts([]int{portOf(t, target.URL)})
+	opts.Concurrency = 1
+	opts.ProxyURL = "http://%zz"
+	res := Sweep(context.Background(), "127.0.0.1", opts)
+	if targetHits != 0 || len(res.Open) != 0 {
+		t.Errorf("bad proxy fell back to direct: hits=%d open=%+v", targetHits, res.Open)
+	}
+}

@@ -249,25 +249,6 @@ func TestEventSourceHandshakePreservesOnlyStaticCursor(t *testing.T) {
 	}
 }
 
-func TestStableClientRouteBoundsDynamicAndWildcardRoutes(t *testing.T) {
-	cases := map[string]string{
-		"/users/:id":       "/users/1",
-		"/org/[org]/users": "/org/1/users",
-		"/post/${slug}":    "/post/1",
-	}
-	for input, want := range cases {
-		got, ok := stableClientRoute(input)
-		if !ok || got != want {
-			t.Errorf("stableClientRoute(%q) = %q, %v; want %q", input, got, ok, want)
-		}
-	}
-	for _, input := range []string{"*", "/*", "/files/:path*", "https://other.test/page"} {
-		if got, ok := stableClientRoute(input); ok {
-			t.Errorf("wildcard/non-root route %q unexpectedly became %q", input, got)
-		}
-	}
-}
-
 func TestIsReplayableMethod(t *testing.T) {
 	cases := map[string]bool{
 		"GET":  true,

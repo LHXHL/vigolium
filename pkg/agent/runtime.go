@@ -72,10 +72,14 @@ type RecordSpec struct {
 // standard engine: builtin tools, the config's system prompt (or the package
 // default), and the engine's default turn cap.
 type SessionSpec struct {
-	System            string // explicit system prompt; empty falls back to cfg/default
-	SourcePath        string // appended to the system prompt when set
-	MaxTurns          int    // 0 = engine default
-	IncludeTools      bool   // register the builtin tool set
+	System       string // explicit system prompt; empty falls back to cfg/default
+	SourcePath   string // appended to the system prompt when set
+	MaxTurns     int    // 0 = engine default
+	IncludeTools bool   // register the builtin tool set
+	// OfflineTools, with IncludeTools, narrows the builtin set to the tools
+	// that touch neither the network nor a shell (read_file, ls, grep, glob).
+	// For a run that must not contact the target (`agent triage --no-probe`).
+	OfflineTools      bool
 	EnablePromptCache bool
 	// Skills, when non-nil and non-empty, injects an <available_skills> block
 	// into the system prompt and registers the load_skill tool (requires

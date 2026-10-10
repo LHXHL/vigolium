@@ -167,7 +167,7 @@ func TestProcessResults_RecordKindsDoNotInflateFindingsOrCaps(t *testing.T) {
 		{URL: "https://example.com/c", RecordKind: output.RecordKindCandidate, EvidenceGrade: output.EvidenceGradeCandidate},
 		{URL: "https://example.com/f1"},
 		{URL: "https://example.com/f2"}, // dropped by the finding-only cap
-	}, mod, nil)
+	}, mod, nil, nil)
 
 	assert.Equal(t, 1, findings)
 	assert.Equal(t, 1, candidates)
@@ -201,7 +201,7 @@ func TestProcessResults_CoordinationUsesPostHookEvent(t *testing.T) {
 	e.processResults(context.Background(), []*output.ResultEvent{{
 		URL:              "https://example.com/before?id=1",
 		FuzzingParameter: "before",
-	}}, mod, nil)
+	}}, mod, nil, nil)
 
 	assert.True(t, e.scanCtx.ParamFindings.HasFinding("https://example.com/after", "after", "xss"))
 	assert.False(t, e.scanCtx.ParamFindings.HasFinding("https://example.com/before", "before", "xss"), "pre-hook coordinates must not suppress unrelated work")
@@ -218,7 +218,7 @@ func TestProcessResults_DuplicateFindingDoesNotConsumeCap(t *testing.T) {
 		{URL: "https://example.com/a", DedupKey: "root-a"},
 		{URL: "https://example.com/a?second-evidence=1", DedupKey: "root-a"},
 		{URL: "https://example.com/b", DedupKey: "root-b"},
-	}, mod, nil)
+	}, mod, nil, nil)
 
 	assert.Equal(t, 2, callbacks, "only distinct root causes are dispatched")
 	assert.Len(t, loadFindings(t, db), 2, "duplicate evidence is merged and does not crowd out the second root cause")
@@ -273,7 +273,7 @@ func TestProcessResults_BaselineFindingLinksWithoutDuplicateRecord(t *testing.T)
 	// which is exactly the signal that the finding is the unchanged baseline.
 	results := []*output.ResultEvent{{URL: "https://example.com/test"}}
 
-	e.processResults(ctx, results, mod, rr)
+	e.processResults(ctx, results, mod, rr, nil)
 
 	if got := countRecords(t, db); got != 0 {
 		t.Errorf("http_records = %d, want 0 (baseline finding must not create a duplicate record)", got)
@@ -308,7 +308,7 @@ func TestProcessResults_MutatedFindingDoesNotLinkBaseline(t *testing.T) {
 		Response: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nzzz",
 	}}
 
-	e.processResults(ctx, results, mod, rr)
+	e.processResults(ctx, results, mod, rr, nil)
 
 	if got := countRecords(t, db); got != 1 {
 		t.Errorf("http_records = %d, want 1 (mutated finding saves its own evidence record)", got)

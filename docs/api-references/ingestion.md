@@ -16,23 +16,33 @@ Import HTTP request/response data into the database for scanning. Supports multi
 | Field                  | Type   | Required | Description                              |
 |------------------------|--------|----------|------------------------------------------|
 | `input_mode`           | string | Yes      | Input format (see modes below)           |
-| `url`                  | string | No       | Override URL (used as base URL for some modes) |
+| `url`                  | string | No       | Base URL for `openapi`, endpoint for `wsdl`, `{{baseUrl}}` for `postman`; overrides the host of each record for the other modes |
 | `content`              | string | No       | Raw content (plaintext)                  |
 | `content_base64`       | string | No       | Base64-encoded content                   |
 | `http_request_base64`  | string | No       | Base64-encoded raw HTTP request (for `burp_base64`) |
 | `http_response_base64` | string | No       | Base64-encoded raw HTTP response (for `burp_base64`) |
+| `variables`            | object | No       | Values for Postman `{{name}}` placeholders and OpenAPI/WSDL parameters and credentials (the REST form of `--spec-var`), e.g. `{"baseUrl": "https://api.example.com", "bearer": "<token>"}` |
 
 **Input modes:**
 
+`input_mode` takes the same format names and aliases as the CLI's `-I`, plus three REST-only single-item modes and `auto`. An unknown mode returns 400 (`unsupported_input_mode`) with every accepted value in `details`.
+
 | Mode                  | Description                          | Content field  |
 |-----------------------|--------------------------------------|----------------|
+| `auto`                | Detect the format from the content (same detector as `-i` without `-I`); the response's `detected_format` names it. Undetectable content returns 400 (`input_unparsed`) | `content`      |
 | `url`                 | Single URL                           | `content`      |
-| `url_file`            | Newline-separated list of URLs       | `content`      |
 | `curl`                | Single curl command                  | `content`      |
 | `burp_base64`         | Base64 raw HTTP request (+response)  | `http_request_base64` |
+| `urls` / `url_file` / `url` list aliases | Newline-separated list of URLs; `#` comments skipped. Content that is mostly not URLs returns 400 (`input_unparsed`) naming the format it resembles | `content`      |
 | `openapi` / `swagger` | OpenAPI/Swagger spec (JSON or YAML)  | `content`      |
-| `postman_collection`  | Postman Collection v2                | `content`      |
+| `postman` / `postman_collection` | Postman Collection v2      | `content`      |
 | `har` / `http_archive`| HAR (HTTP Archive) 1.2 JSON          | `content`      |
+| `wsdl` / `soap`       | WSDL 1.1 service description (`url` = endpoint) | `content` |
+| `burpxml` / `burp`    | Burp "Save items" XML export         | `content`      |
+| `burpraw` / `raw`     | Raw HTTP request, optionally `***` + response | `content` |
+| `burpscope`           | Burp scope / project config (include rules → URLs) | `content` |
+| `nuclei`              | Nuclei JSONL output                  | `content`      |
+| `deparos`             | Deparos discovery JSONL              | `content`      |
 
 ### Ingest a URL
 
@@ -127,10 +137,27 @@ curl -s -X POST http://localhost:9002/api/ingest-http \
 {
   "project_uuid": "00000000-0000-0000-defa-c01001000001",
   "imported": 15,
-  "skipped": 0,
+  "skipped": 1,
+  "format": "openapi",
+  "skipped_reasons": {"out_of_scope": 1, "skipped_operation": 2},
   "errors": [],
-  "message": "imported 15 requests from OpenAPI spec"
+  "message": "imported 15 requests from OpenAPI spec (1 filtered by scope) (2 operations produced no request)"
 }
+```
+
+`skipped` is the number of records filtered by scope. `skipped_reasons` counts everything that did not become a record, by reason: `out_of_scope`, `unparsed_line` (URL lists), `skipped_operation` (OpenAPI), `skipped_request` (Postman requests that could not be built, typically an unresolved `{{variable}}` in the URL; each such variable is named in `errors`). `format` is the parser used and `detected_format` is set for `auto`.
+
+OpenAPI security schemes take their credential from `variables`: `bearer` (or the scheme name, or `Authorization`) for `http bearer`, `oauth2` and `openIdConnect`; `basic` as `user:pass` for `http basic`; the parameter name for `apiKey`. A value already starting with `Bearer `/`Basic ` is used as-is.
+
+### Detect the format
+
+```bash
+curl -s -X POST http://localhost:9002/api/ingest-http \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"input_mode\": \"auto\",
+    \"content_base64\": \"$(base64 < export.json)\"
+  }" | jq '.detected_format, .imported'
 ```
 
 ### Ingest into a specific project

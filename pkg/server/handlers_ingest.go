@@ -3,69 +3,48 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/input/formats/burpscope"
 	"github.com/vigolium/vigolium/pkg/input/formats/curl"
-	"github.com/vigolium/vigolium/pkg/input/formats/har"
 	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
 	"github.com/vigolium/vigolium/pkg/input/formats/postman"
-	"github.com/vigolium/vigolium/pkg/storagesig"
+	"github.com/vigolium/vigolium/pkg/input/formats/urls"
+	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
+	"github.com/vigolium/vigolium/pkg/input/source"
 	"go.uber.org/zap"
 )
 
-// buildScopeMatchInput extracts scope-relevant fields from an HttpRequestResponse.
-func buildScopeMatchInput(rr *httpmsg.HttpRequestResponse) config.ScopeMatchInput {
-	input := config.ScopeMatchInput{
-		Host:               rr.Service().Host(),
-		Path:               rr.Request().Path(),
-		RequestContentType: rr.Request().Header("Content-Type"),
-		RequestRaw:         string(rr.Request().Raw()),
-	}
-	if rr.HasResponse() {
-		resp := rr.Response()
-		input.StatusCode = resp.StatusCode()
-		input.ResponseContentType = resp.Header("Content-Type")
-		input.ResponseBody = resp.BodyToString()
-	}
-	return input
+// isIngestInScope checks whether a request/response pair should be saved into
+// projectUUID: the project's scope (the server's, with its config overlay),
+// static files always filtered, full rules only when applied_on_ingest is set.
+// A project overlay that cannot be read refuses the record (logged) rather
+// than judging it by the wider global scope.
+func (h *Handlers) isIngestInScope(rr *httpmsg.HttpRequestResponse, projectUUID string) bool {
+	return h.ingestAdmitter(projectUUID)(rr)
 }
 
-// isIngestInScope checks whether a request/response pair should be saved.
-// Static file filtering is always enforced (regardless of applied_on_ingest).
-// Full scope rules are only enforced when applied_on_ingest is true.
-func (h *Handlers) isIngestInScope(rr *httpmsg.HttpRequestResponse) bool {
-	if h.settings == nil {
-		return true
+// ingestAdmitter resolves projectUUID's ingest scope once and returns its
+// admit rule, so a batch ingest judges every record without re-resolving the
+// scope per record. When the scope cannot be resolved the error is logged
+// once and every record is refused.
+func (h *Handlers) ingestAdmitter(projectUUID string) func(*httpmsg.HttpRequestResponse) bool {
+	scope, err := h.ingestScopeFor(projectUUID)
+	if err != nil {
+		zap.L().Warn("Ingest: project scope unavailable; records not stored",
+			zap.String("project_uuid", projectUUID), zap.Error(err))
+		return func(*httpmsg.HttpRequestResponse) bool { return false }
 	}
-	matcher := h.getScopeMatcher()
-	if matcher == nil {
-		return true
-	}
-	// Always filter static files regardless of applied_on_ingest — except
-	// object-storage assets, kept as metadata-only (body stripped) so the CDN
-	// traversal modules can probe storage-fronted static URLs.
-	if matcher.IsStaticFile(rr.Request().Path()) {
-		var hg storagesig.HeaderGetter
-		if rr.HasResponse() && rr.Response() != nil {
-			hg = rr.Response()
-		}
-		if !storagesig.KeepStaticAsMeta(rr.Request().Path(), hg) {
-			return false
-		}
-		if rr.Response() != nil {
-			rr.Response().TruncateBody(0)
-		}
-	}
-	if !h.settings.Scope.AppliedOnIngest {
-		return true
-	}
-	return matcher.InScope(buildScopeMatchInput(rr))
+	return scope.admit
 }
 
 // fetchResponseIfNeeded fetches the HTTP response for a request if one isn't
@@ -217,25 +196,16 @@ func (a *ingestAccumulator) finish() (imported int, errs []string) {
 // HandleIngestHTTP handles POST /api/ingest-http
 func (h *Handlers) HandleIngestHTTP(c fiber.Ctx) error {
 	if h.repo == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	var req IngestHTTPRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid JSON: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 	}
 
 	if req.InputMode == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingMode.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingMode)
 	}
 
 	// Detached on purpose: ingestion persists records, and when the async
@@ -246,27 +216,90 @@ func (h *Handlers) HandleIngestHTTP(c fiber.Ctx) error {
 	// durable, so we use a background context.
 	ctx := context.Background()
 
-	switch req.InputMode {
+	// Three REST-only single-item modes have no file equivalent. Everything
+	// else is an input-format name from the same registry -I uses (legacy REST
+	// names such as postman_collection/http_archive/url_file are aliases there),
+	// or "auto" to detect it from the content.
+	mode := strings.ToLower(strings.TrimSpace(req.InputMode))
+	switch mode {
 	case "burp_base64":
 		return h.ingestBurpBase64(c, ctx, &req)
 	case "curl":
 		return h.ingestCurl(c, ctx, &req)
-	case "openapi", "swagger":
-		return h.ingestOpenAPI(c, ctx, &req)
-	case "postman_collection":
-		return h.ingestPostman(c, ctx, &req)
-	case "har", "http_archive":
-		return h.ingestHAR(c, ctx, &req)
 	case "url":
 		return h.ingestURL(c, ctx, &req)
-	case "url_file":
-		return h.ingestURLFile(c, ctx, &req)
-	default:
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrInvalidMode.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
 	}
+
+	content, err := resolveContent(&req)
+	if err != nil {
+		return respondError(c, fiber.StatusBadRequest, err)
+	}
+
+	var format, detected string
+	if mode == ingestModeAuto {
+		det := source.DetectFormatHead(headOf(content), "")
+		if det.Format == "" {
+			return respondErrorMsg(c, fiber.StatusBadRequest, "input_unparsed: could not detect the input format from the content; set input_mode explicitly", "supported input_mode values: "+strings.Join(supportedIngestModes(), ", "))
+		}
+		format, detected = det.Format, det.Format
+		zap.L().Info("ingest: detected input format",
+			zap.String("format", det.Format), zap.String("reason", det.Reason))
+	} else {
+		info, ok := source.LookupFormat(mode)
+		if !ok || mode == "" {
+			return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("unsupported_input_mode: %q is not a supported input_mode", req.InputMode), "supported input_mode values: "+strings.Join(supportedIngestModes(), ", "))
+		}
+		format = info.Name
+	}
+
+	switch format {
+	case "urls":
+		return h.ingestURLFile(c, ctx, &req, content, detected)
+	case "openapi":
+		return h.ingestOpenAPI(c, ctx, &req, content, detected)
+	default:
+		return h.ingestFileFormat(c, ctx, &req, content, format, detected)
+	}
+}
+
+// ingestModeAuto is the input_mode that detects the format from the content.
+const ingestModeAuto = "auto"
+
+// supportedIngestModes lists every accepted input_mode: the REST-only
+// single-item modes, "auto", then each registry format with its aliases.
+func supportedIngestModes() []string {
+	modes := []string{"url", "burp_base64", "curl", ingestModeAuto}
+	for _, f := range source.Formats() {
+		if f.Name == "curl" {
+			continue // the REST "curl" mode above
+		}
+		modes = append(modes, f.Name)
+		modes = append(modes, f.Aliases...)
+	}
+	return modes
+}
+
+// headOf returns the detection window of content.
+func headOf(content string) []byte {
+	if len(content) > source.DetectHeadBytes {
+		content = content[:source.DetectHeadBytes]
+	}
+	return []byte(content)
+}
+
+// ingestSkipped builds the response's skipped_reasons map, omitting zero
+// counts (nil when nothing was skipped).
+func ingestSkipped(reasons map[string]int) map[string]int {
+	out := map[string]int{}
+	for k, v := range reasons {
+		if v > 0 {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // resolveContent returns content from the request, decoding base64 if needed.
@@ -286,18 +319,12 @@ func resolveContent(req *IngestHTTPRequest) (string, error) {
 
 func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
 	if req.HTTPRequestBase64 == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "'http_request_base64' is required for burp_base64 mode",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "'http_request_base64' is required for burp_base64 mode")
 	}
 
 	rawReq, err := base64.StdEncoding.DecodeString(req.HTTPRequestBase64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid base64 in http_request_base64: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid base64 in http_request_base64: %w", err))
 	}
 
 	var rr *httpmsg.HttpRequestResponse
@@ -307,10 +334,7 @@ func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *Inges
 		rr, err = httpmsg.ParseRawRequest(string(rawReq))
 	}
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse raw request: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to parse raw request: %w", err))
 	}
 
 	// Attach response if provided
@@ -326,7 +350,7 @@ func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *Inges
 
 	rr = h.fetchResponseIfNeeded(rr)
 
-	if !h.isIngestInScope(rr) {
+	if !h.isIngestInScope(rr, getProjectUUID(c)) {
 		return c.JSON(IngestHTTPResponse{
 			ProjectUUID: getProjectUUID(c),
 			Imported:    0,
@@ -337,10 +361,7 @@ func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *Inges
 
 	if _, err := h.saveRecord(ctx, rr, ingestSource(c), getProjectUUID(c)); err != nil {
 		zap.L().Error("Failed to save ingested record", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to save record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to save record: %w", err))
 	}
 
 	return c.JSON(IngestHTTPResponse{
@@ -353,18 +374,12 @@ func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *Inges
 func (h *Handlers) ingestCurl(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
 	content, err := resolveContent(req)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	rr, err := curl.ParseSingleCommand(content)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse curl command: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to parse curl command: %w", err))
 	}
 
 	if req.URL != "" {
@@ -375,7 +390,7 @@ func (h *Handlers) ingestCurl(c fiber.Ctx, ctx context.Context, req *IngestHTTPR
 
 	rr = h.fetchResponseIfNeeded(rr)
 
-	if !h.isIngestInScope(rr) {
+	if !h.isIngestInScope(rr, getProjectUUID(c)) {
 		return c.JSON(IngestHTTPResponse{
 			ProjectUUID: getProjectUUID(c),
 			Imported:    0,
@@ -385,10 +400,7 @@ func (h *Handlers) ingestCurl(c fiber.Ctx, ctx context.Context, req *IngestHTTPR
 	}
 
 	if _, err := h.saveRecord(ctx, rr, ingestSource(c), getProjectUUID(c)); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to save record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to save record: %w", err))
 	}
 
 	return c.JSON(IngestHTTPResponse{
@@ -398,20 +410,13 @@ func (h *Handlers) ingestCurl(c fiber.Ctx, ctx context.Context, req *IngestHTTPR
 	})
 }
 
-func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
-	content, err := resolveContent(req)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
-	}
-
+func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest, content, detected string) error {
 	data := []byte(content)
 	ext := openapi.DetectFormatFromContent(data)
 
 	var skipped int
 	acc := h.newIngestAccumulator(ctx, ingestSource(c), getProjectUUID(c))
+	admit := h.ingestAdmitter(getProjectUUID(c))
 
 	var urlOverrideSvc *httpmsg.Service
 	if req.URL != "" {
@@ -420,7 +425,12 @@ func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHT
 		}
 	}
 
-	opts := openapi.Options{}
+	// A request `url` is the base URL the spec's operations are generated
+	// against; without it the spec's own servers are used. (BaseURL used to be
+	// left unset, so every OpenAPI ingest with a `url` failed with the parser's
+	// "base URL required" error.)
+	var stats openapi.ParseStats
+	opts := openapi.Options{BaseURL: req.URL, Variables: req.Variables, Stats: &stats}
 	if req.URL == "" {
 		opts.UseSpecServers = true
 	}
@@ -429,7 +439,7 @@ func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHT
 			rr = rr.WithService(urlOverrideSvc)
 		}
 		rr = h.fetchResponseIfNeeded(rr)
-		if !h.isIngestInScope(rr) {
+		if !admit(rr) {
 			skipped++
 			return true
 		}
@@ -438,97 +448,163 @@ func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHT
 	})
 
 	if parseErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse OpenAPI spec: " + parseErr.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to parse OpenAPI spec: %w", parseErr))
 	}
-	imported, errors := acc.finish()
+	imported, errs := acc.finish()
 
 	msg := fmt.Sprintf("imported %d requests from OpenAPI spec", imported)
 	if skipped > 0 {
 		msg += fmt.Sprintf(" (%d filtered by scope)", skipped)
 	}
+	if stats.SkippedOperations > 0 {
+		msg += fmt.Sprintf(" (%d operations produced no request)", stats.SkippedOperations)
+	}
 
 	return c.JSON(IngestHTTPResponse{
-		ProjectUUID: getProjectUUID(c),
-		Imported:    imported,
-		Skipped:     skipped,
-		Errors:      errors,
-		Message:     msg,
+		ProjectUUID:    getProjectUUID(c),
+		Imported:       imported,
+		Skipped:        skipped,
+		Format:         "openapi",
+		DetectedFormat: detected,
+		SkippedReasons: ingestSkipped(map[string]int{
+			"out_of_scope":      skipped,
+			"skipped_operation": stats.SkippedOperations,
+		}),
+		Errors:  errs,
+		Message: msg,
 	})
 }
 
-func (h *Handlers) ingestPostman(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
-	content, err := resolveContent(req)
+// ingestFileFormat ingests content of any registry format through the same
+// parser -i uses. Parsers read files, so the content is written to a private
+// temp file (0700 dir, 0600 file) that is removed afterwards.
+func (h *Handlers) ingestFileFormat(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest, content, format, detected string) error {
+	parser, err := source.NewParser(format)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
-	parser := postman.New()
-	var skipped int
-	acc := h.newIngestAccumulator(ctx, ingestSource(c), getProjectUUID(c))
+	// The request `url` is the endpoint for WSDL; for the other formats it
+	// overrides each record's host, as it always has. A scope export's hosts
+	// are the point of it, so they are left alone.
+	overrideHost := true
+	switch p := parser.(type) {
+	case *postman.Format:
+		// `url` also fills {{baseUrl}}/{{url}}, so a collection written
+		// against a base-URL variable resolves without an explicit variables map.
+		p.SetPostmanOptions(postman.Options{BaseURL: req.URL, Variables: req.Variables})
+	case *wsdl.Format:
+		p.SetWSDLOptions(wsdl.Options{EndpointURL: req.URL, Variables: req.Variables})
+		overrideHost = false
+	case *burpscope.Format:
+		overrideHost = false
+	}
+
+	path, cleanup, err := writeIngestTempFile(content)
+	if err != nil {
+		zap.L().Error("ingest: failed to stage content", zap.Error(err))
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to stage ingest content: %w", err))
+	}
+	defer cleanup()
 
 	var urlOverrideSvc *httpmsg.Service
-	if req.URL != "" {
+	if overrideHost && req.URL != "" {
 		if svc, svcErr := httpmsg.ParseService(req.URL); svcErr == nil {
 			urlOverrideSvc = svc
 		}
 	}
 
-	parseErr := parser.ParseFromData([]byte(content), func(rr *httpmsg.HttpRequestResponse) bool {
+	var skipped int
+	acc := h.newIngestAccumulator(ctx, ingestSource(c), getProjectUUID(c))
+	admit := h.ingestAdmitter(getProjectUUID(c))
+	parseErr := parser.Parse(path, func(rr *httpmsg.HttpRequestResponse) bool {
 		if urlOverrideSvc != nil {
 			rr = rr.WithService(urlOverrideSvc)
 		}
 		rr = h.fetchResponseIfNeeded(rr)
-		if !h.isIngestInScope(rr) {
+		if !admit(rr) {
 			skipped++
 			return true
 		}
 		acc.add(rr)
 		return true
 	})
-
+	imported, errs := acc.finish()
 	if parseErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse Postman collection: " + parseErr.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		if imported == 0 {
+			return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("failed to parse %s input: %s", format, parseErr.Error()))
+		}
+		// A partially parseable file keeps its good records; the error is
+		// reported alongside them rather than dropped.
+		errs = append(errs, "parse: "+parseErr.Error())
 	}
-	imported, errors := acc.finish()
 
-	msg := fmt.Sprintf("imported %d requests from Postman collection", imported)
+	reasons := map[string]int{"out_of_scope": skipped}
+	msg := fmt.Sprintf("imported %d requests from %s input", imported, format)
 	if skipped > 0 {
 		msg += fmt.Sprintf(" (%d filtered by scope)", skipped)
 	}
+	if p, ok := parser.(*postman.Format); ok {
+		// Requests the collection could not build (an unresolved {{var}} in
+		// the URL, an unparseable URL) are counted, and each unresolved
+		// variable is named so the caller knows which `variables` to send.
+		st := p.Stats()
+		reasons["skipped_request"] = st.Skipped
+		if st.Skipped > 0 {
+			msg += fmt.Sprintf(" (%d requests could not be built)", st.Skipped)
+		}
+		names := make([]string, 0, len(st.UnresolvedVariables))
+		for name := range st.UnresolvedVariables {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			v := st.UnresolvedVariables[name]
+			errs = append(errs, fmt.Sprintf("unresolved variable {{%s}}: %d request(s) skipped, %d kept with the literal placeholder; pass it in \"variables\"", name, v.Skipped, v.Kept))
+		}
+	}
 
 	return c.JSON(IngestHTTPResponse{
-		ProjectUUID: getProjectUUID(c),
-		Imported:    imported,
-		Skipped:     skipped,
-		Errors:      errors,
-		Message:     msg,
+		ProjectUUID:    getProjectUUID(c),
+		Imported:       imported,
+		Skipped:        skipped,
+		Format:         format,
+		DetectedFormat: detected,
+		SkippedReasons: ingestSkipped(reasons),
+		Errors:         errs,
+		Message:        msg,
 	})
+}
+
+// writeIngestTempFile stages content in a fresh private directory and returns
+// the file path and a cleanup func that removes the directory.
+func writeIngestTempFile(content string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "vigolium-ingest-")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	path := filepath.Join(dir, "input")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return path, cleanup, nil
 }
 
 func (h *Handlers) ingestURL(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
 	content, err := resolveContent(req)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	rr, err := httpmsg.GetRawRequestFromURL(strings.TrimSpace(content))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to create request from URL: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to create request from URL: %w", err))
 	}
 
 	if req.URL != "" {
@@ -539,7 +615,7 @@ func (h *Handlers) ingestURL(c fiber.Ctx, ctx context.Context, req *IngestHTTPRe
 
 	rr = h.fetchResponseIfNeeded(rr)
 
-	if !h.isIngestInScope(rr) {
+	if !h.isIngestInScope(rr, getProjectUUID(c)) {
 		return c.JSON(IngestHTTPResponse{
 			ProjectUUID: getProjectUUID(c),
 			Imported:    0,
@@ -549,10 +625,7 @@ func (h *Handlers) ingestURL(c fiber.Ctx, ctx context.Context, req *IngestHTTPRe
 	}
 
 	if _, err := h.saveRecord(ctx, rr, ingestSource(c), getProjectUUID(c)); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to save record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to save record: %w", err))
 	}
 
 	return c.JSON(IngestHTTPResponse{
@@ -562,76 +635,26 @@ func (h *Handlers) ingestURL(c fiber.Ctx, ctx context.Context, req *IngestHTTPRe
 	})
 }
 
-func (h *Handlers) ingestHAR(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
-	content, err := resolveContent(req)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
-	}
-
-	parser := har.New()
-	var skipped int
-	acc := h.newIngestAccumulator(ctx, ingestSource(c), getProjectUUID(c))
-
-	var urlOverrideSvc *httpmsg.Service
-	if req.URL != "" {
-		if svc, svcErr := httpmsg.ParseService(req.URL); svcErr == nil {
-			urlOverrideSvc = svc
+func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest, content, detected string) error {
+	// Never silent: content that is mostly not URLs (a HAR posted as
+	// url_file, say) is refused with the format it resembles, instead of
+	// answering 200 with a line of errors per JSON brace.
+	if err := source.CheckURLListContent("content", []byte(content), detected == ""); err != nil {
+		var ue *source.UnparsedInputError
+		msg := err.Error()
+		if errors.As(err, &ue) {
+			msg = fmt.Sprintf("input_unparsed: content is not a URL list (%d of %d non-comment lines are not URLs)", ue.Failed, ue.Lines)
+			if ue.Candidate != "" {
+				msg += fmt.Sprintf("; it looks like %s, set input_mode to %q or \"auto\"", ue.Candidate, ue.Candidate)
+			}
 		}
-	}
-
-	// Accumulate in-scope records and persist them in bounded batches, so a large
-	// HAR imports in a handful of transactions instead of one blocking flush per
-	// record.
-	parseErr := parser.ParseFromData([]byte(content), func(rr *httpmsg.HttpRequestResponse) bool {
-		if urlOverrideSvc != nil {
-			rr = rr.WithService(urlOverrideSvc)
-		}
-		rr = h.fetchResponseIfNeeded(rr)
-		if !h.isIngestInScope(rr) {
-			skipped++
-			return true
-		}
-		acc.add(rr)
-		return true
-	})
-
-	if parseErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse HAR file: " + parseErr.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
-	}
-	imported, errors := acc.finish()
-
-	msg := fmt.Sprintf("imported %d requests from HAR file", imported)
-	if skipped > 0 {
-		msg += fmt.Sprintf(" (%d filtered by scope)", skipped)
-	}
-
-	return c.JSON(IngestHTTPResponse{
-		ProjectUUID: getProjectUUID(c),
-		Imported:    imported,
-		Skipped:     skipped,
-		Errors:      errors,
-		Message:     msg,
-	})
-}
-
-func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
-	content, err := resolveContent(req)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, msg)
 	}
 
 	var skipped int
 	var parseErrors []string // per-line parse errors keep their line context
 	acc := h.newIngestAccumulator(ctx, ingestSource(c), getProjectUUID(c))
+	admit := h.ingestAdmitter(getProjectUUID(c))
 
 	var urlOverrideSvc *httpmsg.Service
 	if req.URL != "" {
@@ -643,7 +666,7 @@ func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHT
 	lines := strings.Split(content, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if !urls.IsTargetLine(line) {
 			continue
 		}
 
@@ -659,7 +682,7 @@ func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHT
 
 		rr = h.fetchResponseIfNeeded(rr)
 
-		if !h.isIngestInScope(rr) {
+		if !admit(rr) {
 			skipped++
 			continue
 		}
@@ -667,7 +690,7 @@ func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHT
 		acc.add(rr)
 	}
 	imported, accErrs := acc.finish()
-	errors := append(parseErrors, accErrs...)
+	errs := append(parseErrors, accErrs...)
 
 	msg := fmt.Sprintf("imported %d requests from URL list", imported)
 	if skipped > 0 {
@@ -675,10 +698,16 @@ func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHT
 	}
 
 	return c.JSON(IngestHTTPResponse{
-		ProjectUUID: getProjectUUID(c),
-		Imported:    imported,
-		Skipped:     skipped,
-		Errors:      errors,
-		Message:     msg,
+		ProjectUUID:    getProjectUUID(c),
+		Imported:       imported,
+		Skipped:        skipped,
+		Format:         "urls",
+		DetectedFormat: detected,
+		SkippedReasons: ingestSkipped(map[string]int{
+			"out_of_scope":  skipped,
+			"unparsed_line": len(parseErrors),
+		}),
+		Errors:  errs,
+		Message: msg,
 	})
 }

@@ -13,6 +13,7 @@ func httpGraphQLFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "graphql",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".graphql(url: string, opts: {query, variables?, operation?, headers?, session?})",
 			Returns:     "{data, errors, raw}",
@@ -137,6 +138,7 @@ func httpGraphQLFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "graphqlSchema",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".graphqlSchema(url: string, opts?: {headers?, session?})",
 			Returns:     "object | null",

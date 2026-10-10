@@ -79,3 +79,53 @@ func TestLooksLikeURLParam(t *testing.T) {
 	require.False(t, LooksLikeURLParam("name", "alice"))
 	require.False(t, LooksLikeURLParam("count", "42"))
 }
+
+func TestLooksLikeURLParam_BlindSSRFNames(t *testing.T) {
+	positives := []string{
+		// substring fragments
+		"webhook", "webhookUrl", "slack_webhook", "avatar", "avatarSource",
+		"continue", "continueTo", "domain", "targetDomain", "origin_url",
+		"returnurl", "uri_template",
+		// whole-token fragments
+		"hook", "hook_target", "image", "profileImage", "img", "img-src",
+		"icon", "favicon_icon", "logo", "companyLogo", "feed", "rss.feed",
+		"next", "nextPage", "return", "returnTo", "smtpHost", "host_name",
+		"site", "site[0]", "out", "out_link", "to", "redirect-to", "ReturnURL",
+	}
+	for _, name := range positives {
+		require.Truef(t, LooksLikeURLParam(name, "x"), "%q should look like a URL param", name)
+	}
+
+	// Short tokens must not match as substrings of unrelated words.
+	negatives := []string{
+		"ghost", "context", "contextId", "token", "photo", "total", "timeout",
+		"layout", "logout", "feedback", "website_count", "outcome", "hostess",
+		"nextgen", "returned", "icons", "imgs", "stock", "customer_id",
+	}
+	for _, name := range negatives {
+		require.Falsef(t, LooksLikeURLParam(name, "x"), "%q must not look like a URL param", name)
+	}
+
+	// "host" is also a standard request header. Name-only callers keep excluding
+	// it; typed callers exclude only the header, so a ?host= query param qualifies.
+	require.False(t, LooksLikeURLParam("host", "internal.example"))
+	require.False(t, LooksLikeURLParamAt(httpmsg.INS_HEADER, "Host", "internal.example"))
+	require.True(t, LooksLikeURLParamAt(httpmsg.INS_PARAM_URL, "host", "internal.example"))
+	require.True(t, LooksLikeURLParamAt(httpmsg.INS_PARAM_JSON, "host", "x"))
+	require.False(t, LooksLikeURLParamAt(httpmsg.INS_HEADER, "Origin", "https://a.example"))
+}
+
+func TestParamNameTokens(t *testing.T) {
+	cases := map[string][]string{
+		"returnUrl":     {"return", "url"},
+		"returnURLPath": {"return", "url", "path"},
+		"img2":          {"img", "2"},
+		"site[0].host":  {"site", "0", "host"},
+		"redirect-to":   {"redirect", "to"},
+		"HOST":          {"host"},
+		"":              nil,
+	}
+	for in, want := range cases {
+		require.Equalf(t, want, paramNameTokens(in), "tokens of %q", in)
+	}
+}

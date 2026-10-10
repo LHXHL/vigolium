@@ -509,7 +509,7 @@ vigolium ingest -t https://api.example.com -I openapi -i spec.yaml
 > Import the spec and scan immediately
 ```
 ```bash
-vigolium ingest -t https://api.example.com -I openapi -i spec.yaml -S
+vigolium ingest -t https://api.example.com -I openapi -i spec.yaml --scan-on-receive
 ```
 
 **Ingest Burp export:**
@@ -1401,7 +1401,7 @@ These are examples of natural language prompts you can give to Claude Code or Co
 | "Export results as HTML report" | `vigolium export --format html -o report.html` |
 | "What traffic is in the database?" | `vigolium traffic` |
 | "Write me an extension that checks for exposed .env files" | Generates a JS extension file |
-| "Start the server with auto-scan" | `vigolium server -t <url> --scan-on-receive` |
+| "Start the server with auto-scan" | `vigolium server --scan-on-receive` (no target flag; scoped by `scope.*` rules) |
 | "Source-aware AI scan" | `vigolium agent swarm -t <url> --source ./src` |
 | "Multi-phase code audit" | `vigolium agent audit --source ./src` |
 | "Clean up old scan data" | `vigolium db clean --before <date> --force` |

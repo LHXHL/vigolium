@@ -57,6 +57,10 @@ func New() *Module {
 	return m
 }
 
+// VulnClass enables cross-module (param, class) dedup: once any open-redirect module
+// reports a parameter, the others in the class skip it.
+func (m *Module) VulnClass() string { return modkit.VulnClassOpenRedirect }
+
 func (m *Module) ScanPerRequest(
 	ctx *httpmsg.HttpRequestResponse,
 	httpClient *http.Requester,
@@ -105,6 +109,10 @@ func (m *Module) ScanPerRequest(
 			if !matchTopParams(ip.Name()) && !matchValueIsURL(paramValue) {
 				continue
 			}
+			// Another open-redirect module already reported this param here.
+			if scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
+				continue
+			}
 			foundIssues, match, err := checkWithAllModules(ctx.Request().Raw(), ip, urlx, ctx.Service(), httpClient)
 			if err == nil && match {
 				results = append(results, foundIssues...)
@@ -130,7 +138,7 @@ func (m *Module) ScanPerRequest(
 	if len(bodyPoints) > 0 {
 		newParamNames := []string{}
 		for _, ip := range bodyPoints {
-			if checkedParams[ip.Name()] {
+			if checkedParams[ip.Name()] || scanCtx.ParamAlreadyFound(ctx, ip.Name(), m.VulnClass()) {
 				continue
 			}
 			paramValue := ip.BaseValue()

@@ -9,6 +9,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -107,7 +108,7 @@ func (m *Module) ScanPerRequest(
 	// Category 1: sub_path + oob_part clusterbomb (5 × 3 = 15 probes)
 	for _, sub := range subPaths {
 		for _, oob := range oobParts {
-			oastURL := oast.GenerateURL(urlx.String(), sub, "path", ModuleID, requestHash)
+			oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), sub, "path", ModuleID, requestHash)
 			if oastURL == "" {
 				continue
 			}
@@ -121,7 +122,7 @@ func (m *Module) ScanPerRequest(
 
 	// Category 2: /{proxy_path}/http://{oast} (11 probes)
 	for _, pp := range proxyPaths {
-		oastURL := oast.GenerateURL(urlx.String(), pp, "path", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), pp, "path", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}
@@ -134,7 +135,7 @@ func (m *Module) ScanPerRequest(
 
 	// Category 3: /{proxy_path}/{oast} (11 probes)
 	for _, pp := range proxyPaths {
-		oastURL := oast.GenerateURL(urlx.String(), pp, "path", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), pp, "path", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}
@@ -147,7 +148,7 @@ func (m *Module) ScanPerRequest(
 
 	// Category 4: vendor-specific tileproxy (2 probes)
 	for _, tp := range tileproxyPaths {
-		oastURL := oast.GenerateURL(urlx.String(), "tileproxy", "path", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), "tileproxy", "path", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}
@@ -160,7 +161,7 @@ func (m *Module) ScanPerRequest(
 
 	// Category 5: query parameter pingback (15 probes)
 	for _, pp := range paramProbes {
-		oastURL := oast.GenerateURL(urlx.String(), pp.name, "parameter", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), pp.name, "parameter", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}
@@ -172,7 +173,7 @@ func (m *Module) ScanPerRequest(
 	}
 
 	// Category 6: Proxy-Authorization header with OAST URL
-	oastURL := oast.GenerateURL(urlx.String(), "Proxy-Authorization", "header", ModuleID, requestHash)
+	oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), "Proxy-Authorization", "header", ModuleID, requestHash)
 	if oastURL != "" {
 		oast.RecordPayload(oastURL, "Basic "+oastURL)
 		if err := m.sendHeaderProbe(ctx, httpClient, "Proxy-Authorization", "Basic "+oastURL); err != nil {
