@@ -132,6 +132,11 @@ type ExecutorConfig struct {
 	// dynamic-assessment.allow_risky_payloads) into ScanContext, unlocking
 	// risk:high payloads below deep.
 	AllowRiskyPayloads bool
+	// InsertionPointFilter, when non-nil, narrows the per-insertion-point stage
+	// to the points it accepts (`finding verify` re-runs a module on the one
+	// point a finding was found on). Host- and request-scope modules are not
+	// affected; their results carry FuzzingParameter for callers to filter on.
+	InsertionPointFilter func(httpmsg.InsertionPoint) bool
 	// ContentClassByHost seeds the per-host content-class registry from the
 	// heuristics root probe (host → modkit.ContentClass string). It is the
 	// fallback consulted by the content-class gate when a record's own

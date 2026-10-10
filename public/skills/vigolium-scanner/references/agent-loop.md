@@ -476,9 +476,37 @@ Finding output shape:
 
 ## Step 4 — Confirm a finding
 
+Two tools, for two questions:
+
+- **Does the module still find it?** `vigolium finding verify <id|hash>...`
+  re-runs the finding's own module against the request it scanned, on the one
+  insertion point it was found on, and records a verdict. Use it first: it
+  needs no reasoning about the payload and it writes the answer back.
+- **What exactly does the target answer?** `vigolium replay` re-sends one
+  request and diffs it against the stored baseline, for manual confirmation.
+
+```bash
+vigolium finding verify 42 -j                         # one finding
+vigolium finding verify --scan-uuid <uuid> --mark -j  # every finding of a scan, status set
+vigolium finding verify 42 --dry-run                  # what would run; sends nothing
+```
+
+Verdicts: `confirmed` (the module reported it again), `not_reproduced` (the
+module ran against a responding target and did not), `inconclusive` (target
+unreachable, module timed out, or no baseline could be rebuilt — the `reason`
+says which), `unsupported` (agent, audit, OAST and known-issue-scan findings,
+or an `ext-*` module not loaded with `--ext`). The verdict lands in the
+finding's `verification` field (`finding -j` shows it with `verified_at`); the
+status is untouched unless `--mark` moves `not_reproduced` → `false_positive`
+and `confirmed` → `confirmed`, with the same audit trail as `finding mark`.
+Passive findings are re-analyzed on the stored record without a request
+(`--refetch` fetches a fresh one). `--fail-if not_reproduced` exits 4 when any
+finding matches, after the envelope is written. Full reference:
+[data.md → finding verify](data.md#finding-verify).
+
 `vigolium replay` re-sends **one** request and diffs it against the stored
 baseline. It is the CLI surface of the in-process `replay_request` tool, and it
-is the correct way to prove a finding is real before reporting it.
+is the way to inspect a finding's evidence by hand before reporting it.
 
 ```bash
 # Re-send the request behind a stored record.
@@ -1081,6 +1109,7 @@ On the read commands:
 | `traffic --group-by <unknown field>` | `2` | `usage_error` (lists the groupable fields) |
 | `traffic body --uuid <no such record>` | `1` | `record_not_found` |
 | `finding mark <id/hash that matches nothing>` | `1` | `not_found` — after the mutation envelope, which lists it in `not_found` |
+| `finding verify … --fail-if not_reproduced` (a finding did not reproduce) | `4` | `gate_tripped` — after the envelope |
 | `scan diff <unknown scan>` / `finding --new-since <unknown scan>` | `1` | `scan_not_found` |
 | `traffic body --uuid <request with no response>` | `1` | `body_unavailable` |
 | `scan -S -o <unwritable path>` | `1` | `export_failed` — the scan ran; the artifact did not land |

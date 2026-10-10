@@ -127,7 +127,7 @@ func TestProcessResults_MarkUsesModuleKey(t *testing.T) {
 	e.processResults(context.Background(), []*output.ResultEvent{{
 		URL:              "https://example.com/users?id=1",
 		FuzzingParameter: "id",
-	}}, mod, nil)
+	}}, mod, nil, nil)
 
 	_, item := makeTestItem("example.com", "/users?id=2", "")
 	assert.True(t, e.scanCtx.ParamAlreadyFound(item, "id", "xss"),

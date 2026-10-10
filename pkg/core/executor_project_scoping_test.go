@@ -242,7 +242,7 @@ func TestProcessResults_StampsConfiguredProjectOnFindings(t *testing.T) {
 		Matched: "https://example.com/item?id=1",
 	}
 
-	e.processResults(ctx, []*output.ResultEvent{result}, &trackingPassiveModule{id: "sqli-scanner"}, nil)
+	e.processResults(ctx, []*output.ResultEvent{result}, &trackingPassiveModule{id: "sqli-scanner"}, nil, nil)
 
 	findings := loadFindings(t, db)
 	if len(findings) != 1 {

@@ -207,17 +207,11 @@ func resolveNamed(ips []httpmsg.InsertionPoint, sel Selectors) ([]Position, erro
 		if !ok {
 			return nil, fmt.Errorf("bad --point %q (want TYPE:name, e.g. URL_PARAM:id)", np)
 		}
-		found := false
-		for _, ip := range ips {
-			if strings.EqualFold(ip.Type().String(), typeName) && ip.Name() == name {
-				positions = append(positions, ipToPosition(ip))
-				found = true
-				break
-			}
-		}
-		if !found {
+		ip := httpmsg.FindInsertionPoint(ips, typeName, name)
+		if ip == nil {
 			return nil, fmt.Errorf("--point %q not found; available: %s", np, availablePoints(ips))
 		}
+		positions = append(positions, ipToPosition(ip))
 	}
 	for _, h := range sel.HeaderNames {
 		found := false

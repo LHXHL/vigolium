@@ -16,7 +16,10 @@ import (
 	"go.uber.org/zap"
 )
 
-func (e *Executor) processResults(ctx context.Context, results []*output.ResultEvent, m modules.Module, item *httpmsg.HttpRequestResponse) {
+// processResults finalizes and emits one module call's results. ip is the
+// insertion point the call scanned (nil for host-, request-scope and passive
+// modules); it and item supply the replay context `finding verify` reads back.
+func (e *Executor) processResults(ctx context.Context, results []*output.ResultEvent, m modules.Module, item *httpmsg.HttpRequestResponse, ip httpmsg.InsertionPoint) {
 	moduleType := database.ModuleTypeActive
 	if _, ok := m.(modules.PassiveModule); ok {
 		moduleType = database.ModuleTypePassive
@@ -81,6 +84,8 @@ func (e *Executor) processResults(ctx context.Context, results []*output.ResultE
 			continue
 		}
 
+		e.setReplayContext(result, item, ip)
+
 		emitted := e.emitResult(ctx, result, baselineReq, baselineResp)
 
 		// Cross-module finding dedup: mark (URL, param, vuln_class) as found
@@ -142,6 +147,55 @@ func (e *Executor) reconfirmBodyDifferential(
 		zap.String("param", result.FuzzingParameter),
 		zap.String("reason", res.Reason))
 	return false
+}
+
+// maxStoredPayload bounds ResultEvent.Payload as derived by the executor: the
+// payload is a replay hint, and the full request is already on the finding.
+const maxStoredPayload = 4096
+
+// setReplayContext records what `finding verify` needs to re-run the module:
+// the stored record of the scanned item, the insertion point and the value
+// injected there. Values a module (or extension) set itself are kept.
+func (e *Executor) setReplayContext(result *output.ResultEvent, item *httpmsg.HttpRequestResponse, ip httpmsg.InsertionPoint) {
+	if item == nil || item.Request() == nil {
+		return
+	}
+	if result.OriginRecordUUID == "" && e.caches.requestUUIDs != nil {
+		result.OriginRecordUUID = e.ResolveRequestUUID(item.Request().ID())
+	}
+	if ip == nil {
+		return
+	}
+	if result.FuzzingParameter == "" {
+		result.FuzzingParameter = ip.Name()
+	}
+	if result.FuzzingParameter != ip.Name() {
+		return // the module reported another point; don't pair it with this one
+	}
+	if result.InsertionPointType == "" {
+		result.InsertionPointType = ip.Type().String()
+	}
+	if result.Payload == "" && result.Request != "" && result.Request != string(item.Request().Raw()) {
+		result.Payload = injectedValue(result.Request, ip)
+	}
+}
+
+// injectedValue reads the value at ip's position in the mutated raw request.
+// Empty when the request does not parse or no longer carries the point.
+func injectedValue(rawRequest string, ip httpmsg.InsertionPoint) string {
+	pts, err := httpmsg.CreateAllInsertionPoints([]byte(rawRequest), true)
+	if err != nil {
+		return ""
+	}
+	found := httpmsg.FindInsertionPoint(pts, ip.Type().String(), ip.Name())
+	if found == nil || found.BaseValue() == ip.BaseValue() {
+		return ""
+	}
+	v := found.BaseValue()
+	if len(v) > maxStoredPayload {
+		v = v[:maxStoredPayload]
+	}
+	return v
 }
 
 // moduleFindingAllowed returns true if the module has not exceeded its finding cap.

@@ -50,7 +50,7 @@ func (e *Executor) runActivePerHost(ctx context.Context, reqClient *http.Request
 				},
 				mod, item, reqClient, releaseSlot, 0)
 			if completed && len(results) > 0 {
-				e.processResults(ctx, results, mod, item)
+				e.processResults(ctx, results, mod, item, nil)
 			}
 		})
 	}
@@ -89,7 +89,7 @@ func (e *Executor) runActivePerRequest(ctx context.Context, reqClient *http.Requ
 				},
 				mod, item, reqClient, releaseSlot, workUnits)
 			if completed && len(results) > 0 {
-				e.processResults(ctx, results, mod, item)
+				e.processResults(ctx, results, mod, item, nil)
 			}
 		})
 	}
@@ -163,6 +163,9 @@ func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *ht
 			if !allowedTypes.Contains(ip.Type()) {
 				continue
 			}
+			if ipFilter := e.cfg.InsertionPointFilter; ipFilter != nil && !ipFilter(ip) {
+				continue
+			}
 
 			// Cross-module dedup: skip if another module already found this vuln
 			// class on this param.
@@ -188,7 +191,7 @@ func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *ht
 					},
 					mod, item, reqClient, releaseSlot, 0)
 				if completed && len(results) > 0 {
-					e.processResults(ctx, results, mod, item)
+					e.processResults(ctx, results, mod, item, pt)
 				}
 			})
 		}

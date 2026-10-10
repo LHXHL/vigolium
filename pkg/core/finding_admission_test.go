@@ -90,13 +90,13 @@ func TestSharedAdmissionNoCallbackOnRediscovery(t *testing.T) {
 	mod := &trackingPassiveModule{id: "rediscovery"}
 	round1.processResults(context.Background(), []*output.ResultEvent{
 		{URL: "https://example.com/a", DedupKey: "root-a"},
-	}, mod, nil)
+	}, mod, nil, nil)
 	assert.Equal(t, 1, calls1)
 	assert.Len(t, loadFindings(t, db1), 1)
 
 	round2.processResults(context.Background(), []*output.ResultEvent{
 		{URL: "https://example.com/a?again=1", DedupKey: "root-a"},
-	}, mod, nil)
+	}, mod, nil, nil)
 	assert.Equal(t, 0, calls2, "a root cause reported in round 1 must not re-fire in round 2")
 }
 

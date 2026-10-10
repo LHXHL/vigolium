@@ -89,6 +89,17 @@ type ResultEvent struct {
 	IsFuzzingResult  bool   `json:"is_fuzzing_result,omitempty"`
 	FuzzingParameter string `json:"fuzzing_parameter,omitempty"`
 
+	// Replay context, set by the executor so `finding verify` can re-run the
+	// module exactly: OriginRecordUUID is the http_record of the item the
+	// module scanned (empty when the run stores nothing), InsertionPointType
+	// names the point it mutated (an httpmsg.InsertionPointType.String() value;
+	// the point's name is FuzzingParameter), and Payload is the value it
+	// injected there. Persisted as findings.origin_record_uuid,
+	// insertion_point and payload.
+	OriginRecordUUID   string `json:"origin_record_uuid,omitempty"`
+	InsertionPointType string `json:"insertion_point_type,omitempty"`
+	Payload            string `json:"payload,omitempty"`
+
 	// Error field for error reporting
 	Error string `json:"error,omitempty"`
 

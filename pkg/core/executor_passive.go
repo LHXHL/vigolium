@@ -32,7 +32,7 @@ func (e *Executor) runPassivePerHostFiltered(ctx context.Context, item *httpmsg.
 			},
 			module, item,
 		)
-		e.processResults(ctx, results, module, item)
+		e.processResults(ctx, results, module, item, nil)
 	}
 }
 
@@ -75,7 +75,7 @@ func (e *Executor) runPassivePerRequestFiltered(ctx context.Context, item *httpm
 					},
 					mod, item,
 				)
-				e.processResults(ctx, results, mod, item)
+				e.processResults(ctx, results, mod, item, nil)
 			})
 		}
 		g.Wait()
@@ -93,7 +93,7 @@ func (e *Executor) runPassivePerRequestFiltered(ctx context.Context, item *httpm
 			},
 			module, item,
 		)
-		e.processResults(ctx, results, module, item)
+		e.processResults(ctx, results, module, item, nil)
 	}
 }
 

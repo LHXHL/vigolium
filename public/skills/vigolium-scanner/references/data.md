@@ -22,6 +22,7 @@ Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `traf
 - [finding](#finding)
 - [finding load](#finding-load)
 - [finding mark](#finding-mark)
+- [finding verify](#finding-verify)
 - [traffic](#traffic)
 - [traffic --replay](#traffic---replay)
 - [traffic --curl / finding --curl](#traffic---curl--finding---curl)
@@ -835,6 +836,73 @@ Writes to the project DB, or a standalone `.sqlite` with `-S --db <file>`
 ```bash
 vigolium finding mark 42 --as false_positive --note "static asset, no user input"
 vigolium finding mark 3f9a0c2b71de 43 --as confirmed --by alice -j
+```
+
+---
+
+## finding verify
+
+**Usage:** `vigolium finding verify <id|hash>... [--scan-uuid <uuid>] [--mark] [--fail-if <verdicts>] [flags]`
+
+Re-run the module behind each finding against the request it originally
+scanned and record whether the finding reproduces. Name findings as for
+[`finding mark`](#finding-mark); `--scan-uuid` adds every finding of a scan.
+
+| Verdict | Meaning |
+|---------|---------|
+| `confirmed` | the module reported the same finding again |
+| `not_reproduced` | the module ran against a responding target and did not report it |
+| `inconclusive` | no verdict: target unreachable, module timed out or errored, or the baseline could not be rebuilt (`reason` says which) |
+| `unsupported` | no deterministic re-run: agent, audit, OAST and known-issue-scan findings, or an `ext-*` module that is not loaded |
+
+**Reconstruction.** The module comes from the finding's `module_id`; an
+`ext-*` module is loaded from `--ext` / `--ext-dir` (or the configured
+extension directory). The baseline is the finding's `origin_record_uuid` (the
+record the module scanned, stored since schema v3); for older findings it is the
+linked record when that is a scanned record, otherwise a scanned record on the
+same host, method and path that differs from the finding's request in exactly
+one insertion point. The insertion point is the stored `insertion_point`
+(`{type, name}`), else that single differing point. The module then runs alone
+on that point with cross-module dedup and the finding cap off, against a fresh
+baseline response. A **passive** finding is re-analyzed on its stored record
+and sends nothing; `--refetch` fetches a fresh response first.
+
+**Writes.** The verdict is stored in the finding's `verification`
+(`{verdict, at, module_version, scan_uuid, reason}`) and `verified_at`; status
+is not changed. `--mark` also moves `not_reproduced` → `false_positive` and
+`confirmed` → `confirmed` through the `finding mark` path (status note, actor
+`finding-verify`, status history). `--no-write` stores nothing; `--dry-run`
+prints the reconstruction (module, baseline request, insertion point) and sends
+nothing.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--scan-uuid` | string | — | Also verify every finding of this scan (UUID, 8+ char prefix, `latest`, `previous`; unknown → exit 1 `scan_not_found`) |
+| `--mark` | bool | false | Set the status from the verdict (not with `--dry-run` / `--no-write`) |
+| `--fail-if` | string | — | Exit 4 when any finding gets one of these verdicts (comma-separated) |
+| `--dry-run` | bool | false | Print what would run; send and write nothing |
+| `--no-write` | bool | false | Run, but do not store the verdict |
+| `--refetch` | bool | false | Passive findings: analyze a fresh response instead of the stored one |
+| `--rate-limit` | float | 0 | Max requests/second (0 = unlimited) |
+| `--timeout` | duration | 2m | Time limit per finding (one request is capped at 15s) |
+
+`-j` is a mutation envelope: `action: "verify"`, `changed` (a verdict was
+stored), `dry_run`, `items` = one object per finding `{id, finding_hash,
+module_id, verdict, reason, plan: {baseline, insertion_point,
+insertion_point_source, payload, network}, results, matched, requests,
+duration_ms, written, status_change}`, plus `verdicts` (count per verdict),
+`not_found` and `written`. Any `not_found` exits 1; `--fail-if` exits 4, both
+after the document is written. Refused (exit 2) to write under `--glob-db` and
+for a `.jsonl` `--db` — use `--no-write` there.
+
+The finding `-j` item carries the replay context and the latest result:
+`origin_record_uuid`, `insertion_point`, `payload`, `verification`,
+`verified_at`.
+
+```bash
+vigolium finding verify 42 -j
+vigolium finding verify --scan-uuid 6f1c2a9e --mark --fail-if not_reproduced
+vigolium finding verify 3f9a0c2b71de --dry-run
 ```
 
 ---

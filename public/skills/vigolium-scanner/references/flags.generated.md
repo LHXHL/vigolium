@@ -61,6 +61,7 @@ run `vigolium <command> -h`.
 - [vigolium finding](#vigolium-finding)
 - [vigolium finding load](#vigolium-finding-load)
 - [vigolium finding mark](#vigolium-finding-mark)
+- [vigolium finding verify](#vigolium-finding-verify)
 - [vigolium fuzz](#vigolium-fuzz)
 - [vigolium gau](#vigolium-gau)
 - [vigolium import](#vigolium-import)
@@ -990,6 +991,23 @@ Record a verdict on findings (false_positive, confirmed, accepted_risk, fixed, t
 | `--by` | - | string | - | Who decided (default "cli") |
 | `--note` | - | string | - | Why: stored with the verdict and in the finding's status history |
 | `--stateless` | `-S` | bool | `false` | Write to the standalone .sqlite named by --db with project scoping off |
+
+## vigolium finding verify
+
+Usage: `vigolium finding verify <id|hash>... [--scan-uuid <uuid>]`
+
+Re-run a finding's module against its target and record whether it reproduces
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--dry-run` | - | bool | `false` | Print the reconstructed module, baseline request and insertion point; send nothing and write nothing |
+| `--fail-if` | - | string | - | Exit 4 when any finding gets one of these verdicts: confirmed,not_reproduced,inconclusive,unsupported (comma-separated) |
+| `--mark` | - | bool | `false` | Also set the status: not_reproduced → false_positive, confirmed → confirmed |
+| `--no-write` | - | bool | `false` | Run the verification but do not store the verdict |
+| `--rate-limit` | - | float64 | `0` | Max requests/second across the verification (0 = unlimited; fractions allowed) |
+| `--refetch` | - | bool | `false` | Passive findings: fetch a fresh response instead of re-analyzing the stored one |
+| `--stateless` | `-S` | bool | `false` | Use the standalone .sqlite named by --db with project scoping off |
+| `--timeout` | - | duration | `2m0s` | Time limit for verifying one finding (one request is capped at 15s) |
 
 ## vigolium fuzz
 

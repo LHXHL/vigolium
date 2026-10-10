@@ -595,7 +595,8 @@ var (
 		"url", "hostname", "matched_at", "extracted_results", "additional_evidence",
 		"tags", "cwe_id", "cvss_score", "remediation", "status", "status_note", "status_actor", "scan_uuid",
 		"agentic_scan_uuid", "repo_name", "source_file", "found_at",
-		"http_record_uuids", "response_evidence", "request", "response",
+		"http_record_uuids", "origin_record_uuid", "insertion_point", "payload", "verification", "verified_at",
+		"response_evidence", "request", "response",
 		"records", "records_total", "records_truncated", "records_error",
 	}
 )
@@ -802,6 +803,22 @@ func compactFindingView(f *database.Finding, records []*database.HTTPRecord, opt
 	m["found_at"] = f.FoundAt.Format(time.RFC3339)
 	if len(f.HTTPRecordUUIDs) > 0 {
 		m["http_record_uuids"] = f.HTTPRecordUUIDs
+	}
+	// Replay context and the latest `finding verify` result.
+	if f.OriginRecordUUID != "" {
+		m["origin_record_uuid"] = f.OriginRecordUUID
+	}
+	if f.InsertionPoint != nil {
+		m["insertion_point"] = f.InsertionPoint
+	}
+	if f.Payload != "" {
+		m["payload"] = f.Payload
+	}
+	if f.Verification != nil {
+		m["verification"] = f.Verification
+	}
+	if f.VerifiedAt != nil {
+		m["verified_at"] = f.VerifiedAt.Format(time.RFC3339)
 	}
 
 	if !opts.noBodies {
