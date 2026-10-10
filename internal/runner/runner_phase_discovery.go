@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	nethttp "net/http"
 	neturl "net/url"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/pkg/core"
+	"github.com/vigolium/vigolium/pkg/core/egress"
+	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/deparos/discovery"
 	"github.com/vigolium/vigolium/pkg/input/source"
@@ -19,6 +22,23 @@ import (
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
 )
+
+// discoveryEgress is the deparos egress hook for one discovery phase run: the
+// scan's host slots and quarantine (through its egress gate), with discovery's
+// own pace — discovery.rate_limit or an explicit --rate-limit, unpaced
+// otherwise (config.DiscoveryRateLimit) — as ONE token bucket shared by every
+// concurrent discovery target. Built once per phase run, so the rate is
+// phase-wide rather than per target.
+func discoveryEgress(infra *phaseInfra, rateLimit int) func(nethttp.RoundTripper) nethttp.RoundTripper {
+	var svc *services.Services
+	if infra != nil {
+		svc = infra.svc
+	}
+	gate := svc.EgressGate().WithRate(buildScanRateLimiter(rateLimit))
+	return func(next nethttp.RoundTripper) nethttp.RoundTripper {
+		return gate.RoundTripper(next, egress.LaneNormal)
+	}
+}
 
 func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error {
 	phaseStart := time.Now()
@@ -112,6 +132,7 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 				return !matcher.ExplicitlyExcluded(u.Hostname(), u.Path)
 			}
 		}
+		deparosCfg.Egress = discoveryEgress(infra, deparosCfg.RateLimit)
 		src, srcErr := source.NewDeparosDiscoverySource(phaseCtx, deparosCfg)
 		if srcErr != nil {
 			zap.L().Warn("Failed to initialize deparos discovery", zap.Error(srcErr))
@@ -140,9 +161,9 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 
 	// Only the dials discovery actually applies (config.phasePaceSupport): the
 	// engine's thread count and, when one is explicitly configured, its request
-	// rate. max-per-host used to be printed here and has never been enforced on
-	// this phase — deparos has its own HTTP client and no host semaphore — and the
-	// concurrency printed was the global value rather than the section's.
+	// rate (one bucket for the whole phase). Its host slots are the scan's own
+	// (the shared host limiter, through the egress gate), so no discovery-specific
+	// max-per-host is printed; the concurrency printed is the section's.
 	rateDetail := "unlimited"
 	if rate := r.discoveryRateLimit(); rate > 0 {
 		rateDetail = fmt.Sprintf("%d/s", rate)

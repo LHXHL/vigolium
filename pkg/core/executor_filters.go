@@ -2,10 +2,7 @@ package core
 
 import (
 	"sort"
-	"strings"
 
-	"github.com/vigolium/vigolium/pkg/httpmsg"
-	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 )
@@ -63,54 +60,4 @@ func filterNonScopeAware(mods []modules.PassiveModule) []modules.PassiveModule {
 		out = append(out, m)
 	}
 	return out
-}
-
-// moduleFilter provides O(1) module-enable lookups via a map.
-type moduleFilter struct {
-	all bool
-	set map[string]struct{}
-}
-
-// allModulesFilter is a pre-allocated filter that allows all modules,
-// avoiding a new moduleFilter allocation on the common path.
-var allModulesFilter = moduleFilter{all: true}
-
-// newModuleFilter builds a filter from the enableModules slice.
-// Empty slice or "all" sentinel means all modules are enabled.
-func newModuleFilter(enableModules []string) moduleFilter {
-	if len(enableModules) == 0 {
-		return moduleFilter{all: true}
-	}
-	set := make(map[string]struct{}, len(enableModules))
-	for _, id := range enableModules {
-		if id == "all" {
-			return moduleFilter{all: true}
-		}
-		set[id] = struct{}{}
-	}
-	return moduleFilter{set: set}
-}
-
-// allows returns true if the module should run.
-func (f *moduleFilter) allows(moduleID string) bool {
-	if f.all {
-		return true
-	}
-	_, ok := f.set[moduleID]
-	return ok
-}
-
-// getKnownTotal returns the total count from source if known, otherwise 0.
-func getKnownTotal(src source.InputSource) int64 {
-	return source.GetTotal(src)
-}
-
-// getHeaderValue extracts the first matching header value by name (case-insensitive).
-func getHeaderValue(headers []httpmsg.HttpHeader, name string) string {
-	for _, h := range headers {
-		if strings.EqualFold(h.Name, name) {
-			return h.Value
-		}
-	}
-	return ""
 }

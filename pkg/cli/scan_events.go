@@ -8,6 +8,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -59,16 +60,20 @@ func beginScanEventStream(db *database.DB, opts *types.Options, settings *config
 		dbPath = config.ExpandPath(settings.Database.SQLite.Path)
 	}
 
+	phases := plannedPhaseIDs(opts)
 	started := scanevents.Event{
 		Type:      scanevents.TypeScanStarted,
 		Target:    target,
 		Targets:   len(opts.Targets),
 		Strategy:  strategyName,
-		Phases:    plannedPhaseIDs(opts),
+		Phases:    phases,
 		DBPath:    dbPath,
 		Project:   opts.ProjectUUID,
 		Pace:      &globalPace,
 		PhasePace: phasePace,
+		// Which outbound paths the rate limit and host slots govern, and which
+		// they do not (and why), for the phases this scan runs.
+		Egress: egress.Inventory(phases),
 	}
 	// Present only when the targets are the input (see scanTargetAdmission); a
 	// zero is written, so "0 admitted" is visible before the run fails.

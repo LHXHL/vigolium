@@ -139,7 +139,7 @@ func (m *Module) CanProcess(ctx *httpmsg.HttpRequestResponse) bool {
 // AEAD suites yields no finding.
 func (m *Module) ScanPerHost(
 	ctx *httpmsg.HttpRequestResponse,
-	_ *http.Requester,
+	httpClient *http.Requester,
 	scanCtx *modkit.ScanContext,
 ) ([]*output.ResultEvent, error) {
 	service := ctx.Service()
@@ -170,7 +170,7 @@ func (m *Module) ScanPerHost(
 	// Technology gate: only audit hosts that actually complete a TLS handshake.
 	// A default (library-chosen) handshake failing means the host is down, not TLS,
 	// or otherwise unreachable — nothing to audit, fail closed.
-	if _, ok := handshake(host, port, &tls.Config{
+	if _, ok := handshake(httpClient, host, port, &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // intentional: audit untrusted TLS
 		MinVersion:         tls.VersionTLS10,
 		ServerName:         tlsprobe.SNIName(host),
@@ -190,13 +190,13 @@ func (m *Module) ScanPerHost(
 			cfg.CipherSuites = p.ciphers
 		}
 
-		state, ok := handshake(host, port, cfg)
+		state, ok := handshake(httpClient, host, port, cfg)
 		if !ok {
 			continue
 		}
 		// Multi-round confirmation: re-verify with a second independent handshake so
 		// a transient success can't produce a finding.
-		if _, ok2 := handshake(host, port, cfg); !ok2 {
+		if _, ok2 := handshake(httpClient, host, port, cfg); !ok2 {
 			continue
 		}
 		findings = append(findings, weakFinding{
@@ -272,7 +272,17 @@ func (m *Module) buildResult(ctx *httpmsg.HttpRequestResponse, host, dedupKey st
 // that pins a weak protocol/cipher, ok==true is deterministic proof the server
 // accepts it. Certificate validation is disabled (scan targets routinely present
 // untrusted certs); this module reads the negotiated protocol/cipher, not trust.
-func handshake(host string, port int, cfg *tls.Config) (tls.ConnectionState, bool) {
+//
+// Each handshake is one gated attempt through the scan's egress gate (rate
+// token, host slot, quarantine) via httpClient: the dial bypasses the
+// requester, so it would otherwise go out unpaced. A refusal reads as a failed
+// handshake.
+func handshake(httpClient *http.Requester, host string, port int, cfg *tls.Config) (tls.ConnectionState, bool) {
+	release, err := httpClient.AcquireDial(host, port)
+	if err != nil {
+		return tls.ConnectionState{}, false
+	}
+	defer release()
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: dialTimeout},

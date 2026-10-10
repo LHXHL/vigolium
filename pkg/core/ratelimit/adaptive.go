@@ -136,10 +136,10 @@ func (h *HostRateLimiter) PreArm(host, vendor string) {
 // start limit (MaxPerHost) — under WafAutoArm it stays pinned there until armed.
 func (h *HostRateLimiter) newEntry() *hostEntry {
 	if !h.usesAdaptiveEntries() {
-		return &hostEntry{sem: make(chan struct{}, h.maxPerHost)}
+		return &hostEntry{sem: make(chan struct{}, h.maxPerHost), reserved: make(chan struct{}, reservedPriorityHeadroom)}
 	}
 	start := min(max(h.maxPerHost, h.minPerHost), h.ceilingPerHost)
-	e := &hostEntry{tokens: make(chan struct{}, h.ceilingPerHost)}
+	e := &hostEntry{tokens: make(chan struct{}, h.ceilingPerHost), reserved: make(chan struct{}, reservedPriorityHeadroom)}
 	e.limit.Store(int64(start))
 	// Adaptive hosts are armed from birth (adjust from the first request); WAF-auto-arm
 	// hosts start unarmed and stay pinned at MaxPerHost until a WAF block arms them.

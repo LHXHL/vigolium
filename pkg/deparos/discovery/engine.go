@@ -317,13 +317,16 @@ type EngineMetrics struct {
 //     so a retry also has to take a token; a burst of 503s must not be allowed to
 //     outrun the configured rate.
 //  3. Retry — the engine's existing behaviour, unchanged.
-//  4. Counting — innermost, so it sees every physical attempt including each
+//  4. Egress — the caller's admission policy (vigolium's scan gate: host slot,
+//     quarantine, token). Inside retry, so each attempt is admitted on its own
+//     and the slot is not held through a retry's backoff.
+//  5. Counting — innermost, so it sees every physical attempt including each
 //     retry, which is what a server's access log would show.
 //
 // The optional rungs are omitted entirely when unconfigured rather than wrapping
 // with a no-op, so a run that uses none has the exact chain it had before.
 func engineMiddleware(eng *config.EngineConfig) []pkghttp.Middleware {
-	mw := make([]pkghttp.Middleware, 0, 4)
+	mw := make([]pkghttp.Middleware, 0, 5)
 	if eng.RequestFilter != nil {
 		mw = append(mw, pkghttp.FilterMiddleware(eng.RequestFilter))
 	}
@@ -338,6 +341,9 @@ func engineMiddleware(eng *config.EngineConfig) []pkghttp.Middleware {
 		}))
 	}
 	mw = append(mw, pkghttp.RetryMiddleware(pkghttp.DefaultRetryConfig()))
+	if eng.Egress != nil {
+		mw = append(mw, pkghttp.Middleware(eng.Egress))
+	}
 	if eng.RequestCounter != nil {
 		mw = append(mw, pkghttp.CountingMiddleware(eng.RequestCounter))
 	}

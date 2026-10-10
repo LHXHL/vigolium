@@ -14,7 +14,10 @@
 //
 // The package is self-contained: it owns its own net.Dialer and http.Client
 // (TLS verification disabled, redirects not followed) rather than routing through
-// the vigolium request middleware, keeping the sweep fast and unit-testable.
+// the vigolium request middleware, keeping the sweep fast and unit-testable. The
+// scan still governs it through two hooks: WrapTransport puts the HTTP confirm
+// step behind the scan's egress gate (rate token, host slot, quarantine), and
+// OnDial counts each TCP pre-filter dial, which is counted but not paced.
 //
 // Proxy: the HTTP confirm step goes through Options.ProxyURL when one is set, so
 // an operator's --proxy sees every request the sweep sends. The TCP pre-filter
@@ -72,6 +75,14 @@ type Options struct {
 	// ProxyURL routes the HTTP confirm requests through this proxy (the scan's
 	// --proxy). The TCP pre-filter always dials directly; see the package doc.
 	ProxyURL string
+	// WrapTransport, when set, wraps the confirm client's transport — the scan
+	// passes its egress gate here so every confirm request is admitted like any
+	// other target request. nil = ungated.
+	WrapTransport func(http.RoundTripper) http.RoundTripper
+	// OnDial, when set, is called once per TCP pre-filter dial attempt. A bare
+	// connect has no request to rate, but it reaches the host, so the scan
+	// counts it.
+	OnDial func()
 }
 
 func (o Options) normalize() Options {
@@ -131,16 +142,20 @@ func Sweep(ctx context.Context, host string, opts Options) Result {
 	}
 
 	dialer := &net.Dialer{Timeout: opts.DialTimeout}
+	var transport http.RoundTripper = &http.Transport{
+		Proxy:               proxyFunc(opts.ProxyURL),
+		DialContext:         dialer.DialContext,
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // sweep confirmation only; we never trust these endpoints
+		TLSHandshakeTimeout: opts.HTTPTimeout,
+		DisableKeepAlives:   true,
+	}
+	if opts.WrapTransport != nil {
+		transport = opts.WrapTransport(transport)
+	}
 	client := &http.Client{
 		Timeout:       opts.HTTPTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Transport: &http.Transport{
-			Proxy:               proxyFunc(opts.ProxyURL),
-			DialContext:         dialer.DialContext,
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // sweep confirmation only; we never trust these endpoints
-			TLSHandshakeTimeout: opts.HTTPTimeout,
-			DisableKeepAlives:   true,
-		},
+		Transport:     transport,
 	}
 
 	var (
@@ -168,6 +183,9 @@ func Sweep(ctx context.Context, host string, opts Options) Result {
 			// instead of waiting out the longer HTTP/TLS timeout, and the open
 			// count feeds the honeypot ratio. The follow-up HTTP confirm dials
 			// again — one extra handshake per open port, by design.
+			if opts.OnDial != nil {
+				opts.OnDial()
+			}
 			if !TCPReachable(ctx, dialer, host, port) {
 				return
 			}

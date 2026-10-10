@@ -61,8 +61,10 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 	mgr, err := authentication.NewManager(sessions,
 		authentication.WithSessionDir(sessionCfg.SessionDir),
 		// A login goes to the host the scan is about to attack, so it follows the
-		// same proxy and TLS policy as every other request to that host.
-		authentication.WithLoginTransport(http.LoginTransport(opts)),
+		// same proxy and TLS policy as every other request to that host, and the
+		// same egress gate (rate, host slot, quarantine, count) on the priority
+		// lane, so it never waits behind the requests that are waiting for it.
+		authentication.WithLoginTransport(http.GatedLoginTransport(opts, infra.svc.EgressGate())),
 	)
 	if err != nil {
 		return err

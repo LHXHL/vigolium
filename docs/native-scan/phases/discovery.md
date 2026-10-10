@@ -345,4 +345,7 @@ Targets run through a bounded pool, `discovery.target_concurrency` (default
 host:port never run together. The engine threads (`scanning_pace.discovery.concurrency`)
 are a phase budget split across the targets that can run together
 (`max(5, threads / active)`), so going concurrent does not multiply the requests
-in flight; an explicit discovery `rate_limit` applies to each target.
+in flight; an explicit discovery `rate_limit` is one bucket for every target in
+flight, so it is the phase's rate. Discovery requests also take the scan's
+per-host slots and stop at its dead-host quarantine, like every other target
+request (see "The egress gate" in `docs/configuration.md`).

@@ -174,8 +174,9 @@ func PhaseSectionNames() []string {
 // Honest as of improvement-2 WP11. Flipping an entry to true is part of the
 // change that makes it true, never a separate bookkeeping step.
 var phasePaceSupport = map[string]struct{ Concurrency, RateLimit, MaxPerHost bool }{
-	// Deparos engine threads, and (WP11) a per-engine token bucket. Targets run
-	// sequentially, so the per-engine bucket is the phase-wide rate.
+	// Deparos engine threads, and one token bucket shared by every concurrent
+	// discovery target (through the scan's egress gate), so the rate is
+	// phase-wide. Host slots are the scan's shared ones, not a section value.
 	"discovery": {Concurrency: true, RateLimit: true},
 	// The crawler is a single browser with no limiter fields at all.
 	"spidering": {},

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
@@ -139,6 +140,10 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 	hostLimiter := newHostLimiter(maxPerHost, r.settings, r.options.NoWafPacing)
 	svc.HostLimiter = hostLimiter
 	infra.hostLimiter = hostLimiter
+	// The scan's one egress gate over the three components above: every target
+	// sender (requester, discovery, login, port-sweep) admits through it or a
+	// view of it, so they share one wire-attempt counter.
+	svc.Egress = egress.New(egress.Config{Rate: svc.RateLimiter, Hosts: hostLimiter, Breaker: svc.HostErrors})
 	infra.svc = svc
 
 	httpRequester, err := http.NewRequester(r.options, svc)

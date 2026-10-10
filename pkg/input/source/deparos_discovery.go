@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	nethttp "net/http"
 	"net/url"
 	"slices"
 	"sort"
@@ -77,11 +78,18 @@ type DeparosDiscoveryConfig struct {
 	// buildDeparosConfig in the runner — because imposing the global 100 rps
 	// default on a crawl changes the speed of every existing scan.
 	//
-	// The bucket is per engine, i.e. per target. Two targets on the same
-	// host:port never run at once (see TargetConcurrency), so it is still the
-	// rate any one host sees; with several hosts in flight the phase as a whole
-	// can send up to that many times RateLimit.
+	// On its own the bucket is per engine, i.e. per target, so with several
+	// targets in flight the phase as a whole can send up to that many times
+	// RateLimit. The runner avoids that by passing Egress, which carries ONE
+	// bucket at this rate for every target; RateLimit then only describes it.
 	RateLimit int
+
+	// Egress, when set, admits every physical attempt of every per-target engine
+	// (deparos EngineConfig.Egress): the scan's host slots and quarantine, plus
+	// the discovery token bucket. Because the same wrapper serves all targets,
+	// its bucket is phase-wide. When set, the engines' own per-target bucket
+	// (RateLimit) is not installed — the gate is expected to carry the rate.
+	Egress func(nethttp.RoundTripper) nethttp.RoundTripper
 
 	// TargetConcurrency is how many targets are discovered at once. 0 = default
 	// (min(len(Targets), 3)); 1 = one at a time. Targets sharing a host:port are
@@ -780,6 +788,13 @@ func (d *DeparosDiscoverySource) buildDeparosConfig(target string) *deparosconfi
 	// Passed straight through, including 0: the engine reads 0 as "unpaced", and
 	// turning it into a default here would throttle every scan that never asked.
 	cfg.Engine.RequestsPerSecond = d.cfg.RateLimit
+	if d.cfg.Egress != nil {
+		// One gate for every target: its bucket is the phase-wide rate, so a
+		// per-engine bucket on top would only re-pace each target at the same
+		// number (see DeparosDiscoveryConfig.Egress).
+		cfg.Engine.Egress = d.cfg.Egress
+		cfg.Engine.RequestsPerSecond = 0
+	}
 
 	// Discovery mode
 	switch d.cfg.Mode {

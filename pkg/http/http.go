@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,7 +22,7 @@ import (
 	"github.com/projectdiscovery/rawhttp"
 	"github.com/projectdiscovery/retryablehttp-go"
 	httpUtils "github.com/projectdiscovery/utils/http"
-	"github.com/vigolium/vigolium/pkg/core/hosterrors"
+	"github.com/vigolium/vigolium/pkg/core/egress"
 	"github.com/vigolium/vigolium/pkg/core/network"
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/deparos/waf"
@@ -154,8 +155,22 @@ type Requester struct {
 	// It is the numerator of the machine event stream's phase.progress: a
 	// consumer watching a 15-minute crawl learns it is moving from this slope and
 	// nothing else. Incremented on the executeDirectly path only, so a clusterer
-	// cache hit — which sends nothing — correctly does not count.
+	// cache hit — which sends nothing — correctly does not count. Counts wire
+	// attempts: a retry and a followed redirect hop each add one.
 	sent *atomic.Int64
+	// gate admits every wire attempt (rate token, host slot, quarantine). It is
+	// the Services' gate (Services.EgressGate), shared by every clone.
+	gate *egress.Gate
+	// lane is the host-slot lane this requester's traffic uses. LaneNormal for
+	// scan traffic; WithLane(egress.LanePriority) for traffic the scan waits on.
+	lane egress.Lane
+	// retries is how many times a request that failed at the transport level is
+	// re-sent (--retries). Retries run in executeDirectly through the gate, not
+	// inside retryablehttp, so each one pays a token and none holds the host slot
+	// through its backoff.
+	retries int
+	// retryBackoff overrides egress.DefaultBackoff (tests).
+	retryBackoff func(attempt int) time.Duration
 }
 
 // edgePacer fingerprints the CDN/WAF edge fronting a host from ordinary (non-block)
@@ -645,9 +660,7 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 		return nil, errors.Wrap(err, "could not create cookiejar")
 	}
 
-	retryOpts := retryablehttp.DefaultOptionsSpraying
-	retryOpts.RetryMax = options.Retries
-	retryOpts.RetryWaitMax = 10 * time.Second
+	retryOpts := scanRetryOptions()
 	// MUST be carried over from options: NewWithHTTPClient hands these options to
 	// retryablehttp.NewClient, which overwrites the supplied http.Client's Timeout
 	// with its own whenever retryOpts.Timeout > 0. DefaultOptionsSpraying carries
@@ -675,16 +688,21 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	// Sharing the transport means connections are reused across both client variants.
 	sharedTransport := makeTransport()
 
+	// One gate for every clone of this requester (see Services.EgressGate), and
+	// the attempt counter, both needed by the redirect policy below.
+	gate := services.EgressGate()
+	sent := &atomic.Int64{}
+
 	// Client with redirects
-	client := retryablehttp.NewWithHTTPClient(&http.Client{
+	client := newScanRetryClient(&http.Client{
 		Transport:     sharedTransport,
 		Timeout:       timeout,
 		Jar:           jar,
-		CheckRedirect: makeRedirectFunc(redirectMode, maxRedir),
+		CheckRedirect: gateRedirects(makeRedirectFunc(redirectMode, maxRedir), gate, sent),
 	}, retryOpts)
 
 	// Client without redirects
-	clientNoRedir := retryablehttp.NewWithHTTPClient(&http.Client{
+	clientNoRedir := newScanRetryClient(&http.Client{
 		Transport:     sharedTransport,
 		Timeout:       timeout,
 		Jar:           jar,
@@ -731,7 +749,9 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 		respObserver:     &responseObserver{},
 		edgePacer:        &edgePacer{},
 		poolStats:        poolStats,
-		sent:             &atomic.Int64{},
+		sent:             sent,
+		gate:             gate,
+		retries:          max(options.Retries, 0),
 	}
 
 	// Keep the edge-pacer's once-per-host dedup in sync with the limiter's entry
@@ -967,9 +987,7 @@ func (r *Requester) cloneSharingTransport() (*Requester, error) {
 		return nil, errors.Wrap(err, "could not create cookiejar")
 	}
 
-	retryOpts := retryablehttp.DefaultOptionsSpraying
-	retryOpts.RetryMax = r.services.Options.Retries
-	retryOpts.RetryWaitMax = 10 * time.Second
+	retryOpts := scanRetryOptions()
 
 	clone := *r
 	clone.client = cloneRetryClientWithJar(r.client, jar, retryOpts)
@@ -989,7 +1007,7 @@ func cloneRetryClientWithJar(src *retryablehttp.Client, jar http.CookieJar, opts
 	// Timeout" above true. Done at this single seam rather than at each caller:
 	// this is the only function that can drop it, so it cannot be forgotten.
 	opts.Timeout = base.Timeout
-	clone := retryablehttp.NewWithHTTPClient(&base, opts)
+	clone := newScanRetryClient(&base, opts)
 	// NewWithHTTPClient builds a fresh HTTP/2 fallback client from retryablehttp's
 	// defaults; carry src's proxy-aware one across instead.
 	if src.HTTPClient2 != nil {
@@ -1109,83 +1127,70 @@ func (r *Requester) Clusterer() *RequestClusterer {
 	return r.clusterer
 }
 
-// executeDirectly sends HTTP request with rate limiting and host error tracking.
-// ctx is propagated to the outgoing request for cancellation.
+// executeDirectly sends one logical request through the egress gate, retrying
+// transport failures. ctx is propagated to the outgoing request for cancellation.
+//
+// Each wire attempt is a separate gate admission (egress.Gate.Do): a rate token,
+// a host slot, the quarantine check and Admit, then the send, then the slot
+// back and the outcome to the breaker. The backoff before a retry is slept
+// WITHOUT the slot. Retries used to run inside retryablehttp, which took no
+// token for them and held the slot through every 1–10s backoff sleep.
+//
+// Only the standard client retries. A raw request (framing attacks, request-line
+// tricks) is exactly one round trip by design — the response must belong to the
+// bytes that were sent — so it never did, and does not now.
 func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequestResponse, opts Options) (*httpUtils.ResponseChain, time.Duration, error) {
 	host := ""
-	if input.Service() != nil {
-		host = input.Service().Host()
+	hostPort := ""
+	if svc := input.Service(); svc != nil && svc.Host() != "" {
+		host = svc.Host()
+		hostPort = net.JoinHostPort(host, strconv.Itoa(svc.Port()))
 	}
 
-	// Quarantined-host short-circuit BEFORE acquiring a limiter slot, so a
-	// request already known to be unresponsive doesn't consume scarce per-host
-	// concurrency only to be rejected immediately after. Quarantined is
-	// read-only; the half-open probe is claimed by Admit just before the send.
-	hostKey := ""
-	if r.services.HostErrors != nil {
-		hostKey = httpmsg.HostPortKey(input)
-		if r.services.HostErrors.Quarantined(hostKey) {
-			return nil, 0, hosterrors.ErrUnresponsiveHost
+	policy := egress.RetryPolicy{
+		Retryable:     retryableTransportError,
+		Backoff:       r.retryBackoff,
+		IgnoreTimeout: opts.IgnoreTimeoutTracking,
+	}
+	if !opts.RawRequest {
+		policy.MaxRetries = r.retries
+	}
+
+	var (
+		resp    *httpUtils.ResponseChain
+		elapsed time.Duration
+	)
+	attempts, err := r.gate.Do(ctx, hostPort, r.lane, policy, func(int) error {
+		// The clock starts HERE — after the rate token and the host slot, right
+		// before the send. Queue time is vigolium's own saturation, not the
+		// target's latency. It covers this attempt only (redirect hops and body
+		// capture included): an earlier failed attempt and its backoff say
+		// nothing about how fast the host answered the request that succeeded.
+		start := time.Now()
+		// Counted before the send, not after a successful one: a request that
+		// timed out or was refused still hit the network, and a progress counter
+		// that only moves on success reads as a stalled scan against a failing
+		// host — the exact case a consumer most needs to see moving.
+		r.sent.Add(1)
+		var sendErr error
+		resp, sendErr = r.doRequest(ctx, input, opts)
+		elapsed = time.Since(start)
+		if sendErr != nil {
+			// Feed transport failures (timeout/reset/refused) to the adaptive
+			// limiter so it can back the host off; a no-op in static mode.
+			r.reportHostFeedback(host, 0, sendErr, false)
 		}
-	}
-
-	// Global requests-per-second cap (only when --rate-limit was set). Acquire a
-	// rate token BEFORE holding a scarce per-host concurrency slot so a throttled
-	// request doesn't occupy a slot while it waits. Wait honors ctx, so scan
-	// shutdown / phase deadline unblocks it promptly.
-	if r.services.RateLimiter != nil {
-		if err := r.services.RateLimiter.Wait(ctx); err != nil {
-			return nil, 0, err
-		}
-	}
-
-	// Per-host rate limiting (concurrency control)
-	if r.services.HostLimiter != nil && host != "" {
-		// Context-aware acquire: a scan shutdown or phase deadline unblocks a
-		// waiting acquire promptly instead of stranding the goroutine until the
-		// limiter's own acquire timeout elapses.
-		if err := r.services.HostLimiter.AcquireWithTimeoutContext(ctx, host); err != nil {
-			// Acquire timeout/cancellation is our own saturation or shutdown, not
-			// host distress — don't feed it back to the adaptive controller.
-			return nil, 0, err
-		}
-		defer r.services.HostLimiter.Release(host)
-	}
-
-	// Admit immediately before the send: for a host whose quarantine cooldown
-	// has elapsed this is the Open→HalfOpen transition, and only one caller
-	// gets through as the probe. Everything else waits out the probe.
-	if r.services.HostErrors != nil && !r.services.HostErrors.Admit(hostKey) {
-		return nil, 0, hosterrors.ErrUnresponsiveHost
-	}
-
-	// The clock starts HERE — after the global rate token and the per-host
-	// permit have been acquired, immediately before the send. Queue time is
-	// vigolium's own saturation, not the target's latency, and folding it in
-	// would make every reported duration a function of --rate-limit and
-	// --concurrency rather than of the host. The returned duration covers the
-	// full logical operation from that point: retries, redirect hops and body
-	// capture included.
-	start := time.Now()
-	// Counted before the send, not after a successful one: a request that timed
-	// out or was refused still hit the network, and a progress counter that only
-	// moves on success reads as a stalled scan against a host that is failing —
-	// the exact case a consumer most needs to see moving.
-	r.sent.Add(1)
-	resp, err := r.doRequest(ctx, input, opts)
+		return sendErr
+	})
 	if err != nil {
-		if r.services.HostErrors != nil {
-			r.services.HostErrors.MarkFailed(hostKey, err, opts.IgnoreTimeoutTracking)
+		if attempts > 1 && ctx.Err() == nil {
+			// The message retryablehttp used to give a retried failure, so logs
+			// and transport-error classification read the same as before.
+			err = fmt.Errorf("%s giving up after %d attempts: %w", requestLabel(input), attempts, err)
 		}
-		// Feed transport failures (timeout/reset/refused) to the adaptive limiter
-		// so it can back the host off; a no-op in static mode.
-		r.reportHostFeedback(host, 0, err, false)
 		return nil, 0, err
 	}
 
-	if r.services.HostErrors != nil {
-		r.services.HostErrors.MarkSuccess(hostKey)
-	}
 	// Classify a WAF/CDN block once (cheap status pre-gate; only reads the body on a
 	// block-status response) and feed that single result to both consumers: the
 	// adaptive limiter (arms/backs-off WAF-auto-arm throttling) and the once-per-host
@@ -1209,7 +1214,121 @@ func (r *Requester) executeDirectly(ctx context.Context, input *httpmsg.HttpRequ
 		}
 		r.respObserver.report(host, urlStr, input.Request().Raw(), resp, status)
 	}
-	return resp, time.Since(start), nil
+	return resp, elapsed, nil
+}
+
+// requestLabel is "METHOD url" for error messages.
+func requestLabel(input *httpmsg.HttpRequestResponse) string {
+	method := ""
+	if req := input.Request(); req != nil {
+		method = req.Method()
+	}
+	if u, err := input.URL(); err == nil && u != nil {
+		return strings.TrimSpace(method + " " + u.String())
+	}
+	return method
+}
+
+// retryableTransportError is the retry decision retryablehttp made before
+// retries moved into executeDirectly (CheckRecoverableErrors): any transport
+// error (a client timeout included), except on a cancelled ctx, a redirect-limit or bad-scheme error, an
+// untrusted certificate, or a permanent network error. A gate refusal
+// (quarantine, slot timeout) never reaches it: Do stops on those itself.
+func retryableTransportError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	// CheckRecoverableErrors type-asserts *url.Error directly, so hand it the
+	// url.Error inside whatever wrapping doRequest added.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr
+	}
+	ok, _ := retryablehttp.CheckRecoverableErrors(ctx, nil, err)
+	return ok
+}
+
+// scanRetryOptions are the retryablehttp options every scan client uses. Its
+// own retry loop is OFF (RetryMax 0): executeDirectly retries through the
+// egress gate instead. The returned options still need Timeout set.
+func scanRetryOptions() retryablehttp.Options {
+	opts := retryablehttp.DefaultOptionsSpraying
+	opts.RetryMax = 0
+	opts.RetryWaitMax = 10 * time.Second
+	return opts
+}
+
+// newScanRetryClient wraps hc in a retryablehttp client with opts, and makes a
+// failed attempt return its own error rather than retryablehttp's "giving up
+// after 1 attempts" wrapper, which with retries off described nothing and hid
+// the *url.Error from the retry decision.
+func newScanRetryClient(hc *http.Client, opts retryablehttp.Options) *retryablehttp.Client {
+	c := retryablehttp.NewWithHTTPClient(hc, opts)
+	c.ErrorHandler = retryablehttp.PassthroughErrorHandler
+	return c
+}
+
+// gateRedirects wraps a redirect policy so every hop it follows takes a rate
+// token and counts as a wire attempt. The original request's host slot is held
+// through the hops (usually the same host; a cross-host hop holding the first
+// host's slot is accepted). A hop the policy refuses costs nothing.
+func gateRedirects(policy func(*http.Request, []*http.Request) error, gate *egress.Gate, sent *atomic.Int64) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if err := policy(req, via); err != nil {
+			return err
+		}
+		if err := gate.Token(req.Context()); err != nil {
+			return err
+		}
+		sent.Add(1)
+		return nil
+	}
+}
+
+// WithLane returns a shallow clone whose traffic uses lane's host slots. A
+// login, re-login or reachability preflight runs on egress.LanePriority so it
+// never queues behind the module requests that are waiting for it.
+func (r *Requester) WithLane(lane egress.Lane) *Requester {
+	if r == nil || r.lane == lane {
+		return r
+	}
+	clone := *r
+	clone.lane = lane
+	return &clone
+}
+
+// Gate returns the egress gate this requester sends through (nil-safe: a nil
+// requester returns a nil gate, which admits everything).
+func (r *Requester) Gate() *egress.Gate {
+	if r == nil {
+		return nil
+	}
+	return r.gate
+}
+
+// AcquireDial admits one connection a module opens itself (a TLS handshake for
+// certificate or cipher probing) through the scan's egress gate: a rate token,
+// a host slot, the quarantine check, one counted attempt. Call the returned
+// release when the connection is closed. The outcome is not reported to the
+// breaker: a probe that offers a cipher the server refuses says nothing about
+// whether the host is alive.
+//
+// It waits on the requester's task context (WithContext), so a module timeout
+// or scan shutdown unblocks it. Nil-safe: on a nil requester it admits
+// immediately.
+func (r *Requester) AcquireDial(host string, port int) (func(), error) {
+	if r == nil || r.gate == nil {
+		return func() {}, nil
+	}
+	ctx := r.defaultCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := r.gate.Acquire(ctx, net.JoinHostPort(host, strconv.Itoa(port)), r.lane)
+	if err != nil {
+		return nil, err
+	}
+	return func() { release(egress.Outcome{Neutral: true}) }, nil
 }
 
 // classifyWAFBlock returns the WAF/CDN block classification for resp, or nil if it is

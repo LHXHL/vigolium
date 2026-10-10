@@ -340,7 +340,7 @@ as effective.
 
 | Phase | `concurrency` | `rate_limit` | `max_per_host` |
 |---|---|---|---|
-| `discovery` | yes (engine threads) | yes, **explicit only** (see below) | no |
+| `discovery` | yes (engine threads) | yes, **explicit only** (see below) | no (the scan's shared host slots apply) |
 | `spidering` | no | no | no |
 | `probe` | yes | yes | yes |
 | `dynamic-assessment` | yes (workers) | no (scan-wide limiter) | no (scan-wide semaphore) |
@@ -361,8 +361,45 @@ every scan that merely loaded a config file. Unset means unpaced, and
 `concurrency` remains the throttle. The section value wins over the global flag.
 Discovery runs up to `discovery.target_concurrency` targets at once (never two on
 the same host:port): `concurrency` is the phase's thread budget, split across the
-targets in flight (`max(5, concurrency / active)`), while `rate_limit` applies to
-each target, so it is still the rate any one host sees.
+targets in flight (`max(5, concurrency / active)`), and `rate_limit` is one
+bucket shared by every target in flight, so it is the rate of the whole phase.
+Discovery requests also take the scan's per-host slots and honour its dead-host
+quarantine (see the egress gate below).
+
+#### The egress gate
+
+Every request a native scan sends to a target goes through one gate, in this
+order: the dead-host quarantine check, a global `rate_limit` token, a per-host
+slot (`max_per_host`), then one counted wire attempt.
+
+- **Retries** (`--retries`, default 1) are separate attempts: each takes a
+  token, and the backoff before it (1s, doubling, capped at 10s) is slept
+  without holding the host slot. Only transport errors are retried; raw
+  requests (smuggling and request-line probes) are never retried.
+- **Redirect hops** that are followed take a token each; the original request's
+  host slot is held through the hops.
+- `requests_sent` (events, `scan status`, `scans.total_requests`) counts wire
+  attempts, retries and hops included.
+- **Discovery** uses its own token bucket (above) with the shared host slots and
+  quarantine. **Session logins** go through the gate on a priority lane that may
+  use one reserved slot per host, so a login never waits behind the module
+  requests that are waiting for it. The **port-sweep** HTTP confirm step is
+  gated; its TCP connect pre-filter is counted but not paced. The
+  `tls_cert_recon` and `tls_protocol_cipher_audit` handshakes take a gated
+  attempt each.
+
+Some paths bypass the gate. `scan.started` lists them, for the phases the scan
+runs, as `egress: {gated: [...], exempt: [{path, reason}]}`:
+
+| Exempt path | Why |
+|---|---|
+| `known-issue-scan` | nuclei's own HTTP stack; its pace section's rate and concurrency apply |
+| `spidering` | the Chrome crawl; requests are counted, not gated |
+| `browser-confirmations` | Chrome used by confirmation modules; low volume |
+| `http_request_smuggling.cl0` | own raw-socket dialer; also bypasses `--proxy` |
+| `h2race` | own HTTP/2 dialer; honours an `http://` CONNECT proxy |
+| `probe-tls`, `scheme-detection` | one TLS handshake / TCP connect per host:port in the probe phase |
+| `external-harvest`, `oast`, `npm-registry` | not target traffic |
 
 ### `discovery`
 

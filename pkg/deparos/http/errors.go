@@ -48,6 +48,15 @@ func IsRetryable(err error) bool {
 		return false
 	}
 
+	// An error that states its own retryability wins over the shape checks
+	// below: a caller's egress gate refusing a request (quarantined host, a slot
+	// wait that timed out) sent nothing, and its cause can still look like a
+	// net.Error (context.DeadlineExceeded is one).
+	var stated interface{ Retryable() bool }
+	if errors.As(err, &stated) {
+		return stated.Retryable()
+	}
+
 	// Unwrap RequestError to get underlying error
 	var reqErr *RequestError
 	if errors.As(err, &reqErr) {

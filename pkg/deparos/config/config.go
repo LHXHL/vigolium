@@ -1,6 +1,7 @@
 package config
 
 import (
+	nethttp "net/http"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -277,6 +278,17 @@ type EngineConfig struct {
 	// Not serialized: resolved from the caller's pace settings, which have their
 	// own config surface.
 	RequestsPerSecond int `json:"-"`
+
+	// Egress, when set, wraps the engine's transport INSIDE its retry middleware,
+	// so every physical attempt (each retry included) is admitted by the caller's
+	// egress policy before it goes out. Vigolium passes its scan gate here: the
+	// scan's host slots and dead-host quarantine, plus a discovery-wide token
+	// bucket shared by every concurrent discovery target. When the gate carries
+	// the rate, leave RequestsPerSecond at 0 so the request is not paced twice.
+	//
+	// A refusal it returns must not be retryable (see deparos/http.IsRetryable).
+	// Not serialized: a runtime hook, not configuration.
+	Egress func(nethttp.RoundTripper) nethttp.RoundTripper `json:"-"`
 }
 
 // PrefixBreakerConfig tunes the per-prefix discovery circuit breaker.

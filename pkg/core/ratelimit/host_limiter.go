@@ -59,6 +59,11 @@ type hostEntry struct {
 	sem      chan struct{} // static mode: fixed-cap semaphore (acquire = send)
 	lastUsed atomic.Int64  // Unix nanos — updated atomically, no lock needed
 
+	// reserved is the priority lane's headroom (acquire = send), in both modes:
+	// reservedPriorityHeadroom extra slots only AcquirePriority may take. See
+	// AcquirePriority for why it exists.
+	reserved chan struct{}
+
 	// Adaptive-mode fields (zero/unused in static mode).
 	tokens   chan struct{} // resizable token pool (acquire = receive), cap = ceiling
 	limit    atomic.Int64  // current allowed concurrency (available + inflight)
@@ -95,6 +100,9 @@ func (e *hostEntry) idleSince(d time.Duration) bool {
 // requests, so the eviction loop won't reclaim a host mid-request. Static mode
 // reads the semaphore length; adaptive mode reads the inflight counter.
 func (e *hostEntry) hasInflight() bool {
+	if len(e.reserved) > 0 {
+		return true
+	}
 	if e.tokens != nil {
 		return e.inflight.Load() > 0
 	}
@@ -486,6 +494,74 @@ func (h *HostRateLimiter) tryAcquire(host string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// reservedPriorityHeadroom is how many slots per host are held back for the
+// priority lane, on top of the host's normal limit.
+const reservedPriorityHeadroom = 1
+
+// AcquirePriority takes a slot for host on the priority lane: a normal slot when
+// one is free, otherwise one of the host's reservedPriorityHeadroom reserved
+// slots, otherwise whichever of the two frees first. It returns the matching
+// release, which must be called exactly once.
+//
+// The lane exists for requests the rest of the scan waits on — a login, a
+// re-login, a reachability preflight. Queued behind MaxPerHost module requests
+// that are themselves waiting for that login, such a request would deadlock the
+// host; the reserved slot means it never queues behind ordinary traffic. It
+// lets a host briefly run at limit+1, which is the whole point.
+//
+// Bounded by the limiter's acquire timeout and ctx, like AcquireWithTimeoutContext.
+func (h *HostRateLimiter) AcquirePriority(ctx context.Context, host string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	shard := h.shardFor(host)
+	entry := h.getOrCreateEntry(shard, host)
+	normal := func() { h.Release(host) }
+	reserved := func() {
+		select {
+		case <-entry.reserved:
+		default:
+			zap.L().Warn("HostRateLimiter: priority release with no reserved slot held", zap.String("host", host))
+		}
+	}
+
+	if h.tryAcquire(host) {
+		return normal, nil
+	}
+	select {
+	case entry.reserved <- struct{}{}:
+		entry.touch()
+		return reserved, nil
+	default:
+	}
+
+	acquireCtx, cancel := context.WithTimeout(ctx, h.acquireTimeout)
+	defer cancel()
+	if entry.tokens != nil {
+		select {
+		case <-acquireCtx.Done():
+			return nil, acquireCtx.Err()
+		case <-entry.tokens:
+			entry.inflight.Add(1)
+			entry.touch()
+			return normal, nil
+		case entry.reserved <- struct{}{}:
+			entry.touch()
+			return reserved, nil
+		}
+	}
+	select {
+	case <-acquireCtx.Done():
+		return nil, acquireCtx.Err()
+	case entry.sem <- struct{}{}:
+		entry.touch()
+		return normal, nil
+	case entry.reserved <- struct{}{}:
+		entry.touch()
+		return reserved, nil
 	}
 }
 
