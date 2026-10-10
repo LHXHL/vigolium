@@ -76,6 +76,15 @@ type directScanSession struct {
 	// verdict is folded into each row (runner.ApplyRequestBudget).
 	budget *egress.Budget
 
+	// phaseReasons are partial reasons the direct path observed outside the
+	// executor report, per scan UUID: oast_unavailable (interactsh did not
+	// register, blind checks skipped) and scan_budget
+	// (--scanning-max-duration ran out). Folded into the row by complete.
+	phaseReasons map[string][]string
+
+	// oast caches the OAST config the direct path runs with (oastConfig).
+	oast directOASTSettings
+
 	// heartbeats keep each row's liveness fresh while its input runs, one per
 	// scan UUID. Each ends itself once its row is finalized (StopWhenRowDone);
 	// close stops any left. Without them a long scan-url row carried no
@@ -132,6 +141,20 @@ func newDirectScanSession(name string, inputs []scanInput) *directScanSession {
 		modules: strings.Join(modules, ","),
 		budget:  directRequestBudget(),
 	}
+}
+
+// notePhaseReason records a partial reason for scanUUID's row (see
+// phaseReasons).
+func (s *directScanSession) notePhaseReason(scanUUID, reason string) {
+	if s.phaseReasons == nil {
+		s.phaseReasons = map[string][]string{}
+	}
+	for _, r := range s.phaseReasons[scanUUID] {
+		if r == reason {
+			return
+		}
+	}
+	s.phaseReasons[scanUUID] = append(s.phaseReasons[scanUUID], reason)
 }
 
 // scanUUID returns the UUID the next input scans under: the pinned one, or a
@@ -306,6 +329,11 @@ func (s *directScanSession) complete(ctx context.Context, repo *database.Reposit
 		execErr = s.agg.err
 	}
 	completion = runner.ApplyRequestBudget(completion, s.budget)
+	if reached || (s.pinned != "" && s.agg.reached) {
+		for _, reason := range s.phaseReasons[scanUUID] {
+			completion = runner.ApplyDirectPhaseReason(completion, reason)
+		}
+	}
 
 	logger := database.NewScanLogger(repo, scanUUID)
 	for _, issue := range tally.Rejected {

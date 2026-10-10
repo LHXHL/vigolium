@@ -9,6 +9,8 @@ Session configuration enables authenticated scanning across all agent modes and 
 | `--auth-file <path>` | YAML/JSON file (single session **or** `sessions:` bundle), or a bare name resolved against `scanning_strategy.session.session_dir` | yes |
 | `--auth <name:Header:value>` | Inline session — name and header injected as static headers | yes |
 
+Both work on `scan`, `run`, `scan-url` and `scan-request` (one definition, aliases `--session` / `--session-file`). On `scan-url` / `scan-request` they route the request through the runner, which hydrates the session; a header also given with `-H` keeps the `-H` value.
+
 ## Session Config Format
 
 Session configs can be written in **YAML or JSON** — the format is auto-detected by file extension or content sniffing.
@@ -302,9 +304,13 @@ vigolium agent swarm --discover -t http://localhost:3000 --source ~/projects/my-
 ### Manual Auth File
 
 ```bash
-# Pass a YAML auth file to scan or run (scan-url and scan-request have no
-# --auth-file; for one authenticated URL use scan -t <url> --auth-file auth.yaml)
+# Pass a YAML auth file to scan or run
 vigolium scan -t https://example.com --auth-file auth.yaml
+
+# scan-url and scan-request take --auth / --auth-file too (they route the
+# request through the runner, which hydrates the session)
+vigolium scan-url https://example.com/api/me --auth-file auth.yaml
+vigolium scan-request -i request.txt --auth 'admin:Cookie:session=abc'
 
 # Agent modes take the same native files (repeatable; validated before the run).
 # Swarm: --auth-file and --auth-config (agent format; a native file is detected)

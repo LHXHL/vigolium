@@ -1956,6 +1956,8 @@ Scan a raw HTTP request for vulnerabilities
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
+| `--auth` | - | stringArray | - | Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas). |
+| `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |
 | `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--discover` | - | bool | `false` | Run content discovery before scanning |
@@ -1964,9 +1966,11 @@ Scan a raw HTTP request for vulnerabilities
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating; --soft-fail overrides. |
 | `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
+| `--header` | `-H` | stringArray | - | Set a header on the captured request (repeatable, e.g. -H 'Cookie: a=1'): replaces every same-named captured header, else appends. Commas are literal — repeat -H for multiple headers. |
 | `--ignore-scope` | - | bool | `false` | Scan the target even when the configured scope rejects it (relaxes scope.host/scope.path for this run) |
 | `--input` | `-i` | string | `-` | Input file or - for stdin |
 | `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
+| `--intensity` | - | string | - | Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy) |
 | `--keep-db-on-error` | - | bool | `false` | On a failed -S/--stateless scan, move the throwaway working database to ~/.vigolium/recovered instead of deleting it, so the partial results survive the failure (requires -S) |
 | `--known-issue-scan` | - | bool | `false` | Run known issue scan (Nuclei + native secret scanning) |
 | `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
@@ -1986,6 +1990,7 @@ Scan a raw HTTP request for vulnerabilities
 | `--no-scheme-probe` | - | bool | `false` | Do not probe the target (TCP connect / TLS handshake) when the request carries no scheme signal; keep the https default |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
+| `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--output` | `-o` | string | - | Write findings to this file (use with --format jsonl\|html; pairs with -S/--stateless) |
 | `--passive-only` | - | bool | `false` | Run only passive modules (no active scanning). Combine with --module-id to narrow to specific passive modules. |
 | `--pdf-timeout` | - | duration | `0s` | Bound the headless-Chrome PDF render (0 = $VIGOLIUM_PDF_TIMEOUT, else 1m30s) |
@@ -1993,6 +1998,8 @@ Scan a raw HTTP request for vulnerabilities
 | `--print-traffic` | - | bool | `false` | After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent. |
 | `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
+| `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
+| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
 | `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--spider` | - | bool | `false` | Run browser-based spidering before scanning |
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
@@ -2008,6 +2015,8 @@ Scan a single URL for vulnerabilities
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
+| `--auth` | - | stringArray | - | Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas). |
+| `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |
 | `--body` | - | string | - | Request body |
 | `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
@@ -2020,6 +2029,7 @@ Scan a single URL for vulnerabilities
 | `--header` | `-H` | stringArray | - | Custom header (repeatable, e.g. -H 'Cookie: x=1'). Commas are literal — repeat -H for multiple headers. |
 | `--ignore-scope` | - | bool | `false` | Scan the target even when the configured scope rejects it (relaxes scope.host/scope.path for this run) |
 | `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
+| `--intensity` | - | string | - | Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy) |
 | `--keep-db-on-error` | - | bool | `false` | On a failed -S/--stateless scan, move the throwaway working database to ~/.vigolium/recovered instead of deleting it, so the partial results survive the failure (requires -S) |
 | `--known-issue-scan` | - | bool | `false` | Run known issue scan (Nuclei + native secret scanning) |
 | `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
@@ -2039,6 +2049,7 @@ Scan a single URL for vulnerabilities
 | `--no-passive` | - | bool | `false` | Skip passive modules |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
+| `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--output` | `-o` | string | - | Write findings to this file (use with --format jsonl\|html; pairs with -S/--stateless) |
 | `--passive-only` | - | bool | `false` | Run only passive modules (no active scanning). Combine with --module-id to narrow to specific passive modules. |
 | `--pdf-timeout` | - | duration | `0s` | Bound the headless-Chrome PDF render (0 = $VIGOLIUM_PDF_TIMEOUT, else 1m30s) |
@@ -2046,6 +2057,8 @@ Scan a single URL for vulnerabilities
 | `--print-traffic` | - | bool | `false` | After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent. |
 | `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
+| `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
+| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
 | `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--spider` | - | bool | `false` | Run browser-based spidering before scanning |
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |

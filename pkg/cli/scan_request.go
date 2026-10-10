@@ -42,8 +42,10 @@ func init() {
 	registerScanModuleFlags(flags)
 	registerModuleSelectionFlags(flags)
 	registerHTTPClientFlags(flags)
+	flags.StringArrayVarP(&scanURLHeaders, "header", "H", nil, "Set a header on the captured request (repeatable, e.g. -H 'Cookie: a=1'): replaces every same-named captured header, else appends. Commas are literal — repeat -H for multiple headers.")
 	registerPhaseFlags(flags)
 	registerLightweightScanIOFlags(flags)
+	registerLightweightScanTuningFlags(flags)
 }
 
 func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
@@ -68,6 +70,9 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	// there alone let `scan-url --keep-db-on-error` exit 0 having done nothing
 	// with the flag, which is the shape of control this plan exists to remove.
 	if err := validateKeepDBOnError(globalStateless); err != nil {
+		return err
+	}
+	if err := validateLightweightScanTuning(); err != nil {
 		return err
 	}
 	noteCIOutputDeprecated()
@@ -132,6 +137,12 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// -H overrides the captured request (replace a same-named header, else
+	// append), before admission so a Host override is admitted as sent.
+	if rr, err = applyRequestHeaderOverrides(rr, scanURLHeaders); err != nil {
+		return err
+	}
+
 	// Extract method and target for output
 	method := rr.Request().Method()
 	target := rr.Target()
@@ -158,6 +169,11 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	_, refused := admission.verdict(target)
 	resolved, schemeSource := settleRequestScheme(ctx, normalized, rr, scanReqTarget != "", scanReqNoSchemeProbe || refused)
 	if resolved != rr {
+		// A probe rebuilds the request from the captured text, so the -H
+		// overrides are applied again.
+		if resolved, err = applyRequestHeaderOverrides(resolved, scanURLHeaders); err != nil {
+			return err
+		}
 		rr, target = resolved, resolved.Target()
 		inputs = []scanInput{{rr: rr, target: target, method: method}}
 		if admission, err = admitDirectInputs(inputs); err != nil {
@@ -178,6 +194,28 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 		return withFailOnGate(admission.settle(sess.reach.settle(runScanDocumentBatch(ctx, cmd, sess, inputs))))
 	}
 	return withFailOnGate(admission.settle(sess.reach.settle(dispatchSingleScan(ctx, sess, rr, target, method))))
+}
+
+// applyRequestHeaderOverrides applies scan-request's -H values to the captured
+// request: each replaces every captured header of the same name
+// (case-insensitive), or is appended when the capture has none. So -H
+// overrides the capture: `-H 'Cookie: session=fresh'` swaps a stale captured
+// Cookie instead of sending two. Two -H with one name: the last wins, as on the
+// Runner path, where the requester sets each -H on every request.
+func applyRequestHeaderOverrides(rr *httpmsg.HttpRequestResponse, headers []string) (*httpmsg.HttpRequestResponse, error) {
+	if len(headers) == 0 || rr == nil || rr.Request() == nil {
+		return rr, nil
+	}
+	req := rr.Request()
+	for _, h := range headers {
+		name, value, ok := strings.Cut(h, ":")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, usageErrorf("invalid -H %q: want 'Name: value'", h)
+		}
+		req = req.WithHeader(name, strings.TrimSpace(value))
+	}
+	return httpmsg.NewHttpRequestResponse(req, rr.Response()), nil
 }
 
 // normalizeRawRequestInput prepares a raw HTTP request for the parser while

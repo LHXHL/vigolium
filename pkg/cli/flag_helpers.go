@@ -74,9 +74,9 @@ func registerScanPipelineFlags(flags *pflag.FlagSet) {
 	flags.StringSliceVar(&globalSkipPhases, "skip", nil, "Skip these phases (repeatable: "+runner.PhaseNamesDesc(true)+"; aliases accepted, see 'vigolium run --help')")
 	flags.StringVar(&globalStrategy, "strategy", "", "Scanning strategy preset (lite, balanced, deep)")
 	flags.StringVar(&globalScanningProfile, "scanning-profile", "", "Scanning profile name or YAML file path")
-	flags.StringVar(&globalIntensity, "intensity", "", "Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy)")
-	flags.StringVar(&globalScopeOrigin, "scope-origin", "", scopeOriginFlagUsage)
-	flags.DurationVar(&globalScanningMaxDuration, "scanning-max-duration", 0, "Maximum total scan duration (overrides config, e.g. 1h, 30m)")
+	registerIntensityFlag(flags)
+	registerScopeOriginFlag(flags)
+	registerScanningMaxDurationFlag(flags)
 	flags.StringVar(&globalHeuristicsCheck, "heuristics-check", "", `Pre-scan heuristics level: none, basic, advanced (default: basic)`)
 	flags.BoolVar(&globalSkipHeuristics, "skip-heuristics", false, "Disable pre-scan heuristics (equivalent to --heuristics-check=none)")
 	registerAllowRiskyPayloadsFlag(flags)
@@ -84,6 +84,49 @@ func registerScanPipelineFlags(flags *pflag.FlagSet) {
 	registerParamMiningFlag(flags)
 	registerRequestBudgetFlags(flags)
 	registerScanDocumentFlags(flags)
+}
+
+// registerIntensityFlag, registerScopeOriginFlag and
+// registerScanningMaxDurationFlag are the one definition of each flag, shared
+// by the full pipeline (registerScanPipelineFlags: scan, run) and the
+// lightweight single-request commands (registerLightweightScanTuningFlags:
+// scan-url, scan-request). They bind the same globals, so the resolver
+// (resolveNativeScanOptions / resolveLightweightScanOptions) reads one value
+// whichever command parsed it.
+func registerIntensityFlag(flags *pflag.FlagSet) {
+	flags.StringVar(&globalIntensity, "intensity", "", "Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy)")
+}
+
+func registerScopeOriginFlag(flags *pflag.FlagSet) {
+	flags.StringVar(&globalScopeOrigin, "scope-origin", "", scopeOriginFlagUsage)
+}
+
+func registerScanningMaxDurationFlag(flags *pflag.FlagSet) {
+	flags.DurationVar(&globalScanningMaxDuration, "scanning-max-duration", 0, "Maximum total scan duration (overrides config, e.g. 1h, 30m)")
+}
+
+// registerOASTURLFlag declares --oast-url for scan, run, scan-url and
+// scan-request.
+func registerOASTURLFlag(flags *pflag.FlagSet) {
+	flags.StringVar(&scanOpts.OastURL, "oast-url", "", "Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest'")
+}
+
+// registerLightweightScanTuningFlags registers the scan-tuning flags scan-url
+// and scan-request share with `vigolium scan`: --intensity,
+// --scanning-max-duration, --scope-origin, --oast-url and --auth/--auth-file.
+// Same globals, same usage strings (pinned by TestScanTuningFlagParity).
+//
+// Routing: --auth/--auth-file and --intensity need the runner (session
+// hydration, profile + module-tier resolution), so they send the request down
+// the Runner path (needsRunnerScan). --scanning-max-duration and --oast-url
+// are honoured on the direct path too (executor MaxDuration, fixed-URL OAST).
+// --scope-origin was read by both paths before it was registered here.
+func registerLightweightScanTuningFlags(flags *pflag.FlagSet) {
+	registerIntensityFlag(flags)
+	registerScanningMaxDurationFlag(flags)
+	registerScopeOriginFlag(flags)
+	registerOASTURLFlag(flags)
+	registerAuthFlags(flags)
 }
 
 // registerParamMiningFlag declares --param-mining for the full pipeline (scan,

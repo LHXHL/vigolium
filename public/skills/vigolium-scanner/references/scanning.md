@@ -393,6 +393,22 @@ Scan a single URL for vulnerabilities. Designed for quick, targeted scans and AI
 | `--known-issue-scan` | bool | `false` | Run known issue scan (Nuclei/Kingfisher) |
 | `--no-passive` | bool | `false` | Skip passive modules |
 
+### Scan tuning (shared with `scan`)
+
+`scan-url` and `scan-request` register these with the same definitions and help text as `scan`:
+
+| Flag | Path | Effect |
+|------|------|--------|
+| `--auth <name:Header:value>` / `--auth-file <path>` (aliases `--session` / `--session-file`) | Runner | Authenticated scan with session hydration, refresh and re-login, as on `scan`. See [auth.md](auth.md) |
+| `--intensity quick\|balanced\|deep` | Runner | Applies the intensity's scanning profile, its `scanning_pace`, and its module-tier ceiling (`quick` stops at the moderate tier). It does not apply the profile's strategy (no phases switch on; use `--discover`/`--spider`/...), and `deep` does not port-sweep the host |
+| `--scanning-max-duration <d>` | either | Caps the run. A run it ends is `partial` with `scan_budget` |
+| `--oast-url <url>` | either | Fixed out-of-band callback URL instead of interactsh (ready at once) |
+| `--scope-origin <mode>` | either | Host scope strictness for admission and the executor's scope filter |
+
+"Runner" means the flag routes the request through the full native-scan runner, like `-o`, `-S` or a phase flag do. The scan document (`-j`) has the same shape on both paths.
+
+On the direct path, out-of-band checks follow `oast.enabled` as on `scan`: with no `--oast-url`, interactsh registration starts before the request goes out and gets up to 3s. When it cannot register, stderr says `OAST unavailable (...) — blind/out-of-band checks skipped` once, and the scan row is `partial` with `oast_unavailable`. `vigolium config set oast.enabled false` turns OAST off.
+
 ### Examples
 
 ```bash
@@ -409,6 +425,9 @@ vigolium scan-url https://example.com --discover
 
 # Specific modules, no passive
 vigolium scan-url https://example.com/api -m xss-reflected --no-passive
+
+# Authenticated, quick intensity, capped at 10 minutes
+vigolium scan-url https://example.com/api/me --auth-file admin.yaml --intensity quick --scanning-max-duration 10m
 ```
 
 ---
@@ -447,8 +466,11 @@ Read a raw HTTP request from file or stdin and run scanner modules against it. D
 |------|-------|------|---------|-------------|
 | `--input` | `-i` | string | `-` (stdin) | Input file or stdin |
 | `--target` | `-t` | string | — | Override target URL (scheme://host) |
+| `--header` | `-H` | []string | — | Set a header on the captured request (repeatable). **`-H` overrides the capture**: it replaces every captured header of the same name (case-insensitive), or is appended when the capture has none. With two `-H` of one name, the last wins |
 | `--known-issue-scan` | — | bool | `false` | Run known issue scan |
 | `--no-passive` | — | bool | `false` | Skip passive modules |
+
+The [scan tuning flags](#scan-tuning-shared-with-scan) (`--auth`, `--auth-file`, `--intensity`, `--scanning-max-duration`, `--oast-url`, `--scope-origin`) work as on `scan-url`.
 
 ### Examples
 
@@ -464,6 +486,9 @@ vigolium scan-request -i request.txt --target https://staging.example.com
 
 # With discovery
 vigolium scan-request -i request.txt --discover
+
+# Swap the captured (stale) session cookie for a fresh one
+vigolium scan-request -i request.txt -H 'Cookie: session=fresh'
 ```
 
 ---

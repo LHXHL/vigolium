@@ -33,6 +33,19 @@ var nativeScanFlagAliases = map[string]string{
 	// output; "no response" is what operators reach for, and on a host sweep
 	// (where the body is the bulk of every row) it is the flag most often typed.
 	"no-response": "omit-response",
+	// --session / --session-file: see authFlagAliases. Listed here too because
+	// addFlagAliases installs the command's normalize func, replacing the one
+	// registerAuthFlags set on the flag set — which left both spellings an
+	// unknown flag on scan and run.
+	"session":      "auth",
+	"session-file": "auth-file",
+}
+
+// authFlagAliases are the former names of --auth / --auth-file, shown in older
+// guides and copy-pasted commands.
+var authFlagAliases = map[string]string{
+	"session":      "auth",
+	"session-file": "auth-file",
 }
 
 func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
@@ -120,7 +133,7 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	flags.StringArrayVar(&scanOpts.KnownIssueScanTemplates, "known-issue-scan-templates", nil, "Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too.")
 
 	// OAST flags
-	flags.StringVar(&scanOpts.OastURL, "oast-url", "", "Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest'")
+	registerOASTURLFlag(flags)
 
 	flags.BoolVar(&scanOpts.UploadResults, "upload-results", false, "Upload scan results to cloud storage after completion (requires storage config)")
 
@@ -140,26 +153,33 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	_ = flags.MarkHidden("captured-console")
 
 	if includeAuth {
-		flags.StringArrayVar(&scanOpts.AuthFiles, "auth-file", nil,
-			"Path to auth file (YAML/JSON, single session or sessions: bundle), "+
-				"or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal.")
-		flags.StringArrayVar(&scanOpts.AuthInline, "auth", nil,
-			"Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas).")
-
-		// Accept the former flag names (--session / --session-file) shown in older
-		// guides and copy-pasted commands as aliases for --auth / --auth-file. A
-		// normalize func routes them to the same flag so both spellings share one
-		// value list. Registering duplicate flags bound to the same slice would
-		// instead make `--auth X --session Y` silently drop X, because pflag tracks
-		// the "changed" state per flag and each flag's first Set replaces the slice.
-		flags.SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
-			switch name {
-			case "session":
-				name = "auth"
-			case "session-file":
-				name = "auth-file"
-			}
-			return pflag.NormalizedName(name)
-		})
+		registerAuthFlags(flags)
 	}
+}
+
+// registerAuthFlags declares --auth / --auth-file (with the --session /
+// --session-file spellings normalized onto them). One definition for scan,
+// run, scan-url and scan-request.
+func registerAuthFlags(flags *pflag.FlagSet) {
+	flags.StringArrayVar(&scanOpts.AuthFiles, "auth-file", nil,
+		"Path to auth file (YAML/JSON, single session or sessions: bundle), "+
+			"or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal.")
+	flags.StringArrayVar(&scanOpts.AuthInline, "auth", nil,
+		"Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas).")
+
+	// Accept the former flag names (--session / --session-file) shown in older
+	// guides and copy-pasted commands as aliases for --auth / --auth-file. A
+	// normalize func routes them to the same flag so both spellings share one
+	// value list. Registering duplicate flags bound to the same slice would
+	// instead make `--auth X --session Y` silently drop X, because pflag tracks
+	// the "changed" state per flag and each flag's first Set replaces the slice.
+	//
+	// A command that also calls addFlagAliases replaces this func with its own,
+	// so its alias table must carry these entries (nativeScanFlagAliases does).
+	flags.SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
+		if canonical, ok := authFlagAliases[name]; ok {
+			name = canonical
+		}
+		return pflag.NormalizedName(name)
+	})
 }

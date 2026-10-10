@@ -93,6 +93,7 @@ func init() {
 	registerHTTPClientFlags(flags)
 	registerPhaseFlags(flags)
 	registerLightweightScanIOFlags(flags)
+	registerLightweightScanTuningFlags(flags)
 }
 
 // hasFileOutputFormat reports whether --format requests a file-materialized
@@ -144,10 +145,18 @@ func validateGlobalFormats() error {
 // --events is on the list for the same reason: the event stream is emitted by
 // the scan phases, which only run under the Runner. On the direct path the flag
 // parsed and then described nothing.
+//
+// --auth/--auth-file and --intensity are on it because session hydration
+// (login, refresh, live re-login) and intensity → profile + module-tier
+// resolution exist only in the Runner; copying them onto the direct path would
+// be a second implementation. --scanning-max-duration and --oast-url are not:
+// the direct path honours both itself (executor MaxDuration, fixed-URL OAST).
 func needsRunnerScan() bool {
 	// The direct path runs built-in modules only; --ext/--ext-dir extensions
 	// load (and a broken --ext fails the scan) on the runner path.
 	return hasPhaseFlags() ||
+		len(scanOpts.AuthFiles)+len(scanOpts.AuthInline) > 0 ||
+		strings.TrimSpace(globalIntensity) != "" ||
 		len(globalExtScripts) > 0 || globalExtDir != "" ||
 		globalStateless ||
 		scanOpts.Output != "" ||
@@ -274,6 +283,9 @@ func runScanURLCmd(cmd *cobra.Command, args []string) error {
 	// there alone let `scan-url --keep-db-on-error` exit 0 having done nothing
 	// with the flag, which is the shape of control this plan exists to remove.
 	if err := validateKeepDBOnError(globalStateless); err != nil {
+		return err
+	}
+	if err := validateLightweightScanTuning(); err != nil {
 		return err
 	}
 	noteCIOutputDeprecated()
@@ -771,6 +783,13 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		return sess.rejectInput(ctx, scanUUID, target, method, verdict)
 	}
 
+	// The OAST config (--oast-url, oast.enabled), read once per invocation
+	// before anything goes out. See scan_direct_oast.go.
+	oastCfg, err := sess.oastConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	// Set up HTTP stack
 	httpRequester, svc, cleanup, err := setupScanHTTPStack(sess.budget)
 	if err != nil {
@@ -868,6 +887,10 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		},
 		StatusInterval: 30 * time.Second,
 	}
+	// Out-of-band checks: registration (if any) starts now and is awaited,
+	// bounded, right before the executor runs. Correlated callbacks land in
+	// the same finding list as the executor's.
+	oastSvc := startDirectOAST(oastCfg, executorCfg.OnResult, repo, scanUUID, scanProjectUUID)
 
 	// Forward-declared so OnStatus can read the executor's considered-module
 	// counter (which counts modules whose CanProcess was evaluated, fired or
@@ -906,6 +929,9 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		}
 	}
 
+	if oastSvc = awaitDirectOAST(ctx, sess, scanUUID, oastSvc, &executorCfg); oastSvc != nil {
+		defer oastSvc.Close()
+	}
 	scanExecutor = core.NewExecutor(executorCfg, src, active, passive)
 	scanExecutor.SetNoParamDedup(scanOpts.NoParamDedup)
 	executor := scanExecutor
@@ -915,11 +941,20 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 	// per request with a goroutine that outlived it, so a multi-target run left
 	// one leaked goroutine and one registered channel per target, and only the
 	// in-flight scan saw the interrupt.
-	_, execErr := executor.Execute(ctx)
+	// --scanning-max-duration caps this run as it caps a Runner scan. A
+	// deadline on the context rather than ExecutorConfig.MaxDuration (the same
+	// cancellation) so the row can say the budget, not the target, ended it.
+	execCtx, cancelExec := withScanMaxDuration(ctx, globalScanningMaxDuration)
+	_, execErr := executor.Execute(execCtx)
+	budgetHit := execCtx.Err() != nil && ctx.Err() == nil
+	cancelExec()
 	if execErr != nil {
 		scanErrors = append(scanErrors, execErr.Error())
 	}
 	interrupted := ctx.Err() != nil
+	if budgetHit {
+		noteDirectScanBudget(sess, scanUUID, globalScanningMaxDuration)
+	}
 
 	// Finalize the row on every exit from Execute, interrupted or not.
 	mu.Lock()
@@ -1007,6 +1042,21 @@ func buildPhaseOptions(target string) (*types.Options, error) {
 	opts.ProxyURL = globalProxy
 	opts.ConfigPath = globalConfig
 	opts.ScopeOriginMode = globalScopeOrigin
+	// Scan tuning shared with `vigolium scan` (registerLightweightScanTuningFlags).
+	// Intensity is validated and resolved to its profile by
+	// resolveLightweightScanOptions; OastURL and ScanMaxDuration reach settings
+	// through runner.ApplyScanSettingOverrides there.
+	opts.Intensity = strings.TrimSpace(globalIntensity)
+	opts.ScanMaxDuration = globalScanningMaxDuration
+	opts.OastURL = scanOpts.OastURL
+	opts.AuthFiles = scanOpts.AuthFiles
+	opts.AuthInline = scanOpts.AuthInline
+	// -H rides on every request the Runner sends (phase-discovered ones too),
+	// and pins those header names against an --auth session's values. The
+	// request itself already carries them (scan-url builds it with them,
+	// scan-request applies them over the capture); the requester Sets, so
+	// nothing is sent twice.
+	opts.Headers = append([]string(nil), scanURLHeaders...)
 	opts.OutputFormats = parseFormats(globalFormat)
 	// reconcileOutputFormats validates formats and sets DeferredJSONLExport, which
 	// the post-scan jsonl export keys off of. Propagate its error rather than
@@ -1131,9 +1181,11 @@ func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, tar
 		return err
 	}
 
-	// Apply CLI overrides
-	if opts.ScopeOriginMode != "" {
-		settings.Scope.CLIOriginMode = opts.ScopeOriginMode
+	// The shared scan-options resolver (FND-4): --intensity → profile, then
+	// the settings-backed overrides (--oast-url, --scope-origin,
+	// --scanning-max-duration), exactly as `vigolium scan` applies them.
+	if err := resolveLightweightScanOptions(settings, opts); err != nil {
+		return err
 	}
 	if scanIgnoreScope {
 		relaxScopeForIgnore(&settings.Scope)

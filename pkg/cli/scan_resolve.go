@@ -2,10 +2,12 @@ package cli
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/agent/agenttypes"
 	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 )
@@ -116,4 +118,63 @@ func resolveNativeScanOptions(cmd *cobra.Command, settings *config.Settings, opt
 		return "", err
 	}
 	return strategy.Name, nil
+}
+
+// validateLightweightScanTuning rejects a bad --intensity or a negative
+// --scanning-max-duration on scan-url / scan-request before any network or
+// database work, on either path (the Runner path would only find out after
+// loading settings; the direct path never resolves the intensity).
+func validateLightweightScanTuning() error {
+	if v := strings.TrimSpace(globalIntensity); v != "" {
+		if _, err := agenttypes.ValidateIntensity(v); err != nil {
+			return asUsageError(err)
+		}
+	}
+	if globalScanningMaxDuration < 0 {
+		return usageErrorf("--scanning-max-duration must not be negative, got %s", globalScanningMaxDuration)
+	}
+	return nil
+}
+
+// resolveLightweightScanOptions is the shared resolver's share of a scan-url /
+// scan-request run through the Runner (runRunnerScan): intensity → profile,
+// then the settings-backed overrides (--oast-url, --scope-origin,
+// --scanning-max-duration), then — only when an intensity applied a profile —
+// the profile's scanning_pace folded into the knobs not typed.
+//
+// The strategy step is deliberately not run: a strategy (the configured
+// default, or the one the intensity's profile names) turns whole phases on and
+// off, and these commands scan the one request they were given; phases are
+// opted into with --discover/--spider/... instead. Without an intensity the
+// profile and pace steps are skipped too, so a plain -S/-o run keeps
+// scanning with exactly the flags it was given.
+func resolveLightweightScanOptions(settings *config.Settings, opts *types.Options) error {
+	profiled := false
+	if opts.Intensity != "" {
+		profilePath, err := runner.ApplyIntensityAndProfile(settings, opts, runner.ProfileRequest{Intensity: opts.Intensity})
+		if err != nil {
+			return err
+		}
+		if profilePath != "" {
+			profiled = true
+			zap.L().Info("Applied scanning profile", zap.String("profile", opts.ScanningProfile), zap.String("path", profilePath))
+		}
+		// --intensity deep turns on the alternate-port sweep of the CLI target
+		// hosts on `scan`. Here the input is one request, not a host to
+		// enumerate; a phase flag (which crawls from the target URL) keeps it.
+		if !hasPhaseFlags() {
+			opts.SkipPortSweep = true
+		}
+	}
+	runner.ApplyScanSettingOverrides(settings, opts)
+	if !profiled {
+		return nil
+	}
+	return runner.ApplyScanPace(settings, opts, runner.ExplicitPace{
+		Concurrency:        concurrencyKnob.globalChanged(),
+		RateLimit:          rateLimitKnob.globalChanged(),
+		MaxPerHost:         maxPerHostKnob.globalChanged(),
+		MaxRequests:        opts.MaxRequests > 0,
+		MaxRequestsPerHost: opts.MaxRequestsPerHost > 0,
+	})
 }
