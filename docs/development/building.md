@@ -158,7 +158,8 @@ deliberately conservative and kept green so `make lint` can gate CI:
 
 ## CI
 
-`.github/workflows/ci.yml` runs lint, `go vet`, race-disabled unit tests with a
+`.github/workflows/ci.yml` runs only when started by hand (Actions tab or
+`gh workflow run ci.yml`; `-f macos=true` adds the macOS job). It runs lint, `go vet`, race-disabled unit tests with a
 coverage floor (`coverage-gate`, `COVERAGE_MIN`), plus informational
 `govulncheck`, SBOM (CycloneDX), and dependency-review jobs. The vendored
 `pkg/spitolas/rod` package and everything under `platform/` are excluded from

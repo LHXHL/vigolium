@@ -1,21 +1,18 @@
 name: CI
 
-# Runs on every push to main, every pull request, nightly (which is also the
-# only time macOS runs besides main pushes), and on demand from the Actions tab
-# or `gh workflow run ci.yml`.
+# Manual only: the full suite is long, so it runs on demand from the Actions
+# tab or `gh workflow run ci.yml` (add `-f macos=true` for the macOS job).
+# Pushes and pull requests do not trigger it.
 on:
-  push:
-    branches: [main]
-  pull_request:
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      macos:
+        description: Also run the macOS (arm64) job (10x minutes)
+        default: false
+        type: boolean
 
-# Cancel superseded PR runs to save CI minutes. Runs on main are never
-# cancelled, so every main commit gets a complete result.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -174,8 +171,8 @@ jobs:
   macos:
     name: macOS (arm64)
     runs-on: macos-14
-    # macOS minutes cost 10x, so this runs on main pushes and nightly only.
-    if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # macOS minutes cost 10x, so this runs only when the run asks for it.
+    if: inputs.macos
     steps:
       - uses: actions/checkout@v6
 
@@ -347,7 +344,8 @@ jobs:
     name: Dependency review
     runs-on: ubuntu-latest
     # Diffs the dependency graph against the PR base for known-vulnerable or
-    # license-incompatible additions; only meaningful on pull requests.
+    # license-incompatible additions; only meaningful on pull requests, so it
+    # is skipped while CI is manual-only.
     if: github.event_name == 'pull_request'
     # Non-blocking for now (mirrors the govulncheck stance): surface advisories
     # for triage rather than hard-failing unrelated PRs.
