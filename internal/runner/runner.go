@@ -128,6 +128,10 @@ type spideringOutcome struct {
 	complete bool     // every capture receipt was complete (nothing lost, drains finished)
 	sawSSO   bool     // at least one target redirected off-host to a login wall
 	ssoHosts []string // the off-host login/SSO hosts (excluded from fuzzing scope)
+
+	// routeSeeds are the client routes the running spidering phase hands each
+	// target's crawl as ExtraSeeds (see loadSpiderRouteSeeds); nil outside it.
+	routeSeeds *routeSeedSet
 }
 
 // phaseInfra holds shared resources across all scan phases.

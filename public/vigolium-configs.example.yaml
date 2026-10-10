@@ -1255,6 +1255,19 @@ spidering:
   # Default: false (redacted)
   graph_include_values: false
 
+  # Browse client-side routes found in the target's JavaScript (the jstangle
+  # route facts discovery stores) as crawl entry points. The initial crawl
+  # takes routes earlier runs of the project stored; the targeted re-spider
+  # takes this scan's, under discovery.respider's caps. A route only the
+  # router knows is otherwise invisible to an interaction crawl.
+  # Default: true
+  route_seeds: true
+
+  # Route seeds one target's crawl browses, after scope filtering and dedup.
+  # Each costs a navigation and a settle. 0 = default.
+  # Default: 50
+  max_extra_seeds: 50
+
 # ============================================================================
 # Known Issue Scan
 # ============================================================================

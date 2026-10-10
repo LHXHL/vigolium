@@ -523,6 +523,8 @@ spidering:
   max_capture_body_bytes: 0  # dynamic body ceiling; 0 = 16 MiB, -1 = none
   graph_output_dir: ""       # write crawl graphs here (one file per crawl)
   graph_include_values: false  # keep credential-bearing values in graphs
+  route_seeds: true          # browse client routes found in the JS (initial crawl + re-spider)
+  max_extra_seeds: 50        # route seeds browsed per target crawl (0 = 50)
   interaction:               # what the browser may change; every key optional
     edit_fields: true        # type into / toggle / select controls
     submit_forms: true       # dispatch a form submit by any mechanism
