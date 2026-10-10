@@ -1,4 +1,4 @@
-import { getBaseUrl, buildAuthHeaders } from '@/api/client';
+import { getBaseUrl, buildAuthHeaders, errorMessageFromBody } from '@/api/client';
 
 export interface SSECallbacks {
   onChunk: (text: string) => void;
@@ -30,8 +30,7 @@ export async function fetchSSE(
   if (!res.ok) {
     let msg = res.statusText;
     try {
-      const errBody = await res.json();
-      msg = errBody.error || msg;
+      msg = errorMessageFromBody(await res.json(), msg);
     } catch { /* ignore */ }
     callbacks.onError(new Error(`${res.status}: ${msg}`));
     return;

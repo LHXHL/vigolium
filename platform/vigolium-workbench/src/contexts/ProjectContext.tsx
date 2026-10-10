@@ -3,7 +3,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
-import { ApiError, getProjectUUID, setProjectUUID } from '@/api/client';
+import { ApiError, getProjectUUID, onProjectNotFound, setProjectUUID } from '@/api/client';
 import { useProjects, useCreateProject } from '@/api/hooks';
 import { isCloudBuild, isStaticBuild } from '@/lib/buildMode';
 import type { Project } from '@/api/types';
@@ -84,6 +84,19 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setMounted(true);
   }, []);
 
+  // The server answered project_not_found for the stored UUID (DB reset, or
+  // the project was deleted elsewhere). client.ts has already cleared it and
+  // retried the request once; drop it from state and refetch the list so the
+  // auto-switch below lands on a project that exists.
+  useEffect(
+    () =>
+      onProjectNotFound(() => {
+        setProjectUUIDState(null);
+        void queryClient.invalidateQueries({ queryKey: ['projects'] });
+      }),
+    [queryClient],
+  );
+
   const setProject = useCallback(
     (uuid: string | null) => {
       const oldKey = getProjectUUID() ?? 'default';
@@ -135,7 +148,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         // Any 403 here means the user is in a bad project-state (stale
         // localStorage, lost access, etc.) — drop them onto /select-project.
-        if (err instanceof ApiError && err.code === 403) {
+        if (err instanceof ApiError && err.status === 403) {
           setProjectUUID(null);
           setProjectUUIDState(null);
           if (pathname !== '/select-project' && !AUTH_ENTRY_PATHS.has(pathname)) {

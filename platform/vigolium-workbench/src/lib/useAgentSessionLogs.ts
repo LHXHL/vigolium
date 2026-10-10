@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { buildApiUrl, buildAuthHeaders } from '@/api/client';
+import { buildApiUrl, buildAuthHeaders, errorMessageFromBody } from '@/api/client';
 import { isTerminalAgentStatus } from '@/api/types';
 
 export interface AgentSessionLogsState {
@@ -71,7 +71,7 @@ export function useAgentSessionLogs(uuid: string | null, status?: string): Agent
           if (abort.signal.aborted) return;
           if (!res.ok) {
             let msg = res.statusText;
-            try { const j = await res.json(); msg = j.error || msg; } catch { /* ignore */ }
+            try { msg = errorMessageFromBody(await res.json(), msg); } catch { /* ignore */ }
             setError(`${res.status}: ${msg}`);
             return;
           }
@@ -128,7 +128,7 @@ export function useAgentSessionLogs(uuid: string | null, status?: string): Agent
               continue;
             }
             let msg = res.statusText;
-            try { const j = await res.json(); msg = j.error || msg; } catch { /* ignore */ }
+            try { msg = errorMessageFromBody(await res.json(), msg); } catch { /* ignore */ }
             setError(`${res.status}: ${msg}`);
             break;
           }

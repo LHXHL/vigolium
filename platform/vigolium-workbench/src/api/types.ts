@@ -2,7 +2,11 @@
 
 export interface PaginatedResponse<T> {
   project_uuid?: string;
+  /** Rows. v2 bodies carry them as `items`; client.ts aliases them here. */
   data: T[];
+  items?: T[];
+  schema_version?: number;
+  command?: string;
   total: number;
   limit: number;
   offset: number;
@@ -158,9 +162,15 @@ export interface ScanResponse {
   repo_path?: string; // legacy, prefer source
 }
 
+/**
+ * An error body in either server version: v1 has a string `error`, the HTTP
+ * status in `code` and the string code in `error_code`; v2 has an `error`
+ * object carrying the string code.
+ */
 export interface ErrorResponse {
-  error: string;
+  error: string | { code: string; message: string; status: number; details?: string };
   code?: number;
+  error_code?: string;
   details?: string;
 }
 

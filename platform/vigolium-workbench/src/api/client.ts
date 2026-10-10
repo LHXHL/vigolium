@@ -23,16 +23,89 @@ export function setProjectUUID(uuid: string | null) {
 
 // ── Error ──────────────────────────────────────────────────────────
 
+/**
+ * A failed API call. `status` is the HTTP status; `code` is the server's
+ * stable string error code (`project_not_found`, `scan_not_found`, …) — the
+ * value to branch on. Never branch on `message`.
+ */
 export class ApiError extends Error {
-  code: number;
+  status: number;
+  code: string;
   details?: string;
 
-  constructor(error: string, code: number, details?: string) {
+  constructor(error: string, status: number, code?: string, details?: string) {
     super(error);
     this.name = 'ApiError';
-    this.code = code;
+    this.status = status;
+    this.code = code ?? '';
     this.details = details;
   }
+}
+
+/**
+ * Builds an ApiError from a non-2xx response body. Reads both server shapes:
+ * v1 `{error: "msg", code: 404, error_code: "…", details}` and
+ * v2 `{ok: false, error: {code: "…", message, status, details}}`.
+ */
+export function apiErrorFromBody(body: unknown, status: number, fallback: string): ApiError {
+  const b = (body && typeof body === 'object' ? body : {}) as ErrorResponse;
+  const err = b.error;
+  if (err && typeof err === 'object') {
+    return new ApiError(err.message || fallback, status, err.code, err.details);
+  }
+  return new ApiError(err || fallback, status, b.error_code, b.details);
+}
+
+/** The human message of an error body in either server shape. */
+export function errorMessageFromBody(body: unknown, fallback: string): string {
+  return apiErrorFromBody(body, 0, fallback).message;
+}
+
+async function apiErrorFromResponse(res: Response, fallback: string = res.statusText): Promise<ApiError> {
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    // ignore parse error
+  }
+  return apiErrorFromBody(body, res.status, fallback);
+}
+
+/** The server's code for a request naming a project it does not have. */
+export const PROJECT_NOT_FOUND = 'project_not_found';
+
+type ProjectNotFoundListener = (staleUUID: string | null) => void;
+const projectNotFoundListeners: ProjectNotFoundListener[] = [];
+
+/**
+ * Subscribe to "the stored project UUID no longer exists on the server".
+ * By the time listeners run the stale UUID is already cleared from
+ * localStorage; ProjectContext uses this to refetch the project list.
+ */
+export function onProjectNotFound(listener: ProjectNotFoundListener) {
+  projectNotFoundListeners.push(listener);
+  return () => {
+    const idx = projectNotFoundListeners.indexOf(listener);
+    if (idx >= 0) projectNotFoundListeners.splice(idx, 1);
+  };
+}
+
+function emitProjectNotFound(staleUUID: string | null) {
+  projectNotFoundListeners.forEach((fn) => fn(staleUUID));
+}
+
+/**
+ * v2 list bodies carry rows under `items`; v1 under `data`. Callers read
+ * `data`, so alias it once here.
+ */
+function unwrapListBody<T>(body: T): T {
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const b = body as Record<string, unknown>;
+    if (Array.isArray(b.items) && b.data === undefined) {
+      return { ...b, data: b.items } as T;
+    }
+  }
+  return body;
 }
 
 // ── Auth (static/workbench mode only) ──────────────────────────────
@@ -81,7 +154,7 @@ function emitDemoBlocked(method: string, path: string) {
 
 export class DemoReadOnlyError extends ApiError {
   constructor() {
-    super('This action is disabled in demo mode', 403);
+    super('This action is disabled in demo mode', 403, 'forbidden');
     this.name = 'DemoReadOnlyError';
   }
 }
@@ -250,7 +323,12 @@ export function withDemoKey(urlOrPath: string): string {
 
 // ── HTTP helpers ───────────────────────────────────────────────────
 
-async function request<T>(method: string, path: string, body?: unknown, opts: { allowText?: boolean } = {}): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts: { allowText?: boolean; retried?: boolean } = {},
+): Promise<T> {
   guardDemoMutation(method, path);
 
   const url = buildApiUrl(path);
@@ -264,27 +342,26 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
 
   if (isStaticBuild && res.status === 401) {
     emitAuthRequired();
-    throw new ApiError('Unauthorized', 401);
+    throw new ApiError('Unauthorized', 401, 'unauthorized');
   }
 
   if (!res.ok) {
-    let errBody: ErrorResponse | undefined;
-    try {
-      errBody = await res.json();
-    } catch {
-      // ignore parse error
+    const err = await apiErrorFromResponse(res);
+    // The stored project is gone (DB reset, deleted elsewhere): forget it,
+    // let ProjectContext refetch the list, and retry once without it.
+    if (err.code === PROJECT_NOT_FOUND && headers['X-Project-UUID'] && !opts.retried) {
+      const stale = getProjectUUID();
+      setProjectUUID(null);
+      emitProjectNotFound(stale);
+      return request<T>(method, path, body, { ...opts, retried: true });
     }
-    throw new ApiError(
-      errBody?.error || res.statusText,
-      errBody?.code || res.status,
-      errBody?.details
-    );
+    throw err;
   }
 
   if (opts.allowText && (res.headers.get('Content-Type') || '').startsWith('text/plain')) {
     return (await res.text()) as T;
   }
-  return res.json();
+  return unwrapListBody(await res.json()) as T;
 }
 
 function withQuery(path: string, params?: Record<string, string | number | undefined>): string {
@@ -343,21 +420,11 @@ export async function apiUpload<T>(path: string, file: File): Promise<T> {
 
   if (isStaticBuild && res.status === 401) {
     emitAuthRequired();
-    throw new ApiError('Unauthorized', 401);
+    throw new ApiError('Unauthorized', 401, 'unauthorized');
   }
 
   if (!res.ok) {
-    let errBody: ErrorResponse | undefined;
-    try {
-      errBody = await res.json();
-    } catch {
-      // ignore parse error
-    }
-    throw new ApiError(
-      errBody?.error || res.statusText,
-      errBody?.code || res.status,
-      errBody?.details
-    );
+    throw await apiErrorFromResponse(res);
   }
 
   return res.json();
@@ -374,16 +441,7 @@ export async function login(username: string, accessCode: string): Promise<{ tok
   });
 
   if (!res.ok) {
-    let errBody: ErrorResponse | undefined;
-    try {
-      errBody = await res.json();
-    } catch {
-      // ignore
-    }
-    throw new ApiError(
-      errBody?.error || 'login failed',
-      errBody?.code || res.status,
-    );
+    throw await apiErrorFromResponse(res, 'login failed');
   }
 
   return res.json();
