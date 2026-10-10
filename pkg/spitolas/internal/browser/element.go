@@ -1,6 +1,8 @@
 package browser
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -31,51 +33,97 @@ func (e *Element) boundedElem() *rod.Element {
 	return e.rodElem.Timeout(firstPositiveDuration(e.page.config.ElementTimeout, 5*time.Second))
 }
 
-// Click clicks the element with fresh timeout. The per-operation Timeout only
+// repaintOp runs a rod element op that can block on a repaint, bounded by the
+// element's (crawl-bound) context and ElementTimeout.
+//
+// rod's scroll-into-view (reached from Click, Hover, Focus, Input, Select,
+// SelectAllText, WaitInteractable and ScrollIntoView) calls
+// Page.WaitRepaint, which awaits requestAnimationFrame on rod's root page
+// handle. That handle carries the tab's own long-lived context, not the
+// element's or the crawl's, so neither Timeout nor cancellation reaches it: on a
+// tab that stops rendering, the op blocks until the tab closes.
+func (e *Element) repaintOp(op string, fn func(*rod.Element) error) error {
+	return runRepaintBounded(e.rodElem.GetContext(),
+		firstPositiveDuration(e.page.config.ElementTimeout, 5*time.Second), op, e.rodElem, fn)
+}
+
+// runRepaintBounded runs fn on a clone of el bound to ctx and capped at
+// timeout. It returns when fn does, or when that bound ends, whichever comes
+// first. In the second case fn is abandoned in its goroutine; its bound context
+// is already done, so once the repaint arrives fn's next CDP call fails rather
+// than clicking late. The goroutine itself ends when the tab closes.
+func runRepaintBounded(ctx context.Context, timeout time.Duration, op string, el *rod.Element, fn func(*rod.Element) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	opCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	bound := el.Context(opCtx)
+	done := make(chan error, 1)
+	go func() {
+		done <- safeRod(op, func() error { return fn(bound) })
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-opCtx.Done():
+		return fmt.Errorf("%s: no repaint or response before the bound ended: %w", op, opCtx.Err())
+	}
+}
+
+// Click clicks the element with fresh timeout. The per-operation timeout only
 // bounds this call because the element was adopted onto the crawl context first
-// — see Page.adopt.
+// — see Page.adopt. It waits for a repaint, so it runs through repaintOp.
 func (e *Element) Click() error {
-	return e.rodElem.Timeout(e.page.config.ElementTimeout).Click(proto.InputMouseButtonLeft, 1)
+	return e.repaintOp("Click", func(el *rod.Element) error {
+		return el.Click(proto.InputMouseButtonLeft, 1)
+	})
 }
 
 // DoubleClick double-clicks the element with fresh timeout.
 func (e *Element) DoubleClick() error {
-	return e.rodElem.Timeout(e.page.config.ElementTimeout).Click(proto.InputMouseButtonLeft, 2)
+	return e.repaintOp("DoubleClick", func(el *rod.Element) error {
+		return el.Click(proto.InputMouseButtonLeft, 2)
+	})
 }
 
 // RightClick right-clicks the element with fresh timeout.
 func (e *Element) RightClick() error {
-	return e.rodElem.Timeout(e.page.config.ElementTimeout).Click(proto.InputMouseButtonRight, 1)
+	return e.repaintOp("RightClick", func(el *rod.Element) error {
+		return el.Click(proto.InputMouseButtonRight, 1)
+	})
 }
 
 // Hover hovers over the element with fresh timeout.
 func (e *Element) Hover() error {
-	return e.rodElem.Timeout(e.page.config.ElementTimeout).Hover()
+	return e.repaintOp("Hover", (*rod.Element).Hover)
 }
 
 // Focus focuses the element.
 func (e *Element) Focus() error {
-	return e.boundedElem().Focus()
+	return e.repaintOp("Focus", (*rod.Element).Focus)
 }
 
 // Input types text into the element.
 func (e *Element) Input(text string) error {
-	return e.boundedElem().Input(text)
+	return e.repaintOp("Input", func(el *rod.Element) error { return el.Input(text) })
 }
 
 // Clear clears the element value.
 func (e *Element) Clear() error {
-	return e.boundedElem().SelectAllText()
+	return e.repaintOp("Clear", (*rod.Element).SelectAllText)
 }
 
 // SelectAllText selects all text in the element.
 func (e *Element) SelectAllText() error {
-	return e.boundedElem().SelectAllText()
+	return e.repaintOp("SelectAllText", (*rod.Element).SelectAllText)
 }
 
 // Select selects options in a select element.
 func (e *Element) Select(values []string) error {
-	return e.boundedElem().Select(values, true, rod.SelectorTypeText)
+	return e.repaintOp("Select", func(el *rod.Element) error {
+		return el.Select(values, true, rod.SelectorTypeText)
+	})
 }
 
 // SetFiles sets files for a file input element.
@@ -158,13 +206,15 @@ func (e *Element) WaitEnabled() error {
 // WaitInteractable waits for the element to be interactable with safe timeout.
 // Uses config.ElementTimeout to prevent infinite waits.
 func (e *Element) WaitInteractable() error {
-	_, err := e.rodElem.Timeout(e.page.config.ElementTimeout).WaitInteractable()
-	return err
+	return e.repaintOp("WaitInteractable", func(el *rod.Element) error {
+		_, err := el.WaitInteractable()
+		return err
+	})
 }
 
 // ScrollIntoView scrolls the element into view.
 func (e *Element) ScrollIntoView() error {
-	return e.boundedElem().ScrollIntoView()
+	return e.repaintOp("ScrollIntoView", (*rod.Element).ScrollIntoView)
 }
 
 // GetSelector generates a unique CSS selector for the element.

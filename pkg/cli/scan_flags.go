@@ -96,7 +96,7 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	flags.BoolVar(&scanOpts.SpideringEnabled, "spider", false, "Enable browser-based spidering phase before scanning")
 	flags.DurationVar(&scanOpts.SpideringMaxDuration, "spider-max-time", 30*time.Minute, "Max time for spidering per target")
 	flags.StringVarP(&scanOpts.SpideringBrowserEngine, "browser-engine", "E", "chromium", "Browser engine: 'chromium', 'ungoogled', or 'fingerprint'")
-	flags.IntVarP(&scanOpts.SpideringBrowserCount, "browsers", "b", 1, "Browser instances to launch for spidering (currently clamped to 1 — the crawler is single-threaded)")
+	flags.IntVarP(&scanOpts.SpideringBrowserCount, "browsers", "b", 1, "Browser instances to launch for spidering (clamped to 1; for parallel crawling set spidering.tabs in the config, which runs N tabs of the one browser)")
 	flags.BoolVar(&scanOpts.SpideringHeadless, "headless", true, "Run browser in headless mode")
 	flags.BoolVar(&scanOpts.SpideringHeaded, "headed", false, "Show the browser window during spidering (sugar for --headless=false; wins when both are set)")
 	flags.BoolVar(&scanOpts.SpideringNoCDP, "no-cdp", false, "Disable Chrome DevTools Protocol event listener detection")
