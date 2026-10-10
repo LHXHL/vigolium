@@ -26,6 +26,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/grafana/sobek v0.0.0-20260727154728-7781506a890f
 	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/invopop/jsonschema v0.13.0
 	github.com/invopop/yaml v0.3.1
 	github.com/json-iterator/go v1.1.12
 	github.com/klauspost/compress v1.19.2
@@ -52,6 +53,7 @@ require (
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/rs/xid v1.6.0
 	github.com/samber/lo v1.53.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/shirou/gopsutil/v4 v4.26.7
 	github.com/sourcegraph/conc v0.3.0
 	github.com/spf13/cobra v1.10.2
@@ -267,7 +269,6 @@ require (
 	github.com/imdario/mergo v0.3.16 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/indece-official/go-ebcdic v1.2.0 // indirect
-	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/itchyny/gojq v0.12.17 // indirect
 	github.com/itchyny/timefmt-go v0.1.6 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
@@ -390,7 +391,6 @@ require (
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/sahilm/fuzzy v0.1.3 // indirect
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/sashabaranov/go-openai v1.37.0 // indirect
 	github.com/segmentio/ksuid v1.0.4 // indirect
 	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 // indirect

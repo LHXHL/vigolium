@@ -3,7 +3,7 @@
 # same-named file can never shadow them).
 .PHONY: all build-linux build-darwin build-windows deps-chrome-cft sync-platform sync-skills \
 	test-canary-postgres test-pg-full test-e2e-autonomous test-e2e-scorecard \
-	access-lab-up access-lab-down access-lab-logs access-lab-status \
+	access-lab-up access-lab-down access-lab-logs access-lab-status schema \
 	setup-agent-codex test-smoke-autopilot test-smoke-autopilot-rest test-smoke-autopilot-prior test-smoke-autopilot-ginandjuice \
 	test-smoke-autopilot-crapi test-smoke-autopilot-juiceshop
 
@@ -1629,6 +1629,14 @@ verify-generated:
 tidy:
 	@echo "$(PREFIX) Tidying dependencies..."
 	$(GOMOD) tidy
+
+# Regenerate the published JSON Schemas (docs/schema) from the registered
+# command, event and error shapes (pkg/contract). TestSchemaGolden fails until
+# this is re-run after a contract change; review the diff before committing.
+schema:
+	@echo "$(PREFIX) Regenerating docs/schema..."
+	VIGOLIUM_UPDATE_SCHEMA=1 $(GOTEST) -count=1 -run '^TestSchemaGolden$$' ./pkg/cli/
+	@echo "$(PREFIX) Done. Review the diff before committing."
 
 # Regenerate the coding-agent skill's flag reference from the cobra command
 # tree. The file is committed so the embedded skill bundle stays self-contained;

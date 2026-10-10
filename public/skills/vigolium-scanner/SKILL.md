@@ -196,6 +196,7 @@ Full event table and field-by-field notes:
 | Attribute callbacks logged by your own OAST endpoint (scan ran with `--oast-url 'https://{nonce}.cb.example.com'`) | `vigolium oast ingest cb.log --format raw-log -j` |
 | Harvest known URLs for a domain | `vigolium kit harvest target.example` |
 | Crack a JWT's HMAC secret | `vigolium kit jwt-crack <token>` |
+| Exact shape of a `-j` document, an `--events` line or the error envelope | `vigolium schema command <name>` · `schema event <type>` · `schema error` (JSON Schema 2020-12; `vigolium schema` lists what is covered) |
 | List/print built-in wordlists or payloads | `vigolium kit wordlist [name]` / `vigolium kit payload --class sqli` |
 | Remove leftover vigolium temp scratch | `vigolium kit tmp-clean` |
 | Hand a finding to Burp | `vigolium finding --id 42 --push-to-burp -B http://127.0.0.1:9009` |

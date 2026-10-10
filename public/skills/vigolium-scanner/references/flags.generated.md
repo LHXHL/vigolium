@@ -106,6 +106,13 @@ run `vigolium <command> -h`.
 - [vigolium scan wait](#vigolium-scan-wait)
 - [vigolium scan-request](#vigolium-scan-request)
 - [vigolium scan-url](#vigolium-scan-url)
+- [vigolium schema](#vigolium-schema)
+- [vigolium schema all](#vigolium-schema-all)
+- [vigolium schema command](#vigolium-schema-command)
+- [vigolium schema error](#vigolium-schema-error)
+- [vigolium schema event](#vigolium-schema-event)
+- [vigolium schema list](#vigolium-schema-list)
+- [vigolium schema plan](#vigolium-schema-plan)
 - [vigolium scope](#vigolium-scope)
 - [vigolium scope set](#vigolium-scope-set)
 - [vigolium scope view](#vigolium-scope-view)
@@ -2006,6 +2013,54 @@ Scan a single URL for vulnerabilities
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
 | `--target` | `-t` | stringArray | - | Target URL to scan (repeatable; alternative to the positional URL argument). Commas are literal. |
 | `--timeout` | - | duration | `15s` | HTTP request timeout (e.g. 30s, 1m, 2h) |
+
+## vigolium schema
+
+Print the JSON Schema of -j documents, --events lines and the error envelope
+
+_No command-specific flags._
+
+## vigolium schema all
+
+Print every schema in one object
+
+_No command-specific flags._
+
+## vigolium schema command
+
+Usage: `vigolium schema command <name>`
+
+Print one command's -j document schema
+
+_No command-specific flags._
+
+## vigolium schema error
+
+Print the -j error envelope schema (error.code is a closed enum)
+
+_No command-specific flags._
+
+## vigolium schema event
+
+Usage: `vigolium schema event [type]`
+
+Print the schema of one --events line type, or of any line
+
+_No command-specific flags._
+
+## vigolium schema list
+
+Aliases: `ls`
+
+List the commands, event types and documents that have a schema
+
+_No command-specific flags._
+
+## vigolium schema plan
+
+Print the scan plan schema (scan --dry-run, the scan.plan event)
+
+_No command-specific flags._
 
 ## vigolium scope
 

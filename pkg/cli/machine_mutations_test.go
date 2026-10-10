@@ -103,6 +103,7 @@ func requireMutation(t *testing.T, doc map[string]any, command string, changed b
 	require.Contains(t, doc, "project_source", "every envelope says where its project came from")
 	items, ok := doc["items"].([]any)
 	require.True(t, ok, "items must be an array: %v", doc["items"])
+	validateRegisteredMap(t, doc)
 	return items
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/vigolium/vigolium/pkg/contract/contracttest"
 	"context"
 	"encoding/json"
 	"errors"
@@ -83,6 +84,7 @@ func TestEndpointsJSONEnvelope(t *testing.T) {
 		require.NoError(t, renderEndpoints(context.Background(), endpointsCmd, db, database.QueryFilters{ProjectUUID: "p1"}))
 	})
 	env := decodeEnvelope(t, out)
+	contracttest.Validate(t, "endpoints", []byte(out))
 	require.Equal(t, "endpoints", env.Command)
 	require.Equal(t, "read", env.Kind)
 	require.True(t, env.OK)
@@ -107,6 +109,7 @@ func TestEndpointsScanProvenanceWarning(t *testing.T) {
 		require.NoError(t, renderEndpoints(ctx, endpointsCmd, db, database.QueryFilters{ProjectUUID: "p1", ScanUUID: "old-scan"}))
 	})
 	require.Equal(t, provenanceScanNotStamped, decodeEnvelope(t, out).Provenance)
+	contracttest.Validate(t, "endpoints", []byte(out))
 
 	code, _ := scanProvenanceWarning(ctx, db, "p1", "missing-scan")
 	require.Equal(t, provenanceScanNotFound, code)
@@ -134,6 +137,7 @@ func TestParamsJSONRedactsByDefault(t *testing.T) {
 	})
 	require.NotContains(t, out, "hunter2")
 	env := decodeEnvelope(t, out)
+	contracttest.Validate(t, "params", []byte(out))
 	require.Equal(t, "params", env.Command)
 	require.EqualValues(t, 2, env.Total)
 	require.Contains(t, out, `"alice"`)
@@ -183,6 +187,7 @@ func TestTrafficCurlRendering(t *testing.T) {
 	})
 	require.NotContains(t, out, "s3cret")
 	env := decodeEnvelope(t, out)
+	contracttest.Validate(t, "traffic", []byte(out))
 	require.Equal(t, "traffic", env.Command)
 	var it struct {
 		UUID string   `json:"uuid"`

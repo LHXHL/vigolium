@@ -167,6 +167,13 @@ var dbIntents = map[string]string{
 	"project use":    "write",
 
 	// Skills, storage (object store, not the DB), misc.
+	"schema":           dbIntentNone,
+	"schema list":      dbIntentNone,
+	"schema command":   dbIntentNone,
+	"schema event":     dbIntentNone,
+	"schema error":     dbIntentNone,
+	"schema plan":      dbIntentNone,
+	"schema all":       dbIntentNone,
 	"skills":           dbIntentNone,
 	"skills get":       dbIntentNone,
 	"skills install":   dbIntentNone,

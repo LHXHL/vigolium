@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/vigolium/vigolium/pkg/contract/contracttest"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -300,6 +301,7 @@ func TestScanWaitCommandEndToEnd(t *testing.T) {
 	}
 	var env map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &env), stdout)
+	contracttest.Validate(t, "scan wait", []byte(stdout))
 	if env["command"] != "scan wait" {
 		t.Errorf("command = %v", env["command"])
 	}
@@ -319,11 +321,13 @@ func TestScanWaitCommandEndToEnd(t *testing.T) {
 	if code != 1 || !strings.Contains(stdout, `"scan_abandoned"`) {
 		t.Errorf("abandoned: exit %d stdout %s", code, stdout)
 	}
+	contracttest.ValidateError(t, []byte(stdout))
 
 	code, stdout, _ = runScanWaitChild(t, home, db, "scan", "status", "c2-dead", "-j")
 	if code != 0 || !strings.Contains(stdout, `"effective_status":"abandoned"`) {
 		t.Errorf("status: exit %d stdout %s", code, stdout)
 	}
+	contracttest.Validate(t, "scan status", []byte(stdout))
 
 	code, _, _ = runScanWaitChild(t, home, db, "scan", "wait", "c2-done", "--poll", "0s")
 	if code != ExitUsageError {

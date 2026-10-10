@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "contract.ErrorBody": {
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "body_decode_failed",
+            "body_incomplete",
+            "body_unavailable",
+            "budget_exhausted",
+            "config_invalid",
+            "conflict",
+            "database_locked",
+            "database_unavailable",
+            "export_failed",
+            "extension_load_failed",
+            "failed",
+            "finding_not_found",
+            "forbidden",
+            "gate_tripped",
+            "ingest_incomplete",
+            "input_unparsed",
+            "internal_error",
+            "invalid_project_uuid",
+            "invalid_request",
+            "lint_failed",
+            "login_failed",
+            "method_not_allowed",
+            "no_targets_in_scope",
+            "no_targets_reachable",
+            "not_authenticated",
+            "not_found",
+            "not_ready",
+            "output_too_large",
+            "partial",
+            "payload_too_large",
+            "pdf_failed",
+            "preflight_failed",
+            "project_not_found",
+            "provider_missing",
+            "proxy_auth_required",
+            "queue_full",
+            "rate_limited",
+            "record_not_found",
+            "scan_abandoned",
+            "scan_not_found",
+            "schema_outdated",
+            "schema_too_new",
+            "service_unavailable",
+            "source_incompatible",
+            "source_missing",
+            "source_unreadable",
+            "timed_out",
+            "unauthorized",
+            "unsupported_api_version",
+            "unsupported_input_mode",
+            "usage_error",
+            "wait_timeout"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer",
+          "enum": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "exit_code"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "command": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean",
+      "const": false
+    },
+    "error": {
+      "$ref": "#/$defs/contract.ErrorBody"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "soft_fail": {
+      "type": "boolean"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "generated_at_ms": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "error",
+    "generated_at",
+    "generated_at_ms"
+  ],
+  "title": "vigolium -j error",
+  "description": "What a failed -j command prints on stdout: ok:false and an error object. Branch on error.code, never on the message."
+}

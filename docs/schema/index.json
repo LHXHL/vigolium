@@ -1,0 +1,226 @@
+[
+  {
+    "name": "endpoints",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Endpoints (origin + path template) aggregated from stored traffic."
+  },
+  {
+    "name": "finding",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Stored findings as finding views; --curl rows render each finding's request as a curl command."
+  },
+  {
+    "name": "finding mark",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Findings whose status changed; unchanged and not_found list the rest."
+  },
+  {
+    "name": "log ls",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at)."
+  },
+  {
+    "name": "module disable",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Every module the search matched, each saying whether this run flipped it."
+  },
+  {
+    "name": "module enable",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Every module the search matched, each saying whether this run flipped it."
+  },
+  {
+    "name": "oast ingest",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Findings saved from logged OAST callbacks; the counters say how the callbacks were attributed."
+  },
+  {
+    "name": "params",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Parameters by endpoint and location, aggregated from stored traffic."
+  },
+  {
+    "name": "project create",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "The project created."
+  },
+  {
+    "name": "project delete",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "The project deleted, with what it held."
+  },
+  {
+    "name": "project use",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "The project activated (or created with --create)."
+  },
+  {
+    "name": "run",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document: one document per invocation, items are finding views."
+  },
+  {
+    "name": "scan",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document: one document per invocation, items are finding views."
+  },
+  {
+    "name": "scan diff",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Findings classified new / unchanged / fixed / not_reobserved between two scans."
+  },
+  {
+    "name": "scan status",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One scan's live status: phase, progress, liveness and ETA."
+  },
+  {
+    "name": "scan wait",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "The scan's final status view, printed once the scan ends."
+  },
+  {
+    "name": "scan-request",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document: one document per invocation, items are finding views."
+  },
+  {
+    "name": "scan-url",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document: one document per invocation, items are finding views."
+  },
+  {
+    "name": "traffic",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Stored HTTP records; --curl rows render each request as a curl command."
+  },
+  {
+    "name": "scan.started",
+    "kind": "event",
+    "description": "First line of every stream: what the scan will run, against what, at what pace and budget."
+  },
+  {
+    "name": "scan.interrupting",
+    "kind": "event",
+    "description": "A shutdown signal arrived and the graceful stop began. Nonterminal: scan.finished still follows."
+  },
+  {
+    "name": "scan.finished",
+    "kind": "event",
+    "description": "The terminal line, on every reachable exit path. status: completed, curtailed, interrupted or failed."
+  },
+  {
+    "name": "phase.started",
+    "kind": "event",
+    "description": "A phase began."
+  },
+  {
+    "name": "phase.progress",
+    "kind": "event",
+    "description": "Heartbeat while a phase runs. total is a non-decreasing upper bound, absent until known."
+  },
+  {
+    "name": "phase.finished",
+    "kind": "event",
+    "description": "A phase ended. status: completed, curtailed or failed; reasons are defects, limits configured bounds reached."
+  },
+  {
+    "name": "waf.block",
+    "kind": "event",
+    "description": "The edge started filtering scan traffic for a host."
+  },
+  {
+    "name": "waf.pacing",
+    "kind": "event",
+    "description": "Proactive pacing armed for a host behind a CDN/WAF edge."
+  },
+  {
+    "name": "finding.new",
+    "kind": "event",
+    "description": "A finding was reported. Metadata only: the evidence is in the database."
+  },
+  {
+    "name": "import.summary",
+    "kind": "event",
+    "description": "What a bridge import is about to write: total will cross, matched is what the source holds."
+  },
+  {
+    "name": "error",
+    "kind": "event",
+    "description": "A NON-fatal error. A failure that ends the run is scan.finished{status:failed}."
+  },
+  {
+    "name": "scan.plan",
+    "kind": "event",
+    "description": "The resolved scan plan, second on every stream (the same object `scan --dry-run` prints)."
+  },
+  {
+    "name": "scan.setup",
+    "kind": "event",
+    "description": "A first-run install step (templates, browser): component, state started|finished|failed."
+  },
+  {
+    "name": "oast.unavailable",
+    "kind": "event",
+    "description": "OAST registration failed or timed out: out-of-band checks do not run (scan partial, oast_unavailable)."
+  },
+  {
+    "name": "host.quarantined",
+    "kind": "event",
+    "description": "A host's breaker opened after consecutive errors; it is re-probed after a cooldown."
+  },
+  {
+    "name": "host.recovered",
+    "kind": "event",
+    "description": "A quarantined host answered its probe and is back in rotation."
+  },
+  {
+    "name": "host.dead",
+    "kind": "event",
+    "description": "A host failed every probe: no further requests go to it this scan."
+  },
+  {
+    "name": "auth.session_suspect",
+    "kind": "event",
+    "description": "Responses for a session look logged out; gen is the suspected credential generation."
+  },
+  {
+    "name": "auth.relogin",
+    "kind": "event",
+    "description": "How a re-login cycle ended: ok, the new generation when it worked, count of logins tried."
+  },
+  {
+    "name": "module.error",
+    "kind": "event",
+    "description": "Module failures, rate-limited: count is how many occurrences the line stands for."
+  },
+  {
+    "name": "extension.failed",
+    "kind": "event",
+    "description": "An extension failed to load or run."
+  },
+  {
+    "name": "error",
+    "kind": "error",
+    "description": "The -j error envelope (ok:false)."
+  }
+]

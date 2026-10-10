@@ -106,6 +106,7 @@ var bannerFreeCommands = map[string]bool{
 	"powershell": true,
 	"version":    true,
 	"config":     true,
+	"schema":     true,
 
 	"scan":         true,
 	"scan-url":     true,

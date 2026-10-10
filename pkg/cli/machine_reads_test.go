@@ -32,6 +32,7 @@ func requireEnvelope(t *testing.T, doc map[string]any, command, kind string) []a
 		require.Contains(t, doc, "changed", "a mutation document always says whether it changed state")
 		require.NotEmpty(t, doc["action"], "a mutation document names its action")
 	}
+	validateRegisteredMap(t, doc)
 	return items
 }
 

@@ -140,6 +140,7 @@ func decodeOne(t *testing.T, stdout string) map[string]any {
 	if dec.More() {
 		t.Fatalf("stdout carries more than one JSON document:\n%s", stdout)
 	}
+	validateRegisteredDoc(t, []byte(stdout))
 	return doc
 }
 

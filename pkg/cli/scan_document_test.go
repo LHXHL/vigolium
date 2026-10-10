@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/vigolium/vigolium/pkg/contract/contracttest"
 	"context"
 	"encoding/json"
 	"os"
@@ -262,6 +263,7 @@ func TestScanDocumentHasNoNucleiKeys(t *testing.T) {
 			require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 			doc := decodeOneScanDoc(t, stdout)
 			assertNoNucleiKeys(t, stdout)
+			contracttest.Validate(t, args[0], []byte(stdout))
 			assert.Equal(t, args[0], doc.Command)
 			assert.Equal(t, "completed", doc.Status, stderr)
 			assert.Equal(t, tc.persisted, doc.Persisted)
@@ -303,6 +305,7 @@ func TestScanDocumentFailurePath(t *testing.T) {
 	require.Equal(t, 1, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
 	assert.Zero(t, hits.Load())
 	doc := decodeOneScanDoc(t, stdout)
+	contracttest.Validate(t, "scan", []byte(stdout))
 	assert.Equal(t, "failed", doc.Status)
 	assert.Equal(t, database.ReasonNoTargetsInScope, doc.StopReason)
 	require.NotEmpty(t, doc.Errors)

@@ -188,21 +188,29 @@ func scanDiffGate(diff *database.ScanDiff) error {
 	return gateError{err: fmt.Errorf("--fail-on-new %s: %d new finding(s) at or above it", scanDiffFailOnNew, n)}
 }
 
+// scanDiffSideView is the summary of one side of the diff (base, head).
+type scanDiffSideView struct {
+	UUID         string `json:"uuid"`
+	Status       string `json:"status"`
+	Target       string `json:"target"`
+	StartedAt    string `json:"started_at"`
+	Completeness string `json:"completeness,omitempty"`
+	FinishedAt   string `json:"finished_at,omitempty"`
+}
+
 // scanDiffScanView is the summary of one side of the diff.
-func scanDiffScanView(s *database.Scan) map[string]any {
-	m := map[string]any{
-		"uuid":       s.UUID,
-		"status":     s.Status,
-		"target":     s.Target,
-		"started_at": agentTimestamp(s.StartedAt),
-	}
-	if s.Completeness != "" {
-		m["completeness"] = s.Completeness
+func scanDiffScanView(s *database.Scan) scanDiffSideView {
+	v := scanDiffSideView{
+		UUID:         s.UUID,
+		Status:       s.Status,
+		Target:       s.Target,
+		StartedAt:    agentTimestamp(s.StartedAt),
+		Completeness: s.Completeness,
 	}
 	if !s.FinishedAt.IsZero() {
-		m["finished_at"] = agentTimestamp(s.FinishedAt)
+		v.FinishedAt = agentTimestamp(s.FinishedAt)
 	}
-	return m
+	return v
 }
 
 func writeScanDiffJSON(cmd *cobra.Command, diff *database.ScanDiff, projectUUID string) error {

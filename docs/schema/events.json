@@ -1,0 +1,1212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "event.auth.relogin": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "auth.relogin"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "session": {
+          "type": "string"
+        },
+        "gen": {
+          "type": "integer"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "session",
+        "ok"
+      ],
+      "description": "How a re-login cycle ended: ok, the new generation when it worked, count of logins tried."
+    },
+    "event.auth.session_suspect": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "auth.session_suspect"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "gen": {
+          "type": "integer"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "session"
+      ],
+      "description": "Responses for a session look logged out; gen is the suspected credential generation."
+    },
+    "event.error": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "error"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "error_kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "message"
+      ],
+      "description": "A NON-fatal error. A failure that ends the run is scan.finished{status:failed}."
+    },
+    "event.extension.failed": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "extension.failed"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "An extension failed to load or run."
+    },
+    "event.finding.new": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "finding.new"
+        },
+        "host": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "A finding was reported. Metadata only: the evidence is in the database."
+    },
+    "event.host.dead": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "host.dead"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "A host failed every probe: no further requests go to it this scan."
+    },
+    "event.host.quarantined": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "host.quarantined"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "A host's breaker opened after consecutive errors; it is re-probed after a cooldown."
+    },
+    "event.host.recovered": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "host.recovered"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "A quarantined host answered its probe and is back in rotation."
+    },
+    "event.import.summary": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "import.summary"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "What a bridge import is about to write: total will cross, matched is what the source holds."
+    },
+    "event.module.error": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "module.error"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "error_kind": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "Module failures, rate-limited: count is how many occurrences the line stands for."
+    },
+    "event.oast.unavailable": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "oast.unavailable"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "OAST registration failed or timed out: out-of-band checks do not run (scan partial, oast_unavailable)."
+    },
+    "event.phase.finished": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "phase.finished"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requests_sent": {
+          "type": "integer"
+        },
+        "findings": {
+          "type": "integer"
+        },
+        "requests_in_scope": {
+          "type": "integer"
+        },
+        "done": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "phase",
+        "status"
+      ],
+      "description": "A phase ended. status: completed, curtailed or failed; reasons are defects, limits configured bounds reached."
+    },
+    "event.phase.progress": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "phase.progress"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "requests_sent": {
+          "type": "integer"
+        },
+        "findings": {
+          "type": "integer"
+        },
+        "requests_in_scope": {
+          "type": "integer"
+        },
+        "done": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "unit": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "phase"
+      ],
+      "description": "Heartbeat while a phase runs. total is a non-decreasing upper bound, absent until known."
+    },
+    "event.phase.started": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "phase.started"
+        },
+        "phase": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "phase"
+      ],
+      "description": "A phase began."
+    },
+    "event.scan.finished": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.finished"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stop_reason": {
+          "type": "string"
+        },
+        "requests_sent": {
+          "type": "integer"
+        },
+        "findings": {
+          "type": "integer"
+        },
+        "records_written": {
+          "type": "integer"
+        },
+        "records_basis": {
+          "type": "string"
+        },
+        "targets_admitted": {
+          "type": "integer"
+        },
+        "targets_rejected": {
+          "type": "integer"
+        },
+        "targets_reached": {
+          "type": "integer"
+        },
+        "targets_unreachable": {
+          "type": "integer"
+        },
+        "budget_exhausted_hosts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "exports": {
+          "items": {
+            "$ref": "#/$defs/scanevents.Export"
+          },
+          "type": "array"
+        },
+        "module_errors": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "extensions_failed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "findings_by_severity": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "status"
+      ],
+      "description": "The terminal line, on every reachable exit path. status: completed, curtailed, interrupted or failed."
+    },
+    "event.scan.interrupting": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.interrupting"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "A shutdown signal arrived and the graceful stop began. Nonterminal: scan.finished still follows."
+    },
+    "event.scan.plan": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.plan"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "The resolved scan plan, second on every stream (the same object `scan --dry-run` prints)."
+    },
+    "event.scan.setup": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.setup"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "component": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type"
+      ],
+      "description": "A first-run install step (templates, browser): component, state started|finished|failed."
+    },
+    "event.scan.started": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "scan.started"
+        },
+        "target": {
+          "type": "string"
+        },
+        "targets": {
+          "type": "integer"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "phases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "project_uuid": {
+          "type": "string"
+        },
+        "pace": {
+          "$ref": "#/$defs/scanevents.Pace"
+        },
+        "phase_pace": {
+          "additionalProperties": {
+            "$ref": "#/$defs/scanevents.Pace"
+          },
+          "type": "object"
+        },
+        "targets_admitted": {
+          "type": "integer"
+        },
+        "targets_rejected": {
+          "type": "integer"
+        },
+        "budgets": {
+          "$ref": "#/$defs/scanevents.Budgets"
+        },
+        "request_cap_enforcement": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "egress": {
+          "$ref": "#/$defs/scanevents.Egress"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "pace",
+        "budgets"
+      ],
+      "description": "First line of every stream: what the scan will run, against what, at what pace and budget."
+    },
+    "event.waf.block": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "waf.block"
+        },
+        "host": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "The edge started filtering scan traffic for a host."
+    },
+    "event.waf.pacing": {
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1
+        },
+        "ts": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "waf.pacing"
+        },
+        "host": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "concurrency_from": {
+          "type": "integer"
+        },
+        "concurrency_to": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "v",
+        "ts",
+        "seq",
+        "scan_uuid",
+        "type",
+        "host"
+      ],
+      "description": "Proactive pacing armed for a host behind a CDN/WAF edge."
+    },
+    "scanevents.Budgets": {
+      "properties": {
+        "max_requests": {
+          "type": "integer"
+        },
+        "max_requests_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_requests",
+        "max_requests_per_host"
+      ]
+    },
+    "scanevents.Egress": {
+      "properties": {
+        "gated": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exempt": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/scanevents.EgressExemption"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "gated",
+        "exempt"
+      ]
+    },
+    "scanevents.EgressExemption": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "reason"
+      ]
+    },
+    "scanevents.Export": {
+      "properties": {
+        "format": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "format",
+        "path"
+      ]
+    },
+    "scanevents.Pace": {
+      "properties": {
+        "rate_limit": {
+          "type": "integer"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "max_per_host": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "rate_limit",
+        "concurrency",
+        "max_per_host"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/event.scan.started"
+    },
+    {
+      "$ref": "#/$defs/event.scan.interrupting"
+    },
+    {
+      "$ref": "#/$defs/event.scan.finished"
+    },
+    {
+      "$ref": "#/$defs/event.phase.started"
+    },
+    {
+      "$ref": "#/$defs/event.phase.progress"
+    },
+    {
+      "$ref": "#/$defs/event.phase.finished"
+    },
+    {
+      "$ref": "#/$defs/event.waf.block"
+    },
+    {
+      "$ref": "#/$defs/event.waf.pacing"
+    },
+    {
+      "$ref": "#/$defs/event.finding.new"
+    },
+    {
+      "$ref": "#/$defs/event.import.summary"
+    },
+    {
+      "$ref": "#/$defs/event.error"
+    },
+    {
+      "$ref": "#/$defs/event.scan.plan"
+    },
+    {
+      "$ref": "#/$defs/event.scan.setup"
+    },
+    {
+      "$ref": "#/$defs/event.oast.unavailable"
+    },
+    {
+      "$ref": "#/$defs/event.host.quarantined"
+    },
+    {
+      "$ref": "#/$defs/event.host.recovered"
+    },
+    {
+      "$ref": "#/$defs/event.host.dead"
+    },
+    {
+      "$ref": "#/$defs/event.auth.session_suspect"
+    },
+    {
+      "$ref": "#/$defs/event.auth.relogin"
+    },
+    {
+      "$ref": "#/$defs/event.module.error"
+    },
+    {
+      "$ref": "#/$defs/event.extension.failed"
+    }
+  ],
+  "title": "vigolium --events",
+  "description": "One line of `vigolium scan --events ndjson`; `type` selects the shape."
+}

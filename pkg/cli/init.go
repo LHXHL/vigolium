@@ -502,7 +502,7 @@ var bootstrapExemptCommands = map[string]bool{
 // The root command with no subcommand only prints usage, and the `completion`
 // subtree only writes a shell script to stdout — neither touches a database or
 // a profile, and both are reached by users who have not yet decided to use
-// vigolium at all.
+// vigolium at all. The `schema` subtree prints compiled-in schemas, the same.
 func shouldBootstrap(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
@@ -514,7 +514,7 @@ func shouldBootstrap(cmd *cobra.Command) bool {
 		return false
 	}
 	for c := cmd; c != nil; c = c.Parent() {
-		if c.Name() == "completion" {
+		if c.Name() == "completion" || (c.Name() == "schema" && c.Parent() == cmd.Root()) {
 			return false
 		}
 	}

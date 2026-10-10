@@ -1169,6 +1169,43 @@ vigolium doctor --json      # environment readiness
 against, so `phases[].canonical` and `phases[].aliases` are exactly what `--only`,
 `--skip`, and `run <phase>` accept.
 
+### Machine-readable schemas (`vigolium schema`)
+
+The shapes above are published as JSON Schema (draft 2020-12), reflected from the
+Go types the commands emit, so a driver can validate what it parses instead of
+trusting prose:
+
+```bash
+vigolium schema                          # what has a schema: commands, event types, error, documents
+vigolium schema command finding          # one command's -j document (envelope + typed items)
+vigolium schema command scan status      # multi-word command paths need no quoting
+vigolium schema event phase.progress     # one --events line type
+vigolium schema event                    # any --events line: oneOf keyed on `type`
+vigolium schema error                    # the -j error envelope; error.code is the closed enum
+vigolium schema all > vigolium.schema.json
+```
+
+- Without `-j` the output is the bare schema, ready for a validator. With `-j` it is
+  the usual envelope whose `items` are `{name, kind, envelope_kind, description, schema}`.
+- Command schemas pin `schema_version` (2), `command`, `ok: true` and `kind`; a
+  mutation's schema requires `changed` and `action`. Objects are closed
+  (`additionalProperties: false`), so a key the schema does not name is a contract
+  change, not a silent addition. Keys marked optional are omitted when empty;
+  `--fields` may drop any item key, and `--json-legacy-keys` documents are outside
+  the contract.
+- Registered commands: `finding`, `traffic` (both with the `--curl` row variant),
+  `endpoints`, `params`, `log ls`, `scan status`, `scan wait`, `scan diff`, the scan
+  document (`scan`, `run`, `scan-url`, `scan-request`), and the mutations `finding
+  mark`, `oast ingest`, `project create|use|delete`, `module enable|disable`.
+  `vigolium schema` lists the current set; a test keeps every other command on an
+  explicit pending list with the reason it has no schema yet.
+- Each `--events` type is closed over the keys that type can carry (`v`, `ts`,
+  `seq`, `scan_uuid`, `type` on every line).
+- `schema plan` prints the scan plan document (`scan --dry-run`, the `scan.plan`
+  event) once a build registers it; otherwise it fails `not_found`.
+- The same files are committed under [`docs/schema/`](schema/) and regenerated with
+  `make schema`; a test fails when they drift from the code.
+
 ## Credentials
 
 `auth list` and `config ls` redact secrets by default — session tokens, auth
