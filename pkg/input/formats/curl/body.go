@@ -1,17 +1,15 @@
 package curl
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"mime/multipart"
-	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/vigolium/vigolium/pkg/input/formats/internal/multipartform"
 )
 
 // DataKind distinguishes curl's four body-data flavours, which differ only in
@@ -203,60 +201,15 @@ func BuildMultipartBody(fields, literalFields []string) (body, contentType strin
 		return "", ""
 	}
 
-	// mime/multipart rather than hand-written framing: it gets RFC 2183 header
-	// quoting right, where a Go %q would emit Go string escapes instead.
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	if err := w.SetBoundary(multipartBoundary(parts)); err != nil {
+	mparts := make([]multipartform.Part, len(parts))
+	for i, p := range parts {
+		mparts[i] = multipartform.Part{Name: p.name, FileName: p.filename, ContentType: p.contentType, Value: p.value}
+	}
+	body, contentType, err := multipartform.Build(mparts, multipartBoundary(parts))
+	if err != nil {
 		return "", ""
 	}
-	for _, p := range parts {
-		h := make(textproto.MIMEHeader)
-		if p.filename != "" {
-			h.Set("Content-Disposition", fmt.Sprintf("form-data; name=%s; filename=%s",
-				quoteMIMEParam(p.name), quoteMIMEParam(p.filename)))
-		} else {
-			h.Set("Content-Disposition", fmt.Sprintf("form-data; name=%s", quoteMIMEParam(p.name)))
-		}
-		ct := p.contentType
-		if ct == "" && p.filename != "" {
-			ct = "application/octet-stream"
-		}
-		if ct != "" {
-			h.Set("Content-Type", ct)
-		}
-		part, err := w.CreatePart(h)
-		if err != nil {
-			return "", ""
-		}
-		if _, err := io.WriteString(part, p.value); err != nil {
-			return "", ""
-		}
-	}
-	if err := w.Close(); err != nil {
-		return "", ""
-	}
-	return buf.String(), w.FormDataContentType()
-}
-
-// quoteMIMEParam quotes a multipart parameter per RFC 2183 (backslash-escaping
-// only quotes and backslashes), which is not the same as Go's %q.
-func quoteMIMEParam(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"', '\\':
-			b.WriteByte('\\')
-			b.WriteRune(r)
-		case '\r', '\n':
-			b.WriteByte(' ')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
+	return body, contentType
 }
 
 // multipartBoundary derives a stable boundary from the parts so identical

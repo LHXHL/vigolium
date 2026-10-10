@@ -2,6 +2,7 @@ package payload
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -204,11 +205,11 @@ func (p *StreamingFilesProvider) Next(ctx context.Context) ([]byte, error) {
 			continue
 		}
 
-		word := strings.TrimSpace(p.scanner.Text())
-		if word == "" || p.seen.IsSeen(word) {
+		line := bytes.TrimSpace(p.scanner.Bytes())
+		if len(line) == 0 || p.seen.IsSeen(string(line)) {
 			continue
 		}
-		return []byte(word), nil
+		return bytes.Clone(line), nil
 	}
 }
 

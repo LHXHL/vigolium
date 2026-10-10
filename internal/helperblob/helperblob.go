@@ -15,6 +15,7 @@
 package helperblob
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -26,6 +27,7 @@ import (
 	"path/filepath"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/vigolium/vigolium/internal/atomicfile"
 )
 
 // ErrChecksumMismatch is returned when a decompressed or downloaded helper does
@@ -147,44 +149,38 @@ func Install(src io.Reader, pin Pin, dir, name string) (string, error) {
 	}
 	dst := filepath.Join(dir, name)
 
-	tmpFile, err := os.CreateTemp(dir, name+".*.tmp")
-	if err != nil {
+	// verified is set once the decompressed bytes match pin, so a failure after
+	// it (the rename) can fall back to an identical file already at dst.
+	verified := false
+	var writeErr error
+	err := atomicfile.WriteFile(dst, 0o755, func(w *bufio.Writer) error {
+		sum, n, err := Decompress(w, src, pin.Size)
+		switch {
+		case err != nil:
+			writeErr = err
+		case n != pin.Size || sum != pin.SHA256:
+			writeErr = fmt.Errorf("%w for %s: expected sha256 %s (%d bytes), got %s (%d bytes)",
+				ErrChecksumMismatch, name, pin.SHA256, pin.Size, sum, n)
+		default:
+			verified = true
+		}
+		return writeErr
+	})
+	switch {
+	case err == nil:
+		return dst, nil
+	case writeErr != nil:
+		return "", writeErr
+	case !verified:
 		return "", fmt.Errorf("create helper temp file: %w", err)
-	}
-	tmp := tmpFile.Name()
-	fail := func(err error) (string, error) {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmp)
-		return "", err
-	}
-
-	sum, n, err := Decompress(tmpFile, src, pin.Size)
-	if err != nil {
-		return fail(err)
-	}
-	if n != pin.Size || sum != pin.SHA256 {
-		return fail(fmt.Errorf("%w for %s: expected sha256 %s (%d bytes), got %s (%d bytes)",
-			ErrChecksumMismatch, name, pin.SHA256, pin.Size, sum, n))
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("write helper binary: %w", err)
-	}
-	if err := os.Chmod(tmp, 0o755); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("chmod helper binary: %w", err)
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
+	case Cached(dst, pin):
 		// Windows refuses to replace a file another process is executing. The
 		// directory is keyed by content hash, so a complete file already at
 		// dst is byte-identical to what we just verified: adopt it.
-		if Cached(dst, pin) {
-			return dst, nil
-		}
+		return dst, nil
+	default:
 		return "", fmt.Errorf("install helper binary: %w", err)
 	}
-	return dst, nil
 }
 
 // DetectPlatform inspects the leading bytes of an executable and reports the

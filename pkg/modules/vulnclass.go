@@ -1,71 +1,13 @@
 package modules
 
-import (
-	"sort"
+import "sort"
 
-	"github.com/vigolium/vigolium/pkg/modules/modkit"
-)
-
-// Vulnerability classes for VulnClassifier, re-exported from modkit (where
-// module packages can import them without a cycle). One finding per
+// Vulnerability classes for VulnClassifier live in modkit (VulnClass*),
+// where module packages can import them without a cycle. One finding per
 // (location, parameter, class) is the goal: once a module of a class reports a
 // parameter, the other modules of that class skip it. --no-param-dedup turns
-// the skip off for audit runs.
-const (
-	VulnClassSQLi          = modkit.VulnClassSQLi
-	VulnClassNoSQLi        = modkit.VulnClassNoSQLi
-	VulnClassCmdi          = modkit.VulnClassCmdi
-	VulnClassCodeInjection = modkit.VulnClassCodeInjection
-	VulnClassSSTI          = modkit.VulnClassSSTI
-	VulnClassCSTI          = modkit.VulnClassCSTI
-	VulnClassSSRF          = modkit.VulnClassSSRF
-	VulnClassLFI           = modkit.VulnClassLFI
-	VulnClassXSS           = modkit.VulnClassXSS
-	VulnClassXSSStored     = modkit.VulnClassXSSStored
-	VulnClassCRLF          = modkit.VulnClassCRLF
-	VulnClassOpenRedirect  = modkit.VulnClassOpenRedirect
-	VulnClassXXE           = modkit.VulnClassXXE
-	VulnClassLDAP          = modkit.VulnClassLDAP
-	VulnClassXPath         = modkit.VulnClassXPath
-	VulnClassSSI           = modkit.VulnClassSSI
-	VulnClassSMTPHeader    = modkit.VulnClassSMTPHeader
-	VulnClassESI           = modkit.VulnClassESI
-)
-
-// knownVulnClasses is the closed set a VulnClass() return value must belong
-// to (enforced by the registry contract test).
-var knownVulnClasses = map[string]struct{}{
-	VulnClassSQLi: {}, VulnClassNoSQLi: {}, VulnClassCmdi: {}, VulnClassCodeInjection: {},
-	VulnClassSSTI: {}, VulnClassCSTI: {}, VulnClassSSRF: {}, VulnClassLFI: {},
-	VulnClassXSS: {}, VulnClassXSSStored: {}, VulnClassCRLF: {}, VulnClassOpenRedirect: {},
-	VulnClassXXE: {}, VulnClassLDAP: {}, VulnClassXPath: {}, VulnClassSSI: {},
-	VulnClassSMTPHeader: {}, VulnClassESI: {},
-}
-
-// IsKnownVulnClass reports whether class is one of the VulnClass* constants.
-func IsKnownVulnClass(class string) bool {
-	_, ok := knownVulnClasses[class]
-	return ok
-}
-
-// KnownVulnClasses returns the VulnClass* constants, sorted.
-func KnownVulnClasses() []string {
-	out := make([]string, 0, len(knownVulnClasses))
-	for c := range knownVulnClasses {
-		out = append(out, c)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// Class cost ranks for ClassPrioritized, re-exported from modkit.
-const (
-	ClassCostInBand  = modkit.ClassCostInBand
-	ClassCostBoolean = modkit.ClassCostBoolean
-	ClassCostTiming  = modkit.ClassCostTiming
-	ClassCostBrowser = modkit.ClassCostBrowser
-	ClassCostOAST    = modkit.ClassCostOAST
-)
+// the skip off for audit runs. Class cost ranks for ClassPrioritized are
+// modkit.ClassCost*.
 
 // ClassPrioritized is an optional interface for VulnClassifier modules that
 // rank themselves within their vuln class. Lower runs earlier: the executor

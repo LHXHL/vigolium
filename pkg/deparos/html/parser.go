@@ -2,6 +2,7 @@ package html
 
 import (
 	"io"
+	"slices"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -130,7 +131,7 @@ func (p *Parser) traverse(n *html.Node, result *HTMLParsed, bodyBuilder, visible
 			case "href":
 				if tagName == "a" {
 					result.OutboundLinkCount++
-					if !contains(result.OutboundTagNames, tagName) {
+					if !slices.Contains(result.OutboundTagNames, tagName) {
 						result.OutboundTagNames = append(result.OutboundTagNames, tagName)
 					}
 				}
@@ -303,14 +304,4 @@ func countLines(text string) int {
 	}
 	lines := strings.Split(text, "\n")
 	return len(lines)
-}
-
-// contains checks if slice contains string
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

@@ -517,9 +517,6 @@ func (s *SitemapSampler) Sample() []*url.URL {
 	return out
 }
 
-// Offered is the number of URLs passed to Add.
-func (s *SitemapSampler) Offered() int { return s.offered }
-
 // Shapes is the number of distinct shapes held.
 func (s *SitemapSampler) Shapes() int { return len(s.order) }
 

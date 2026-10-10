@@ -1,6 +1,7 @@
 package exttest
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -316,8 +317,8 @@ func (r *fixtureRun) runCase(extPath, fixDir, name string) (res CaseResult) {
 		return fail("%v", err)
 	}
 
-	handler := firstNonEmpty(expect.Handler, fx.Directives["handler"])
-	insertion := firstNonEmpty(expect.Insertion, fx.Directives["insertion"])
+	handler := cmp.Or(expect.Handler, fx.Directives["handler"])
+	insertion := cmp.Or(expect.Insertion, fx.Directives["insertion"])
 	outcome, err := ext.Run(rr, RunOptions{Handler: handler, Insertion: insertion})
 	if err != nil {
 		return fail("%v", err)
@@ -348,13 +349,4 @@ func (r *fixtureRun) runCase(extPath, fixDir, name string) (res CaseResult) {
 func isDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

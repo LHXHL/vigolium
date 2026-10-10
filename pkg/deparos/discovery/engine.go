@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -282,6 +283,11 @@ type Engine struct {
 	// sitemapCapped counts sitemap locs dropped by the sitemap budgets (see
 	// fetchSitemaps / SitemapCapped); above zero is the sitemap_cap limit.
 	sitemapCapped atomic.Int64
+
+	// seeding is true from Start until the sitemap source and the initial
+	// task wave have been queued; the engine never reports idle meanwhile, so
+	// a slow sitemap fetch cannot end discovery before it is seeded.
+	seeding atomic.Bool
 }
 
 // EngineMetrics tracks discovery statistics.
@@ -752,11 +758,21 @@ func (e *Engine) Start() error {
 			return fmt.Errorf("invalid start URL: %w", err)
 		}
 
-		// Fetch and parse robots.txt for initial URL discovery
+		// Fetch and parse robots.txt for initial URL discovery. The sitemap
+		// source it names runs off the state lock, before the initial task
+		// wave (sitemap locs feed the observed-path wordlist those tasks use).
 		logger.Info("Fetching robots.txt")
-		e.fetchRobotsTxt(targetURL)
+		named := e.loadRobotsTxt(targetURL)
 
-		go e.generateInitialTasks()
+		// Tracked by e.wg so Stop's cleanup never races the seeding.
+		e.seeding.Store(true)
+		e.wg.Go(func() {
+			defer e.seeding.Store(false)
+			e.fetchSitemaps(targetURL, named)
+			if e.ctx.Err() == nil {
+				e.generateInitialTasks()
+			}
+		})
 
 		return nil
 
@@ -892,7 +908,7 @@ func (e *Engine) GetState() State {
 // IsIdle returns true if queue is empty and coordinator has no work pending.
 // Used by TUI to detect completion.
 func (e *Engine) IsIdle() bool {
-	return e.taskQueue.IsEmpty() && e.coordinator.IsIdle()
+	return !e.seeding.Load() && e.taskQueue.IsEmpty() && e.coordinator.IsIdle()
 }
 
 // Done returns a channel that is closed when the engine's context is cancelled.
@@ -935,6 +951,7 @@ func (e *Engine) newCallbacks() *Callbacks {
 		AddRequestFact:              e.AddRequestFact,
 		RequeueReplayTemplate:       e.RequeueReplayTemplate,
 		NoteReplayOutcome:           e.NoteReplayOutcome,
+		ReplayEvidenceSpent:         e.replayEvidenceSpent,
 		StoreJSTangleRequests:       e.storeJSTangleRequests,
 		StoreJSTangleFacts:          e.storeJSTangleFacts,
 		ProcessJSTangleCapabilities: e.processJSTangleCapabilityFacts,
@@ -1436,6 +1453,12 @@ func (e *Engine) NoteReplayOutcome(sourceURL, templateID string, note ReplayNote
 	e.templateRegistry().NoteOutcome(sourceURL, templateID, note)
 }
 
+// replayEvidenceSpent reports whether NoteReplayOutcome would drop a response
+// body anyway, letting the coordinator skip copying it.
+func (e *Engine) replayEvidenceSpent() bool {
+	return e.replayEvidenceBytes.Load() > maxReplayEvidenceTotal
+}
+
 // RequestTemplateOutcomes reports every JS-derived request template with its
 // final outcome. Read it after Stop() and before the siteMap closes: it is the
 // only place unreplayed, withheld and not-found templates survive the crawl.
@@ -1489,16 +1512,9 @@ func withheldPolicyReason(policy ReplaySafety, fact *jstangle.HTTPRequestFact) s
 		method = "GET"
 	}
 	if strings.EqualFold(fact.Client, "graphql") && isReplayableMethod(method) {
-		return "graphql-" + strings.ToLower(defaultString(fact.OperationType, "mutation"))
+		return "graphql-" + strings.ToLower(cmp.Or(fact.OperationType, "mutation"))
 	}
 	return "method:" + method
-}
-
-func defaultString(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
 }
 
 // RequeueReplayTemplate returns a claimed JS-replay template to the pending set
@@ -1633,7 +1649,7 @@ func (e *Engine) WaitForQueues(ctx context.Context) error {
 			taskQueueEmpty := e.taskQueue.IsEmpty()
 			coordinatorIdle := e.coordinator.IsIdle()
 
-			allIdle := taskQueueEmpty && coordinatorIdle
+			allIdle := !e.seeding.Load() && taskQueueEmpty && coordinatorIdle
 
 			if allIdle {
 				if !idleDetected {

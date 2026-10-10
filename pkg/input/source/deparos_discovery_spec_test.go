@@ -104,7 +104,7 @@ func crawledSpecRecord() *httpmsg.HttpRequestResponse {
 // executor backfill depends on: spec-derived endpoints come out as request-only
 // stubs (no response), so they must later be fetched + backfilled to show traffic.
 func TestExtractSpecEndpoints_ProducesRequestOnlyStubs(t *testing.T) {
-	endpoints := extractSpecEndpoints([]*httpmsg.HttpRequestResponse{crawledSpecRecord()})
+	endpoints := extractSpecEndpointsSeen([]*httpmsg.HttpRequestResponse{crawledSpecRecord()}, map[string]struct{}{})
 
 	assert.NotEmpty(t, endpoints, "a discovered OpenAPI spec must yield endpoints")
 	for i, rr := range endpoints {
@@ -122,15 +122,15 @@ func TestSaveAndEmit_TagsRecordsWithSource(t *testing.T) {
 	ctx := context.Background()
 
 	crawled := []*httpmsg.HttpRequestResponse{crawledSpecRecord()}
-	specEndpoints := extractSpecEndpoints(crawled)
+	specEndpoints := extractSpecEndpointsSeen(crawled, map[string]struct{}{})
 	if len(specEndpoints) == 0 {
 		t.Fatal("expected spec endpoints from the fixture")
 	}
 
-	if err := d.saveAndEmit(ctx, crawled, crawlRecordSource); err != nil {
+	if _, err := d.saveAndEmitWithUUIDs(ctx, crawled, crawlRecordSource); err != nil {
 		t.Fatalf("saveAndEmit(crawled): %v", err)
 	}
-	if err := d.saveAndEmit(ctx, specEndpoints, specRecordSource); err != nil {
+	if _, err := d.saveAndEmitWithUUIDs(ctx, specEndpoints, specRecordSource); err != nil {
 		t.Fatalf("saveAndEmit(spec): %v", err)
 	}
 
@@ -154,7 +154,7 @@ func TestSaveAndEmit_EmitsWithoutUUIDsOnSaveFailure(t *testing.T) {
 	ctx := context.Background()
 
 	recs := []*httpmsg.HttpRequestResponse{crawledSpecRecord(), crawledSpecRecord()}
-	if err := d.saveAndEmit(ctx, recs, specRecordSource); err != nil {
+	if _, err := d.saveAndEmitWithUUIDs(ctx, recs, specRecordSource); err != nil {
 		t.Fatalf("saveAndEmit: %v", err)
 	}
 

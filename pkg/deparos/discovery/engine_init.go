@@ -527,16 +527,10 @@ func (e *Engine) extractWordsFromStoredResponses() error {
 	return nil
 }
 
-// fetchRobotsTxt fetches and parses robots.txt to discover initial URLs, then
-// runs the sitemap source over the sitemaps it names (or the default sitemap
-// paths when it names none). Non-fatal: failures are logged and discovery goes on.
-func (e *Engine) fetchRobotsTxt(baseURL *url.URL) {
-	named := e.loadRobotsTxt(baseURL)
-	e.fetchSitemaps(baseURL, named)
-}
-
 // loadRobotsTxt fetches robots.txt, feeds it through the spider coordinator and
-// returns the Sitemap: URLs it declares (nil when it is missing or names none).
+// returns the Sitemap: URLs it declares (nil when it is missing or names none);
+// Start hands them to fetchSitemaps (which falls back to the default sitemap
+// paths for nil). Non-fatal: failures are logged and discovery goes on.
 func (e *Engine) loadRobotsTxt(baseURL *url.URL) []*url.URL {
 	robotsURL := *baseURL
 	robotsURL.Path = "/robots.txt"

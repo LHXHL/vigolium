@@ -16,6 +16,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
+	"github.com/vigolium/vigolium/pkg/yamlext"
 )
 
 // jsCallTimeout hard-bounds a single JS extension callable. Sobek runs JS
@@ -75,7 +76,7 @@ func NewJSActiveModule(script *LoadedScript, opts APIOptions) (*JSActiveModule, 
 		"JS extension: "+script.Metadata.Name,
 		script.Metadata.ConfirmationCriteria,
 		sev,
-		ParseConfidence(script.Metadata.Confidence, severity.Firm),
+		yamlext.ParseConfidence(script.Metadata.Confidence, severity.Firm),
 		scanTypes,
 		modkit.AllInsertionPointTypes,
 	)
@@ -424,7 +425,7 @@ func parseSingleJSResult(vm *sobek.Runtime, obj *sobek.Object, ctx *httpmsg.Http
 	// Per-result overrides. Anything left unset is filled from the module
 	// defaults (confidence, tags) by the executor.
 	if v := obj.Get("confidence"); isSet(v) {
-		result.Info.Confidence = ParseConfidence(v.String(), severity.ConfidenceUndefined)
+		result.Info.Confidence = yamlext.ParseConfidence(v.String(), severity.ConfidenceUndefined)
 	}
 	if v := obj.Get("tags"); isSet(v) {
 		for _, tag := range jsStringSlice(vm, v) {

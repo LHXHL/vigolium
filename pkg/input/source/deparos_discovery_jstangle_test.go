@@ -206,8 +206,9 @@ func TestJSTangleFactAlwaysPersisted(t *testing.T) {
 			Value: jstangle.ValueTemplate{Rendered: "/internal/metrics", Static: true}}}},
 	}
 
-	acc, err := d.importCollected(context.Background(), nil, collectedGroups{
-		sourceOrder: fx.order, bySource: fx.crawl, jsTemplates: plan, sizeHint: 8,
+	acc := newImportAccum(8)
+	err := d.importCollected(context.Background(), nil, collectedGroups{
+		sourceOrder: fx.order, bySource: fx.crawl, jsTemplates: plan, acc: acc,
 	})
 	require.NoError(t, err)
 	d.noteJSTemplateStats("https://app.example/", plan, acc.factBundles)
@@ -348,8 +349,8 @@ func TestJSTemplateStubsSurviveDeparosCleanup(t *testing.T) {
 	noise := mustRR(t, "GET", "https://app.example/wordlist-guess").WithResponse(httpmsg.NewHttpResponse(noiseRaw))
 	fx.crawl[crawlRecordSource] = append(fx.crawl[crawlRecordSource], noise)
 
-	_, err = d.importCollected(ctx, nil, collectedGroups{
-		sourceOrder: fx.order, bySource: fx.crawl, jsTemplates: plan, sizeHint: 8,
+	err = d.importCollected(ctx, nil, collectedGroups{
+		sourceOrder: fx.order, bySource: fx.crawl, jsTemplates: plan, acc: newImportAccum(8),
 	})
 	require.NoError(t, err)
 	drainItems(d)

@@ -60,28 +60,24 @@ const (
 	maxDiscoveryFlushPoll = time.Second
 )
 
-// flushSettings resolves the streaming knobs: the interval, the node threshold,
-// and whether in-crawl flushing runs at all (a negative interval turns it off,
-// leaving everything to the end of the target as before).
-func (c DeparosDiscoveryConfig) flushSettings() (interval time.Duration, nodes int, enabled bool) {
+// flushSettings resolves the streaming interval and whether in-crawl flushing
+// runs at all (a negative interval turns it off, leaving everything to the end
+// of the target as before).
+func (c DeparosDiscoveryConfig) flushSettings() (interval time.Duration, enabled bool) {
 	interval = c.FlushInterval
 	switch {
 	case interval < 0:
-		return 0, 0, false
+		return 0, false
 	case interval == 0:
 		interval = defaultDiscoveryFlushInterval
 	}
-	nodes = c.FlushNodes
-	if nodes <= 0 {
-		nodes = defaultDiscoveryFlushNodes
-	}
-	return interval, nodes, true
+	return interval, true
 }
 
 // streamsFuzz reports whether the fuzz class is streamed during the crawl: it
 // needs in-crawl flushing on and discovery.stream_fuzz not turned off.
 func (c DeparosDiscoveryConfig) streamsFuzz() bool {
-	_, _, enabled := c.flushSettings()
+	_, enabled := c.flushSettings()
 	return enabled && !c.FuzzAtEnd
 }
 
@@ -359,7 +355,7 @@ func (c *targetCollector) flush(ctx context.Context) error {
 	batch := make([]collectedRecord, 0, len(fuzz)+len(refs))
 	batch = append(batch, fuzz...)
 	batch = append(batch, refs...)
-	order, bySource, _ := groupCollectedBySource(batch)
+	order, bySource := groupCollectedBySource(batch)
 	for _, label := range order {
 		if err := c.d.importGroup(importCtx, c.acc, bySource[label], label); err != nil {
 			return err
@@ -385,7 +381,7 @@ func (c *targetCollector) flush(ctx context.Context) error {
 // function that stops it and waits for it to exit. With streaming disabled it
 // returns a no-op.
 func (c *targetCollector) startFlusher(ctx context.Context) (stop func()) {
-	interval, nodes, enabled := c.d.cfg.flushSettings()
+	interval, enabled := c.d.cfg.flushSettings()
 	if !enabled {
 		return func() {}
 	}
@@ -394,7 +390,7 @@ func (c *targetCollector) startFlusher(ctx context.Context) (stop func()) {
 	exited := make(chan struct{})
 	go func() {
 		defer close(exited)
-		c.runFlusher(ctx, quit, interval, nodes, poll)
+		c.runFlusher(ctx, quit, interval, defaultDiscoveryFlushNodes, poll)
 	}()
 	var once sync.Once
 	return func() {
@@ -508,7 +504,7 @@ func (c *targetCollector) finish(ctx context.Context, engine targetEngineFacts, 
 	kept = append(kept, fuzz...)
 	kept = append(kept, c.pendingRefs...)
 	c.pendingRefs = nil
-	sourceOrder, bySource, _ := groupCollectedBySource(kept)
+	sourceOrder, bySource := groupCollectedBySource(kept)
 
 	// Parse API specs (OpenAPI/Swagger/Postman/WSDL) found among the responses
 	// read since the last flush and queue their documented endpoints. They are
@@ -550,7 +546,7 @@ func (c *targetCollector) finish(ctx context.Context, engine targetEngineFacts, 
 	}
 	d.mu.Unlock()
 
-	_, err := d.importCollected(ctx, c.siteMap, collectedGroups{
+	err := d.importCollected(ctx, c.siteMap, collectedGroups{
 		sourceOrder:   sourceOrder,
 		bySource:      bySource,
 		specEndpoints: specEndpoints,

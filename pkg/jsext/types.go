@@ -61,23 +61,6 @@ func ParseSeverity(s string) severity.Severity {
 	}
 }
 
-// ParseConfidence converts a confidence string (tentative, firm, certain) to
-// the severity type, returning def when s is empty or unrecognized. Shared by
-// the JS and YAML extension loaders so module defaults and per-result values
-// parse identically.
-func ParseConfidence(s string, def severity.Confidence) severity.Confidence {
-	if c := severity.ToConfidence(s); c != severity.ConfidenceUndefined {
-		return c
-	}
-	return def
-}
-
-// IsValidConfidence reports whether s is a recognized confidence value.
-// An empty string is valid (the module default applies).
-func IsValidConfidence(s string) bool {
-	return strings.TrimSpace(s) == "" || severity.ToConfidence(s) != severity.ConfidenceUndefined
-}
-
 // ParseScanScopes converts string scan types to bitmask.
 func ParseScanScopes(types []string) modkit.ScanScope {
 	var result modkit.ScanScope

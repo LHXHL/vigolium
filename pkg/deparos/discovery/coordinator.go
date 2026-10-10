@@ -688,6 +688,12 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 		}
 		cb.NoteReplayOutcome(v.SourceURL, v.TemplateID, n)
 	}
+	// evidence captures a not-found replay's response for its note, leaving the
+	// body out once the evidence budget is spent (NoteReplayOutcome would drop it).
+	evidence := func(rc *responsechain.ResponseChain) *storage.ResponseData {
+		keepBody := cb.ReplayEvidenceSpent == nil || !cb.ReplayEvidenceSpent()
+		return captureReplayResponse(rc, keepBody)
+	}
 	defer func() {
 		if cb.RequeueReplayTemplate == nil || len(settled) >= len(claimed) {
 			return
@@ -809,7 +815,7 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 				zap.String("method", variant.Method),
 				zap.Error(err))
 			note(variant, ReplayNote{Outcome: TemplateReplayedNotFound, Reason: "analysis-error",
-				Status: rc.Response().StatusCode, Response: captureReplayResponse(rc)})
+				Status: rc.Response().StatusCode, Response: evidence(rc)})
 			rc.Close()
 			continue
 		}
@@ -819,7 +825,7 @@ func (c *PayloadCoordinator) executeJSExtractedRequestTask(ctx context.Context, 
 			// request-shape 4xx, or a soft-404). Keep the response: the stub the
 			// source persists for this template carries it as evidence.
 			note(variant, ReplayNote{Outcome: TemplateReplayedNotFound,
-				Status: rc.Response().StatusCode, Response: captureReplayResponse(rc)})
+				Status: rc.Response().StatusCode, Response: evidence(rc)})
 			rc.Close()
 			continue
 		}

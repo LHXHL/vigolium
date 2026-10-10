@@ -385,7 +385,7 @@ func parseDocument(
 	var (
 		version        int
 		sourceRoot     string
-		sources        []string
+		sources        [][]byte // raw tokens; only entries under the path cap are decoded
 		sourcesContent [][]byte
 		sectionValues  [][]byte
 		hasMappings    bool
@@ -408,13 +408,7 @@ func parseDocument(
 				return nil
 			}
 			return walkArray(value, func(_ int, item []byte) error {
-				var source string
-				if item[0] == '"' {
-					if err := json.Unmarshal(item, &source); err != nil {
-						return fmt.Errorf("sources: %w", err)
-					}
-				}
-				sources = append(sources, source)
+				sources = append(sources, item)
 				return nil
 			})
 		case "sourcesContent":
@@ -495,15 +489,23 @@ func parseDocument(
 		out.ExternalSections = append(out.ExternalSections, sectionURL)
 	}
 
-	for index, rawPath := range sources {
+	for index, token := range sources {
 		out.SourcesTotal++
 		if len(*entries) >= MaxSourcePaths {
-			// Past the path cap nothing is listed or recovered.
+			// Past the path cap nothing is decoded, listed or recovered.
 			out.SourcesTotal += len(sources) - index - 1
 			skipped := len(sources) - index
 			out.SkippedSources += skipped
 			markTruncated(out, TruncationSourcePaths)
 			break
+		}
+		var rawPath string
+		if token[0] == '"' {
+			decoded, err := unquoteString(token)
+			if err != nil {
+				return fmt.Errorf("decode source map: sources: %w", err)
+			}
+			rawPath = string(decoded)
 		}
 		entry := sourceEntry{
 			rawPath: rawPath, sourceRoot: sourceRoot,
@@ -615,13 +617,22 @@ var vendorMarkers = []string{
 	"webpack/runtime/", "(webpack)/", "vite/", "~/",
 }
 
+// vendorSegmentMarkers are vendorMarkers anchored at a segment boundary.
+var vendorSegmentMarkers = func() []string {
+	out := make([]string, len(vendorMarkers))
+	for i, marker := range vendorMarkers {
+		out[i] = "/" + marker
+	}
+	return out
+}()
+
 // IsVendorPath reports whether a source-map path names vendor code rather than
 // the application's own source. A marker matches at the start of the path or
 // at any segment boundary.
 func IsVendorPath(sourcePath string) bool {
 	lowered := strings.ToLower(strings.ReplaceAll(sourcePath, "\\", "/"))
-	for _, marker := range vendorMarkers {
-		if strings.HasPrefix(lowered, marker) || strings.Contains(lowered, "/"+marker) {
+	for i, marker := range vendorMarkers {
+		if strings.HasPrefix(lowered, marker) || strings.Contains(lowered, vendorSegmentMarkers[i]) {
 			return true
 		}
 	}

@@ -6,8 +6,8 @@ package modkit
 // finding on a parameter, the rest skip that parameter at that location.
 //
 // They live in modkit (not pkg/modules) so module packages can use them
-// without an import cycle; pkg/modules re-exports them alongside the class
-// list the registry contract test checks against. Declare a class only for
+// without an import cycle; the pkg/modules registry contract test checks every
+// VulnClass() against this list. Declare a class only for
 // modules that test the same sink: tech-specific probes (log4shell, struts
 // OGNL, PDF generators, AEM XXE) stay unclassified.
 const (

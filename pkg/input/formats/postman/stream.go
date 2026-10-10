@@ -1,14 +1,14 @@
 package postman
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/vigolium/vigolium/pkg/input/formats/internal/jsonstream"
 )
 
 // A collection is streamed with json.Decoder tokens rather than unmarshalled
@@ -60,7 +60,7 @@ func itemPath(parent string, index int) string {
 // prescan reads a whole collection, keeping only variables, auth blocks and
 // the request count.
 func prescan(r io.Reader) (*collectionPlan, error) {
-	dec := json.NewDecoder(skipBOM(r))
+	dec := json.NewDecoder(jsonstream.SkipBOM(r))
 	top := &collectionScan{folderAuth: map[string]*auth{}}
 	var inner *collectionScan
 
@@ -70,7 +70,7 @@ func prescan(r io.Reader) (*collectionPlan, error) {
 	}
 	if ok {
 		for dec.More() {
-			key, err := readKey(dec)
+			key, err := jsonstream.ReadKey(dec)
 			if err != nil {
 				return nil, err
 			}
@@ -89,11 +89,11 @@ func prescan(r io.Reader) (*collectionPlan, error) {
 				return nil, err
 			}
 		}
-		if err := expectDelim(dec, '}'); err != nil {
+		if err := jsonstream.ExpectDelim(dec, '}'); err != nil {
 			return nil, err
 		}
 	}
-	if err := expectEOF(dec); err != nil {
+	if err := jsonstream.ExpectEOF(dec); err != nil {
 		return nil, err
 	}
 
@@ -110,7 +110,7 @@ func (s *collectionScan) scanObject(dec *json.Decoder) (bool, error) {
 		return false, err
 	}
 	for dec.More() {
-		key, err := readKey(dec)
+		key, err := jsonstream.ReadKey(dec)
 		if err != nil {
 			return false, err
 		}
@@ -118,7 +118,7 @@ func (s *collectionScan) scanObject(dec *json.Decoder) (bool, error) {
 			return false, err
 		}
 	}
-	return true, expectDelim(dec, '}')
+	return true, jsonstream.ExpectDelim(dec, '}')
 }
 
 // scanMember consumes the value of one collection-object member.
@@ -144,7 +144,7 @@ func (s *collectionScan) scanMember(dec *json.Decoder, key string) error {
 		}
 		return nil
 	default:
-		return skipValue(dec)
+		return jsonstream.SkipValue(dec)
 	}
 }
 
@@ -160,7 +160,7 @@ func (s *collectionScan) scanItems(dec *json.Decoder, parent string) (int, error
 			return 0, err
 		}
 	}
-	return n, expectDelim(dec, ']')
+	return n, jsonstream.ExpectDelim(dec, ']')
 }
 
 func (s *collectionScan) scanItem(dec *json.Decoder, path string) error {
@@ -173,7 +173,7 @@ func (s *collectionScan) scanItem(dec *json.Decoder, path string) error {
 		isFolder bool
 	)
 	for dec.More() {
-		key, err := readKey(dec)
+		key, err := jsonstream.ReadKey(dec)
 		if err != nil {
 			return err
 		}
@@ -197,7 +197,7 @@ func (s *collectionScan) scanItem(dec *json.Decoder, path string) error {
 				s.requests++
 			}
 		default:
-			if err := skipValue(dec); err != nil {
+			if err := jsonstream.SkipValue(dec); err != nil {
 				return err
 			}
 		}
@@ -205,19 +205,19 @@ func (s *collectionScan) scanItem(dec *json.Decoder, path string) error {
 	if isFolder && itemAuth != nil {
 		s.folderAuth[path] = itemAuth
 	}
-	return expectDelim(dec, '}')
+	return jsonstream.ExpectDelim(dec, '}')
 }
 
 // stream runs the parse pass: it walks to the planned collection's `item`
 // array and hands each request to the walker.
 func (w *walker) stream(r io.Reader, plan *collectionPlan) error {
-	dec := json.NewDecoder(skipBOM(r))
+	dec := json.NewDecoder(jsonstream.SkipBOM(r))
 	ok, err := openObject(dec)
 	if err != nil || !ok {
 		return err
 	}
 	for dec.More() {
-		key, err := readKey(dec)
+		key, err := jsonstream.ReadKey(dec)
 		if err != nil {
 			return err
 		}
@@ -228,7 +228,7 @@ func (w *walker) stream(r io.Reader, plan *collectionPlan) error {
 		case !plan.wrapped && strings.EqualFold(key, "item"):
 			cont, err = w.streamItems(dec, "", plan.auth)
 		default:
-			cont, err = true, skipValue(dec)
+			cont, err = true, jsonstream.SkipValue(dec)
 		}
 		if err != nil || !cont {
 			return err
@@ -243,12 +243,12 @@ func (w *walker) streamCollection(dec *json.Decoder, inherited *auth) (bool, err
 		return true, err
 	}
 	for dec.More() {
-		key, err := readKey(dec)
+		key, err := jsonstream.ReadKey(dec)
 		if err != nil {
 			return false, err
 		}
 		if !strings.EqualFold(key, "item") {
-			if err := skipValue(dec); err != nil {
+			if err := jsonstream.SkipValue(dec); err != nil {
 				return false, err
 			}
 			continue
@@ -258,7 +258,7 @@ func (w *walker) streamCollection(dec *json.Decoder, inherited *auth) (bool, err
 			return cont, err
 		}
 	}
-	return true, expectDelim(dec, '}')
+	return true, jsonstream.ExpectDelim(dec, '}')
 }
 
 // streamItems processes an `item` array. It returns false once the callback
@@ -277,7 +277,7 @@ func (w *walker) streamItems(dec *json.Decoder, parent string, inherited *auth) 
 			return cont, err
 		}
 	}
-	return true, expectDelim(dec, ']')
+	return true, jsonstream.ExpectDelim(dec, ']')
 }
 
 // streamItem processes one item: a folder's children first, then the item's
@@ -302,7 +302,7 @@ func (w *walker) streamItem(dec *json.Decoder, path string, inherited *auth) (bo
 		itemAuth *auth
 	)
 	for dec.More() {
-		key, err := readKey(dec)
+		key, err := jsonstream.ReadKey(dec)
 		if err != nil {
 			return false, err
 		}
@@ -326,12 +326,12 @@ func (w *walker) streamItem(dec *json.Decoder, path string, inherited *auth) (bo
 				return false, err
 			}
 		default:
-			if err := skipValue(dec); err != nil {
+			if err := jsonstream.SkipValue(dec); err != nil {
 				return false, err
 			}
 		}
 	}
-	if err := expectDelim(dec, '}'); err != nil {
+	if err := jsonstream.ExpectDelim(dec, '}'); err != nil {
 		return false, err
 	}
 
@@ -375,71 +375,10 @@ func openDelim(dec *json.Decoder, want json.Delim) (bool, error) {
 	return true, nil
 }
 
-func readKey(dec *json.Decoder) (string, error) {
-	tok, err := dec.Token()
-	if err != nil {
-		return "", err
-	}
-	key, ok := tok.(string)
-	if !ok {
-		return "", fmt.Errorf("expected an object key, got %v", tok)
-	}
-	return key, nil
-}
-
-func expectDelim(dec *json.Decoder, want json.Delim) error {
-	tok, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	if d, ok := tok.(json.Delim); !ok || d != want {
-		return fmt.Errorf("expected %q, got %v", want, tok)
-	}
-	return nil
-}
-
-// expectEOF rejects trailing data after the top-level value, as json.Unmarshal did.
-func expectEOF(dec *json.Decoder) error {
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = errors.New("unexpected data after the top-level value")
-		}
-		return err
-	}
-	return nil
-}
-
-// discard is a json.Unmarshaler that ignores its input. Decoding into it
-// consumes one value through the decoder's reused buffer without building
-// anything, which makes it the cheapest way to skip a subtree.
-type discard struct{}
-
-func (*discard) UnmarshalJSON([]byte) error { return nil }
-
-func skipValue(dec *json.Decoder) error {
-	return dec.Decode(&discard{})
-}
-
 // nullProbe consumes one value and records whether it was `null`.
 type nullProbe struct{ null bool }
 
 func (p *nullProbe) UnmarshalJSON(b []byte) error {
 	p.null = bytes.Equal(bytes.TrimSpace(b), []byte("null"))
 	return nil
-}
-
-// readBufferSize sizes the read buffer in front of the decoder. The decoder
-// refills its own buffer only as far as the current value needs (a few KiB per
-// entry), and a syscall per refill made streaming several times slower than
-// reading the file whole.
-const readBufferSize = 1 << 20
-
-// skipBOM buffers r and drops a leading UTF-8 byte-order mark, common on files
-// exported from Windows tooling, which json.Unmarshal rejected.
-func skipBOM(r io.Reader) io.Reader {
-	br := bufio.NewReaderSize(r, readBufferSize)
-	if head, err := br.Peek(3); err == nil && string(head) == "\xef\xbb\xbf" {
-		_, _ = br.Discard(3)
-	}
-	return br
 }

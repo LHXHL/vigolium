@@ -1,12 +1,12 @@
 package har
 
 import (
-	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/vigolium/vigolium/pkg/input/formats/internal/jsonstream"
 )
 
 // The HAR is walked with json.Decoder tokens rather than unmarshalled whole:
@@ -24,25 +24,25 @@ type entryFunc func(dec *json.Decoder, index int) (bool, error)
 
 // walkEntries streams r to log.entries[] and calls fn for each element.
 func walkEntries(r io.Reader, fn entryFunc) error {
-	dec := json.NewDecoder(skipBOM(r))
+	dec := json.NewDecoder(jsonstream.SkipBOM(r))
 
 	open, err := dec.Token()
 	if err != nil {
 		return err
 	}
 	if open == nil { // `null`, which json.Unmarshal accepted as an empty archive
-		return expectEOF(dec)
+		return jsonstream.ExpectEOF(dec)
 	}
 	if d, ok := open.(json.Delim); !ok || d != '{' {
 		return fmt.Errorf("expected a JSON object, got %v", open)
 	}
 	for dec.More() {
-		key, err := readKey(dec)
+		key, err := jsonstream.ReadKey(dec)
 		if err != nil {
 			return err
 		}
 		if !strings.EqualFold(key, "log") {
-			if err := skipValue(dec); err != nil {
+			if err := jsonstream.SkipValue(dec); err != nil {
 				return err
 			}
 			continue
@@ -52,10 +52,10 @@ func walkEntries(r io.Reader, fn entryFunc) error {
 			return err
 		}
 	}
-	if err := expectDelim(dec, '}'); err != nil {
+	if err := jsonstream.ExpectDelim(dec, '}'); err != nil {
 		return err
 	}
-	return expectEOF(dec)
+	return jsonstream.ExpectEOF(dec)
 }
 
 // walkLog walks the `log` object, descending into `entries`.
@@ -71,12 +71,12 @@ func walkLog(dec *json.Decoder, fn entryFunc) (bool, error) {
 		return false, fmt.Errorf("log: expected an object, got %v", tok)
 	}
 	for dec.More() {
-		key, err := readKey(dec)
+		key, err := jsonstream.ReadKey(dec)
 		if err != nil {
 			return false, err
 		}
 		if !strings.EqualFold(key, "entries") {
-			if err := skipValue(dec); err != nil {
+			if err := jsonstream.SkipValue(dec); err != nil {
 				return false, err
 			}
 			continue
@@ -86,7 +86,7 @@ func walkLog(dec *json.Decoder, fn entryFunc) (bool, error) {
 			return false, err
 		}
 	}
-	return true, expectDelim(dec, '}')
+	return true, jsonstream.ExpectDelim(dec, '}')
 }
 
 // walkArray calls fn for each element of the array the decoder is at.
@@ -107,66 +107,5 @@ func walkArray(dec *json.Decoder, fn entryFunc) (bool, error) {
 			return false, err
 		}
 	}
-	return true, expectDelim(dec, ']')
-}
-
-func readKey(dec *json.Decoder) (string, error) {
-	tok, err := dec.Token()
-	if err != nil {
-		return "", err
-	}
-	key, ok := tok.(string)
-	if !ok {
-		return "", fmt.Errorf("expected an object key, got %v", tok)
-	}
-	return key, nil
-}
-
-func expectDelim(dec *json.Decoder, want json.Delim) error {
-	tok, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	if d, ok := tok.(json.Delim); !ok || d != want {
-		return fmt.Errorf("expected %q, got %v", want, tok)
-	}
-	return nil
-}
-
-// expectEOF rejects trailing data after the top-level value, as json.Unmarshal did.
-func expectEOF(dec *json.Decoder) error {
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = errors.New("unexpected data after the top-level value")
-		}
-		return err
-	}
-	return nil
-}
-
-// discard is a json.Unmarshaler that ignores its input. Decoding into it
-// consumes one value through the decoder's reused buffer without building
-// anything, which makes it the cheapest way to skip a subtree.
-type discard struct{}
-
-func (*discard) UnmarshalJSON([]byte) error { return nil }
-
-func skipValue(dec *json.Decoder) error {
-	return dec.Decode(&discard{})
-}
-
-// readBufferSize sizes the read buffer in front of the decoder. The decoder
-// refills its own buffer only as far as the current value needs (a few KiB per
-// entry), and a syscall per refill made streaming several times slower than
-// reading the file whole.
-const readBufferSize = 1 << 20
-
-// skipBOM buffers r and drops a leading UTF-8 byte-order mark, common on files
-// exported from Windows tooling, which json.Unmarshal rejected.
-func skipBOM(r io.Reader) io.Reader {
-	br := bufio.NewReaderSize(r, readBufferSize)
-	if head, err := br.Peek(3); err == nil && string(head) == "\xef\xbb\xbf" {
-		_, _ = br.Discard(3)
-	}
-	return br
+	return true, jsonstream.ExpectDelim(dec, ']')
 }

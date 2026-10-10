@@ -11,6 +11,7 @@ import (
 
 	"github.com/grafana/sobek"
 	"github.com/vigolium/vigolium/pkg/oast/oastclass"
+	"github.com/vigolium/vigolium/pkg/yamlext"
 )
 
 // LintSeverity categorizes lint issues.
@@ -384,7 +385,7 @@ func checkMetadata(source, filename string, opts LintOptions) []LintIssue {
 	}
 
 	// Validate confidence: an unknown value would silently fall back to "firm".
-	if !IsValidConfidence(meta.Confidence) {
+	if !yamlext.IsValidConfidence(meta.Confidence) {
 		issues = append(issues, LintIssue{
 			Severity: LintError,
 			Rule:     RuleBadConfidence,

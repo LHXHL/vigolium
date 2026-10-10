@@ -176,6 +176,10 @@ type Callbacks struct {
 	// template from these notes after the crawl. May be nil.
 	NoteReplayOutcome func(sourceURL, templateID string, note ReplayNote)
 
+	// ReplayEvidenceSpent reports that the replay evidence budget is used up,
+	// so a not-found response is noted without copying its body. May be nil.
+	ReplayEvidenceSpent func() bool
+
 	// StoreJSTangleRequests persists extracted jstangle requests to database.
 	// Called after jstangle completes. jsURL is the source JavaScript file.
 	StoreJSTangleRequests       func(jsURL *url.URL, reqs []jstangle.ExtractedRequest)

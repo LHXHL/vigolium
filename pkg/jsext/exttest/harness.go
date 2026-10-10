@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -250,7 +251,7 @@ func (x *Extension) Run(rr *httpmsg.HttpRequestResponse, o RunOptions) (*Outcome
 		return nil, err
 	}
 	var points []httpmsg.InsertionPoint
-	if contains(handlers, HandlerPerInsertionPoint) {
+	if slices.Contains(handlers, HandlerPerInsertionPoint) {
 		points, err = x.insertionPoints(rr, o.Insertion)
 		if err != nil {
 			return nil, err
@@ -328,7 +329,7 @@ func (x *Extension) selectHandlers(o RunOptions) ([]string, error) {
 	if h == HandlerPerInsertionPoint && x.Active == nil {
 		return nil, usageErrorf("%s is a passive extension: it has no scanPerInsertionPoint", x.Module().ID())
 	}
-	if !contains(declared, h) {
+	if !slices.Contains(declared, h) {
 		return nil, usageErrorf("%s does not declare %s (its scanTypes select: %s)",
 			x.Module().ID(), h, strings.Join(declared, ", "))
 	}
@@ -450,12 +451,3 @@ func stampModuleDefaults(r *output.ResultEvent, m modules.Module) {
 type fixedUUID string
 
 func (u fixedUUID) ResolveRequestUUID(string) string { return string(u) }
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}

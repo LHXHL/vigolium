@@ -146,7 +146,7 @@ func TestBuildPierceSnapshotLocators(t *testing.T) {
 	s := BuildPierceSnapshot(doc)
 	got := byLocator(s)
 
-	mustHave := func(l Locator, id proto.DOMBackendNodeID, closed bool) {
+	mustHave := func(l Locator, id proto.DOMBackendNodeID) {
 		t.Helper()
 		pe, ok := got[l.String()]
 		if !ok {
@@ -155,20 +155,17 @@ func TestBuildPierceSnapshotLocators(t *testing.T) {
 		if id != 0 && pe.BackendNodeID != id {
 			t.Fatalf("%s: backend id %d, want %d", l, pe.BackendNodeID, id)
 		}
-		if pe.InClosedShadow != closed {
-			t.Fatalf("%s: InClosedShadow=%v, want %v", l, pe.InClosedShadow, closed)
-		}
 	}
 	// Light DOM: absolute XPaths with per-tag sibling indexes, as GetXPath.
-	mustHave(Locator{InnerXPath: "/html[1]/body[1]/div[1]"}, 0, false)
-	mustHave(Locator{InnerXPath: "/html[1]/body[1]/div[2]/a[1]"}, 0, false)
-	mustHave(Locator{InnerXPath: "/html[1]/body[1]/svg[1]/foreignobject[1]"}, 0, false)
+	mustHave(Locator{InnerXPath: "/html[1]/body[1]/div[1]"}, 0)
+	mustHave(Locator{InnerXPath: "/html[1]/body[1]/div[2]/a[1]"}, 0)
+	mustHave(Locator{InnerXPath: "/html[1]/body[1]/svg[1]/foreignobject[1]"}, 0)
 	// Open root, nested open root, closed root.
-	mustHave(Locator{HostChain: []string{"/html[1]/body[1]/x-open[1]"}, InnerXPath: "/div[1]/button[1]"}, openBtn.BackendNodeID, false)
-	mustHave(Locator{HostChain: []string{"/html[1]/body[1]/x-open[1]", "/x-inner[1]"}, InnerXPath: "/button[1]"}, nestedBtn.BackendNodeID, false)
-	mustHave(Locator{HostChain: []string{"/html[1]/body[1]/x-closed[1]"}, InnerXPath: "/button[1]"}, closedBtn.BackendNodeID, true)
+	mustHave(Locator{HostChain: []string{"/html[1]/body[1]/x-open[1]"}, InnerXPath: "/div[1]/button[1]"}, openBtn.BackendNodeID)
+	mustHave(Locator{HostChain: []string{"/html[1]/body[1]/x-open[1]", "/x-inner[1]"}, InnerXPath: "/button[1]"}, nestedBtn.BackendNodeID)
+	mustHave(Locator{HostChain: []string{"/html[1]/body[1]/x-closed[1]"}, InnerXPath: "/button[1]"}, closedBtn.BackendNodeID)
 	// A frame inside a shadow root is walked behind a frame hop.
-	mustHave(Locator{HostChain: []string{"/html[1]/body[1]/x-open[1]", "/iframe[1]"}, InnerXPath: "/html[1]/body[1]/a[1]"}, frameLink.BackendNodeID, false)
+	mustHave(Locator{HostChain: []string{"/html[1]/body[1]/x-open[1]", "/iframe[1]"}, InnerXPath: "/html[1]/body[1]/a[1]"}, frameLink.BackendNodeID)
 
 	for _, pe := range s.Elements {
 		switch pe.BackendNodeID {
@@ -186,9 +183,6 @@ func TestBuildPierceSnapshotLocators(t *testing.T) {
 	}
 	if len(s.ClosedRoots) != 1 || !reflect.DeepEqual(s.ClosedRoots[0].HostChain, []string{"/html[1]/body[1]/x-closed[1]"}) {
 		t.Fatalf("closed roots = %+v", s.ClosedRoots)
-	}
-	if s.ShadowElements == 0 {
-		t.Fatal("ShadowElements not counted")
 	}
 }
 

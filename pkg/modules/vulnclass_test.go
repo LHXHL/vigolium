@@ -1,7 +1,11 @@
 package modules
 
 import (
+	"maps"
+	"slices"
 	"testing"
+
+	"github.com/vigolium/vigolium/pkg/modules/modkit"
 )
 
 // injectionFamilyClasses pins the vuln class of every module in the
@@ -10,44 +14,44 @@ import (
 // (log4shell-probe, struts-ognl-injection, pdf-generation-injection,
 // aem-xxe) out of the generic classes.
 var injectionFamilyClasses = map[string]string{
-	"sqli-error-based":           VulnClassSQLi,
-	"sqli-boolean-blind":         VulnClassSQLi,
-	"sqli-time-blind":            VulnClassSQLi,
-	"sqli-out-of-band":           VulnClassSQLi,
-	"nosqli-error-based":         VulnClassNoSQLi,
-	"nosqli-operator-injection":  VulnClassNoSQLi,
-	"command-injection-echo":     VulnClassCmdi,
-	"command-injection-timing":   VulnClassCmdi,
-	"command-injection-oast":     VulnClassCmdi,
-	"code-exec":                  VulnClassCodeInjection,
-	"server-side-js-injection":   VulnClassCodeInjection,
-	"reflected-ssti":             VulnClassSSTI,
-	"ssti-detection":             VulnClassSSTI,
-	"ssti-blind":                 VulnClassSSTI,
-	"angular-template-injection": VulnClassCSTI,
-	"csti-detection":             VulnClassCSTI,
-	"ssrf-detection":             VulnClassSSRF,
-	"ssrf-filter-bypass":         VulnClassSSRF,
-	"ssrf-protocol-smuggling":    VulnClassSSRF,
-	"ssrf-blind":                 VulnClassSSRF,
-	"lfi-generic":                VulnClassLFI,
-	"lfi-path-traversal":         VulnClassLFI,
-	"xss-light-url-params":       VulnClassXSS,
-	"xss-light-path":             VulnClassXSS,
-	"xss-light-param-discovery":  VulnClassXSS,
-	"xss-light-encoded":          VulnClassXSS,
-	"xss-dom-confirm":            VulnClassXSS,
-	"xss-stored":                 VulnClassXSSStored,
-	"crlf-injection":             VulnClassCRLF,
-	"response-header-injection":  VulnClassCRLF,
-	"open-redirect":              VulnClassOpenRedirect,
-	"open-redirect-confusion":    VulnClassOpenRedirect,
-	"xxe-generic":                VulnClassXXE,
-	"ldap-injection":             VulnClassLDAP,
-	"xpath-injection":            VulnClassXPath,
-	"ssi-injection":              VulnClassSSI,
-	"smtp-header-injection":      VulnClassSMTPHeader,
-	"esi-injection":              VulnClassESI,
+	"sqli-error-based":           modkit.VulnClassSQLi,
+	"sqli-boolean-blind":         modkit.VulnClassSQLi,
+	"sqli-time-blind":            modkit.VulnClassSQLi,
+	"sqli-out-of-band":           modkit.VulnClassSQLi,
+	"nosqli-error-based":         modkit.VulnClassNoSQLi,
+	"nosqli-operator-injection":  modkit.VulnClassNoSQLi,
+	"command-injection-echo":     modkit.VulnClassCmdi,
+	"command-injection-timing":   modkit.VulnClassCmdi,
+	"command-injection-oast":     modkit.VulnClassCmdi,
+	"code-exec":                  modkit.VulnClassCodeInjection,
+	"server-side-js-injection":   modkit.VulnClassCodeInjection,
+	"reflected-ssti":             modkit.VulnClassSSTI,
+	"ssti-detection":             modkit.VulnClassSSTI,
+	"ssti-blind":                 modkit.VulnClassSSTI,
+	"angular-template-injection": modkit.VulnClassCSTI,
+	"csti-detection":             modkit.VulnClassCSTI,
+	"ssrf-detection":             modkit.VulnClassSSRF,
+	"ssrf-filter-bypass":         modkit.VulnClassSSRF,
+	"ssrf-protocol-smuggling":    modkit.VulnClassSSRF,
+	"ssrf-blind":                 modkit.VulnClassSSRF,
+	"lfi-generic":                modkit.VulnClassLFI,
+	"lfi-path-traversal":         modkit.VulnClassLFI,
+	"xss-light-url-params":       modkit.VulnClassXSS,
+	"xss-light-path":             modkit.VulnClassXSS,
+	"xss-light-param-discovery":  modkit.VulnClassXSS,
+	"xss-light-encoded":          modkit.VulnClassXSS,
+	"xss-dom-confirm":            modkit.VulnClassXSS,
+	"xss-stored":                 modkit.VulnClassXSSStored,
+	"crlf-injection":             modkit.VulnClassCRLF,
+	"response-header-injection":  modkit.VulnClassCRLF,
+	"open-redirect":              modkit.VulnClassOpenRedirect,
+	"open-redirect-confusion":    modkit.VulnClassOpenRedirect,
+	"xxe-generic":                modkit.VulnClassXXE,
+	"ldap-injection":             modkit.VulnClassLDAP,
+	"xpath-injection":            modkit.VulnClassXPath,
+	"ssi-injection":              modkit.VulnClassSSI,
+	"smtp-header-injection":      modkit.VulnClassSMTPHeader,
+	"esi-injection":              modkit.VulnClassESI,
 }
 
 // unclassifiedSinkModules test sinks a generic class would wrongly suppress.
@@ -84,14 +88,31 @@ func TestDefaultRegistry_InjectionFamiliesDeclareVulnClass(t *testing.T) {
 	}
 }
 
+// knownVulnClasses is the closed set a VulnClass() return value must belong
+// to: the modkit.VulnClass* constants.
+var knownVulnClasses = map[string]struct{}{
+	modkit.VulnClassSQLi: {}, modkit.VulnClassNoSQLi: {}, modkit.VulnClassCmdi: {},
+	modkit.VulnClassCodeInjection: {}, modkit.VulnClassSSTI: {}, modkit.VulnClassCSTI: {},
+	modkit.VulnClassSSRF: {}, modkit.VulnClassLFI: {}, modkit.VulnClassXSS: {},
+	modkit.VulnClassXSSStored: {}, modkit.VulnClassCRLF: {}, modkit.VulnClassOpenRedirect: {},
+	modkit.VulnClassXXE: {}, modkit.VulnClassLDAP: {}, modkit.VulnClassXPath: {},
+	modkit.VulnClassSSI: {}, modkit.VulnClassSMTPHeader: {}, modkit.VulnClassESI: {},
+}
+
+func isKnownVulnClass(c string) bool {
+	_, ok := knownVulnClasses[c]
+	return ok
+}
+
 func TestDefaultRegistry_VulnClassIsKnownConstant(t *testing.T) {
 	for _, m := range DefaultRegistry.GetActiveModules() {
 		vc, ok := m.(VulnClassifier)
 		if !ok {
 			continue
 		}
-		if c := vc.VulnClass(); !IsKnownVulnClass(c) {
-			t.Errorf("module %q VulnClass() = %q, not one of %v (add a VulnClass* constant)", m.ID(), c, KnownVulnClasses())
+		if c := vc.VulnClass(); !isKnownVulnClass(c) {
+			t.Errorf("module %q VulnClass() = %q, not one of %v (add a modkit.VulnClass* constant)",
+				m.ID(), c, slices.Sorted(maps.Keys(knownVulnClasses)))
 		}
 	}
 }
@@ -126,8 +147,8 @@ func TestDefaultRegistry_ClassPriorityOrder(t *testing.T) {
 }
 
 func TestOrderWithinVulnClass_DefaultsToTierRank(t *testing.T) {
-	heavy := &vcTestModule{id: "heavy", class: VulnClassLFI, tags: []string{TagTierHeavy}}
-	moderate := &vcTestModule{id: "moderate", class: VulnClassLFI, tags: []string{TagTierModerate}}
+	heavy := &vcTestModule{id: "heavy", class: modkit.VulnClassLFI, tags: []string{TagTierHeavy}}
+	moderate := &vcTestModule{id: "moderate", class: modkit.VulnClassLFI, tags: []string{TagTierModerate}}
 	plain := &vcTestModule{id: "plain"}
 	mods := []ActiveModule{heavy, plain, moderate}
 	OrderWithinVulnClass(mods)

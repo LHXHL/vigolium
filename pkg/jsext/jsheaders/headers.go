@@ -21,7 +21,8 @@
 package jsheaders
 
 import (
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/grafana/sobek"
@@ -114,6 +115,16 @@ func (s *Store) lookup(lname string) (string, bool) {
 		b.WriteString(s.entries[i].value)
 	}
 	return b.String(), true
+}
+
+// contains reports whether a header with the lowercase name exists.
+func (s *Store) contains(lname string) bool {
+	for i := range s.entries {
+		if s.entries[i].lname == lname {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) all(lname string) []string {
@@ -231,15 +242,7 @@ func (d *dyn) Set(key string, val sobek.Value) bool {
 
 func (d *dyn) Has(key string) bool {
 	lname := lower(key)
-	if isReserved(lname) {
-		return false
-	}
-	for i := range d.s.entries {
-		if d.s.entries[i].lname == lname {
-			return true
-		}
-	}
-	return false
+	return !isReserved(lname) && d.s.contains(lname)
 }
 
 func (d *dyn) Delete(key string) bool {
@@ -249,17 +252,13 @@ func (d *dyn) Delete(key string) bool {
 
 func (d *dyn) Keys() []string {
 	keys := make([]string, 0, len(d.s.entries))
-outer:
+	seen := make(map[string]struct{}, len(d.s.entries))
 	for i := range d.s.entries {
 		lname := d.s.entries[i].lname
-		if isReserved(lname) {
+		if _, dup := seen[lname]; dup || isReserved(lname) {
 			continue
 		}
-		for _, k := range keys {
-			if k == lname {
-				continue outer
-			}
-		}
+		seen[lname] = struct{}{}
 		keys = append(keys, lname)
 	}
 	return keys
@@ -277,11 +276,7 @@ func New(vm *sobek.Runtime, hs []httpmsg.HttpHeader) *sobek.Object {
 // FromMap returns a JS header object over an unordered map; names are sorted
 // so the key order is deterministic.
 func FromMap(vm *sobek.Runtime, m map[string]string) *sobek.Object {
-	names := make([]string, 0, len(m))
-	for k := range m {
-		names = append(names, k)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(m))
 	s := newStore(len(names))
 	for _, k := range names {
 		s.add(k, m[k])
@@ -321,14 +316,20 @@ func ToMap(vm *sobek.Runtime, v sobek.Value) map[string]string {
 		return out
 	}
 	if s, ok := FromValue(v); ok {
-		seen := make(map[string]string, len(s.entries))
+		// One pass with the same values as lookup: repeats joined with ", " in
+		// wire order under the first occurrence's name; set-cookie keeps its last.
+		firstName := make(map[string]string, len(s.entries))
 		for _, e := range s.entries {
-			if _, dup := seen[e.lname]; dup {
-				continue
+			name, dup := firstName[e.lname]
+			switch {
+			case !dup:
+				firstName[e.lname] = e.name
+				out[e.name] = e.value
+			case e.lname == "set-cookie":
+				out[name] = e.value
+			default:
+				out[name] += ", " + e.value
 			}
-			seen[e.lname] = e.name
-			val, _ := s.lookup(e.lname)
-			out[e.name] = val
 		}
 		return out
 	}
@@ -390,8 +391,7 @@ func newPrototype(vm *sobek.Runtime) *sobek.Object {
 		return vm.NewArray(items...)
 	})
 	method("has", func(call sobek.FunctionCall) sobek.Value {
-		_, ok := this(call).lookup(lower(call.Argument(0).String()))
-		return vm.ToValue(ok)
+		return vm.ToValue(this(call).contains(lower(call.Argument(0).String())))
 	})
 	method("entries", func(call sobek.FunctionCall) sobek.Value {
 		s := this(call)

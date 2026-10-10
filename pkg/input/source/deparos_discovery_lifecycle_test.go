@@ -403,14 +403,15 @@ func TestImportCollected_PersistsUnderAnExpiredPhase(t *testing.T) {
 	cancel()
 	require.Error(t, phaseCtx.Err(), "the phase must already be dead for this to test anything")
 
-	acc, err := d.importCollected(phaseCtx, nil, collectedGroups{
+	acc := newImportAccum(6)
+	err := d.importCollected(phaseCtx, nil, collectedGroups{
 		sourceOrder: []string{crawlRecordSource, jstangleRecordSource},
 		bySource: map[string][]*httpmsg.HttpRequestResponse{
 			crawlRecordSource:    crawled,
 			jstangleRecordSource: referenced,
 		},
 		specEndpoints: specs,
-		sizeHint:      6,
+		acc:           acc,
 	})
 	require.NoError(t, err)
 
@@ -432,10 +433,11 @@ func TestImportCollected_LivePhaseIsUsedAsIs(t *testing.T) {
 	saver := newDeadlineAwareSaver()
 	d := newTestDiscoverySource(saver)
 
-	acc, err := d.importCollected(context.Background(), nil, collectedGroups{
+	acc := newImportAccum(2)
+	err := d.importCollected(context.Background(), nil, collectedGroups{
 		sourceOrder: []string{crawlRecordSource},
 		bySource:    map[string][]*httpmsg.HttpRequestResponse{crawlRecordSource: stubRequests(2)},
-		sizeHint:    2,
+		acc:         acc,
 	})
 	require.NoError(t, err)
 
@@ -452,14 +454,15 @@ func TestImportCollected_AbortStopsPersisting(t *testing.T) {
 	d := newTestDiscoverySource(saver)
 	close(d.abort)
 
-	acc, err := d.importCollected(context.Background(), nil, collectedGroups{
+	acc := newImportAccum(5)
+	err := d.importCollected(context.Background(), nil, collectedGroups{
 		sourceOrder: []string{crawlRecordSource, jstangleRecordSource},
 		bySource: map[string][]*httpmsg.HttpRequestResponse{
 			crawlRecordSource:    stubRequests(2),
 			jstangleRecordSource: stubRequests(2),
 		},
 		specEndpoints: stubRequests(1),
-		sizeHint:      5,
+		acc:           acc,
 	})
 	require.NoError(t, err)
 	assert.True(t, acc.aborted)

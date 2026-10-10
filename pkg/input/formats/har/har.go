@@ -7,15 +7,15 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
 	"os"
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats"
+	"github.com/vigolium/vigolium/pkg/input/formats/internal/jsonstream"
+	"github.com/vigolium/vigolium/pkg/input/formats/internal/multipartform"
 	"go.uber.org/zap"
 )
 
@@ -95,7 +95,7 @@ func (f *Format) Count(input string) (int64, error) {
 	var n int64
 	err = walkEntries(fh, func(dec *json.Decoder, _ int) (bool, error) {
 		n++
-		return true, skipValue(dec)
+		return true, jsonstream.SkipValue(dec)
 	})
 	if err != nil {
 		return 0, err
@@ -298,40 +298,16 @@ func buildMultipart(params []harParam, boundary string) (string, string, error) 
 	if boundary == "" {
 		boundary = defaultMultipartBoundary
 	}
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	if err := w.SetBoundary(boundary); err != nil {
-		return "", "", err
-	}
-	for _, p := range params {
-		h := make(textproto.MIMEHeader)
-		disposition := fmt.Sprintf(`form-data; name="%s"`, escapeQuotes(p.Name))
+	parts := make([]multipartform.Part, len(params))
+	for i, p := range params {
+		parts[i] = multipartform.Part{Name: p.Name, FileName: p.FileName, Value: p.Value}
 		if p.FileName != "" {
-			disposition += fmt.Sprintf(`; filename="%s"`, escapeQuotes(p.FileName))
-			ct := p.ContentType
-			if ct == "" {
-				ct = "application/octet-stream"
-			}
-			h.Set("Content-Type", ct)
-		}
-		h.Set("Content-Disposition", disposition)
-		part, err := w.CreatePart(h)
-		if err != nil {
-			return "", "", err
-		}
-		if _, err := part.Write([]byte(p.Value)); err != nil {
-			return "", "", err
+			// A recorded contentType only applies to file params.
+			parts[i].ContentType = p.ContentType
 		}
 	}
-	if err := w.Close(); err != nil {
-		return "", "", err
-	}
-	return buf.String(), w.FormDataContentType(), nil
+	return multipartform.Build(parts, boundary)
 }
-
-var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
-
-func escapeQuotes(s string) string { return quoteEscaper.Replace(s) }
 
 // buildRawResponse constructs a raw HTTP response string from a HAR response object.
 //

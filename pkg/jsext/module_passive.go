@@ -8,6 +8,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
+	"github.com/vigolium/vigolium/pkg/yamlext"
 )
 
 // JSPassiveModule wraps a JS passive extension as a PassiveModule.
@@ -36,7 +37,7 @@ func NewJSPassiveModule(script *LoadedScript, opts APIOptions) (*JSPassiveModule
 		"JS extension: "+script.Metadata.Name,
 		script.Metadata.ConfirmationCriteria,
 		sev,
-		ParseConfidence(script.Metadata.Confidence, severity.Firm),
+		yamlext.ParseConfidence(script.Metadata.Confidence, severity.Firm),
 		scanTypes,
 		scope,
 	)

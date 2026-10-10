@@ -153,8 +153,9 @@ func BuildTemplateStub(template ExtractedRequestTemplate, fallback *url.URL) (Te
 }
 
 // captureReplayResponse copies what a replay got back into storage form,
-// keeping at most maxReplayEvidenceBody of the body. Must run before rc.Close.
-func captureReplayResponse(rc *responsechain.ResponseChain) *storage.ResponseData {
+// keeping at most maxReplayEvidenceBody of the body (none when keepBody is
+// false). Must run before rc.Close.
+func captureReplayResponse(rc *responsechain.ResponseChain, keepBody bool) *storage.ResponseData {
 	if rc == nil || !rc.Has() {
 		return nil
 	}
@@ -169,14 +170,14 @@ func captureReplayResponse(rc *responsechain.ResponseChain) *storage.ResponseDat
 		}
 	}
 	full := rc.BodyBytes()
-	body := full
-	if len(body) > maxReplayEvidenceBody {
-		body = body[:maxReplayEvidenceBody]
+	var body []byte
+	if keepBody {
+		body = append([]byte(nil), full[:min(len(full), maxReplayEvidenceBody)]...)
 	}
 	return &storage.ResponseData{
 		StatusCode:    resp.StatusCode,
 		Headers:       headers,
-		Body:          append([]byte(nil), body...),
+		Body:          body,
 		ContentLength: int64(len(full)),
 		MIMEType:      extractMIMEType(resp.Header.Get("Content-Type")),
 		Location:      resp.Header.Get("Location"),

@@ -100,11 +100,9 @@ type DeparosDiscoveryConfig struct {
 
 	// FlushInterval is how often a running target's records (the referenced
 	// class, plus the fuzz class unless FuzzAtEnd) are persisted and emitted.
-	// 0 = default (15s); negative = only at the end of the target. FlushNodes
-	// also flushes once that many nodes landed since the last flush
-	// (0 = default, 500).
+	// 0 = default (15s); negative = only at the end of the target. A flush
+	// also runs once defaultDiscoveryFlushNodes nodes landed since the last one.
 	FlushInterval time.Duration
-	FlushNodes    int
 
 	// FuzzAtEnd keeps the fuzz class (wordlist, spider and observed records)
 	// in memory until the target finishes, as before fuzz streaming: exact dedup
@@ -282,12 +280,10 @@ func classifyDiscoverySource(foundBy string) string {
 // groupCollectedBySource buckets records by their source label, preserving the
 // order in which each label is first seen (so the fuzz class, appended first,
 // leads and per-run output is deterministic). It returns that first-seen label
-// order, the per-label record slices, and a flat all-source list used for spec
-// extraction and source-map artifact mapping.
-func groupCollectedBySource(records []collectedRecord) (order []string, bySource map[string][]*httpmsg.HttpRequestResponse, flat []*httpmsg.HttpRequestResponse) {
+// order and the per-label record slices.
+func groupCollectedBySource(records []collectedRecord) (order []string, bySource map[string][]*httpmsg.HttpRequestResponse) {
 	bySource = make(map[string][]*httpmsg.HttpRequestResponse, 3)
 	order = make([]string, 0, 3)
-	flat = make([]*httpmsg.HttpRequestResponse, 0, len(records))
 	for _, rec := range records {
 		if rec.rr == nil {
 			continue
@@ -300,9 +296,8 @@ func groupCollectedBySource(records []collectedRecord) (order []string, bySource
 			order = append(order, label)
 		}
 		bySource[label] = append(bySource[label], rec.rr)
-		flat = append(flat, rec.rr)
 	}
-	return order, bySource, flat
+	return order, bySource
 }
 
 // resolveClusterCap resolves the effective near-identical response cap.
@@ -1060,9 +1055,8 @@ type collectedGroups struct {
 	// jsTemplates is the JS template persistence for the target (nil = none).
 	jsTemplates *jsTemplatePlan
 	// acc carries what earlier flushes of the same target already imported, so
-	// uuidByURL and the emit latch span the whole target. nil starts a fresh one.
-	acc      *importAccum
-	sizeHint int
+	// uuidByURL and the emit latch span the whole target. Required.
+	acc *importAccum
 }
 
 // importCollected is discovery's last stage: write everything one target
@@ -1087,7 +1081,7 @@ func (d *DeparosDiscoverySource) importCollected(
 	ctx context.Context,
 	siteMap *deparosstorage.SiteMap,
 	groups collectedGroups,
-) (*importAccum, error) {
+) error {
 	importCtx, releaseImport := importContext(ctx, d.cfg.DrainTimeout)
 	defer releaseImport()
 
@@ -1098,12 +1092,9 @@ func (d *DeparosDiscoverySource) importCollected(
 	// URL to its persisted UUID across all groups, so source-map artifacts can be
 	// mapped back regardless of which label carried the asset.
 	acc := groups.acc
-	if acc == nil {
-		acc = newImportAccum(groups.sizeHint)
-	}
 	for _, label := range groups.sourceOrder {
 		if err := d.importGroup(importCtx, acc, groups.bySource[label], label); err != nil {
-			return acc, err
+			return err
 		}
 		select {
 		case <-d.abort:
@@ -1111,7 +1102,7 @@ func (d *DeparosDiscoverySource) importCollected(
 		default:
 		}
 		if acc.aborted {
-			return acc, nil
+			return nil
 		}
 	}
 	// siteMap is optional: a caller with no crawl storage (and nothing to map
@@ -1122,12 +1113,9 @@ func (d *DeparosDiscoverySource) importCollected(
 	// After the crawl groups, so the nodes and JS assets the templates annotate
 	// and anchor to already have UUIDs.
 	if err := d.importJSTemplates(importCtx, acc, groups.jsTemplates); err != nil {
-		return acc, err
+		return err
 	}
-	if err := d.importGroup(importCtx, acc, groups.specEndpoints, specRecordSource); err != nil {
-		return acc, err
-	}
-	return acc, nil
+	return d.importGroup(importCtx, acc, groups.specEndpoints, specRecordSource)
 }
 
 // importAccum accumulates the result of persisting one target's record groups.
@@ -1223,15 +1211,11 @@ func (d *DeparosDiscoverySource) persistOnly(ctx context.Context, records []*htt
 	return saved
 }
 
-// saveAndEmit batch-saves a set of discovery records under the given source
-// label, then emits each as a WorkItem tagged with its persisted record UUID
-// (so downstream findings link back to the stored record). A DB save failure is
-// logged and the records are still emitted (without UUIDs) so scanning proceeds.
-func (d *DeparosDiscoverySource) saveAndEmit(ctx context.Context, records []*httpmsg.HttpRequestResponse, recordSource string) error {
-	_, err := d.saveAndEmitWithUUIDs(ctx, records, recordSource)
-	return err
-}
-
+// saveAndEmitWithUUIDs batch-saves a set of discovery records under the given
+// source label, then emits each as a WorkItem tagged with its persisted record
+// UUID (so downstream findings link back to the stored record), returning the
+// UUIDs. A DB save failure is logged and the records are still emitted (without
+// UUIDs) so scanning proceeds.
 func (d *DeparosDiscoverySource) saveAndEmitWithUUIDs(ctx context.Context, records []*httpmsg.HttpRequestResponse, recordSource string) ([]string, error) {
 	if len(records) == 0 {
 		return nil, nil
@@ -1429,15 +1413,10 @@ func originAnchorRecords(recordUUIDByURL map[string]string) map[string]string {
 	return anchors
 }
 
-// extractSpecEndpoints scans discovered records for API specs (OpenAPI/Swagger/Postman/WSDL)
-// and returns parsed endpoints as additional HttpRequestResponse items.
-func extractSpecEndpoints(records []*httpmsg.HttpRequestResponse) []*httpmsg.HttpRequestResponse {
-	return extractSpecEndpointsSeen(records, make(map[string]struct{}))
-}
-
-// extractSpecEndpointsSeen is extractSpecEndpoints with a caller-owned set of
-// spec body hashes already parsed, so a target read in batches parses each
-// spec document once.
+// extractSpecEndpointsSeen scans discovered records for API specs
+// (OpenAPI/Swagger/Postman/WSDL) and returns parsed endpoints as additional
+// HttpRequestResponse items. specSeen is a caller-owned set of spec body hashes
+// already parsed, so a target read in batches parses each spec document once.
 func extractSpecEndpointsSeen(records []*httpmsg.HttpRequestResponse, specSeen map[string]struct{}) []*httpmsg.HttpRequestResponse {
 	var allEndpoints []*httpmsg.HttpRequestResponse
 

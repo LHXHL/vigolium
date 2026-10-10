@@ -90,12 +90,6 @@ func (c *Capture) RequestsSent() int64 { return c.sent.Load() }
 // RequestsSentInScope reports the in-scope share of RequestsSent.
 func (c *Capture) RequestsSentInScope() int64 { return c.sentInScope.Load() }
 
-// PostDataStats reports the lazy request-body fetches: bodies recovered, fetches
-// that failed, and fetches dropped because the queue was full.
-func (c *Capture) PostDataStats() (fetched, failed, dropped int64) {
-	return c.postDataFetched.Load(), c.postDataFailed.Load(), c.postDataDropped.Load()
-}
-
 // countRequest records one request the browser sent and reports whether the
 // operator scope admits it. Called once per requestWillBeSent, outside c.mu.
 func (c *Capture) countRequest(rawURL string, u *url.URL) bool {

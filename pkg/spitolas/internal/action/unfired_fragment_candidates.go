@@ -1079,11 +1079,6 @@ func (u *UnfiredFragmentCandidates) AwaitState(ctx context.Context, strategy any
 	}
 }
 
-// ActiveConsumers returns how many claimed states have not been released.
-func (u *UnfiredFragmentCandidates) ActiveConsumers() int {
-	return int(u.active.Load())
-}
-
 // claimLocked marks stateID as handed to a consumer. Must be called with mu held.
 func (u *UnfiredFragmentCandidates) claimLocked(stateID string) {
 	u.claimed[stateID] = true

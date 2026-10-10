@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/vigolium/vigolium/pkg/types/severity"
 )
 
 // YAMLLintIssue represents a single lint finding for a YAML extension.
@@ -163,7 +161,7 @@ func lintCommonYAML(def *ExtensionDef, at func(string) int) []YAMLLintIssue {
 
 	// Validate confidence
 	if def.Confidence != "" {
-		if !isValidYAMLConfidence(def.Confidence) {
+		if !IsValidConfidence(def.Confidence) {
 			issues = append(issues, YAMLLintIssue{
 				Severity: "error",
 				Rule:     "bad-confidence",
@@ -172,7 +170,7 @@ func lintCommonYAML(def *ExtensionDef, at func(string) int) []YAMLLintIssue {
 			})
 		}
 	}
-	if def.Finding != nil && !isValidYAMLConfidence(def.Finding.Confidence) {
+	if def.Finding != nil && !IsValidConfidence(def.Finding.Confidence) {
 		issues = append(issues, YAMLLintIssue{
 			Severity: "error",
 			Rule:     "bad-confidence",
@@ -181,7 +179,7 @@ func lintCommonYAML(def *ExtensionDef, at func(string) int) []YAMLLintIssue {
 		})
 	}
 	for i, rule := range def.Rules {
-		if !isValidYAMLConfidence(rule.Finding.Confidence) {
+		if !IsValidConfidence(rule.Finding.Confidence) {
 			issues = append(issues, YAMLLintIssue{
 				Severity: "error",
 				Rule:     "bad-confidence",
@@ -431,10 +429,4 @@ func isValidYAMLScanType(s string) bool {
 		return true
 	}
 	return false
-}
-
-// isValidYAMLConfidence reports whether s is empty (module default applies)
-// or one of tentative, firm, certain.
-func isValidYAMLConfidence(s string) bool {
-	return strings.TrimSpace(s) == "" || severity.ToConfidence(s) != severity.ConfidenceUndefined
 }

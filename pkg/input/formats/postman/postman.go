@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"mime/multipart"
-	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +16,7 @@ import (
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats"
+	"github.com/vigolium/vigolium/pkg/input/formats/internal/multipartform"
 	"go.uber.org/zap"
 )
 
@@ -801,48 +800,24 @@ func sniffRawType(raw string) string {
 // entries become placeholder parts: Postman stores only a local path, never
 // the file contents, so the part carries the file name and an empty body.
 func buildMultipart(fields []formField, sub *substitutor, boundary string) (string, string, error) {
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	if err := w.SetBoundary(boundary); err != nil {
-		return "", "", err
-	}
+	parts := make([]multipartform.Part, 0, len(fields))
 	for _, fld := range fields {
 		if fld.Disabled || fld.Key == "" {
 			continue
 		}
-		h := make(textproto.MIMEHeader)
-		disposition := fmt.Sprintf(`form-data; name="%s"`, escapeQuotes(sub.replace(fld.Key)))
-		value := ""
+		part := multipartform.Part{Name: sub.replace(fld.Key), ContentType: fld.ContentType}
 		if strings.EqualFold(fld.Type, "file") {
 			name := filepath.Base(firstSrc(fld.Src))
 			if name == "" || name == "." || name == "/" {
 				name = "file.bin"
 			}
-			disposition += fmt.Sprintf(`; filename="%s"`, escapeQuotes(name))
-			ct := fld.ContentType
-			if ct == "" {
-				ct = "application/octet-stream"
-			}
-			h.Set("Content-Type", ct)
+			part.FileName = name
 		} else {
-			value = sub.replace(fld.Value)
-			if fld.ContentType != "" {
-				h.Set("Content-Type", fld.ContentType)
-			}
+			part.Value = sub.replace(fld.Value)
 		}
-		h.Set("Content-Disposition", disposition)
-		part, err := w.CreatePart(h)
-		if err != nil {
-			return "", "", err
-		}
-		if _, err := part.Write([]byte(value)); err != nil {
-			return "", "", err
-		}
+		parts = append(parts, part)
 	}
-	if err := w.Close(); err != nil {
-		return "", "", err
-	}
-	return buf.String(), w.FormDataContentType(), nil
+	return multipartform.Build(parts, boundary)
 }
 
 // firstSrc returns the file path of a formdata file entry; `src` is a string
@@ -858,7 +833,3 @@ func firstSrc(raw json.RawMessage) string {
 	}
 	return ""
 }
-
-var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
-
-func escapeQuotes(s string) string { return quoteEscaper.Replace(s) }

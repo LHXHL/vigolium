@@ -32,9 +32,6 @@ type PiercedElement struct {
 	BackendNodeID proto.DOMBackendNodeID
 	Tag           string // lower-case tag name
 	Locator       Locator
-	// InClosedShadow is true when any shadow root on the way to the element is
-	// closed — script cannot reach it, only CDP.
-	InClosedShadow bool
 }
 
 // PiercedRoot is a closed shadow root found by the snapshot, addressed by the
@@ -55,8 +52,6 @@ type PierceSnapshot struct {
 	Elements []PiercedElement
 	// ClosedRoots are the closed shadow roots, for the selector pass to query.
 	ClosedRoots []PiercedRoot
-	// ShadowElements counts Elements behind at least one hop.
-	ShadowElements int
 
 	// ClickListeners are the Elements carrying a click listener, in document
 	// order, capped at the probe budget. Nil when listeners were not probed.
@@ -80,7 +75,6 @@ type pierceWalk struct {
 	depth     int    // element depth under the current root
 	kind      pierceRootKind
 	underBody bool
-	closed    bool
 }
 
 // BuildPierceSnapshot flattens a DOM.describeNode{depth:-1, pierce:true} tree
@@ -107,14 +101,12 @@ func (s *PierceSnapshot) walkChildren(parent *proto.DOMNode, w pierceWalk) {
 
 		if (w.underBody || w.kind == pierceRootShadow) && !pierceSkipTags[tag] {
 			pe := PiercedElement{
-				BackendNodeID:  c.BackendNodeID,
-				Tag:            tag,
-				Locator:        Locator{InnerXPath: path},
-				InClosedShadow: w.closed,
+				BackendNodeID: c.BackendNodeID,
+				Tag:           tag,
+				Locator:       Locator{InnerXPath: path},
 			}
 			if len(w.chain) > 0 {
 				pe.Locator.HostChain = w.chain
-				s.ShadowElements++
 			}
 			s.Elements = append(s.Elements, pe)
 		}
@@ -138,17 +130,16 @@ func (s *PierceSnapshot) walkChildren(parent *proto.DOMNode, w pierceWalk) {
 			if sr == nil || sr.ShadowRootType == proto.DOMShadowRootTypeUserAgent {
 				continue
 			}
-			closed := sr.ShadowRootType == proto.DOMShadowRootTypeClosed
 			hc := hostChain()
-			if closed {
+			if sr.ShadowRootType == proto.DOMShadowRootTypeClosed {
 				s.ClosedRoots = append(s.ClosedRoots, PiercedRoot{BackendNodeID: sr.BackendNodeID, HostChain: hc})
 			}
-			s.walkChildren(sr, pierceWalk{chain: hc, kind: pierceRootShadow, closed: w.closed || closed})
+			s.walkChildren(sr, pierceWalk{chain: hc, kind: pierceRootShadow})
 		}
 		// A frame inside a shadow tree: no frame page is ever made for it, so
 		// its document is walked here behind a frame hop.
 		if c.ContentDocument != nil && w.kind == pierceRootShadow {
-			s.walkChildren(c.ContentDocument, pierceWalk{chain: hostChain(), kind: pierceRootDocument, closed: w.closed})
+			s.walkChildren(c.ContentDocument, pierceWalk{chain: hostChain(), kind: pierceRootDocument})
 		}
 	}
 }
