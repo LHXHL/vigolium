@@ -127,6 +127,34 @@ func TestRequester_RawRequestNotRetried(t *testing.T) {
 	}
 }
 
+// A request whose URL cannot be built (path-normalization's "..;/" with no
+// leading slash glues onto the port) fails identically on every attempt, so it
+// is not retried: each retry used to cost a backoff sleep per malformed probe.
+func TestRequester_BuildErrorNotRetried(t *testing.T) {
+	var hits atomic.Int64
+	srv := flakyServer(t, 0, &hits)
+	r, gate := newGatedRequester(t, 3, nil)
+
+	in, err := httpmsg.GetRawRequestFromURL(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := httpmsg.SetPath(in.Request().Raw(), "..;/..;/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := httpmsg.NewRequestResponseRaw(raw, in.Service())
+	if _, _, err := r.Execute(bad, Options{NoClustering: true}); err == nil {
+		t.Fatal("expected a build error")
+	}
+	if gate.Sent() != 1 {
+		t.Fatalf("gate admitted %d attempts, want 1 (no retries of a build error)", gate.Sent())
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("server saw %d requests, want 0", hits.Load())
+	}
+}
+
 // A followed redirect hop is another wire attempt: it takes a token and counts.
 func TestRequester_RedirectHopTakesToken(t *testing.T) {
 	mux := http.NewServeMux()

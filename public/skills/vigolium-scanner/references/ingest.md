@@ -97,7 +97,7 @@ path is indistinguishable from an empty capture.
 ## Local vs Remote Mode
 
 - **Local mode** (default): ingests directly into the local SQLite database and fetches HTTP responses.
-- **Remote mode** (`--server <url>` / `-s`): sends records to a running vigolium server via `POST /api/ingest`. Set `VIGOLIUM_API_KEY` (or the server's `--alternative-ingest-key`) for auth.
+- **Remote mode** (`--server <url>` / `-s`): sends records to a running vigolium server via `POST /api/ingest-http`. Set `VIGOLIUM_API_KEY` (or the server's `--alternative-ingest-key`) for auth.
 - `--scan-on-receive` is **ignored in remote mode** — the server decides whether to scan (start it with `--scan-on-receive`; see [server.md](server.md)).
 
 ## Input formats — one example each

@@ -11,7 +11,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+# jstangle_stub: these images exercise browser fallback, not the jstangle
+# helper, whose linux blobs are only packed for release builds.
+RUN CGO_ENABLED=0 GOOS=linux go build -tags jstangle_stub \
     -ldflags "-s -w" \
     -o /out/vigolium ./cmd/vigolium
 

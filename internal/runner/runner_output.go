@@ -466,7 +466,12 @@ func (r *Runner) printScanConfig() {
 		fmt.Fprintf(os.Stderr, "  %s Project: %s\n", terminal.Purple(terminal.SymbolInfo), terminal.HiTeal(opts.ProjectUUID))
 	}
 
-	strategy := settings.ScanningStrategy.DefaultStrategy
+	// The strategy ApplyScanStrategy resolved for this scan (a REST request's
+	// "strategy" included); the configured default only when none was applied.
+	strategy := opts.ScanningStrategy
+	if strategy == "" {
+		strategy = settings.ScanningStrategy.DefaultStrategy
+	}
 	if strategy == "" {
 		strategy = "default"
 	}

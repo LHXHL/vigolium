@@ -10,16 +10,13 @@ import "errors"
 //   - slot 1: the next key. Ship it here at least one release before switching
 //     the signer to it, then move it to slot 0 and add a new "next".
 //
-// TODO(release-key): both slots hold placeholders. Until the real public keys
-// replace them, every verification fails closed with ErrNoTrustedKeys, so
-// `vigolium update` installs nothing (`--check` still works, and install.sh
-// stays the recovery path). Generate with `minisign -G -p vigolium.pub -s
-// vigolium.key`, keep the secret key offline, and paste the second line of
-// vigolium.pub here. Tests use their own key via Options.TrustedKeys; never
-// put a test key in this list.
+// These are PUBLIC keys and are meant to be published: they can only verify
+// signatures, never create them. The matching secret keys are kept outside the
+// repo (see `make release-sign`). Tests use their own key via
+// Options.TrustedKeys; never put a test key in this list.
 var trustedKeys = []string{
-	"TODO-REPLACE-WITH-CURRENT-RELEASE-MINISIGN-PUBLIC-KEY",
-	"TODO-REPLACE-WITH-NEXT-RELEASE-MINISIGN-PUBLIC-KEY",
+	"RWRFygL+4hNxGBX7o1N8ye9P76suTEmA/5TAoowxAPqN10HTS7maI6cQ",
+	"RWROPwa0u8wc4KitxzSSYyuuaLsp7OkPlFt0cxcgJ6/zlAKTBmO4CWpT",
 }
 
 // ErrNoTrustedKeys means this build carries no usable release signing key.

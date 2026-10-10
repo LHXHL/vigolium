@@ -1135,7 +1135,7 @@ captured (`body_unavailable`).
 
 | Field | Why it is there |
 |---|---|
-| `schema_version` | Gate on it. Bumped on any breaking field change; `2` since v0.6 (scan document, every `-j` an envelope; `--json-legacy-keys` renders old row names for one release). |
+| `schema_version` | Gate on it. Bumped on any breaking field change; `2` since v0.5.3 (scan document, every `-j` an envelope; `--json-legacy-keys` renders old row names for one release). |
 | `ok` | `true` on every result document; the error object carries `"ok": false`, so `.ok` is a valid branch on anything `-j` prints. |
 | `kind` | The document's shape: `read` (rows, or one object as `items: [obj]`), `mutation` (adds `changed`, `action`, and `dry_run` on a dry run) or `scan`. `changed` is always present on a mutation and is `false` on a dry run. |
 | `finding_hash` | (on finding rows) The finding's stable identity — the dedup key and what SARIF fingerprints use. Selectable with `--fields`. |

@@ -36,10 +36,11 @@ TARBALL_SHA256=""
 
 # Release signing key (minisign): checksums.txt is signed by `make
 # release-sign` and its signature is checked when `minisign` is on PATH.
-# TODO(release-key): set this to the second line of vigolium.pub, the same key
-# as pkg/selfupdate/keys.go. While empty the signature check is skipped (the
-# sha256 check against checksums.txt still runs and still fails closed).
-MINISIGN_PUBKEY=""
+# Release signing public key (PUBLIC by design, safe to publish: it only verifies
+# signatures). It is the second line of vigolium.pub, the same key as
+# slot 0 of pkg/selfupdate/keys.go. If empty, the signature check is skipped
+# (the sha256 check against checksums.txt still runs and still fails closed).
+MINISIGN_PUBKEY="RWRFygL+4hNxGBX7o1N8ye9P76suTEmA/5TAoowxAPqN10HTS7maI6cQ"
 MINISIGN_PUBKEY="${VIGOLIUM_MINISIGN_PUBKEY:-$MINISIGN_PUBKEY}"
 
 # Retry configuration

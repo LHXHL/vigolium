@@ -1318,7 +1318,10 @@ release-verify:
 # signed checksums.txt cannot be replayed under a new metadata.json. The
 # matching public keys live in pkg/selfupdate/keys.go (current + next slot) and
 # in the installers' MINISIGN_PUBKEY. Runs after release-verify, before any
-# upload. When MINISIGN_PUB exists the fresh signature is verified with it.
+# upload. The secret key comes from VIGOLIUM_MINISIGN_SECRET_KEY (the base64
+# line of the .key file, kept out of the repo in a shell env file) when set,
+# else from the MINISIGN_KEY file. The fresh signature is verified with
+# VIGOLIUM_MINISIGN_PUBLIC_KEY when set, else with MINISIGN_PUB if it exists.
 # Usage: make release-sign DIST=build/dist [MINISIGN_KEY=…] [MINISIGN_PUB=…]
 MINISIGN_KEY?=$(HOME)/.minisign/vigolium.key
 MINISIGN_PUB?=$(HOME)/.minisign/vigolium.pub
@@ -1326,12 +1329,20 @@ release-sign:
 	@command -v minisign >/dev/null 2>&1 || { echo "\033[31m[!] release-sign: minisign is required (https://jedisct1.github.io/minisign/)\033[0m" >&2; exit 1; }
 	@set -e; dist="$(or $(DIST),$(RELEASE_DIST))"; \
 		[ -s "$$dist/checksums.txt" ] || { echo "\033[31m[!] release-sign: missing $$dist/checksums.txt\033[0m" >&2; exit 1; }; \
-		[ -f "$(MINISIGN_KEY)" ] || { echo "\033[31m[!] release-sign: secret key not found at $(MINISIGN_KEY) (set MINISIGN_KEY=…)\033[0m" >&2; exit 1; }; \
+		key="$(MINISIGN_KEY)"; \
+		if [ -n "$$VIGOLIUM_MINISIGN_SECRET_KEY" ]; then \
+			key=$$(umask 077; mktemp); trap 'rm -f "$$key"' EXIT; \
+			printf 'untrusted comment: vigolium release key (from env)\n%s\n' "$$VIGOLIUM_MINISIGN_SECRET_KEY" > "$$key"; \
+		fi; \
+		[ -f "$$key" ] || { echo "\033[31m[!] release-sign: no secret key (set VIGOLIUM_MINISIGN_SECRET_KEY, or MINISIGN_KEY=… to a key file; tried $(MINISIGN_KEY))\033[0m" >&2; exit 1; }; \
 		rm -f "$$dist/checksums.txt.minisig"; \
 		echo "$(PREFIX) Signing $$dist/checksums.txt (vigolium $(VERSION))..."; \
-		minisign -S -s "$(MINISIGN_KEY)" -m "$$dist/checksums.txt" -x "$$dist/checksums.txt.minisig" \
+		minisign -S -s "$$key" -m "$$dist/checksums.txt" -x "$$dist/checksums.txt.minisig" \
 			-t "vigolium $(VERSION)" -c "vigolium $(VERSION) release checksums"; \
-		if [ -f "$(MINISIGN_PUB)" ]; then \
+		if [ -n "$$VIGOLIUM_MINISIGN_PUBLIC_KEY" ]; then \
+			minisign -V -q -P "$$VIGOLIUM_MINISIGN_PUBLIC_KEY" -m "$$dist/checksums.txt" -x "$$dist/checksums.txt.minisig"; \
+			echo "$(PREFIX) Signature verified with VIGOLIUM_MINISIGN_PUBLIC_KEY"; \
+		elif [ -f "$(MINISIGN_PUB)" ]; then \
 			minisign -V -q -p "$(MINISIGN_PUB)" -m "$$dist/checksums.txt" -x "$$dist/checksums.txt.minisig"; \
 			echo "$(PREFIX) Signature verified with $(MINISIGN_PUB)"; \
 		fi

@@ -556,7 +556,7 @@ Source-aware / whitebox scanning is **not** a strategy — it is an agent featur
 ### Precedence
 
 1. `--only <phase>` overrides everything — only that phase runs, heuristics disabled
-2. `--skip <phase>` disables specific phases while keeping all others
+2. `--skip <phase>` disables specific phases while keeping all others (`--skip preflight` drops the per-target reachability GET; scope admission still applies)
 3. `--strategy <name>` sets baseline phase configuration
 4. Individual phase flags (`--discover`, `--spider`, etc.) override strategy settings
 5. Config file `scanning_strategy.default_strategy` provides the lowest-precedence default

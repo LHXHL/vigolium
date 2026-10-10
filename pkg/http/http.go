@@ -1306,13 +1306,28 @@ func requestLabel(input *httpmsg.HttpRequestResponse) string {
 	return method
 }
 
+// requestBuildError is a request that could not be built from its raw form (an
+// unparseable URL, say). Nothing reached the wire and every attempt fails the
+// same way, so it is never retried: before retries moved into executeDirectly
+// the build ran outside retryablehttp's loop, and retrying it here costs a full
+// backoff per malformed probe (path-normalization sends dozens).
+type requestBuildError struct{ err error }
+
+func (e *requestBuildError) Error() string { return "failed to build request: " + e.err.Error() }
+func (e *requestBuildError) Unwrap() error { return e.err }
+
 // retryableTransportError is the retry decision retryablehttp made before
 // retries moved into executeDirectly (CheckRecoverableErrors): any transport
 // error (a client timeout included), except on a cancelled ctx, a redirect-limit or bad-scheme error, an
-// untrusted certificate, or a permanent network error. A gate refusal
+// untrusted certificate, a permanent network error, or a request that could
+// not be built (requestBuildError). A gate refusal
 // (quarantine, slot timeout) never reaches it: Do stops on those itself.
 func retryableTransportError(ctx context.Context, err error) bool {
 	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	var buildErr *requestBuildError
+	if errors.As(err, &buildErr) {
 		return false
 	}
 	// CheckRecoverableErrors type-asserts *url.Error directly, so hand it the
@@ -1524,7 +1539,7 @@ func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestRes
 
 	req, err := input.BuildRetryableRequestWithContext(ctx)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to build request")
+		return nil, &requestBuildError{err: err}
 	}
 
 	// Apply default browser headers (only those not already set on the request).

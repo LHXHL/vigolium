@@ -89,10 +89,13 @@ func TestAPI_REST_NativeScan_EndToEnd(t *testing.T) {
 	env := newSettingsTestEnv(t, "")
 	target := newRESTScanTarget(t)
 
-	// Trigger the scan. lite strategy keeps it quick; the /search?q= sink gives the
-	// dynamic-assessment phase a real reflected parameter to exercise.
+	// Trigger the scan. lite strategy keeps the phase set small; its pace (20 req/s)
+	// is meant for fragile production targets and would take minutes against the
+	// full module set, so the explicit pace overrides it for this local target. The
+	// /search?q= sink gives the dynamic-assessment phase a real reflected parameter.
 	scanURL := target.URL + "/search?q=canary"
-	resp := env.post(t, "/api/scans/run", fmt.Sprintf(`{"targets":[%q],"strategy":"lite"}`, scanURL))
+	resp := env.post(t, "/api/scans/run", fmt.Sprintf(
+		`{"targets":[%q],"strategy":"lite","concurrency":25,"max_per_host":50,"rate_limit":1000}`, scanURL))
 	require.Equal(t, http.StatusAccepted, resp.StatusCode, "scan trigger must be accepted, not error/panic")
 	var run server.ScanResponse
 	readJSON(t, resp, &run)

@@ -112,8 +112,10 @@ func TestAutopilot_AuditDriverFastFailsOnMissingSourcePath_E2E(t *testing.T) {
 	bogusSource := filepath.Join(t.TempDir(), "definitely-not-real-"+uniqueSuffix())
 	require.NoFileExists(t, bogusSource)
 
+	// audit_mode opts in to the nested audit harness, which REST autopilot
+	// keeps off by default; without it the source-path preflight never runs.
 	body := fmt.Sprintf(
-		`{"target":"http://example.test","source":%q,"dry_run":true}`,
+		`{"target":"http://example.test","source":%q,"audit_mode":"lite","dry_run":true}`,
 		bogusSource,
 	)
 	t.Logf("POST %s/api/agent/run/autopilot\n  body: %s", apiURL, body)

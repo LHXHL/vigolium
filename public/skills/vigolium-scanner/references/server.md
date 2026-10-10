@@ -30,7 +30,7 @@ To *push* traffic into a running server (or ingest locally without a server), se
 
 **Usage:** `vigolium server [flags]`
 
-Start the API server. By default it exposes the Swagger UI, the `/api/ingest`
+Start the API server. By default it exposes the Swagger UI, the `/api/ingest-http`
 endpoint, and the agent endpoints, all behind API-key auth. It does **not** scan
 anything until you either call an endpoint or pass `--scan-on-receive`.
 
@@ -203,7 +203,16 @@ Burp/proxy traffic as files in real time (`ls`/`grep`/`jq`).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/ingest` | Submit HTTP records for ingestion |
+| `POST` | `/api/ingest-http` | Submit HTTP records for ingestion |
+| `POST` | `/api/scan-url` / `/api/scan-request` | Scan one URL / raw request (scope enforced: out of scope is `422`; schemeless requests are settled like the CLI) |
+| `POST` | `/api/scan-records` / `/api/scan-all-records` / `/api/scans/run` | Scan selected stored records / every record / a full native scan |
+| `GET` | `/api/scans[/:uuid[/logs]]` | List / inspect scans and their logs |
+| `POST` | `/api/scans/:uuid/{pause,resume,stop}` | Control a running scan |
+| `GET` | `/api/findings[/:id]` | List / get findings |
+| `PATCH` | `/api/findings/:id/status` | Set a finding's status |
+| `POST` | `/api/findings/:id/verify` | Re-run the finding's module to confirm it (as `vigolium finding verify`) |
+| `GET` | `/api/http-records[/:uuid]` | List / get stored traffic |
+| `GET` / `POST` | `/api/scope` | Read / update the project's scope |
 | `POST` | `/api/agent/run/query` | Single-shot agent prompt execution |
 | `POST` | `/api/agent/run/autopilot` | Autonomous AI-driven scanning session |
 | `POST` | `/api/agent/run/swarm` | AI-guided targeted / full-scope scan |

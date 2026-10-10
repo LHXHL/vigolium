@@ -49,15 +49,17 @@ func setupTestDB(t *testing.T) (*database.DB, *database.Repository) {
 	return db, database.NewRepository(db)
 }
 
-// parseAndStore parses a file with the given format and stores all results in the DB.
+// parseAndStore parses a file with the given format and stores all results in the DB,
+// stamping each new record with scanUUID so QueryFilters.ScanUUID selects it.
 // Returns the list of saved record UUIDs.
-func parseAndStore(t *testing.T, format formats.Format, filePath string, repo *database.Repository, _ string) []string {
+func parseAndStore(t *testing.T, format formats.Format, filePath string, repo *database.Repository, scanUUID string) []string {
 	t.Helper()
 	ctx := context.Background()
 
 	var uuids []string
 	err := format.Parse(filePath, func(rr *httpmsg.HttpRequestResponse) bool {
-		uuid, saveErr := repo.SaveRecord(ctx, rr, "test", database.DefaultProjectUUID)
+		uuid, saveErr := repo.SaveRecordWithLineage(ctx, rr, "test", database.DefaultProjectUUID,
+			database.RecordLineage{ScanUUID: scanUUID})
 		require.NoError(t, saveErr, "failed to save record")
 		uuids = append(uuids, uuid)
 		return true
