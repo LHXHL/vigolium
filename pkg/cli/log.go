@@ -22,6 +22,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"go.uber.org/zap"
 )
 
 var (
@@ -30,6 +31,7 @@ var (
 	logFollow    bool
 	logStripANSI bool
 	logRaw       bool
+	logLsReap    bool
 )
 
 var logCmd = &cobra.Command{
@@ -59,8 +61,22 @@ Pass --tui to open the interactive picker.`,
 var logLsCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List native scan and agentic scan sessions",
-	Long:  "Print every native scan and agentic scan session that has a stored log, sorted by most recent first. Each row shows the session UUID, kind, start time, and source — pass the UUID to 'vigolium log <uuid>' to view its log.",
-	RunE:  runLogLs,
+	Long: `Print every native scan and agentic scan session that has a stored log, sorted by most recent first. Each row shows the session UUID, kind, start time, and source — pass the UUID to 'vigolium log <uuid>' to view its log.
+
+--reap cleans up after scans that died: every native scan row of the project
+that still says "running" but is abandoned (nothing has written for 2 minutes,
+or its process on this host is gone) is finalized as failed with
+stop_reason "abandoned", and status.json heartbeat files older than
+scanning_strategy.scan_logs.status_retention_days (default 30, 0 = keep) are
+removed. --reap writes the store, so it is refused under --read-only and on a
+-S/--glob-db read.`,
+	Example: FormatExamples(
+		"# Sessions, newest first, with liveness",
+		"vigolium log ls -j",
+		"# Finalize dead running rows and prune old status.json files",
+		"vigolium log ls --reap",
+	),
+	RunE: runLogLs,
 }
 
 func init() {
@@ -74,6 +90,15 @@ func init() {
 	logCmd.Flags().BoolVar(&logRaw, "raw", false, "For agentic sessions, print the raw transcript JSONL verbatim instead of the rendered replay")
 	tui.AddFlags(logCmd, &logLsTUI, &logLsNoTUI)
 	tui.AddFlags(logLsCmd, &logLsTUI, &logLsNoTUI)
+	logLsCmd.Flags().BoolVar(&logLsReap, "reap", false, "Finalize abandoned running scan rows as failed (stop_reason abandoned) and prune expired status.json files; writes the store")
+}
+
+// logLsExtras are the top-level keys `log ls -j --reap` adds.
+type logLsExtras struct {
+	// Reaped lists the scan UUIDs this run finalized as abandoned.
+	Reaped []string `json:"reaped,omitempty"`
+	// StatusFilesRemoved counts the expired status.json files pruned.
+	StatusFilesRemoved *int `json:"status_files_removed,omitempty"`
 }
 
 // sessionRow is a normalized view of a scan log session (native or agentic)
@@ -173,7 +198,19 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 	// No CreateSchema: `log` opens the read pool (db_intent.go), whose opener
 	// checks the schema with catalog reads and never takes the write lock — a
 	// listing must not queue behind the scan it is listing.
-	db, err := openReadDB(globDBSkipSet{Records: true})
+	//
+	// --reap writes (dbWriteFlags flips the intent), so it opens the shared
+	// store itself: a -S/--glob-db read is a scratch copy nobody would see the
+	// finalized rows in.
+	var db *database.DB
+	if logLsReap {
+		if globalStateless || strings.TrimSpace(globalGlobDB) != "" {
+			return usageErrorf("--reap finalizes rows in the store; it cannot run on a -S/--glob-db read")
+		}
+		db, err = getDB()
+	} else {
+		db, err = openReadDB(globDBSkipSet{Records: true})
+	}
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -185,7 +222,25 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	rows := collectNativeRows(ctx, repo, projectUUID, settings.ScanningStrategy.ScanLogs.EffectiveSessionsDir())
+	sessionsDir := settings.ScanningStrategy.ScanLogs.EffectiveSessionsDir()
+	var extras *logLsExtras
+	if logLsReap {
+		reaped, reapErr := reapAbandonedScans(ctx, repo, projectUUID, sessionsDir)
+		if reapErr != nil {
+			return fmt.Errorf("reap abandoned scans: %w", reapErr)
+		}
+		removed, pruneErr := pruneSessionStatusForSettings(settings)
+		if pruneErr != nil {
+			zap.L().Warn("Some expired status.json files could not be removed", zap.Error(pruneErr))
+		}
+		extras = &logLsExtras{Reaped: reaped, StatusFilesRemoved: &removed}
+		if !globalJSON && !globalSilent {
+			fmt.Fprintf(os.Stderr, "%s Reaped %d abandoned scan(s); removed %d expired status file(s)\n",
+				terminal.InfoSymbol(), len(reaped), removed)
+		}
+	}
+
+	rows := collectNativeRows(ctx, repo, projectUUID, sessionsDir)
 	rows = append(rows, collectAgenticRows(ctx, repo, projectUUID, settings.Agent.EffectiveSessionsDir())...)
 
 	sort.Slice(rows, func(i, j int) bool {
@@ -212,6 +267,12 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 		// documented hole is one every consumer special-cases forever.
 		env := newAgentEnvelope("log ls", "rows", out, int64(len(out)), 0, len(out))
 		env.DBPath = resolvedReadDBPath()
+		if extras != nil {
+			if extras.Reaped == nil {
+				extras.Reaped = []string{}
+			}
+			env.With("reaped", extras.Reaped).With("status_files_removed", *extras.StatusFilesRemoved)
+		}
 		if len(out) > 0 {
 			env.WithQuery("log", rows[0].uuid)
 		}

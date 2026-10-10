@@ -27,7 +27,7 @@
     "name": "log ls",
     "kind": "command",
     "envelope_kind": "read",
-    "description": "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at)."
+    "description": "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at); --reap adds reaped and status_files_removed."
   },
   {
     "name": "module disable",
@@ -93,13 +93,13 @@
     "name": "scan status",
     "kind": "command",
     "envelope_kind": "read",
-    "description": "One scan's live status: phase, progress, liveness and ETA."
+    "description": "One scan's live status: phase, progress, liveness, ETA and the stored plan."
   },
   {
     "name": "scan wait",
     "kind": "command",
-    "envelope_kind": "read",
-    "description": "The scan's final status view, printed once the scan ends."
+    "envelope_kind": "scan",
+    "description": "The finished scan's scan document (the one scan -j prints, rebuilt from the stored row), printed once the scan ends."
   },
   {
     "name": "scan-request",

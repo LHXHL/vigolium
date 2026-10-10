@@ -175,6 +175,7 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
       "matched_at": ["…"], "scan_uuid": "9551f38a-…" }
   ],
   "items_truncated": false,
+  "plan": null,
   "query": "vigolium --db /home/you/.vigolium/database-vgnm.sqlite --project-uuid 00000000-0000-0000-defa-c01001000001 finding --scan-uuid 9551f38a-… -j",
   "query_argv": ["vigolium", "--db", "/home/you/.vigolium/database-vgnm.sqlite",
                  "--project-uuid", "00000000-0000-0000-defa-c01001000001",
@@ -194,6 +195,11 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
   Candidates and observations are counts only (`finding --scan-uuid <uuid>
   --record-kind candidate`). No nuclei-shaped keys (`template-id`, `matched-at`,
   `info{}`) appear anywhere.
+- **`plan`** is the scan's resolved plan as the runner stored it on the row
+  (`scans.plan`, the [`--dry-run`](#plan-first---dry-run) object, `vigolium
+  schema plan`), embedded verbatim. It is `null` for a direct `scan-url` /
+  `scan-request` run (no plan is resolved there), a row written by an older
+  binary, and a document spanning several scans.
 - **Identity.** A persisted finding has its store `id`; an unpersisted one (`-S`,
   or a direct run with no store) has none — `finding_hash` is its identity.
 - **`status`**: `completed`, `curtailed` (finished but partial: see `reasons`),
@@ -1158,12 +1164,21 @@ get the same heartbeat while their input runs.
 (`running|abandoned|completed|failed|cancelled`), `liveness {last_write_at,
 stale, sources, process_gone}`, `phase`, `phases_done`, `requests_sent`,
 `findings`, `findings_by_severity`, `progress` (null when the phase has no
-count), `eta {estimate_ms, upper_bound_ms, basis}`, `completeness`,
-`stop_reason`, `started_at`, `duration_ms`, `db_path`. **The ETA is never
-invented:** `upper_bound_ms` is the remaining `--scanning-max-duration` budget,
-`estimate_ms` extrapolates the current phase's rate only when it is the last
-planned phase and its total is known; otherwise each is `null` and `basis` says
-`unknown`.
+count), `eta {estimate_ms, upper_bound_ms, basis}`, `plan` (the stored plan,
+verbatim; null when the row has none), `completeness`, `stop_reason`,
+`started_at`, `duration_ms`, `db_path`. **The ETA is never invented:**
+
+- `upper_bound_ms` is the tighter of the remaining `--scanning-max-duration`
+  budget and the stored plan's ceilings for what is left (the current phase's
+  ceiling less the time it has run, plus every later enabled phase's ceiling;
+  a per-target budget counts as budget × admitted targets).
+- `estimate_ms` is the current phase's own rate, `elapsed × (total−done)/done`
+  (needs a known total), plus the later phases at 0.6 of their ceilings,
+  clamped to the upper bound.
+- Either is `null` when something it rests on is unknown (no plan, a later
+  phase with no ceiling, no count for the current phase). `basis` joins what
+  the figures rest on — `phase_rate`, `plan_ceilings`, `scan_budget` — or says
+  `unknown`; a finished scan reports `0`/`0` with `basis: "finished"`.
 
 **Abandoned** means the row says `running` but nothing has written for 2
 minutes (heartbeat, `status.json`, `runtime.log`, the newest `scan_logs` line),
@@ -1174,7 +1189,14 @@ auto-follow.
 
 `scan wait` polls through the read-only database pool (it never contends for
 the scan's write lock), prints progress lines on stderr, and on a terminal
-state prints the final `scan status` item and exits:
+state prints, under `-j`, the finished scan's [scan document](#the-scan-document)
+— the envelope `scan -j` prints (`kind: "scan"`, findings as `items`,
+`status`, `completeness`, `phase_outcomes`, `plan`), rebuilt from the scan's
+row, with the row's own `started_at`/`finished_at`/`duration_ms`. `-n/--limit`,
+`--fields` and `--compact` shape it as on `scan`. A `-S`/`--db-isolate` scan
+whose row is not in the store being read gets the same document from its
+`status.json` (counts, no `items`, `persisted: false`). Without `-j` it prints
+the human status block. Then it exits:
 
 | Exit | When |
 |---|---|
@@ -1182,6 +1204,15 @@ state prints the final `scan status` item and exits:
 | `1` | failed or cancelled (`failed`), abandoned (`scan_abandoned`), `--timeout` elapsed (`wait_timeout`, default 30m; `0` waits forever) |
 | `4` | `--fail-on <severity>` matched a finding of that scan |
 | `5` | `--fail-on-partial` and the scan completed `partial` (`partial`) |
+
+**Cleaning up dead scans.** `vigolium log ls --reap` finalizes every
+`running` row of the project whose liveness says abandoned: `status: failed`,
+`completeness: partial`, `stop_reason: "abandoned"`, `finished_at` = its last
+write. It also prunes `status.json` files whose last write is older than
+`scanning_strategy.scan_logs.status_retention_days` (default 30; `0` keeps
+them; `vigolium server` runs the same prune at start). `-j` adds `reaped`
+(UUIDs) and `status_files_removed`. `--reap` writes, so `--read-only` and
+`-S`/`--glob-db` refuse it (exit 2).
 
 An unknown UUID is tolerated for 30s (the row may not exist yet), then fails
 `not_found`. `--events ndjson` streams `phase.progress` lines on stdout instead

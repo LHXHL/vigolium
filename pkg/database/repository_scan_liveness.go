@@ -92,3 +92,66 @@ func (r *Repository) LastScanLogTimes(ctx context.Context, projectUUIDs, scanUUI
 	}
 	return out, nil
 }
+
+// ListRunningScans returns every scan row whose stored status is still
+// "running", newest first — the candidates a reaper checks for liveness. An
+// empty projectUUID reads across projects (a stateless read of a standalone
+// file), like ListScans.
+func (r *Repository) ListRunningScans(ctx context.Context, projectUUID string) ([]*Scan, error) {
+	var scans []*Scan
+	q := r.db.NewSelect().
+		Model(&scans).
+		Where("status = ?", "running").
+		OrderExpr("created_at DESC")
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
+	if err := q.Scan(ctx); err != nil {
+		return nil, err
+	}
+	return scans, nil
+}
+
+// ReapAbandonedScan finalizes a scan whose row still says "running" but whose
+// process is gone (the caller's liveness verdict): status failed, completeness
+// partial, stop_reason abandoned, and an error_message naming the last write.
+// finished_at is that last write when known (when the scan actually stopped),
+// else now; phase_outcomes and the severity counts are left as they are.
+//
+// Only a row still "running" is touched, so a scan that finalized between the
+// caller's read and this write keeps its own verdict. reaped reports whether
+// this call wrote the row.
+func (r *Repository) ReapAbandonedScan(ctx context.Context, scan *Scan, lastWriteAt time.Time) (reaped bool, err error) {
+	if scan == nil {
+		return false, nil
+	}
+	finishedAt := lastWriteAt
+	msg := "abandoned: the scan's process stopped without finalizing its row (no liveness signal ever written)"
+	if finishedAt.IsZero() {
+		finishedAt = time.Now()
+	} else {
+		msg = "abandoned: the scan's process stopped without finalizing its row (last write " + finishedAt.UTC().Format(time.RFC3339) + ")"
+	}
+	durationMs := int64(0)
+	if !scan.StartedAt.IsZero() && finishedAt.After(scan.StartedAt) {
+		durationMs = finishedAt.Sub(scan.StartedAt).Milliseconds()
+	}
+	res, err := r.db.NewUpdate().
+		Model((*Scan)(nil)).
+		Set("status = ?", "failed").
+		Set("error_message = ?", msg).
+		Set("completeness = ?", CompletenessPartial).
+		Set("stop_reason = ?", ReasonAbandoned).
+		Set("finished_at = ?", finishedAt).
+		Set("duration_ms = ?", durationMs).
+		Set("current_phase = NULL").
+		Set("updated_at = CURRENT_TIMESTAMP").
+		Where("uuid = ?", scan.UUID).
+		Where("status = ?", "running").
+		Exec(ctx)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}

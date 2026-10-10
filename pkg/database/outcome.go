@@ -107,6 +107,7 @@ const (
 	ReasonAuthLost             = "auth_lost"              // the session expired mid-scan and re-login did not restore it
 	ReasonPhaseError           = "phase_error"            // a phase failed and the scan carried on without it
 	ReasonExtensionsAllFailed  = "extensions_all_failed"  // every requested extension failed to load or run
+	ReasonAbandoned            = "abandoned"              // the scan's process died without finalizing; set by `log ls --reap`
 
 	// Stop reasons: the scan did nothing useful and ends with exit 1.
 	ReasonNoTargetsInScope   = "no_targets_in_scope"  // scope admitted zero targets
@@ -150,6 +151,7 @@ var OutcomeCodes = []string{
 	ReasonAuthLost,
 	ReasonPhaseError,
 	ReasonExtensionsAllFailed,
+	ReasonAbandoned,
 	ReasonNoTargetsInScope,
 	ReasonNoTargetsReachable,
 	LimitTargetBudget,

@@ -41,8 +41,12 @@ var scanWaitCmd = &cobra.Command{
 	Use:   "wait <scan-uuid>",
 	Short: "Block until a scan finishes, then print its summary and exit with its outcome",
 	Long: `Poll a scan's status (the same view as 'vigolium scan status') until it
-reaches a terminal state, printing progress to stderr, then print the final
-status document on stdout and exit with the scan's outcome:
+reaches a terminal state, printing progress to stderr, then print the finished
+scan on stdout and exit with the scan's outcome. Under -j that is the scan
+document — the same envelope 'vigolium scan -j' prints (kind "scan", findings
+as items, status, completeness, phase_outcomes, the stored plan), rebuilt from
+the scan's row — so a driver that waited parses what one that ran the scan
+would; -n/--limit, --fields and --compact shape it the same way.
 
   0  completed
   1  failed or cancelled (error.code failed); the scan's process died while the
@@ -78,6 +82,7 @@ func init() {
 	f.BoolVar(&scanWaitFailOnPartial, "fail-on-partial", false, "Exit 5 (error.code partial) when the scan completed with partial coverage")
 	f.StringVar(&scanWaitEvents, "events", "", "Stream progress as NDJSON on stdout (value: ndjson): phase.progress lines, then scan.finished")
 	f.BoolVarP(&globalStateless, "stateless", "S", false, "Read from --db (a standalone .sqlite) with project scoping off")
+	registerScanDocumentFlags(f)
 }
 
 // waitClock is the time source of the wait loop; tests substitute a fake.
@@ -237,6 +242,9 @@ func runScanWait(cmd *cobra.Command, args []string) error {
 	if err := resetFailOnGate(); err != nil {
 		return err
 	}
+	if err := validateScanDocumentFlags(); err != nil {
+		return err
+	}
 	format, err := scanevents.ParseFormat(scanWaitEvents)
 	if err != nil {
 		return asUsageError(err)
@@ -287,7 +295,7 @@ func runScanWait(cmd *cobra.Command, args []string) error {
 	case streaming:
 		emitWaitStreamFinished(view)
 	case globalJSON:
-		if err := emitObject(cmd, "", view, withDBPath(view.DBPath), withQuery("finding", "--scan-uuid", uuid)); err != nil {
+		if err := scanWaitDocument(reader, view).Emit(); err != nil {
 			return err
 		}
 	default:
@@ -306,6 +314,24 @@ func runScanWait(cmd *cobra.Command, args []string) error {
 		return failOnGateError()
 	}
 	return scanWaitExit(view, gate, scanWaitFailOnPartial)
+}
+
+// scanWaitDocument builds the scan document for the finished scan v: from its
+// row when the store being read has it (AddStored, the same reads `scan -j`
+// makes), else from the status.json facts alone (AddStatusOnly: a -S or
+// --db-isolate scan whose row went with its scratch store).
+func scanWaitDocument(reader *scanStatusReader, v *scanStatusView) *scanDocBuilder {
+	b := newScanDocBuilder("scan wait")
+	if reader != nil && reader.repo != nil && slices.Contains(v.Source, "db") {
+		ctx, cancel := docReadContext()
+		defer cancel()
+		if row, err := reader.repo.GetScanByUUID(ctx, v.ScanUUID); err == nil && row != nil {
+			b.AddStored(ctx, reader.repo, row, v.EffectiveStatus, reader.dbPath)
+			return b
+		}
+	}
+	b.AddStatusOnly(v)
+	return b
 }
 
 // failOnGateFromCounts trips --fail-on from a severity tally, for a scan whose

@@ -37,7 +37,7 @@ var machineKinds = map[string]machineKind{
 	"scan":            kindScan,
 	"scan diff":       kindRead,
 	"scan status":     kindRead,
-	"scan wait":       kindRead, // the final status view as one item; --events streams instead
+	"scan wait":       kindScan, // the finished scan's scan document; --events streams instead
 	"run":             kindScan,
 	"scan-url":        kindScan,
 	"scan-request":    kindScan,

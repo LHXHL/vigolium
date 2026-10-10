@@ -230,6 +230,15 @@
     },
     "output_budget": {
       "$ref": "#/$defs/contract.OutputBudget"
+    },
+    "reaped": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "status_files_removed": {
+      "type": "integer"
     }
   },
   "additionalProperties": false,
@@ -246,5 +255,5 @@
     "kind"
   ],
   "title": "vigolium log ls -j",
-  "description": "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at)."
+  "description": "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at); --reap adds reaped and status_files_removed."
 }

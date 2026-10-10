@@ -193,7 +193,7 @@ var dbIntents = map[string]string{
 // command is not a reader or a writer — an invocation is. Shared with
 // applyReadOnlyMode, which refuses them under --read-only for the same reason
 // they flip intent here.
-var dbWriteFlags = []string{"save-to-vigolium-db", "in-replace"}
+var dbWriteFlags = []string{"save-to-vigolium-db", "in-replace", "reap"}
 
 // applyDBIntentAnnotations stamps every command's declared intent from
 // dbIntents. Called from prepareCommandTree, once the tree is complete.

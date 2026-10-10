@@ -279,6 +279,7 @@ func seedScanStatusStore(t *testing.T) (home, dbPath string) {
 	repo := database.NewRepository(db)
 	started := time.Now().Add(-time.Minute)
 	require.NoError(t, repo.CreateScan(ctx, &database.Scan{UUID: "c2-done", ProjectUUID: database.DefaultProjectUUID, Status: "running", StartedAt: started}))
+	require.NoError(t, repo.UpdateScanPartial(ctx, &database.Scan{UUID: "c2-done", Plan: []byte(`{"schema_version":1,"scan_uuid":"c2-done","strategy":"balanced","heuristics_check":"basic","phases":[{"id":"discovery","enabled":true,"sends_target_traffic":true}],"budgets":{"scan_max_duration_ms":0,"max_requests":0,"max_requests_per_host":0,"rate_limit":0,"concurrency":0,"max_per_host":0},"modules":{"active":1,"passive":0,"extensions":0,"tier_ceiling":"","tier_filtered":0,"hygiene_suppressed":0,"risk_gated":0,"risky_payloads_allowed":false,"by_scope":{}},"scope":{},"auth":[],"targets":{"seeded":1,"from_files":0,"admitted":1,"rejected":0},"estimate":{"low":0,"high":0,"by_phase":{},"basis":"","confidence":""},"warnings":[]}`)}))
 	require.NoError(t, repo.CompleteScanWithOutcome(ctx, "c2-done", "", database.ScanCompletion{Completeness: database.CompletenessPartial, StopReason: "scan_budget"}))
 	// A "running" row whose heartbeat stopped long ago: an abandoned scan.
 	old := time.Now().Add(-time.Hour)
@@ -302,14 +303,26 @@ func TestScanWaitCommandEndToEnd(t *testing.T) {
 	var env map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &env), stdout)
 	contracttest.Validate(t, "scan wait", []byte(stdout))
-	if env["command"] != "scan wait" {
-		t.Errorf("command = %v", env["command"])
+	// The scan document, rebuilt from the row: kind scan, the row's verdict,
+	// the stored plan verbatim.
+	if env["command"] != "scan wait" || env["kind"] != "scan" || env["scan_uuid"] != "c2-done" {
+		t.Errorf("envelope = %v", env)
 	}
-	items, _ := env["items"].([]any)
-	require.Len(t, items, 1)
-	item := items[0].(map[string]any)
-	if item["effective_status"] != "completed" || item["completeness"] != "partial" {
-		t.Errorf("item = %v", item)
+	if env["status"] != "curtailed" || env["completeness"] != "partial" || env["stop_reason"] != "scan_budget" {
+		t.Errorf("verdict = %v / %v / %v", env["status"], env["completeness"], env["stop_reason"])
+	}
+	if plan, _ := env["plan"].(map[string]any); plan == nil || plan["strategy"] != "balanced" {
+		t.Errorf("plan = %v", env["plan"])
+	}
+	if items, ok := env["items"].([]any); !ok || len(items) != 0 {
+		t.Errorf("items = %v (no findings seeded)", env["items"])
+	}
+
+	code, stdout, _ = runScanWaitChild(t, home, db, "scan", "status", "c2-done", "-j")
+	require.Equal(t, 0, code, stdout)
+	contracttest.Validate(t, "scan status", []byte(stdout))
+	if !strings.Contains(stdout, `"strategy":"balanced"`) {
+		t.Errorf("scan status should embed the stored plan: %s", stdout)
 	}
 
 	code, _, stderr = runScanWaitChild(t, home, db, "scan", "wait", "c2-done", "--fail-on-partial")
@@ -332,6 +345,27 @@ func TestScanWaitCommandEndToEnd(t *testing.T) {
 	code, _, _ = runScanWaitChild(t, home, db, "scan", "wait", "c2-done", "--poll", "0s")
 	if code != ExitUsageError {
 		t.Errorf("--poll 0 exit = %d, want 2", code)
+	}
+
+	// log ls --reap finalizes the abandoned row; scan status then says failed.
+	code, _, _ = runScanWaitChild(t, home, db, "--read-only", "log", "ls", "--reap")
+	if code != ExitUsageError {
+		t.Errorf("--read-only --reap exit = %d, want 2", code)
+	}
+	code, stdout, stderr = runScanWaitChild(t, home, db, "log", "ls", "--reap", "-j")
+	require.Equal(t, 0, code, stderr)
+	contracttest.Validate(t, "log ls", []byte(stdout))
+	var reap struct {
+		Reaped             []string `json:"reaped"`
+		StatusFilesRemoved *int     `json:"status_files_removed"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &reap), stdout)
+	if len(reap.Reaped) != 1 || reap.Reaped[0] != "c2-dead" || reap.StatusFilesRemoved == nil {
+		t.Errorf("reap = %+v", reap)
+	}
+	code, stdout, _ = runScanWaitChild(t, home, db, "scan", "status", "c2-dead", "-j")
+	if code != 0 || !strings.Contains(stdout, `"effective_status":"failed"`) || !strings.Contains(stdout, `"stop_reason":"abandoned"`) {
+		t.Errorf("after reap: exit %d stdout %s", code, stdout)
 	}
 }
 

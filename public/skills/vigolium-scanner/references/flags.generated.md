@@ -1398,6 +1398,7 @@ List native scan and agentic scan sessions
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--no-tui` | - | bool | `false` | Force TUI off (escape hatch if TUI ever becomes default) |
+| `--reap` | - | bool | `false` | Finalize abandoned running scan rows as failed (stop_reason abandoned) and prune expired status.json files; writes the store |
 | `--tui` | - | bool | `false` | Open interactive TUI (arrow keys to navigate, enter to view details, c to copy id) |
 
 ## vigolium module
@@ -1909,9 +1910,14 @@ Block until a scan finishes, then print its summary and exit with its outcome
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--events` | - | string | - | Stream progress as NDJSON on stdout (value: ndjson): phase.progress lines, then scan.finished |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — evaluated on the finished scan (exit 4); --soft-fail overrides. |
 | `--fail-on-partial` | - | bool | `false` | Exit 5 (error.code partial) when the scan completed with partial coverage |
+| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
+| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
+| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--poll` | - | duration | `2s` | How often to re-read the scan's status |
 | `--stateless` | `-S` | bool | `false` | Read from --db (a standalone .sqlite) with project scoping off |
 | `--timeout` | - | duration | `30m0s` | Give up after this long (exit 1, error.code wait_timeout); 0 waits indefinitely |

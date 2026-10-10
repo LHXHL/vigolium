@@ -16,6 +16,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/scanevents"
+	"github.com/vigolium/vigolium/pkg/scanplan"
 	"github.com/vigolium/vigolium/pkg/types"
 )
 
@@ -38,6 +39,9 @@ import (
 //     finding_hash as identity);
 //   - AddRunner folds in a Runner pass, read from the scan row and its findings
 //     while the database (a -S temp store included) is still open;
+//   - AddStored folds in a finished scan read back by its row alone (what
+//     `scan wait` prints), and AddStatusOnly one known only from its
+//     status.json heartbeat file;
 //   - Emit writes the document once per invocation and latches, so the root's
 //     error envelope never follows it. A failed scan still gets its document,
 //     with status "failed" and errors[]; the exit code carries the failure.
@@ -139,6 +143,13 @@ type scanDocScan struct {
 	startedAt    time.Time
 	errors       []scanDocError
 	targets      []scanDocTarget
+	// plan is the resolved plan stored on the row (scans.plan), nil when the
+	// row has none (a direct-path scan, an older binary).
+	plan *scanplan.Plan
+	// finishedAt and durationMS are the row's own, used when the document
+	// describes a stored scan rather than this invocation's run.
+	finishedAt time.Time
+	durationMS int64
 }
 
 // scanDocBuilder accumulates one invocation's scan document. Not safe for
@@ -153,6 +164,9 @@ type scanDocBuilder struct {
 	view    agentViewOptions
 	limit   int
 	emitted bool
+	// fromRows: the document describes stored scans (AddStored/AddStatusOnly),
+	// so its times are the scans' own, not this invocation's.
+	fromRows bool
 }
 
 // newScanDocBuilder starts the document for command (its path without the root).
@@ -223,6 +237,9 @@ func (b *scanDocBuilder) fillFromStore(ctx context.Context, repo *database.Repos
 	s.phases = view.PhaseOutcomes
 	s.reasons = unionPhaseReasons(view.PhaseOutcomes)
 	s.startedAt = view.StartedAt
+	s.finishedAt = row.FinishedAt
+	s.durationMS = row.DurationMs
+	s.plan = storedScanPlan(row)
 	return row
 }
 
@@ -337,6 +354,108 @@ func (b *scanDocBuilder) AddRunner(in runnerDocInput) {
 			s.targets[0].DurationMS = &d
 		}
 	}
+}
+
+// AddStored folds in a scan that has already ended, read back from the store by
+// its row alone: what `scan wait` prints once the scan it polled is terminal.
+// The document is the one the scan's own `scan -j` printed, rebuilt by the
+// same reads (fillFromStore), so a driver that waited parses the same shape as
+// one that ran the scan. effective is the scan status view's effective_status
+// (completed, failed or cancelled); dbPath names the store for the follow-up.
+func (b *scanDocBuilder) AddStored(ctx context.Context, repo *database.Repository, row *database.Scan, effective, dbPath string) {
+	if b == nil || repo == nil || row == nil {
+		return
+	}
+	b.fromRows = true
+	s := b.scanFor(row.UUID)
+	// Scoped by the row's own project: the findings of the scan live there,
+	// and a -S read of a standalone file keeps its row ids resolvable.
+	if got := b.fillFromStore(ctx, repo, s, row.ProjectUUID); got != nil {
+		row = got
+	}
+	if s.projectUUID == "" {
+		s.projectUUID = row.ProjectUUID
+	}
+	s.persisted = true
+	s.dbPath = dbPath
+	s.status = storedScanDocStatus(effective, s.completeness)
+	if s.completeness == "" && s.status != scanevents.StatusCompleted {
+		s.completeness = database.CompletenessPartial
+	}
+	if row.ErrorMessage != "" && s.status != scanevents.StatusCompleted && s.status != scanevents.StatusCurtailed {
+		s.errors = append(s.errors, scanDocError{Code: apicontract.CodeFailed, Message: row.ErrorMessage})
+	}
+	s.modules = runnerDocModules(s.phases)
+
+	var tally *database.TargetTally
+	for _, p := range s.phases {
+		if p.Phase == string(runner.PhasePreflight) && p.Targets != nil {
+			tally = p.Targets
+		}
+	}
+	s.targets = runnerDocTargets(splitStoredTargets(row.Target), tally, s.scanUUID, "")
+	if len(s.targets) == 1 {
+		n := s.total
+		s.targets[0].Findings = &n
+		if row.DurationMs > 0 {
+			d := row.DurationMs
+			s.targets[0].DurationMS = &d
+		}
+	}
+}
+
+// AddStatusOnly folds in a finished scan known only from its status.json
+// heartbeat file: a -S or --db-isolate scan whose row is not in the store being
+// read. The file carries counts, not findings, so items stay empty (total and
+// counts_by_severity are exact; items_truncated says the rest is elsewhere) and
+// the document is not "persisted" anywhere a follow-up could name.
+func (b *scanDocBuilder) AddStatusOnly(v *scanStatusView) {
+	if b == nil || v == nil {
+		return
+	}
+	b.fromRows = true
+	s := b.scanFor(v.ScanUUID)
+	s.projectUUID = v.ProjectUUID
+	s.completeness = v.Completeness
+	s.stopReason = v.StopReason
+	s.status = storedScanDocStatus(v.EffectiveStatus, s.completeness)
+	if s.completeness == "" && s.status != scanevents.StatusCompleted {
+		s.completeness = database.CompletenessPartial
+	}
+	s.total = int64(v.Findings)
+	s.counts = map[string]int{}
+	for sev, n := range v.FindingsBySeverity {
+		s.counts[sev] = n
+	}
+	s.plan = v.Plan
+	s.startedAt, s.finishedAt, s.durationMS = v.startedAt, v.finishedAt, v.DurationMS
+	if v.ErrorMessage != "" && s.status == scanevents.StatusFailed {
+		s.errors = append(s.errors, scanDocError{Code: apicontract.CodeFailed, Message: v.ErrorMessage})
+	}
+}
+
+// storedScanDocStatus maps a finished scan's effective status (the `scan
+// status` vocabulary) to the scan document's (the scan.finished one).
+func storedScanDocStatus(effective, completeness string) string {
+	switch effective {
+	case effStatusFailed:
+		return scanevents.StatusFailed
+	case effStatusCancelled:
+		return scanevents.StatusInterrupted
+	}
+	return scanDocStatus(false, false, completeness)
+}
+
+// splitStoredTargets undoes the runner's ", " join of the CLI targets on
+// scans.target.
+func splitStoredTargets(target string) []string {
+	var out []string
+	for _, t := range strings.Split(target, ", ") {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // runnerDocModules reads modules{} off the dynamic-assessment phase, which
@@ -772,6 +891,38 @@ func (b *scanDocBuilder) envelope() *agentEnvelope {
 		reasons = []string{}
 	}
 	now := time.Now()
+	finishedAt, durationMS := now, now.Sub(b.start).Milliseconds()
+	if b.fromRows {
+		// A stored scan's own times, not this invocation's: `scan wait` began
+		// long after the scan did and ends after it.
+		finishedAt, durationMS = time.Time{}, 0
+		var earliest time.Time
+		for _, s := range b.scans {
+			if !s.startedAt.IsZero() && (earliest.IsZero() || s.startedAt.Before(earliest)) {
+				earliest = s.startedAt
+			}
+			if s.finishedAt.After(finishedAt) {
+				finishedAt = s.finishedAt
+			}
+			durationMS = max(durationMS, s.durationMS)
+		}
+		if !earliest.IsZero() {
+			startedAt = earliest
+		}
+		if finishedAt.IsZero() {
+			finishedAt = now
+		}
+		if durationMS == 0 && finishedAt.After(startedAt) {
+			durationMS = finishedAt.Sub(startedAt).Milliseconds()
+		}
+	}
+	// The plan is the scan's: embedded verbatim when the document describes
+	// one scan whose row stored one, null otherwise (a direct-path scan, an
+	// older binary, a document spanning several scans).
+	var plan *scanplan.Plan
+	if len(b.scans) == 1 {
+		plan = b.scans[0].plan
+	}
 	env.With("scan_uuids", uuids).
 		With("persisted", persisted && !stateless).
 		With("stateless", stateless).
@@ -787,9 +938,10 @@ func (b *scanDocBuilder) envelope() *agentEnvelope {
 		With("observations", observations).
 		With("errors", errs).
 		With("items_truncated", total > int64(len(items))).
-		With("duration_ms", now.Sub(b.start).Milliseconds()).
+		With("plan", plan).
+		With("duration_ms", durationMS).
 		With("started_at", agentTimestamp(startedAt)).
-		With("finished_at", agentTimestamp(now))
+		With("finished_at", agentTimestamp(finishedAt))
 	if stopReason != "" {
 		env.With("stop_reason", stopReason)
 	}

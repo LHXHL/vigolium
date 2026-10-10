@@ -4,6 +4,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/contract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/oast"
+	"github.com/vigolium/vigolium/pkg/scanplan"
 )
 
 // schema_registry.go declares the -j document shapes `vigolium schema`
@@ -178,9 +179,12 @@ type scanDocExtras struct {
 	Observations      int64                   `json:"observations"`
 	Errors            []scanDocError          `json:"errors"`
 	ItemsTruncated    bool                    `json:"items_truncated"`
-	DurationMS        int64                   `json:"duration_ms"`
-	StartedAt         string                  `json:"started_at"`
-	FinishedAt        string                  `json:"finished_at"`
+	// Plan is the scan's stored plan (scans.plan, the `schema plan` document),
+	// verbatim; null when the row has none or the document spans several scans.
+	Plan       *scanplan.Plan `json:"plan"`
+	DurationMS int64          `json:"duration_ms"`
+	StartedAt  string         `json:"started_at"`
+	FinishedAt string         `json:"finished_at"`
 }
 
 type scanDiffExtras struct {
@@ -261,12 +265,12 @@ func init() {
 		Extras: endpointsExtras{}, Description: "Endpoints (origin + path template) aggregated from stored traffic."})
 	registerCommandSchema(contract.Command{Name: "params", Item: database.ParamView{},
 		Extras: paramsExtras{}, Description: "Parameters by endpoint and location, aggregated from stored traffic."})
-	registerCommandSchema(contract.Command{Name: "log ls", Item: logRowView{},
-		Description: "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at)."})
+	registerCommandSchema(contract.Command{Name: "log ls", Item: logRowView{}, Extras: logLsExtras{},
+		Description: "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at); --reap adds reaped and status_files_removed."})
 	registerCommandSchema(contract.Command{Name: "scan status", Item: scanStatusView{}, ItemsKind: contract.ItemsObject,
-		Description: "One scan's live status: phase, progress, liveness and ETA."})
-	registerCommandSchema(contract.Command{Name: "scan wait", Item: scanStatusView{}, ItemsKind: contract.ItemsObject,
-		Description: "The scan's final status view, printed once the scan ends."})
+		Description: "One scan's live status: phase, progress, liveness, ETA and the stored plan."})
+	registerCommandSchema(contract.Command{Name: "scan wait", Item: findingViewSchema{}, Extras: scanDocExtras{},
+		Description: "The finished scan's scan document (the one scan -j prints, rebuilt from the stored row), printed once the scan ends."})
 	registerCommandSchema(contract.Command{Name: "scan diff", Item: scanDiffItemSchema{}, Extras: scanDiffExtras{},
 		Description: "Findings classified new / unchanged / fixed / not_reobserved between two scans."})
 	for _, name := range []string{"scan", "run", "scan-url", "scan-request"} {

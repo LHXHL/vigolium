@@ -187,6 +187,7 @@ func TestOutcomeCodeValuesAreStable(t *testing.T) {
 		"auth_lost":                  ReasonAuthLost,
 		"phase_error":                ReasonPhaseError,
 		"extensions_all_failed":      ReasonExtensionsAllFailed,
+		"abandoned":                  ReasonAbandoned,
 		"no_targets_in_scope":        ReasonNoTargetsInScope,
 		"no_targets_reachable":       ReasonNoTargetsReachable,
 		"host_request_budget":        LimitHostRequestBudget,

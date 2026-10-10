@@ -448,24 +448,34 @@ vigolium scan wait "$ID" --timeout 45m -j --fail-on high   # block until it ends
 - `scan status -j` → `items[0]`: `effective_status`
   (`running|abandoned|completed|failed|cancelled`), `phase`, `phases_done`,
   `requests_sent`, `findings_by_severity`, `progress {done,total,unit}` (null
-  without a count), `eta {estimate_ms, upper_bound_ms, basis}`, and
-  `liveness {last_write_at, stale, sources, process_gone}`.
+  without a count), `eta {estimate_ms, upper_bound_ms, basis}`,
+  `liveness {last_write_at, stale, sources, process_gone}`, and `plan` (the
+  scan's stored plan, verbatim; null when the row has none).
 - **Act on `effective_status`, not `status`.** `abandoned` = the row still says
   `running` but nothing has written for 2 minutes, or its PID on this host is
   gone. The process died; do not wait on it.
 - **ETA is null when there is no basis** — never read null as "almost done".
-  `upper_bound_ms` is the remaining `--scanning-max-duration`; `estimate_ms`
-  exists only in the last phase with a known total.
+  `upper_bound_ms` is the tighter of the remaining `--scanning-max-duration`
+  and the stored plan's ceilings for the phases left; `estimate_ms` is the
+  current phase's rate (needs a known total) plus the later phases at 0.6 of
+  their ceilings. `basis` names the inputs (`phase_rate`, `plan_ceilings`,
+  `scan_budget`).
 - `scan wait` exits `0` completed, `1` failed/cancelled (`failed`),
   `scan_abandoned` or `wait_timeout` (default `--timeout 30m`), `4` on
-  `--fail-on`, `5` on `--fail-on-partial` with a partial scan. On success it
-  prints the final `scan status` item; progress goes to stderr (or, with
-  `--events ndjson`, as `phase.progress` lines on stdout).
+  `--fail-on`, `5` on `--fail-on-partial` with a partial scan. When the scan
+  ends, `-j` prints the **scan document** — the same envelope `scan -j` prints
+  (`kind: "scan"`, findings as `items`, `status`, `completeness`,
+  `phase_outcomes`, `plan`), rebuilt from the row — so parse it exactly as you
+  would a scan you ran. Progress goes to stderr (or, with `--events ndjson`, as
+  `phase.progress` lines on stdout).
 - Works for `-S` and `--db-isolate` scans too: the runner's heartbeat file
   (`<sessions_dir>/<uuid>/status.json`) answers when the row is not in the
   store yet.
 - `log ls -j` rows carry the same verdict: `effective_status`, `stale`,
-  `last_write_at`, `liveness_sources`. Use them to find dead `running` rows.
+  `last_write_at`, `liveness_sources`. Use them to find dead `running` rows;
+  `vigolium log ls --reap` finalizes them (`status: failed`,
+  `stop_reason: "abandoned"`; `-j` lists them in `reaped`) and prunes
+  `status.json` files older than `scan_logs.status_retention_days` (default 30).
 
 ## Step 3 — Read the results
 

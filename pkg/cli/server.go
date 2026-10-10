@@ -442,6 +442,10 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 		defer func() { _ = db.Close() }()
 	}
 
+	// Prune native-scan status.json heartbeat files past their retention
+	// (scanning_strategy.scan_logs.status_retention_days), off the start path.
+	pruneSessionStatusInBackground(settings)
+
 	// Load file-based users for role-based access control.
 	// Bootstrap from embedded default template on first run.
 	var userStore *server.UserStore
