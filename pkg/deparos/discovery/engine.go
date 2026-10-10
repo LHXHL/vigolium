@@ -1526,10 +1526,11 @@ func (e *Engine) assetGraph() *JSAssetGraph {
 	e.jsAssetGraphOnce.Do(func() {
 		if e.jsAssetGraph == nil {
 			e.jsAssetGraph = NewJSAssetGraph(JSAssetGraphConfig{
-				MaxDepth:           e.config.JSTangle.MaxAssetDepth,
-				MaxAssetsPerParent: e.config.JSTangle.MaxAssetsPerParent,
-				MaxAssetsPerHost:   e.config.JSTangle.MaxAssetsPerHost,
-				MaxAssetsTotal:     e.config.JSTangle.MaxAssetsTotal,
+				MaxDepth:            e.config.JSTangle.MaxAssetDepth,
+				MaxAssetsPerParent:  e.config.JSTangle.MaxAssetsPerParent,
+				MaxChunksPerRuntime: e.config.JSTangle.MaxChunksPerRuntime,
+				MaxAssetsPerHost:    e.config.JSTangle.MaxAssetsPerHost,
+				MaxAssetsTotal:      e.config.JSTangle.MaxAssetsTotal,
 			})
 		}
 	})

@@ -42,12 +42,14 @@ type corpusFact struct {
 	Confidence string   `json:"confidence,omitempty"`
 	AssetType  string   `json:"assetType,omitempty"`
 	Loader     string   `json:"loader,omitempty"`
-	Auth       string   `json:"auth,omitempty"`
-	Reason     string   `json:"reason,omitempty"`
-	Key        string   `json:"key,omitempty"`
-	Suppressed []string `json:"suppressed,omitempty"`
-	Operation  string   `json:"operation,omitempty"`
-	Flow       string   `json:"flow,omitempty"`
+	// Alternatives are the concrete URLs of an enumerated template asset.
+	Alternatives []string `json:"alternatives,omitempty"`
+	Auth         string   `json:"auth,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	Key          string   `json:"key,omitempty"`
+	Suppressed   []string `json:"suppressed,omitempty"`
+	Operation    string   `json:"operation,omitempty"`
+	Flow         string   `json:"flow,omitempty"`
 }
 
 type corpusGolden struct {
@@ -106,7 +108,7 @@ func projectCorpusResult(result *ScanResult) corpusGolden {
 	for _, fact := range result.AssetFacts {
 		assets = append(assets, corpusFact{
 			Kind: fact.Kind, URL: fact.URL.Rendered, AssetType: fact.AssetType,
-			Loader: fact.Loader, Confidence: fact.Provenance.Confidence,
+			Loader: fact.Loader, Alternatives: fact.URL.Alternatives, Confidence: fact.Provenance.Confidence,
 		})
 	}
 	add("assetReference", assets)

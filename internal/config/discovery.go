@@ -83,6 +83,9 @@ type DiscoveryJSTangleConfig struct {
 	MaxAssetsPerParent int    `yaml:"max_assets_per_parent"`
 	MaxAssetsPerHost   int    `yaml:"max_assets_per_host"`
 	MaxAssetsTotal     int    `yaml:"max_assets_total"`
+	// MaxChunksPerRuntime bounds webpack/Vite chunks rendered from one bundle's
+	// loader runtime (replaces max_assets_per_parent for them). 0 = 512.
+	MaxChunksPerRuntime int `yaml:"max_chunks_per_runtime"`
 
 	// Persistence of JS-derived request templates that did not become
 	// discovery nodes; they are stored as source=jstangle http_records.
@@ -387,6 +390,7 @@ func DefaultDiscoveryConfig() *DiscoveryConfig {
 			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 0, HardInputMB: 16, MaxRequestsPerFile: 500,
 			MaxASTNodes:   500_000,
 			MaxAssetDepth: 4, MaxAssetsPerParent: 64, MaxAssetsPerHost: 512, MaxAssetsTotal: 2048,
+			MaxChunksPerRuntime:     512,
 			MaxPersistedJSTemplates: 2000,
 		},
 		Sitemap: DiscoverySitemapConfig{

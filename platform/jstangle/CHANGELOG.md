@@ -31,6 +31,16 @@ Protocol stays at version 2; every addition is optional and advertised in
 - `clientRoute.fullPath` and `clientRoute.parentId` for nested route tables.
 - `stats.truncated` / `scanCompleted.counts.truncated` and the `request_cap` /
   `fact_cap:<kind>` completion reason codes.
+- Runtime-loaded chunks (`loader.webpack-chunk`, `loader.vite-preload`
+  capabilities; `assetReference` schema 3): the webpack chunk-filename function
+  (`__webpack_require__.u`, minified `n.u=`, webpack 4 `jsonpScriptSrc`) and
+  `.miniCssF` are evaluated symbolically over the chunk-id set and emitted as
+  `assetType: "chunk"` with `loader: "webpack-chunk"` / `"webpack-css-chunk"`,
+  prefixed with a static `.p` publicPath; Vite `__vitePreload` dependencies
+  (including `__vite__mapDeps`) as `loader: "vite-preload"`; template imports
+  over a literal map as `loader: "template-import"` with the concrete URLs in
+  `url.alternatives`. Capped by `maxChunksPerRuntime` (2000 per runtime, outside
+  `maxAssetReferences`); the rest count in `truncated.assetReference`.
 
 ### Changed
 

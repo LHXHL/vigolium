@@ -1071,6 +1071,10 @@ discovery:
     max_assets_per_parent: 64
     max_assets_per_host: 512
     max_assets_total: 2048
+    # Lazy chunks a bundle's loader runtime names (webpack chunk maps, Vite
+    # preload deps, template imports over a literal map) use this per-bundle
+    # budget instead of max_assets_per_parent. 0 = 512.
+    max_chunks_per_runtime: 512
 
     # JS-derived requests the crawl did not confirm (404/soft-404 replays,
     # medium-confidence or withheld templates) are still stored as

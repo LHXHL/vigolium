@@ -483,6 +483,7 @@ discovery:
     max_assets_per_parent: 64
     max_assets_per_host: 512
     max_assets_total: 2048
+    max_chunks_per_runtime: 512  # webpack/Vite chunks one bundle's loader may add (replaces max_assets_per_parent for them)
     persist_unreplayed: true     # also store JS templates never sent (withheld/deduped) as source=jstangle rows
     persist_not_found_emit_statuses: [400, 405, 415, 422]  # not-found replays handed to later phases
     max_persisted_js_templates: 2000  # per-target cap (js_template_persist_cap limit)

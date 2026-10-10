@@ -131,6 +131,9 @@ type kitAsset struct {
 	Eager           bool   `json:"eager"`
 	Inline          bool   `json:"inline,omitempty"`
 	ParentSourceURL string `json:"parent_source_url,omitempty"`
+	// Alternatives are other renderings of URL; for loader "template-import"
+	// they are the concrete URLs enumerated from a literal map.
+	Alternatives []string `json:"alternatives,omitempty"`
 }
 
 type kitGraphQLVariable struct {
@@ -294,6 +297,7 @@ func kitBeautifyAssets(res *jstangle.ScanResult) []kitAsset {
 			URL:             fact.URL.Rendered,
 			Type:            fact.AssetType,
 			Loader:          fact.Loader,
+			Alternatives:    fact.URL.Alternatives,
 			Eager:           fact.Eager,
 			Inline:          fact.Inline,
 			ParentSourceURL: fact.ParentSourceURL,

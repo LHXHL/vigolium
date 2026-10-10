@@ -27,6 +27,8 @@ import (
 //   - Angular     ngsw.json                         (assetGroups + hashTable)
 //   - React (CRA) asset-manifest.json               (files + entrypoints)
 //   - Nuxt        /_nuxt/builds/latest.json → meta  (prerendered routes)
+//   - Vite        .vite/manifest.json (Vite 5+), manifest.json (Vite ≤4)
+//                                                   ({file, imports, css} per chunk)
 //   - Any PWA     Workbox precache list in the SW   ({url,revision} entries)
 //
 // Detected manifests/workers are fetched through the standard JSFetch pipeline;
@@ -168,6 +170,15 @@ func nuxtMarkers(ls string) bool {
 	return strings.Contains(ls, "__nuxt__") || strings.Contains(ls, "/_nuxt/")
 }
 
+// viteMarkers reports Vite build/dev markers in a lowercased body: the module
+// entry script Vite injects (`type="module" crossorigin`), its modulepreload
+// links, and the dev client.
+func viteMarkers(ls string) bool {
+	return strings.Contains(ls, `type="module" crossorigin`) ||
+		strings.Contains(ls, "modulepreload") ||
+		strings.Contains(ls, "/@vite/client")
+}
+
 // extraSPAMarkers reports the remaining modern-framework / PWA markers (Next,
 // Vue, SvelteKit, service-worker registration) in a lowercased body.
 func extraSPAMarkers(ls string) bool {
@@ -190,7 +201,7 @@ func extraSPAMarkers(ls string) bool {
 // server-rendered sites are not probed. The body is lowercased once.
 func looksLikeModernSPA(body []byte) bool {
 	ls := strings.ToLower(string(body))
-	if angularMarkers(ls) || reactMarkers(ls) || nuxtMarkers(ls) || extraSPAMarkers(ls) {
+	if angularMarkers(ls) || reactMarkers(ls) || nuxtMarkers(ls) || viteMarkers(ls) || extraSPAMarkers(ls) {
 		return true
 	}
 	return swRegisterRe.Match(body) || manifestLinkRe.Match(body)
@@ -211,7 +222,8 @@ func spaManifestCandidateURLs(base *url.URL, body []byte) []*url.URL {
 	ls := strings.ToLower(string(body))
 	isAngular := angularMarkers(ls)
 	isNuxt := nuxtMarkers(ls)
-	if !isAngular && !isNuxt && !reactMarkers(ls) && !extraSPAMarkers(ls) &&
+	isVite := viteMarkers(ls)
+	if !isAngular && !isNuxt && !isVite && !reactMarkers(ls) && !extraSPAMarkers(ls) &&
 		!swRegisterRe.Match(body) && !manifestLinkRe.Match(body) {
 		return nil
 	}
@@ -243,6 +255,12 @@ func spaManifestCandidateURLs(base *url.URL, body []byte) []*url.URL {
 	}
 	if isNuxt {
 		c.addPath("/_nuxt/builds/latest.json")
+	}
+	// Vite ≤4 writes manifest.json (already probed generically); Vite 5+
+	// moved it under .vite/. Either exists only with build.manifest, but when
+	// served it names every chunk, including lazy ones no HTML references.
+	if isVite {
+		c.addPath("/.vite/manifest.json")
 	}
 
 	return c.out
@@ -290,6 +308,10 @@ func harvestSPAManifest(jsURL *url.URL, body []byte, cb *Callbacks) {
 		queueAssets(cb, parseNgswManifestAssets(jsURL, body), "ngsw.json", jsURL)
 	case isCRAAssetManifest(jsURL):
 		queueAssets(cb, parseCRAAssetManifest(jsURL, body), "asset-manifest.json", jsURL)
+	case isViteManifestURL(jsURL):
+		// manifest.json is also the PWA web-manifest name; parseViteManifest
+		// returns nothing unless the body has the Vite chunk shape.
+		queueAssets(cb, parseViteManifest(jsURL, body), "vite manifest", jsURL)
 	case isNuxtLatest(jsURL):
 		queueAssets(cb, parseNuxtLatest(jsURL, body), "nuxt latest.json", jsURL)
 	case isNuxtMeta(jsURL):
@@ -321,6 +343,66 @@ func queueAssets(cb *Callbacks, assets []*url.URL, kind string, src *url.URL) {
 // asset-manifest.json.
 func isCRAAssetManifest(u *url.URL) bool {
 	return u != nil && strings.HasSuffix(strings.ToLower(u.Path), "asset-manifest.json")
+}
+
+// isViteManifestURL reports whether a URL may be a Vite build manifest:
+// .vite/manifest.json (Vite 5+) or a bare manifest.json (Vite ≤4).
+func isViteManifestURL(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	// Covers .vite/manifest.json too; asset-manifest.json (CRA) does not match.
+	return strings.HasSuffix(strings.ToLower(u.Path), "/manifest.json")
+}
+
+// viteManifestChunk is the part of a Vite manifest entry
+// ({file, src, isEntry, imports, dynamicImports, css, assets}) that names
+// fetchable files. imports/dynamicImports are keys of other entries and css
+// lists stylesheets, so walking every entry's file covers all chunks.
+type viteManifestChunk struct {
+	File   string   `json:"file"`
+	Assets []string `json:"assets"`
+}
+
+// parseViteManifest parses a Vite manifest and returns the same-origin
+// fetchable chunk URLs it lists. The shape decides, not the name: every
+// top-level value must be an object with a "file", so a PWA web manifest
+// ({"name": ..., "icons": [...]}) yields nothing. Files are relative to the
+// build root, which is the manifest's directory (Vite ≤4) or the parent of
+// its .vite/ directory (Vite 5+).
+func parseViteManifest(manifestURL *url.URL, body []byte) []*url.URL {
+	if manifestURL == nil || manifestURL.Host == "" || len(body) == 0 {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || len(raw) == 0 {
+		return nil
+	}
+	chunks := make([]viteManifestChunk, 0, len(raw))
+	for _, value := range raw {
+		var chunk viteManifestChunk
+		if err := json.Unmarshal(value, &chunk); err != nil || strings.TrimSpace(chunk.File) == "" {
+			return nil
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	root := *manifestURL
+	root.RawQuery, root.Fragment = "", ""
+	if lower := strings.ToLower(root.Path); strings.HasSuffix(lower, "/.vite/manifest.json") {
+		root.Path = root.Path[:len(root.Path)-len(".vite/manifest.json")]
+	} else {
+		root.Path = root.Path[:strings.LastIndex(root.Path, "/")+1]
+	}
+	root.RawPath = ""
+	c := newURLCollector(&root)
+	for _, chunk := range chunks {
+		c.addFetchable(chunk.File)
+		for _, asset := range chunk.Assets {
+			c.addFetchable(asset)
+		}
+	}
+	return c.out
 }
 
 // isNuxtLatest reports whether a URL points at the Nuxt app-manifest pointer

@@ -82,23 +82,54 @@ func (e *Engine) processAssetFacts(ctx context.Context, parentURL string, source
 			}
 			continue
 		}
-		resolved, added, reason := graph.Add(parentURL, fact.URL.Rendered, AssetKind(fact.AssetType))
-		if !added {
-			if reason != "duplicate-url" && reason != "" {
-				logger.Debug("JS asset graph rejected reference", zap.String("parent", parentURL), zap.String("asset", fact.URL.Rendered), zap.String("reason", reason))
+		for _, candidate := range assetFactURLs(fact) {
+			resolved, added, reason := graph.AddLoaded(parentURL, candidate, AssetKind(fact.AssetType), fact.Loader)
+			if !added {
+				if reason != "duplicate-url" && reason != "" {
+					logger.Debug("JS asset graph rejected reference", zap.String("parent", parentURL),
+						zap.String("asset", candidate), zap.String("loader", fact.Loader), zap.String("reason", reason))
+				}
+				continue
 			}
-			continue
-		}
-		if resolved == nil || e.spiderScope == nil || !e.spiderScope.IsInScope(resolved) {
-			continue
-		}
-		if fact.AssetType != string(AssetWASM) {
-			queued = append(queued, resolved)
+			if resolved == nil || e.spiderScope == nil || !e.spiderScope.IsInScope(resolved) {
+				continue
+			}
+			if assetFetchable(fact, resolved) {
+				queued = append(queued, resolved)
+			}
 		}
 	}
 	if len(queued) > 0 {
 		e.queueJSFetch(queued, ProvenanceReferenced)
 	}
+}
+
+// assetFactURLs lists the concrete URLs an asset fact names: its rendered URL,
+// or, for a template the helper enumerated from a literal map (loader
+// "template-import"), each alternative. A template with no enumerated
+// alternatives stays a hint and yields nothing.
+func assetFactURLs(fact jstangle.AssetReferenceFact) []string {
+	if !strings.Contains(fact.URL.Rendered, "${") {
+		return []string{fact.URL.Rendered}
+	}
+	urls := make([]string, 0, len(fact.URL.Alternatives))
+	for _, alternative := range fact.URL.Alternatives {
+		if alternative != "" && !strings.Contains(alternative, "${") {
+			urls = append(urls, alternative)
+		}
+	}
+	return urls
+}
+
+// assetFetchable reports whether an admitted asset is worth a JS fetch. WASM
+// and stylesheets (webpack CSS chunks, Vite CSS preload deps) stay graph nodes
+// only: the JS-fetch task drops non-JS bodies, so fetching them costs a
+// request for nothing.
+func assetFetchable(fact jstangle.AssetReferenceFact, resolved *url.URL) bool {
+	if fact.AssetType == string(AssetWASM) || fact.Loader == jstangle.LoaderWebpackCSSChunk {
+		return false
+	}
+	return !strings.HasSuffix(strings.ToLower(resolved.Path), ".css")
 }
 
 // processSourceMapCandidates queues the maps an asset points at: inline ones are

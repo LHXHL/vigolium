@@ -118,7 +118,8 @@ func (c *JSTangleConfig) Validate() error {
 		return err
 	}
 	if c.MaxRequestsPerFile < 1 || c.MaxASTNodes < 1_000 || c.MaxASTNodes > 5_000_000 ||
-		c.MaxAssetDepth < 1 || c.MaxAssetsPerParent < 1 || c.MaxAssetsPerHost < 1 || c.MaxAssetsTotal < 1 {
+		c.MaxAssetDepth < 1 || c.MaxAssetsPerParent < 1 || c.MaxAssetsPerHost < 1 || c.MaxAssetsTotal < 1 ||
+		c.MaxChunksPerRuntime < 0 {
 		return fmt.Errorf("request/asset limits must be positive and max_ast_nodes must be 1000-5000000")
 	}
 	return nil

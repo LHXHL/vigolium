@@ -78,6 +78,9 @@ type JSTangleConfig struct {
 	MaxAssetsPerParent int `json:"max_assets_per_parent" yaml:"max_assets_per_parent"`
 	MaxAssetsPerHost   int `json:"max_assets_per_host" yaml:"max_assets_per_host"`
 	MaxAssetsTotal     int `json:"max_assets_total" yaml:"max_assets_total"`
+	// MaxChunksPerRuntime bounds the loader-rendered chunks (webpack/Vite) one
+	// bundle may add to the asset graph, in place of MaxAssetsPerParent. 0 = 512.
+	MaxChunksPerRuntime int `json:"max_chunks_per_runtime" yaml:"max_chunks_per_runtime"`
 }
 
 // TargetConfig defines where and what to discover.

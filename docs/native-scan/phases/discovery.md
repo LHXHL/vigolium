@@ -140,6 +140,26 @@ normal scope/auth/rate policy; recovered sources are retained as immutable scan
 artifacts. WebSocket/SSE handshakes are opt-in and never pass through ordinary
 HTTP variant generation.
 
+Lazy chunks whose names a bundle computes at runtime are recovered too. The
+helper evaluates the webpack chunk-filename function (`__webpack_require__.u`,
+minified `n.u=`, the webpack 4 `jsonpScriptSrc`, and `.miniCssF` for CSS) over
+every chunk id it can see (hash-map keys and `.e(id)` call sites), using a pure
+evaluator that folds only string concatenation, object lookups and ternaries and
+gives up on any call. A static `.p` publicPath is prefixed; an automatic one
+leaves the URL relative to the bundle. Vite `__vitePreload` dependency lists
+(including Vite 5 `__vite__mapDeps`) and template imports over a literal map
+(``import(`./i18n/${lang}.${HASHES[lang]}.js`)``) become chunk assets as well;
+a template with a free variable stays a hint. These facts carry a `loader`
+(`webpack-chunk`, `webpack-css-chunk`, `vite-preload`, `template-import`). Each
+bundle may add up to `discovery.jstangle.max_chunks_per_runtime` (default 512)
+loader chunks to the graph instead of the `max_assets_per_parent` budget, still
+under `max_assets_per_host` and `max_assets_total`; the helper itself stops at
+2000 per runtime and reports the rest as `truncated.assetReference`. CSS chunks
+stay graph nodes and are not fetched. When an SPA page carries Vite markers,
+discovery also probes `/.vite/manifest.json` (Vite 5+); that file and a Vite 4
+`/manifest.json` (recognised by its `{file, imports, css}` entries, so a PWA web
+manifest is ignored) queue every chunk they list.
+
 Large input degrades visibly: transformed output is dropped first, then a
 bounded lexical endpoint/asset pass is used. Hard-limit input is rejected with a
 diagnostic. A summary reports worker jobs, cache hits, extracted fact confidence,

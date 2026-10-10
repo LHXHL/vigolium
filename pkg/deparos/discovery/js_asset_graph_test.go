@@ -1,6 +1,8 @@
 package discovery
 
 import (
+	"fmt"
+	"net/url"
 	"testing"
 
 	"github.com/vigolium/vigolium/pkg/deparos/jstangle"
@@ -84,5 +86,83 @@ func TestAnnotateSourceMappedResultCoversEveryTypedFactFamily(t *testing.T) {
 	annotateSourceMappedResult(result, source)
 	if len(result.RequestFacts[0].Provenance.ResolutionSteps) != 1 {
 		t.Fatal("source-map annotation was not idempotent")
+	}
+}
+
+// A chunk runtime names far more children than MaxAssetsPerParent allows; the
+// loader budget admits them without eating the general per-parent slots, and
+// per-host/total caps still bound the whole graph.
+func TestJSAssetGraphLoaderChunkBudget(t *testing.T) {
+	const parent = "https://example.com/static/js/main.js"
+	graph := NewJSAssetGraph(JSAssetGraphConfig{
+		MaxDepth: 4, MaxAssetsPerParent: 2, MaxChunksPerRuntime: 5, MaxAssetsPerHost: 100, MaxAssetsTotal: 100,
+	})
+	graph.AddRoot(parent, AssetScript)
+	for i := 0; i < 5; i++ {
+		if _, added, reason := graph.AddLoaded(parent, fmt.Sprintf("/static/js/%d.chunk.js", i), AssetChunk, jstangle.LoaderWebpackChunk); !added {
+			t.Fatalf("chunk %d rejected: %s", i, reason)
+		}
+	}
+	if _, added, reason := graph.AddLoaded(parent, "/static/js/99.chunk.js", AssetChunk, jstangle.LoaderWebpackChunk); added || reason != "chunk-limit" {
+		t.Fatalf("chunk budget: added=%v reason=%s", added, reason)
+	}
+	// Plain references keep their own MaxAssetsPerParent slots.
+	for _, child := range []string{"/a.js", "/b.js"} {
+		if _, added, reason := graph.Add(parent, child, AssetScript); !added {
+			t.Fatalf("plain child %s rejected: %s", child, reason)
+		}
+	}
+	if _, added, reason := graph.Add(parent, "/c.js", AssetScript); added || reason != "parent-limit" {
+		t.Fatalf("parent cap: added=%v reason=%s", added, reason)
+	}
+
+	// Host and total caps still bound loader children.
+	small := NewJSAssetGraph(JSAssetGraphConfig{MaxDepth: 4, MaxAssetsPerParent: 1, MaxChunksPerRuntime: 50, MaxAssetsPerHost: 3, MaxAssetsTotal: 100})
+	small.AddRoot(parent, AssetScript)
+	for i := 0; i < 2; i++ {
+		if _, added, _ := small.AddLoaded(parent, fmt.Sprintf("/%d.js", i), AssetChunk, jstangle.LoaderWebpackChunk); !added {
+			t.Fatalf("chunk %d rejected under host cap", i)
+		}
+	}
+	if _, added, reason := small.AddLoaded(parent, "/9.js", AssetChunk, jstangle.LoaderWebpackChunk); added || reason != "host-limit" {
+		t.Fatalf("host cap: added=%v reason=%s", added, reason)
+	}
+}
+
+func TestDefaultJSAssetGraphChunkBudget(t *testing.T) {
+	if got := NewJSAssetGraph(JSAssetGraphConfig{}).config.MaxChunksPerRuntime; got != 512 {
+		t.Fatalf("default MaxChunksPerRuntime = %d, want 512", got)
+	}
+}
+
+func TestAssetFactURLsAndFetchability(t *testing.T) {
+	static := jstangle.AssetReferenceFact{AssetType: string(AssetChunk), Loader: jstangle.LoaderWebpackChunk,
+		URL: jstangle.ValueTemplate{Rendered: "/static/js/17.abc.chunk.js", Static: true}}
+	if got := assetFactURLs(static); len(got) != 1 || got[0] != "/static/js/17.abc.chunk.js" {
+		t.Fatalf("static fact urls = %v", got)
+	}
+	enumerated := jstangle.AssetReferenceFact{AssetType: string(AssetDynamicImport), Loader: jstangle.LoaderTemplateImport,
+		URL: jstangle.ValueTemplate{Rendered: "./locales/${lang}.js", Alternatives: []string{"./locales/en.js", "./locales/${x}.js", "./locales/fr.js"}}}
+	if got := assetFactURLs(enumerated); len(got) != 2 || got[0] != "./locales/en.js" || got[1] != "./locales/fr.js" {
+		t.Fatalf("enumerated template urls = %v", got)
+	}
+	hint := jstangle.AssetReferenceFact{AssetType: string(AssetDynamicImport), URL: jstangle.ValueTemplate{Rendered: "./pages/${name}.js"}}
+	if got := assetFactURLs(hint); len(got) != 0 {
+		t.Fatalf("template hint should yield no urls, got %v", got)
+	}
+
+	js, _ := url.Parse("https://example.com/static/js/17.abc.chunk.js")
+	css, _ := url.Parse("https://example.com/assets/About-C2y.css")
+	if !assetFetchable(static, js) {
+		t.Fatal("webpack JS chunk should be fetched")
+	}
+	if assetFetchable(jstangle.AssetReferenceFact{AssetType: string(AssetChunk), Loader: jstangle.LoaderWebpackCSSChunk}, css) {
+		t.Fatal("webpack CSS chunk should stay a graph node")
+	}
+	if assetFetchable(jstangle.AssetReferenceFact{AssetType: string(AssetChunk), Loader: jstangle.LoaderVitePreload}, css) {
+		t.Fatal("Vite CSS preload dep should stay a graph node")
+	}
+	if assetFetchable(jstangle.AssetReferenceFact{AssetType: string(AssetWASM)}, js) {
+		t.Fatal("wasm should stay a graph node")
 	}
 }

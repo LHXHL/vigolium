@@ -167,6 +167,19 @@ const (
 	CapabilityRequestSuppressed = "facts.httpRequest.suppressed"
 	CapabilityRouteFullPath     = "facts.clientRoute.fullPath"
 	CapabilityTruncationCounts  = "completion.truncated"
+	// Helper release 2: runtime chunk loaders (AssetReferenceFact.Loader).
+	CapabilityWebpackChunkLoader = "loader.webpack-chunk"
+	CapabilityVitePreloadLoader  = "loader.vite-preload"
+)
+
+// AssetReferenceFact.Loader values. A fact with a loader is a chunk the bundle
+// loads by a computed name; discovery budgets those per parent with
+// MaxChunksPerRuntime rather than MaxAssetsPerParent.
+const (
+	LoaderWebpackChunk    = "webpack-chunk"
+	LoaderWebpackCSSChunk = "webpack-css-chunk"
+	LoaderVitePreload     = "vite-preload"
+	LoaderTemplateImport  = "template-import"
 )
 
 // ReasonRequestCap is the completion reason for a run whose endpoint facts
@@ -460,8 +473,9 @@ type AssetReferenceFact struct {
 	ParentSourceURL string        `json:"parentSourceUrl,omitempty"`
 	Eager           bool          `json:"eager"`
 	Inline          bool          `json:"inline,omitempty"`
-	// Loader names the runtime that loads the asset (for example
-	// "webpack-chunk"); empty for plain references.
+	// Loader names the runtime that loads the asset (Loader* constants:
+	// "webpack-chunk", "webpack-css-chunk", "vite-preload", "template-import");
+	// empty for plain references. Runtime chunks use AssetType "chunk".
 	Loader     string     `json:"loader,omitempty"`
 	Provenance Provenance `json:"provenance"`
 }

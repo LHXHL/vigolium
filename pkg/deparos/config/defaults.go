@@ -159,6 +159,7 @@ func NewDefaultConfig() *Config {
 			NormalInputMB: 1, MaxASTInputMB: 4, MaxUnpackInputMB: 16, HardInputMB: 16, MaxRequestsPerFile: 500,
 			MaxASTNodes:   500_000,
 			MaxAssetDepth: 4, MaxAssetsPerParent: 64, MaxAssetsPerHost: 512, MaxAssetsTotal: 2048,
+			MaxChunksPerRuntime: 512,
 		},
 		Sitemap: SitemapConfig{
 			Enabled: true, MaxURLs: DefaultSitemapMaxURLs, PerShape: DefaultSitemapPerShape, FollowIndex: true,

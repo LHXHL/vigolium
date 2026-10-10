@@ -58,7 +58,8 @@ export function getCapabilities(): CapabilitiesRecord {
       // 3: optional auth, callSite, suppressed; query split out of rendered URLs.
       httpRequest: 3,
       domFlow: 2,
-      assetReference: 2,
+      // 3: optional loader; assetType "chunk" for runtime-loaded chunks.
+      assetReference: 3,
       graphqlOperation: 2,
       websocket: 2,
       eventSource: 2,
@@ -91,6 +92,8 @@ export function getCapabilities(): CapabilitiesRecord {
       'facts.httpRequest.queryFromUrl',
       'facts.clientRoute.fullPath',
       'completion.truncated',
+      'loader.webpack-chunk',
+      'loader.vite-preload',
     ],
     profiles: [
       'legacy',

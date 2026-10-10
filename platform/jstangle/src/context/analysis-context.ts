@@ -67,6 +67,12 @@ export interface AnalysisLimits {
   maxBundleModules: number;
   /** Max pathLiteral facts; extra literals are counted in `truncated`. */
   maxPathLiterals: number;
+  /**
+   * Max chunk URLs rendered from one loader runtime (a webpack chunk-filename
+   * function, a Vite preload helper, a template import). Runtime chunks are
+   * bounded by this instead of maxAssetReferences; extras count in `truncated`.
+   */
+  maxChunksPerRuntime: number;
   deadlineMs: number;
 }
 
@@ -92,6 +98,7 @@ export const DEFAULT_LIMITS: AnalysisLimits = {
   // endpoint-bearing modules first so a truncated scan loses the least.
   maxBundleModules: 512,
   maxPathLiterals: 2_000,
+  maxChunksPerRuntime: 2_000,
   deadlineMs: 60_000,
 };
 
@@ -335,6 +342,19 @@ export class AnalysisContext {
     }
     this.assetDedup.add(key);
     this.assetReferences.push(reference);
+  }
+
+  /**
+   * Add a runtime-loaded chunk. The caller has already applied
+   * maxChunksPerRuntime, so only the dedup applies here: a 300-chunk webpack
+   * runtime must not be cut by the general maxAssetReferences cap.
+   */
+  addChunkReference(reference: AssetReferenceFact): boolean {
+    const key = `${reference.assetType}\u0000${reference.url.rendered}`;
+    if (this.assetDedup.has(key)) return false;
+    this.assetDedup.add(key);
+    this.assetReferences.push(reference);
+    return true;
   }
 
   private addBoundedFact<T extends { id: string; kind: string }>(fact: T, target: T[], stage: string): void {

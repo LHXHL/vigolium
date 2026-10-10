@@ -1,0 +1,30 @@
+{
+  "status": "complete",
+  "counts": {
+    "assetReference": 2,
+    "pathLiteral": 1
+  },
+  "facts": [
+    {
+      "kind": "assetReference",
+      "url": "/app/static/js/4.77ab12cd.chunk.js",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "webpack-chunk"
+    },
+    {
+      "kind": "assetReference",
+      "url": "/app/static/js/admin.31d6cfe0.chunk.js",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "webpack-chunk"
+    },
+    {
+      "kind": "pathLiteral",
+      "url": "/app/",
+      "confidence": "low",
+      "reason": "assignment",
+      "key": "p"
+    }
+  ]
+}

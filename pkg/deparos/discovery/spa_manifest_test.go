@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -281,5 +282,80 @@ func TestHarvestSPAManifestDispatch(t *testing.T) {
 	)
 	if len(queued) != before {
 		t.Errorf("plain JS should not queue anything")
+	}
+}
+
+func TestParseViteManifest(t *testing.T) {
+	const body = `{
+		"index.html": {"file": "assets/index-4f1a.js", "src": "index.html", "isEntry": true,
+			"imports": ["_vendor-9c2d.js"], "dynamicImports": ["src/pages/Admin.vue"], "css": ["assets/index-77aa.css"]},
+		"_vendor-9c2d.js": {"file": "assets/vendor-9c2d.js"},
+		"src/pages/Admin.vue": {"file": "assets/Admin-1b2c.js", "src": "src/pages/Admin.vue", "isDynamicEntry": true,
+			"css": ["assets/Admin-3d4e.css"], "assets": ["assets/logo-5f6a.svg", "assets/config-7b8c.json"]}
+	}`
+
+	t.Run("vite 5 .vite/manifest.json resolves against the build root", func(t *testing.T) {
+		got := sortedURLStrings(parseViteManifest(mustParseURL(t, "https://app.example.com/app/.vite/manifest.json"), []byte(body)))
+		want := []string{
+			"https://app.example.com/app/assets/Admin-1b2c.js",
+			"https://app.example.com/app/assets/config-7b8c.json",
+			"https://app.example.com/app/assets/index-4f1a.js",
+			"https://app.example.com/app/assets/vendor-9c2d.js",
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("vite 4 manifest.json at the build root", func(t *testing.T) {
+		got := sortedURLStrings(parseViteManifest(mustParseURL(t, "https://app.example.com/manifest.json"), []byte(body)))
+		if !contains(got, "https://app.example.com/assets/Admin-1b2c.js") || len(got) != 4 {
+			t.Fatalf("got %v", got)
+		}
+	})
+
+	t.Run("web app manifest and garbage are not vite manifests", func(t *testing.T) {
+		base := mustParseURL(t, "https://app.example.com/manifest.json")
+		for _, notVite := range []string{
+			`{"name":"App","short_name":"App","start_url":"/","icons":[{"src":"/icon.png"}]}`,
+			`{"a":{"file":"assets/a.js"},"b":{"src":"no-file"}}`,
+			`{}`, `[]`, `garbage`,
+		} {
+			if got := parseViteManifest(base, []byte(notVite)); got != nil {
+				t.Errorf("%s: got %v", notVite, sortedURLStrings(got))
+			}
+		}
+	})
+}
+
+func TestViteManifestDiscovery(t *testing.T) {
+	origin := "https://app.example.com"
+	page := `<html><head><script type="module" crossorigin src="/assets/index-4f1a.js"></script>` +
+		`<link rel="modulepreload" crossorigin href="/assets/vendor-9c2d.js"></head><body><div id="app"></div></body></html>`
+	if !looksLikeModernSPA([]byte(page)) {
+		t.Fatal("vite page should look like a modern SPA")
+	}
+	got := sortedURLStrings(spaManifestCandidateURLs(mustParseURL(t, origin+"/"), []byte(page)))
+	for _, want := range []string{origin + "/.vite/manifest.json", origin + "/manifest.json"} {
+		if !contains(got, want) {
+			t.Errorf("missing %q in %v", want, got)
+		}
+	}
+	react := `<div id="root"></div><script src="/static/js/main.abc.js"></script>`
+	if contains(sortedURLStrings(spaManifestCandidateURLs(mustParseURL(t, origin+"/"), []byte(react))), origin+"/.vite/manifest.json") {
+		t.Error("non-vite page should not probe .vite/manifest.json")
+	}
+
+	var queued []*url.URL
+	cb := &Callbacks{QueueJSFetch: func(urls []*url.URL) { queued = append(queued, urls...) }}
+	harvestSPAManifest(mustParseURL(t, origin+"/.vite/manifest.json"),
+		[]byte(`{"src/main.ts":{"file":"assets/main-1a.js","isEntry":true}}`), cb)
+	if !contains(sortedURLStrings(queued), origin+"/assets/main-1a.js") {
+		t.Errorf("vite manifest dispatch did not queue chunk: %v", sortedURLStrings(queued))
+	}
+	before := len(queued)
+	harvestSPAManifest(mustParseURL(t, origin+"/manifest.json"), []byte(`{"name":"App","icons":[]}`), cb)
+	if len(queued) != before {
+		t.Errorf("web app manifest should queue nothing, got %v", sortedURLStrings(queued[before:]))
 	}
 }

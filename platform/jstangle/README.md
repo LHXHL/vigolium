@@ -125,7 +125,18 @@ Current typed records are:
   `query[]`.
 - `domFlow`: binding/order-aware source-to-sink browser flow.
 - `assetReference`: dynamic/static chunks, workers, service workers, manifests,
-  source maps, Wasm, and config assets.
+  source maps, Wasm, and config assets. Runtime-loaded chunks carry a `loader`
+  and `assetType: "chunk"`: `webpack-chunk` / `webpack-css-chunk` are rendered
+  by symbolically evaluating the webpack chunk-filename function
+  (`__webpack_require__.u`, minified `n.u=`, webpack 4 `jsonpScriptSrc`,
+  `.miniCssF`) over its chunk-id set (hash-map keys, `.e(id)` call sites) and
+  prefixed with a static `.p`; `vite-preload` are `__vitePreload` dependencies
+  (including `__vite__mapDeps`). An ``import(`./x-${MAP[k]}.js`)`` over a
+  literal map keeps the template as `rendered`, lists the concrete URLs in
+  `alternatives` and has loader `template-import`. The evaluator folds only
+  concatenation, object lookups, logical operators and ternaries and bails on
+  any call; nothing is executed. Chunks are capped per runtime by
+  `maxChunksPerRuntime` (2000) instead of `maxAssetReferences`.
 - `graphqlOperation`: parsed operation/document, variables, persisted hash,
   endpoint, and transport.
 - `websocket` and `eventSource`: protocol metadata and message/event behavior.
@@ -159,7 +170,7 @@ budget, allowing forward-compatible diagnostics instead of silent loss.
   `reasonCode` to `request_cap` (endpoint facts dropped) or `fact_cap:<kind>`.
 - `--capabilities` lists additive record features (`facts.pathLiteral`,
   `facts.httpRequest.auth`, `facts.clientRoute.fullPath`,
-  `completion.truncated`, ...) so a host can gate on them without a protocol
+  `completion.truncated`, `loader.webpack-chunk`, `loader.vite-preload`, ...) so a host can gate on them without a protocol
   bump.
 - Artifact paths are verified to remain inside the job directory before Go
   reads them; all job directories are removed after success, failure, or cancel.

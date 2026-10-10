@@ -39,7 +39,9 @@ export type FeatureCapability =
   | 'facts.httpRequest.urlModel'
   | 'facts.httpRequest.queryFromUrl'
   | 'facts.clientRoute.fullPath'
-  | 'completion.truncated';
+  | 'completion.truncated'
+  | 'loader.webpack-chunk'
+  | 'loader.vite-preload';
 
 export type ScanStatus = 'complete' | 'partial' | 'failed' | 'cancelled';
 
@@ -235,7 +237,19 @@ export type AssetType =
   | 'source-map'
   | 'wasm'
   | 'manifest'
-  | 'config';
+  | 'config'
+  | 'chunk';
+
+/**
+ * Runtime that loads an asset the bundle never names literally:
+ * - `webpack-chunk` / `webpack-css-chunk`: rendered from the webpack runtime's
+ *   chunk-filename function (`__webpack_require__.u` / `.miniCssF`) over its
+ *   chunk-id set, prefixed with a static `.p` publicPath.
+ * - `vite-preload`: a dependency listed in a Vite `__vitePreload` call.
+ * - `template-import`: an `import(`...${x}...`)` whose alternatives were
+ *   enumerated from a literal map.
+ */
+export type AssetLoader = 'webpack-chunk' | 'webpack-css-chunk' | 'vite-preload' | 'template-import';
 
 export interface AssetReferenceFact {
   kind: 'assetReference';
@@ -245,6 +259,7 @@ export interface AssetReferenceFact {
   parentSourceUrl?: string;
   eager: boolean;
   inline?: boolean;
+  loader?: AssetLoader;
   provenance: Provenance;
 }
 

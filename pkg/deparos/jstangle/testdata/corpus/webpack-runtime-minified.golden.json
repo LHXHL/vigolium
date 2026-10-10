@@ -1,0 +1,36 @@
+{
+  "status": "complete",
+  "counts": {
+    "assetReference": 4
+  },
+  "facts": [
+    {
+      "kind": "assetReference",
+      "url": "../../static/css/42.9f8e7d6c.chunk.css",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "webpack-css-chunk"
+    },
+    {
+      "kind": "assetReference",
+      "url": "../../static/js/311.aa11bb22.chunk.js",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "webpack-chunk"
+    },
+    {
+      "kind": "assetReference",
+      "url": "../../static/js/about.5c2e4a1f.chunk.js",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "webpack-chunk"
+    },
+    {
+      "kind": "assetReference",
+      "url": "../../static/js/admin.0b9d7e3c.chunk.js",
+      "confidence": "high",
+      "assetType": "chunk",
+      "loader": "webpack-chunk"
+    }
+  ]
+}

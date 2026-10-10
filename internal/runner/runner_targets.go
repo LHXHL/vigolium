@@ -661,6 +661,7 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 			MaxASTNodes:        dc.JSTangle.MaxASTNodes,
 			MaxAssetDepth:      dc.JSTangle.MaxAssetDepth, MaxAssetsPerParent: dc.JSTangle.MaxAssetsPerParent,
 			MaxAssetsPerHost: dc.JSTangle.MaxAssetsPerHost, MaxAssetsTotal: dc.JSTangle.MaxAssetsTotal,
+			MaxChunksPerRuntime: dc.JSTangle.MaxChunksPerRuntime,
 		}
 		cfg.JSTemplatePersist = source.JSTemplatePersistConfig{
 			SkipUnreplayed: !boolPtrOr(dc.JSTangle.PersistUnreplayed, true),
