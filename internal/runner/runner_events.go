@@ -186,6 +186,17 @@ func (t *phaseTracker) sentSoFar() int64 {
 	if t.requester != nil {
 		total = t.requester.RequestsSent() - t.baseSent
 	}
+	return total + t.extraSentSoFar()
+}
+
+// extraSentSoFar sums only the counters registered with addCounter — the
+// requests this phase sent outside the shared requester. The liveness
+// heartbeat adds it to the requester's scan-wide count. Nil-safe.
+func (t *phaseTracker) extraSentSoFar() int64 {
+	if t == nil {
+		return 0
+	}
+	var total int64
 	t.mu.Lock()
 	for _, c := range t.counters {
 		total += c.read() - c.base
@@ -322,11 +333,28 @@ func (t *phaseTracker) trackTargets(total int) *targetProgress {
 // earlier reading means "no bound known yet" and is omitted rather than
 // reported as 0, which would read as "nothing to do".
 func (t *phaseTracker) fillProgress(ev *scanevents.Event) {
+	p := t.progressSnapshot()
+	if p == nil {
+		return
+	}
+	ev.Done = scanevents.Int64(p.Done)
+	ev.Total = p.Total
+	ev.Unit = p.Unit
+}
+
+// progressSnapshot reads the phase's progress source once, applying the
+// clamp fillProgress documents. Nil when the phase has no source (or the
+// tracker is nil); Total is nil until a bound is known. Shared by the event
+// stream and the liveness heartbeat so both report the same numbers.
+func (t *phaseTracker) progressSnapshot() *SessionProgress {
+	if t == nil {
+		return nil
+	}
 	t.mu.Lock()
 	f, unit := t.progress, t.progressUnit
 	t.mu.Unlock()
 	if f == nil {
-		return
+		return nil
 	}
 	done, total := f()
 
@@ -341,11 +369,11 @@ func (t *phaseTracker) fillProgress(ev *scanevents.Event) {
 	t.lastTotal = total
 	t.mu.Unlock()
 
-	ev.Done = scanevents.Int64(done)
+	p := &SessionProgress{Done: done, Unit: unit}
 	if known {
-		ev.Total = scanevents.Int64(total)
+		p.Total = scanevents.Int64(total)
 	}
-	ev.Unit = unit
+	return p
 }
 
 // recordFinding counts a finding against the running phase, so phase.finished
@@ -569,15 +597,21 @@ func (t *phaseTracker) outcome() database.PhaseOutcome {
 }
 
 // attachEventObserver routes every finding the output writer emits into the
-// machine event stream, and counts it against the phase that produced it. One
-// call, one seam: the runner has ~six OnResult callbacks and the writer is the
-// only thing all of them reach.
+// machine event stream, and counts it against the phase that produced it and
+// the scan's liveness heartbeat. One call, one seam: the runner has ~six
+// OnResult callbacks and the writer is the only thing all of them reach.
+//
+// Attached whether or not a stream is on (the heartbeat counts findings on
+// every run), and only once per writer: a Runner reused across agent rescans
+// calls this per run, and chaining a second wrapper would count and emit every
+// finding twice. The wrapper reads the current phase and heartbeat at call
+// time, so one attachment serves every run.
 func (r *Runner) attachEventObserver() {
-	if !scanevents.On() {
-		return
-	}
 	sw, ok := r.output.(*output.StandardWriter)
 	if !ok {
+		return
+	}
+	if !r.eventObserverAttached.CompareAndSwap(false, true) {
 		return
 	}
 	prior := sw.OnEvent
@@ -586,6 +620,9 @@ func (r *Runner) attachEventObserver() {
 			prior(ev)
 		}
 		r.currentPhase.Load().recordFinding()
+		if ev != nil {
+			r.liveness.Load().RecordFinding(ev.Info.Severity.String())
+		}
 		emitFindingEvent(ev)
 	}
 }

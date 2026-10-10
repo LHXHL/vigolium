@@ -57,6 +57,12 @@ type directScanSession struct {
 	// them rather than merged from per-input verdicts.
 	sharedCreated bool
 	agg           directScanAggregate
+
+	// heartbeats keep each row's liveness fresh while its input runs, one per
+	// scan UUID. Each ends itself once its row is finalized (StopWhenRowDone);
+	// close stops any left. Without them a long scan-url row carried no
+	// heartbeat and `scan wait` would call it abandoned after two minutes.
+	heartbeats map[string]*runner.Heartbeat
 }
 
 // directScanAggregate is the folded input of DirectScanCompletion across the
@@ -113,9 +119,37 @@ func (s *directScanSession) noteStore() { s.storeOpened = true }
 // close releases the store once every input is done. Safe to call when no
 // input opened one.
 func (s *directScanSession) close() {
-	if s != nil && s.storeOpened {
+	if s == nil {
+		return
+	}
+	for _, h := range s.heartbeats {
+		h.Stop(context.Background())
+	}
+	if s.storeOpened {
 		closeDatabaseOnExit()
 	}
+}
+
+// startHeartbeat starts scanUUID's liveness heartbeat once its row exists.
+// The direct path counts no requests outside the executor, so the beat
+// carries liveness and phase only and leaves total_requests alone.
+func (s *directScanSession) startHeartbeat(repo *database.Repository, projectUUID, scanUUID string) {
+	if repo == nil || scanUUID == "" || s.heartbeats[scanUUID] != nil {
+		return
+	}
+	if s.heartbeats == nil {
+		s.heartbeats = make(map[string]*runner.Heartbeat)
+	}
+	settings := settingsOrDefaults()
+	s.heartbeats[scanUUID] = runner.StartHeartbeat(runner.HeartbeatConfig{
+		Repo:            repo,
+		ScanUUID:        scanUUID,
+		SessionsDir:     settings.ScanningStrategy.ScanLogs.EffectiveSessionsDir(),
+		ProjectUUID:     projectUUID,
+		Phase:           string(runner.PhaseDynamicAssessment),
+		PhasesPlanned:   []string{string(runner.PhaseDynamicAssessment)},
+		StopWhenRowDone: true,
+	})
 }
 
 // begin creates the scan row an input reports into, after the store was
@@ -150,6 +184,7 @@ func (s *directScanSession) begin(ctx context.Context, repo *database.Repository
 			s.sharedCreated = true
 		}
 	}
+	s.startHeartbeat(repo, projectUUID, scanUUID)
 	logger.Info("scan", fmt.Sprintf("%s started: %s %s with %d active + %d passive modules", s.name, method, target, active, passive))
 }
 

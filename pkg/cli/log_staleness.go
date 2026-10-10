@@ -6,46 +6,10 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
-
-// logStaleAfter is how long a "running" scan may go without writing before its
-// row is treated as abandoned rather than live.
-//
-// Two minutes: a scan writes phase lines, the [status] ticker and finding lines
-// continuously, so a live run is never silent this long, while a run killed by a
-// deadline or SIGKILL is silent forever. Erring long is the safe direction — the
-// cost of guessing "still running" on a live scan is nothing (it tails, which is
-// what the operator wanted), and the cost of guessing it on a dead one is the
-// unbounded stall this exists to prevent.
-const logStaleAfter = 2 * time.Minute
-
-// logSourceIsStale reports whether a session whose row still says "running" has
-// in fact stopped writing. Consulted only to decide auto-follow; an explicit
-// --follow always wins, because an operator who typed it may be waiting for a
-// scan that is genuinely just slow to start.
-func logSourceIsStale(src *logSource) bool {
-	if src == nil {
-		return false
-	}
-	// The log file's mtime is the most direct liveness signal available: it is
-	// touched by the writing process itself, so it cannot outlive it the way a
-	// status column can.
-	if src.filePath != "" {
-		if info, err := os.Stat(src.filePath); err == nil {
-			return time.Since(info.ModTime()) > logStaleAfter
-		}
-	}
-	// No file (persist_logs off, DB fallback): fall back to the row's own
-	// updated_at, which the scan logger's batcher advances as it writes.
-	if !src.updatedAt.IsZero() {
-		return time.Since(src.updatedAt) > logStaleAfter
-	}
-	return false
-}
 
 // noticeMarkers are the bracketed tags the scan uses for operator notices,
 // referenced from the producer rather than re-typed here — recoloring or

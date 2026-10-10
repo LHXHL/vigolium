@@ -854,6 +854,59 @@ recognise is safe to ignore. Some types and fields (`scan.plan`, `scan.setup`,
 emits them; the skill's `references/agent-loop.md` lists each with the release
 expected to start emitting it.
 
+### Watching a scan from another process (`scan status`, `scan wait`)
+
+When the scan was launched elsewhere (in the background, by another tool, on a
+`--scan-uuid` you chose), poll it instead of holding its stream:
+
+```bash
+vigolium scan status <uuid> -j          # one item: where it is now
+vigolium scan wait <uuid> --timeout 45m -j --fail-on high
+```
+
+Every native scan keeps a **heartbeat**, whether or not `--events` or
+`persist_logs` is set: every 10s and on each phase change it rewrites
+`<sessions_dir>/<uuid>/status.json` atomically (phase, requests sent, findings,
+`progress {done,total,unit}`, PID, host) and stamps the scan row's
+`heartbeat_at`, `current_phase`, `pid`, `runner_host` and `total_requests`.
+The file is what answers for a `-S` or `--db-isolate` scan, whose row is not in
+the store you are reading until the run ends. `scan-url`/`scan-request` rows
+get the same heartbeat while their input runs.
+
+`scan status` item fields: `status` (stored), `effective_status`
+(`running|abandoned|completed|failed|cancelled`), `liveness {last_write_at,
+stale, sources, process_gone}`, `phase`, `phases_done`, `requests_sent`,
+`findings`, `findings_by_severity`, `progress` (null when the phase has no
+count), `eta {estimate_ms, upper_bound_ms, basis}`, `completeness`,
+`stop_reason`, `started_at`, `duration_ms`, `db_path`. **The ETA is never
+invented:** `upper_bound_ms` is the remaining `--scanning-max-duration` budget,
+`estimate_ms` extrapolates the current phase's rate only when it is the last
+planned phase and its total is known; otherwise each is `null` and `basis` says
+`unknown`.
+
+**Abandoned** means the row says `running` but nothing has written for 2
+minutes (heartbeat, `status.json`, `runtime.log`, the newest `scan_logs` line),
+or the scan ran on this host and its PID is gone — then immediately. The same
+verdict feeds `log ls -j` (`last_write_at`, `stale`, `effective_status`,
+`liveness_sources` per row; `status` stays the stored value) and `log <uuid>`'s
+auto-follow.
+
+`scan wait` polls through the read-only database pool (it never contends for
+the scan's write lock), prints progress lines on stderr, and on a terminal
+state prints the final `scan status` item and exits:
+
+| Exit | When |
+|---|---|
+| `0` | completed |
+| `1` | failed or cancelled (`failed`), abandoned (`scan_abandoned`), `--timeout` elapsed (`wait_timeout`, default 30m; `0` waits forever) |
+| `4` | `--fail-on <severity>` matched a finding of that scan |
+| `5` | `--fail-on-partial` and the scan completed `partial` (`partial`) |
+
+An unknown UUID is tolerated for 30s (the row may not exist yet), then fails
+`not_found`. `--events ndjson` streams `phase.progress` lines on stdout instead
+and ends with `scan.finished`, or with an `error` line whose `error_kind` is
+`wait_timeout` / `scan_abandoned`; it cannot be combined with `-j`.
+
 ## Discovering the interface
 
 ```bash

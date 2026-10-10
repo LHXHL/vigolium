@@ -49,6 +49,8 @@ var dbIntents = map[string]string{
 	// Scans and agent runs write findings, records and scan rows.
 	"scan":            "write",
 	"scan diff":       "read",
+	"scan status":     "read",
+	"scan wait":       "read", // polls during a scan: must never take the write lock
 	"run":             "write",
 	"scan-url":        "write",
 	"scan-request":    "write",

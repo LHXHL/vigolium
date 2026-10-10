@@ -92,6 +92,14 @@ type Runner struct {
 	// finalizer persists on the scan row and the terminal banner reads. Reset at
 	// the top of RunNativeScan; see scanOutcome.
 	scanOutcome scanOutcome
+
+	// liveness is the running scan's heartbeat (status.json and the scan row's
+	// heartbeat columns), nil outside RunNativeScan. Atomic for the same reason
+	// as currentPhase: the finding observer reads it from worker goroutines.
+	liveness atomic.Pointer[Heartbeat]
+	// eventObserverAttached guards attachEventObserver against wrapping the
+	// writer's OnEvent again on a reused Runner.
+	eventObserverAttached atomic.Bool
 }
 
 // Finalized reports whether RunNativeScan already wrote the scan's terminal

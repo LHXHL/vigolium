@@ -131,6 +131,16 @@ func (r *Runner) RunNativeScan() (err error) {
 	// scan-creation sites and only the runner knows the settings the matcher will
 	// actually be built from.
 	r.persistScopeOriginMode(ctx, infra.scanUUID)
+	// Liveness heartbeat, always on (status.json + the row's heartbeat
+	// columns). Finish is registered BEFORE the finalizer so it runs AFTER it
+	// (defers are LIFO): status.json only states a terminal status once the
+	// row does. The finalizer itself calls Stop first, which writes the final
+	// total_requests before the row is completed.
+	liveness := r.startLiveness(infra, plan)
+	defer func() {
+		liveness.Finish(r.terminalSessionStatus(err))
+		r.liveness.Store(nil)
+	}()
 	if r.repository != nil {
 		defer func() {
 			// Terminal status, most-truthful first: a returned error (including a
@@ -152,6 +162,7 @@ func (r *Runner) RunNativeScan() (err error) {
 			// runner the single finalization owner — the server no longer overwrites.
 			finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(r.ctx), 30*time.Second)
 			defer finalCancel()
+			liveness.Stop(finalCtx)
 			// WithOutcome, not CompleteScan: the runner is the only component that
 			// saw every phase, so it is the only one that can say whether the run
 			// actually covered its input. Everything else writes "unknown".
@@ -426,9 +437,12 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		tracker.setProgress(unit, tracker.executorProgress)
 		ctx = core.WithExecutorObserver(ctx, tracker.observeExecutor)
 	}
+	liveness := r.liveness.Load()
+	liveness.PhaseStarted(string(phase))
 	defer func() {
 		r.currentPhase.Store((*phaseTracker)(nil))
 		r.scanOutcome.append(tracker.finish(ctx, err))
+		liveness.PhaseEnded(string(phase), tracker.extraSentSoFar())
 	}()
 
 	switch phase {

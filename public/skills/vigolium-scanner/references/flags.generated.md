@@ -94,6 +94,8 @@ run `vigolium <command> -h`.
 - [vigolium replay](#vigolium-replay)
 - [vigolium run](#vigolium-run)
 - [vigolium scan](#vigolium-scan)
+- [vigolium scan status](#vigolium-scan-status)
+- [vigolium scan wait](#vigolium-scan-wait)
 - [vigolium scan-request](#vigolium-scan-request)
 - [vigolium scan-url](#vigolium-scan-url)
 - [vigolium scope](#vigolium-scope)
@@ -1693,6 +1695,32 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--timeout` | - | duration | `15s` | HTTP request timeout (e.g. 30s, 1m, 2h) |
 | `--tls-probe` | - | bool | `false` | Probe each HTTPS target's TLS: negotiated version/cipher plus the leaf certificate (subject, SANs, issuer, validity, fingerprints), reported inline in --json output and not stored. Read by the probe phase. |
 | `--upload-results` | - | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
+
+## vigolium scan status
+
+Usage: `vigolium scan status <scan-uuid>`
+
+Show a scan's live status: phase, progress, liveness and ETA
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--glob-db` | - | string | - | Read across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S |
+| `--stateless` | `-S` | bool | `false` | Read from --db (a .jsonl export or standalone .sqlite) with project scoping off |
+
+## vigolium scan wait
+
+Usage: `vigolium scan wait <scan-uuid>`
+
+Block until a scan finishes, then print its summary and exit with its outcome
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--events` | - | string | - | Stream progress as NDJSON on stdout (value: ndjson): phase.progress lines, then scan.finished |
+| `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical) — evaluated on the finished scan (exit 4); --soft-fail overrides. |
+| `--fail-on-partial` | - | bool | `false` | Exit 5 (error.code partial) when the scan completed with partial coverage |
+| `--poll` | - | duration | `2s` | How often to re-read the scan's status |
+| `--stateless` | `-S` | bool | `false` | Read from --db (a standalone .sqlite) with project scoping off |
+| `--timeout` | - | duration | `30m0s` | Give up after this long (exit 1, error.code wait_timeout); 0 waits indefinitely |
 
 ## vigolium scan-request
 
