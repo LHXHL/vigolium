@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/core/egress"
@@ -82,8 +83,8 @@ type directScanSession struct {
 	// (--scanning-max-duration ran out). Folded into the row by complete.
 	phaseReasons map[string][]string
 
-	// oast caches the OAST config the direct path runs with (oastConfig).
-	oast directOASTSettings
+	// cfg is the invocation's settings, loaded once (see directSettings).
+	cfg *directSettings
 
 	// heartbeats keep each row's liveness fresh while its input runs, one per
 	// scan UUID. Each ends itself once its row is finalized (StopWhenRowDone);
@@ -98,6 +99,38 @@ type directScanSession struct {
 	finished     []string
 	finishedOut  map[string]webhook.Outcome
 	finishedRepo *database.Repository
+}
+
+// directSettings is the settings one scan-url / scan-request invocation on the
+// direct path runs with: global → the resolved project's overlay, with
+// --oast-url and --scope-origin applied as runner.ApplyScanSettingOverrides
+// applies them for `vigolium scan`. Loaded once, on first use, and shared by
+// scope admission, OAST, the browser-probe stealth default,
+// allow_risky_payloads and the scan webhook.
+type directSettings struct {
+	loaded   bool
+	settings *config.Settings
+	err      error
+}
+
+func (d *directSettings) get() (*config.Settings, error) {
+	if !d.loaded {
+		d.loaded = true
+		d.settings, d.err = loadProjectSettings(globalConfig)
+		if d.err == nil {
+			runner.ApplyScanSettingOverrides(d.settings, &types.Options{OastURL: scanOpts.OastURL, ScopeOriginMode: globalScopeOrigin})
+		}
+	}
+	return d.settings, d.err
+}
+
+// loadSettings returns the session's settings (see directSettings). An error
+// means an explicit --config or a project overlay could not be read.
+func (s *directScanSession) loadSettings() (*config.Settings, error) {
+	if s.cfg == nil {
+		s.cfg = &directSettings{}
+	}
+	return s.cfg.get()
 }
 
 // directScanAggregate is the folded input of DirectScanCompletion across the
@@ -206,7 +239,7 @@ func (s *directScanSession) fireWebhooks() {
 	if len(s.finished) == 0 {
 		return
 	}
-	settings, err := loadProjectSettings(globalConfig)
+	settings, err := s.loadSettings()
 	if err != nil {
 		settings = settingsOrDefaults()
 	}

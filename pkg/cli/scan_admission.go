@@ -171,18 +171,16 @@ type directAdmission struct {
 // returns nil under --ignore-scope (the direct path then applies no scope, as
 // it always did). The matcher is built over all inputs, exactly as the runner
 // builds its own over Targets, so origin mode sees the same index.
-func admitDirectInputs(inputs []scanInput) (*directAdmission, error) {
+func admitDirectInputs(cfg *directSettings, inputs []scanInput) (*directAdmission, error) {
 	if scanIgnoreScope || len(inputs) == 0 {
 		return nil, nil
 	}
 	// Global → the resolved project's overlay: the scope a project narrowed
-	// with `scope set --project` is the one that admits these inputs.
-	settings, err := loadProjectSettings(globalConfig)
+	// with `scope set --project` is the one that admits these inputs
+	// (--scope-origin applied).
+	settings, err := cfg.get()
 	if err != nil {
 		return nil, err
-	}
-	if globalScopeOrigin != "" {
-		settings.Scope.CLIOriginMode = globalScopeOrigin
 	}
 	targets := make([]string, 0, len(inputs))
 	for _, in := range inputs {

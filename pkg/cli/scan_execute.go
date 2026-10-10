@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -29,15 +30,83 @@ import (
 // executeNativeScan runs one full native scan pass against the current
 // scanOpts. In stateless mode it allocates a fresh temporary SQLite database
 // and tears it down on return so callers can invoke it once per target.
-func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyName string) (err error) {
-	// Wall-clock anchor for the whole scan pass, surfaced in the completion
-	// summary. Captured before DB setup so it reflects total time, not just the
-	// scanning legs.
-	scanStart := time.Now()
+func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyName string) error {
+	// -j: the single scan document, read from this pass's scan row and
+	// findings. It writes on every exit that got as far as an open database:
+	// success, curtailment, interrupt and failure (status "failed" with
+	// errors[]), and latches, so the root does not append an error envelope
+	// after it.
+	var doc *scanDocBuilder
+	if globalJSON {
+		doc = newScanDocBuilder(scanCommandName(cmd))
+	}
+	return runNativeScanLifecycle(nativeScanPass{
+		opts:         scanOpts,
+		settings:     settings,
+		strategyName: strategyName,
+		// Wall-clock anchor for the whole scan pass, surfaced in the
+		// completion summary. Captured before DB setup so it reflects total
+		// time, not just the scanning legs.
+		scanStart: time.Now(),
+		dbIsolate: true,
+		console:   true,
+		doc:       doc,
+		ownsDoc:   true,
+		// Scope admission over the targets this run is about to seed, for the
+		// banner and scan.started (the runner recomputes it and owns the
+		// verdict). Assigned on every pass: executeNativeScan runs once per
+		// target under the per-host fan-outs, and a stale verdict must not
+		// leak into the next one.
+		admit: func() *types.TargetAdmission {
+			return scanTargetAdmission(settings, scanOpts, cmd != nil && cmd.Flags().Changed("input-mode"))
+		},
+		run: func(db *database.DB, repo *database.Repository, scanStart time.Time) error {
+			return runNativeScanInput(cmd, settings, db, repo, scanStart)
+		},
+	})
+}
+
+// nativeScanPass is one native-scan pass through runNativeScanLifecycle: what
+// differs between `vigolium scan` (executeNativeScan) and the lightweight
+// commands' Runner path (runRunnerScan).
+type nativeScanPass struct {
+	opts         *types.Options
+	settings     *config.Settings
+	strategyName string
+	scanStart    time.Time
+
+	// dbIsolate honours --db-isolate (scan into a private scratch database,
+	// merged into the real one afterwards).
+	dbIsolate bool
+	// console prints the scan-configuration banner and, under -S -o with the
+	// console format, captures the console session as the output file.
+	console bool
+	// doc is the -j scan document this pass folds itself into (nil: none).
+	// ownsDoc: the pass writes it, on every exit once a database is open;
+	// otherwise the caller writes it and the pass folds in only once it has a
+	// scan identity (an earlier failure is the caller's to report).
+	doc       *scanDocBuilder
+	ownsDoc   bool
+	docMethod string
+	// dbOpenError prefixes a failure to open the database ("" = the default).
+	dbOpenError string
+	// admit, when set, computes opts.TargetAdmission once the scan UUID is
+	// pinned; otherwise the caller set it.
+	admit func() *types.TargetAdmission
+	// run builds and runs the Runner over db, then the post-scan tail.
+	run func(db *database.DB, repo *database.Repository, scanStart time.Time) error
+}
+
+// runNativeScanLifecycle is the lifecycle every native-scan pass shares: the
+// -S temp store, the signal handler, the --events stream, --db-isolate, the
+// database, the scan webhook, the -j document, the pinned scan UUID and the
+// post-scan export tail, around p.run.
+func runNativeScanLifecycle(p nativeScanPass) (err error) {
+	opts, settings, scanStart := p.opts, p.settings, p.scanStart
 
 	// Stateless mode: create a temporary SQLite database for this run only.
 	var statelessDBPath string
-	if scanOpts.Stateless {
+	if opts.Stateless {
 		tmpFile, tmpErr := scratch.CreateTemp("stateless-*.sqlite")
 		if tmpErr != nil {
 			return fmt.Errorf("failed to create temporary database: %w", tmpErr)
@@ -78,11 +147,13 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	// many parallel scan processes can share one --db without contending on a
 	// single SQLite writer. Registered before the DB opens so the merge runs
 	// after db.Close() (defers are LIFO), once the scratch's writes are flushed.
-	finish, dErr := dbIsolateBegin(settings, scanOpts.Silent)
-	if dErr != nil {
-		return dErr
+	if p.dbIsolate {
+		finish, dErr := dbIsolateBegin(settings, opts.Silent)
+		if dErr != nil {
+			return dErr
+		}
+		defer func() { err = finish(err) }()
 	}
-	defer func() { err = finish(err) }()
 
 	if err := settings.Database.Validate(); err != nil {
 		return fmt.Errorf("invalid database configuration: %w", err)
@@ -90,7 +161,7 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 
 	db, err := database.NewDB(&settings.Database)
 	if err != nil {
-		return fmt.Errorf("failed to create database connection: %w", err)
+		return fmt.Errorf("%s: %w", cmp.Or(p.dbOpenError, "failed to create database connection"), err)
 	}
 	defer func() { _ = db.Close() }()
 
@@ -100,26 +171,27 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	// db.Close, the -S temp store's release and the --db-isolate merge: the row
 	// it reads is the authoritative copy at that moment. See
 	// fireNativeScanWebhook.
-	webhookArmed := false
+	armed := false
 	defer func() {
-		if webhookArmed {
-			fireNativeScanWebhook(settings, database.NewRepository(db), scanOpts, err, signals.Interrupted(), scanStart)
+		if armed {
+			fireNativeScanWebhook(settings, database.NewRepository(db), opts, err, signals.Interrupted(), scanStart)
 		}
 	}()
 
-	// -j: the single scan document, read from this pass's scan row and
-	// findings. Registered right after the database opened, so LIFO runs it
-	// after the runner closed and after every export defer (err then carries
-	// an export failure), while db — a -S temp store included — is still open.
-	// It writes on every exit that got this far: success, curtailment,
-	// interrupt and failure (status "failed" with errors[]), and latches, so
-	// the root does not append an error envelope after it.
-	if globalJSON {
-		doc := newScanDocBuilder(scanCommandName(cmd))
-		docDBPath := nativeScanDocDBPath(settings)
+	// -j: fold this pass into the scan document. Registered right after the
+	// database opened, so LIFO runs it after the runner closed and after every
+	// export defer (err then carries an export failure), while db — a -S temp
+	// store included — is still open.
+	if p.doc != nil {
+		docDBPath := nativeScanDocDBPath(opts, settings)
 		defer func() {
-			doc.AddRunner(runnerDocInput{db: db, opts: scanOpts, runErr: err, dbPath: docDBPath})
-			recordExportFailure(&err, doc.Emit())
+			if !p.ownsDoc && !armed {
+				return
+			}
+			p.doc.AddRunner(runnerDocInput{db: db, opts: opts, runErr: err, dbPath: docDBPath, method: p.docMethod})
+			if p.ownsDoc {
+				recordExportFailure(&err, p.doc.Emit())
+			}
 		}()
 	}
 
@@ -138,11 +210,11 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	// into the output file as a faithful transcript, instead of the minimal
 	// per-record DB export. Started before printScanSummary so the banner is
 	// included. Other --format values keep the post-scan DB export below.
-	transcriptActive := scanOpts.Stateless && scanOpts.Output != "" &&
-		!scanOpts.Silent && !globalJSON && !globalCIOutput &&
-		len(scanOpts.OutputFormats) == 1 && scanOpts.OutputFormats[0] == "console"
+	transcriptActive := p.console && opts.Stateless && opts.Output != "" &&
+		!opts.Silent && !globalJSON && !globalCIOutput &&
+		len(opts.OutputFormats) == 1 && opts.OutputFormats[0] == "console"
 	if transcriptActive {
-		transcriptPath := scanOpts.Output
+		transcriptPath := opts.Output
 		tc, tErr := startTranscriptCapture(transcriptPath)
 		if tErr != nil {
 			fmt.Fprintf(os.Stderr, "%s Failed to start transcript capture (%v); falling back to record export\n",
@@ -159,29 +231,29 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 
 	// Pin the scan UUID before the banner so the config summary can show it and
 	// the runner reuses the same identifier instead of minting its own.
-	scanOpts.ScanUUID = pinnedOrNewUUID(scanOpts.ScanUUID)
-	webhookArmed = true
+	opts.ScanUUID = pinnedOrNewUUID(opts.ScanUUID)
+	armed = true
 
-	// Scope admission over the targets this run is about to seed, for the
-	// banner and scan.started (the runner recomputes it and owns the verdict).
-	// Assigned on every pass: executeNativeScan runs once per target under the
-	// per-host fan-outs, and a stale verdict must not leak into the next one.
-	scanOpts.TargetAdmission = scanTargetAdmission(settings, scanOpts, cmd != nil && cmd.Flags().Changed("input-mode"))
+	if p.admit != nil {
+		opts.TargetAdmission = p.admit()
+	}
 
 	// Machine event stream (--events). Installed here, after the uuid is pinned
 	// and the database is open, so scan.started can name both. The totals are
 	// gathered as the OUTERMOST of the post-scan defers below — while the
 	// database is still open — and the line itself is written by the holder
 	// registered above, after the db-isolate merge.
-	prepareTerminalEvent, emitEvents, evErr := beginScanEventStream(db, scanOpts, settings, strategyName, scanStart)
+	prepareTerminalEvent, emitEvents, evErr := beginScanEventStream(db, opts, settings, p.strategyName, scanStart)
 	if evErr != nil {
 		return evErr
 	}
 	emitTerminalEvent = emitEvents
 	defer func() { prepareTerminalEvent(err) }()
-	// Print scan summary banner (after DB init so we can show HTTP record count)
-	printScanSummary(scanOpts, settings, strategyName, repo, "")
-	scanOpts.ScanConfigPrinted = true
+	if p.console {
+		// Print scan summary banner (after DB init so we can show HTTP record count)
+		printScanSummary(opts, settings, p.strategyName, repo, "")
+		opts.ScanConfigPrinted = true
+	}
 
 	// For stateless mode with --output: suppress StandardWriter's live file
 	// output and export the full database post-scan. This covers console
@@ -189,28 +261,35 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	// file even when the phase only ingests HTTP records (e.g. discovery) and
 	// emits no findings for StandardWriter to write.
 	var statelessOutputPath string
-	if scanOpts.Stateless && scanOpts.Output != "" {
-		statelessOutputPath = scanOpts.Output
-		savedOutput := scanOpts.Output
-		scanOpts.Output = "" // prevent StandardWriter from creating the output file
-		defer func() { scanOpts.Output = savedOutput }()
+	if opts.Stateless && opts.Output != "" {
+		statelessOutputPath = opts.Output
+		savedOutput := opts.Output
+		opts.Output = "" // prevent StandardWriter from creating the output file
+		defer func() { opts.Output = savedOutput }()
 	}
 	// Defer stateless export so all exit paths are covered automatically. When
 	// a transcript is being captured, skip the console export so it does not
 	// truncate and clobber the transcript file at the same path.
 	defer func() {
-		recordExportFailure(&err, finishStatelessExport(db, scanOpts, statelessOutputPath, transcriptActive))
+		recordExportFailure(&err, finishStatelessExport(db, opts, statelessOutputPath, transcriptActive))
 	}()
 	// Persisted (non-stateless) --format jsonl emits the same scan-scoped
 	// unified envelope post-scan instead of StandardWriter's live nuclei stream
 	// (suppressed via DeferredJSONLExport). No-ops for stateless and CI runs.
 	defer func() {
-		if skipDeferredJSONLExport(err, scanOpts.Stateless, statelessOutputPath) {
+		if skipDeferredJSONLExport(err, opts.Stateless, statelessOutputPath) {
 			return
 		}
-		recordExportFailure(&err, finishScanJSONLExport(db, scanOpts))
+		recordExportFailure(&err, finishScanJSONLExport(db, opts))
 	}()
 
+	return p.run(db, repo, scanStart)
+}
+
+// runNativeScanInput is `vigolium scan`'s run step: it picks the input (-i
+// file, the stored records, or the targets/stdin), runs the Runner over it and
+// reports. See runNativeScanLifecycle for everything around it.
+func runNativeScanInput(cmd *cobra.Command, settings *config.Settings, db *database.DB, repo *database.Repository, scanStart time.Time) (err error) {
 	// If -i was explicitly provided, use two-phase ingest-then-scan
 	hasInputFile := globalInput != "" && globalInput != "-"
 	if hasInputFile {
@@ -334,11 +413,11 @@ func scanCommandName(cmd *cobra.Command) string {
 // --db-isolate destination the scratch merges into, else the configured
 // SQLite file. "" when it cannot be named (a -S temp store, a non-SQLite
 // driver).
-func nativeScanDocDBPath(settings *config.Settings) string {
+func nativeScanDocDBPath(opts *types.Options, settings *config.Settings) string {
 	switch {
-	case scanOpts.Stateless:
+	case opts.Stateless:
 		return ""
-	case scanOpts.DBIsolate && dbIsolateDestPath != "":
+	case opts.DBIsolate && dbIsolateDestPath != "":
 		return dbIsolateDestPath
 	case settings.Database.Driver == "sqlite":
 		return settings.Database.SQLite.Path

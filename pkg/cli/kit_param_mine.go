@@ -10,16 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
-	"github.com/vigolium/vigolium/pkg/core/network"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
-	"github.com/vigolium/vigolium/pkg/core/services"
-	"github.com/vigolium/vigolium/pkg/dedup"
-	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/httpstack"
 	"github.com/vigolium/vigolium/pkg/parammine"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
-	"golang.org/x/time/rate"
 )
 
 var (
@@ -127,11 +122,12 @@ func runKitParamMine(cmd *cobra.Command, args []string) error {
 		return clicommon.UsageErrorf("the wordlist is empty")
 	}
 
-	requester, cleanup, err := kitParamMineRequester()
+	stack, err := kitParamMineStack()
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer stack.Close()
+	requester := stack.Requester
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -216,9 +212,9 @@ func kitParamMineHeaderMap(raw []string) (map[string]string, error) {
 	return out, nil
 }
 
-// kitParamMineRequester builds a standalone requester: the global --proxy, this
+// kitParamMineStack builds a standalone requester: the global --proxy, this
 // command's timeout and rate limit, and a per-host concurrency limiter.
-func kitParamMineRequester() (*http.Requester, func(), error) {
+func kitParamMineStack() (*httpstack.Stack, error) {
 	opts := types.DefaultOptions()
 	opts.Timeout = kitParamMineTimeout
 	opts.ProxyURL = globalProxy
@@ -226,28 +222,5 @@ func kitParamMineRequester() (*http.Requester, func(), error) {
 	opts.Debug = globalDebug
 	opts.DumpTraffic = globalDumpTraffic
 	opts.RateLimit = kitParamMineRateLimit
-	if err := network.Init(opts); err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize network: %w", err)
-	}
-	dedupMgr := dedup.NewManager()
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:    opts.MaxPerHost,
-		MaxEntries:    1000,
-		EvictAfter:    30 * time.Second,
-		EvictInterval: 10 * time.Second,
-	})
-	svc := &services.Services{Options: opts, DedupManager: dedupMgr, HostLimiter: hostLimiter}
-	if kitParamMineRateLimit > 0 {
-		svc.RateLimiter = rate.NewLimiter(rate.Limit(kitParamMineRateLimit), 1)
-	}
-	requester, err := http.NewRequester(opts, svc)
-	cleanup := func() {
-		dedupMgr.Close()
-		_ = hostLimiter.Close()
-	}
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to create HTTP requester: %w", err)
-	}
-	return requester, cleanup, nil
+	return httpstack.New(httpstack.Config{Options: opts, RateLimit: float64(kitParamMineRateLimit)})
 }

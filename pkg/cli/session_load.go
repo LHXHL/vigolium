@@ -86,9 +86,9 @@ func sessionLoadOut() io.Writer {
 
 // sessionLoginClient is the client a login check runs over: the transport a
 // scan's login uses (pkg/http.LoginTransport — --proxy or the environment
-// proxy, the scan's permissive target TLS) and the per-request timeout.
-func sessionLoginClient() *http.Client {
-	timeout := sessionLoadTimeout
+// proxy, the scan's permissive target TLS) and the per-request timeout
+// (<= 0: sessionLoadDefaultTimeout).
+func sessionLoginClient(timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = sessionLoadDefaultTimeout
 	}
@@ -202,7 +202,7 @@ func checkSessionLogins(ctx context.Context, sessions []*authentication.Session,
 	}
 
 	_, _ = fmt.Fprintf(w, "%s Validating login flows...\n\n", terminal.InfoSymbol())
-	client := sessionLoginClient()
+	client := sessionLoginClient(sessionLoadTimeout)
 	for i, sess := range sessions {
 		if sess.Login == nil && sess.LoginRequest == "" {
 			results[i] = authentication.LoginResult{
@@ -339,7 +339,7 @@ func runSessionLoadRawRequest(cmd *cobra.Command, data []byte, w io.Writer) erro
 	}
 	res := authentication.LoginResult{Session: name, URL: loginReq.URL}
 
-	result, err := authentication.DiscoverLoginContext(cmdContext(cmd), loginReq, sessionLoginClient())
+	result, err := authentication.DiscoverLoginContext(cmdContext(cmd), loginReq, sessionLoginClient(sessionLoadTimeout))
 	if err != nil {
 		reason := authentication.LoginReasonNetworkError
 		if result != nil {

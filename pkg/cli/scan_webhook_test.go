@@ -52,7 +52,7 @@ func webhookFixture(t *testing.T, extraYAML string) *webhookReceiver {
 	t.Cleanup(r.srv.Close)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
-	cfg := fmt.Sprintf("notify:\n  enabled: true\n  provider: webhook\n  webhook:\n    url: %s\n    timeout_sec: 5\n%s", r.srv.URL, extraYAML)
+	cfg := fmt.Sprintf("%snotify:\n  enabled: true\n  provider: webhook\n  webhook:\n    url: %s\n    timeout_sec: 5\n%s", noOASTConfig, r.srv.URL, extraYAML)
 	require.NoError(t, os.WriteFile(cfgPath, []byte(cfg), 0o600))
 	orig := globalConfig
 	t.Cleanup(func() { globalConfig = orig })

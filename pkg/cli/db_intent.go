@@ -248,7 +248,7 @@ func resolveDBIntent(cmd *cobra.Command) clicommon.OpenIntent {
 // applyDBIntent arms the shared opener with the running command's intent.
 // Called before anything can open a database.
 func applyDBIntent(cmd *cobra.Command) {
-	clicommon.CommandIntent = resolveDBIntent(cmd)
+	clicommon.Policy.Intent = resolveDBIntent(cmd)
 }
 
 // getDBFor opens (or reuses) the shared connection for an explicit intent,

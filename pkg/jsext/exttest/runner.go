@@ -11,12 +11,8 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
-	"github.com/vigolium/vigolium/pkg/core/egress"
-	"github.com/vigolium/vigolium/pkg/core/network"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
-	"github.com/vigolium/vigolium/pkg/core/services"
-	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
+	"github.com/vigolium/vigolium/pkg/httpstack"
 	"github.com/vigolium/vigolium/pkg/types"
 	"github.com/vigolium/vigolium/pkg/yamlext"
 )
@@ -172,47 +168,28 @@ func extensionStem(name string) string {
 // fixtureRun holds what cases share: the loopback HTTP stack mock cases use.
 type fixtureRun struct {
 	opts      FixtureOptions
-	network   *http.Requester
+	stack     *httpstack.Stack
 	netErr    error
-	netClose  func()
 	netInited bool
 }
 
-func (r *fixtureRun) close() {
-	if r.netClose != nil {
-		r.netClose()
-	}
-}
+func (r *fixtureRun) close() { r.stack.Close() }
 
 // networkRequester builds, once, the requester mock-backed cases send
 // through: the scan's HTTP stack with request clustering off (a cached
 // response would hide a request from the mock) and no proxy flag.
 func (r *fixtureRun) networkRequester() (*http.Requester, error) {
-	if r.netInited {
-		return r.network, r.netErr
+	if !r.netInited {
+		r.netInited = true
+		opts := types.DefaultOptions()
+		opts.ClusterRequests = false
+		opts.Timeout = 10 * time.Second
+		r.stack, r.netErr = httpstack.New(httpstack.Config{Options: opts, MaxHosts: 100})
 	}
-	r.netInited = true
-	opts := types.DefaultOptions()
-	opts.ClusterRequests = false
-	opts.Timeout = 10 * time.Second
-	if err := network.Init(opts); err != nil {
-		r.netErr = fmt.Errorf("initialize network: %w", err)
+	if r.netErr != nil {
 		return nil, r.netErr
 	}
-	dedupMgr := dedup.NewManager()
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost: opts.MaxPerHost, MaxEntries: 100,
-		EvictAfter: 30 * time.Second, EvictInterval: 10 * time.Second,
-	})
-	svc := &services.Services{Options: opts, DedupManager: dedupMgr, HostLimiter: hostLimiter}
-	svc.Egress = egress.New(egress.Config{Hosts: hostLimiter, Breaker: svc.HostErrors})
-	r.netClose = func() {
-		dedupMgr.Close()
-		_ = hostLimiter.Close()
-		network.Close()
-	}
-	r.network, r.netErr = http.NewRequester(opts, svc)
-	return r.network, r.netErr
+	return r.stack.Requester, nil
 }
 
 // runExtension runs every case of one extension. The extension is loaded once

@@ -40,13 +40,13 @@ func cliRepoRoot(t *testing.T) string {
 // The failure is the ABSENCE of a call, which no unit test of the helper itself
 // can see: seedTargetsFromTargetFiles can be perfectly correct and still never
 // run. So the wiring is asserted structurally — the promotion must happen inside
-// executeNativeScan and BEFORE runner.New, which is the moment Options is frozen
-// into the input source and the phases.
+// runNativeScanInput (executeNativeScan's run step) and BEFORE runner.New, which
+// is the moment Options is frozen into the input source and the phases.
 //
 // The ordering matters in the other direction too: the promotion clears
 // TargetsFilePaths, and printScanSummary / the -P fan-out dispatch both read it,
-// so it must stay below them in the same function rather than moving up into
-// runScanCmd.
+// so it must stay in the run step (which runNativeScanLifecycle calls after the
+// banner) rather than moving up into runScanCmd.
 func TestExecuteNativeScanSeedsTargetsBeforeBuildingRunner(t *testing.T) {
 	path := filepath.Join(cliRepoRoot(t), "pkg", "cli", "scan_execute.go")
 	fset := token.NewFileSet()
@@ -56,12 +56,12 @@ func TestExecuteNativeScanSeedsTargetsBeforeBuildingRunner(t *testing.T) {
 	var body *ast.BlockStmt
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if ok && fn.Name.Name == "executeNativeScan" && fn.Recv == nil {
+		if ok && fn.Name.Name == "runNativeScanInput" && fn.Recv == nil {
 			body = fn.Body
 			break
 		}
 	}
-	require.NotNil(t, body, "executeNativeScan not found in scan_execute.go")
+	require.NotNil(t, body, "runNativeScanInput not found in scan_execute.go")
 
 	seedPos, runnerPos := token.NoPos, token.NoPos
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -84,8 +84,8 @@ func TestExecuteNativeScanSeedsTargetsBeforeBuildingRunner(t *testing.T) {
 	})
 
 	require.True(t, seedPos.IsValid(),
-		"executeNativeScan must call seedTargetsFromTargetFiles, or a -T/--target-file run leaves Options.Targets empty and the target-seeded phases (spidering seeds, deparos content discovery) silently do nothing")
-	require.True(t, runnerPos.IsValid(), "executeNativeScan must build the runner via runner.New")
+		"runNativeScanInput must call seedTargetsFromTargetFiles, or a -T/--target-file run leaves Options.Targets empty and the target-seeded phases (spidering seeds, deparos content discovery) silently do nothing")
+	require.True(t, runnerPos.IsValid(), "runNativeScanInput must build the runner via runner.New")
 	require.Less(t, int(seedPos), int(runnerPos),
 		"seedTargetsFromTargetFiles must run BEFORE runner.New — after it, Options is already frozen into the input source and the phases")
 }

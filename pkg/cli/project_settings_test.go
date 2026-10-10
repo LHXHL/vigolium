@@ -141,7 +141,7 @@ func TestProjectOverlayHonouredByScanResolver(t *testing.T) {
 		swapGlobal(t, &scanIgnoreScope, false)
 		swapGlobal(t, &globalConfig, "")
 		clicommon.ResetProjectResolutionForTest()
-		adm, err := admitDirectInputs([]scanInput{
+		adm, err := admitDirectInputs(&directSettings{}, []scanInput{
 			{target: "https://app.example.com/"},
 			{target: "https://other.example.org/"},
 		})

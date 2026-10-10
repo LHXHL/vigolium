@@ -142,6 +142,10 @@ type ExecutorConfig struct {
 	// dynamic-assessment.allow_risky_payloads) into ScanContext, unlocking
 	// risk:high payloads below deep.
 	AllowRiskyPayloads bool
+	// NoParamDedup mirrors --no-param-dedup into ScanContext: modules sharing
+	// a vuln class stop skipping parameters another module already reported
+	// (dispatch-time, in-task and in-module checks alike).
+	NoParamDedup bool
 	// InsertionPointFilter, when non-nil, narrows the per-insertion-point stage
 	// to the points it accepts (`finding verify` re-runs a module on the one
 	// point a finding was found on). Host- and request-scope modules are not

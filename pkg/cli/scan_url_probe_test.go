@@ -21,7 +21,7 @@ func TestInstallDirectProbeDefaults(t *testing.T) {
 	t.Cleanup(func() { globalConfig, globalProxy, globalStateless = prevConfig, prevProxy, prevStateless })
 	globalConfig, globalProxy, globalStateless = cfg, "http://127.0.0.1:8089", true
 
-	restore := installDirectProbeDefaults()
+	restore := (&directScanSession{}).installProbeDefaults()
 	if got := spitolas.DefaultProbeProxy(); got != "http://127.0.0.1:8089" {
 		t.Errorf("probe proxy default = %q, want --proxy", got)
 	}

@@ -129,6 +129,7 @@ func Run(ctx context.Context, p *Plan, opts RunOptions) *Result {
 		OnCandidate:          collect,
 		OnObservation:        collect,
 		InsertionPointFilter: p.pointFilter(),
+		NoParamDedup:         true,
 	}
 	if opts.Timeout > 0 {
 		cfg.ActiveModuleTimeout = opts.Timeout
@@ -143,7 +144,6 @@ func Run(ctx context.Context, p *Plan, opts RunOptions) *Result {
 		active = []modules.ActiveModule{p.module.(modules.ActiveModule)}
 	}
 	exec := core.NewExecutor(cfg, source.NewSingleSource(item, nil), active, passiveMods)
-	exec.SetNoParamDedup(true)
 	_, execErr := exec.Execute(runCtx)
 
 	if svc.Egress != nil {

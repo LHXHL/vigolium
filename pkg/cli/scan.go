@@ -149,10 +149,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.TargetsFilePaths = globalTargetFiles
 	scanOpts.InputFileMode = globalInputMode
 	scanOpts.InputFileModeExplicit = cmd.Flags().Changed("input-mode")
-	scanOpts.Timeout = globalTimeout
-	scanOpts.Concurrency = globalConcurrency
-	scanOpts.MaxPerHost = globalMaxPerHost
-	scanOpts.NoWafPacing = globalNoWafPacing
+	globalScanFlagsToOptions(scanOpts)
 	// globalChanged, not cmd.Flags().Changed: pflag marks a flag Changed when only
 	// its PHASE-QUALIFIED form was typed, so `--concurrency known-issue-scan=5`
 	// would read as an explicit global concurrency — which makes the runner refuse
@@ -166,15 +163,6 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	// default the code never applied. The no-cap case now requires asking for it
 	// (--rate-limit 0); negative values are rejected by the flag parser.
 	scanOpts.RateLimit = globalRateLimit
-	scanOpts.MaxHostError = globalMaxHostError
-	scanOpts.MaxFindingsPerModule = globalMaxFindingsPerModule
-	scanOpts.Verbose = globalVerbose
-	scanOpts.Silent = globalSilent
-	scanOpts.Debug = globalDebug
-	scanOpts.DumpTraffic = globalDumpTraffic
-	scanOpts.JSONOutput = globalJSON
-	scanOpts.ProxyURL = globalProxy
-	scanOpts.ConfigPath = globalConfig
 	// Targets and TargetsFilePaths are bound above, so both are readable here.
 	scanOpts.Stdin, scanStdinExplicit = resolveStdinInput(
 		fileutil.HasStdin(),
@@ -190,7 +178,6 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.OnlyPhase = globalOnly
 	scanOpts.SkipPhases = globalSkipPhases
 	scanOpts.ScopeOriginMode = globalScopeOrigin
-	scanOpts.NoTechFilter = globalNoTechFilter
 	scanOpts.OutputFormats = parseFormats(globalFormat)
 	// Validated here, before any network or database work: a typo in --events
 	// should fail in milliseconds, not after a 15-minute crawl whose whole reason

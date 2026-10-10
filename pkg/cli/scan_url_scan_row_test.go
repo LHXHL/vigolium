@@ -34,7 +34,11 @@ func directRowFixture(t *testing.T) {
 	resetDBCacheForTest()
 	// A throwaway HOME: each row's liveness heartbeat writes status.json under
 	// the configured sessions dir (~/.vigolium/native-sessions by default).
-	t.Setenv("HOME", t.TempDir())
+	// Its discovered config turns OAST off, so no direct-path scan registers
+	// with the public interactsh server (oast.enabled defaults to true).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeNoOASTHomeConfig(t, home)
 	globalDB = filepath.Join(t.TempDir(), "direct.sqlite")
 	globalScanUUID = ""
 	globalSilent = true
@@ -43,6 +47,18 @@ func directRowFixture(t *testing.T) {
 	// headers. Keeps the run to a handful of requests against the local server.
 	globalModules = []string{"security-headers-missing"}
 	globalModuleTags = nil
+}
+
+// noOASTConfig is a config section that keeps a test scan off the public
+// interactsh server.
+const noOASTConfig = "oast:\n  enabled: false\n"
+
+// writeNoOASTHomeConfig writes home's discovered config with OAST off.
+func writeNoOASTHomeConfig(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, ".vigolium")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "vigolium-configs.yaml"), []byte(noOASTConfig), 0o600))
 }
 
 func bareServer(t *testing.T) *httptest.Server {

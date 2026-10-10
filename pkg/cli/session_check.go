@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -15,13 +14,10 @@ import (
 	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/authentication"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
-	"github.com/vigolium/vigolium/pkg/core/network"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
-	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/dedup"
 	vighttp "github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/httpstack"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
 )
@@ -111,10 +107,7 @@ func runSessionCheck(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 	ctx := cmdContext(cmd)
 
-	w := io.Writer(os.Stdout)
-	if globalJSON {
-		w = os.Stderr
-	}
+	w := humanOut()
 
 	settings, err := loadProjectSettings(globalConfig)
 	if err != nil {
@@ -167,12 +160,13 @@ func runSessionCheck(cmd *cobra.Command, args []string) error {
 		plans = append(plans, plan{sess: s, url: target, method: method})
 	}
 
-	requester, cleanup, err := sessionCheckRequester()
+	stack, err := sessionCheckStack()
 	if err != nil {
 		return err
 	}
-	defer cleanup()
-	loginClient := sessionCheckLoginClient()
+	defer stack.Close()
+	requester := stack.Requester
+	loginClient := sessionLoginClient(sessionCheckTimeout)
 
 	items := make([]sessionCheckItem, 0, len(plans))
 	for _, p := range plans {
@@ -247,7 +241,7 @@ func resolveCheckSessions(ctx context.Context, arg, sessionDir string) ([]*authe
 	// The same name may be stored for several hosts: prefer the one --url
 	// points at.
 	row := match[0]
-	if host := urlHostname(sessionCheckURL); host != "" {
+	if host := httpmsg.HostnameFromURL(sessionCheckURL); host != "" {
 		for _, r := range match {
 			if strings.EqualFold(r.Hostname, host) {
 				row = r
@@ -273,14 +267,6 @@ func parseCheckSessionFile(data []byte, name string) ([]*authentication.Session,
 func fileExists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()
-}
-
-func urlHostname(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return u.Hostname()
 }
 
 // sessionCheckTarget is the URL to check s on: --url, else check.url (after
@@ -314,22 +300,9 @@ func sessionLoginURL(s *authentication.Session) string {
 	return ""
 }
 
-// sessionCheckLoginClient is the client the login runs over: the transport a
-// scan's login uses (pkg/http.LoginTransport: --proxy, the scan's target TLS).
-func sessionCheckLoginClient() *http.Client {
-	timeout := sessionCheckTimeout
-	if timeout <= 0 {
-		timeout = sessionLoadDefaultTimeout
-	}
-	return &http.Client{
-		Timeout:   timeout,
-		Transport: vighttp.LoginTransport(&types.Options{ProxyURL: globalProxy, Timeout: timeout}),
-	}
-}
-
-// sessionCheckRequester builds the scan's requester (same client, proxy, TLS
+// sessionCheckStack builds the scan's requester (same client, proxy, TLS
 // stance and default headers a scan sends with) for the two check requests.
-func sessionCheckRequester() (*vighttp.Requester, func(), error) {
+func sessionCheckStack() (*httpstack.Stack, error) {
 	opts := types.DefaultOptions()
 	opts.Timeout = sessionCheckTimeout
 	if opts.Timeout <= 0 {
@@ -339,27 +312,7 @@ func sessionCheckRequester() (*vighttp.Requester, func(), error) {
 	opts.Verbose = globalVerbose
 	opts.Debug = globalDebug
 	opts.DumpTraffic = globalDumpTraffic
-	if err := network.Init(opts); err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize network: %w", err)
-	}
-	dedupMgr := dedup.NewManager()
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:    opts.MaxPerHost,
-		MaxEntries:    100,
-		EvictAfter:    30 * time.Second,
-		EvictInterval: 10 * time.Second,
-	})
-	cleanup := func() {
-		dedupMgr.Close()
-		_ = hostLimiter.Close()
-	}
-	svc := &services.Services{Options: opts, DedupManager: dedupMgr, HostLimiter: hostLimiter}
-	requester, err := vighttp.NewRequester(opts, svc)
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to create HTTP requester: %w", err)
-	}
-	return requester, cleanup, nil
+	return httpstack.New(httpstack.Config{Options: opts, MaxHosts: 100})
 }
 
 // checkOneSession logs s in (when it has a login flow), then sends the

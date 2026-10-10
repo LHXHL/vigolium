@@ -76,7 +76,7 @@ func applyReadOnlyMode(cmd *cobra.Command) error {
 			return usageErrorf("--read-only cannot be combined with --%s: that flag writes to the database", w)
 		}
 	}
-	clicommon.ReadOnlyRequested = true
+	clicommon.Policy.ReadOnly = true
 	return nil
 }
 

@@ -333,10 +333,10 @@ func TestRetiredScanOnReceiveShorthand(t *testing.T) {
 // nothing, so rejecting it was a conflict that did not exist.
 func TestReadOnlyAcceptsWriterFlagFalse(t *testing.T) {
 	orig := globalReadOnly
-	origRequested := clicommon.ReadOnlyRequested
+	origRequested := clicommon.Policy.ReadOnly
 	t.Cleanup(func() {
 		globalReadOnly = orig
-		clicommon.ReadOnlyRequested = origRequested
+		clicommon.Policy.ReadOnly = origRequested
 	})
 
 	newTraffic := func() *cobra.Command {
@@ -350,13 +350,13 @@ func TestReadOnlyAcceptsWriterFlagFalse(t *testing.T) {
 
 	globalReadOnly = true
 
-	clicommon.ReadOnlyRequested = false
+	clicommon.Policy.ReadOnly = false
 	cmd := newTraffic()
 	require.NoError(t, cmd.Flags().Set("save-to-vigolium-db", "false"))
 	require.NoError(t, applyReadOnlyMode(cmd), "--save-to-vigolium-db=false writes nothing")
-	assert.True(t, clicommon.ReadOnlyRequested)
+	assert.True(t, clicommon.Policy.ReadOnly)
 
-	clicommon.ReadOnlyRequested = false
+	clicommon.Policy.ReadOnly = false
 	cmd = newTraffic()
 	require.NoError(t, cmd.Flags().Set("save-to-vigolium-db", "true"))
 	err := applyReadOnlyMode(cmd)

@@ -244,16 +244,6 @@ func (e *Executor) goActiveTask(ctx context.Context, t *itemTracker, fn func(rel
 	}()
 }
 
-// SetNoParamDedup mirrors --no-param-dedup into this executor's ScanContext:
-// when true, modules sharing a vuln class stop skipping parameters another
-// module already reported (dispatch-time, in-task and in-module checks alike).
-// Call it after NewExecutor and before Execute.
-func (e *Executor) SetNoParamDedup(disabled bool) {
-	if e.scanCtx != nil {
-		e.scanCtx.NoParamDedup = disabled
-	}
-}
-
 // runActiveStage dispatches every eligible active task for req as a detached
 // task of t and returns without waiting for them.
 func (e *Executor) runActiveStage(ctx context.Context, t *itemTracker, req *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility) {

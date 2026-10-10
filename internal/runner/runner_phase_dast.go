@@ -309,6 +309,7 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 		FollowSubdomains:     r.options.FollowSubdomains || strings.EqualFold(r.options.Intensity, "deep"),
 		DeepScan:             strings.EqualFold(r.options.Intensity, "deep"),
 		AllowRiskyPayloads:   r.riskyPayloadsAllowed(),
+		NoParamDedup:         r.options.NoParamDedup,
 		ModuleTimeouts:       &phaseModuleTimeouts,
 		SkipBaseline:         true,
 		PauseCtrl:            r.pauseCtrl,
@@ -581,7 +582,6 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 		}
 
 		sorExecutor = core.NewExecutor(sorCfg, continuousSource, activeModules, passiveModules)
-		sorExecutor.SetNoParamDedup(r.options.NoParamDedup)
 		executor := sorExecutor
 		if oastService != nil {
 			oastService.SetRequestUUIDResolver(executor.ResolveRequestUUID)
@@ -740,7 +740,6 @@ func (r *Runner) runDynamicAssessmentRound(
 		WithParamShapeCoalescing(r.resolveMaxParamShapeSamples())
 
 	executor := core.NewExecutor(baseCfg, dbSource, activeModules, passiveModules)
-	executor.SetNoParamDedup(r.options.NoParamDedup)
 	if oastService != nil {
 		oastService.SetRequestUUIDResolver(executor.ResolveRequestUUID)
 	}

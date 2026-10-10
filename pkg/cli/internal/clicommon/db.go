@@ -25,21 +25,27 @@ var (
 	dbConnIntent OpenIntent
 )
 
-// ReadOnlyRequested is set by the CLI before the first GetDB call when the
-// command must not modify its source (--read-only). It is a package var rather
-// than a GetDB parameter because GetDB is called from ~30 sites that would all
-// have to thread a value none of them decides.
-var ReadOnlyRequested bool
+// OpenPolicy is how the running command may open the shared database. The CLI
+// sets Policy from it in PersistentPreRunE, before anything can open one.
+type OpenPolicy struct {
+	// Intent is the command's declared intent (the vigolium.io/db-intent
+	// annotation).
+	Intent OpenIntent
+	// ReadOnly (--read-only) forces IntentEvidence for the whole process: the
+	// command must not modify its source.
+	ReadOnly bool
+	// MustExist is the expanded path of an explicitly pinned SQLite source a
+	// pure read command must NOT create ("" = none: the built-in default
+	// database is still made on first use). Enforced here rather than at the
+	// call sites, so a read path added later inherits the guarantee instead of
+	// having to remember it.
+	MustExist string
+}
 
-// RequireExistingSource holds the expanded path of an explicitly pinned SQLite
-// source that a pure read command must NOT create. Empty means no such
-// requirement — the built-in default database is still made on first use.
-//
-// Set by the CLI (applySourceMustExist) for the same reason ReadOnlyRequested is
-// a package var: GetDB is reached from ~30 call sites, none of which decides
-// this. Enforced here rather than at those call sites so a read path added later
-// inherits the guarantee instead of having to remember it.
-var RequireExistingSource string
+// Policy is the running command's open policy. A package var rather than a
+// GetDB parameter because GetDB is reached from ~40 call sites that would all
+// have to thread a value none of them decides.
+var Policy = OpenPolicy{Intent: IntentWrite}
 
 // SourceMissingError reports a pinned database path that is not there.
 //
@@ -79,12 +85,12 @@ func (e *SourceIncompatibleError) Error() string {
 }
 
 // GetDB returns the cached database connection, opening it on first use with
-// the running command's declared intent (CommandIntent; --read-only forces
+// the running command's declared intent (Policy.Intent; --read-only forces
 // IntentEvidence). configPath is the --config path (may be empty) and dbPath is
 // the --db SQLite override (may be empty). When the database is not explicitly
 // enabled it defaults to SQLite at the standard location. See GetDBFor.
 func GetDB(configPath, dbPath string) (*database.DB, error) {
-	return GetDBFor(CommandIntent, configPath, dbPath)
+	return GetDBFor(Policy.Intent, configPath, dbPath)
 }
 
 // GetDBFor returns the cached database connection, opening it on first use for
@@ -317,9 +323,9 @@ func migrateThroughWriter(cfg *config.DatabaseConfig) error {
 // being inside a file that never had them. Checked before any migration, which
 // is exactly what would create them.
 func refuseForeignStore(db *database.DB) error {
-	if RequireExistingSource != "" && !db.HasVigoliumSchema(context.Background()) {
+	if Policy.MustExist != "" && !db.HasVigoliumSchema(context.Background()) {
 		_ = db.Close()
-		return &SourceIncompatibleError{Path: RequireExistingSource}
+		return &SourceIncompatibleError{Path: Policy.MustExist}
 	}
 	return nil
 }
@@ -329,18 +335,18 @@ func refuseForeignStore(db *database.DB) error {
 // path is there — not that it is a vigolium store, which the schema check and
 // the source_incompatible code downstream still decide.
 func checkSourceExists() error {
-	if RequireExistingSource == "" {
+	if Policy.MustExist == "" {
 		return nil
 	}
-	info, err := os.Stat(RequireExistingSource)
+	info, err := os.Stat(Policy.MustExist)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &SourceMissingError{Path: RequireExistingSource}
+			return &SourceMissingError{Path: Policy.MustExist}
 		}
-		return fmt.Errorf("cannot read database %q: %w", RequireExistingSource, err)
+		return fmt.Errorf("cannot read database %q: %w", Policy.MustExist, err)
 	}
 	if info.IsDir() {
-		return fmt.Errorf("database %q is a directory, not a file", RequireExistingSource)
+		return fmt.Errorf("database %q is a directory, not a file", Policy.MustExist)
 	}
 	return nil
 }

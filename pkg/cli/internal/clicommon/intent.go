@@ -13,7 +13,7 @@ package clicommon
 //   - IntentEvidence: --read-only. mode=ro; nothing about the file may change.
 //
 // Commands declare their intent once, in the CLI's command table (the
-// vigolium.io/db-intent annotation); the CLI sets CommandIntent from it before
+// vigolium.io/db-intent annotation); the CLI sets Policy.Intent from it before
 // the command runs. A flag that turns a read into a write flips it there too.
 type OpenIntent int
 
@@ -61,16 +61,10 @@ func (i OpenIntent) serves(want OpenIntent) bool {
 	}
 }
 
-// CommandIntent is the running command's declared intent, set by the CLI's
-// PersistentPreRunE before anything can open a database. A package var for the
-// same reason ReadOnlyRequested is: ~40 call sites reach GetDB and none of them
-// decides this.
-var CommandIntent = IntentWrite
-
 // effectiveIntent folds --read-only in: it forces evidence intent for the whole
 // process, whatever a call site asked for.
 func effectiveIntent(want OpenIntent) OpenIntent {
-	if ReadOnlyRequested {
+	if Policy.ReadOnly {
 		return IntentEvidence
 	}
 	return want

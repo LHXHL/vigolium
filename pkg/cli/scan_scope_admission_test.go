@@ -44,14 +44,14 @@ func TestScopeAdmissionChild(t *testing.T) {
 }
 
 // a3Home is a throwaway HOME with the first-run marker present (no dependency
-// bootstrap) and a config whose scope admits only hostInclude.
+// bootstrap) and a config whose scope admits only hostInclude, with OAST off.
 func a3Home(t *testing.T, hostInclude string) string {
 	t.Helper()
 	home := t.TempDir()
 	dir := filepath.Join(home, ".vigolium")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, initMarkerFileName), []byte("ok"), 0o600))
-	cfg := "scope:\n  host:\n    include: [\"" + hostInclude + "\"]\n    exclude: []\n"
+	cfg := noOASTConfig + "scope:\n  host:\n    include: [\"" + hostInclude + "\"]\n    exclude: []\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "vigolium-configs.yaml"), []byte(cfg), 0o600))
 	return home
 }

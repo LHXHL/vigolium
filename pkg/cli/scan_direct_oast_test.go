@@ -16,11 +16,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 )
 
-// No direct-path scan in this package's tests registers with the public
-// interactsh server (oast.enabled defaults to true). Tests that exercise the
-// registration turn it back on against a local server.
-func init() { directAutoOAST = false }
-
 // failingInteractsh is a local "interactsh server" that refuses registration.
 func failingInteractsh(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -44,13 +39,8 @@ func TestDirectOASTConfig(t *testing.T) {
 	directRowFixture(t)
 	swapGlobal(t, &scanOpts.OastURL, "")
 
-	t.Run("interactsh stays off in tests", func(t *testing.T) {
-		cfg, err := (&directScanSession{}).oastConfig()
-		require.NoError(t, err)
-		assert.Nil(t, cfg)
-	})
-
 	t.Run("--oast-url selects fixed-URL mode", func(t *testing.T) {
+		writeOASTConfig(t, "oast:\n  enabled: true\n")
 		scanOpts.OastURL = "https://{nonce}.cb.example"
 		t.Cleanup(func() { scanOpts.OastURL = "" })
 		cfg, err := (&directScanSession{}).oastConfig()
@@ -69,7 +59,6 @@ func TestDirectOASTConfig(t *testing.T) {
 	})
 
 	t.Run("interactsh when enabled", func(t *testing.T) {
-		swapGlobal(t, &directAutoOAST, true)
 		writeOASTConfig(t, "oast:\n  enabled: true\n  server_url: http://127.0.0.1:9\n")
 		cfg, err := (&directScanSession{}).oastConfig()
 		require.NoError(t, err)
@@ -114,7 +103,6 @@ func TestAwaitDirectOASTUnavailable(t *testing.T) {
 // still runs and completes, and its row is partial with oast_unavailable.
 func TestDirectScanOASTUnavailableMarksPartial(t *testing.T) {
 	directRowFixture(t)
-	swapGlobal(t, &directAutoOAST, true)
 	swapGlobal(t, &scanOpts.OastURL, "")
 	iact := failingInteractsh(t)
 	writeOASTConfig(t, "oast:\n  enabled: true\n  server_url: "+iact.URL+"\n")

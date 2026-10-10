@@ -21,8 +21,7 @@ func EffectiveConfigPath(configFlag string) string {
 // ConfigWarn prints one configuration diagnostic. The default writes to stderr;
 // pkg/cli replaces it so --silent and the machine-output modes are honoured.
 //
-// A package var rather than a parameter for the same reason ReadOnlyRequested is
-// one: LoadSettings is reached from ~35 call sites, none of which decides output
+// A package var rather than a parameter for the same reason Policy is one: LoadSettings is reached from ~35 call sites, none of which decides output
 // policy, and threading a writer through all of them to answer a question only
 // the root command knows is worse than one assignment at startup.
 var ConfigWarn = func(msg string) {

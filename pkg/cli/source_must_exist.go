@@ -61,5 +61,5 @@ func applySourceMustExist(cmd *cobra.Command) {
 	// the same way the opener will. The two differ — config's form also expands
 	// ${VAR:-default} — so using the wrong one would stat one file and create
 	// another, which is the precise outcome this check exists to prevent.
-	clicommon.RequireExistingSource = database.ExpandPath(globalDB)
+	clicommon.Policy.MustExist = database.ExpandPath(globalDB)
 }

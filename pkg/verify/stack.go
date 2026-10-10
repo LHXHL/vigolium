@@ -2,21 +2,14 @@ package verify
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"golang.org/x/time/rate"
-
 	"github.com/vigolium/vigolium/internal/config"
-	"github.com/vigolium/vigolium/pkg/core/egress"
-	"github.com/vigolium/vigolium/pkg/core/network"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
-	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
+	"github.com/vigolium/vigolium/pkg/httpstack"
 	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -48,20 +41,8 @@ type HTTPConfig struct {
 }
 
 // HTTPStack is the requester a verification runs modules with, behind an
-// egress gate so the request count can be reported.
-type HTTPStack struct {
-	Requester *http.Requester
-	Services  *services.Services
-	cleanup   func()
-}
-
-// Close releases the stack's limiter, dedup manager and network reference.
-func (s *HTTPStack) Close() {
-	if s != nil && s.cleanup != nil {
-		s.cleanup()
-		s.cleanup = nil
-	}
-}
+// egress gate so the request count can be reported. Close releases it.
+type HTTPStack = httpstack.Stack
 
 // NewHTTPStack builds the HTTP stack for a verification. It takes a reference
 // on the process network dialer (network.Init) that Close returns.
@@ -75,32 +56,7 @@ func NewHTTPStack(cfg HTTPConfig) (*HTTPStack, error) {
 	opts.Verbose = cfg.Verbose
 	opts.Debug = cfg.Debug
 	opts.DumpTraffic = cfg.DumpTraffic
-	if err := network.Init(opts); err != nil {
-		return nil, fmt.Errorf("failed to initialize network: %w", err)
-	}
-	dedupMgr := dedup.NewManager()
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:    opts.MaxPerHost,
-		MaxEntries:    100,
-		EvictAfter:    30 * time.Second,
-		EvictInterval: 10 * time.Second,
-	})
-	svc := &services.Services{Options: opts, DedupManager: dedupMgr, HostLimiter: hostLimiter}
-	if cfg.RateLimit > 0 {
-		svc.RateLimiter = rate.NewLimiter(rate.Limit(cfg.RateLimit), 1)
-	}
-	svc.Egress = egress.New(egress.Config{Rate: svc.RateLimiter, Hosts: hostLimiter, Breaker: svc.HostErrors})
-	cleanup := func() {
-		dedupMgr.Close()
-		_ = hostLimiter.Close()
-		network.Close()
-	}
-	requester, err := http.NewRequester(opts, svc)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("failed to create HTTP requester: %w", err)
-	}
-	return &HTTPStack{Requester: requester, Services: svc, cleanup: cleanup}, nil
+	return httpstack.New(httpstack.Config{Options: opts, MaxHosts: 100, RateLimit: cfg.RateLimit})
 }
 
 // LoadExtensionModules loads the JS/YAML extensions cfg names and returns their

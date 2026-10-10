@@ -12,8 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vigolium/vigolium/internal/scratch"
-
 	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -21,13 +19,10 @@ import (
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/core/egress"
-	"github.com/vigolium/vigolium/pkg/core/network"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
-	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/httpstack"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
@@ -296,7 +291,8 @@ func runScanURLCmd(cmd *cobra.Command, args []string) error {
 	}
 	// Scope admission over every input, before any network activity.
 	scopeEscapeHint = "or pass --ignore-scope to scan it anyway"
-	admission, err := admitDirectInputs(inputs)
+	cfg := &directSettings{}
+	admission, err := admitDirectInputs(cfg, inputs)
 	if err != nil {
 		return err
 	}
@@ -307,6 +303,7 @@ func runScanURLCmd(cmd *cobra.Command, args []string) error {
 	// The scan rows and the store of the direct path; see directScanSession.
 	sess := newDirectScanSession(database.ScanNameScanURL, inputs)
 	sess.admission = admission
+	sess.cfg = cfg
 	defer sess.close()
 
 	// An input that got no answer fails the command (no_targets_reachable) only
@@ -486,69 +483,22 @@ func buildRequestFromFlags(target, method, body string, headers []string) (*http
 	return rr, nil
 }
 
-// setupScanHTTPStack initializes the HTTP stack for scanning, held to budget
-// (the invocation's request budget; nil = none).
-// Returns requester, services, and a cleanup function.
-func setupScanHTTPStack(budget *egress.Budget) (*http.Requester, *services.Services, func(), error) {
+// setupScanHTTPStack builds the direct path's HTTP stack, held to budget (the
+// invocation's request budget; nil = none). A refused request fails fast; this
+// path does not cancel the run, it lets the remaining module requests be
+// refused and reports the row partial (runner.ApplyRequestBudget).
+//
+// WAF pacing matches the main scan/run path: throttle a host only once it
+// returns WAF/CDN blocks, plus the proactive edge pre-arm unless
+// --no-waf-pacing. Without it the default edge pacing AND its disabling flag
+// would both be inert here.
+func setupScanHTTPStack(budget *egress.Budget) (*httpstack.Stack, error) {
 	opts := types.DefaultOptions()
-	opts.Concurrency = globalConcurrency
-	opts.Timeout = globalTimeout
-	opts.ProxyURL = globalProxy
-	opts.Verbose = globalVerbose
-	opts.Debug = globalDebug
-	opts.DumpTraffic = globalDumpTraffic
-	opts.MaxPerHost = globalMaxPerHost
-	opts.NoWafPacing = globalNoWafPacing
-	opts.MaxHostError = globalMaxHostError
+	globalFlagsToOptions(opts)
 	if globalNoClustering {
 		opts.ClusterRequests = false
 	}
-
-	if err := network.Init(opts); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to initialize network: %w", err)
-	}
-
-	dedupMgr := dedup.NewManager()
-
-	svc := &services.Services{
-		Options:      opts,
-		DedupManager: dedupMgr,
-	}
-
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:    opts.MaxPerHost,
-		MaxEntries:    1000,
-		EvictAfter:    30 * time.Second,
-		EvictInterval: 10 * time.Second,
-		// Match the main scan/run path: throttle a host only once it returns
-		// WAF/CDN blocks (reactive), plus proactive edge pre-arm unless
-		// --no-waf-pacing disables it. Without this the default edge pacing AND its
-		// disabling flag are both inert on the direct scan-url/scan-request path.
-		WafAutoArm:    true,
-		DisablePreArm: opts.NoWafPacing,
-	})
-	svc.HostLimiter = hostLimiter
-	// The request budget rides on the gate, as on the Runner path. A refused
-	// request fails fast; this path does not cancel the run, it lets the
-	// remaining module requests be refused and reports the row partial
-	// (runner.ApplyRequestBudget). Set before NewRequester, which binds the
-	// gate it finds on svc.
-	svc.Egress = egress.New(egress.Config{Rate: svc.RateLimiter, Hosts: hostLimiter, Breaker: svc.HostErrors}).
-		WithBudget(budget)
-
-	httpRequester, err := http.NewRequester(opts, svc)
-	if err != nil {
-		dedupMgr.Close()
-		_ = hostLimiter.Close()
-		return nil, nil, nil, fmt.Errorf("failed to create HTTP requester: %w", err)
-	}
-
-	cleanup := func() {
-		dedupMgr.Close()
-		_ = hostLimiter.Close()
-	}
-
-	return httpRequester, svc, cleanup, nil
+	return httpstack.New(httpstack.Config{Options: opts, WafPacing: true, Budget: budget})
 }
 
 // getFilteredModules returns active and passive modules based on CLI flags.
@@ -783,20 +733,26 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		return sess.rejectInput(ctx, scanUUID, target, method, verdict)
 	}
 
-	// The OAST config (--oast-url, oast.enabled), read once per invocation
-	// before anything goes out. See scan_direct_oast.go.
+	// The invocation's settings, loaded once, and the OAST config (--oast-url,
+	// oast.enabled) from them, before anything goes out. See
+	// scan_direct_oast.go.
+	settings, err := sess.loadSettings()
+	if err != nil {
+		return nil, err
+	}
 	oastCfg, err := sess.oastConfig()
 	if err != nil {
 		return nil, err
 	}
 
 	// Set up HTTP stack
-	httpRequester, svc, cleanup, err := setupScanHTTPStack(sess.budget)
+	stack, err := setupScanHTTPStack(sess.budget)
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
-	defer installDirectProbeDefaults()()
+	defer stack.Close()
+	httpRequester, svc := stack.Requester, stack.Services
+	defer sess.installProbeDefaults()()
 
 	// Warn once per host when the edge WAF/CDN starts filtering scan traffic.
 	// The Runner-backed path wires this in RunNativeScan; this direct path builds
@@ -857,8 +813,10 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		// module's follow-up leaving scope is dropped here too. Nil under
 		// --ignore-scope.
 		ScopeMatcher: sess.admission.scopeMatcher(),
-		// The direct path loads no settings, so only the flag can opt in here.
-		AllowRiskyPayloads: scanOpts.AllowRiskyPayloads != nil && *scanOpts.AllowRiskyPayloads,
+		// --allow-risky-payloads, else dynamic-assessment.allow_risky_payloads,
+		// as on the runner path (--intensity takes the runner path).
+		AllowRiskyPayloads: runner.RiskyPayloadsAllowed(&types.Options{AllowRiskyPayloads: scanOpts.AllowRiskyPayloads}, settings),
+		NoParamDedup:       scanOpts.NoParamDedup,
 		OnResult: func(result *output.ResultEvent) {
 			mu.Lock()
 			findings = append(findings, result)
@@ -933,7 +891,6 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		defer oastSvc.Close()
 	}
 	scanExecutor = core.NewExecutor(executorCfg, src, active, passive)
-	scanExecutor.SetNoParamDedup(scanOpts.NoParamDedup)
 	executor := scanExecutor
 
 	// The invocation's cancellation context arrives from the RunE, which installs
@@ -1021,26 +978,15 @@ func buildPhaseOptions(target string) (*types.Options, error) {
 	// Modules — active from -m/--module-tag, passive = all, then --module-id /
 	// --passive-only / --no-passive overrides.
 	applyModuleSelection(opts, scanURLNoPassive)
-	opts.NoTechFilter = globalNoTechFilter
 	opts.AllowRiskyPayloads = scanOpts.AllowRiskyPayloads
 	opts.NoParamDedup = scanOpts.NoParamDedup
 	opts.MaxRequests = scanOpts.MaxRequests
 	opts.MaxRequestsPerHost = scanOpts.MaxRequestsPerHost
 
-	// Global CLI flags
+	// Global CLI flags. This copy used to skip --max-findings-per-module, which
+	// the direct path of the same command and `vigolium scan` both honour.
+	globalScanFlagsToOptions(opts)
 	opts.ScanUUID = globalScanUUID
-	opts.Timeout = globalTimeout
-	opts.Concurrency = globalConcurrency
-	opts.MaxPerHost = globalMaxPerHost
-	opts.NoWafPacing = globalNoWafPacing
-	opts.MaxHostError = globalMaxHostError
-	opts.Verbose = globalVerbose
-	opts.Silent = globalSilent
-	opts.Debug = globalDebug
-	opts.DumpTraffic = globalDumpTraffic
-	opts.JSONOutput = globalJSON
-	opts.ProxyURL = globalProxy
-	opts.ConfigPath = globalConfig
 	opts.ScopeOriginMode = globalScopeOrigin
 	// Scan tuning shared with `vigolium scan` (registerLightweightScanTuningFlags).
 	// Intensity is validated and resolved to its profile by
@@ -1126,8 +1072,9 @@ func validateRunnerScanOutput(opts *types.Options) error {
 // runRunnerScan scans a single parsed request (or, when phase flags are set, the
 // target URL) through the full native-scan Runner so the lightweight scan-url /
 // scan-request commands honor -o/--output, -S/--stateless, --skip, and file
-// output formats (jsonl/html/...) exactly like `vigolium scan`. It mirrors
-// executeNativeScan's stateless temp-DB lifecycle and post-scan export tail.
+// output formats (jsonl/html/...) exactly like `vigolium scan`. It runs
+// executeNativeScan's lifecycle (runNativeScanLifecycle): the stateless temp-DB,
+// the event stream and the post-scan export tail.
 //
 // With no phase flags the exact request (method/body/headers) is fed straight to
 // the executor via a SingleSource, so scan-request's raw POST bodies survive. A
@@ -1136,7 +1083,7 @@ func validateRunnerScanOutput(opts *types.Options) error {
 //
 // sess carries the invocation's scan document under -j (sess.doc): the pass
 // folds itself in while its database — a -S temp store included — is open.
-func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, target string) (err error) {
+func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, target string) error {
 	scanStart := time.Now()
 	opts, err := buildPhaseOptions(target)
 	if err != nil {
@@ -1159,9 +1106,6 @@ func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, tar
 		return usageErrorf("--stateless and --db are mutually exclusive")
 	}
 
-	// One signal handler for the whole invocation — see executeNativeScan.
-	signals := startScanSignals(scanStart)
-	defer signals.stop()
 	// See the same guard in scan.go: --json/--ci-output stream results to stdout,
 	// so they are not discarded and the warning would be false.
 	if opts.Stateless && opts.Output == "" && !opts.Silent && !globalJSON && !globalCIOutput {
@@ -1196,36 +1140,18 @@ func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, tar
 	admission := runner.AdmitTargets(settings.Scope, opts.Targets)
 	opts.TargetAdmission = &admission
 
-	// Stateless mode: scan into a throwaway temp SQLite DB that is removed after
-	// the run, so the main DB stays untouched (mirrors `vigolium scan -S`).
-	var statelessDBPath string
-	if opts.Stateless {
-		tmpFile, tmpErr := scratch.CreateTemp("stateless-*.sqlite")
-		if tmpErr != nil {
-			return fmt.Errorf("failed to create temporary database: %w", tmpErr)
-		}
-		statelessDBPath = tmpFile.Name()
-		_ = tmpFile.Close()
-		// Registered first so it runs last, after the DB handle is closed. See
-		// the same defer in executeNativeScan.
-		defer func() { err = releaseStatelessDB(statelessDBPath, err) }()
-		settings.Database.Driver = "sqlite"
-		settings.Database.SQLite.Path = statelessDBPath
-	} else if globalDB != "" {
+	// -S: the lifecycle scans into a throwaway temp SQLite DB that is removed
+	// after the run, so the main DB stays untouched (mirrors `vigolium scan -S`).
+	if !opts.Stateless && globalDB != "" {
 		settings.Database.Driver = "sqlite"
 		settings.Database.SQLite.Path = globalDB
 	}
 	applyGlobalExtFlagsToSettings(settings)
 	applyRequestBudgetConfig(settings, opts)
 
-	// Validate database config
-	if err := settings.Database.Validate(); err != nil {
-		return fmt.Errorf("invalid database configuration: %w", err)
-	}
 	if err := settings.DynamicAssessment.Extensions.Validate(); err != nil {
 		return fmt.Errorf("invalid extensions configuration: %w", err)
 	}
-
 	// Validate per-phase configs when enabled
 	if opts.DiscoverEnabled {
 		if err := settings.Discovery.Validate(); err != nil {
@@ -1248,104 +1174,58 @@ func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, tar
 		}
 	}
 
-	db, err := database.NewDB(&settings.Database)
-	if err != nil {
-		return fmt.Errorf("scan requires a database; use --db <path> or configure vigolium-configs.yaml: %w", err)
-	}
-	defer func() { _ = db.Close() }()
+	pass := nativeScanPass{
+		opts:         opts,
+		settings:     settings,
+		strategyName: opts.ScanningStrategy,
+		scanStart:    scanStart,
+		dbOpenError:  "scan requires a database; use --db <path> or configure vigolium-configs.yaml",
+		run: func(db *database.DB, repo *database.Repository, scanStart time.Time) error {
+			// No phase flags → scan the exact request via SingleSource; a phase
+			// flag → crawl from the target URL via the standard input source.
+			var scanRunner *runner.Runner
+			var err error
+			if hasPhaseFlags() {
+				scanRunner, err = runner.New(opts)
+			} else {
+				scanRunner, err = runner.NewWithInputSource(opts, source.NewSingleSource(rr, opts.Modules))
+			}
+			if err != nil {
+				return fmt.Errorf("failed to create scan runner: %w", err)
+			}
+			if scanRunner == nil {
+				return nil
+			}
+			scanRunner.SetSettings(settings)
+			scanRunner.SetRepository(repo)
 
-	ctx, cancelSetup := setupContext(settings)
-	defer cancelSetup()
-	if err := db.EnsureSchemaReady(ctx); err != nil {
-		return wrapSetupError(ctx, db.Driver(), "database schema setup", err)
-	}
-	repo := database.NewRepository(db)
+			// Closed before the export defers read the DB so any buffered
+			// records land first. A failed scan must abort visibly (non-zero,
+			// no success banner).
+			if err := runNativeScanPass(scanRunner); err != nil {
+				return err
+			}
 
-	// Machine event stream (--events). Registered before the export defers so its
-	// terminal scan.finished is the last line written — a consumer treats it as
-	// end-of-stream.
-	opts.ScanUUID = pinnedOrNewUUID(opts.ScanUUID)
-	// Scan webhook on every exit from here on: see the same defer in
-	// executeNativeScan. Registered before the document and export defers, so
-	// LIFO runs it after them and after the runner's finalizer, while db (a -S
-	// temp store included) is still open.
-	defer func() { fireNativeScanWebhook(settings, repo, opts, err, signals.Interrupted(), scanStart) }()
-	// -j: fold this pass into the invocation's scan document. Registered here,
-	// before the export defers, so LIFO runs it after them (err carries an
-	// export failure) and after the runner closed, while db is still open.
+			// The same tail the full scan command runs, minus the upload — see
+			// reportNativeScanSuccess for why that step stays behind.
+			//
+			// recordExportFailure, not a bare return: the summary and the gate
+			// still run on an unwritable report (the findings exist and are
+			// worth showing), but the run no longer exits 0 claiming to have
+			// written a file that is not there.
+			var tailErr error
+			recordExportFailure(&tailErr, reportScanCompletion(db, settings, repo, opts, scanStart))
+			return tailErr
+		},
+	}
+	// -j: fold this pass into the invocation's scan document.
 	if sess != nil && sess.doc != nil {
-		docDBPath := ""
-		if !opts.Stateless && settings.Database.Driver == "sqlite" {
-			docDBPath = settings.Database.SQLite.Path
-		}
-		method := ""
+		pass.doc = sess.doc
 		if rr != nil && rr.Request() != nil {
-			method = rr.Request().Method()
+			pass.docMethod = rr.Request().Method()
 		}
-		defer func() {
-			sess.doc.AddRunner(runnerDocInput{db: db, opts: opts, runErr: err, dbPath: docDBPath, method: method})
-		}()
 	}
-	prepareTerminalEvent, emitTerminalEvent, evErr := beginScanEventStream(db, opts, settings, opts.ScanningStrategy, scanStart)
-	if evErr != nil {
-		return evErr
-	}
-	// Registered first so LIFO writes the line last; prepare, registered second,
-	// gathers the totals before it while the database is still open. There is no
-	// --db-isolate merge on this path, so both sit together here.
-	defer func() { emitTerminalEvent(err) }()
-	defer func() { prepareTerminalEvent(err) }()
-
-	// Stateless + -o: suppress StandardWriter's live file output and materialize
-	// every requested format from the temp DB post-scan (mirrors executeNativeScan).
-	var statelessOutputPath string
-	if opts.Stateless && opts.Output != "" {
-		statelessOutputPath = opts.Output
-		opts.Output = ""
-	}
-	// Export tail. Registered before the runner is closed; both read the DB after
-	// the explicit scanRunner.Close() below flushes records, but before db.Close().
-	defer func() { recordExportFailure(&err, finishStatelessExport(db, opts, statelessOutputPath, false)) }()
-	defer func() {
-		if skipDeferredJSONLExport(err, opts.Stateless, statelessOutputPath) {
-			return
-		}
-		recordExportFailure(&err, finishScanJSONLExport(db, opts))
-	}()
-
-	// Build the Runner. No phase flags → scan the exact request via SingleSource;
-	// a phase flag → crawl from the target URL via the standard input source.
-	var scanRunner *runner.Runner
-	if hasPhaseFlags() {
-		scanRunner, err = runner.New(opts)
-	} else {
-		scanRunner, err = runner.NewWithInputSource(opts, source.NewSingleSource(rr, opts.Modules))
-	}
-	if err != nil {
-		return fmt.Errorf("failed to create scan runner: %w", err)
-	}
-	if scanRunner == nil {
-		return nil
-	}
-	scanRunner.SetSettings(settings)
-	scanRunner.SetRepository(repo)
-
-	// Close before the export defers read the DB so any buffered records land
-	// first. A failed scan must abort visibly (non-zero, no success banner).
-	scanErr := runNativeScanPass(scanRunner)
-	if scanErr != nil {
-		err = scanErr
-		return err
-	}
-
-	// The same tail the full scan command runs, minus the upload — see
-	// reportNativeScanSuccess for why that step stays behind.
-	//
-	// recordExportFailure, not a bare return: the summary and the gate still run
-	// on an unwritable report (the findings exist and are worth showing), but the
-	// run no longer exits 0 claiming to have written a file that is not there.
-	recordExportFailure(&err, reportScanCompletion(db, settings, repo, opts, scanStart))
-	return err
+	return runNativeScanLifecycle(pass)
 }
 
 // outputScanResult writes the scan result as JSON or human-readable table.

@@ -8,13 +8,11 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
-	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/oast"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
-	"github.com/vigolium/vigolium/pkg/types"
 )
 
 // Out-of-band (OAST) checks on the scan-url / scan-request direct path.
@@ -31,47 +29,27 @@ import (
 //     partial with oast_unavailable, as on the Runner path.
 //
 // The config is read through the same settings layers and the same
-// runner.ApplyScanSettingOverrides as `vigolium scan`, so --oast-url and
-// oast.enabled mean the same thing on every path.
+// runner.ApplyScanSettingOverrides as `vigolium scan` (directSettings), so
+// --oast-url and oast.enabled mean the same thing on every path.
 
 // directOASTWait bounds the wait for interactsh registration before the
 // executor runs: the Runner's dynamic-assessment wait.
 const directOASTWait = 3 * time.Second
 
-// directAutoOAST gates interactsh registration on the direct path. A fixed
-// --oast-url / oast.oast_url is unaffected. A variable so this package's tests
-// keep the public interactsh server out of every direct-path scan they run.
-var directAutoOAST = true
-
-// directOASTSettings caches the invocation's OAST config: loaded once, shared
-// by every input of a batch.
-type directOASTSettings struct {
-	loaded bool
-	cfg    *config.OASTConfig // nil: no OAST on this invocation
-	err    error
-}
-
 // oastConfig returns the OAST config the direct path runs with, or nil when
-// OAST is off (oast.enabled false, or interactsh with directAutoOAST off).
-// A settings load failure is returned: it means an explicit --config could not
-// be read, which every other path treats as fatal too.
+// OAST is off (oast.enabled false). A settings load failure is returned: it
+// means an explicit --config could not be read, which every other path treats
+// as fatal too.
 func (s *directScanSession) oastConfig() (*config.OASTConfig, error) {
-	if s.oast.loaded {
-		return s.oast.cfg, s.oast.err
-	}
-	s.oast.loaded = true
-	settings, err := loadProjectSettings(globalConfig)
+	settings, err := s.loadSettings()
 	if err != nil {
-		s.oast.err = err
 		return nil, err
 	}
-	runner.ApplyScanSettingOverrides(settings, &types.Options{OastURL: scanOpts.OastURL})
-	cfg := settings.OAST
-	if !cfg.Enabled || (cfg.OastURL == "" && !directAutoOAST) {
+	if !settings.OAST.Enabled {
 		return nil, nil
 	}
-	s.oast.cfg = &cfg
-	return s.oast.cfg, nil
+	cfg := settings.OAST
+	return &cfg, nil
 }
 
 // startDirectOAST builds one input's OAST service (registration, if any,

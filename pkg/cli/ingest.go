@@ -16,13 +16,9 @@ import (
 	"github.com/vigolium/vigolium/internal/ingestor"
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/core"
-	"github.com/vigolium/vigolium/pkg/core/network"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
-	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/dedup"
-	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/httpstack"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
@@ -472,40 +468,14 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 
 	// --- 5. Initialize HTTP stack ---
 	opts := types.DefaultOptions()
+	globalFlagsToOptions(opts)
 	opts.Concurrency = ingestOpts.Concurrency
-	opts.Timeout = globalTimeout
-	opts.ProxyURL = globalProxy
-	opts.Verbose = globalVerbose
-	opts.Debug = globalDebug
-	opts.DumpTraffic = globalDumpTraffic
-	opts.MaxPerHost = globalMaxPerHost
-	opts.NoWafPacing = globalNoWafPacing
-
-	if err := network.Init(opts); err != nil {
-		return outcome, fmt.Errorf("failed to initialize network: %w", err)
-	}
-
-	dedupMgr := dedup.NewManager()
-	defer dedupMgr.Close()
-
-	svc := &services.Services{
-		Options:      opts,
-		DedupManager: dedupMgr,
-	}
-
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:    opts.MaxPerHost,
-		MaxEntries:    1000,
-		EvictAfter:    30 * time.Second,
-		EvictInterval: 10 * time.Second,
-	})
-	defer func() { _ = hostLimiter.Close() }()
-	svc.HostLimiter = hostLimiter
-
-	httpRequester, err := http.NewRequester(opts, svc)
+	stack, err := httpstack.New(httpstack.Config{Options: opts})
 	if err != nil {
-		return outcome, fmt.Errorf("failed to create HTTP requester: %w", err)
+		return outcome, err
 	}
+	defer stack.Close()
+	svc, httpRequester := stack.Services, stack.Requester
 
 	// --- 6. Signal handling ---
 	sigChan := make(chan os.Signal, 1)
@@ -870,23 +840,10 @@ func runLocalIngestScan(settings *config.Settings, db *database.DB, repo *databa
 
 	// Build scan options from global flags
 	opts := types.DefaultOptions()
-	opts.Concurrency = globalConcurrency
-	opts.Timeout = globalTimeout
-	opts.ProxyURL = globalProxy
-	opts.Verbose = globalVerbose
-	opts.Silent = globalSilent
-	opts.Debug = globalDebug
-	opts.DumpTraffic = globalDumpTraffic
-	opts.JSONOutput = globalJSON
-	opts.MaxPerHost = globalMaxPerHost
-	opts.NoWafPacing = globalNoWafPacing
-	opts.MaxHostError = globalMaxHostError
-	opts.MaxFindingsPerModule = globalMaxFindingsPerModule
-	opts.ConfigPath = globalConfig
+	globalScanFlagsToOptions(opts)
 
 	// Modules are already resolved via resolveModules()
 	opts.Modules = ingestOpts.EnableModules
-	opts.NoTechFilter = globalNoTechFilter
 
 	// Create a Scan record if none provided
 	ingestScanProjectUUID, err := resolveProjectUUID()

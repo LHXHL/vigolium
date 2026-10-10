@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
 	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/httpstack"
 	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -519,20 +519,9 @@ func newHostLimiter(maxPerHost int, settings *config.Settings, noWafPacing bool)
 	if maxPerHost <= 0 {
 		maxPerHost = types.DefaultMaxPerHost
 	}
-	adaptive, minPerHost, ceilingPerHost := adaptiveHostLimiterSettings(settings)
-	return hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:     maxPerHost,
-		MaxEntries:     1000,
-		EvictAfter:     30 * time.Second,
-		EvictInterval:  10 * time.Second,
-		Adaptive:       adaptive,
-		MinPerHost:     minPerHost,
-		CeilingPerHost: ceilingPerHost,
-		// Throttle a host only once it starts returning WAF/CDN blocks; a non-WAF
-		// scan is unaffected. The constructor drops this when Adaptive is on.
-		WafAutoArm: true,
-		// --no-waf-pacing turns off only the proactive edge pre-arm; reactive
-		// WAF-block back-off stays on.
-		DisablePreArm: noWafPacing,
-	})
+	// The standalone stacks' limiter (httpstack), with the scan's WAF pacing;
+	// the constructor drops reactive WAF pacing when Adaptive is on.
+	cfg := httpstack.HostLimiterConfig(maxPerHost, 0, true, noWafPacing)
+	cfg.Adaptive, cfg.MinPerHost, cfg.CeilingPerHost = adaptiveHostLimiterSettings(settings)
+	return hostlimit.NewHostRateLimiter(cfg)
 }

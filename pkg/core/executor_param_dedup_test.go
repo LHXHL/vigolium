@@ -65,9 +65,8 @@ func runQueuedSameClass(t *testing.T, noParamDedup bool) int32 {
 	first := &classedIPStub{activeStub: activeStub{id: "first", scopes: modules.ScanScopeInsertionPoint}, class: "sqli", gate: gate}
 	second := &classedIPStub{activeStub: activeStub{id: "second", scopes: modules.ScanScopeInsertionPoint}, class: "sqli", reached: reached}
 
-	e := NewExecutor(ExecutorConfig{Workers: 1, ActiveTaskLimit: 1}, nil,
+	e := NewExecutor(ExecutorConfig{Workers: 1, ActiveTaskLimit: 1, NoParamDedup: noParamDedup}, nil,
 		[]modules.ActiveModule{first, second}, nil)
-	e.SetNoParamDedup(noParamDedup)
 	require.Equal(t, []string{"first", "second"}, ids(e.perIPActive))
 
 	_, item := makeTestItem("example.com", "/item?id=1", "<html></html>")

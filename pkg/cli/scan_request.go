@@ -151,7 +151,8 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	// reported (exit 1, no_targets_in_scope) without being sent.
 	inputs := []scanInput{{rr: rr, target: target, method: method}}
 	scopeEscapeHint = "or pass --ignore-scope to scan it anyway"
-	admission, err := admitDirectInputs(inputs)
+	cfg := &directSettings{}
+	admission, err := admitDirectInputs(cfg, inputs)
 	if err != nil {
 		return err
 	}
@@ -176,13 +177,14 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 		}
 		rr, target = resolved, resolved.Target()
 		inputs = []scanInput{{rr: rr, target: target, method: method}}
-		if admission, err = admitDirectInputs(inputs); err != nil {
+		if admission, err = admitDirectInputs(cfg, inputs); err != nil {
 			return err
 		}
 	}
 
 	sess := newDirectScanSession(database.ScanNameScanRequest, inputs)
 	sess.admission = admission
+	sess.cfg = cfg
 	sess.schemeSource = schemeSource
 	defer sess.close()
 

@@ -19,9 +19,7 @@ func isolateDBState(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Cleanup(func() {
 		ResetDBCache()
-		CommandIntent = IntentWrite
-		ReadOnlyRequested = false
-		RequireExistingSource = ""
+		Policy = OpenPolicy{Intent: IntentWrite}
 	})
 	ResetDBCache()
 }
@@ -167,7 +165,7 @@ func TestGetDBFor_ReadOnlyForcesEvidence(t *testing.T) {
 	}
 	ResetDBCache()
 
-	ReadOnlyRequested = true
+	Policy.ReadOnly = true
 	db, err := GetDBFor(IntentWrite, "", path)
 	if err != nil {
 		t.Fatalf("evidence open: %v", err)
