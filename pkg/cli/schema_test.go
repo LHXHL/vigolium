@@ -185,7 +185,7 @@ func TestFindingViewMirror(t *testing.T) {
 		}
 	}
 
-	env := newAgentEnvelope("finding", "findings", views, 2, 0, 2)
+	env := newMachineEnvelope(findingCmd, kindRead, "findings", views, 2, 0, 2)
 	env.WithProjectScope("p1")
 	raw, err := jsonMarshalNoEscape(env)
 	require.NoError(t, err)
@@ -195,7 +195,7 @@ func TestFindingViewMirror(t *testing.T) {
 	for k := range recViews[0] {
 		require.Contains(t, contract.JSONFieldNames(recordViewSchema{}), k)
 	}
-	env = newAgentEnvelope("traffic", "records", recViews, 1, 0, 1)
+	env = newMachineEnvelope(trafficCmd, kindRead, "records", recViews, 1, 0, 1)
 	raw, err = jsonMarshalNoEscape(env)
 	require.NoError(t, err)
 	contracttest.Validate(t, "traffic", raw)
@@ -221,7 +221,7 @@ func TestDisplayFindingsJSONMatchesSchema(t *testing.T) {
 	db := newInventoryTestDB(t)
 	withJSON(t)
 	out := captureStdout(t, func() {
-		require.NoError(t, displayFindingsJSON(context.Background(), db,
+		require.NoError(t, displayFindingsJSON(context.Background(), findingCmd, db,
 			[]*database.Finding{fullFinding(time.Now())}, 1, "p1"))
 	})
 	contracttest.Validate(t, "finding", []byte(out))

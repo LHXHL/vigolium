@@ -750,14 +750,6 @@ func scanDocQueryArgv(dbPath, projectUUID, scanUUID string) []string {
 	return append(argv, "finding", "--scan-uuid", scanUUID, "-j")
 }
 
-func quoteArgv(argv []string) string {
-	quoted := make([]string, 0, len(argv))
-	for _, a := range argv {
-		quoted = append(quoted, shellQuoteArg(a))
-	}
-	return strings.Join(quoted, " ")
-}
-
 // envelope assembles the document.
 func (b *scanDocBuilder) envelope() *agentEnvelope {
 	var (
@@ -864,6 +856,7 @@ func (b *scanDocBuilder) envelope() *agentEnvelope {
 		limit = len(items)
 	}
 	env := newAgentEnvelope(b.command, "findings", items, total, 0, limit)
+	env.Kind = string(kindScan)
 	env.WithProjectScope(projectUUID)
 	stateless := globalStateless
 	if persisted && !stateless {

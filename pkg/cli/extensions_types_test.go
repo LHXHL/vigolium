@@ -60,7 +60,7 @@ func TestExtensionsDocsJSON(t *testing.T) {
 	t.Cleanup(func() { globalJSON = prev })
 
 	out := captureStdout(t, func() {
-		require.NoError(t, emitExtensionDocsJSON("sha256"))
+		require.NoError(t, emitExtensionDocsJSON(extensionsDocsCmd, "sha256"))
 	})
 	var doc struct {
 		Items []apiFunctionView `json:"items"`
@@ -77,7 +77,7 @@ func TestExtensionsDocsJSON(t *testing.T) {
 
 	// No match is an empty list, still valid JSON.
 	out = captureStdout(t, func() {
-		require.NoError(t, emitExtensionDocsJSON("zzz-no-such-function"))
+		require.NoError(t, emitExtensionDocsJSON(extensionsDocsCmd, "zzz-no-such-function"))
 	})
 	doc.Items = nil
 	require.NoError(t, json.Unmarshal([]byte(out), &doc))

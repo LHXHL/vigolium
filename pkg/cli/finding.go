@@ -338,7 +338,7 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		}
 
 		if globalJSON {
-			return displayFindingsJSON(ctx, db, findings, total, filters.ProjectUUID)
+			return displayFindingsJSON(ctx, cmd, db, findings, total, filters.ProjectUUID)
 		}
 
 		// Echo the active filter conditions (severity, search, host, …) so it's
@@ -548,7 +548,7 @@ func buildFindingFilters(fuzzyTerm string) (database.QueryFilters, error) {
 		return database.QueryFilters{}, err
 	}
 
-	verdicts, err := parseVerdictList(findingVerdict)
+	verdicts, err := parseEnumCSV("--verdict", findingVerdict, database.FindingStatuses)
 	if err != nil {
 		return database.QueryFilters{}, err
 	}
@@ -653,9 +653,9 @@ func printActiveFindingFilters(filters database.QueryFilters, fuzzyTerm string) 
 	s.print(findingMarkdown || findingBurp || findingRaw)
 }
 
-func displayFindingsJSON(ctx context.Context, db *database.DB, findings []*database.Finding, total int64, projectUUID string) error {
+func displayFindingsJSON(ctx context.Context, cmd *cobra.Command, db *database.DB, findings []*database.Finding, total int64, projectUUID string) error {
 	opts := agentViewOptionsFromFlags()
-	env := newAgentEnvelope("finding", "findings",
+	env := newMachineEnvelope(cmd, kindRead, "findings",
 		findingViews(ctx, db, findings, opts, findingWithRecords), total, findingOffset, findingLimit)
 	env.WithProjectScope(projectUUID)
 	env.DBPath = resolvedReadDBPath()

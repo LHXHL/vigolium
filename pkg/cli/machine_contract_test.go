@@ -144,24 +144,6 @@ func TestMachineContractCobraTree(t *testing.T) {
 	}
 }
 
-// TestEnvelopeKindFollowsDeclaration: a legacy newAgentEnvelope call, spelled
-// with an alias or trailing flags, still renders its command's kind.
-func TestEnvelopeKindFollowsDeclaration(t *testing.T) {
-	preparedMachineTree(t)
-	for command, want := range map[string]string{
-		"db ls --list-tables": "read",
-		"db stats":            "read",
-		"traffic --group-by":  "read",
-		"scan-url":            "scan",
-		"config set":          "", // mutation without the spine: no kind until it has `changed`
-		"no-such-command":     "",
-	} {
-		if got := newAgentEnvelope(command, "", nil, 0, 0, 0).Kind; got != want {
-			t.Errorf("kind for %q = %q, want %q", command, got, want)
-		}
-	}
-}
-
 func sortedMapKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

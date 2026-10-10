@@ -159,7 +159,6 @@ func writeAgentJSON(env *agentEnvelope) error {
 	// hook is one a new command forgets — which is how a merged read with a
 	// skipped file reported a clean short answer in the first place.
 	attachGlobSources(env)
-	stampRunningCommand(env)
 	return writeResultDocument(env)
 }
 

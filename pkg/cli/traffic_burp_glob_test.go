@@ -99,7 +99,7 @@ func TestSaveGlobToBurpStreamsEveryMatchedFile(t *testing.T) {
 	trafficBurpBridgeURL = bridgeURL
 	t.Cleanup(func() { trafficBurpBridgeURL = restore })
 
-	err := saveGlobToBurp(context.Background(), filepath.Join(dir, "scan-*.sqlite"),
+	err := saveGlobToBurp(context.Background(), trafficCmd, filepath.Join(dir, "scan-*.sqlite"),
 		database.QueryFilters{SortBy: "sent_at"})
 	if err != nil {
 		t.Fatalf("saveGlobToBurp: %v", err)
@@ -121,7 +121,7 @@ func TestSaveGlobToBurpAppliesFiltersPerFile(t *testing.T) {
 	trafficBurpBridgeURL = bridgeURL
 	t.Cleanup(func() { trafficBurpBridgeURL = restore })
 
-	err := saveGlobToBurp(context.Background(), filepath.Join(dir, "scan-*.sqlite"),
+	err := saveGlobToBurp(context.Background(), trafficCmd, filepath.Join(dir, "scan-*.sqlite"),
 		database.QueryFilters{HostPattern: "b.example"})
 	if err != nil {
 		t.Fatalf("saveGlobToBurp: %v", err)
@@ -151,7 +151,7 @@ func TestSaveGlobToBurpReadsMixedFormats(t *testing.T) {
 	// The JSONL fixture's record carries no raw request, so it is offered to the
 	// bridge and rejected there rather than silently dropped — Added counts only
 	// the sqlite pair, but the run must not fail over it.
-	err := saveGlobToBurp(context.Background(), filepath.Join(dir, "scan-*"),
+	err := saveGlobToBurp(context.Background(), trafficCmd, filepath.Join(dir, "scan-*"),
 		database.QueryFilters{})
 	if err != nil {
 		t.Fatalf("saveGlobToBurp: %v", err)
@@ -175,7 +175,7 @@ func TestSaveGlobToBurpSkipsUnreadableMatch(t *testing.T) {
 	trafficBurpBridgeURL = bridgeURL
 	t.Cleanup(func() { trafficBurpBridgeURL = restore })
 
-	err := saveGlobToBurp(context.Background(), filepath.Join(dir, "scan-*.sqlite"),
+	err := saveGlobToBurp(context.Background(), trafficCmd, filepath.Join(dir, "scan-*.sqlite"),
 		database.QueryFilters{})
 	if err != nil {
 		t.Fatalf("saveGlobToBurp: %v", err)
@@ -190,7 +190,7 @@ func TestSaveGlobToBurpErrorsWhenPatternMatchesNothing(t *testing.T) {
 	trafficBurpBridgeURL = "http://127.0.0.1:9009"
 	t.Cleanup(func() { trafficBurpBridgeURL = restore })
 
-	err := saveGlobToBurp(context.Background(),
+	err := saveGlobToBurp(context.Background(), trafficCmd,
 		filepath.Join(t.TempDir(), "nope-*.sqlite"), database.QueryFilters{})
 	if err == nil {
 		t.Fatal("expected an error when the glob matches no files")

@@ -33,7 +33,7 @@ func TestConfigSetUsageErrors(t *testing.T) {
 		"add residue":        {"scope.host.exclude.add", `"x"`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := runConfigSet(deps, args)
+			err := runConfigSet(nil, deps, args)
 			var usage clicommon.UsageError
 			if !errors.As(err, &usage) {
 				t.Fatalf("runConfigSet(%q) = %v, want a UsageError", args, err)
@@ -53,7 +53,7 @@ func TestConfigSetStructuredValueFile(t *testing.T) {
 	}
 	deps := Deps{ConfigFlag: func() string { return cfg }}
 
-	if err := runConfigSet(deps, []string{"scope.host.include", `["a.example","*.b.example"]`}); err != nil {
+	if err := runConfigSet(nil, deps, []string{"scope.host.include", `["a.example","*.b.example"]`}); err != nil {
 		t.Fatal(err)
 	}
 	settings, err := config.LoadSettings(cfg)
@@ -65,7 +65,7 @@ func TestConfigSetStructuredValueFile(t *testing.T) {
 	}
 
 	before, _ := os.ReadFile(cfg)
-	if err := runConfigSet(deps, []string{"scope.host.include", `["a.example",`}); err == nil {
+	if err := runConfigSet(nil, deps, []string{"scope.host.include", `["a.example",`}); err == nil {
 		t.Fatal("broken list accepted")
 	}
 	after, _ := os.ReadFile(cfg)

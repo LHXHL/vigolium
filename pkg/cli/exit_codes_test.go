@@ -85,13 +85,13 @@ func TestExitCodeTable(t *testing.T) {
 		wantExit int
 		wantCode apicontract.ErrorCode
 	}{
-		{"plain error", errors.New("boom"), ExitError, errCodeFailed},
-		{"usage error", usageErrorf("--a and --b are mutually exclusive"), ExitUsageError, errCodeUsage},
-		{"usage error from clicommon", clicommon.UsageErrorf("usage: config set <key> <value>"), ExitUsageError, errCodeUsage},
-		{"confirmation required", fmt.Errorf("delete: %w", errConfirmationRequired), ExitUsageError, errCodeUsage},
+		{"plain error", errors.New("boom"), ExitError, apicontract.CodeFailed},
+		{"usage error", usageErrorf("--a and --b are mutually exclusive"), ExitUsageError, apicontract.CodeUsageError},
+		{"usage error from clicommon", clicommon.UsageErrorf("usage: config set <key> <value>"), ExitUsageError, apicontract.CodeUsageError},
+		{"confirmation required", fmt.Errorf("delete: %w", errConfirmationRequired), ExitUsageError, apicontract.CodeUsageError},
 		{"coded error", codedErrorf(apicontract.CodeNoTargetsInScope, "all 3 targets rejected by scope"), ExitError, apicontract.CodeNoTargetsInScope},
-		{"fuzz match", asMatchErrorf("matched 2 responses"), ExitFuzzMatch, errCodeFailed},
-		{"fail-on gate", gateError{err: errors.New("--fail-on high")}, ExitFailOnGate, errCodeGateTripped},
+		{"fuzz match", asMatchErrorf("matched 2 responses"), ExitFuzzMatch, apicontract.CodeFailed},
+		{"fail-on gate", gateError{err: errors.New("--fail-on high")}, ExitFailOnGate, apicontract.CodeGateTripped},
 		{"incomplete timed_out", incompleteErrorf(apicontract.CodeTimedOut, "agent hit --max-duration"), ExitIncomplete, apicontract.CodeTimedOut},
 		{"incomplete budget", incompleteErrorf(apicontract.CodeBudgetExhausted, "request budget spent"), ExitIncomplete, apicontract.CodeBudgetExhausted},
 		{"incomplete partial", incompleteErrorf(apicontract.CodePartial, "2 of 5 phases failed"), ExitIncomplete, apicontract.CodePartial},

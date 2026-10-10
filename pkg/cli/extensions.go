@@ -128,12 +128,13 @@ var extensionsLsCmd = &cobra.Command{
 // One handler rather than two identical closures, so the -j branch cannot be
 // added to one spelling and forgotten on the other.
 func runExtensionsLs(cmd *cobra.Command, args []string) error {
-	// Bare `extensions` is the documented shorthand for `extensions ls`.
-	// (Looked up rather than named: naming extensionsLsCmd here would make its
-	// initializer cyclic.)
+	// Bare `extensions` is the documented shorthand for `extensions ls`, so its
+	// document names `extensions ls`. (Looked up rather than named: naming
+	// extensionsLsCmd here would make its initializer cyclic.)
+	docCmd := cmd
 	if cmd != nil && cmd.HasSubCommands() {
 		if sub, _, err := cmd.Find([]string{"ls"}); err == nil && sub != cmd {
-			delegateCommand(sub)
+			docCmd = sub
 		}
 	}
 	filter := ""
@@ -141,7 +142,7 @@ func runExtensionsLs(cmd *cobra.Command, args []string) error {
 		filter = args[0]
 	}
 	if globalJSON {
-		return emitExtensionsJSON(extOpts, filter)
+		return emitExtensionsJSON(docCmd, extOpts, filter)
 	}
 	printExtensionsTable(extOpts, filter)
 	return nil
@@ -160,7 +161,7 @@ var extensionsDocsCmd = &cobra.Command{
 			filter = args[0]
 		}
 		if globalJSON {
-			return emitExtensionDocsJSON(filter)
+			return emitExtensionDocsJSON(cmd, filter)
 		}
 		return printExtensionDocs(filter)
 	},
@@ -699,7 +700,7 @@ type apiFunctionView struct {
 // emitExtensionDocsJSON writes the API catalog (optionally filtered) as the
 // standard list envelope. An empty match is an empty list, not an error: the
 // caller asked a question and the answer is "none".
-func emitExtensionDocsJSON(filter string) error {
+func emitExtensionDocsJSON(cmd *cobra.Command, filter string) error {
 	filtered := filterAPIFunctions(filter)
 	views := make([]apiFunctionView, 0, len(filtered))
 	for _, fn := range filtered {
@@ -714,7 +715,7 @@ func emitExtensionDocsJSON(filter string) error {
 			Example:     fn.Example,
 		})
 	}
-	env := newAgentEnvelope("extensions docs", "", views, int64(len(views)), 0, len(views))
+	env := newMachineEnvelope(cmd, kindRead, "", views, int64(len(views)), 0, len(views))
 	if filter != "" {
 		env.With("filter", filter)
 	}
@@ -931,10 +932,7 @@ func installPresets(cmd *cobra.Command, filter string) error {
 
 	// Progress is human text: stdout normally, stderr under -j, where stdout
 	// carries the one result document.
-	progress := os.Stdout
-	if globalJSON {
-		progress = os.Stderr
-	}
+	progress := humanOut()
 
 	filterLower := strings.ToLower(filter)
 	var installed, skipped int

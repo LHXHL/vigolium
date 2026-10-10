@@ -51,8 +51,8 @@ func runExtensionsEval(cmd *cobra.Command, args []string) error {
 				"it does not take code (an argument, --ext-file or --stdin)")
 		}
 		// The output is ext run's, so the document names ext run (and its
-		// schema applies), whichever spelling ran it.
-		delegateCommand(extensionsRunCmd)
+		// schema applies), whichever spelling ran it: runExtensionOnRecord
+		// emits under extensionsRunCmd.
 		return runExtensionOnRecord(cmd, "")
 	}
 

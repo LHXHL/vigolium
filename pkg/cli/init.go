@@ -276,10 +276,11 @@ func copyEmbeddedDir(targetDir, embedPath string) {
 	}
 }
 
-// coreDepCommands lists the leaf cobra command names (cmd.Name()) whose first
-// run checks for chromium + nuclei templates and, when either is missing, says
-// so in one stderr line. Nothing is installed here: the spidering and
-// known-issue-scan phases provision what they need when they run (scan.setup).
+// coreDepCommands lists the command paths (not leaf names: `oast ingest` is not
+// `ingest`) whose first run checks for chromium + nuclei templates and, when
+// either is missing, says so in one stderr line. Nothing is installed here: the
+// spidering and known-issue-scan phases provision what they need when they run
+// (scan.setup).
 // The set deliberately excludes:
 //   - scan-url / scan-request: the direct path neither crawls nor runs nuclei
 //     unless asked, and then the phase provisions lazily like any other scan
@@ -287,18 +288,18 @@ func copyEmbeddedDir(targetDir, embedPath string) {
 //   - data-management commands (project, scope, source, traffic, finding, db, …)
 //   - the olium TUI and the agent query/olium/audit subcommands (LLM-only, no native scan)
 var coreDepCommands = map[string]bool{
-	"scan":      true,
-	"run":       true,
-	"autopilot": true, // `vigolium agent autopilot` — uses chromium for spidering
-	"swarm":     true, // `vigolium agent swarm`     — drives the native scan pipeline
-	"server":    true, // long-running API server that hosts scan endpoints
-	"ingest":    true, // populates the queue feeding scan workers
+	"scan":            true,
+	"run":             true,
+	"agent autopilot": true, // uses chromium for spidering
+	"agent swarm":     true, // drives the native scan pipeline
+	"server":          true, // long-running API server that hosts scan endpoints
+	"ingest":          true, // populates the queue feeding scan workers
 }
 
 // needsCoreDeps reports whether the given command should run the first-run
 // chromium + nuclei-templates check.
 func needsCoreDeps(cmd *cobra.Command) bool {
-	return coreDepCommands[cmd.Name()]
+	return coreDepCommands[commandPathWithoutRoot(cmd)]
 }
 
 // coreDepState is what the first-run check found missing.

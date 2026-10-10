@@ -25,12 +25,12 @@ func newSetCmd(deps Deps, example string) *cobra.Command {
 		Args:    cobra.RangeArgs(1, 3),
 		Example: example,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigSet(deps, args)
+			return runConfigSet(cmd, deps, args)
 		},
 	}
 }
 
-func runConfigSet(deps Deps, args []string) error {
+func runConfigSet(cmd *cobra.Command, deps Deps, args []string) error {
 	var key, value string
 	switch {
 	case len(args) == 1 && strings.Contains(args[0], "="):
@@ -97,7 +97,7 @@ func runConfigSet(deps Deps, args []string) error {
 		if !changed {
 			action = "noop"
 		}
-		return deps.WriteMutation("config set", []configSetResult{{
+		return deps.WriteMutation(cmd, []configSetResult{{
 			Key:        key,
 			Value:      shown,
 			Sensitive:  sensitive,

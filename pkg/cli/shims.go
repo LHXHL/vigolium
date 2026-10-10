@@ -241,12 +241,7 @@ func printShimRoute(argv, notes []string) {
 
 // shimCommandLine renders argv as a pasteable vigolium command.
 func shimCommandLine(argv []string) string {
-	quoted := make([]string, 0, len(argv)+1)
-	quoted = append(quoted, "vigolium")
-	for _, a := range argv {
-		quoted = append(quoted, shellQuoteArg(a))
-	}
-	return strings.Join(quoted, " ")
+	return quoteArgv(append([]string{"vigolium"}, argv...))
 }
 
 // shimDryRun is the --dry-run report: what would run, and every approximation.

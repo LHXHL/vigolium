@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/agent/agenttypes"
@@ -62,11 +63,11 @@ type profileEntry struct {
 // emitStrategyJSON writes the discovery view. `items` carries the strategies —
 // the thing the command is named for — with the other vocabularies as siblings,
 // so the envelope's total/limit describe something meaningful.
-func emitStrategyJSON(cfg *config.ScanningStrategyConfig) error {
+func emitStrategyJSON(cmd *cobra.Command, cfg *config.ScanningStrategyConfig) error {
 	strategies := strategyCatalog(cfg)
 	profiles, profilesDir := profileCatalog(cfg)
 
-	env := newAgentEnvelope("strategy", "strategies", strategies,
+	env := newMachineEnvelope(cmd, kindRead, "strategies", strategies,
 		int64(len(strategies)), 0, len(strategies))
 	env.With("default_strategy", cfg.DefaultStrategy)
 	if cfg.ScanningProfile != "" {

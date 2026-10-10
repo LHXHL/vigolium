@@ -34,9 +34,8 @@ type agentEnvelope struct {
 	Command       string `json:"command"`
 	// Kind names the document's shape — "read", "mutation" or "scan" — so a
 	// consumer can tell a row list from a mutation receipt without knowing the
-	// command. Taken from the command's machine declaration (machine_kinds.go);
-	// omitted for a mutation command still on the legacy constructor, which has
-	// no `changed` to go with it.
+	// command. Set by the builder from the command's machine declaration
+	// (newMachineEnvelope, asMutation); empty from the raw newAgentEnvelope.
 	Kind string `json:"kind,omitempty"`
 	// OK is always true on a result document. The error envelope carries
 	// ok:false (agent_error.go), so `.ok` is a valid branch on every document a
@@ -103,7 +102,9 @@ type agentEnvelope struct {
 	objectResult bool
 }
 
-// newAgentEnvelope builds the standard envelope. legacyKey is the pre-envelope
+// newAgentEnvelope builds the standard envelope with no kind; a command emits
+// through newMachineEnvelope (or emitRead/emitObject/emitMutation), which names
+// it from the cobra path and sets the kind. legacyKey is the pre-envelope
 // name this command used for its row array ("records", "findings", "scans", …);
 // pass "" for a command that had none.
 //
@@ -116,7 +117,6 @@ func newAgentEnvelope(command, legacyKey string, items any, total int64, offset,
 	env := &agentEnvelope{
 		SchemaVersion: AgentSchemaVersion,
 		Command:       command,
-		Kind:          envelopeKindFor(command),
 		OK:            true,
 		Total:         total,
 		Offset:        offset,

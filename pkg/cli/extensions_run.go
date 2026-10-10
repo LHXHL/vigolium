@@ -168,7 +168,7 @@ func runExtensionOnRecord(cmd *cobra.Command, arg string) error {
 	repo := database.NewRepository(db)
 
 	notFound := func() error {
-		return codedErrorf(errCodeRecordNotFound,
+		return codedErrorf(apicontract.CodeRecordNotFound,
 			"no stored record has uuid %q.\n\nList what is there with: vigolium traffic --compact --fields uuid,url -j", uuid)
 	}
 	rec, err := repo.GetRecordByUUIDOrPrefix(context.Background(), uuid)

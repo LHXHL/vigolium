@@ -77,10 +77,7 @@ func runSessionLint(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	w := io.Writer(os.Stdout)
-	if globalJSON {
-		w = os.Stderr
-	}
+	w := humanOut()
 
 	items := []sessionLintItem{}
 	errorsN, warningsN, filesWithErrors := 0, 0, 0

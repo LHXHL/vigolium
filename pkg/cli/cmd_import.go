@@ -12,6 +12,7 @@ import (
 	"github.com/uptrace/bun"
 
 	"github.com/vigolium/vigolium/pkg/agent"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/burpbridge"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -337,13 +338,13 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 		reportPath, err := emitImportReport(ctx, db, reportScan, reportFormat, reportOutput, opts)
 		if err != nil {
-			// errCodeExportFailed, not the inferred code: the import landed and the
+			// apicontract.CodeExportFailed, not the inferred code: the import landed and the
 			// findings are queryable; what failed is the artifact that was asked
 			// for, and a driver's correct response is to retry the report rather
 			// than the import. Left to inference, a missing parent directory wraps
 			// os.ErrNotExist and reports source_missing — which names the import
 			// source that was read successfully a moment earlier.
-			return codedErrorf(errCodeExportFailed,
+			return codedErrorf(apicontract.CodeExportFailed,
 				"import succeeded but report generation failed: %w", err)
 		}
 		if jsonOut != nil {
@@ -363,7 +364,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				// Same reasoning as the report above: the requested artifact is what
 				// failed, not the import.
-				return codedErrorf(errCodeExportFailed,
+				return codedErrorf(apicontract.CodeExportFailed,
 					"import succeeded but upload failed: %w", err)
 			}
 			uploaded = append(uploaded, url)

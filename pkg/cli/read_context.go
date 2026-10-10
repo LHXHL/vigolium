@@ -6,6 +6,7 @@ import (
 
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/httpmsg"
 )
 
 // Every -j read attaches a ready-to-run follow-up command:
@@ -140,11 +141,17 @@ func followUpQuery(tail ...string) string {
 	if parts == nil {
 		return ""
 	}
-	// shellQuoteArg is the resume-command quoter; reusing it means a database
-	// path with a space in it is escaped by the same rule in both places.
-	quoted := make([]string, 0, len(parts))
-	for _, p := range parts {
-		quoted = append(quoted, shellQuoteArg(p))
+	return quoteArgv(parts)
+}
+
+// quoteArgv renders argv as one pasteable POSIX shell line (httpmsg.ShellQuote
+// per word). The one quoter for every command line the CLI prints — follow-up
+// queries, resume and shim lines, the scan document — so a database path with a
+// space in it is escaped by the same rule everywhere.
+func quoteArgv(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = httpmsg.ShellQuote(a)
 	}
 	return strings.Join(quoted, " ")
 }

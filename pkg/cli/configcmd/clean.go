@@ -19,12 +19,12 @@ func newCleanCmd(deps Deps, example string) *cobra.Command {
 		Long:    "Remove the ~/.vigolium/ directory (config, database, extensions) and regenerate fresh defaults.",
 		Example: example,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigClean(deps)
+			return runConfigClean(cmd, deps)
 		},
 	}
 }
 
-func runConfigClean(deps Deps) error {
+func runConfigClean(cmd *cobra.Command, deps Deps) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
@@ -45,7 +45,7 @@ func runConfigClean(deps Deps) error {
 		if changed {
 			items = append(items, configCleanResult{Path: displayDir, Reinitialized: true})
 		}
-		return deps.WriteMutation("config clean", items, changed, action, extra)
+		return deps.WriteMutation(cmd, items, changed, action, extra)
 	}
 
 	// Check if directory exists

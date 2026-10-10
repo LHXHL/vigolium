@@ -7,7 +7,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -298,22 +297,19 @@ func runServerCATrust(cmd *cobra.Command, action string) error {
 			return fmt.Errorf("no %s commands for %s: %s", action, plan.Platform, strings.Join(plan.Notes, "; "))
 		}
 		// Child output goes to stderr under -j so stdout stays one document.
-		var out io.Writer = os.Stdout
-		if globalJSON {
-			out = os.Stderr
-		}
+		out := humanOut()
 		for _, step := range plan.Steps {
 			if !globalJSON && !globalSilent {
-				fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(), shellJoin(step.Argv))
+				fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(), quoteArgv(step.Argv))
 			}
 			c := exec.Command(step.Argv[0], step.Argv[1:]...)
 			c.Stdin, c.Stdout, c.Stderr = os.Stdin, out, os.Stderr
 			if err := c.Run(); err != nil {
 				var exitErr *exec.ExitError
 				if errors.As(err, &exitErr) {
-					return fmt.Errorf("%s failed (exit %d)", shellJoin(step.Argv), exitErr.ExitCode())
+					return fmt.Errorf("%s failed (exit %d)", quoteArgv(step.Argv), exitErr.ExitCode())
 				}
-				return fmt.Errorf("%s: %w", shellJoin(step.Argv), err)
+				return fmt.Errorf("%s: %w", quoteArgv(step.Argv), err)
 			}
 		}
 	}
@@ -334,31 +330,11 @@ func runServerCATrust(cmd *cobra.Command, action string) error {
 	} else if len(plan.Steps) > 0 {
 		fmt.Printf("# %s the Vigolium ingest-proxy CA (%s); rerun with --yes to execute:\n", action, plan.Platform)
 		for _, step := range plan.Steps {
-			fmt.Println(shellJoin(step.Argv))
+			fmt.Println(quoteArgv(step.Argv))
 		}
 	}
 	for _, n := range plan.Notes {
 		fmt.Printf("# note: %s\n", n)
 	}
 	return nil
-}
-
-// shellSafeRune reports whether r needs no quoting in a POSIX shell word.
-func shellSafeRune(r rune) bool {
-	return r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == ',' || r == '=' || r == '@' ||
-		(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
-}
-
-// shellJoin renders argv for copy-paste into a POSIX shell, single-quoting any
-// argument that is not plainly safe.
-func shellJoin(argv []string) string {
-	parts := make([]string, len(argv))
-	for i, a := range argv {
-		if a != "" && strings.IndexFunc(a, func(r rune) bool { return !shellSafeRune(r) }) < 0 {
-			parts[i] = a
-			continue
-		}
-		parts[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
-	}
-	return strings.Join(parts, " ")
 }

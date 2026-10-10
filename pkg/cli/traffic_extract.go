@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -172,7 +173,7 @@ func loadExtractTarget(ctx context.Context) (*extractedMessage, error) {
 	}
 
 	notFound := func() error {
-		return codedErrorf(errCodeRecordNotFound,
+		return codedErrorf(apicontract.CodeRecordNotFound,
 			"no stored record has uuid %q.\n\nList what is there with: vigolium traffic --compact --fields uuid,url -j", uuid)
 	}
 
@@ -200,13 +201,13 @@ func loadExtractTarget(ctx context.Context) (*extractedMessage, error) {
 	raw := record.RawRequest
 	if side == sideResponse {
 		if !record.HasResponse {
-			return nil, codedErrorf(errCodeBodyUnavailable,
+			return nil, codedErrorf(apicontract.CodeBodyUnavailable,
 				"record %q has no response captured: the request was stored without one", uuid)
 		}
 		raw = record.RawResponse
 	}
 	if len(raw) == 0 {
-		return nil, codedErrorf(errCodeBodyUnavailable, "record %q has no %s bytes stored", uuid, side)
+		return nil, codedErrorf(apicontract.CodeBodyUnavailable, "record %q has no %s bytes stored", uuid, side)
 	}
 
 	headers, body := splitHeadersBody(raw)
@@ -250,7 +251,7 @@ func runTrafficBody(cmd *cobra.Command, args []string) error {
 				// which is right for a preview and wrong here: a caller who asked for
 				// `decoded` and silently received compressed bytes would write a
 				// broken artifact and never know.
-				return codedErrorf(errCodeBodyDecodeFailed,
+				return codedErrorf(apicontract.CodeBodyDecodeFailed,
 					"record %q: the %s body is gzip-encoded but could not be decoded.\n"+
 						"Use --representation stored to extract the compressed bytes as captured",
 					msg.Record.UUID, msg.Side)
@@ -264,7 +265,7 @@ func runTrafficBody(cmd *cobra.Command, args []string) error {
 		if dec.Capped {
 			complete = false
 			if !extractAllowIncomplete {
-				return codedErrorf(errCodeBodyIncomplete,
+				return codedErrorf(apicontract.CodeBodyIncomplete,
 					"record %q: the decoded %s body exceeds the %d-byte decoder limit, so only a prefix is available.\n"+
 						"Pass --allow-incomplete to write the prefix anyway, or --representation stored for the complete compressed bytes",
 					msg.Record.UUID, msg.Side, agentGunzipCap)
@@ -356,7 +357,7 @@ func deliverBody(cmd *cobra.Command, msg *extractedMessage, out []byte, complete
 // reads these commands and the listings alike. total/offset/limit describe the
 // one message that was addressed.
 func newExtractEnvelope(cmd *cobra.Command, msg *extractedMessage, receipt map[string]any) *agentEnvelope {
-	env := newAgentEnvelope(commandPathWithoutRoot(cmd), "", receipt, 1, 0, 1)
+	env := newMachineEnvelope(cmd, kindRead, "", receipt, 1, 0, 1)
 	env.DBPath = resolvedReadDBPath()
 	env.WithProjectScope(msg.ProjectScope)
 	return env.WithQuery("traffic", "--uuid", msg.Record.UUID, "--json", "--full-body")

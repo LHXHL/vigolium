@@ -56,12 +56,7 @@ const (
 // under --json (stdout is reserved for the run document), otherwise stdout.
 // Every agent command routes its stream through here; a test walks pkg/cli
 // and rejects any other StreamWriter assignment (TestAgentStreamSinkUsedEverywhere).
-func agentStreamSink() io.Writer {
-	if globalJSON {
-		return os.Stderr
-	}
-	return os.Stdout
-}
+func agentStreamSink() io.Writer { return humanOut() }
 
 // agentRunStatus maps how a run ended to its agentic_scans.status and to the
 // status the run document reports. They differ in one spelling only: the

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/dbimport"
@@ -139,7 +140,7 @@ func TestTrafficBodyCrossProjectNotFound(t *testing.T) {
 		extractUUID = "rec-b"
 		_, err := loadExtractTarget(context.Background())
 		require.Error(t, err)
-		assert.Equal(t, errCodeRecordNotFound, classifyErrorCode(err, classifyExitCode(err)))
+		assert.Equal(t, apicontract.CodeRecordNotFound, classifyErrorCode(err, classifyExitCode(err)))
 		assert.NotContains(t, err.Error(), "project",
 			"the message must not reveal that the record exists elsewhere")
 	})

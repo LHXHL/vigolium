@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 )
 
 // The --json contract is "exactly one document on stdout". The tests here cover
@@ -85,7 +86,7 @@ func TestWriteAgentJSONFileFailureLeavesErrorEnvelope(t *testing.T) {
 	require.Equal(t, false, docs[0]["ok"])
 	errObj, ok := docs[0]["error"].(map[string]any)
 	require.True(t, ok, "error envelope has no error object: %v", docs[0])
-	require.Equal(t, string(errCodeExportFailed), errObj["code"],
+	require.Equal(t, string(apicontract.CodeExportFailed), errObj["code"],
 		"a failed -o write is a failed requested artifact, not a missing source")
 	require.Contains(t, errObj["message"], "write ")
 	require.Contains(t, errObj["message"], jsonOutputPath,

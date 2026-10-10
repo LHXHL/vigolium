@@ -244,12 +244,10 @@ func registerCommandSchema(c contract.Command) {
 // (stream commands render a read envelope under -j).
 func envelopeKindForDeclared(k machineKind) string {
 	switch k {
-	case kindRead, kindStream:
-		return contract.KindRead
-	case kindMutation:
-		return contract.KindMutation
-	case kindScan:
-		return contract.KindScan
+	case kindStream:
+		return string(kindRead)
+	case kindRead, kindMutation, kindScan:
+		return string(k)
 	}
 	return ""
 }

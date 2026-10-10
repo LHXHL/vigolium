@@ -315,7 +315,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	// and outside runWithWatch so --watch cannot re-post the whole corpus on every
 	// tick, matching how --replay is dispatched below.
 	if trafficSaveToBurp && strings.TrimSpace(globalGlobDB) != "" {
-		return saveGlobToBurp(context.Background(), globalGlobDB, filters)
+		return saveGlobToBurp(context.Background(), cmd, globalGlobDB, filters)
 	}
 
 	rendersRaw := trafficRendersRawBodies()
@@ -359,7 +359,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		// The aggregate answers a question about the matched rows without
 		// hydrating them, so it runs before anything that would.
 		if strings.TrimSpace(trafficGroupBy) != "" {
-			return runTrafficGroupBy(ctx, db, filters)
+			return runTrafficGroupBy(ctx, cmd, db, filters)
 		}
 		if trafficSaveToBurp {
 			records, err := database.NewQueryBuilder(db, filters).Execute(ctx)
@@ -431,7 +431,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		}
 
 		if globalJSON {
-			return displayJSON(ctx, db, records, total, trafficOffset, trafficLimit, provenance...)
+			return displayJSON(ctx, cmd, db, records, total, trafficOffset, trafficLimit, provenance...)
 		}
 
 		// Echo the active filter conditions (search, host, method, status, …) so

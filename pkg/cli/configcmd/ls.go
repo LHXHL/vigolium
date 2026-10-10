@@ -24,7 +24,7 @@ func newLsCmd(deps Deps, example string) *cobra.Command {
 		Example: example,
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigLs(deps, args, showSecrets)
+			return runConfigLs(cmd, deps, args, showSecrets)
 		},
 	}
 	cmd.Flags().BoolVar(&showSecrets, "show-secrets", false, "Reveal sensitive values (API keys, tokens, credentials) in plaintext instead of [redacted]; prints a warning to stderr")
@@ -73,7 +73,7 @@ func newConfigEntryView(entry config.ConfigEntry, showSecrets bool) configEntryV
 	return v
 }
 
-func runConfigLs(deps Deps, args []string, showSecrets bool) error {
+func runConfigLs(cmd *cobra.Command, deps Deps, args []string, showSecrets bool) error {
 	settings, err := config.LoadSettings(deps.ConfigFlag())
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -114,7 +114,7 @@ func runConfigLs(deps Deps, args []string, showSecrets bool) error {
 	// that should be handed plaintext credentials, since -j output routinely
 	// lands in an agent transcript.
 	if deps.jsonRequested() {
-		return deps.WriteJSON("config ls", "entries", matched, len(matched), map[string]any{
+		return deps.WriteJSON(cmd, "entries", matched, len(matched), map[string]any{
 			"config_path": config.ContractPath(clicommon.EffectiveConfigPath(deps.ConfigFlag())),
 			"redacted":    !showSecrets,
 			"filter":      filter,

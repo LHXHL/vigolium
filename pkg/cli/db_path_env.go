@@ -47,15 +47,16 @@ var dbPathEnvPinned bool
 // project-scoping-off (dbPathEnvAutoStateless) mid-run.
 //
 // Read commands need no such list: they express the same intent by asking
-// statelessReadRequested, and both `vigolium audit` and `vigolium agent audit`
-// land here on leaf name alone.
+// statelessReadRequested. Keyed by full command path, not leaf name: a leaf
+// name collides (`extensions run` is not `run`).
 var statelessWriteCommands = map[string]bool{
-	"scan":         true,
-	"scan-url":     true,
-	"scan-request": true,
-	"run":          true,
-	"audit":        true,
-	"autopilot":    true,
+	"scan":            true,
+	"scan-url":        true,
+	"scan-request":    true,
+	"run":             true,
+	"audit":           true,
+	"agent audit":     true,
+	"agent autopilot": true,
 }
 
 // statelessWriteRequested reports whether the user explicitly asked cmd for the
@@ -67,7 +68,7 @@ var statelessWriteCommands = map[string]bool{
 // about -S and I do not want it", and reading Changed as enabled dropped the pin
 // and sent the scan's writes to the default database instead.
 func statelessWriteRequested(cmd *cobra.Command) bool {
-	if !statelessWriteCommands[cmd.Name()] {
+	if !statelessWriteCommands[commandPathWithoutRoot(cmd)] {
 		return false
 	}
 	return flagOn(cmd, "stateless")

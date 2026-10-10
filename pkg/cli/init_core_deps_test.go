@@ -161,12 +161,14 @@ func TestCoreDepNoticeQuietModes(t *testing.T) {
 // TestCoreDepCommandsSkipDirectPath: scan-url / scan-request no longer run the
 // first-run check; the phases provision lazily.
 func TestCoreDepCommandsSkipDirectPath(t *testing.T) {
-	for _, name := range []string{"scan-url", "scan-request"} {
-		if needsCoreDeps(&cobra.Command{Use: name}) {
-			t.Errorf("%s still runs the first-run dependency check", name)
+	for _, path := range []string{"scan-url", "scan-request", "oast ingest", "extensions run"} {
+		if needsCoreDeps(cmdAtPath(path)) {
+			t.Errorf("%s runs the first-run dependency check", path)
 		}
 	}
-	if !needsCoreDeps(&cobra.Command{Use: "scan"}) {
-		t.Error("scan should run the first-run dependency check")
+	for _, path := range []string{"scan", "ingest", "agent swarm"} {
+		if !needsCoreDeps(cmdAtPath(path)) {
+			t.Errorf("%s should run the first-run dependency check", path)
+		}
 	}
 }

@@ -45,70 +45,9 @@ type agentError struct {
 	ExitCode int                   `json:"exit_code"`
 }
 
-// Stable error codes. The closed set lives in pkg/apicontract, shared with the
-// REST API; these unexported names keep pkg/cli's call sites short. Add new
-// codes there, never here: a consumer branches on these strings, and a value
-// defined in only one transport is one the other transport drifts from.
-const (
-	errCodeUsage = apicontract.CodeUsageError
-	// errCodeSourceMissing: the path does not exist.
-	errCodeSourceMissing = apicontract.CodeSourceMissing
-	// errCodeSourceUnreadable: the file exists but is not openable as a database
-	// — not SQLite at all, or corrupt.
-	errCodeSourceUnreadable = apicontract.CodeSourceUnreadable
-	// errCodeSourceIncompatible: a perfectly good SQLite file that is not a
-	// vigolium store. It opens, it passes an integrity check, and every read
-	// against it fails on a missing table.
-	//
-	// It has its own code because the three states it used to share with
-	// errCodeFailed are decisions a caller makes differently: an empty store
-	// ("nothing scanned this yet") means go scan; a zero-byte or foreign file
-	// means the path is wrong; a genuine query failure means the read itself
-	// broke. Collapsing them is how a scratch database that was never a vigolium
-	// store gets reported as a target with no traffic.
-	errCodeSourceIncompatible = apicontract.CodeSourceIncompatible
-	errCodeGateTripped        = apicontract.CodeGateTripped
-	errCodeFailed             = apicontract.CodeFailed
-
-	// Single-message extraction (traffic body / traffic headers). These name the
-	// states that `db export --format fs` used to collapse into an empty file or a
-	// generic failure — which is how a mistyped UUID, a request stored without a
-	// response, and a genuinely empty body all became the same answer.
-	//
-	// errCodeRecordNotFound: no record carries the given UUID.
-	errCodeRecordNotFound = apicontract.CodeRecordNotFound
-	// errCodeBodyUnavailable: the record exists, but the requested side was never
-	// captured. Distinct from a captured body of zero length, which SUCCEEDS and
-	// reports empty: true.
-	errCodeBodyUnavailable = apicontract.CodeBodyUnavailable
-	// errCodeBodyDecodeFailed: the body announces an encoding that could not be
-	// undone. Never silently downgraded to the stored bytes: a caller who asked
-	// for `decoded` and received compressed bytes writes a broken artifact.
-	errCodeBodyDecodeFailed = apicontract.CodeBodyDecodeFailed
-	// errCodeBodyIncomplete: only a prefix of the body is available (the decoder
-	// hit its ceiling). Requires --allow-incomplete to extract anyway.
-	errCodeBodyIncomplete = apicontract.CodeBodyIncomplete
-	// errCodeExportFailed: the work ran, but a requested artifact was not written
-	// — an unwritable destination, a failed query mid-stream, a VACUUM that could
-	// not complete. Distinct from a failure of the scan itself: the findings may
-	// well exist, they just did not reach the file the caller asked for, and a
-	// driver's correct response is to retry the export rather than the scan.
-	errCodeExportFailed = apicontract.CodeExportFailed
-	// errCodeIngestIncomplete: the ingest ran, but not every record it read
-	// reached the database — a write the store refused, or a request with no
-	// response to store. Distinct from a generic failure because the caller's
-	// remedy is about the records, not the command: re-ingest the capture, or
-	// check that the origins it replays against are still reachable. It exists
-	// because the alternative was the shape it replaces — "30 records ingested",
-	// exit 0, zero rows in the table.
-	errCodeIngestIncomplete = apicontract.CodeIngestIncomplete
-	// errCodeOutputTooLarge: --max-output-bytes is smaller than the result
-	// document's fixed parts, so not even a zero-item page fits. Distinct from
-	// a usage error because the flag value is well formed and the command ran
-	// — the caller's remedy is a larger budget or a narrower projection, not a
-	// corrected command line.
-	errCodeOutputTooLarge = apicontract.CodeOutputTooLarge
-)
+// errCodeIngestIncomplete is the one remaining alias, for ingest.go; new code
+// names apicontract.Code* directly.
+const errCodeIngestIncomplete = apicontract.CodeIngestIncomplete
 
 // codedError carries a stable error code alongside its message, for conditions
 // the classifier cannot infer from an exit code or a wrapped sentinel. The type
@@ -122,7 +61,7 @@ func codedErrorf(code apicontract.ErrorCode, format string, args ...any) error {
 
 // classifyErrorCode maps an error to its stable code. The source cases are
 // matched on message content because the database layer wraps driver errors as
-// plain text; a miss degrades to errCodeFailed, never to a wrong success.
+// plain text; a miss degrades to apicontract.CodeFailed, never to a wrong success.
 func classifyErrorCode(err error, exitCode int) apicontract.ErrorCode {
 	switch exitCode {
 	case ExitUsageError:
@@ -137,9 +76,9 @@ func classifyErrorCode(err error, exitCode int) apicontract.ErrorCode {
 				return coded.Code()
 			}
 		}
-		return errCodeUsage
+		return apicontract.CodeUsageError
 	case ExitFailOnGate:
-		return errCodeGateTripped
+		return apicontract.CodeGateTripped
 	case ExitIncomplete:
 		// The incomplete error names which budget or failure stopped the work;
 		// classifyExitCode only chose 5 because one is in the chain.
@@ -160,7 +99,7 @@ func classifyErrorCode(err error, exitCode int) apicontract.ErrorCode {
 	// the query layer, because the open is what was refused.
 	var incompatible *clicommon.SourceIncompatibleError
 	if errors.As(err, &incompatible) {
-		return errCodeSourceIncompatible
+		return apicontract.CodeSourceIncompatible
 	}
 	// The database layer codes its own conditions (database_locked from an
 	// exhausted busy retry, schema_too_new, schema_outdated) by implementing
@@ -182,14 +121,14 @@ func classifyErrorCode(err error, exitCode int) apicontract.ErrorCode {
 	// "no such file or directory" is an OS strerror string that is neither
 	// locale- nor platform-stable.
 	if errors.Is(err, os.ErrNotExist) {
-		return errCodeSourceMissing
+		return apicontract.CodeSourceMissing
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "failed to connect to database"),
 		strings.Contains(msg, "not a database"),
 		strings.Contains(msg, "readonly database"):
-		return errCodeSourceUnreadable
+		return apicontract.CodeSourceUnreadable
 	// A missing table is matched on message text for the same reason the cases
 	// above are, but with a firmer guarantee: unlike an OS strerror string, "no
 	// such table" is SQLite's OWN error text, fixed in its source and identical
@@ -203,9 +142,9 @@ func classifyErrorCode(err error, exitCode int) apicontract.ErrorCode {
 	// stops firing on a non-English server.
 	case strings.Contains(msg, "no such table"),
 		strings.Contains(msg, "42p01"):
-		return errCodeSourceIncompatible
+		return apicontract.CodeSourceIncompatible
 	}
-	return errCodeFailed
+	return apicontract.CodeFailed
 }
 
 // emitJSONError writes the structured error to stdout when the caller asked for

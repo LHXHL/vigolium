@@ -30,13 +30,13 @@ type Deps struct {
 	// config result has the same schema_version/items/generated_at spine as every
 	// other -j payload rather than a second shape invented here. total is the row
 	// count, which the caller already knows — passing it avoids reflecting over
-	// the slice on the other side of the seam.
-	WriteJSON func(command, legacyKey string, items any, total int, extra map[string]any) error
+	// the slice on the other side of the seam. cmd names the document.
+	WriteJSON func(cmd *cobra.Command, legacyKey string, items any, total int, extra map[string]any) error
 	// WriteMutation emits a state-changing command's result through the CLI's
 	// mutation spine (kind "mutation", changed, action, dry_run). changed and
 	// action are arguments, not extras: the envelope owns those keys, and an
 	// extra named "changed" is dropped rather than rendered.
-	WriteMutation func(command string, items any, changed bool, action string, extra map[string]any) error
+	WriteMutation func(cmd *cobra.Command, items any, changed bool, action string, extra map[string]any) error
 
 	// RecentScanTargets returns the targets of the n most recent scans in the
 	// given project ("" = the project the CLI resolves by default), for

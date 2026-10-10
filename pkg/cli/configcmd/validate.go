@@ -35,7 +35,7 @@ func newValidateCmd(deps Deps, example string) *cobra.Command {
 		Example: example,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigValidate(deps, opts)
+			return runConfigValidate(cmd, deps, opts)
 		},
 	}
 	cmd.Flags().StringVar(&opts.Project, "project", "", "Also validate this project's config overlay, checking the merged global → project settings")
@@ -44,7 +44,7 @@ func newValidateCmd(deps Deps, example string) *cobra.Command {
 	return cmd
 }
 
-func runConfigValidate(deps Deps, opts validateOptions) error {
+func runConfigValidate(cmd *cobra.Command, deps Deps, opts validateOptions) error {
 	if opts.Recent < 0 {
 		return clicommon.UsageErrorf("--recent must be >= 0, got %d", opts.Recent)
 	}
@@ -102,7 +102,7 @@ func runConfigValidate(deps Deps, opts validateOptions) error {
 		if opts.Project != "" {
 			extra["project_config_path"] = config.ContractPath(config.ProjectConfigPath(opts.Project))
 		}
-		if err := deps.WriteJSON("config validate", "", issues, len(issues), extra); err != nil {
+		if err := deps.WriteJSON(cmd, "", issues, len(issues), extra); err != nil {
 			return err
 		}
 	} else {

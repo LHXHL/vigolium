@@ -3,8 +3,8 @@ package cli
 import (
 	"context"
 	"os"
-	"reflect"
 
+	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/configcmd"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -49,8 +49,8 @@ func init() {
 // the envelope type keeps the dependency pointing one way, and means a config
 // result carries the same schema_version/items/generated_at spine as every other
 // machine payload instead of a second shape invented in that package.
-func writeConfigEnvelope(command, legacyKey string, items any, total int, extra map[string]any) error {
-	env := newAgentEnvelope(command, legacyKey, items, int64(total), 0, total)
+func writeConfigEnvelope(cmd *cobra.Command, legacyKey string, items any, total int, extra map[string]any) error {
+	env := newMachineEnvelope(cmd, kindRead, legacyKey, items, int64(total), 0, total)
 	for k, v := range extra {
 		env.With(k, v)
 	}
@@ -59,16 +59,8 @@ func writeConfigEnvelope(command, legacyKey string, items any, total int, extra 
 
 // writeConfigMutation is writeConfigEnvelope for the state-changing config
 // commands: the same envelope through the mutation spine.
-func writeConfigMutation(command string, items any, changed bool, action string, extra map[string]any) error {
-	items, object := normalizeEnvelopeItems(items)
-	n := reflect.ValueOf(items).Len()
-	env := newAgentEnvelope(command, "", items, int64(n), 0, n)
-	env.objectResult = object
-	env.asMutation(changed, action, false)
-	for _, k := range sortedExtraKeys(extra) {
-		env.With(k, extra[k])
-	}
-	return writeAgentJSON(env)
+func writeConfigMutation(cmd *cobra.Command, items any, changed bool, action string, extra map[string]any) error {
+	return emitMutation(cmd, "", mutationResult{Changed: changed, Action: action, Items: items, Extra: extra})
 }
 
 // recentScanTargets feeds `config validate`'s recent-target scope rule. It

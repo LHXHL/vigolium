@@ -116,7 +116,7 @@ func asMatchErrorf(format string, args ...any) error {
 // re-derive it here.
 //
 // Exit code and machine code come from the coded error, which classifyExitCode
-// maps to ExitError and classifyErrorCode reports as errCodeExportFailed — or as
+// maps to ExitError and classifyErrorCode reports as apicontract.CodeExportFailed — or as
 // the renderer's own artifact code when the failure carries one (a PDF render
 // is pdf_failed).
 //
@@ -133,7 +133,7 @@ func recordExportFailure(err *error, exportErr error) {
 			terminal.ErrorPrefix(), exportErr)
 		return
 	}
-	code := errCodeExportFailed
+	code := apicontract.CodeExportFailed
 	var specific interface{ Code() apicontract.ErrorCode }
 	if errors.As(exportErr, &specific) && isExportFailureCode(specific.Code()) {
 		code = specific.Code()
@@ -144,11 +144,11 @@ func recordExportFailure(err *error, exportErr error) {
 // isExportFailureCode reports whether code names a requested artifact that was
 // not written: export_failed, or a renderer's more specific pdf_failed.
 func isExportFailureCode(code apicontract.ErrorCode) bool {
-	return code == errCodeExportFailed || code == apicontract.CodePDFFailed
+	return code == apicontract.CodeExportFailed || code == apicontract.CodePDFFailed
 }
 
 // writeRequestedFile publishes an artifact the caller asked for with -o, and
-// codes a failure as errCodeExportFailed.
+// codes a failure as apicontract.CodeExportFailed.
 //
 // The code is the point, and it is why this is one function rather than the
 // two-line pair it replaces at each site. The work ran and its result exists; it
@@ -161,7 +161,7 @@ func isExportFailureCode(code apicontract.ErrorCode) bool {
 // wrap at each call site.
 func writeRequestedFile(dest string, data []byte) error {
 	if err := atomicfile.WriteBytes(dest, data); err != nil {
-		return codedErrorf(errCodeExportFailed, "write %s: %w", dest, err)
+		return codedErrorf(apicontract.CodeExportFailed, "write %s: %w", dest, err)
 	}
 	return nil
 }

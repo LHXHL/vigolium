@@ -81,10 +81,10 @@ func TestBuildCATrustPlan(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestShellJoin(t *testing.T) {
+func TestQuoteArgv(t *testing.T) {
 	assert.Equal(t, "security delete-certificate -c 'Vigolium Ingest Proxy CA' /k",
-		shellJoin([]string{"security", "delete-certificate", "-c", "Vigolium Ingest Proxy CA", "/k"}))
-	assert.Equal(t, `echo 'it'\''s' ''`, shellJoin([]string{"echo", "it's", ""}))
+		quoteArgv([]string{"security", "delete-certificate", "-c", "Vigolium Ingest Proxy CA", "/k"}))
+	assert.Equal(t, `echo 'it'\''s' ''`, quoteArgv([]string{"echo", "it's", ""}))
 }
 
 // runCAPrint runs `server ca print` and returns its stdout.

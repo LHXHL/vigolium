@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -68,7 +69,7 @@ func validateTrafficGroupFlags(on func(string) bool) error {
 }
 
 // runTrafficGroupBy executes the aggregate and renders it.
-func runTrafficGroupBy(ctx context.Context, db *database.DB, filters database.QueryFilters) error {
+func runTrafficGroupBy(ctx context.Context, cmd *cobra.Command, db *database.DB, filters database.QueryFilters) error {
 	grouping, err := database.NewQueryBuilder(db, filters).
 		GroupRecordsBy(ctx, trafficGroupBy, trafficGroupLimit)
 	if err != nil {
@@ -78,7 +79,7 @@ func runTrafficGroupBy(ctx context.Context, db *database.DB, filters database.Qu
 		// The project scope comes from the filters the query actually ran with,
 		// not from a second resolve: two sources for "which project was this" can
 		// disagree, and the envelope exists to be asserted against.
-		return emitTrafficGroupJSON(grouping, filters.ProjectUUID)
+		return emitTrafficGroupJSON(cmd, grouping, filters.ProjectUUID)
 	}
 	printTrafficGrouping(grouping)
 	return nil
@@ -91,8 +92,8 @@ func runTrafficGroupBy(ctx context.Context, db *database.DB, filters database.Qu
 // separate named field rather than an overloaded `total`, because a consumer
 // dividing one by the other is asking a real question and must not be handed two
 // different denominators under one name.
-func emitTrafficGroupJSON(g database.RecordGrouping, projectUUID string) error {
-	env := newAgentEnvelope("traffic --group-by", "", g.Groups, g.DistinctGroups, 0, trafficGroupLimit)
+func emitTrafficGroupJSON(cmd *cobra.Command, g database.RecordGrouping, projectUUID string) error {
+	env := newMachineEnvelope(cmd, kindRead, "", g.Groups, g.DistinctGroups, 0, trafficGroupLimit)
 	env.WithProjectScope(projectUUID)
 	env.DBPath = resolvedReadDBPath()
 	env.With("group_by", g.Field).

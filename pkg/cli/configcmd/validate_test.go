@@ -7,15 +7,16 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 )
 
 type capturedEnvelope struct {
-	command string
-	items   []config.Issue
-	extra   map[string]any
+	cmd   *cobra.Command
+	items []config.Issue
+	extra map[string]any
 }
 
 func validateDeps(t *testing.T, cfg string, targets []string) (Deps, *capturedEnvelope) {
@@ -24,8 +25,8 @@ func validateDeps(t *testing.T, cfg string, targets []string) (Deps, *capturedEn
 	return Deps{
 		ConfigFlag: func() string { return cfg },
 		JSON:       func() bool { return true },
-		WriteJSON: func(command, legacyKey string, items any, total int, extra map[string]any) error {
-			got.command = command
+		WriteJSON: func(cmd *cobra.Command, legacyKey string, items any, total int, extra map[string]any) error {
+			got.cmd = cmd
 			got.items = items.([]config.Issue)
 			got.extra = extra
 			if total != len(got.items) {
@@ -68,10 +69,11 @@ func codeOf(err error) apicontract.ErrorCode {
 
 func TestConfigValidateClean(t *testing.T) {
 	deps, got := validateDeps(t, writeCfg(t, "{}\n"), nil)
-	if err := runConfigValidate(deps, validateOptions{Recent: 5}); err != nil {
+	cmd := &cobra.Command{Use: "validate"}
+	if err := runConfigValidate(cmd, deps, validateOptions{Recent: 5}); err != nil {
 		t.Fatalf("clean config: %v", err)
 	}
-	if got.command != "config validate" || len(got.items) != 0 || got.extra["valid"] != true {
+	if got.cmd != cmd || len(got.items) != 0 || got.extra["valid"] != true {
 		t.Fatalf("envelope: %+v", got)
 	}
 }
@@ -80,7 +82,7 @@ func TestConfigValidateClean(t *testing.T) {
 func TestConfigValidateErrorsExit1(t *testing.T) {
 	cfg := writeCfg(t, "scope:\n  host:\n    include: ['[\"app.example.com\"', '\"api.example.com\"]']\n")
 	deps, got := validateDeps(t, cfg, nil)
-	err := runConfigValidate(deps, validateOptions{Recent: 5})
+	err := runConfigValidate(nil, deps, validateOptions{Recent: 5})
 	if codeOf(err) != apicontract.CodeConfigInvalid {
 		t.Fatalf("err = %v, want config_invalid", err)
 	}
@@ -96,7 +98,7 @@ func TestConfigValidateErrorsExit1(t *testing.T) {
 func TestConfigValidateWarningsAndStrict(t *testing.T) {
 	cfg := writeCfg(t, "scope:\n  host:\n    include: [old.example.org]\n  bogus_key: 1\n")
 	deps, got := validateDeps(t, cfg, []string{"https://shop.example.com/"})
-	if err := runConfigValidate(deps, validateOptions{Recent: 5}); err != nil {
+	if err := runConfigValidate(nil, deps, validateOptions{Recent: 5}); err != nil {
 		t.Fatalf("warnings only, not strict: %v", err)
 	}
 	codes := map[string]bool{}
@@ -108,14 +110,14 @@ func TestConfigValidateWarningsAndStrict(t *testing.T) {
 			t.Errorf("missing %s in %+v", want, got.items)
 		}
 	}
-	if err := runConfigValidate(deps, validateOptions{Recent: 5, Strict: true}); codeOf(err) != apicontract.CodeConfigInvalid {
+	if err := runConfigValidate(nil, deps, validateOptions{Recent: 5, Strict: true}); codeOf(err) != apicontract.CodeConfigInvalid {
 		t.Fatalf("--strict with warnings: err = %v", err)
 	}
 	if got.extra["valid"] != false {
 		t.Fatalf("--strict ok = %v", got.extra["valid"])
 	}
 	// --recent 0 skips the DB rule.
-	if err := runConfigValidate(deps, validateOptions{Recent: 0}); err != nil {
+	if err := runConfigValidate(nil, deps, validateOptions{Recent: 0}); err != nil {
 		t.Fatal(err)
 	}
 	for _, is := range got.items {
@@ -136,10 +138,10 @@ func TestConfigValidateProjectOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	deps, got := validateDeps(t, cfg, nil)
-	if err := runConfigValidate(deps, validateOptions{Recent: 5}); err != nil {
+	if err := runConfigValidate(nil, deps, validateOptions{Recent: 5}); err != nil {
 		t.Fatalf("global only: %v", err)
 	}
-	err := runConfigValidate(deps, validateOptions{Project: uuid, Recent: 5})
+	err := runConfigValidate(nil, deps, validateOptions{Project: uuid, Recent: 5})
 	if codeOf(err) != apicontract.CodeConfigInvalid {
 		t.Fatalf("project override not validated: %v", err)
 	}
@@ -150,7 +152,7 @@ func TestConfigValidateProjectOverride(t *testing.T) {
 
 func TestConfigValidateUnparseableConfig(t *testing.T) {
 	deps, got := validateDeps(t, writeCfg(t, "scope: [\n"), nil)
-	err := runConfigValidate(deps, validateOptions{Recent: 5})
+	err := runConfigValidate(nil, deps, validateOptions{Recent: 5})
 	if codeOf(err) != apicontract.CodeConfigInvalid {
 		t.Fatalf("err = %v", err)
 	}
@@ -162,7 +164,7 @@ func TestConfigValidateUnparseableConfig(t *testing.T) {
 func TestConfigValidateRecentUsage(t *testing.T) {
 	deps, _ := validateDeps(t, writeCfg(t, "{}\n"), nil)
 	var usage clicommon.UsageError
-	if err := runConfigValidate(deps, validateOptions{Recent: -1}); !errors.As(err, &usage) {
+	if err := runConfigValidate(nil, deps, validateOptions{Recent: -1}); !errors.As(err, &usage) {
 		t.Fatalf("--recent -1: %v", err)
 	}
 }

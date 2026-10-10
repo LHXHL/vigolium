@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -220,7 +221,7 @@ func writeScanDiffJSON(cmd *cobra.Command, diff *database.ScanDiff, projectUUID 
 		v := compactFindingView(e.Finding, nil, opts)
 		// change is the point of the row; a --fields projection never drops it.
 		v["change"] = e.Change
-		if e.FirstSeenScan != "" && (len(opts.fields) == 0 || containsString(opts.fields, "first_seen_scan")) {
+		if e.FirstSeenScan != "" && (len(opts.fields) == 0 || slices.Contains(opts.fields, "first_seen_scan")) {
 			v["first_seen_scan"] = e.FirstSeenScan
 		}
 		items = append(items, v)
@@ -299,15 +300,6 @@ func colorDiffChange(c string) string {
 		return terminal.BoldYellow(c)
 	}
 	return terminal.Gray(c)
-}
-
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 // scanUUIDShape matches a full scan/record UUID.

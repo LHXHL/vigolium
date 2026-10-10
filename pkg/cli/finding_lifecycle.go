@@ -19,20 +19,18 @@ import (
 // by a later scan and not observed by that one (finding_observations), which is
 // the question "what did the scans after X find that X did not".
 
-// parseVerdictList parses --verdict into lifecycle statuses, rejecting a name
-// outside database.FindingStatuses.
-func parseVerdictList(raw string) ([]string, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
+// parseEnumCSV parses a comma-separated enum flag (--verdict, --fail-if):
+// lower-cased, trimmed, de-duplicated in order, and every value checked against
+// valid. Empty input is nil.
+func parseEnumCSV(flag, raw string, valid []string) ([]string, error) {
 	var out []string
 	for _, part := range strings.Split(raw, ",") {
 		v := strings.ToLower(strings.TrimSpace(part))
 		if v == "" {
 			continue
 		}
-		if !database.IsValidFindingStatus(v) {
-			return nil, usageErrorf("invalid --verdict %q (want one of: %s)", part, strings.Join(database.FindingStatuses, ", "))
+		if !slices.Contains(valid, v) {
+			return nil, usageErrorf("invalid %s %q (want one of: %s)", flag, part, strings.Join(valid, ", "))
 		}
 		if !slices.Contains(out, v) {
 			out = append(out, v)

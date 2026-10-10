@@ -92,24 +92,6 @@ func init() {
 	_ = f.MarkHidden("glob-db")
 }
 
-// parseVerifyFailIf parses --fail-if into verdicts.
-func parseVerifyFailIf(raw string) ([]string, error) {
-	var out []string
-	for _, part := range strings.Split(raw, ",") {
-		v := strings.ToLower(strings.TrimSpace(part))
-		if v == "" {
-			continue
-		}
-		if !slices.Contains(database.VerificationVerdicts, v) {
-			return nil, usageErrorf("invalid --fail-if %q (want one of: %s)", part, strings.Join(database.VerificationVerdicts, ", "))
-		}
-		if !slices.Contains(out, v) {
-			out = append(out, v)
-		}
-	}
-	return out, nil
-}
-
 // findingVerifyWrites reports whether this run stores anything.
 func findingVerifyWrites() bool { return !findingVerifyDryRun && !findingVerifyNoWrite }
 
@@ -126,7 +108,7 @@ func validateFindingVerifyFlags(args []string) (failIf []string, err error) {
 	if findingVerifyTimeout < 0 {
 		return nil, usageErrorf("--timeout must be >= 0")
 	}
-	if failIf, err = parseVerifyFailIf(findingVerifyFailIf); err != nil {
+	if failIf, err = parseEnumCSV("--fail-if", findingVerifyFailIf, database.VerificationVerdicts); err != nil {
 		return nil, err
 	}
 	if findingVerifyWrites() {

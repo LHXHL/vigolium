@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -26,11 +27,24 @@ func resetDBPathEnvGlobals(t *testing.T) {
 	})
 }
 
+// cmdAtPath builds a bare command at path ("agent audit") under a stand-in
+// root, for the tables keyed by commandPathWithoutRoot.
+func cmdAtPath(path string) *cobra.Command {
+	parent := &cobra.Command{Use: "vigolium"}
+	var cmd *cobra.Command
+	for _, name := range strings.Fields(path) {
+		cmd = &cobra.Command{Use: name}
+		parent.AddCommand(cmd)
+		parent = cmd
+	}
+	return cmd
+}
+
 // statelessCmd builds a command carrying an -S/--stateless flag, matching how
 // the real commands register it: statelessWriteRequested reads the flag, not the
 // variable behind it, so the binding target is irrelevant here.
-func statelessCmd(name string) *cobra.Command {
-	cmd := &cobra.Command{Use: name}
+func statelessCmd(path string) *cobra.Command {
+	cmd := cmdAtPath(path)
 	var stateless bool
 	cmd.Flags().BoolVarP(&stateless, "stateless", "S", false, "")
 	return cmd
@@ -113,6 +127,16 @@ func TestApplyDBPathEnv(t *testing.T) {
 				require.NoError(t, cmd.Flags().Set("stateless", "true"))
 			},
 			wantDB: "-",
+		},
+		{
+			// Keyed by command path: `extensions run -S` is a read over the
+			// pinned session DB, not top-level `run`'s throwaway store.
+			name: "explicit -S on extensions run keeps the env var",
+			cmd:  statelessCmd("extensions run"),
+			pre: func(cmd *cobra.Command, _ string) {
+				require.NoError(t, cmd.Flags().Set("stateless", "true"))
+			},
+			wantStateless: true,
 		},
 		{
 			// --glob-db already drives a stateless read across a merged set.

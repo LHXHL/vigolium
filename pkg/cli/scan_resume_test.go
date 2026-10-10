@@ -159,12 +159,9 @@ func TestResumeCommandLine(t *testing.T) {
 	assert.Equal(t, "vigolium scan -H 'Cookie: a=b; c=d' -T subs.txt --resume", got)
 }
 
-func TestShellQuoteArg(t *testing.T) {
-	assert.Equal(t, "plain", shellQuoteArg("plain"))
-	assert.Equal(t, "--skip=kis", shellQuoteArg("--skip=kis"))
-	assert.Equal(t, "''", shellQuoteArg(""))
-	assert.Equal(t, "'with space'", shellQuoteArg("with space"))
-	assert.Equal(t, `'it'\''s'`, shellQuoteArg("it's"))
+func TestQuoteArgvWords(t *testing.T) {
+	assert.Equal(t, "plain --skip=kis '' 'with space' 'it'\\''s'",
+		quoteArgv([]string{"plain", "--skip=kis", "", "with space", "it's"}))
 }
 
 // Bare-resume discovery: an explicit -o pins the manifest exactly, while no -o

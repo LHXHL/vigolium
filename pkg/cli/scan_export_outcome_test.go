@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/types"
 )
@@ -133,7 +134,7 @@ func TestRecordExportFailurePrecedence(t *testing.T) {
 		recordExportFailure(&err, exportErr)
 		require.Error(t, err)
 		assert.Equal(t, ExitError, classifyExitCode(err))
-		assert.Equal(t, errCodeExportFailed, classifyErrorCode(err, ExitError))
+		assert.Equal(t, apicontract.CodeExportFailed, classifyErrorCode(err, ExitError))
 	})
 
 	t.Run("nothing failed: the result stays clean", func(t *testing.T) {
@@ -163,7 +164,7 @@ func TestRecordExportFailurePrecedence(t *testing.T) {
 		gated := withFailOnGate(err)
 		assert.Equal(t, ExitError, classifyExitCode(gated),
 			"a gate verdict whose artifact is missing must not report exit 4")
-		assert.Equal(t, errCodeExportFailed, classifyErrorCode(gated, ExitError))
+		assert.Equal(t, apicontract.CodeExportFailed, classifyErrorCode(gated, ExitError))
 	})
 }
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"os"
 	"strings"
 	"time"
 
@@ -50,10 +49,7 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 
 	// Progress is human text: stdout normally, stderr under -j, where stdout
 	// carries the one result document.
-	tally := &seedTally{progress: os.Stdout}
-	if globalJSON {
-		tally.progress = os.Stderr
-	}
+	tally := &seedTally{progress: humanOut()}
 	_, _ = fmt.Fprintf(tally.progress, "%s Seeding database with sample data...\n\n", terminal.InfoSymbol())
 
 	projectUUID, err := resolveProjectUUID()

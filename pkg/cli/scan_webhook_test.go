@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -183,7 +184,7 @@ func TestFireNativeScanWebhookFallback(t *testing.T) {
 	opts := &types.Options{ScanUUID: "no-row", ProjectUUID: "p1", Targets: []string{"https://t.example"}}
 
 	fireNativeScanWebhook(settings, nil, opts, fmt.Errorf("session login failed"), false, time.Now())
-	fireNativeScanWebhook(settings, nil, &types.Options{ScanUUID: "export-only"}, codedErrorf(errCodeExportFailed, "write %s: denied", "out.html"), false, time.Now())
+	fireNativeScanWebhook(settings, nil, &types.Options{ScanUUID: "export-only"}, codedErrorf(apicontract.CodeExportFailed, "write %s: denied", "out.html"), false, time.Now())
 	fireNativeScanWebhook(settings, nil, &types.Options{ScanUUID: "interrupted"}, nil, true, time.Now())
 
 	byID := map[string]webhook.ScanCompletedPayload{}

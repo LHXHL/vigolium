@@ -154,9 +154,6 @@ Common workflows:
 Run 'vigolium <command> --help' for command-specific flags and examples, or 'vigolium --full-example' for a curated tour.`,
 	SilenceUsage: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Every -j result document names this command (machine_commands.go).
-		setRunningCommand(cmd)
-
 		// Initialize logger for all commands
 		zapLogger := initLogger(globalVerbose, globalSilent, globalDebug, globalDumpTraffic, globalLogFile)
 		_ = zapLogger // logger is set globally via zap.ReplaceGlobals
@@ -371,16 +368,17 @@ func init() {
 	pf.StringVar(&globalProjectName, "project-name", "", "Project name to scope all operations to (must match exactly one project). Also honors $VIGOLIUM_PROJECT_NAME")
 }
 
-// memLimitCommands are the leaf command names that drive a native scan and so
-// get an auto soft heap ceiling. The long-running server and the ingest proxy
-// are intentionally excluded — they manage their own concurrency and lifetime.
+// memLimitCommands are the command paths (not leaf names: `extensions run` is
+// not `run`) that drive a native scan and so get an auto soft heap ceiling. The
+// long-running server and the ingest proxy are intentionally excluded — they
+// manage their own concurrency and lifetime.
 var memLimitCommands = map[string]bool{
-	"scan":         true,
-	"scan-url":     true,
-	"scan-request": true,
-	"run":          true,
-	"autopilot":    true, // `vigolium agent autopilot`
-	"swarm":        true, // `vigolium agent swarm`
+	"scan":            true,
+	"scan-url":        true,
+	"scan-request":    true,
+	"run":             true,
+	"agent autopilot": true,
+	"agent swarm":     true,
 }
 
 // applyScanMemLimit derives and applies the GOMEMLIMIT soft ceiling for a
@@ -388,7 +386,7 @@ var memLimitCommands = map[string]bool{
 // no-op for other commands and for child processes that already inherited a
 // GOMEMLIMIT from the -P parent.
 func applyScanMemLimit(cmd *cobra.Command) {
-	if !memLimitCommands[cmd.Name()] {
+	if !memLimitCommands[commandPathWithoutRoot(cmd)] {
 		return
 	}
 	res := memlimit.Apply(memlimit.Options{

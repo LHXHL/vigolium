@@ -161,7 +161,7 @@ func runDBList(cmd *cobra.Command, args []string) error {
 
 	// Handle --list-tables: show all table names and exit (no watch)
 	if listTables {
-		return runListTables(context.Background(), db)
+		return runListTables(context.Background(), cmd, db)
 	}
 
 	// Resolve the target table from the positional arg (primary) / --table alias.
@@ -172,7 +172,7 @@ func runDBList(cmd *cobra.Command, args []string) error {
 
 	// Handle --list-columns: show columns for the table and exit (no watch)
 	if listColumnNames {
-		return runListColumns(context.Background(), db, tableName)
+		return runListColumns(context.Background(), cmd, db, tableName)
 	}
 
 	// Validate --fields against the view this table will actually render. The
@@ -207,19 +207,19 @@ func runDBList(cmd *cobra.Command, args []string) error {
 		// For non-default tables, use generic query
 		switch tableName {
 		case "http_records":
-			return runListHTTPRecords(ctx, db)
+			return runListHTTPRecords(ctx, cmd, db)
 		case "findings":
-			return runListFindings(ctx, db)
+			return runListFindings(ctx, cmd, db)
 		case "scans":
-			return runListScans(ctx, db)
+			return runListScans(ctx, cmd, db)
 		default:
-			return runListGenericTable(ctx, db, tableName)
+			return runListGenericTable(ctx, cmd, db, tableName)
 		}
 	})
 }
 
 // runListTables displays all table names in the database.
-func runListTables(ctx context.Context, db *database.DB) error {
+func runListTables(ctx context.Context, cmd *cobra.Command, db *database.DB) error {
 	tables, err := database.ListTables(ctx, db)
 	if err != nil {
 		return fmt.Errorf("failed to list tables: %w", err)
@@ -229,7 +229,7 @@ func runListTables(ctx context.Context, db *database.DB) error {
 	// anything about the store, so it emitting ANSI-colored text on stdout under
 	// -j was the worst possible exception to the machine contract.
 	if globalJSON {
-		env := newAgentEnvelope("db ls --list-tables", "rows", tables, int64(len(tables)), 0, len(tables))
+		env := newMachineEnvelope(cmd, kindRead, "rows", tables, int64(len(tables)), 0, len(tables))
 		env.DBPath = resolvedReadDBPath()
 		env.WithQuery("db", "ls", "<table>", "--json")
 		return writeAgentJSON(env)
@@ -247,14 +247,14 @@ func runListTables(ctx context.Context, db *database.DB) error {
 }
 
 // runListColumns displays column names and types for a table.
-func runListColumns(ctx context.Context, db *database.DB, tableName string) error {
+func runListColumns(ctx context.Context, cmd *cobra.Command, db *database.DB, tableName string) error {
 	columns, err := database.ListColumns(ctx, db, tableName)
 	if err != nil {
 		return fmt.Errorf("failed to list columns for %q: %w", tableName, err)
 	}
 
 	if globalJSON {
-		env := newAgentEnvelope("db ls --list-columns", "rows", columns, int64(len(columns)), 0, len(columns))
+		env := newMachineEnvelope(cmd, kindRead, "rows", columns, int64(len(columns)), 0, len(columns))
 		env.DBPath = resolvedReadDBPath()
 		env.With("table", tableName)
 		return writeAgentJSON(env)
@@ -275,7 +275,7 @@ func runListColumns(ctx context.Context, db *database.DB, tableName string) erro
 }
 
 // runListHTTPRecords handles the default http_records table listing with full filter support.
-func runListHTTPRecords(ctx context.Context, db *database.DB) error {
+func runListHTTPRecords(ctx context.Context, cmd *cobra.Command, db *database.DB) error {
 	dateFrom, dateTo, err := parseDateRangeFlags(listFrom, listTo,
 		timeFilterFromLabel, timeFilterToLabel)
 	if err != nil {
@@ -328,7 +328,7 @@ func runListHTTPRecords(ctx context.Context, db *database.DB) error {
 	}
 
 	if globalJSON {
-		return displayJSON(ctx, db, records, total, listOffset, listLimit)
+		return displayJSON(ctx, cmd, db, records, total, listOffset, listLimit)
 	} else if listRaw {
 		return displayRaw(records)
 	} else if listTree {
@@ -339,7 +339,7 @@ func runListHTTPRecords(ctx context.Context, db *database.DB) error {
 }
 
 // runListFindings handles the findings table listing.
-func runListFindings(ctx context.Context, db *database.DB) error {
+func runListFindings(ctx context.Context, cmd *cobra.Command, db *database.DB) error {
 	dateFrom, dateTo, err := parseDateRangeFlags(listFrom, listTo,
 		timeFilterFromLabel, timeFilterToLabel)
 	if err != nil {
@@ -389,7 +389,7 @@ func runListFindings(ctx context.Context, db *database.DB) error {
 	}
 
 	if globalJSON {
-		env := newAgentEnvelope("db ls", "findings",
+		env := newMachineEnvelope(cmd, kindRead, "findings",
 			findingViews(ctx, db, findings, agentViewOptionsFromFlags(), false), total, listOffset, listLimit)
 		env.WithProjectScope(projectUUID)
 		env.DBPath = resolvedReadDBPath()
@@ -459,7 +459,7 @@ func runListFindings(ctx context.Context, db *database.DB) error {
 }
 
 // runListScans handles the scans table listing with a compact summary view.
-func runListScans(ctx context.Context, db *database.DB) error {
+func runListScans(ctx context.Context, cmd *cobra.Command, db *database.DB) error {
 	repo := database.NewRepository(db)
 	projectUUID, err := effectiveProjectUUID()
 	if err != nil {
@@ -481,7 +481,7 @@ func runListScans(ctx context.Context, db *database.DB) error {
 		if err != nil {
 			return err
 		}
-		env := newAgentEnvelope("db ls", "scans", rows, total, listOffset, listLimit)
+		env := newMachineEnvelope(cmd, kindRead, "scans", rows, total, listOffset, listLimit)
 		env.DBPath = resolvedReadDBPath()
 		return writeAgentJSON(env)
 	}
@@ -627,7 +627,7 @@ func classifyTarget(s *database.Scan) string {
 }
 
 // runListGenericTable handles arbitrary table listing via raw SQL.
-func runListGenericTable(ctx context.Context, db *database.DB, tableName string) error {
+func runListGenericTable(ctx context.Context, cmd *cobra.Command, db *database.DB, tableName string) error {
 	// Validate table exists
 	tables, err := database.ListTables(ctx, db)
 	if err != nil {
@@ -663,7 +663,7 @@ func runListGenericTable(ctx context.Context, db *database.DB, tableName string)
 		for _, r := range rows {
 			projected = append(projected, projectFields(r, fields))
 		}
-		env := newAgentEnvelope("db ls", "rows", projected, total, listOffset, listLimit)
+		env := newMachineEnvelope(cmd, kindRead, "rows", projected, total, listOffset, listLimit)
 		env.DBPath = resolvedReadDBPath()
 		env.With("table", tableName).With("columns", headers)
 		return writeAgentJSON(env)
@@ -715,7 +715,7 @@ func runListGenericTable(ctx context.Context, db *database.DB, tableName string)
 	return nil
 }
 
-func displayJSON(ctx context.Context, db *database.DB, records []*database.HTTPRecord, total int64, offset, limit int, extra ...envOpt) error {
+func displayJSON(ctx context.Context, cmd *cobra.Command, db *database.DB, records []*database.HTTPRecord, total int64, offset, limit int, extra ...envOpt) error {
 	// effectiveProjectUUID, not resolveProjectUUID: under -S scoping is off and
 	// the rows span every project, so naming one here was a false claim.
 	projectUUID, err := effectiveProjectUUID()
@@ -728,7 +728,7 @@ func displayJSON(ctx context.Context, db *database.DB, records []*database.HTTPR
 	// yet evicted it - so reading a database back showed nothing, and reading a
 	// large sweep back showed facts for its last hosts only.
 	opts := agentViewOptionsFromFlags().withHostFacts(ctx, db, projectUUID, "")
-	env := newAgentEnvelope("traffic", "records",
+	env := newMachineEnvelope(cmd, kindRead, "records",
 		recordViews(records, opts), total, offset, limit)
 	env.WithProjectScope(projectUUID)
 	env.DBPath = resolvedReadDBPath()

@@ -4,10 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
-	"sync"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/contract"
 )
 
 // machine.go holds the constructors a command uses for its -j result document.
@@ -18,16 +17,18 @@ import (
 // (commandPathWithoutRoot), never a hand-typed string, so `command` cannot drift
 // from what the caller typed.
 
-// machineKind is the shape of a command's -j output.
+// machineKind is the shape of a command's -j output. The three kinds a
+// document can render share their spelling with the pkg/contract registry;
+// stream and interactive exist only as declarations.
 type machineKind string
 
 const (
 	// kindRead: an envelope of rows, or of one object wrapped as items:[obj].
-	kindRead machineKind = "read"
+	kindRead machineKind = contract.KindRead
 	// kindMutation: the envelope plus ok/changed/action (and dry_run).
-	kindMutation machineKind = "mutation"
+	kindMutation machineKind = contract.KindMutation
 	// kindScan: the single scan document.
-	kindScan machineKind = "scan"
+	kindScan machineKind = contract.KindScan
 	// kindStream: a documented stream flag owns stdout; -j still yields an
 	// envelope or receipt.
 	kindStream machineKind = "stream"
@@ -72,71 +73,6 @@ func machineKindOf(cmd *cobra.Command) machineKind {
 	return machineKinds[commandPathWithoutRoot(cmd)]
 }
 
-// envelopeKindFor is the `kind` a legacy newAgentEnvelope(command, …) call
-// renders. command is the string the caller passed — sometimes a cobra path
-// spelled with an alias ("db ls") and trailing flags ("db ls --list-tables") —
-// so it is resolved through the tree to the declared kind.
-//
-// A mutation command still on the legacy constructor gets no kind: it has no
-// `changed`, and a document that says "mutation" without one would break the
-// one promise the kind makes. emitMutation sets it.
-func envelopeKindFor(command string) string {
-	switch k := machineKinds[canonicalCommandPath(command)]; k {
-	case kindRead, kindStream:
-		return string(kindRead)
-	case kindScan:
-		return string(kindScan)
-	default:
-		return ""
-	}
-}
-
-var (
-	commandAliasOnce  sync.Once
-	commandAliasIndex map[string]string
-)
-
-// canonicalCommandPath maps "db ls --list-tables" to "db list". The index is
-// built once, from every alias spelling of every command path.
-func canonicalCommandPath(command string) string {
-	commandAliasOnce.Do(func() {
-		commandAliasIndex = map[string]string{}
-		var walk func(c *cobra.Command, spellings []string)
-		walk = func(c *cobra.Command, spellings []string) {
-			canonical := commandPathWithoutRoot(c)
-			for _, s := range spellings {
-				commandAliasIndex[s] = canonical
-			}
-			for _, sub := range c.Commands() {
-				names := append([]string{sub.Name()}, sub.Aliases...)
-				var next []string
-				for _, prefix := range spellings {
-					for _, n := range names {
-						next = append(next, strings.TrimSpace(prefix+" "+n))
-					}
-				}
-				walk(sub, next)
-			}
-		}
-		walk(rootCmd, []string{""})
-	})
-	var words []string
-	for _, w := range strings.Fields(command) {
-		if strings.HasPrefix(w, "-") {
-			break
-		}
-		words = append(words, w)
-	}
-	// Longest known prefix: positional arguments after the command path ("log
-	// <uuid>") are not part of it.
-	for n := len(words); n > 0; n-- {
-		if canonical, ok := commandAliasIndex[strings.Join(words[:n], " ")]; ok {
-			return canonical
-		}
-	}
-	return ""
-}
-
 // envOpt adjusts an envelope before it is written.
 type envOpt func(*agentEnvelope)
 
@@ -161,7 +97,10 @@ func withQuery(tail ...string) envOpt {
 }
 
 // newMachineEnvelope is newAgentEnvelope with the command name and kind taken
-// from cmd rather than typed by hand.
+// from cmd rather than typed by hand. A group whose bare invocation is the
+// documented shorthand for a subcommand (`scope` = `scope view`) passes that
+// subcommand: the output is its output, so the document names it and its
+// schema applies.
 func newMachineEnvelope(cmd *cobra.Command, kind machineKind, legacyKey string, items any, total int64, offset, limit int) *agentEnvelope {
 	env := newAgentEnvelope(commandPathWithoutRoot(cmd), legacyKey, items, total, offset, limit)
 	env.Kind = string(kind)

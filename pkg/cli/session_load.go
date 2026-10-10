@@ -75,15 +75,6 @@ func init() {
 	sessionLoadCmd.Flags().DurationVar(&sessionLoadTimeout, "timeout", sessionLoadDefaultTimeout, "Timeout for each login request")
 }
 
-// sessionLoadOut is where the human report goes: stdout normally, stderr under
-// -j so stdout carries only the result document.
-func sessionLoadOut() io.Writer {
-	if globalJSON {
-		return os.Stderr
-	}
-	return os.Stdout
-}
-
 // sessionLoginClient is the client a login check runs over: the transport a
 // scan's login uses (pkg/http.LoginTransport — --proxy or the environment
 // proxy, the scan's permissive target TLS) and the per-request timeout
@@ -101,7 +92,7 @@ func sessionLoginClient(timeout time.Duration) *http.Client {
 func runSessionLoad(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 	defer closeDatabaseOnExit()
-	w := sessionLoadOut()
+	w := humanOut()
 
 	// Read input.
 	var data []byte

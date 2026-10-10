@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/burpbridge"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -97,7 +98,7 @@ func (s *globBurpSelector) take(records []*database.HTTPRecord) []*database.HTTP
 // table afterwards would re-query the whole corpus a third time (and, with -B
 // set, pull Burp's entire proxy history to merge into it). The save summary is
 // the output.
-func saveGlobToBurp(ctx context.Context, pattern string, filters database.QueryFilters) error {
+func saveGlobToBurp(ctx context.Context, cmd *cobra.Command, pattern string, filters database.QueryFilters) error {
 	matches, err := globDBMatches(pattern)
 	if err != nil {
 		return err
@@ -166,7 +167,7 @@ func saveGlobToBurp(ctx context.Context, pattern string, filters database.QueryF
 	if globalJSON {
 		// items:[aggregate]; the per-run counters stay at the top level, and
 		// --json-legacy-keys renders the aggregate under its old name, `result`.
-		env := newAgentEnvelope("traffic", "result", aggregate, 1, 0, 1).
+		env := newMachineEnvelope(cmd, kindRead, "result", aggregate, 1, 0, 1).
 			With("pattern", pattern).
 			With("files", len(matches)).
 			With("files_read", read).

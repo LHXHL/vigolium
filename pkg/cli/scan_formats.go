@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -66,18 +67,10 @@ func generateReportFromDB(ctx context.Context, db *database.DB, outputPath strin
 
 // parseFormats splits a comma-separated format string, defaulting to "console".
 func parseFormats(raw string) []string {
-	parts := strings.Split(raw, ",")
-	formats := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			formats = append(formats, p)
-		}
+	if formats := clicommon.SplitCSV(raw); len(formats) > 0 {
+		return formats
 	}
-	if len(formats) == 0 {
-		return []string{"console"}
-	}
-	return formats
+	return []string{"console"}
 }
 
 // normalizeScanFormats canonicalizes aliases in place and rejects anything the

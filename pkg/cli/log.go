@@ -265,7 +265,7 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 		// This used to emit a BARE ARRAY, the one -j surface that broke the
 		// "parse .items" rule the envelope exists to establish. A contract with a
 		// documented hole is one every consumer special-cases forever.
-		env := newAgentEnvelope("log ls", "rows", out, int64(len(out)), 0, len(out))
+		env := newMachineEnvelope(cmd, kindRead, "rows", out, int64(len(out)), 0, len(out))
 		env.DBPath = resolvedReadDBPath()
 		if extras != nil {
 			if extras.Reaped == nil {
@@ -477,8 +477,7 @@ func runLogShow(cmd *cobra.Command, args []string) error {
 	// TUI picker when --tui is set). Passing a UUID falls through to the
 	// streaming path below.
 	if len(args) == 0 {
-		delegateCommand(logLsCmd)
-		return runLogLs(cmd, args)
+		return runLogLs(logLsCmd, args)
 	}
 
 	uuid := strings.TrimSpace(args[0])
