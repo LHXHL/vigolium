@@ -75,14 +75,14 @@ func putResponseBuffer(buf []byte) {
 }
 
 // responseBufferGuard records that something still reachable may read the work
-// item's pooled response buffer after processItem returns, so the buffer must NOT
+// item's pooled response buffer after the item completes, so the buffer must NOT
 // go back to the pool.
 //
 // The case it exists for: a module that exceeds its per-module timeout (or is
 // caught by phase cancellation) keeps running — a goroutine cannot be killed —
 // and its scan closure still holds the item, whose response is built over the
-// pooled buffer. Its wrapper meanwhile returns, processItem finishes, and the
-// deferred putResponseBuffer hands that buffer to the next item, which overwrites
+// pooled buffer. Its wrapper meanwhile returns, the item completes, and its
+// itemTracker would hand that buffer to the next item, which overwrites
 // it underneath the abandoned module. The module then reads another request's
 // response and can report a finding against it.
 //

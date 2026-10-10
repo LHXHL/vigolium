@@ -7,8 +7,15 @@ import (
 )
 
 // PauseController provides cooperative pause/resume for worker goroutines.
-// Workers call WaitIfPaused between items; Pause blocks until all active
-// items finish, then holds future workers until Resume is called.
+// Workers call WaitIfPaused between items; Pause blocks until no worker is
+// mid-dispatch, then holds future workers until Resume is called.
+//
+// "Paused" covers the WORKERS only: Pause returns once every worker has finished
+// its current item's fetch, passive stage and task dispatch. Active-module
+// tasks the executor already dispatched run detached from their worker and are
+// not waited for — they may still finish after Pause returns, and in doing so
+// send probe traffic, emit findings, feed discovered URLs and acknowledge their
+// item. No NEW item is dequeued or dispatched while paused.
 //
 // stateMu serializes the Pause/Resume transitions in full (including the mu
 // Lock/Unlock that spans a pause), so concurrent Pause+Resume — reachable, e.g.
@@ -27,7 +34,8 @@ func NewPauseController() *PauseController {
 	return &PauseController{}
 }
 
-// Pause blocks new workers and waits for in-flight items to finish.
+// Pause blocks new workers and waits for workers mid-dispatch to finish
+// dispatching (not for the detached tasks they started; see PauseController).
 // Safe to call multiple times (idempotent) and concurrently with Resume.
 func (p *PauseController) Pause() {
 	p.stateMu.Lock()
@@ -87,7 +95,8 @@ func (p *PauseController) WaitIfPaused(ctx context.Context) bool {
 	}
 }
 
-// AcquireWorker acquires a read lock for the duration of item processing.
+// AcquireWorker acquires a read lock for the duration of a worker's part of an
+// item (fetch, passive stage, task dispatch).
 // Call ReleaseWorker when done. Returns false if paused (caller should
 // call WaitIfPaused first).
 func (p *PauseController) AcquireWorker() {

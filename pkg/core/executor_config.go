@@ -83,21 +83,24 @@ type ExecutorConfig struct {
 	// the cap spans the phase and a root cause re-found in a later round does not
 	// re-fire its callbacks. See FindingAdmission.
 	FindingAdmission      *FindingAdmission
-	MaxDuration           time.Duration                                                                                                       // When > 0, cancel execution after this duration
-	FeedbackDrainTimeout  time.Duration                                                                                                       // Idle timeout for draining feedback after source EOF (default: 100ms)
-	FeedbackDrainMaxStall time.Duration                                                                                                       // Hard cap on draining with workers in-flight but making no progress (0 = 2x active module timeout). Guards against a module that ignores cancellation.
-	WorkerExitGrace       time.Duration                                                                                                       // Grace for worker goroutines to exit after the item channel is closed (0 = default 60s, capped at FeedbackDrainMaxStall). Kept short and separate from the drain-stall cap so shutdown stays responsive.
-	IPCacheSize           int                                                                                                                 // LRU cache size for parsed insertion points (default: 4096)
-	IPCache               *InsertionPointCache                                                                                                // Optional: shared IP cache (if nil, a new one is created)
-	ParallelPassive       bool                                                                                                                // When true, run passive per-request modules concurrently
-	PassiveModuleTimeout  time.Duration                                                                                                       // Timeout per passive module call (default: 5s). 0 uses default.
-	ActiveModuleTimeout   time.Duration                                                                                                       // Timeout per active module call (default: 300s). 0 uses default. Modules may raise via TimeoutHinter.
-	AdaptiveWorkers       bool                                                                                                                // When true, dynamically scale worker count based on queue depth
-	MinWorkers            int                                                                                                                 // Floor for adaptive scaling (default: 2)
-	MaxWorkers            int                                                                                                                 // Ceiling for adaptive scaling (default: Workers*4)
-	ActiveTaskLimit       int                                                                                                                 // Max concurrent active module tasks across host/request/IP scopes
-	OnStatus              func(processed, total, findings, distinctModules, activeCount, passiveCount, timedOut int64, elapsed time.Duration) // Optional: periodic status callback
-	StatusInterval        time.Duration                                                                                                       // Interval for OnStatus callback (default: 30s)
+	MaxDuration           time.Duration        // When > 0, cancel execution after this duration
+	FeedbackDrainTimeout  time.Duration        // Idle timeout for draining feedback after source EOF (default: 100ms)
+	FeedbackDrainMaxStall time.Duration        // Hard cap on draining with workers in-flight but making no progress (0 = 2x active module timeout). Guards against a module that ignores cancellation.
+	WorkerExitGrace       time.Duration        // Grace for worker goroutines to exit after the item channel is closed (0 = default 60s, capped at FeedbackDrainMaxStall). Kept short and separate from the drain-stall cap so shutdown stays responsive.
+	IPCacheSize           int                  // LRU cache size for parsed insertion points (default: 4096)
+	IPCache               *InsertionPointCache // Optional: shared IP cache (if nil, a new one is created)
+	ParallelPassive       bool                 // When true, run passive per-request modules concurrently
+	PassiveModuleTimeout  time.Duration        // Timeout per passive module call (default: 5s). 0 uses default.
+	ActiveModuleTimeout   time.Duration        // Timeout per active module call (default: 300s). 0 uses default. Modules may raise via TimeoutHinter.
+	ActiveTaskLimit       int                  // Max concurrent active module tasks across host/request/IP scopes
+	// MaxOutstandingItems caps items that are dequeued but not yet finished —
+	// a worker dispatches an item's active tasks and moves on, and the item
+	// stays outstanding until its last task returns. Each one holds its live
+	// baseline response buffer, so this is also the buffer-memory bound.
+	// 0 = 4 x Workers. Values below Workers leave some workers idle.
+	MaxOutstandingItems int
+	OnStatus            func(processed, total, findings, distinctModules, activeCount, passiveCount, timedOut int64, elapsed time.Duration) // Optional: periodic status callback
+	StatusInterval      time.Duration                                                                                                       // Interval for OnStatus callback (default: 30s)
 	// ModuleTimeouts, when non-nil, is an externally-owned counter the executor
 	// increments on each active-module timeout (instead of its own private one).
 	// A multi-round phase passes one shared counter so the timed-out total in the
@@ -135,6 +138,9 @@ type ExecutorConfig struct {
 	// Content-Type is indeterminate. Honors the same TechFilterDisabled switch.
 	ContentClassByHost map[string]string
 }
+
+// defaultOutstandingItemsPerWorker sizes MaxOutstandingItems when unset.
+const defaultOutstandingItemsPerWorker = 4
 
 // DefaultExecutorConfig returns sensible defaults.
 func DefaultExecutorConfig() ExecutorConfig {

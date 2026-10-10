@@ -42,35 +42,6 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 		scanUUID: scanUUID,
 	}
 
-	// If SharedInfra is available, reuse its components instead of building fresh
-	if r.sharedInfra != nil {
-		// Borrowed, not owned — phaseInfra.Close must leave these to the owner.
-		infra.borrowedInfra = true
-		infra.httpRequester = r.sharedInfra.HTTPRequester
-		infra.scopeMatcher = r.sharedInfra.ScopeMatcher
-		infra.hostLimiter = r.sharedInfra.HostLimiter
-		infra.svc = r.sharedInfra.Services
-		infra.jsEngine = r.sharedInfra.JSEngine
-		infra.hookChain = r.sharedInfra.HookChain
-		// Still need to initialize sessions, unless nothing in the plan reaches
-		// the target (a login is target traffic; see SendsTargetTraffic).
-		if !plan.SendsTargetTraffic() {
-			r.startOASTRegistration(plan, infra)
-			return infra, nil
-		}
-		if err := r.initSessions(ctx, infra); err != nil {
-			if len(r.options.AuthFiles) > 0 || len(r.options.AuthInline) > 0 {
-				return nil, fmt.Errorf("session initialization failed: %w", err)
-			}
-			// Continuing unauthenticated. Recorded so the assessment phases can
-			// say so instead of letting a wall of 401s read as an open app.
-			infra.authFailureReason = authFailureReason(ctx, err)
-			zap.L().Warn("Failed to initialize sessions", zap.Error(err))
-		}
-		r.startOASTRegistration(plan, infra)
-		return infra, nil
-	}
-
 	// Create notifier with backends. Each backend is gated by the
 	// notify.provider selector — empty means "all", a specific value
 	// activates only that channel.

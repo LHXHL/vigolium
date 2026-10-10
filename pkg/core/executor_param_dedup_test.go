@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sourcegraph/conc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/work"
 )
 
 // classedIPStub is a per-insertion-point module with a vuln class. When gate is
@@ -72,10 +72,10 @@ func runQueuedSameClass(t *testing.T, noParamDedup bool) int32 {
 
 	_, item := makeTestItem("example.com", "/item?id=1", "<html></html>")
 	elig := computeEligibility(item)
-	var g conc.WaitGroup
+	tr := e.newItemTracker(context.Background(), work.NewWithModules(item, nil), false)
 	dispatched := make(chan struct{})
 	go func() {
-		e.runActivePerInsertionPoint(context.Background(), nil, item, &allModulesFilter, &elig, &g)
+		e.runActivePerInsertionPoint(context.Background(), nil, item, &allModulesFilter, &elig, tr)
 		close(dispatched)
 	}()
 
@@ -90,7 +90,8 @@ func runQueuedSameClass(t *testing.T, noParamDedup bool) int32 {
 	close(gate)
 
 	<-dispatched
-	g.Wait()
+	tr.done()
+	<-tr.finished
 	assert.Equal(t, int32(1), first.calls.Load())
 	return second.calls.Load()
 }
@@ -113,9 +114,10 @@ func TestRunActivePerIP_DispatchSkipsMarkedParam(t *testing.T) {
 	e.scanCtx.MarkParamFound(item, "id", "ssti")
 
 	elig := computeEligibility(item)
-	var g conc.WaitGroup
-	e.runActivePerInsertionPoint(context.Background(), nil, item, &allModulesFilter, &elig, &g)
-	g.Wait()
+	tr := e.newItemTracker(context.Background(), work.NewWithModules(item, nil), false)
+	e.runActivePerInsertionPoint(context.Background(), nil, item, &allModulesFilter, &elig, tr)
+	tr.done()
+	<-tr.finished
 	assert.Equal(t, int32(0), mod.calls.Load())
 }
 

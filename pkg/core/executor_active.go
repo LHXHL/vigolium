@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 
-	"github.com/sourcegraph/conc"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules"
@@ -13,7 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func (e *Executor) runActivePerHost(ctx context.Context, reqClient *http.Requester, item *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility, g *conc.WaitGroup) {
+func (e *Executor) runActivePerHost(ctx context.Context, reqClient *http.Requester, item *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility, t *itemTracker) {
 	if len(e.perHostActive) == 0 {
 		return
 	}
@@ -41,7 +40,7 @@ func (e *Executor) runActivePerHost(ctx context.Context, reqClient *http.Request
 		}
 
 		mod := module // capture loop variable
-		e.goActiveTask(ctx, g, func(releaseSlot func()) {
+		e.goActiveTask(ctx, t, func(releaseSlot func()) {
 			results, completed := e.runActiveWithTimeout(ctx,
 				func(runCtx context.Context, client *http.Requester) ([]*output.ResultEvent, error) {
 					if contextual, ok := mod.(modules.ContextualActiveModule); ok {
@@ -57,7 +56,7 @@ func (e *Executor) runActivePerHost(ctx context.Context, reqClient *http.Request
 	}
 }
 
-func (e *Executor) runActivePerRequest(ctx context.Context, reqClient *http.Requester, item *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility, g *conc.WaitGroup) {
+func (e *Executor) runActivePerRequest(ctx context.Context, reqClient *http.Requester, item *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility, t *itemTracker) {
 	if len(e.perRequestActive) == 0 {
 		return
 	}
@@ -80,7 +79,7 @@ func (e *Executor) runActivePerRequest(ctx context.Context, reqClient *http.Requ
 		}
 
 		mod := module // capture loop variable
-		e.goActiveTask(ctx, g, func(releaseSlot func()) {
+		e.goActiveTask(ctx, t, func(releaseSlot func()) {
 			results, completed := e.runActiveWithTimeout(ctx,
 				func(runCtx context.Context, client *http.Requester) ([]*output.ResultEvent, error) {
 					if contextual, ok := mod.(modules.ContextualActiveModule); ok {
@@ -112,7 +111,7 @@ func (e *Executor) itemInsertionPointCount(item *httpmsg.HttpRequestResponse) in
 	return len(pts)
 }
 
-func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *http.Requester, item *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility, g *conc.WaitGroup) {
+func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *http.Requester, item *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility, t *itemTracker) {
 	if len(e.perIPActive) == 0 {
 		return
 	}
@@ -172,7 +171,7 @@ func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *ht
 			}
 
 			mod, pt := module, ip // capture loop variables
-			e.goActiveTask(ctx, g, func(releaseSlot func()) {
+			e.goActiveTask(ctx, t, func(releaseSlot func()) {
 				// Re-check when the task actually runs: it may have waited on the
 				// active-task semaphore while a same-class module confirmed this
 				// param, and the dispatch-time check above could not see that.
@@ -196,10 +195,15 @@ func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *ht
 	}
 }
 
-// goActiveTask runs fn on the shared WaitGroup, gated by the active-task
-// semaphore. Semaphore acquisition is context-aware: if ctx is cancelled (scan
-// shutdown or max-duration timeout) while every slot is occupied, the task is
-// abandoned instead of blocking the dispatcher until a slot frees up.
+// goActiveTask runs fn as a detached task of t's item, gated by the global
+// active-task semaphore. Semaphore acquisition is context-aware: if ctx is
+// cancelled (scan shutdown or max-duration timeout) while every slot is
+// occupied, the task is skipped instead of blocking the dispatcher until a slot
+// frees up.
+//
+// The task holds a reference on t for as long as it runs, so the item is
+// acknowledged only after its last task returns; nobody waits on it here. The
+// scan-level taskWG lets Execute join every task at shutdown.
 //
 // Slot release is NOT tied to fn returning. fn hands releaseSlot to
 // runActiveWithTimeout, which frees the slot only when the module's real work
@@ -208,7 +212,11 @@ func (e *Executor) runActivePerInsertionPoint(ctx context.Context, reqClient *ht
 // replacement tasks while abandoned scans still hold connections, so the
 // concurrency cap would understate true in-flight work. sync.Once keeps the
 // release idempotent so a stray double-call can never over-drain the semaphore.
-func (e *Executor) goActiveTask(ctx context.Context, g *conc.WaitGroup, fn func(releaseSlot func())) {
+//
+// A panic in fn is recovered here (a detached goroutine has no caller to unwind
+// to): it is reported, the slot is released if fn had not handed it off yet,
+// and the item is marked so it is acknowledged anyway — the poison-item rule.
+func (e *Executor) goActiveTask(ctx context.Context, t *itemTracker, fn func(releaseSlot func())) {
 	select {
 	case e.pool.activeTaskSem <- struct{}{}:
 	case <-ctx.Done():
@@ -216,9 +224,21 @@ func (e *Executor) goActiveTask(ctx context.Context, g *conc.WaitGroup, fn func(
 	}
 	var once sync.Once
 	releaseSlot := func() { once.Do(func() { <-e.pool.activeTaskSem }) }
-	g.Go(func() {
+	t.acquire()
+	e.pool.taskWG.Add(1)
+	go func() {
+		defer e.pool.taskWG.Done()
+		defer t.done()
+		var panicked bool
+		defer func() {
+			if panicked {
+				t.panicked.Store(true)
+				releaseSlot()
+			}
+		}()
+		defer e.recoverFromPanicInto("activeTask", &panicked)
 		fn(releaseSlot)
-	})
+	}()
 }
 
 // SetNoParamDedup mirrors --no-param-dedup into this executor's ScanContext:
@@ -231,7 +251,9 @@ func (e *Executor) SetNoParamDedup(disabled bool) {
 	}
 }
 
-func (e *Executor) runActiveStage(ctx context.Context, req *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility) {
+// runActiveStage dispatches every eligible active task for req as a detached
+// task of t and returns without waiting for them.
+func (e *Executor) runActiveStage(ctx context.Context, t *itemTracker, req *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility) {
 	// One context-bound requester clone per item, handed to every active-module
 	// task below — they all run under the same PHASE ctx. Binding the context once
 	// here keeps that work off the hottest fan-out loop; runActiveWithTimeout still
@@ -245,11 +267,7 @@ func (e *Executor) runActiveStage(ctx context.Context, req *httpmsg.HttpRequestR
 		reqClient = e.httpClient.WithContext(ctx)
 	}
 
-	// conc.WaitGroup automatically catches panics per goroutine and re-panics
-	// on Wait(), which is caught by processItem's top-level panic recovery.
-	var g conc.WaitGroup
-	e.runActivePerHost(ctx, reqClient, req, filter, elig, &g)
-	e.runActivePerRequest(ctx, reqClient, req, filter, elig, &g)
-	e.runActivePerInsertionPoint(ctx, reqClient, req, filter, elig, &g)
-	g.Wait()
+	e.runActivePerHost(ctx, reqClient, req, filter, elig, t)
+	e.runActivePerRequest(ctx, reqClient, req, filter, elig, t)
+	e.runActivePerInsertionPoint(ctx, reqClient, req, filter, elig, t)
 }

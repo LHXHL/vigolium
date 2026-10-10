@@ -301,7 +301,7 @@ func TestWorkerWithholdsAckForDequeuedItemAfterCancel(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		e.worker(ctx, 0, ch)
+		e.worker(ctx, 0, ch, nil)
 	}()
 	wg.Wait()
 
@@ -325,7 +325,7 @@ func TestWorkerAcksProcessedItem(t *testing.T) {
 	ch <- item
 	close(ch)
 
-	e.worker(context.Background(), 0, ch)
+	e.worker(context.Background(), 0, ch, nil)
 
 	if got := acks.Load(); got != 1 {
 		t.Errorf("item acknowledged %d time(s), want 1", got)

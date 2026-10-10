@@ -2,8 +2,6 @@ package runner
 
 import (
 	"context"
-	stderrors "errors"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -62,7 +60,6 @@ type Runner struct {
 	teeWriter         *teeWriter           // Optional: captures stderr for trace logging
 	sessionLogFile    *os.File             // Optional: runtime.log handle for verbose file-only writes
 	sessionLogMu      sync.Mutex           // serializes concurrent writes to sessionLogFile
-	sharedInfra       *SharedInfra         // Optional: pre-built infrastructure for reuse across rescans
 	// targetsAreInput is set by New when the input source was built from
 	// options.Targets alone, so scope admission over them covers the whole
 	// input (see targetAdmission).
@@ -136,16 +133,8 @@ type phaseInfra struct {
 
 	// oast is the scan's OAST service, registering in the background from
 	// buildInfrastructure when dynamic assessment is in the plan (nil
-	// otherwise, or when OAST is disabled). Owned by this scan even when the
-	// rest of the infrastructure is borrowed. See startOASTRegistration.
+	// otherwise, or when OAST is disabled). See startOASTRegistration.
 	oast *oast.Service
-
-	// borrowedInfra marks this phaseInfra as holding components OWNED by a
-	// SharedInfra (reused across rescans) rather than built for this phase. A
-	// borrower must not close them: the shared limiter would be stopped — and its
-	// shard maps nilled — out from under the next rescan that borrows the same
-	// instance, and a second Close on it is a "close of closed channel" panic.
-	borrowedInfra bool
 
 	// Multi-session support for IDOR/BOLA testing
 	compareSessions []compareSession
@@ -181,19 +170,14 @@ type compareSession struct {
 	Hostname string // hostname this session is associated with (empty = all hosts)
 }
 
-// Close releases infrastructure resources this phase OWNS. Components borrowed
-// from a SharedInfra are left alone; their owner closes them.
+// Close releases the infrastructure resources this phase owns.
 func (p *phaseInfra) Close() {
-	// Per-scan, so closed whether or not the rest is borrowed. Idempotent: the
-	// dynamic-assessment phase usually closed it already.
+	// Idempotent: the dynamic-assessment phase usually closed it already.
 	p.oast.Close()
-	if p.borrowedInfra {
-		return
-	}
-	// Return idle sockets before dropping the requester. This phase owns it
-	// (borrowedInfra is false), so nothing else is still reading through its
-	// transport. Compare-session requesters are separate owners with their own
-	// pools and are released alongside it.
+	// Return idle sockets before dropping the requester. This phase owns it, so
+	// nothing else is still reading through its transport. Compare-session
+	// requesters are separate owners with their own pools and are released
+	// alongside it.
 	p.httpRequester.CloseIdleConnections()
 	for _, cs := range p.compareSessions {
 		cs.Client.CloseIdleConnections()
@@ -203,28 +187,6 @@ func (p *phaseInfra) Close() {
 	}
 	if p.notifier != nil {
 		p.notifier.Close()
-	}
-}
-
-// SharedInfra holds reusable infrastructure components that can be shared across
-// multiple scan runs (e.g., rescans in agent swarm mode). This avoids rebuilding
-// expensive resources like HTTP requesters and scope matchers for each rescan.
-type SharedInfra struct {
-	HTTPRequester *http.Requester
-	ScopeMatcher  *config.ScopeMatcher
-	HostLimiter   *hostlimit.HostRateLimiter
-	Services      *services.Services
-	JSEngine      *jsext.Engine
-	HookChain     *jsext.HookChain
-}
-
-// Close releases resources held by SharedInfra.
-func (s *SharedInfra) Close() {
-	// The shared requester outlives individual scans (that is the point of
-	// SharedInfra), so its pool is only released when the sharer itself is done.
-	s.HTTPRequester.CloseIdleConnections()
-	if s.HostLimiter != nil {
-		_ = s.HostLimiter.Close()
 	}
 }
 
@@ -255,83 +217,6 @@ func buildScanRateLimiter(perSec int) *rate.Limiter {
 		return nil
 	}
 	return rate.NewLimiter(rate.Limit(perSec), perSec)
-}
-
-// BuildSharedInfra creates a SharedInfra from the given options and settings.
-// It extracts the reusable portions of buildInfrastructure.
-func BuildSharedInfra(opts *types.Options, settings *config.Settings, repo *database.Repository) (*SharedInfra, error) {
-	infra := &SharedInfra{}
-
-	svc := &services.Services{
-		Options:     opts,
-		RateLimiter: buildScanRateLimiter(effectiveRateLimit(opts)),
-	}
-
-	if cache := newHostErrorCache(opts, settings, nil); cache != nil {
-		svc.HostErrors = cache
-	}
-
-	maxPerHost := opts.MaxPerHost
-	if opts.MaxPerHostExplicitlySet {
-		// An explicit -c/--max-per-host wins outright; otherwise newHostLimiter
-		// falls back to the common scanning_pace value.
-		maxPerHost = max(maxPerHost, 1)
-	} else {
-		maxPerHost = 0
-	}
-	hostLimiter := newHostLimiter(maxPerHost, settings, opts.NoWafPacing)
-	svc.HostLimiter = hostLimiter
-	infra.HostLimiter = hostLimiter
-	infra.Services = svc
-
-	var errs []error
-
-	httpRequester, err := http.NewRequester(opts, svc)
-	if err != nil {
-		zap.L().Warn("Failed to create HTTP requester for SharedInfra", zap.Error(err))
-		errs = append(errs, fmt.Errorf("could not create http requester: %w", err))
-	} else {
-		infra.HTTPRequester = httpRequester
-	}
-
-	if settings != nil {
-		infra.ScopeMatcher = config.NewScopeMatcher(settings.Scope, opts.Targets...)
-	}
-
-	if settings != nil && settings.DynamicAssessment.Extensions.Enabled {
-		jsEngineOpts := &jsext.EngineOptions{
-			ScanUUID:   opts.ScanUUID,
-			Repository: repo,
-			LLMClient:  extensionLLMClient(settings),
-		}
-		if settings != nil {
-			scopeCfg := settings.Scope
-			jsEngineOpts.ScopeConfig = &scopeCfg
-			jsEngineOpts.ScopeMatcher = config.NewScopeMatcher(settings.Scope, opts.Targets...)
-		}
-		jsEngine, jsErr := jsext.NewEngine(&settings.DynamicAssessment.Extensions, httpRequester, jsEngineOpts)
-		if jsErr != nil {
-			zap.L().Warn("Failed to initialize JS extensions for SharedInfra", zap.Error(jsErr))
-			errs = append(errs, fmt.Errorf("could not create js engine: %w", jsErr))
-		} else {
-			infra.JSEngine = jsEngine
-			preHooks := jsEngine.PreHooks()
-			postHooks := jsEngine.PostHooks()
-			if len(preHooks) > 0 || len(postHooks) > 0 {
-				infra.HookChain = jsext.NewHookChain(preHooks, postHooks)
-			}
-		}
-	}
-
-	if len(errs) > 0 {
-		return infra, fmt.Errorf("partial SharedInfra (%d failures): %w", len(errs), stderrors.Join(errs...))
-	}
-	return infra, nil
-}
-
-// SetSharedInfra allows the runner to reuse pre-built infrastructure instead of building fresh.
-func (r *Runner) SetSharedInfra(infra *SharedInfra) {
-	r.sharedInfra = infra
 }
 
 // New creates a new client for running the enumeration process.

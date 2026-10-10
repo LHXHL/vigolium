@@ -565,7 +565,7 @@ curl -s -X POST http://localhost:9002/api/scans/scan-abc123/stop \
 
 ### POST /api/scans/:uuid/pause — Pause a Running Scan
 
-Pauses a running scan. Workers finish their current item then block until resumed. The scan status is set to `"paused"` in the database.
+Pauses a running scan. Workers finish dispatching their current item then block until resumed; no new item is fetched or dispatched while paused. Active-module tasks that were already dispatched are not waited for and may still finish (sending their probes, recording findings) after the pause takes effect. The scan status is set to `"paused"` in the database.
 
 ```bash
 curl -s -X POST http://localhost:9002/api/scans/scan-abc123/pause \

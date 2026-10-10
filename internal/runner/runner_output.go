@@ -562,14 +562,12 @@ func (r *Runner) printScanConfig() {
 	// Extensions
 	extEnabled := settings != nil && settings.DynamicAssessment.Extensions.Enabled
 	if extEnabled {
-		extCount := 0
-		if r.sharedInfra != nil && r.sharedInfra.JSEngine != nil {
-			extCount = len(r.sharedInfra.JSEngine.ActiveModules()) + len(r.sharedInfra.JSEngine.PassiveModules())
-		}
-		fmt.Fprintf(os.Stderr, "  %s Extensions: %s | %s loaded\n",
+		// No count here: the extension engine is built later, in
+		// buildInfrastructure, so a "N loaded" figure printed now could only
+		// ever have said 0.
+		fmt.Fprintf(os.Stderr, "  %s Extensions: %s\n",
 			terminal.Purple(terminal.SymbolInfo),
-			terminal.HiGreen("enabled"),
-			terminal.HiTeal(fmt.Sprintf("%d", extCount)))
+			terminal.HiGreen("enabled"))
 	} else {
 		fmt.Fprintf(os.Stderr, "  %s Extensions: %s\n",
 			terminal.Purple(terminal.SymbolInfo),

@@ -407,7 +407,7 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 
 		// Restrict the DB poller to records that came from user ingestion.
 		// Without this, "finding" records persisted by the executor's
-		// emitResult (executor.go:1474-1488 — one row per finding with an
+		// emitResult (pkg/core/executor_results.go — one row per finding with an
 		// attached request/response pair) would get polled back into the
 		// scan and fan out 1 ingested request → hundreds of re-scanned rows.
 		sorSourceFilter := database.IngestRecordSources

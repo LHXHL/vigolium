@@ -308,7 +308,7 @@ func (e *Executor) runPassiveWithTimeout(
 	ch := moduleResultChanPool.Get().(chan moduleCallResult)
 	go func() {
 		// runScanFnGuarded recovers a module panic into an error: this goroutine
-		// is outside processItem's recover and the conc.WaitGroup boundary, so an
+		// is outside the worker's and the active task's panic recovery, so an
 		// unrecovered panic here would crash the process.
 		events, err := e.runScanFnGuarded(callCtx, module.ID(), scanFn)
 		ch <- moduleCallResult{events, err}
@@ -342,7 +342,7 @@ func (e *Executor) runPassiveWithTimeout(
 // derived from the phase context. It returns the module's results and whether
 // the call completed within the bound. When the per-module timeout fires OR the
 // phase deadline (ctx) is reached, it returns (nil, false) immediately so the
-// worker stops blocking on g.Wait() and the phase ends on time. The scan function
+// task returns, its item can complete, and the phase ends on time. The scan function
 // receives callCtx for explicit use. The executor also hands the module a
 // requester bound to the PHASE context (http.Requester.WithContext), so
 // context-less Execute calls abort in-flight requests on scan shutdown / phase
@@ -430,7 +430,7 @@ func (e *Executor) runActiveWithTimeout(
 		// executor's concurrency cap keeps reflecting genuinely in-flight scans.
 		defer releaseSlot()
 		// runScanFnGuarded recovers a module panic into an error: this goroutine
-		// is outside processItem's recover and the conc.WaitGroup boundary, so an
+		// is outside the worker's and the active task's panic recovery, so an
 		// unrecovered panic here would crash the process.
 		events, err := e.runScanFnGuarded(callCtx, module.ID(), func(c context.Context) ([]*output.ResultEvent, error) {
 			return scanFn(c, reqClient)

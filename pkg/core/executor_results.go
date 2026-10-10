@@ -467,7 +467,7 @@ func (e *Executor) reportPanic(label string, r any) {
 // happened through recovered.
 //
 // The flag is an out-parameter rather than a return value because this runs as a
-// deferred call, where a return value is discarded. Its one caller needs the
+// deferred call, where a return value is discarded. Its callers need the
 // fact: a work item whose processing panicked must still be acknowledged, or the
 // same poison item is re-served on every later run and the durable cursor never
 // moves past it.
@@ -482,8 +482,8 @@ func (e *Executor) recoverFromPanicInto(label string, recovered *bool) {
 
 // runScanFnGuarded runs a module scan function, converting a panic into an
 // error value instead of letting it unwind. The active/passive timeout wrappers
-// invoke scanFn from a raw goroutine that neither processItem's recover nor the
-// conc.WaitGroup boundary can reach, so an unrecovered panic there crashes the
+// invoke scanFn from a raw goroutine that neither the worker's nor the active
+// task's panic recovery can reach, so an unrecovered panic there crashes the
 // whole process. Recovering here keeps a single defective module (or a parser
 // panic on adversarial input) from taking down a long-running server, while
 // still surfacing the failure through the normal (nil, err) result path so the

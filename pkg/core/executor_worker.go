@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/sourcegraph/conc"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -142,7 +141,22 @@ func (e *Executor) sendItem(ctx context.Context, item *work.WorkItem, itemCh cha
 	}
 }
 
-func (e *Executor) worker(ctx context.Context, _ int, itemCh <-chan *work.WorkItem) {
+// worker pulls items and runs each one up to the end of its dispatch phase:
+// baseline fetch, passive stage, persist/scope, then dispatching the active
+// tasks. It does NOT wait for those tasks. The item's itemTracker finishes it
+// (ack, Processed(), buffer return) when its last task returns, so a slow
+// module task no longer pins the worker that dispatched it — the worker is
+// already fetching the next baseline.
+//
+// Before every dequeue the worker takes an outstanding-item slot
+// (MaxOutstandingItems, released by the tracker). That keeps the number of
+// open items, and with them live response buffers, bounded, and it is what
+// turns slow tasks into backpressure on itemCh and the feeder instead of an
+// unbounded pile of half-finished items.
+//
+// stop is closed by Execute right after itemCh, so a worker blocked waiting
+// for a slot (every slot held by a stuck task) still exits at shutdown.
+func (e *Executor) worker(ctx context.Context, _ int, itemCh <-chan *work.WorkItem, stop <-chan struct{}) {
 	for {
 		// Block if paused, abort if context cancelled
 		if e.cfg.PauseCtrl != nil {
@@ -154,31 +168,54 @@ func (e *Executor) worker(ctx context.Context, _ int, itemCh <-chan *work.WorkIt
 		select {
 		case <-ctx.Done():
 			return
+		case <-stop:
+			return
+		case e.pool.itemSlots <- struct{}{}:
+		}
+
+		select {
+		case <-ctx.Done():
+			<-e.pool.itemSlots
+			return
 		case item, ok := <-itemCh:
 			if !ok {
+				<-e.pool.itemSlots
 				return
 			}
-			e.pool.inFlight.Add(1)
+			t := e.newItemTracker(ctx, item, true)
+			// PauseCtrl covers the worker's own part only. Tasks already
+			// dispatched keep running after Pause returns; see PauseController.
 			if e.cfg.PauseCtrl != nil {
 				e.cfg.PauseCtrl.AcquireWorker()
 			}
-			panicked := e.processItem(ctx, item)
+			e.dispatchItem(t)
 			if e.cfg.PauseCtrl != nil {
 				e.cfg.PauseCtrl.ReleaseWorker()
 			}
-			e.pool.inFlight.Add(-1)
-			e.finishItem(ctx, item, panicked)
-			if e.statsTracker != nil {
-				e.statsTracker.Increment()
-			}
+			t.done() // drop the dispatcher's reference
 		}
+	}
+}
+
+// dispatchItem runs processItemDetached under panic recovery. A recovered
+// panic marks the tracker so the item is acknowledged anyway when it
+// completes; the caller still owns the dispatcher reference and must call
+// t.done().
+func (e *Executor) dispatchItem(t *itemTracker) {
+	var panicked bool
+	func() {
+		defer e.recoverFromPanicInto("processItem", &panicked)
+		e.processItemDetached(t)
+	}()
+	if panicked {
+		t.panicked.Store(true)
 	}
 }
 
 // finishItem acknowledges an item only if it was actually processed.
 //
 // The worker's select can win a dequeue in the same instant the context is
-// cancelled, and processItem's first act is to bail out on a cancelled context —
+// cancelled, and processItemDetached's first act is to bail out on a cancelled context —
 // so the item came off the queue, did no work, and was then acknowledged anyway.
 // For a DB-backed source an ack is a durable cursor advance: the scan's cursor
 // moved past records nothing ever looked at, and because a curtailed scan still
@@ -196,73 +233,36 @@ func (e *Executor) finishItem(ctx context.Context, item *work.WorkItem, force bo
 	item.Complete()
 }
 
-// workerController monitors queue depth and scales workers up or down.
-// Only active when AdaptiveWorkers is enabled.
-func (e *Executor) workerController(ctx context.Context, itemCh chan *work.WorkItem, wg *conc.WaitGroup) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	nextID := e.cfg.Workers // start IDs after initial workers
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			queueDepth := len(itemCh)
-			queueCap := cap(itemCh)
-			active := int(e.pool.activeWorkers.Load())
-
-			// Scale up: queue > 75% full and we have headroom
-			if queueDepth > queueCap*3/4 && active < e.pool.maxWorkers {
-				workerID := nextID
-				nextID++
-				e.pool.activeWorkers.Add(1)
-				wg.Go(func() {
-					e.worker(ctx, workerID, itemCh)
-					e.pool.activeWorkers.Add(-1)
-				})
-				zap.L().Debug("Adaptive scaling: spawned worker",
-					zap.Int("worker_id", workerID),
-					zap.Int("active_workers", int(e.pool.activeWorkers.Load())))
-			}
-
-			// Note: scaling down is handled naturally — when itemCh is closed,
-			// excess workers exit on their own. We don't preemptively kill workers
-			// to avoid complexity of per-worker cancellation and potential data loss.
-		}
-	}
+// processItem runs one work item through the fetch, passive and active stages
+// and waits until its last active task has finished and the item has been
+// completed (acknowledged unless the context was cancelled). It returns whether
+// a panic was recovered. The worker loop does not use it — it dispatches and
+// moves on (see worker) — but it gives tests and one-shot callers a synchronous
+// view of the same code path.
+func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) (panicked bool) {
+	t := e.newItemTracker(ctx, item, false)
+	e.dispatchItem(t)
+	t.done()
+	<-t.finished
+	return t.panicked.Load()
 }
 
-// processItem runs one work item through the fetch, passive and active stages.
-// It returns whether a panic was recovered, which the caller needs in order to
-// acknowledge the item anyway: a poison item that is never acknowledged is
-// re-served on every subsequent run and freezes the cursor behind it.
-func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) (panicked bool) {
-	// Registered first so it unwinds LAST, after the buffer-return defer below.
-	defer e.recoverFromPanicInto("processItem", &panicked)
+// processItemDetached runs t's item through the fetch, passive and active
+// stages, returning as soon as every active task has been dispatched. The
+// tasks hold references on t; the item completes when the last one returns.
+// It records the pooled baseline buffer on t, which returns it to the pool in
+// complete() unless an abandoned module call flagged it as escaped.
+func (e *Executor) processItemDetached(t *itemTracker) {
+	// t.ctx carries t's response-buffer guard (see withResponseBufferGuard).
+	ctx := t.ctx
+	item := t.item
 
 	// Bail out early if context is cancelled (graceful shutdown)
 	select {
 	case <-ctx.Done():
-		return false
+		return
 	default:
 	}
-
-	// Track pooled response buffer for deferred return.
-	// Must be declared before the panic-recovery defer so it runs first (LIFO).
-	//
-	// guard withholds the buffer from the pool when a module call was abandoned
-	// (per-module timeout or phase cancellation) and may still be reading it. See
-	// responseBufferGuard.
-	var pooledBuf []byte
-	var guard responseBufferGuard
-	ctx = withResponseBufferGuard(ctx, &guard)
-	defer func() {
-		if pooledBuf != nil && !guard.escaped.Load() {
-			putResponseBuffer(pooledBuf)
-		}
-	}()
 
 	req := item.Request
 	enableModules := item.EnableModules
@@ -291,15 +291,14 @@ func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) (panick
 	if !ok {
 		return
 	}
-	// Counted here rather than at the end of processItem: this is the exact point
+	// Counted here rather than when the item completes: this is the exact point
 	// where a server answered, and every later return in this function is a
 	// policy decision about an answer we already have.
 	e.responded.Add(1)
-	// pooledBuf is ASSIGNED, never redeclared: the deferred putResponseBuffer
-	// above closes over the outer variable, and a `:=` here would shadow it and
-	// leak the buffer on every item.
-	var httpResp *httpmsg.HttpResponse
-	req, httpResp, pooledBuf = fetched.req, fetched.resp, fetched.pooledBuf
+	// From here the tracker owns the pooled buffer: complete() returns it once
+	// the last active task is done with the item.
+	httpResp := fetched.resp
+	req, t.pooledBuf = fetched.req, fetched.pooledBuf
 	redirectHops := fetched.hops
 
 	// Learn object-storage-backed hosts from any storage-signalled response so
@@ -422,7 +421,6 @@ func (e *Executor) processItem(ctx context.Context, item *work.WorkItem) (panick
 	elig := computeEligibility(req)
 
 	if !skipActive {
-		e.runActiveStage(ctx, req, &filter, &elig)
+		e.runActiveStage(ctx, t, req, &filter, &elig)
 	}
-	return false
 }

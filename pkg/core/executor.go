@@ -86,8 +86,8 @@ type Executor struct {
 	// responded counts input items for which an HTTP response was actually
 	// received - one per item, not per redirect hop or retry.
 	//
-	// It exists because Processed() cannot answer that question: the worker
-	// increments its stats tracker after processItem returns, and processItem
+	// It exists because Processed() cannot answer that question: the stats
+	// tracker counts every item that completes, and processItemDetached
 	// returns early on a transport failure, a dropped storage-metadata probe, or
 	// a pre-hook rejection. On a normal scan the difference is noise; on a host
 	// sweep, where dead hosts are a large fraction of the input, reporting
@@ -211,14 +211,24 @@ type scanCaches struct {
 
 // workerPool groups the Executor's worker-pool concurrency state.
 type workerPool struct {
-	// inFlight counts workers currently processing items. Used by the feedback
-	// drain loop to wait for all workers to complete.
+	// inFlight counts OUTSTANDING items: incremented when a worker dequeues an
+	// item, decremented when the item's last active task finishes (see
+	// itemTracker). Not busy workers — a worker hands its item's tasks off and
+	// goes back to the queue. The feedback drain loop treats inFlight == 0 plus
+	// an empty feedback channel as idle, which still holds because feedback
+	// only comes from items that are outstanding.
 	inFlight atomic.Int64
 
-	// Adaptive worker scaling: current count plus the lower/upper bounds.
-	activeWorkers atomic.Int32
-	minWorkers    int
-	maxWorkers    int
+	// itemSlots caps outstanding items (ExecutorConfig.MaxOutstandingItems).
+	// A worker takes a slot before it dequeues and the item's tracker gives it
+	// back on completion, so slow detached tasks turn into backpressure on
+	// itemCh instead of an unbounded number of open items (each holding a live
+	// response buffer).
+	itemSlots chan struct{}
+
+	// taskWG tracks every detached active-module task so Execute can join them
+	// at shutdown (bounded by workerExitGrace).
+	taskWG sync.WaitGroup
 
 	// feedbackCh lets modules inject discovered requests back into the pipeline;
 	// feeder wraps it to track drop metrics. activeTaskSem bounds concurrent
@@ -318,6 +328,12 @@ func NewExecutor(
 		}
 	}
 	e.pool.activeTaskSem = make(chan struct{}, activeTaskLimit)
+
+	maxOutstanding := cfg.MaxOutstandingItems
+	if maxOutstanding <= 0 {
+		maxOutstanding = cfg.Workers * defaultOutstandingItemsPerWorker
+	}
+	e.pool.itemSlots = make(chan struct{}, maxOutstanding)
 
 	// Global budget for parallel-passive goroutines. Passive work is CPU-bound, so
 	// the bound only needs to keep cores busy — sized like the active budget so the
@@ -525,29 +541,14 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 	var wg conc.WaitGroup
 	itemCh := make(chan *work.WorkItem, e.cfg.Workers*2)
 
-	e.pool.activeWorkers.Store(int32(e.cfg.Workers))
+	// stopWorkers is closed right after itemCh so a worker parked waiting for
+	// an outstanding-item slot (every slot held by a stuck task) still exits.
+	stopWorkers := make(chan struct{})
 	for i := 0; i < e.cfg.Workers; i++ {
 		workerID := i
 		wg.Go(func() {
-			e.worker(ctx, workerID, itemCh)
-			e.pool.activeWorkers.Add(-1)
+			e.worker(ctx, workerID, itemCh, stopWorkers)
 		})
-	}
-
-	// Start adaptive worker controller if enabled
-	var controllerCancel context.CancelFunc
-	if e.cfg.AdaptiveWorkers {
-		e.pool.minWorkers = e.cfg.MinWorkers
-		if e.pool.minWorkers <= 0 {
-			e.pool.minWorkers = 2
-		}
-		e.pool.maxWorkers = e.cfg.MaxWorkers
-		if e.pool.maxWorkers <= 0 {
-			e.pool.maxWorkers = e.cfg.Workers * 4
-		}
-		var controllerCtx context.Context
-		controllerCtx, controllerCancel = context.WithCancel(ctx)
-		go e.workerController(controllerCtx, itemCh, &wg)
 	}
 
 	e.report.StoppedEarly = !e.feedItems(ctx, itemCh)
@@ -622,21 +623,21 @@ drainLoop:
 		}
 	}
 
-	// Stop the adaptive worker controller before closing the channel
-	if controllerCancel != nil {
-		controllerCancel()
-	}
-
 	close(itemCh)
+	close(stopWorkers)
 
-	// Bound the wait for workers to exit. Healthy workers return immediately once
-	// itemCh is closed; only a worker stuck in a code path that ignores
-	// cancellation lingers. Without a bound, that single worker would hang Wait()
-	// — and the whole scan — forever (the drain stall cap above only breaks the
-	// drain loop; this is where an unresponsive worker would otherwise re-block).
-	// We run Wait() in a goroutine and forward any captured panic so conc's
-	// re-panic semantics are preserved on the normal path; on timeout we log
-	// loudly and proceed, leaking the stuck goroutine rather than hanging.
+	// Bound the wait for workers, then their detached tasks, to exit. Healthy
+	// workers return immediately once itemCh is closed, and on a clean drain
+	// every task has already finished (inFlight reached 0); on cancellation a
+	// task returns as soon as its module wrapper observes ctx.Done. Only code
+	// that ignores cancellation lingers. Without a bound, that single goroutine
+	// would hang the wait — and the whole scan — forever (the drain stall cap
+	// above only breaks the drain loop; this is where an unresponsive worker or
+	// task would otherwise re-block). Tasks are joined only AFTER the workers,
+	// because workers are the only goroutines that start tasks (taskWG.Add must
+	// not race Wait). We wait in a goroutine and forward any captured panic so
+	// conc's re-panic semantics are preserved on the normal path; on timeout we
+	// log loudly and proceed, leaking the stuck goroutines rather than hanging.
 	waitDone := make(chan struct{})
 	var waitPanic atomic.Value
 	go func() {
@@ -653,6 +654,7 @@ drainLoop:
 			close(waitDone)
 		}()
 		wg.Wait()
+		e.pool.taskWG.Wait()
 	}()
 	exitGrace := e.workerExitGrace()
 	workersExited := true
@@ -664,15 +666,16 @@ drainLoop:
 	case <-time.After(exitGrace):
 		workersExited = false
 		e.report.WorkersAbandoned = true
-		zap.L().Warn("abandoning scan worker(s) that did not exit within the shutdown grace to avoid hanging the scan; leaking goroutine(s)",
+		zap.L().Warn("abandoning scan worker(s) or active task(s) that did not exit within the shutdown grace to avoid hanging the scan; leaking goroutine(s)",
 			zap.Int64("in_flight", e.pool.inFlight.Load()),
 			zap.Duration("worker_exit_grace", exitGrace))
 	}
 
-	// Passive-module flush must only run once every worker has exited. Flusher /
-	// BatchFlusher modules aggregate cross-request state that a worker mutates
-	// from ScanPerRequest; if we abandoned a still-running worker above, flushing
-	// here would race that worker on the module's buffer and the result pipeline.
+	// Passive-module flush must only run once every worker and task has exited.
+	// Flusher / BatchFlusher modules aggregate cross-request state that a worker
+	// mutates from ScanPerRequest, and tasks feed the result pipeline; if we
+	// abandoned a still-running one above, flushing here would race it on the
+	// module's buffer and the result pipeline.
 	// In that (pathological, already-degraded) case we skip the flush rather than
 	// risk corrupted findings — deferred findings may be incomplete.
 	if workersExited {
