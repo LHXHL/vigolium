@@ -120,6 +120,10 @@ type Runner struct {
 	// eventObserverAttached guards attachEventObserver against wrapping the
 	// writer's OnEvent again on a reused Runner.
 	eventObserverAttached atomic.Bool
+
+	// phaseRunners replaces defaultPhaseRunners when non-nil (tests stub
+	// phases through it); see phaseRunnerFor.
+	phaseRunners map[NativePhase]phaseRunner
 }
 
 // Finalized reports whether RunNativeScan already wrote the scan's terminal

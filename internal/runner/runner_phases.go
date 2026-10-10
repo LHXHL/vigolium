@@ -385,9 +385,11 @@ func (r *Runner) RunNativeScan() (err error) {
 					r.recordSkippedSteps(plan.Steps[i:], scanStopReason(ctx, r.ctx))
 					break
 				}
+				// Only a fatal error comes back (see executeNativePhase); it
+				// ends the run here as it does an ordinary scan.
 				if err := r.executeNativePhase(ctx, infra, step.Phase); err != nil {
-					zap.L().Error("Full-scan-on-receive: phase error", zap.Error(err))
-					break
+					r.recordSkippedSteps(plan.Steps[i+1:], database.ReasonError)
+					return err
 				}
 			}
 		}
@@ -413,7 +415,12 @@ func (r *Runner) RunNativeScan() (err error) {
 			r.recordSkippedSteps(plan.Steps[i:], scanStopReason(ctx, r.ctx))
 			break
 		}
+		// A phase that fails is recorded and the scan moves on; only a fatal
+		// infrastructure error (errFatal: the database, a record store or the
+		// output writer gone) comes back, and it ends the scan. The phases it
+		// leaves unstarted are recorded skipped so the row shows the gap.
 		if err := r.executeNativePhase(ctx, infra, step.Phase); err != nil {
+			r.recordSkippedSteps(plan.Steps[i+1:], database.ReasonError)
 			return err
 		}
 	}
@@ -463,12 +470,102 @@ func (r *Runner) printFinishedBanner(ctx context.Context, w io.Writer, scanUUID 
 		partialBannerSuffix(r.Completion()))
 }
 
+// phaseRunner is one native phase's entry in the dispatch table: what it is
+// called in the logs, how it runs, and what follows a successful run.
+//
+//   - tag is the output writer's / stderr tee's phase tag (setPhaseTag).
+//   - label is the scan-log component. The two differ for spidering ("spider" /
+//     "spidering"); both are kept as they were, since stored scan logs are
+//     filtered by them.
+//   - started / completed / failed override the default scan-log messages
+//     ("phase started", "phase completed", "phase failed: <err>"). selfStart
+//     means run logs its own start line (dynamic assessment, whose start
+//     carries the module counts, and which logs a skip instead when it has none).
+//   - run does the work. Returning errPhaseSkipped means the phase decided there
+//     was nothing to do and has marked its tracker skipped itself.
+//   - after runs only when run succeeded (discovery's deparos cleanup, the
+//     known-issue-scan finding dedup).
+type phaseRunner struct {
+	tag, label                 string
+	started, completed, failed string
+	selfStart                  bool
+	run                        func(r *Runner, ctx context.Context, infra *phaseInfra) error
+	after                      func(r *Runner, ctx context.Context)
+}
+
+// defaultPhaseRunners is the native phase dispatch table. Every NativePhase the
+// plan can enable has an entry (TestPhaseRunnersCoverPlan); the preflight is not
+// a dispatched phase — RunNativeScan runs it before the plan.
+var defaultPhaseRunners = map[NativePhase]phaseRunner{
+	PhaseHeuristicsCheck: {tag: "heuristics", label: "heuristics", run: func(r *Runner, ctx context.Context, infra *phaseInfra) error {
+		results, err := r.runHeuristicsCheckPhase(ctx, infra)
+		if err != nil {
+			return err
+		}
+		r.heuristicsResults = results
+		return nil
+	}},
+	PhasePortSweep:       {tag: "port-sweep", label: "port-sweep", run: (*Runner).runPortSweepPhase},
+	PhaseExternalHarvest: {tag: "harvest", label: "harvest", run: (*Runner).runExternalHarvestPhase},
+	PhaseHarvestProbe:    {tag: "harvest-probe", label: "harvest-probe", run: (*Runner).runHarvestProbePhase},
+	PhaseSpidering:       {tag: "spider", label: "spidering", run: (*Runner).runSpideringPhase},
+	PhaseProbe:           {tag: "probe", label: "probe", run: (*Runner).runProbePhase},
+	PhaseDiscovery: {tag: "discovery", label: "discovery", run: (*Runner).runDiscoveryPhase,
+		after: func(r *Runner, ctx context.Context) {
+			if r.repository != nil {
+				r.cleanupDeparosRecords(ctx)
+			}
+		}},
+	PhaseTargetedReSpider: {tag: "respider", label: "respider", run: (*Runner).runTargetedReSpiderPhase},
+	PhaseParamMining:      {tag: "param-mining", label: "param-mining", run: (*Runner).runParamMiningPhase},
+	PhaseSeed: {tag: "seed", label: "seed", run: (*Runner).seedCLITargets,
+		started: "seeding CLI targets", completed: "seeding completed", failed: "CLI target seeding failed: "},
+	PhaseKnownIssueScan: {tag: "known-issue-scan", label: "known-issue-scan", run: (*Runner).runKnownIssueScanPhase,
+		after: func(r *Runner, ctx context.Context) { r.deduplicateFindings(ctx, "KnownIssueScan") }},
+	PhaseDynamicAssessment: {tag: "dynamic-assessment", label: "dynamic-assessment", selfStart: true,
+		run: (*Runner).runDynamicAssessmentStep},
+}
+
+// runDynamicAssessmentStep is dynamic assessment's dispatch entry: it resolves
+// the modules first, so a run with none is reported skipped rather than started.
+func (r *Runner) runDynamicAssessmentStep(ctx context.Context, infra *phaseInfra) error {
+	activeModules, passiveModules := r.resolveAllModules(infra)
+	if len(activeModules) == 0 && len(passiveModules) == 0 {
+		zap.L().Info("No modules to execute")
+		r.scanLogger.Info("dynamic-assessment", "skipped, no modules to execute")
+		// Skipped, not completed: a scan that ran no modules at all must not
+		// be reportable as a clean assessment. It is still a COMPLETE scan —
+		// nothing was missed, there was nothing to do — which is why
+		// no_modules is the one skip reason Completion treats as benign.
+		r.currentPhase.Load().markSkipped(database.ReasonNoModules)
+		return errPhaseSkipped
+	}
+	r.scanLogger.InfoWithMeta("dynamic-assessment", "phase started", map[string]interface{}{
+		"active_modules":  len(activeModules),
+		"passive_modules": len(passiveModules),
+	})
+	return r.runDynamicAssessmentPhase(ctx, infra, activeModules, passiveModules)
+}
+
+// phaseRunnerFor returns the dispatch entry for phase: the Runner's own table
+// when a test installed one, else defaultPhaseRunners.
+func (r *Runner) phaseRunnerFor(phase NativePhase) (phaseRunner, bool) {
+	if r.phaseRunners != nil {
+		p, ok := r.phaseRunners[phase]
+		return p, ok
+	}
+	p, ok := defaultPhaseRunners[phase]
+	return p, ok
+}
+
+// executeNativePhase runs one phase through its dispatch entry and applies the
+// phase-error policy (see phase_errors.go). It returns an error only when the
+// scan must stop: a fatal infrastructure error, wrapped with the phase's name.
+// A phase that fails for any other reason is recorded (outcome failed, reason
+// phase_error, an `error` event) and nil is returned, so the next phase runs.
 func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phase NativePhase) (err error) {
-	// One tracker per phase, wrapped around the whole switch rather than
-	// duplicated into its nine arms: the arms disagree about what an error means
-	// (most log and continue, discovery and seed return), and a per-arm emitter
-	// would have to restate that disagreement nine times. Here the tracker sees
-	// the same outcome the caller does.
+	// One tracker per phase, wrapped around the dispatch so the tracker sees the
+	// same outcome the caller does.
 	//
 	// r.currentPhase is set so the module result callbacks — which run on worker
 	// goroutines with no idea which phase they belong to — can count a finding
@@ -497,145 +594,52 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		liveness.PhaseEnded(string(phase), tracker.extraSentSoFar())
 	}()
 
-	switch phase {
-	case PhaseHeuristicsCheck:
-		r.setPhaseTag("heuristics")
-		r.scanLogger.Info("heuristics", "phase started")
-		results, err := r.runHeuristicsCheckPhase(ctx, infra)
-		if err != nil {
-			zap.L().Error("HeuristicsCheck phase failed", zap.Error(err))
-			r.scanLogger.Error("heuristics", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.heuristicsResults = results
-			r.scanLogger.Info("heuristics", "phase completed")
-		}
-	case PhasePortSweep:
-		r.setPhaseTag("port-sweep")
-		r.scanLogger.Info("port-sweep", "phase started")
-		if err := r.runPortSweepPhase(ctx, infra); err != nil {
-			zap.L().Error("PortSweep phase failed", zap.Error(err))
-			r.scanLogger.Error("port-sweep", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.scanLogger.Info("port-sweep", "phase completed")
-		}
-	case PhaseExternalHarvest:
-		r.setPhaseTag("harvest")
-		r.scanLogger.Info("harvest", "phase started")
-		if err := r.runExternalHarvestPhase(ctx, infra); err != nil {
-			zap.L().Error("ExternalHarvest phase failed", zap.Error(err))
-			r.scanLogger.Error("harvest", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.scanLogger.Info("harvest", "phase completed")
-		}
-	case PhaseHarvestProbe:
-		r.setPhaseTag("harvest-probe")
-		r.scanLogger.Info("harvest-probe", "phase started")
-		if err := r.runHarvestProbePhase(ctx, infra); err != nil {
-			zap.L().Error("HarvestProbe phase failed", zap.Error(err))
-			r.scanLogger.Error("harvest-probe", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.scanLogger.Info("harvest-probe", "phase completed")
-		}
-	case PhaseSpidering:
-		r.setPhaseTag("spider")
-		r.scanLogger.Info("spidering", "phase started")
-		if err := r.runSpideringPhase(ctx, infra); err != nil {
-			zap.L().Error("Spidering phase failed", zap.Error(err))
-			r.scanLogger.Error("spidering", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.scanLogger.Info("spidering", "phase completed")
-		}
-	case PhaseProbe:
-		r.setPhaseTag("probe")
-		r.scanLogger.Info("probe", "phase started")
-		if err := r.runProbePhase(ctx, infra); err != nil {
-			zap.L().Error("Probe phase failed", zap.Error(err))
-			r.scanLogger.Error("probe", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.scanLogger.Info("probe", "phase completed")
-		}
-	case PhaseDiscovery:
-		r.setPhaseTag("discovery")
-		r.scanLogger.Info("discovery", "phase started")
-		if err := r.runDiscoveryPhase(ctx, infra); err != nil {
-			r.scanLogger.Error("discovery", "phase failed: "+err.Error())
-			// No noteError here: this error is RETURNED, so it ends the scan and
-			// rides out on scan.finished. The tracker records it once, in finish.
-			return fmt.Errorf("discovery phase failed: %w", err)
-		}
-		r.scanLogger.Info("discovery", "phase completed")
-		if r.repository != nil {
-			r.cleanupDeparosRecords(ctx)
-		}
-	case PhaseTargetedReSpider:
-		r.setPhaseTag("respider")
-		r.scanLogger.Info("respider", "phase started")
-		if err := r.runTargetedReSpiderPhase(ctx, infra); err != nil {
-			zap.L().Error("Targeted re-spider phase failed", zap.Error(err))
-			r.scanLogger.Error("respider", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.scanLogger.Info("respider", "phase completed")
-		}
-	case PhaseParamMining:
-		r.setPhaseTag("param-mining")
-		r.scanLogger.Info("param-mining", "phase started")
-		if err := r.runParamMiningPhase(ctx, infra); err != nil {
-			zap.L().Error("ParamMining phase failed", zap.Error(err))
-			r.scanLogger.Error("param-mining", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.scanLogger.Info("param-mining", "phase completed")
-		}
-	case PhaseSeed:
-		r.setPhaseTag("seed")
-		r.scanLogger.Info("seed", "seeding CLI targets")
-		if err := r.seedCLITargets(ctx, infra); err != nil {
-			r.scanLogger.Error("seed", "CLI target seeding failed: "+err.Error())
-			return fmt.Errorf("CLI target seeding failed: %w", err)
-		}
-		r.scanLogger.Info("seed", "seeding completed")
-	case PhaseKnownIssueScan:
-		r.setPhaseTag("known-issue-scan")
-		r.scanLogger.Info("known-issue-scan", "phase started")
-		if err := r.runKnownIssueScanPhase(ctx, infra); err != nil {
-			zap.L().Error("KnownIssueScan phase failed", zap.Error(err))
-			r.scanLogger.Error("known-issue-scan", "phase failed: "+err.Error())
-			tracker.noteError(err)
-		} else {
-			r.scanLogger.Info("known-issue-scan", "phase completed")
-			r.deduplicateFindings(ctx, "KnownIssueScan")
-		}
-	case PhaseDynamicAssessment:
-		r.setPhaseTag("dynamic-assessment")
-		activeModules, passiveModules := r.resolveAllModules(infra)
-		if len(activeModules) > 0 || len(passiveModules) > 0 {
-			r.scanLogger.InfoWithMeta("dynamic-assessment", "phase started", map[string]interface{}{
-				"active_modules":  len(activeModules),
-				"passive_modules": len(passiveModules),
-			})
-			if err := r.runDynamicAssessmentPhase(ctx, infra, activeModules, passiveModules); err != nil {
-				zap.L().Error("Dynamic-assessment phase failed", zap.Error(err))
-				r.scanLogger.Error("dynamic-assessment", "phase failed: "+err.Error())
-				tracker.noteError(err)
-			} else {
-				r.scanLogger.Info("dynamic-assessment", "phase completed")
-			}
-		} else {
-			zap.L().Info("No modules to execute")
-			r.scanLogger.Info("dynamic-assessment", "skipped, no modules to execute")
-			// Skipped, not completed: a scan that ran no modules at all must not
-			// be reportable as a clean assessment. It is still a COMPLETE scan —
-			// nothing was missed, there was nothing to do — which is why
-			// no_modules is the one skip reason Completion treats as benign.
-			tracker.markSkipped(database.ReasonNoModules)
-		}
+	p, ok := r.phaseRunnerFor(phase)
+	if !ok {
+		zap.L().Warn("No runner for native phase; skipping it", zap.String("phase", string(phase)))
+		return nil
 	}
-	return nil
+	r.setPhaseTag(p.tag)
+	if !p.selfStart {
+		r.scanLogger.Info(p.label, orDefault(p.started, "phase started"))
+	}
+	runErr := p.run(r, ctx, infra)
+	switch {
+	case runErr == nil:
+		r.scanLogger.Info(p.label, orDefault(p.completed, "phase completed"))
+		if p.after != nil {
+			p.after(r, ctx)
+		}
+		return nil
+	case errors.Is(runErr, errPhaseSkipped):
+		return nil
+	}
+
+	r.scanLogger.Error(p.label, orDefault(p.failed, "phase failed: ")+runErr.Error())
+	switch {
+	case stoppedByScanContext(ctx, runErr):
+		// The scan's context ended under the phase. finish marks the phase
+		// partial with that context's stop reason, and the phase loop records
+		// the phases that never started; this is not the phase's failure.
+		zap.L().Warn("Phase stopped with the scan", zap.String("phase", string(phase)), zap.Error(runErr))
+		return nil
+	case isFatalPhaseError(runErr):
+		// RETURNED, so it ends the scan and rides out on scan.finished; the
+		// tracker records it once, in finish, without a non-fatal `error` event.
+		zap.L().Error("Phase failed; stopping the scan", zap.String("phase", string(phase)), zap.Error(runErr))
+		return fatal(fmt.Errorf("%s phase failed: %w", phase, runErr))
+	default:
+		zap.L().Error("Phase failed; the scan continues without it", zap.String("phase", string(phase)), zap.Error(runErr))
+		tracker.noteError(runErr)
+		tracker.markPartial(database.ReasonPhaseError)
+		return nil
+	}
+}
+
+// orDefault returns s, or def when s is empty.
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }

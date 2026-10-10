@@ -511,6 +511,10 @@ func (e *Executor) timedOutCount() int64 {
 	return e.moduleTimeouts.Load()
 }
 
+// IsLevelDBClosed reports whether err comes from a closed LevelDB store (see
+// isLevelDBClosed). The runner treats it as a fatal phase error.
+func IsLevelDBClosed(err error) bool { return isLevelDBClosed(err) }
+
 // isLevelDBClosed returns true if the error is caused by a closed LevelDB instance,
 // which happens during shutdown when the dedup manager is closed before workers finish.
 //

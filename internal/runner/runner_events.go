@@ -537,8 +537,9 @@ func (t *phaseTracker) finish(ctx context.Context, err error) database.PhaseOutc
 	}
 	// recordError, not noteError: an error that reaches finish is the one the
 	// CALLER is returning, so it rides out on scan.finished. Emitting a non-fatal
-	// `error` event for it too would contradict that event's contract, and the
-	// arms that log-and-continue have already called noteError themselves.
+	// `error` event for it too would contradict that event's contract, and a
+	// failure the scan survives has already been through noteError (see
+	// executeNativePhase).
 	t.recordError(err)
 	// The context the phase ran under explains a curtailment the phase itself
 	// cannot see: the total scan budget, the request budget, or an operator's
@@ -657,11 +658,10 @@ func (r *Runner) attachEventObserver() {
 // scan.finished instead.
 //
 // A method on the tracker rather than a free function taking a name: the tracker
-// owns the CANONICAL phase id, and the eight call sites sit next to
-// scanLogger.Error calls whose component labels are the short tags
-// ("heuristics", "harvest", "respider"). Hand-typing the label at each site had
-// already produced three phases that reported one spelling on phase.started and
-// another on error, which silently breaks a consumer correlating the two.
+// owns the CANONICAL phase id, while the scan log labels phases with the short
+// tags ("heuristics", "harvest", "respider"). Hand-typing the label had already
+// produced three phases that reported one spelling on phase.started and another
+// on error, which silently breaks a consumer correlating the two.
 func (t *phaseTracker) noteError(err error) {
 	if t == nil || err == nil {
 		return

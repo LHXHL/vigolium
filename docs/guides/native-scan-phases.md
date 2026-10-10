@@ -38,6 +38,28 @@ root page preflight fetched, so with heuristics on the GET costs nothing extra f
 plans that never reach the target (`run external-harvest`), scan-on-receive and `-i`/`--all-records`
 input. See [Reachability](../coding-agent.md#reachability).
 
+### When a phase fails
+
+Every phase follows the same rule (`executeNativePhase`, `internal/runner/phase_errors.go`):
+
+- **A phase error does not end the scan.** The phase is recorded `failed` with reason `phase_error`
+  and its first error as the message, an `error` event is emitted, and the next phase runs on
+  whatever the earlier phases stored. The scan finishes `completed` with completeness `partial`
+  (`scan.finished` `curtailed`, `stop_reason: phase_error` unless something earlier stopped it).
+  Discovery and seed are included: they used to abort the scan. A scan whose targets never got
+  in is still loud, through the preflight's `no_targets_in_scope` / `no_targets_reachable` stop.
+- **An infrastructure error stops the scan.** The database or a record store is closed or cannot
+  be written (closed LevelDB, closed record writer, `sql: database is closed`, disk full,
+  read-only database), the output writer is closed, or a session is lost under
+  `reauth.on_failure: abort`. The phase is recorded `failed`, the phases after it `skipped` with
+  reason `error`, and the error (`<phase> phase failed: …`) is the scan row's `error_message`
+  and the `scan.finished{status: "failed"}` message (exit `1`). An explicit `--auth-file` login
+  failure stops the scan before the first phase.
+- **A phase cut short by the scan itself is not a failure.** When Ctrl-C,
+  `--scanning-max-duration`, `--max-requests` or an auth abort ends the scan's context, the
+  running phase is `partial` (`curtailed`) with that reason and the phases that never started are
+  `skipped` with it.
+
 A full scan with all phases enabled:
 
 ```bash
