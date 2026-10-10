@@ -5,7 +5,6 @@ import (
 	"regexp"
 
 	"github.com/pkg/errors"
-	httputil "github.com/projectdiscovery/utils/http"
 	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
@@ -180,7 +179,7 @@ func (m *Module) ScanPerInsertionPoint(
 		// positive: a Cloudflare 403 "Just a moment..." page whose base64
 		// challenge token happened to contain "bSON", matching the MongoDB
 		// pattern. Skip such responses before error matching.
-		if isBlockedResponse(resp) {
+		if infra.IsBlockedResponse(resp) {
 			resp.Close()
 			continue
 		}
@@ -261,16 +260,6 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	return results, nil
-}
-
-// isBlockedResponse reports whether resp came from a WAF/CDN challenge, auth
-// gate, rate limiter, or maintenance page rather than the application. Genuine
-// error-based NoSQLi leaks are emitted by the app stack (typically a 500), so a
-// denied or challenged response can only yield false matches. It combines the
-// vendor-aware block detector (Cloudflare, Akamai, Incapsula, ...) with a plain
-// status gate that also catches generic WAFs the detector does not recognize.
-func isBlockedResponse(resp *httputil.ResponseChain) bool {
-	return infra.IsBlockedResponse(resp)
 }
 
 // checkNoSQLError checks if response contains a NoSQL error pattern not already

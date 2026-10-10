@@ -244,7 +244,7 @@ func uniquePatternMatches(patterns []*regexp.Regexp, body string) []string {
 		if match == "" {
 			continue
 		}
-		match = truncate(match, 140)
+		match = modkit.Truncate(match, 140)
 		key := strings.ToLower(match)
 		if seen[key] {
 			continue
@@ -262,11 +262,4 @@ func looksLikeStructuredStackTrace(body string) bool {
 		}
 	}
 	return false
-}
-
-func truncate(value string, maxLen int) string {
-	if len(value) <= maxLen {
-		return value
-	}
-	return value[:maxLen] + "..."
 }

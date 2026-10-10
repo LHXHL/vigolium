@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/pkg/utils"
 )
 
 func TestRender_Payload(t *testing.T) {
@@ -125,9 +126,9 @@ func TestRender_NilInsertionReturnsEmpty(t *testing.T) {
 }
 
 func TestRandomAlphanumeric(t *testing.T) {
-	s := randomAlphanumeric(32)
+	s := Render("{{rand(32)}}", &TemplateContext{})
 	require.Len(t, s, 32)
 	for _, c := range s {
-		assert.Contains(t, alphanumeric, string(c))
+		assert.Contains(t, utils.ALNUM_CHARSET, string(c))
 	}
 }

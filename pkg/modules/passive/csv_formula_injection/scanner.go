@@ -35,6 +35,9 @@ const (
 // formula (OWASP CSV injection list).
 const triggerChars = "=+-@\t\r"
 
+// cellPreviewRunes caps the offending cell text quoted in a finding.
+const cellPreviewRunes = 120
+
 var (
 	// scanCanaryRe matches the canary tokens vigolium's active modules plant
 	// (modkit.FreshCanary "vgo"+10 hex, xss_stored "vig-sx-"+12 hex), so a
@@ -224,7 +227,7 @@ func scanCSV(body []byte) []hit {
 		}
 		for col, cell := range rec {
 			if reason, sev, conf, ok := classifyCSVCell(cell); ok {
-				hits = append(hits, hit{where: fmt.Sprintf("row %d col %d", row, col+1), cell: truncate(cell), reason: reason, sev: sev, conf: conf})
+				hits = append(hits, hit{where: fmt.Sprintf("row %d col %d", row, col+1), cell: modkit.TruncateRunes(cell, cellPreviewRunes, "…"), reason: reason, sev: sev, conf: conf})
 			}
 		}
 	}
@@ -291,7 +294,7 @@ func scanXLSX(body []byte) []hit {
 			default:
 				continue
 			}
-			hits = append(hits, hit{where: sheet, cell: truncate("=" + formula), reason: reason, sev: sev, conf: conf})
+			hits = append(hits, hit{where: sheet, cell: modkit.TruncateRunes("="+formula, cellPreviewRunes, "…"), reason: reason, sev: sev, conf: conf})
 		}
 	}
 	return hits
@@ -310,12 +313,4 @@ func sniffDelimiter(body []byte) rune {
 		}
 	}
 	return best
-}
-
-func truncate(s string) string {
-	const max = 120
-	if r := []rune(s); len(r) > max {
-		return string(r[:max]) + "…"
-	}
-	return s
 }

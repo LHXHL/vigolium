@@ -208,7 +208,7 @@ func (m *Module) probeEndpoint(
 	// "action_mailbox"/"inbound_emails", a reflected path would otherwise
 	// trip the body markers below and forge a finding (e.g. a 429 from the
 	// edge reflecting "/rails/conductor/action_mailbox/inbound_emails").
-	if status == 404 || status >= 500 || isBlockedOrThrottled(resp) {
+	if status == 404 || status >= 500 || infra.IsBlockedOrThrottled(resp) {
 		return nil
 	}
 
@@ -338,29 +338,6 @@ func (m *Module) probeEndpoint(
 			Reference:   []string{"https://guides.rubyonrails.org/action_mailbox_basics.html"},
 		},
 	}
-}
-
-// isBlockedOrThrottled reports whether a probe response came from a rate
-// limiter, WAF/CDN edge, or server error rather than the Rails application.
-// Such responses never exercised the Action Mailbox route, so their bodies —
-// often error pages that reflect the requested path — cannot confirm exposure.
-func isBlockedOrThrottled(resp *httputil.ResponseChain) bool {
-	if resp == nil || resp.Response() == nil {
-		return false
-	}
-	// Vendor-aware detector (Cloudflare, Akamai, CloudFront, Incapsula, AWS
-	// ELB) plus the generic 429 rate-limit case.
-	if infra.GetBlockDetectionValidator().Validate(resp) != nil {
-		return true
-	}
-	switch resp.Response().StatusCode {
-	case 408, // request timeout
-		425, // too early
-		429, // too many requests
-		451: // unavailable for legal reasons (edge block)
-		return true
-	}
-	return false
 }
 
 // isCORSPreflightResponse reports whether resp is a generic CORS preflight

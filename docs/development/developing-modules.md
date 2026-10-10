@@ -87,6 +87,14 @@ modkit.NewBasePassiveModule(id, name, description, shortDesc, confirmation,
 kebab-case) at construction and panic on a bad ID — so registration fails fast
 during `init()` rather than silently.
 
+Reuse the shared small helpers instead of a private copy (a contract test,
+`pkg/modules/helper_dup_contract_test.go`, rejects new `func truncate(` /
+`randomString(` / `isBlockedResponse(` / `isBlockedOrThrottled(` declarations):
+`modkit.Truncate` / `TruncateWith` / `TruncateNoEllipsis` / `TruncateRunes`
+(UTF-8 safe), `modkit.RandomAlnum(n)` for markers and canaries, and
+`infra.IsBlockedResponse` / `infra.IsBlockedOrThrottled` to skip WAF, challenge
+and rate-limit pages before matching a body.
+
 ## A complete example
 
 Modules conventionally split into `metadata.go` (constants) and `scanner.go`

@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/types/severity"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // Product categories, used for tagging and reporting.
@@ -166,7 +167,10 @@ func MatchPassive(obs Observed) []Match {
 			headerHit = true
 			conf = severity.Certain
 			if v != "" {
-				sigs = append(sigs, "Header: "+h.Name+": "+truncate(v, 80))
+				if len(v) > 80 {
+					v = textutil.TruncateUTF8(v, 80) + "…"
+				}
+				sigs = append(sigs, "Header: "+h.Name+": "+v)
 			} else {
 				sigs = append(sigs, "Header: "+h.Name)
 			}
@@ -417,11 +421,4 @@ func (p *Product) References() []string {
 		return nil
 	}
 	return []string{p.Ref}
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }

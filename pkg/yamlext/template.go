@@ -1,10 +1,11 @@
 package yamlext
 
 import (
-	"crypto/rand"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/vigolium/vigolium/pkg/utils"
 )
 
 var templatePattern = regexp.MustCompile(`\{\{([^}]+)\}\}`)
@@ -68,7 +69,7 @@ func resolveExpr(expr string, ctx *TemplateContext) string {
 		if err != nil || n <= 0 {
 			return ""
 		}
-		return randomAlphanumeric(n)
+		return utils.RandomAlnum(n)
 	}
 
 	// Dotted paths
@@ -133,23 +134,6 @@ func resolveExpr(expr string, ctx *TemplateContext) string {
 
 	// Unrecognized — pass through unchanged
 	return "{{" + expr + "}}"
-}
-
-const alphanumeric = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-func randomAlphanumeric(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		// Fallback to all 'a' on error (extremely unlikely)
-		for i := range b {
-			b[i] = 'a'
-		}
-		return string(b)
-	}
-	for i := range b {
-		b[i] = alphanumeric[int(b[i])%len(alphanumeric)]
-	}
-	return string(b)
 }
 
 // RenderAll renders all strings in a slice.

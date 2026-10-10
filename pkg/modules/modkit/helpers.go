@@ -2,17 +2,50 @@ package modkit
 
 import (
 	"strings"
+	"unicode/utf8"
 
+	"github.com/vigolium/vigolium/pkg/utils"
 	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // Truncate shortens a string to maxLen bytes, appending "..." if truncated.
-// The cut never splits a UTF-8 sequence.
+// The cut never splits a UTF-8 sequence. It is the shared evidence/description
+// cap for modules: do not add a private truncate helper to a module package
+// (pkg/modules/helper_dup_contract_test.go enforces this).
 func Truncate(s string, maxLen int) string {
+	return TruncateWith(s, maxLen, "...")
+}
+
+// TruncateWith is Truncate with a caller-chosen suffix (e.g. "…"). The suffix is
+// appended after the maxLen-byte prefix, so the result may be up to
+// maxLen+len(suffix) bytes; s is returned unchanged when it already fits.
+func TruncateWith(s string, maxLen int, suffix string) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return textutil.TruncateUTF8(s, maxLen) + "..."
+	return textutil.TruncateUTF8(s, maxLen) + suffix
+}
+
+// TruncateNoEllipsis caps s at maxLen bytes without any marker — for stored
+// response excerpts where an appended "..." would read as part of the body.
+func TruncateNoEllipsis(s string, maxLen int) string {
+	return TruncateWith(s, maxLen, "")
+}
+
+// TruncateRunes caps s at maxRunes characters (not bytes), appending suffix
+// when it had to cut. Use it for display budgets measured in characters.
+func TruncateRunes(s string, maxRunes int, suffix string) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	return textutil.TruncateRunes(s, maxRunes) + suffix
+}
+
+// RandomAlnum returns an n-character mixed-case alphanumeric token from the
+// lock-free math/rand/v2 source. Use it for markers, canaries and probe
+// values; it is not suitable for secrets.
+func RandomAlnum(n int) string {
+	return utils.RandomAlnum(n)
 }
 
 // IsJSOrTSContentType returns true if the content type indicates JavaScript or TypeScript.

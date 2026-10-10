@@ -275,7 +275,7 @@ func (m *Module) enumerateAndInvoke(
 		}
 		ep.callables = append(ep.callables, toolCallEvidence{
 			toolName: tool.Name,
-			response: truncate(redactSecrets(respText), 200),
+			response: modkit.Truncate(redactSecrets(respText), 200),
 		})
 	}
 }
@@ -462,13 +462,6 @@ func (m *Module) buildResults(ctx *httpmsg.HttpRequestResponse, endpoints []mcpE
 	}
 
 	return results
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
 
 func containsRune(s string, r rune) bool {

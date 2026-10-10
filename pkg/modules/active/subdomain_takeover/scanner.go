@@ -352,10 +352,3 @@ func stripCredentials(raw []byte) ([]byte, error) {
 	}
 	return clean, nil
 }
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}

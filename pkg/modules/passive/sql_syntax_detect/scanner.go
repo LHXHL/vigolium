@@ -101,7 +101,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 			ExtractedResults: []string{
 				fmt.Sprintf("Parameter: %s", param.Name()),
 				fmt.Sprintf("SQL pattern: %s", matched),
-				fmt.Sprintf("Value (truncated): %s", truncate(decoded, 120)),
+				fmt.Sprintf("Value (truncated): %s", modkit.Truncate(decoded, 120)),
 			},
 			Info: output.Info{
 				Name:        "SQL Syntax in Request Parameter",
@@ -122,12 +122,4 @@ func matchSQL(value string) string {
 		return match
 	}
 	return ""
-}
-
-// truncate returns the first n characters of s, appending "..." if truncated.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }

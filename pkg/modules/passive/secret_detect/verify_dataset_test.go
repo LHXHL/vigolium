@@ -12,6 +12,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/secretscan"
 )
 
@@ -171,7 +172,7 @@ func TestVerifyDataset(t *testing.T) {
 				t.Logf("    … +%d more", len(ks)-300)
 				break
 			}
-			t.Logf("    [%3d] %q  (%s)", surviving[k], truncate(k.val, 90), survivingURL[k])
+			t.Logf("    [%3d] %q  (%s)", surviving[k], modkit.TruncateWith(k.val, 90, "…"), survivingURL[k])
 		}
 	}
 }
@@ -207,11 +208,4 @@ func topN(m map[string]int, n int) []string {
 		out = append(out, fmt.Sprintf("[%3d] %q", x.c, x.s))
 	}
 	return out
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }

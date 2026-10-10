@@ -100,7 +100,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 		if val != "" && check.pattern.MatchString(val) {
 			matches = append(matches, disclosureMatch{
 				name:        check.name + " Disclosed",
-				evidence:    fmt.Sprintf("%s: %s", check.headerName, truncate(val, 100)),
+				evidence:    fmt.Sprintf("%s: %s", check.headerName, modkit.Truncate(val, 100)),
 				description: "A response header identifies server or framework technology. This is reconnaissance context, not proof that the disclosed version is vulnerable.",
 				kind:        output.RecordKindObservation,
 				grade:       output.EvidenceGradeObservation,
@@ -131,7 +131,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 			if primary := debugPrimary.FindString(body); primary != "" {
 				match := disclosureMatch{
 					name:        "Debug Artifact in Response",
-					evidence:    "Debug marker: " + truncate(primary, 100),
+					evidence:    "Debug marker: " + modkit.Truncate(primary, 100),
 					description: "A framework debug marker is present, but a single marker can occur in documentation or ordinary page text.",
 					kind:        output.RecordKindObservation,
 					grade:       output.EvidenceGradeObservation,
@@ -141,7 +141,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 					match.kind = output.RecordKindCandidate
 					match.grade = output.EvidenceGradeCandidate
 					match.severity = severity.Low
-					match.evidence += "; corroborating marker: " + truncate(corroborating, 100)
+					match.evidence += "; corroborating marker: " + modkit.Truncate(corroborating, 100)
 					match.description = "Independent framework and error/debug anchors indicate that a debug response may be exposed. Interactive access or sensitive state was not tested."
 				}
 				matches = append(matches, match)
@@ -150,7 +150,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 			if title := directoryTitle.FindString(body); title != "" {
 				match := disclosureMatch{
 					name:        "Directory Listing Marker",
-					evidence:    "Listing title: " + truncate(title, 100),
+					evidence:    "Listing title: " + modkit.Truncate(title, 100),
 					description: "A directory-listing title is visible, but no independent listing structure was found.",
 					kind:        output.RecordKindObservation,
 					grade:       output.EvidenceGradeObservation,
@@ -161,7 +161,7 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, scanCtx *modki
 					match.kind = output.RecordKindCandidate
 					match.grade = output.EvidenceGradeCandidate
 					match.severity = severity.Low
-					match.evidence += "; listing structure: " + truncate(navigation, 100)
+					match.evidence += "; listing structure: " + modkit.Truncate(navigation, 100)
 					match.description = "A directory-listing title and independent navigation structure are present. The listing may be intentionally public; sensitive file access was not established."
 				}
 				matches = append(matches, match)
@@ -206,11 +206,4 @@ func firstPrivateIPv4(body string) string {
 		}
 	}
 	return ""
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

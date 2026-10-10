@@ -238,21 +238,11 @@ func (m *Module) runCheck(
 	return nil
 }
 
-// randomString generates a random alphanumeric string of the given length.
-func randomString(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[rand.IntN(len(charset))]
-	}
-	return string(b)
-}
-
 // Detection functions - each returns (probe, expectedValues)
 
 func detectQuoteConsumption() (string, []string) {
-	left := randomString(6)
-	right := randomString(6)
+	left := modkit.RandomAlnum(6)
+	right := modkit.RandomAlnum(6)
 	return left + "''" + right, []string{left + "'" + right}
 }
 
@@ -280,29 +270,29 @@ func detectAltExpression() (string, []string) {
 }
 
 func detectUnicodeNormalisation() (string, []string) {
-	left := randomString(6)
-	right := randomString(6)
+	left := modkit.RandomAlnum(6)
+	right := modkit.RandomAlnum(6)
 	// U+212A KELVIN SIGN normalizes to 'K'
 	return left + "\u212a" + right, []string{left + "K" + right}
 }
 
 func detectURLDecodeError() (string, []string) {
-	left := randomString(6)
-	right := randomString(6)
+	left := modkit.RandomAlnum(6)
+	right := modkit.RandomAlnum(6)
 	// U+0391 GREEK CAPITAL LETTER ALPHA may produce decoding artifacts
 	return left + "\u0391" + right, []string{left + "N\u0011" + right}
 }
 
 func detectUnicodeByteTruncation() (string, []string) {
-	left := randomString(6)
-	right := randomString(6)
+	left := modkit.RandomAlnum(6)
+	right := modkit.RandomAlnum(6)
 	// U+CF7B when truncated to single byte becomes '{'
 	return left + "\ucf7b" + right, []string{left + "{" + right}
 }
 
 func detectUnicodeCaseConversion() (string, []string) {
-	left := randomString(6)
-	right := randomString(6)
+	left := modkit.RandomAlnum(6)
+	right := modkit.RandomAlnum(6)
 	// U+0131 LATIN SMALL LETTER DOTLESS I uppercases to 'I'
 	return left + "\u0131" + right, []string{left + "I" + right}
 }
@@ -324,7 +314,7 @@ func detectTwigTemplate() (string, []string) {
 }
 
 func detectUnicodeCombiningDiacritic() (string, []string) {
-	right := randomString(6)
+	right := modkit.RandomAlnum(6)
 	// U+0338 COMBINING LONG SOLIDUS OVERLAY combined with '>' produces U+226F NOT GREATER-THAN
 	return "\u0338" + right, []string{"\u226f" + right}
 }

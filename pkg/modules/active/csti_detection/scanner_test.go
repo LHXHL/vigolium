@@ -3,6 +3,8 @@ package csti_detection
 import (
 	"strings"
 	"testing"
+
+	"github.com/vigolium/vigolium/pkg/modules/modkit"
 )
 
 func TestBuildCSTIProbe(t *testing.T) {
@@ -84,7 +86,7 @@ func TestIsHTMLEncoded(t *testing.T) {
 }
 
 func TestRandomString(t *testing.T) {
-	s := randomString(6)
+	s := modkit.RandomAlnum(6)
 	if len(s) != 6 {
 		t.Errorf("expected length 6, got %d", len(s))
 	}
@@ -97,7 +99,7 @@ func TestRandomString(t *testing.T) {
 	}
 
 	// Two calls should produce different strings (with overwhelming probability)
-	s2 := randomString(6)
+	s2 := modkit.RandomAlnum(6)
 	if s == s2 {
 		t.Error("two consecutive randomString calls produced identical results")
 	}

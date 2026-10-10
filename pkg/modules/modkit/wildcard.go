@@ -3,12 +3,12 @@ package modkit
 import (
 	"fmt"
 	"math"
-	mrand "math/rand/v2"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/utils"
 )
 
 const (
@@ -99,7 +99,7 @@ func (sc *ScanContext) WildcardProbe(
 
 		// Build a GET probe to a random nonexistent path. Use a clearly
 		// synthetic prefix so any debug logs stay legible.
-		probePath := "/" + randomToken(12) + "-vigolium-wp/" + randomToken(8)
+		probePath := "/" + utils.RandomOf(12, utils.HEX_CHARSET) + "-vigolium-wp/" + utils.RandomOf(8, utils.HEX_CHARSET)
 		raw, perr := httpmsg.SetMethod(ctx.Request().Raw(), "GET")
 		if perr != nil {
 			cache.Add(host, entry)
@@ -155,25 +155,4 @@ func (sc *ScanContext) getWildcardCache() *lru.Cache[string, *WildcardEntry] {
 		sc.wildcardCache, _ = lru.New[string, *WildcardEntry](wildcardCacheSize)
 	})
 	return sc.wildcardCache
-}
-
-// randomToken returns an n-char lowercase hex token. These tokens only need to
-// be unlikely to collide with a real route (decoy/canary paths), so a fast
-// lock-free PRNG (math/rand/v2) is used instead of crypto/rand — this avoids a
-// syscall on the hot catch-all/sibling probe loops.
-func randomToken(n int) string {
-	const hexdigits = "0123456789abcdef"
-	out := make([]byte, n)
-	var bits uint64
-	var have int
-	for i := 0; i < n; i++ {
-		if have == 0 {
-			bits = mrand.Uint64()
-			have = 16 // 16 hex nibbles per uint64
-		}
-		out[i] = hexdigits[bits&0xf]
-		bits >>= 4
-		have--
-	}
-	return string(out)
 }

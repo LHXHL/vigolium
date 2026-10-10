@@ -1,6 +1,56 @@
 package modkit
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
+
+func TestTruncateVariants(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, got, want string
+	}{
+		{"fits", Truncate("abc", 5), "abc"},
+		{"exact", Truncate("abcde", 5), "abcde"},
+		{"cut", Truncate("abcdefghij", 5), "abcde..."},
+		{"with suffix", TruncateWith("abcdefghij", 5, "…"), "abcde…"},
+		{"no ellipsis", TruncateNoEllipsis("abcdefghij", 5), "abcde"},
+		{"no ellipsis fits", TruncateNoEllipsis("abc", 5), "abc"},
+		// "é" is 2 bytes: a 4-byte cut would split the second one.
+		{"rune safe", Truncate("éée", 3), "é..."},
+		{"runes fit", TruncateRunes("ééé", 3, "…"), "ééé"},
+		{"runes cut", TruncateRunes("éééé", 3, "…"), "ééé…"},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, c.got, c.want)
+		}
+		if !utf8.ValidString(c.got) {
+			t.Errorf("%s: invalid UTF-8 %q", c.name, c.got)
+		}
+	}
+}
+
+func TestRandomAlnum(t *testing.T) {
+	t.Parallel()
+	const alnum = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	a, b := RandomAlnum(16), RandomAlnum(16)
+	if len(a) != 16 || len(b) != 16 {
+		t.Fatalf("lengths %d/%d, want 16", len(a), len(b))
+	}
+	if a == b {
+		t.Errorf("two back-to-back tokens are equal: %q", a)
+	}
+	for _, c := range a + b {
+		if !strings.ContainsRune(alnum, c) {
+			t.Errorf("non-alphanumeric char %q", c)
+		}
+	}
+	if RandomAlnum(0) != "" {
+		t.Error("RandomAlnum(0) should be empty")
+	}
+}
 
 func TestIsStaticAssetContentType(t *testing.T) {
 	t.Parallel()

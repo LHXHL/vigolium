@@ -164,7 +164,7 @@ func (m *Module) ScanPerHost(
 			URL:              urlx.String(),
 			Matched:          urlx.String(),
 			Request:          string(ctx.Request().Raw()),
-			ExtractedResults: []string{method, evidence, truncate(body, 200)},
+			ExtractedResults: []string{method, evidence, modkit.Truncate(body, 200)},
 			Info: output.Info{
 				Name:        fmt.Sprintf("MCP Non-Standard Method Observed: %s", method),
 				Description: fmt.Sprintf("MCP server at %s distinguishes non-standard JSON-RPC method %q from a randomized unknown-method control. This inventories implementation behavior; sensitive data access or privileged side effects were not demonstrated.", urlx.Host, method),
@@ -177,11 +177,4 @@ func (m *Module) ScanPerHost(
 		})
 	}
 	return findings, nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }

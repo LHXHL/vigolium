@@ -187,7 +187,7 @@ func (m *Module) ScanPerInsertionPoint(
 		// motivating false positive: a scan hammered a host into a 429 whose HTML
 		// error page carried `<html`, absent from the (redirect) baseline, and was
 		// reported as IPv6-loopback SSRF. Never read such a response as SSRF signal.
-		if isBlockedResponse(resp) {
+		if infra.IsBlockedResponse(resp) {
 			resp.Close()
 			continue
 		}
@@ -424,18 +424,7 @@ func (m *Module) fetchBody(ctx *httpmsg.HttpRequestResponse, httpClient *http.Re
 	defer resp.Close()
 	// Capture before Close: FullResponseString() reads pooled buffers Close() returns.
 	ev.Add(label, string(raw), resp.FullResponseString())
-	return resp.Body().String(), isBlockedResponse(resp), true
-}
-
-// isBlockedResponse reports whether resp is a WAF/CDN challenge, auth gate, rate
-// limiter, or maintenance page rather than genuine application traffic. Such
-// pages carry generic HTML that trips the deliberately-broad SSRF markers
-// (`<html`, `<!DOCTYPE`, `localhost`), so they must never be read as evidence of
-// SSRF. It combines the vendor-aware block detector (Cloudflare, Akamai,
-// Incapsula, …) with a plain status gate that also catches generic WAFs the
-// detector does not recognize.
-func isBlockedResponse(resp *httputil.ResponseChain) bool {
-	return infra.IsBlockedResponse(resp)
+	return resp.Body().String(), infra.IsBlockedResponse(resp), true
 }
 
 // looksLikeURLParam reports whether a parameter looks like a URL sink. It delegates

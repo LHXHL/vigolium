@@ -9,6 +9,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/graphqlx"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
@@ -192,7 +193,7 @@ func (m *Module) sendCSRF(
 		return nil, "", false
 	}
 	defer resp.Close()
-	out := &gqlResp{body: resp.BodyString(), blocked: isBlockedResponse(resp)}
+	out := &gqlResp{body: resp.BodyString(), blocked: infra.IsBlockedResponse(resp)}
 	if r := resp.Response(); r != nil {
 		out.status = r.StatusCode
 		out.ctype = r.Header.Get("Content-Type")
