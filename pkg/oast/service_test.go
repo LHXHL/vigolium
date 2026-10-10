@@ -10,6 +10,7 @@ import (
 	"github.com/projectdiscovery/interactsh/pkg/server"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -120,6 +121,7 @@ func TestEnrichOASTResult(t *testing.T) {
 		TargetURL:     "http://victim.example/css",
 		ParameterName: "request-line",
 		InjectionType: "routing-ssrf (request-line)",
+		Class:         oastclass.HostRouting,
 		ModuleID:      "routing-ssrf",
 		RequestHash:   "deadbeef",
 		CallbackURL:   "http://nonce123.oast.pro",
@@ -726,7 +728,7 @@ func TestClassifyInteraction(t *testing.T) {
 // generic parameter-based blind SSRF and the other forwarding headers stay high.
 func TestClassifyInteractionHostRoutingInfo(t *testing.T) {
 	// routing-ssrf (request-line) → Info on any HTTP-family callback.
-	routing := PayloadContext{TargetURL: "http://target.com", InjectionType: "request-line", ModuleID: "routing-ssrf"}
+	routing := PayloadContext{TargetURL: "http://target.com", InjectionType: "request-line", Class: oastclass.HostRouting, ModuleID: "routing-ssrf"}
 	for _, proto := range []string{"http", "https", "HTTPS"} {
 		if sev, _, _ := classifyInteraction(proto, routing); sev.String() != "info" {
 			t.Errorf("routing-ssrf classifyInteraction(%q) severity = %s, want info", proto, sev)
@@ -1095,7 +1097,7 @@ func TestRefineOASTCallbackSSRFNarrow(t *testing.T) {
 	}
 
 	// An already-Info host-routing SSRF is left untouched (nothing to downgrade to).
-	routing := PayloadContext{TargetURL: ssrf.TargetURL, ParameterName: "request-line", InjectionType: "routing-ssrf (request-line)", ModuleID: "routing-ssrf"}
+	routing := PayloadContext{TargetURL: ssrf.TargetURL, ParameterName: "request-line", InjectionType: "routing-ssrf (request-line)", Class: oastclass.HostRouting, ModuleID: "routing-ssrf"}
 	if sev, _, _ := refineOASTCallback(monitor, routing, severity.Info, severity.Certain, "informational"); sev.String() != "info" {
 		t.Errorf("already-Info routing SSRF = %s, want info (untouched)", sev)
 	}
