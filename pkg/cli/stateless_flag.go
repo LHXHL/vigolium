@@ -83,40 +83,66 @@ func registerStatelessRootFlag(cmd *cobra.Command) {
 	_ = cmd.PersistentFlags().MarkHidden("stateless")
 }
 
-// addStatelessShorthand gives cmd and every subcommand a local -S/--stateless
-// when they have none, so the letter means one thing everywhere.
+// statelessShorthandFlag is the hidden long name behind the injected -S.
+//
+// Not "stateless": that name belongs to the root's persistent long-only flag,
+// and whether cobra has already merged it into a command's flagset depends on
+// what touched the command first (help rendering, a test that executed it, ...).
+// Keying the injection on the "stateless" name made the outcome depend on that
+// merge order. A distinct name never collides with the merged flag, so the
+// injection is the same however the tree was used before; --stateless itself
+// keeps resolving to the root persistent flag, bound to the same variable.
+const statelessShorthandFlag = "stateless-shorthand"
+
+// addStatelessShorthand gives cmd and every subcommand a local -S (bound to
+// globalStateless, like --stateless) when the letter is free, so it means one
+// thing everywhere.
 //
 // Not the root persistent flag, which is long-only: a shorthand there would
 // collide with the commands that still bind -S themselves, and pflag resolves
 // that by panicking at startup rather than by shadowing. Registering per command
 // is what lets those keep theirs while every other command accepts the letter.
 //
-// Two structural guards, no exemption list. `server`/`ingest` still bind -S to
-// the retired --scan-on-receive tombstone — but by the time this runs (from
-// Execute, after every init) that shorthand is already registered, so the
-// ShorthandLookup guard skips them on its own and self-heals when the alias is
-// finally removed. A name-keyed exemption list would rot in both directions:
-// rename a command and it silently stops matching; add a third -S owner and the
-// two mechanisms disagree about which is authoritative.
+// One structural guard, no exemption list: the letter is free unless the
+// command, or a persistent flag it inherits, already binds it. That covers the
+// commands with their own -S/--stateless and the `server`/`ingest` retired
+// --scan-on-receive tombstone, and self-heals when the tombstone is finally
+// removed. Inherited flags are read from the ancestors' PersistentFlags rather
+// than from the command's merged flagset, so the guard never depends on whether
+// cobra has merged them yet. A name-keyed exemption list would rot in both
+// directions: rename a command and it silently stops matching; add a third -S
+// owner and the two mechanisms disagree about which is authoritative.
 //
 // On a read command -S is meaningful (read --db with project scoping off);
 // elsewhere it is a documented no-op. Both beat "unknown shorthand flag", which
 // exits non-zero with no output — a control that looks live and can only ever
-// report nothing.
+// report nothing. Idempotent: a second walk finds the letter taken everywhere.
 func addStatelessShorthand(c *cobra.Command) {
 	for _, sub := range c.Commands() {
 		addStatelessShorthand(sub)
 	}
-	if f := c.Flags().Lookup("stateless"); f != nil {
-		return // already has its own, shorthand and all
+	if shorthandTaken(c, "S") {
+		return
 	}
-	if c.Flags().ShorthandLookup("S") != nil {
-		return // the letter is taken on this command (the retired-alias tombstone)
-	}
-	c.Flags().BoolVarP(&globalStateless, "stateless", "S", false,
+	c.Flags().BoolVarP(&globalStateless, statelessShorthandFlag, "S", false,
 		"Read from --db (a .jsonl export or standalone .sqlite) with project scoping off; ignored where it does not apply")
-	_ = c.Flags().MarkHidden("stateless")
+	_ = c.Flags().MarkHidden(statelessShorthandFlag)
 	statelessInjected[c] = true
+}
+
+// shorthandTaken reports whether letter is bound on c: by its own local or
+// persistent flags, or by a persistent flag of any ancestor. It never triggers
+// cobra's persistent-flag merge, so its answer is the same before and after.
+func shorthandTaken(c *cobra.Command, letter string) bool {
+	if c.Flags().ShorthandLookup(letter) != nil || c.PersistentFlags().ShorthandLookup(letter) != nil {
+		return true
+	}
+	for p := c.Parent(); p != nil; p = p.Parent() {
+		if p.PersistentFlags().ShorthandLookup(letter) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // statelessInjected records the commands addStatelessShorthand gave an injected

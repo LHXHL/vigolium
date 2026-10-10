@@ -960,22 +960,11 @@ func validateDocArgv(root *cobra.Command, argv []string, deprecatedOK bool, dept
 		}
 	}
 
-	// -S is a bool on every command (prepareCommandTree injects it), so
-	// `vigolium --db x -S finding` resolves to finding in the binary. Whether
-	// ROOT carries the injected -S depends on whether cobra had merged its
-	// persistent --stateless before the injection ran, which differs between
-	// the binary and a test binary that already executed commands; without it
-	// cobra's Find reads "finding" as -S's value. Resolve the path without it.
-	stateless := slices.Contains(argv, "-S")
-	if stateless {
-		argv = slices.DeleteFunc(slices.Clone(argv), func(a string) bool { return a == "-S" })
-	}
+	// -S is a bool on every command, root included (prepareCommandTree injects
+	// it), so `vigolium --db x -S finding` resolves to finding.
 	cmd, rest, err := root.Find(argv)
 	if err != nil {
 		return nil, err
-	}
-	if stateless {
-		rest = append([]string{"-S"}, rest...)
 	}
 	cmdPath := cmd.CommandPath()
 
