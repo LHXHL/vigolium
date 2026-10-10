@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -133,7 +132,7 @@ var projectCreateCmd = &cobra.Command{
 var projectListCmd = &cobra.Command{
 	Use:     "list",
 	Short:   "List all projects",
-	Long:    "Print every project stored in the database, marking the active one (resolved from --project-uuid, $VIGOLIUM_PROJECT_UUID, or the default). Pass --json for machine-readable output, or run interactively to launch the picker.",
+	Long:    "Print every project stored in the database, marking the active one (resolved from --project-uuid, $VIGOLIUM_PROJECT_UUID, or the default). Pass -j/--json for machine-readable output, or run interactively to launch the picker.",
 	Aliases: []string{"ls"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer syncLogger()
@@ -150,9 +149,7 @@ var projectListCmd = &cobra.Command{
 			return fmt.Errorf("failed to list projects: %w", err)
 		}
 
-		jsonOutput, _ := cmd.Flags().GetBool("json")
-
-		if active, tuiErr := tui.Active(projectLsTUI, projectLsNoTUI, jsonOutput); tuiErr != nil {
+		if active, tuiErr := tui.Active(projectLsTUI, projectLsNoTUI, globalJSON); tuiErr != nil {
 			return tuiErr
 		} else if active {
 			if len(projects) == 0 {
@@ -163,7 +160,7 @@ var projectListCmd = &cobra.Command{
 			return pickProjectLsTUI(projects, activeUUID)
 		}
 
-		if jsonOutput {
+		if globalJSON {
 			active, _ := resolveProjectUUID()
 			type projectJSON struct {
 				UUID          string `json:"uuid"`
@@ -188,9 +185,9 @@ var projectListCmd = &cobra.Command{
 					UpdatedAt:     p.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 				})
 			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(out)
+			// The global -j: the local --json this command used to define shadowed
+			// it (`project list -j` failed) and printed a bare array.
+			return emitRead(cmd, "", out, int64(len(out)), 0, len(out), withDBPath(resolvedReadDBPath()))
 		}
 
 		if len(projects) == 0 {
@@ -423,7 +420,6 @@ func init() {
 	projectCreateCmd.Flags().String("description", "", "Project description")
 	projectUseCmd.Flags().String("name", "", "Name to use when auto-creating a project (default: \"Project <short-uuid>\")")
 	projectUseCmd.Flags().String("description", "", "Description to use when auto-creating a project")
-	projectListCmd.Flags().Bool("json", false, "Output as JSON")
 	projectDeleteCmd.Flags().Bool("keep-config", false, "Keep the project's config directory (~/.vigolium/projects/<uuid>) on disk")
 	tui.AddFlags(projectListCmd, &projectLsTUI, &projectLsNoTUI)
 	projectCmd.AddCommand(projectCreateCmd)

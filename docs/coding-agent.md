@@ -228,7 +228,7 @@ duplicates the rows on the wire and exists only for consumers still migrating.
 - `ok` is `true` on every result document. The error object carries
   `"ok": false`, so `.ok` is a valid branch on anything `-j` prints.
 - `kind` names the document's shape: `read` (a row list, or a one-object answer
-  wrapped as `items: [obj]` with `total: 1`, as `db stats` does), `mutation`, or
+  wrapped as `items: [obj]` with `total: 1`, as `db stats` and `doctor` do), `mutation`, or
   `scan`. A `mutation` document adds `changed` (always present; `false` on a dry
   run), `action` (`"compact"`, `"push_to_burp"`, …) and `dry_run: true` on a dry
   run. Commands not yet on the envelope have no `kind`.

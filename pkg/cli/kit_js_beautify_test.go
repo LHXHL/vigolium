@@ -152,6 +152,25 @@ func runKitBeautifyWithFake(t *testing.T, input string, res *jstangle.ScanResult
 	return stdout, stderr, fake
 }
 
+// kitBeautifyItem returns the result object of a `kit js-beautify -j` run:
+// items[0] of the one envelope on stdout.
+func kitBeautifyItem(t *testing.T, stdout string) []byte {
+	t.Helper()
+	var env struct {
+		Command string            `json:"command"`
+		Kind    string            `json:"kind"`
+		Items   []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("output is not one JSON document: %v\n%s", err, stdout)
+	}
+	if env.Command != "kit js-beautify" || env.Kind != "read" || len(env.Items) != 1 {
+		t.Fatalf("want a kit js-beautify read envelope with one item, got command=%q kind=%q items=%d",
+			env.Command, env.Kind, len(env.Items))
+	}
+	return env.Items[0]
+}
+
 // One fact of every kind must come out of -j --extract with its provenance
 // flattened onto the item. The golden is the item-schema contract (plan D6);
 // regenerate with UPDATE_GOLDEN=1 only for a deliberate schema change.
@@ -165,8 +184,10 @@ func TestKitBeautifyExtractAllKindsGolden(t *testing.T) {
 		t.Errorf("--extract should request the full profile, got %q", fake.opts.Profile)
 	}
 
+	// The golden pins the result object itself — items[0] of the envelope —
+	// so the envelope's per-run fields (generated_at) stay out of it.
 	var pretty bytes.Buffer
-	if err := json.Indent(&pretty, []byte(stdout), "", "  "); err != nil {
+	if err := json.Indent(&pretty, kitBeautifyItem(t, stdout), "", "  "); err != nil {
 		t.Fatalf("output is not JSON: %v\n%s", err, stdout)
 	}
 	pretty.WriteByte('\n')
@@ -200,7 +221,7 @@ func TestKitBeautifyKindsFilter(t *testing.T) {
 		t.Errorf("--kinds should imply --extract, got profile %q", fake.opts.Profile)
 	}
 	var doc map[string]any
-	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+	if err := json.Unmarshal(kitBeautifyItem(t, stdout), &doc); err != nil {
 		t.Fatal(err)
 	}
 	for _, absent := range []string{"endpoints", "assets", "graphql", "realtime", "paths"} {
@@ -302,7 +323,7 @@ func TestKitBeautifySecrets(t *testing.T) {
 
 		stdout, _, _ := runKitBeautifyWithFake(t, "var gh=\""+token+"\";", res)
 		var doc kitBeautifyResult
-		if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		if err := json.Unmarshal(kitBeautifyItem(t, stdout), &doc); err != nil {
 			t.Fatal(err)
 		}
 		if len(doc.Secrets) != 1 || doc.Counts[kitKindSecrets] != 1 {

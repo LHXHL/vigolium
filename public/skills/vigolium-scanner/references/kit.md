@@ -27,8 +27,17 @@ files/stdin, honours `-j/--json` for machine output, and gates via exit codes.
 These are **primitives**: they do one job and report raw output, never a
 vulnerability verdict. They touch no project DB, so nothing is persisted — pipe
 the output where you need it. Every command reads `-` (or no argument) as stdin
-and takes `-j/--json` for a single structured object on stdout (human notes go
+and takes `-j/--json` for one envelope document on stdout (human notes go
 to stderr, so a pipe stays clean).
+
+Under `-j` every kit command prints the standard envelope (`schema_version`,
+`command`, `kind`, `ok`, `total`, `items`, …; see `agent-loop.md`). The rows
+are always in `items`; every other field the command reports (`count`,
+`files_scanned`, `server`, …) stays at the top level under its old name. A
+single-object result (`js-beautify`, `jwt-crack`, `tmp-clean`) is
+`items:[object]` — read `.items[0]`. `--json-legacy-keys` re-adds the
+pre-envelope row name (`matches`, `urls`, …) or flattens the object back to
+the top level, for one release.
 
 | I need to… | Use |
 |---|---|
@@ -62,7 +71,7 @@ vigolium kit secret-scan -j --min-confidence high src/  # high-confidence JSON
 | `--fail-on-match` | exit **3** when any secret is found (CI/agent gate) |
 | `--max-file-size` | skip files larger than N bytes (default 16 MiB) |
 
-JSON: `{files_scanned, count, matches:[{rule_id, rule_name, confidence, secret, entropy, file, line, start, end}]}`.
+JSON: envelope with `items` = matches `[{rule_id, rule_name, confidence, secret, entropy, file, line, start, end}]`, plus top-level `files_scanned`, `count`.
 Reports *where* a secret is, never exploitability. Obvious placeholders
 (`…EXAMPLE`, `123456…` sequences) are safelisted away.
 
@@ -102,7 +111,8 @@ goes to stderr and stdout stays the source.
 | `--deadline` | analysis deadline (0 = engine default, 60s) |
 | `--timeout` | fetch timeout for a URL argument (default 30s) |
 
-JSON: `{source, status, changed, format, module_count, module_paths?, bytes_in,
+JSON: envelope with `items:[result]`, where `result` (read `.items[0]`) is
+`{source, status, changed, format, module_count, module_paths?, bytes_in,
 bytes_out, content, endpoints?, routes?, assets?, graphql?, realtime?,
 dom_flows?, paths?, secrets?, counts, truncated?, diagnostics?, output_path?,
 modules_dir?, modules_written?}`.
@@ -182,7 +192,8 @@ vigolium kit oast poll --session run.yaml --deregister    # final drain + tear d
 | `--wait` / `--interval` | `poll` | how long to poll / cadence (auto-shrunk below `--wait`) |
 | `--deregister` | `poll` | after draining, destroy the session server-side and delete the file |
 
-`poll` JSON: `{server, session, count, interactions:[{protocol, unique_id, full_id, remote_address, timestamp, raw_request, raw_response}]}`.
+`new` JSON: envelope, `items` = the minted URLs, top-level `server`, `session`, `count`.
+`poll` JSON: envelope, `items` = interactions `[{protocol, unique_id, full_id, remote_address, timestamp, raw_request, raw_response}]`, top-level `server`, `session`, `count`.
 Point `--server`/`--token` at a self-hosted interactsh to keep callbacks
 private. Keep the session file until you are done polling.
 
@@ -200,8 +211,14 @@ cat domains.txt | vigolium kit harvest -                # stdin
 vigolium kit harvest --source wayback,commoncrawl target.example
 ```
 
-Plain mode streams deduped URLs one per line; `-j` yields
-`{domains, sources, count, urls}`. Same source set and shaping as the scan's
+Plain mode streams deduped URLs one per line; `-j` yields the envelope with
+`items` = the URLs (sorted) and top-level `domains`, `sources`, `count`,
+`stats` (`raw`, `kept`, and why the rest were dropped: `invalid`, `static`,
+`duplicate`, `over_shape`, `over_domain_cap`; `source_errors`) and `limits`
+(limit codes the run hit, such as `cdx_max_rows`; non-empty means the archive
+held more than was read). stdin is read with the shared bounded reader, so a
+producer that never closes it fails at `--input-read-timeout` instead of
+hanging. Same source set and shaping as the scan's
 `external-harvest` phase: URLs come back normalized (tracking params, fragments
 and static assets dropped; `.js`/`.map` kept) and sampled to
 `external_harvester.per_shape` URLs per path shape and `max_urls` per domain.
@@ -226,7 +243,7 @@ vigolium kit jwt-crack -j --fail-on-crack eyJ...
 | `-p/--secret` | inline candidate secret (repeatable) |
 | `--fail-on-crack` | exit **3** when the secret is recovered |
 
-JSON: `{alg, cracked, secret, matched_alg, candidates_tried, wordlist, header, payload}`.
+JSON: envelope with `items:[{alg, cracked, secret, matched_alg, candidates_tried, wordlist, header, payload}]`.
 The recovered secret is printed in full (that is the point).
 
 ## wordlist
@@ -240,6 +257,9 @@ vigolium kit wordlist -j            # the same, as JSON
 vigolium kit wordlist fuzz          # print the fuzz list to stdout
 vigolium kit wordlist jwt > jwt.txt # materialize (alias: jwt → jwt.secrets.list)
 ```
+
+`-j` without a name: `items` = `[{name, entries, bytes}]`. With a name: `items`
+= the entries, top-level `name` and `count`.
 
 A name matches the embedded filename, its basename without extension, or the
 `jwt` alias. Built-ins: `dir-short`, `dir-long`, `dir-large`, `file-short`,
@@ -259,7 +279,8 @@ vigolium kit payload --class sqli,xss -j # two classes, as JSON
 
 Classes: `cmdi`, `crlf`, `lfi`, `open_redirect`, `path_traversal`, `sqli`,
 `ssrf`, `ssti`, `xss`, `xxe` (aliases like `sql`→`sqli`, `traversal`→
-`path_traversal`). JSON: `{classes, count, payloads}`.
+`path_traversal`). JSON: envelope with `items` = the payloads and top-level
+`classes`, `count`; `--list -j` has the class names as `items`.
 
 ---
 
@@ -276,6 +297,9 @@ vigolium kit tmp-clean --max-age 1h     # narrower window
 vigolium kit tmp-clean --max-age 0      # everything not held by a running scan
 vigolium kit tmp-clean -j               # machine-readable receipt
 ```
+
+`-j` is a mutation envelope: `changed` (anything removed), `action: "delete"`,
+`items:[{temp_dir, scratch_root, abandoned_removed, legacy_removed, total_removed, duration}]`.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|

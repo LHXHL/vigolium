@@ -2,9 +2,7 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -23,7 +21,6 @@ func init() {
 	storagePresignCmd.Flags().String("key", "", "Object key (required)")
 	storagePresignCmd.Flags().String("method", "GET", "HTTP method: GET or PUT")
 	storagePresignCmd.Flags().Duration("expiry", time.Hour, "URL validity duration (e.g. 30m, 1h, 24h)")
-	storagePresignCmd.Flags().Bool("json", false, "Output as JSON")
 	_ = storagePresignCmd.MarkFlagRequired("key")
 	storageCmd.AddCommand(storagePresignCmd)
 }
@@ -38,7 +35,6 @@ func runStoragePresign(cmd *cobra.Command, _ []string) error {
 	key, _ := cmd.Flags().GetString("key")
 	methodFlag, _ := cmd.Flags().GetString("method")
 	expiry, _ := cmd.Flags().GetDuration("expiry")
-	jsonOut, _ := cmd.Flags().GetBool("json")
 
 	method := strings.ToUpper(methodFlag)
 	var url string
@@ -54,15 +50,15 @@ func runStoragePresign(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{
+	if globalJSON {
+		// items:[presign]; --json-legacy-keys flattens it back to the bare
+		// object the old local --json printed.
+		return emitObject(cmd, ".", map[string]any{
 			"url":            url,
 			"key":            key,
 			"method":         method,
 			"expiry_seconds": int(expiry.Seconds()),
-		})
+		}, withProjectScope(projectUUID))
 	}
 
 	fmt.Printf("%s Presigned %s URL (valid %s):\n", terminal.SuccessSymbol(), method, expiry)

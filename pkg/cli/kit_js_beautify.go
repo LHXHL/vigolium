@@ -253,7 +253,9 @@ func runKitJSBeautify(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		return writeAgentJSON(result)
+		// Wrapped, not reshaped: items:[result] carries the same object D6
+		// defined; --json-legacy-keys flattens it back to the top level.
+		return emitObject(cmd, ".", result)
 	}
 
 	// Plain mode: the beautified (or unchanged) source is the payload on stdout;

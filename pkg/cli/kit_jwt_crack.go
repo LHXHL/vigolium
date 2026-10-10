@@ -97,7 +97,7 @@ func runKitJWTCrack(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		if err := writeAgentJSON(res); err != nil {
+		if err := emitObject(cmd, ".", res); err != nil {
 			return err
 		}
 	} else if ok {

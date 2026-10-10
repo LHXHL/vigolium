@@ -32,8 +32,8 @@ var doctorCmd = &cobra.Command{
 	Long: "Run diagnostic checks on database, agent backends, third-party tools, scope rules, OAST reachability, and other dependencies to verify the scanner is ready to operate.\n\n" +
 		"Exits 1 (error.code not_ready) when the verdict is not_ready; with --strict also when it is degraded. " +
 		"The report is written first either way, so -j consumers always get it on stdout.",
-	Args:  cobra.NoArgs,
-	RunE:  runDoctorCmd,
+	Args: cobra.NoArgs,
+	RunE: runDoctorCmd,
 }
 
 func init() {
@@ -43,11 +43,31 @@ func init() {
 	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "Exit 1 when the verdict is degraded, not only when it is not_ready")
 }
 
-// doctorOutput is the JSON structure when --fix is used with --json.
-type doctorOutput struct {
-	Report  *diagnostics.Report     `json:"report"`
-	Fixes   []diagnostics.FixResult `json:"fixes,omitempty"`
-	Updated *diagnostics.Report     `json:"updated,omitempty"`
+// emitDoctorJSON writes the doctor -j document: items:[report], with the
+// verdict copied up as `status` so a caller can branch without indexing into
+// items. Under --fix, `fixes` and `updated` (the re-checked report) ride along
+// at the top level and `status` is the re-checked verdict — the one the exit
+// code follows.
+//
+// The legacy alias reproduces the pre-envelope shapes under
+// --json-legacy-keys: "." flattens the bare report a plain run printed, and
+// "report" renders the {report, fixes, updated} object --fix printed.
+func emitDoctorJSON(cmd *cobra.Command, report *diagnostics.Report, fixes []diagnostics.FixResult, updated *diagnostics.Report) error {
+	verdict := report
+	legacyKey := "."
+	var opts []envOpt
+	if updated != nil {
+		verdict = updated
+		legacyKey = "report"
+		if fixes == nil {
+			fixes = []diagnostics.FixResult{}
+		}
+		opts = append(opts, withExtra("fixes", fixes), withExtra("updated", updated))
+	}
+	if verdict != nil {
+		opts = append(opts, withExtra("status", verdict.Status))
+	}
+	return emitObject(cmd, legacyKey, report, opts...)
 }
 
 func runDoctorCmd(cmd *cobra.Command, args []string) error {
@@ -109,7 +129,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 		if globalJSON {
 			// Through the shared writer so this counts as the invocation's one
 			// result document and the error path does not append a second.
-			if err := writeAgentJSON(report); err != nil {
+			if err := emitDoctorJSON(cmd, report, nil, nil); err != nil {
 				return err
 			}
 			return doctorVerdictError(report)
@@ -152,11 +172,7 @@ func runDoctorCmd(cmd *cobra.Command, args []string) error {
 	ensureInitMarkerIfDepsPresent(updated)
 
 	if globalJSON {
-		if err := writeAgentJSON(doctorOutput{
-			Report:  report,
-			Fixes:   fixes,
-			Updated: updated,
-		}); err != nil {
+		if err := emitDoctorJSON(cmd, report, fixes, updated); err != nil {
 			return err
 		}
 		return doctorVerdictError(updated)

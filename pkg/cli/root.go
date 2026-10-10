@@ -292,8 +292,12 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 
 		// Handle -M/--list-modules shortcut
 		if globalListModules {
-			printModuleTable(moduleOpts, "")
-			fmt.Println()
+			if err := listModulesShortcut(); err != nil {
+				return err
+			}
+			if !globalJSON {
+				fmt.Println()
+			}
 			os.Exit(0)
 		}
 

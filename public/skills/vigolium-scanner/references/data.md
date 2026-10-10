@@ -136,6 +136,12 @@ with `error.code: "ingest_incomplete"`, so a zero exit means the whole source
 landed. A glob read reports `glob_sources` naming every file it skipped and why;
 `--glob-strict` turns the first such skip into a hard failure instead.
 
+`import -j` is a mutation envelope: `changed` (did anything land), `action:
+"import"` (`"noop"` when a bridge import matched nothing), `items: []`, and the
+import counters at the top level under their usual names (`findings_total`,
+`findings_saved`, `findings_failed`, `records_imported`, the `*_merged` set for
+a SQLite merge, `report_path`, `uploaded_to`).
+
 ### import flags
 
 | Flag | Short | Type | Default | Description |
@@ -273,7 +279,10 @@ Run a health check on the installation: verifies the config and database paths, 
 
 Exit status follows the verdict, after the report is written: `not_ready`
 (no usable database) exits 1 with `error.code: not_ready`; `degraded` exits 0
-unless `--strict`. Gate on the exit code, or read `.status` from `doctor -j`.
+unless `--strict`. Gate on the exit code, or read `.status` from `doctor -j`
+(a read envelope: `items[0]` is the full report and `status` is copied to the
+top level; under `--fix` it is the re-checked verdict, with `fixes` and
+`updated` beside it).
 The report also carries a `scope` check (the `config validate` scope rules;
 an error degrades the verdict) and an `oast` check (DNS + TLS reachability of
 the interactsh server; never affects the verdict).
@@ -1215,6 +1224,11 @@ Manage scanner modules. Lists active and passive modules with their scan scope, 
 | `--tags` | bool | `false` | Show only unique module tags |
 | `--verbose` / `-v` | bool | `false` | Show long description and confirmation criteria |
 
+`module ls -j` (also `module -j` and `-M -j`) is a read envelope: `items` =
+modules `{id, name, type, description, short_description, confirmation_criteria,
+severity, confidence, scan_scope, tags, enabled}`, with `active_count` and
+`passive_count` at the top level.
+
 ### module enable/disable flags
 
 | Flag | Type | Default | Description |
@@ -1605,14 +1619,17 @@ List objects under the active project's prefix in the configured bucket.
 |------|------|---------|-------------|
 | `--prefix` | string | — | Limit results to keys under this prefix (e.g. `ugc/`, `native-scans/`) |
 | `--tree` | bool | `false` | Render objects as a directory tree (directories first, then files) |
-| `--json` | bool | `false` | Output as JSON |
 
 ```bash
 vigolium storage ls
 vigolium storage ls --prefix ugc/
 vigolium storage ls --tree
-vigolium storage ls --json
+vigolium storage ls -j
 ```
+
+`-j` is the global flag (the old local `--json` printed a bare array and
+broke `-j`): a read envelope with the objects as `items` and `prefix` at the
+top level.
 
 ---
 
@@ -1688,14 +1705,15 @@ Generate a presigned URL for direct GET (download) or PUT (upload) against the a
 | `--key` | string | — | Object key (**required**) |
 | `--method` | string | `GET` | HTTP method: `GET` or `PUT` |
 | `--expiry` | duration | `1h` | URL validity duration (e.g. `30m`, `1h`, `24h`) |
-| `--json` | bool | `false` | Output as JSON `{url, key, method, expiry_seconds}` |
+
+`-j` (global) emits a read envelope with `items:[{url, key, method, expiry_seconds}]`.
 
 ```bash
 # 1h GET URL
 vigolium storage presign --key ugc/foo.tar.gz --method GET --expiry 1h
 
 # 30m PUT URL (machine-readable)
-vigolium storage presign --key uploads/new.tar.gz --method PUT --expiry 30m --json
+vigolium storage presign --key uploads/new.tar.gz --method PUT --expiry 30m -j
 ```
 
 ---
@@ -1736,7 +1754,7 @@ vigolium st                 # alias for strategy
 
 **Usage:** `vigolium version`
 
-Show version, build time, commit, and author information. Supports `--json` for machine-readable output, which also reports `db_schema_version` - check both at startup rather than discovering drift at parse time.
+Show version, build time, commit, and author information. Supports `-j` for machine-readable output: a read envelope whose `items[0]` carries `version`, `commit`, `build_time`, `db_schema_version` and `db_min_reader_version` (the envelope's own `schema_version` is the `-j` contract) - check both at startup rather than discovering drift at parse time.
 
 ---
 

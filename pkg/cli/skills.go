@@ -57,7 +57,7 @@ prefer 'vigolium skills install' over copying stale files by hand.
 Running 'vigolium skills' with no subcommand is a shortcut for 'skills list'.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsList()
+		return runSkillsList(cmd)
 	},
 }
 
@@ -68,7 +68,7 @@ var skillsListCmd = &cobra.Command{
 	Short:   "List all bundled skills",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsList()
+		return runSkillsList(cmd)
 	},
 }
 
@@ -77,10 +77,14 @@ var skillsGetCmd = &cobra.Command{
 	Use:   "get [name...]",
 	Short: "Print a skill's full content",
 	Long: `Print a skill's SKILL.md to stdout. Pass --full to also include its
-reference files, or --all to output every bundled skill.`,
+reference files, or --all to output every bundled skill.
+
+With -j the content comes back in the envelope instead: one item per skill,
+with its markdown in "content" and, under --full, each reference file as
+{"path","content"} in "references".`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSkillsGet(args)
+		return runSkillsGet(cmd, args)
 	},
 }
 
@@ -224,7 +228,7 @@ func writeBody(data []byte) {
 	}
 }
 
-func runSkillsList() error {
+func runSkillsList(cmd *cobra.Command) error {
 	skills, err := loadBundledSkills()
 	if err != nil {
 		return err
@@ -241,7 +245,7 @@ func runSkillsList() error {
 		for i, s := range skills {
 			entries[i] = jsonEntry{s.Name, s.Description, s.EmbedDir, s.References}
 		}
-		return writeAgentJSON(map[string]any{"skills": entries, "total": len(entries)})
+		return emitRead(cmd, "skills", entries, int64(len(entries)), 0, len(entries))
 	}
 
 	if len(skills) == 0 {
@@ -263,7 +267,22 @@ func runSkillsList() error {
 	return nil
 }
 
-func runSkillsGet(names []string) error {
+// skillGetItem is one skill under `skills get -j`.
+type skillGetItem struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	EmbedPath   string           `json:"embed_path"`
+	Content     string           `json:"content"`
+	References  []skillReference `json:"references,omitempty"`
+}
+
+// skillReference is one reference file of a skill, included under --full.
+type skillReference struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+func runSkillsGet(cmd *cobra.Command, names []string) error {
 	skills, err := loadBundledSkills()
 	if err != nil {
 		return err
@@ -274,11 +293,15 @@ func runSkillsGet(names []string) error {
 	case skillsOpts.All:
 		targets = skills
 	case len(names) == 0:
-		return fmt.Errorf("skills get: provide a skill name or --all (available: %s)", bundleNames(skills))
+		return usageErrorf("skills get: provide a skill name or --all (available: %s)", bundleNames(skills))
 	default:
 		if targets, err = resolveNamedTargets(skills, names); err != nil {
 			return err
 		}
+	}
+
+	if globalJSON {
+		return emitSkillsGetJSON(cmd, targets)
 	}
 
 	for i, b := range targets {
@@ -306,6 +329,32 @@ func runSkillsGet(names []string) error {
 		}
 	}
 	return nil
+}
+
+// emitSkillsGetJSON writes the requested skills as envelope rows, with each
+// SKILL.md (and, under --full, every reference file) as content. The raw
+// markdown stream is the human form; under -j the one document is the contract.
+func emitSkillsGetJSON(cmd *cobra.Command, targets []bundledSkill) error {
+	items := make([]skillGetItem, 0, len(targets))
+	for _, b := range targets {
+		body, err := public.StaticFS.ReadFile(b.EmbedDir + "/SKILL.md")
+		if err != nil {
+			return fmt.Errorf("read %s: %w", b.Name, err)
+		}
+		item := skillGetItem{Name: b.Name, Description: b.Description, EmbedPath: b.EmbedDir, Content: string(body)}
+		if skillsOpts.Full {
+			item.References = []skillReference{}
+			for _, ref := range b.References {
+				refBody, refErr := public.StaticFS.ReadFile(b.EmbedDir + "/" + ref)
+				if refErr != nil {
+					continue
+				}
+				item.References = append(item.References, skillReference{Path: ref, Content: string(refBody)})
+			}
+		}
+		items = append(items, item)
+	}
+	return emitRead(cmd, "", items, int64(len(items)), 0, len(items))
 }
 
 // skillsInstallBaseDir resolves the parent directory that skill bundles are

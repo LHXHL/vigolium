@@ -165,7 +165,7 @@ func runKitSecretScan(cmd *cobra.Command, args []string) error {
 	})
 
 	if globalJSON {
-		if err := writeAgentJSON(report); err != nil {
+		if err := emitStructRead(cmd, report, "matches"); err != nil {
 			return err
 		}
 	} else {

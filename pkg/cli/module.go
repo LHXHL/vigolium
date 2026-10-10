@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -30,12 +28,12 @@ var moduleCmd = &cobra.Command{
 	Short:   "Manage scanner modules",
 	Long:    "List, enable, and disable built-in scanner modules. Running 'vigolium module [search]' is a shortcut for 'module ls [search]'. Use 'enable' / 'disable' subcommands to toggle modules in the active configuration.",
 	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		filter := ""
 		if len(args) > 0 {
 			filter = args[0]
 		}
-		printModuleTable(moduleOpts, filter)
+		return printModuleTable(cmd, moduleOpts, filter)
 	},
 }
 
@@ -46,18 +44,25 @@ var moduleLsCmd = &cobra.Command{
 	Short:   "List available modules",
 	Long:    "Print a table of every registered active or passive module, grouped by scan scope. Filter by substring on id/name/description/tag, or by --type (active|passive). Use --list-enabled to show only enabled modules, --tags to dump unique tags, and -v for full descriptions and confirmation criteria.",
 	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		filter := ""
 		if len(args) > 0 {
 			filter = args[0]
 		}
-		printModuleTable(moduleOpts, filter)
+		return printModuleTable(cmd, moduleOpts, filter)
 	},
 }
+
+// listModulesShortcut runs the root -M/--list-modules shortcut as `module ls`.
+// A variable assigned in init, because the root command's own literal calling
+// printModuleTable would be an initialization cycle (the envelope resolves
+// command paths through rootCmd).
+var listModulesShortcut func() error
 
 func init() {
 	rootCmd.AddCommand(moduleCmd)
 	moduleCmd.AddCommand(moduleLsCmd)
+	listModulesShortcut = func() error { return printModuleTable(moduleLsCmd, moduleOpts, "") }
 
 	for _, cmd := range []*cobra.Command{moduleCmd, moduleLsCmd} {
 		cmd.Flags().StringVar(&moduleOpts.ModuleType, "type", "all",
@@ -159,20 +164,21 @@ func modulePrimaryScope(m modules.Module) modules.ScanScope {
 	return 0
 }
 
-func printModuleTable(opts *moduleOptions, filter string) {
+// printModuleTable renders the module list. cmd names the command in the -j
+// envelope; the -M/--list-modules shortcut passes moduleLsCmd, whose list it is.
+func printModuleTable(cmd *cobra.Command, opts *moduleOptions, filter string) error {
 	if globalJSON {
-		printModuleJSON(opts, filter)
-		return
+		return printModuleJSON(cmd, opts, filter)
 	}
 
 	if opts.TagsOnly {
 		printModuleTags(opts, filter)
-		return
+		return nil
 	}
 
 	if opts.Verbose {
 		printModuleVerbose(opts, filter)
-		return
+		return nil
 	}
 
 	emCfg := loadEnabledModulesConfig()
@@ -269,6 +275,7 @@ func printModuleTable(opts *moduleOptions, filter string) {
 	printScopedGroups("Passive Modules", passiveGroups, terminal.BoldBlue)
 
 	printModuleFooter()
+	return nil
 }
 
 func printScopedGroups(title string, groups []moduleScopeGroup, colorFn func(string) string) {
@@ -324,9 +331,9 @@ type moduleJSONEntry struct {
 	Enabled              bool     `json:"enabled"`
 }
 
-func printModuleJSON(opts *moduleOptions, filter string) {
+func printModuleJSON(cmd *cobra.Command, opts *moduleOptions, filter string) error {
 	emCfg := loadEnabledModulesConfig()
-	var entries []moduleJSONEntry
+	entries := []moduleJSONEntry{}
 	var activeCount, passiveCount int
 
 	if opts.ModuleType == "all" || opts.ModuleType == "active" {
@@ -381,15 +388,11 @@ func printModuleJSON(opts *moduleOptions, filter string) {
 		}
 	}
 
-	out := map[string]interface{}{
-		"modules":       entries,
-		"total":         len(entries),
-		"active_count":  activeCount,
-		"passive_count": passiveCount,
-	}
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	_ = encoder.Encode(out)
+	// The rows are `items` (legacy alias `modules`); the per-type counts stay at
+	// the top level under their old names.
+	return emitRead(cmd, "modules", entries, int64(len(entries)), 0, len(entries),
+		withExtra("active_count", activeCount),
+		withExtra("passive_count", passiveCount))
 }
 
 // formatTags joins tags with commas for table display.

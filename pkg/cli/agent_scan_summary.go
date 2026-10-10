@@ -83,7 +83,7 @@ func emitAgentScanJSONSummary(repo *database.Repository, projectUUID, agenticSca
 		top = append(top, compactFindingView(f, nil, agentViewOptions{}))
 	}
 
-	_ = writeAgentJSON(map[string]any{
+	_ = writeLegacyResultJSON(map[string]any{
 		"agentic_scan_uuid":  agenticScanUUID,
 		"project_uuid":       projectUUID,
 		"status":             status,

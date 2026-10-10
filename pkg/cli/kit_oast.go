@@ -113,7 +113,7 @@ func runKitOASTNew(cmd *cobra.Command, args []string) error {
 
 	res := kitOASTNewResult{Server: kitOASTServer, Session: kitOASTSession, Count: len(urls), URLs: urls}
 	if globalJSON {
-		return writeAgentJSON(res)
+		return emitStructRead(cmd, res, "urls")
 	}
 	for _, u := range urls {
 		fmt.Println(u)
@@ -207,7 +207,7 @@ func runKitOASTPoll(cmd *cobra.Command, args []string) error {
 	}
 
 	if globalJSON {
-		return writeAgentJSON(res)
+		return emitStructRead(cmd, res, "interactions")
 	}
 	if res.Count == 0 {
 		fmt.Fprintf(os.Stderr, "%s no interactions received (polled %s)\n", terminal.InfoSymbol(), kitOASTWait)

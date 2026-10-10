@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -54,7 +53,7 @@ func runKitWordlist(cmd *cobra.Command, args []string) error {
 
 	// No argument (or the literal "list") → inventory.
 	if len(args) == 0 || strings.EqualFold(args[0], "list") {
-		return printKitWordlistIndex(names)
+		return printKitWordlistIndex(cmd, names)
 	}
 
 	file, ok := resolveWordlistName(args[0], names)
@@ -68,17 +67,17 @@ func runKitWordlist(cmd *cobra.Command, args []string) error {
 
 	if globalJSON {
 		entries := splitWordlistEntries(data)
-		return writeAgentJSON(kitWordlistCatResult{Name: file, Count: len(entries), Entries: entries})
+		if entries == nil {
+			entries = []string{}
+		}
+		return emitStructRead(cmd, kitWordlistCatResult{Name: file, Count: len(entries), Entries: entries}, "entries")
 	}
 	// Print raw bytes verbatim so redirection reproduces the list exactly.
-	_, werr := os.Stdout.Write(data)
-	if werr == nil && len(data) > 0 && data[len(data)-1] != '\n' {
-		fmt.Println()
-	}
-	return werr
+	writeBody(data)
+	return nil
 }
 
-func printKitWordlistIndex(names []string) error {
+func printKitWordlistIndex(cmd *cobra.Command, names []string) error {
 	infos := make([]kitWordlistInfo, 0, len(names))
 	for _, n := range names {
 		data, err := wordlists.ReadList(n)
@@ -88,9 +87,7 @@ func printKitWordlistIndex(names []string) error {
 		infos = append(infos, kitWordlistInfo{Name: n, Entries: len(splitWordlistEntries(data)), Bytes: len(data)})
 	}
 	if globalJSON {
-		return writeAgentJSON(struct {
-			Wordlists []kitWordlistInfo `json:"wordlists"`
-		}{infos})
+		return emitRead(cmd, "wordlists", infos, int64(len(infos)), 0, len(infos))
 	}
 	for _, in := range infos {
 		fmt.Printf("%s\t%d entries\t%d bytes\n", terminal.Bold(in.Name), in.Entries, in.Bytes)

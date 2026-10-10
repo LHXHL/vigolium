@@ -49,36 +49,18 @@ var knownNonConforming = map[string]string{
 	"agent session": "raw {sessions} or raw scan",
 	"agent triage":  "text verdict",
 
-	// Reads still RAW or NONE (B4).
+	// Reads still RAW or NONE (B5, or the group that next changes them).
 	"auth lint":          "text report",
 	"auth totp":          "raw {code,expires_in} always",
-	"doctor":             "raw diagnostics report",
 	"extensions eval":    "text",
 	"extensions example": "text",
 	"extensions lint":    "text report",
 	"extensions preset":  "text",
-	"extensions types":   "d.ts on stdout; raw {path,bytes} with -o",
-	"js":                 "own --format json document",
-	"kit harvest":        "raw kitHarvestResult",
-	"kit js-beautify":    "raw kitBeautifyResult",
-	"kit jwt-crack":      "raw kitJWTCrackResult",
-	"kit oast new":       "raw",
-	"kit oast poll":      "raw",
-	"kit payload":        "raw anonymous structs",
-	"kit secret-scan":    "raw kitSecretReport",
-	"kit wordlist":       "raw (two shapes)",
+	"extensions types":   "d.ts on stdout under -j without -o",
+	"import":             "-j is the mutation envelope; local --format (report format) shadows the global --format",
+	"js":                 "-j is the envelope; local --format (json|text) shadows the global --format",
 	"log":                "`log <uuid>` prints a text transcript",
-	"module":             "raw {modules,total,…} (module ls)",
-	"module ls":          "raw {modules,total,…}",
 	"project config":     "text",
-	"project list":       "local --json flag, bare array",
-	"skills":             "raw {skills,total} (skills list)",
-	"skills get":         "raw SKILL.md markdown",
-	"skills list":        "raw {skills,total}",
-	"storage ls":         "local --json flag, bare array",
-	"storage presign":    "local --json flag, bare object",
-	"traffic":            "burp-glob save mode writes a raw aggregate",
-	"version":            "raw map",
 
 	// Mutations without the spine (B5).
 	"auth load":       "text",
@@ -87,11 +69,7 @@ var knownNonConforming = map[string]string{
 	"db clean":        "text",
 	"db reset":        "text",
 	"db seed":         "text",
-	"finding load":    "raw {format,total,saved,skipped}",
-	"import":          "raw map",
-	"ingest":          "envelope without changed/action; remote target: raw {records_submitted,…}",
 	"init":            "text",
-	"kit tmp-clean":   "raw kitTmpCleanResult",
 	"module disable":  "text",
 	"module enable":   "text",
 	"project create":  "text",
@@ -102,7 +80,6 @@ var knownNonConforming = map[string]string{
 	"storage results": "text",
 	"storage rm":      "text",
 	"storage upload":  "text",
-	"update":          "raw {steps}",
 
 	// Streams that ignore -j (B4/B5).
 	"db export":        "own --format stream; ignores -j",
@@ -112,7 +89,7 @@ var knownNonConforming = map[string]string{
 
 // knownNonConformingCeiling pins the ratchet's size. Lower it when an entry is
 // removed; never raise it.
-const knownNonConformingCeiling = 66
+const knownNonConformingCeiling = 43
 
 // shadowCheckedFlags are the local flag names that must not shadow a persistent
 // one: a local --json silently replaces the global -j on that command.

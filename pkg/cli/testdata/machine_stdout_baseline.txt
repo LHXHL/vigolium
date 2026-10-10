@@ -1,16 +1,5 @@
 # Raw stdout writers in pkg/cli that bypass the -j envelope (machine_stdout_lint_test.go).
 # Shrink-only: delete a line when its writer moves to emitRead/emitObject/emitMutation.
 # <file> <func> <count>
-agent.go printAgentList 1
-agent.go printAgentResult 1
-agent.go printTemplateList 1
 agent_input.go printIntentDryRun 1
-agent_session.go runAgentSession 1
-agent_session.go showAgentSessionDetail 1
-finding_load.go runFindingLoad 1
-ingest.go reportRemoteIngest 1
-kit_wordlist.go runKitWordlist 1
-module.go printModuleJSON 1
 scan_url.go outputScanResult 2
-storage_ls.go runStorageLs 1
-storage_presign.go runStoragePresign 1

@@ -141,22 +141,45 @@ func normalizeFieldList(in []string) []string {
 // writeAgentJSON writes a command's RESULT document: to stdout, or to the file
 // -o/--output named, with a small receipt taking its place on stdout.
 //
-// Only result documents belong here. The error envelope (emitJSONError) and the
-// -o receipt itself call writeAgentJSONToStdout instead: filing an error object
-// under `"artifact": "json_result"` would be a lie, and a receipt that could
-// itself be redirected has nowhere left to report.
-func writeAgentJSON(v any) error {
+// It takes the envelope and nothing else. It used to take `any`, and every
+// command that hand-built a map or passed its own struct got a document with no
+// schema_version, command, ok or kind — the RAW shapes the machine contract
+// exists to remove. With this signature a command cannot ship one without the
+// compiler noticing; emitRead/emitObject/emitMutation/envelopeFromStruct build
+// the envelope.
+//
+// Only result documents belong here. The error envelope (writeErrorFrame) and
+// the -o receipt (writeReceiptFrame) have their own writers: filing an error
+// object under `"artifact": "json_result"` would be a lie, and a receipt that
+// could itself be redirected has nowhere left to report.
+func writeAgentJSON(env *agentEnvelope) error {
 	// Attached here rather than at each call site: every -j read that can be
 	// sourced from --glob-db funnels through this function, and a per-command
 	// hook is one a new command forgets — which is how a merged read with a
 	// skipped file reported a clean short answer in the first place.
-	if env, ok := v.(*agentEnvelope); ok {
-		attachGlobSources(env)
-	}
-	// After attachGlobSources, because glob_sources is part of the document the
-	// budget is measured against, and before any destination is chosen: a
-	// budgeted document is the same document whether it goes to stdout or to a
-	// file, which is the invariant encodeAgentJSON exists to hold.
+	attachGlobSources(env)
+	return writeResultDocument(env)
+}
+
+// writeLegacyResultJSON writes a result document that is not an envelope yet.
+//
+// Deprecated: transitional, for the commands whose machine shape is still being
+// designed — the scan-url result (B6, the single scan document) and the agent
+// commands' maps (B7, the agent contract). It exists so those writers share the
+// encoder (--pretty, compact by default), -o, the output budget and the
+// one-document latch instead of each hand-rolling json.NewEncoder(os.Stdout).
+// Do not add callers: a new command emits through emitRead/emitObject/
+// emitMutation. Deleted when B6/B7 land.
+func writeLegacyResultJSON(v any) error {
+	return writeResultDocument(v)
+}
+
+// writeResultDocument is the shared tail of writeAgentJSON and the legacy shim:
+// budget, then stdout or the -o file.
+func writeResultDocument(v any) error {
+	// Before any destination is chosen: a budgeted document is the same
+	// document whether it goes to stdout or to a file, which is the invariant
+	// encodeAgentJSON exists to hold.
 	//
 	// It hands back the bytes it measured, so a budgeted document is encoded once
 	// here rather than once to decide where to cut and again to emit.
@@ -180,9 +203,26 @@ func writeAgentJSON(v any) error {
 	return writeAgentJSONDoc(doc)
 }
 
-// writeAgentJSONToStdout writes v to stdout. It is the only path that touches
-// stdout, so the encoder is configured in exactly one place.
-func writeAgentJSONToStdout(v any) error {
+// writeErrorFrame writes the error envelope straight to stdout. Never through
+// writeAgentJSON: -o/--output redirects the RESULT document, and an error is not
+// one. Routing it there would write the failure into the file the caller
+// expected results in, and leave stdout carrying a receipt for it.
+func writeErrorFrame(env agentErrorEnvelope) error {
+	return writeStdoutFrame(env)
+}
+
+// writeReceiptFrame writes a receipt — the stdout stand-in for a result that
+// went somewhere else (the -o file, or body bytes written to a path) — straight
+// to stdout. A receipt that could itself be redirected has nowhere left to
+// report.
+func writeReceiptFrame(receipt any) error {
+	return writeStdoutFrame(receipt)
+}
+
+// writeStdoutFrame encodes v with the shared encoder and writes it to stdout.
+// Unexported to the frame writers above, so the only ways onto stdout are a
+// result envelope, an error, or a receipt.
+func writeStdoutFrame(v any) error {
 	doc, err := encodeAgentJSON(v)
 	if err != nil {
 		return err
@@ -191,7 +231,7 @@ func writeAgentJSONToStdout(v any) error {
 }
 
 // writeAgentJSONDoc writes an already-encoded document and latches. Separate
-// from writeAgentJSONToStdout so a caller that has the exact bytes in hand —
+// from writeStdoutFrame so a caller that has the exact bytes in hand —
 // applyOutputBudget measured them — does not encode the same value twice.
 func writeAgentJSONDoc(doc []byte) error {
 	_, err := os.Stdout.Write(doc)

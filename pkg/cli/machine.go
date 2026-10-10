@@ -236,6 +236,37 @@ func applyEnvOpts(env *agentEnvelope, opts []envOpt) *agentEnvelope {
 	return env
 }
 
+// emitStructRead writes a command's existing result struct as a read
+// envelope (see envelopeFromStruct): rowsField becomes `items` (legacy alias:
+// its old name) and every other field stays at the top level under the name it
+// always had.
+func emitStructRead(cmd *cobra.Command, v any, rowsField string) error {
+	env, err := envelopeFromStruct(cmd, v, rowsField)
+	if err != nil {
+		return err
+	}
+	return writeAgentJSON(env)
+}
+
+// structFields marshals a result struct once and returns its top-level fields,
+// for a command that keeps its old scalar keys as envelope extras (a mutation's
+// counters) rather than rows.
+func structFields(v any) (map[string]any, error) {
+	raw, err := jsonMarshalNoEscape(v)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, fmt.Errorf("structFields: %T is not a JSON object: %w", v, err)
+	}
+	out := make(map[string]any, len(fields))
+	for k, val := range fields {
+		out[k] = val
+	}
+	return out, nil
+}
+
 // envelopeFromStruct wraps a command's existing result struct without
 // reshaping it ("wrap, don't reshape"): v is marshaled once, its rowsField
 // becomes `items` (legacy alias: rowsField), and every other top-level key is

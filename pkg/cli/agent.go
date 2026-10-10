@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -354,9 +353,7 @@ func printAgentList(settings *config.Settings) error {
 				IsActive:    p.Name == activeProvider,
 			})
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(map[string]interface{}{
+		return writeLegacyResultJSON(map[string]interface{}{
 			"providers": entries,
 			"total":     len(entries),
 			"active":    activeProvider,
@@ -386,9 +383,7 @@ func printTemplateList(settings *config.Settings) error {
 	}
 
 	if globalJSON {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(map[string]interface{}{
+		return writeLegacyResultJSON(map[string]interface{}{
 			"templates": templates,
 			"total":     len(templates),
 		})
@@ -410,9 +405,7 @@ func printTemplateList(settings *config.Settings) error {
 
 func printAgentResult(result *agent.Result) {
 	if globalJSON {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		_ = encoder.Encode(result)
+		_ = writeLegacyResultJSON(result)
 		return
 	}
 

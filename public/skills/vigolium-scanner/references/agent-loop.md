@@ -1034,7 +1034,7 @@ To re-send a request you must ask for it explicitly — `replay -u <uuid>` or
 Check the contract once at startup:
 
 ```bash
-vigolium version --json   # {version, commit, schema_version, db_schema_version}
+vigolium version --json   # envelope: schema_version (the -j contract); items[0] = {version, commit, db_schema_version, db_min_reader_version}
 ```
 
 ## Exit codes

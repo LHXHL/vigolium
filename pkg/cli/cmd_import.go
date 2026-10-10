@@ -225,6 +225,11 @@ func runImport(cmd *cobra.Command, args []string) error {
 			return pErr
 		}
 		if !proceed {
+			if globalJSON {
+				// Nothing matched (or nothing was confirmed): still one document,
+				// saying no state changed, rather than an empty stdout.
+				return emitMutation(cmd, "", mutationResult{Action: "noop", Extra: map[string]any{"bridge_url": bridgeURL}})
+			}
 			return nil
 		}
 		result, err := importBurpTrafficToDB(ctx, repo, bridgeURL, query, projectUUID)
@@ -232,7 +237,15 @@ func runImport(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("import Burp traffic: %w", err)
 		}
 		if globalJSON {
-			return writeAgentJSONToStdout(burpImportResultJSON(bridgeURL, result))
+			extra, err := structFields(burpImportResultJSON(bridgeURL, result))
+			if err != nil {
+				return err
+			}
+			return emitMutation(cmd, "", mutationResult{
+				Changed: result.Inserted+result.Updated > 0,
+				Action:  "import",
+				Extra:   extra,
+			})
 		}
 		writeBurpImportResult(os.Stdout, result)
 		return nil
@@ -357,7 +370,13 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if jsonOut != nil {
-		if err := writeAgentJSONToStdout(jsonOut); err != nil {
+		// The counters stay at the top level under the names they always had;
+		// the mutation spine (changed/action) is added around them.
+		if err := emitMutation(cmd, "", mutationResult{
+			Changed: importChanged(summary),
+			Action:  "import",
+			Extra:   jsonOut,
+		}); err != nil {
 			return err
 		}
 	}
@@ -371,6 +390,20 @@ func runImport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// importChanged reports whether an import wrote anything: a parsed source that
+// stored a record, a finding or an agentic scan row, or a merge that copied any
+// row.
+func importChanged(r *dbimport.Result) bool {
+	if r == nil {
+		return false
+	}
+	if m := r.MergeStats; m != nil {
+		return m.ProjectsMerged+m.ScansMerged+m.AgenticScansMerged+m.RecordsMerged+m.FindingsMerged+
+			m.FindingRecordsMerged+m.OASTMerged+m.ObservationsMerged+m.StatusEventsMerged > 0
+	}
+	return r.AgenticScanUUID() != "" || r.RecordsImported > 0 || r.FindingsSaved > 0
 }
 
 // importIncompleteError reports a lossy import, or nil when nothing was lost.

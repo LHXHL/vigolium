@@ -15,7 +15,7 @@ Create and list projects:
 vigolium project create my-engagement \
   --description "Q3 application assessment"
 vigolium project list
-vigolium project ls --json
+vigolium project ls -j      # read envelope: items = projects {uuid, name, active, …}
 ```
 
 `project create` generates a UUID unless the global `--project-uuid` flag is

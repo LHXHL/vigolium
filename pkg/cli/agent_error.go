@@ -244,5 +244,5 @@ func emitJSONError(err error, exitCode int, cmd *cobra.Command) {
 	// redirects the RESULT document, and an error is not one. Routing it there
 	// would write the failure into the file the caller expected results in, and
 	// leave stdout carrying a receipt for it.
-	_ = writeAgentJSONToStdout(env)
+	_ = writeErrorFrame(env)
 }

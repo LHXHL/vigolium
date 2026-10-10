@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -219,7 +218,8 @@ func reportIngest(out ingestOutcome, remote bool, failedSources, totalSources in
 		// items is [] rather than nil: the envelope's contract is that `items`
 		// is the canonical collection, and a JSON null breaks every consumer
 		// that iterates or measures it.
-		env := newAgentEnvelope("ingest", "", []any{}, out.Stored, 0, 0)
+		env := newAgentEnvelope("ingest", "", []any{}, out.Stored, 0, 0).
+			asMutation(out.Stored > 0, "ingest", false)
 		env.DBPath = resolvedReadDBPath()
 		env.With("records_ingested", out.Stored).
 			With("records_failed", out.Failed).
@@ -276,17 +276,16 @@ func ingestSummaryLine(out ingestOutcome, elapsed time.Duration) string {
 // emitting exactly one document for the whole invocation.
 func reportRemoteIngest(out ingestOutcome, failedSources, totalSources int, elapsed time.Duration) error {
 	if globalJSON {
-		doc := map[string]interface{}{
-			"records_submitted": out.Submitted,
-			"errors":            out.Errors,
-			"duration_ms":       elapsed.Milliseconds(),
-		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(doc); err != nil {
+		// The envelope around the counters remote mode always reported: total is
+		// the submissions, and changed says whether the server accepted any.
+		env := newAgentEnvelope("ingest", "", []any{}, out.Submitted, 0, 0).
+			asMutation(out.Submitted > 0, "submit", false)
+		env.With("records_submitted", out.Submitted).
+			With("errors", out.Errors).
+			With("duration_ms", elapsed.Milliseconds())
+		if err := writeAgentJSON(env); err != nil {
 			return err
 		}
-		jsonResultEmitted = true
 	} else {
 		rate := float64(0)
 		if secs := elapsed.Seconds(); secs > 0 {

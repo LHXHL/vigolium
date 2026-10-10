@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,7 +46,7 @@ func init() {
 	flags.StringVar(&jsOpts.codeFile, "code-file", "", "Path to JavaScript/TypeScript file to execute")
 	flags.StringVar(&jsOpts.target, "target", "", "Set TARGET variable in JS scope (URL)")
 	flags.DurationVar(&jsOpts.timeout, "timeout", 30*time.Second, "Execution timeout")
-	flags.StringVar(&jsOpts.format, "format", "json", "Output format: json or text")
+	flags.StringVar(&jsOpts.format, "format", "json", "Output format without -j: json (the raw JSON value) or text (strings unquoted); -j wraps the value in the envelope")
 }
 
 func runJsCmd(cmd *cobra.Command, args []string) error {
@@ -77,6 +78,10 @@ func runJsCmd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("js error: %w", result.Error)
 	}
 
+	if globalJSON {
+		return emitJSEvalResult(cmd, result.Value)
+	}
+
 	if result.Value != "" {
 		if jsOpts.format == "text" {
 			// Try to print as raw string (strip surrounding quotes for simple strings)
@@ -93,6 +98,33 @@ func runJsCmd(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// jsEvalItem is the -j result of `vigolium js`: the script's return value as
+// JSON (null when it returned undefined or null).
+type jsEvalItem struct {
+	Value json.RawMessage `json:"value"`
+}
+
+// emitJSEvalResult wraps the script's JSON-stringified return value as
+// items:[{"value": …}]. --format is the human/raw-pipe switch; under -j the
+// envelope is the contract, so the value is embedded as JSON, not as a string.
+func emitJSEvalResult(cmd *cobra.Command, value string) error {
+	raw := json.RawMessage("null")
+	if value != "" {
+		if json.Valid([]byte(value)) {
+			raw = json.RawMessage(value)
+		} else {
+			// JSON.stringify failed and the VM fell back to String(): keep it, as
+			// a string.
+			quoted, err := json.Marshal(value)
+			if err != nil {
+				return err
+			}
+			raw = quoted
+		}
+	}
+	return emitObject(cmd, "", jsEvalItem{Value: raw})
 }
 
 // resolveJsSource determines the JS source from --code, --code-file, or stdin (default).

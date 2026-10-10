@@ -703,7 +703,9 @@ func runExtensionsTypes(dest string) error {
 		return err
 	}
 	if globalJSON {
-		return writeAgentJSON(map[string]any{"path": config.ContractPath(path), "bytes": len(src)})
+		// A receipt for the file written, as items:[{path, bytes}].
+		return writeAgentJSON(newAgentEnvelope("extensions types", ".",
+			map[string]any{"path": config.ContractPath(path), "bytes": len(src)}, 1, 0, 1))
 	}
 	fmt.Fprintf(os.Stderr, "%s Wrote %s\n", terminal.SuccessSymbol(), path)
 	return nil

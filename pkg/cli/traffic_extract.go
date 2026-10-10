@@ -327,7 +327,7 @@ func deliverBody(cmd *cobra.Command, msg *extractedMessage, out []byte, complete
 				msg.Side, msg.Record.UUID)
 		}
 		if globalJSON {
-			return writeAgentJSONToStdout(newExtractEnvelope(cmd, msg, receipt("")))
+			return writeReceiptFrame(newExtractEnvelope(cmd, msg, receipt("")))
 		}
 		_, err := os.Stdout.Write(out)
 		return err
@@ -338,7 +338,7 @@ func deliverBody(cmd *cobra.Command, msg *extractedMessage, out []byte, complete
 	}
 
 	if globalJSON {
-		return writeAgentJSONToStdout(newExtractEnvelope(cmd, msg, receipt(dest)))
+		return writeReceiptFrame(newExtractEnvelope(cmd, msg, receipt(dest)))
 	}
 	// Human receipt on stderr: stdout stayed empty, so a caller who redirected it
 	// expecting bytes gets an empty file rather than a surprise line of prose.

@@ -31,8 +31,8 @@ var versionCmd = &cobra.Command{
 	Short: "Show version information",
 	Long:  "Print Vigolium version, build time, git commit, and author/contributor info. Pair with -j/--json to emit a machine-readable JSON object instead.",
 	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
-		printVersion()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return printVersion(cmd)
 	},
 }
 
@@ -96,10 +96,9 @@ func bannerFor(authors string) string {
 	)
 }
 
-func printVersion() {
+func printVersion(cmd *cobra.Command) error {
 	if globalJSON {
-		printVersionJSON()
-		return
+		return printVersionJSON(cmd)
 	}
 
 	fmt.Printf("%s - %s\n", terminal.BoldCyan("Vigolium"), Description)
@@ -118,9 +117,12 @@ func printVersion() {
 	fmt.Printf("%s %s\n", "Initial Contributor:", terminal.Magenta(InitialContributor))
 	fmt.Printf("%s %s\n", "Website:", terminal.Blue("https://www.vigolium.com"))
 	fmt.Printf("%s %s\n", "Docs:", terminal.Blue("https://docs.vigolium.com"))
+	return nil
 }
 
-func printVersionJSON() {
+// printVersionJSON writes the version facts as items:[info]; --json-legacy-keys
+// flattens them back to the top level, the bare object this printed before.
+func printVersionJSON(cmd *cobra.Command) error {
 	commit := Commit
 	if len(commit) > 7 {
 		commit = commit[:7]
@@ -152,7 +154,7 @@ func printVersionJSON() {
 		info["commit"] = commit
 	}
 
-	_ = writeAgentJSON(info)
+	return emitObject(cmd, ".", info)
 }
 
 func initLogger(verbose, silent, debug, dumpTraffic bool, logFile string) *zap.Logger {

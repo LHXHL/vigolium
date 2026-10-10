@@ -72,6 +72,9 @@ func runFindingLoad(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(findings) == 0 {
+		if globalJSON {
+			return emitFindingLoadJSON(cmd, projectUUID, formatName, 0, nil, 0)
+		}
 		fmt.Printf("%s No findings found in input\n", terminal.WarningSymbol())
 		return nil
 	}
@@ -79,6 +82,7 @@ func runFindingLoad(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	repo := database.NewRepository(db)
 	saved, skipped := 0, 0
+	savedIDs := []int64{}
 	for _, f := range findings {
 		if err := repo.SaveFindingDirect(ctx, f); err != nil {
 			// Check if the error indicates a constraint violation (unlikely with ON CONFLICT DO NOTHING)
@@ -90,21 +94,38 @@ func runFindingLoad(cmd *cobra.Command, args []string) error {
 			skipped++
 		} else {
 			saved++
+			savedIDs = append(savedIDs, f.ID)
 		}
 	}
 
 	if globalJSON {
-		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-			"format":  formatName,
-			"total":   len(findings),
-			"saved":   saved,
-			"skipped": skipped,
-		})
+		return emitFindingLoadJSON(cmd, projectUUID, formatName, len(findings), savedIDs, skipped)
 	}
 
 	fmt.Printf("%s Loaded %d findings from %s format (%d new, %d duplicates skipped)\n",
 		terminal.SuccessSymbol(), len(findings), formatName, saved, skipped)
 	return nil
+}
+
+// emitFindingLoadJSON writes the load result as a mutation: items are the ids
+// of the findings stored (total counts them), and the old counters stay at the
+// top level — except the old `total`, the parsed count, which the envelope's
+// own total now means something else for and is reported as `parsed`.
+func emitFindingLoadJSON(cmd *cobra.Command, projectUUID, format string, parsed int, savedIDs []int64, skipped int) error {
+	if savedIDs == nil {
+		savedIDs = []int64{}
+	}
+	return emitMutation(cmd, "", mutationResult{
+		Changed: len(savedIDs) > 0,
+		Action:  "import",
+		Items:   savedIDs,
+		Extra: map[string]any{
+			"format":  format,
+			"parsed":  parsed,
+			"saved":   len(savedIDs),
+			"skipped": skipped,
+		},
+	}, withProjectScope(projectUUID), withDBPath(resolvedReadDBPath()))
 }
 
 // readFindingInput reads finding data from positional arg, --finding-file, or stdin.

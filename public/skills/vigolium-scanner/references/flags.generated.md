@@ -1117,7 +1117,7 @@ Execute JavaScript with the full vigolium.* API
 |------|-------|------|---------|-------------|
 | `--code` | - | string | - | Inline JavaScript code to execute |
 | `--code-file` | - | string | - | Path to JavaScript/TypeScript file to execute |
-| `--format` | - | string | `json` | **(overrides the global `--format`)** Output format: json or text |
+| `--format` | - | string | `json` | **(overrides the global `--format`)** Output format without -j: json (the raw JSON value) or text (strings unquoted); -j wraps the value in the envelope |
 | `--target` | - | string | - | Set TARGET variable in JS scope (URL) |
 | `--timeout` | - | duration | `30s` | Execution timeout |
 
@@ -1433,7 +1433,6 @@ List all projects
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--json` | - | bool | `false` | **(overrides the global `--json`)** Output as JSON |
 | `--no-tui` | - | bool | `false` | Force TUI off (escape hatch if TUI ever becomes default) |
 | `--tui` | - | bool | `false` | Open interactive TUI (arrow keys to navigate, enter to view details, c to copy id) |
 
@@ -1944,7 +1943,6 @@ List objects in cloud storage for the active project
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--json` | - | bool | `false` | **(overrides the global `--json`)** Output as JSON |
 | `--prefix` | - | string | - | Limit results to keys under this prefix |
 | `--tree` | - | bool | `false` | Render objects as a directory tree |
 
@@ -1955,7 +1953,6 @@ Generate a presigned upload or download URL
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--expiry` | - | duration | `1h0m0s` | URL validity duration (e.g. 30m, 1h, 24h) |
-| `--json` | - | bool | `false` | **(overrides the global `--json`)** Output as JSON |
 | `--key` | - | string | - | Object key (required) |
 | `--method` | - | string | `GET` | HTTP method: GET or PUT |
 

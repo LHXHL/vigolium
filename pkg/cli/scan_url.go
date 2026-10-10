@@ -1197,7 +1197,7 @@ func outputScanResult(result *scanResult) error {
 	}
 
 	if globalJSON {
-		return writeAgentJSON(result)
+		return writeLegacyResultJSON(result) // B6: becomes the single scan document
 	}
 
 	if result.StopReason == database.ReasonNoTargetsInScope {

@@ -93,9 +93,7 @@ func runAgentSession(cmd *cobra.Command, args []string) error {
 			"limit":    sessionLimit,
 			"sessions": runs,
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(output)
+		return writeLegacyResultJSON(output)
 	}
 
 	if len(runs) == 0 {
@@ -198,9 +196,7 @@ func showAgentSessionDetail(ctx context.Context, repo *database.Repository, uuid
 	}
 
 	if globalJSON {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(run)
+		return writeLegacyResultJSON(run)
 	}
 
 	tailLines := sessionTail
