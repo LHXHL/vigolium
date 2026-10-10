@@ -433,6 +433,8 @@ func (r *Runner) buildSpiderConfig(target string, settingsCfg config.SpideringCo
 		MaxConsecutiveFails: settingsCfg.MaxConsecutiveFails,
 		Headless:            settingsCfg.Headless,
 		BrowserCount:        settingsCfg.BrowserCount,
+		Tabs:                settingsCfg.Tabs,
+		TabIsolation:        settingsCfg.TabIsolation,
 		Strategy:            settingsCfg.Strategy,
 		IncludeResponseBody: settingsCfg.IncludeResponseBody,
 		IncludeHeaders:      true,

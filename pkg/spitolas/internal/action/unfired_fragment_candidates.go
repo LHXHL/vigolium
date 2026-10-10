@@ -229,6 +229,21 @@ type UnfiredFragmentCandidates struct {
 
 	// MAB policy for adaptive action selection (MAK strategy).
 	mabPolicy MABPolicy
+
+	// claimed holds the states handed to a consumer by PollStateByPriority or
+	// AwaitState and not yet released by TaskDone. A claimed state is never
+	// handed to a second consumer, so two tabs never start crawling the same
+	// state's actions at once. active is len(claimed): the number of consumers
+	// that are crawling and may still add states.
+	//
+	// stateReady is signalled (on mu) whenever a state becomes pollable, a
+	// claim is released, the queue is closed or a waiter's context ends. An
+	// AwaitState caller waits on it, so the Crawljax termination rule — the
+	// queue is empty AND no consumer is active — is checked under the same
+	// lock every change is made under and no wake-up can be lost.
+	claimed    map[string]bool
+	active     atomic.Int32
+	stateReady *sync.Cond
 }
 
 // UnfiredFragmentCandidatesConfig holds configuration for UnfiredFragmentCandidates.
@@ -255,7 +270,7 @@ func NewUnfiredFragmentCandidates(config *UnfiredFragmentCandidatesConfig, state
 		config = DefaultUnfiredFragmentCandidatesConfig()
 	}
 
-	return &UnfiredFragmentCandidates{
+	u := &UnfiredFragmentCandidates{
 		cache:                 make(map[string][]*CandidateCrawlAction),
 		statesWithCandidates:  newStateQueue(),
 		unreachableCache:      make(map[string][]*CandidateCrawlAction),
@@ -268,7 +283,10 @@ func NewUnfiredFragmentCandidates(config *UnfiredFragmentCandidatesConfig, state
 		restoreConnectedEdges: config.RestoreConnectedEdges,
 		unexploredStates:      true,
 		stateProvider:         stateProvider,
+		claimed:               make(map[string]bool),
 	}
+	u.stateReady = sync.NewCond(&u.mu)
+	return u
 }
 
 // getBestAction returns the best action using fragment-based prioritization.
@@ -606,6 +624,8 @@ func (u *UnfiredFragmentCandidates) restoreStateLocked(stateID string) {
 func (u *UnfiredFragmentCandidates) addPendingStateLocked(stateID string) {
 	atomic.AddInt32(&u.pendingStates, 1)
 	u.statesWithCandidates.Add(stateID)
+	// Wake every AwaitState waiter: the state may be unclaimed and pollable.
+	u.stateReady.Broadcast()
 	zap.L().Debug("Added state to queue",
 		zap.String("state_id", stateID),
 		zap.Int32("pending_states", atomic.LoadInt32(&u.pendingStates)))
@@ -673,12 +693,14 @@ func (u *UnfiredFragmentCandidates) IsEmpty() bool {
 	running := atomic.LoadInt32(&u.runningConsumers)
 	pending := atomic.LoadInt32(&u.pendingStates)
 	u.consumersLock.RUnlock()
+	active := u.active.Load()
 
-	empty := running == 0 && pending == 0
+	empty := running <= 0 && pending == 0 && active == 0
 
 	zap.L().Debug("isEmpty check",
 		zap.Bool("empty", empty),
 		zap.Int32("running_consumers", running),
+		zap.Int32("active_consumers", active),
 		zap.Int32("pending_states", pending))
 
 	return empty
@@ -702,26 +724,31 @@ func (u *UnfiredFragmentCandidates) AwaitNewTask(ctx context.Context) (string, e
 	return stateID, nil
 }
 
-// TaskDone indicates that a task is done.
+// TaskDone indicates that a task is done. A state claimed by PollStateByPriority
+// or AwaitState is released (and the active count drops); otherwise this pairs
+// with AwaitNewTask/GetNextNonDuplicate. Either way the state is re-queued when
+// it still has actions, and every AwaitState waiter is woken: the release may
+// have made the state pollable again or brought the active count to zero.
 func (u *UnfiredFragmentCandidates) TaskDone(stateID string) {
 	u.consumersLock.Lock()
 	defer u.consumersLock.Unlock()
 
-	atomic.AddInt32(&u.runningConsumers, -1)
-
-	u.mu.RLock()
-	queue := u.cache[stateID]
-	hasMore := len(queue) > 0
-	u.mu.RUnlock()
-
-	if hasMore {
-		u.mu.Lock()
-		u.addPendingStateLocked(stateID)
-		u.mu.Unlock()
+	u.mu.Lock()
+	if u.claimed[stateID] {
+		delete(u.claimed, stateID)
+		u.active.Add(-1)
+	} else {
+		atomic.AddInt32(&u.runningConsumers, -1)
 	}
+	if len(u.cache[stateID]) > 0 {
+		u.addPendingStateLocked(stateID)
+	}
+	u.stateReady.Broadcast()
+	u.mu.Unlock()
 
 	zap.L().Debug("Task done",
 		zap.String("state_id", stateID),
+		zap.Int32("active_consumers", u.active.Load()),
 		zap.Int32("running_consumers", atomic.LoadInt32(&u.runningConsumers)),
 		zap.Int32("pending_states", atomic.LoadInt32(&u.pendingStates)))
 }
@@ -935,6 +962,7 @@ func (u *UnfiredFragmentCandidates) Close() {
 	if !u.closed {
 		u.closed = true
 		u.statesWithCandidates.Close()
+		u.stateReady.Broadcast()
 	}
 }
 
@@ -973,7 +1001,12 @@ func (u *UnfiredFragmentCandidates) Stats() Stats {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 
-	pending := u.GetTotalPendingActions()
+	// Summed inline: calling GetTotalPendingActions here would re-take the read
+	// lock, which deadlocks once a writer queues between the two acquisitions.
+	pending := 0
+	for _, actions := range u.cache {
+		pending += len(actions)
+	}
 	return Stats{
 		TotalPending: len(u.cache),
 		TotalSeen:    pending,
@@ -988,13 +1021,78 @@ func (u *UnfiredFragmentCandidates) RecordStateCreation(stateID string) {
 	// No-op: statesWithCandidates already preserves discovery order.
 }
 
-// PollStateByPriority polls the next state to work on based on crawl strategy.
-// Returns empty string if no states available.
+// PollStateByPriority claims the next state to work on based on crawl
+// strategy, without blocking. Returns empty string if no unclaimed state has
+// pending actions. A returned state is claimed until TaskDone(stateID).
 // Note: strategy is interface{} to avoid import cycle with config package.
 func (u *UnfiredFragmentCandidates) PollStateByPriority(strategy interface{}) string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
+	stateID := u.nextUnclaimedStateLocked()
+	if stateID != "" {
+		u.claimLocked(stateID)
+	}
+	return stateID
+}
+
+// AwaitState claims the next state to work on, blocking while every state with
+// pending actions is claimed by another consumer that may still add more. It
+// returns:
+//   - (stateID, nil): a claimed state; release it with TaskDone(stateID).
+//   - ("", nil): the frontier is drained — no unclaimed state has pending
+//     actions and no consumer is active (the Crawljax termination rule), or the
+//     candidates were closed. Every other waiter observes the same and returns.
+//   - ("", ctx.Err()): ctx ended while waiting.
+//
+// Note: strategy is any to avoid import cycle with config package.
+func (u *UnfiredFragmentCandidates) AwaitState(ctx context.Context, strategy any) (string, error) {
+	// A cancelled ctx must wake a waiter. Taking mu before broadcasting means
+	// the broadcast cannot fall between a waiter's ctx check and its Wait.
+	stop := context.AfterFunc(ctx, func() {
+		u.mu.Lock()
+		u.stateReady.Broadcast()
+		u.mu.Unlock()
+	})
+	defer stop()
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if u.closed {
+			return "", nil
+		}
+		if stateID := u.nextUnclaimedStateLocked(); stateID != "" {
+			u.claimLocked(stateID)
+			return stateID, nil
+		}
+		if u.active.Load() == 0 {
+			// Drained: nobody is crawling, so nobody can add work. Wake the
+			// other waiters so they see it too.
+			u.stateReady.Broadcast()
+			return "", nil
+		}
+		u.stateReady.Wait()
+	}
+}
+
+// ActiveConsumers returns how many claimed states have not been released.
+func (u *UnfiredFragmentCandidates) ActiveConsumers() int {
+	return int(u.active.Load())
+}
+
+// claimLocked marks stateID as handed to a consumer. Must be called with mu held.
+func (u *UnfiredFragmentCandidates) claimLocked(stateID string) {
+	u.claimed[stateID] = true
+	u.active.Add(1)
+}
+
+// nextUnclaimedStateLocked picks the next unclaimed state with pending actions.
+// Must be called with mu held.
+func (u *UnfiredFragmentCandidates) nextUnclaimedStateLocked() string {
 	// Select in the deterministic order states were discovered — the FIFO
 	// statesWithCandidates queue — NOT Go's randomized map iteration. The old
 	// map-range made state scheduling nondeterministic (a different order every
@@ -1002,7 +1100,7 @@ func (u *UnfiredFragmentCandidates) PollStateByPriority(strategy interface{}) st
 	// progression "normal"/"oldest_first" intend, while adaptive/MAB still drives
 	// ACTION selection within a state via PollByMode.
 	for _, stateID := range u.statesWithCandidates.Snapshot() {
-		if len(u.cache[stateID]) > 0 {
+		if len(u.cache[stateID]) > 0 && !u.claimed[stateID] {
 			return stateID
 		}
 	}
@@ -1010,7 +1108,7 @@ func (u *UnfiredFragmentCandidates) PollStateByPriority(strategy interface{}) st
 	// restored directly into the cache). Scan the cache so a state with pending
 	// actions is never stranded just because it is missing from the queue.
 	for stateID, actions := range u.cache {
-		if len(actions) > 0 {
+		if len(actions) > 0 && !u.claimed[stateID] {
 			return stateID
 		}
 	}

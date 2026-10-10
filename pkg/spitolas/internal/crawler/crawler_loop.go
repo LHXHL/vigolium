@@ -7,66 +7,86 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/action"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/mab"
 	"github.com/vigolium/vigolium/pkg/spitolas/internal/state"
 )
 
-// crawlLoop is the main crawl loop.
-//  1. Poll a STATE (not action) from the queue
+// errCrawlTerminated is returned by a tab's consume loop when a termination
+// condition (budget, state cap, failure streak, cancellation) ended the crawl.
+// It cancels the sibling tabs' wait for work; crawlLoop reports it as nil.
+var errCrawlTerminated = errors.New("crawl terminated")
+
+// crawlLoop is the main crawl loop. Every tab (spidering.tabs, default 1) runs
+// consume against the one shared frontier:
+//  1. Claim a STATE (not action) from the queue
 //  2. Call execute(state) which:
 //     a. If not at state, reset() to index (adds reload edge) then reachFromHome()
 //     b. crawlThroughActions() - DFS through all actions from current state
-//  3. TaskDone(state) - re-add state to queue if it still has actions
+//  3. TaskDone(state) - release the claim and re-add the state if it still has actions
+//
+// The loop ends when the queue is empty AND no tab is crawling (a tab still
+// crawling can add states), or when any tab hits a termination condition.
 func (c *Crawler) crawlLoop(ctx context.Context) error {
-	iteration := 0
-	for {
-		iteration++
+	if c.shouldTerminate(ctx) {
+		zap.L().Debug("Termination condition met")
+		c.addFinalReloadEdge(c.primary)
+		return nil
+	}
+
+	workers := c.tabWorkers(ctx)
+	var err error
+	if len(workers) == 1 {
+		err = c.consume(ctx, ctx, workers[0])
+	} else {
+		// gctx only bounds the wait for work: when one tab stops the crawl the
+		// others stop waiting. In-flight browser work stays on ctx and ends at
+		// the next shouldTerminate, which sees the same global condition.
+		g, gctx := errgroup.WithContext(ctx)
+		for _, w := range workers {
+			g.Go(func() error { return c.consume(ctx, gctx, w) })
+		}
+		err = g.Wait()
+	}
+	if errors.Is(err, errCrawlTerminated) {
+		return nil
+	}
+	return err
+}
+
+// consume is one tab's share of the crawl loop: claim a state, crawl it,
+// release it, until the frontier drains or the crawl terminates.
+func (c *Crawler) consume(ctx, waitCtx context.Context, w *tabWorker) error {
+	for iteration := 1; ; iteration++ {
 		// Log queue stats every iteration for debugging
 		stats := c.candidates.Stats()
-		isEmpty := c.candidates.IsEmpty()
 		zap.L().Debug("CrawlLoop iteration",
+			zap.Int("tab", w.id),
 			zap.Int("iteration", iteration),
 			zap.Int("pending_states", stats.TotalPending),
 			zap.Int("total_seen", stats.TotalSeen))
 
 		// Check termination conditions
 		if c.shouldTerminate(ctx) {
-			zap.L().Debug("Termination condition met")
-			c.addFinalReloadEdge()
+			zap.L().Debug("Termination condition met", zap.Int("tab", w.id))
+			c.addFinalReloadEdge(w)
+			return errCrawlTerminated
+		}
+
+		// Claim a STATE (not action) from the queue based on crawl strategy.
+		// Blocks while other tabs hold every pending state and may add more.
+		stateID, err := c.candidates.AwaitState(waitCtx, c.config.CrawlStrategy)
+		if err != nil || stateID == "" {
+			// Drained (nothing pending, no tab crawling), or a sibling tab
+			// stopped the crawl.
+			zap.L().Debug("No more states to crawl", zap.Int("tab", w.id), zap.Error(err))
+			c.addFinalReloadEdge(w)
 			return nil
 		}
 
-		// Check if queue is empty
-		if isEmpty {
-			zap.L().Debug("No more states to crawl")
-			c.addFinalReloadEdge()
-			return nil
-		}
-
-		// Poll a STATE (not action) from the queue based on crawl strategy
-		stateID := c.candidates.PollStateByPriority(c.config.CrawlStrategy)
-		if stateID == "" {
-			zap.L().Debug("No more states with pending actions")
-			c.addFinalReloadEdge()
-			return nil
-		}
-
-		zap.L().Debug("Processing state", zap.String("state_id", stateID))
-
-		// Get the state to crawl
-		crawlTask, ok := c.graph.GetState(stateID)
-		if !ok {
-			zap.L().Warn("State not found, skipping", zap.String("state_id", stateID))
-			continue
-		}
-
-		c.execute(ctx, crawlTask)
-
-		zap.L().Debug("Execute completed for state", zap.String("state_id", stateID))
-
-		c.candidates.TaskDone(stateID)
+		c.runTask(ctx, w, stateID)
 
 		// Log MAB summary every 5 iterations for debugging
 		if c.mabPolicy != nil && iteration%5 == 0 {
@@ -75,19 +95,47 @@ func (c *Crawler) crawlLoop(ctx context.Context) error {
 	}
 }
 
+// runTask crawls one claimed state and always releases the claim: a claim
+// that is never released keeps the active count above zero and would leave the
+// other tabs waiting for work forever.
+func (c *Crawler) runTask(ctx context.Context, w *tabWorker, stateID string) {
+	defer c.candidates.TaskDone(stateID)
+	defer func() {
+		if r := recover(); r != nil {
+			zap.L().Error("Crawl task panicked, recovering",
+				zap.Int("tab", w.id), zap.String("state_id", stateID),
+				zap.Any("panic", r), zap.Stack("stack"))
+		}
+	}()
+
+	zap.L().Debug("Processing state", zap.Int("tab", w.id), zap.String("state_id", stateID))
+
+	// Get the state to crawl
+	crawlTask, ok := c.graph.GetState(stateID)
+	if !ok {
+		zap.L().Warn("State not found, skipping", zap.String("state_id", stateID))
+		c.candidates.PurgeState(stateID)
+		return
+	}
+
+	c.execute(ctx, w, crawlTask)
+
+	zap.L().Debug("Execute completed for state", zap.Int("tab", w.id), zap.String("state_id", stateID))
+}
+
 // execute crawls all actions from a target state.
 //  1. If at crawlTask state -> setBTStatus(true, -1) + crawlThroughActions() (NO EARLY RETURN!)
 //  2. ALWAYS: reset() + reachFromHome() + crawlThroughActions()
-func (c *Crawler) execute(ctx context.Context, crawlTask *state.State) {
+func (c *Crawler) execute(ctx context.Context, w *tabWorker, crawlTask *state.State) {
 	zap.L().Debug("Execute task for state",
 		zap.String("state", crawlTask.Name),
 		zap.String("state_id", crawlTask.ID))
 
-	currentState := c.stateMachine.GetCurrentState()
+	currentState := w.stateMachine.GetCurrentState()
 
-	if currentState != nil && currentState.ID == crawlTask.ID {
+	if currentState != nil && currentState.ID == crawlTask.ID && w.crawlPath != nil {
 		zap.L().Debug("Already at target state, crawling through actions first")
-		c.crawlPath.MarkSuccess()
+		w.crawlPath.MarkSuccess()
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -95,7 +143,7 @@ func (c *Crawler) execute(ctx context.Context, crawlTask *state.State) {
 						zap.Any("panic", r))
 				}
 			}()
-			c.crawlThroughActions(ctx)
+			c.crawlThroughActions(ctx, w)
 		}()
 		zap.L().Debug("crawlThroughActions completed (same state)")
 	}
@@ -116,9 +164,11 @@ func (c *Crawler) execute(ctx context.Context, crawlTask *state.State) {
 		zap.String("current_state", currentStateName),
 		zap.String("target_state", crawlTask.Name))
 
-	if err := c.reset(ctx, crawlTask.ID); err != nil {
+	if err := c.reset(ctx, w, crawlTask.ID); err != nil {
 		zap.L().Debug("Reset failed", zap.Error(err))
-		c.crawlPath.MarkFailed()
+		if w.crawlPath != nil {
+			w.crawlPath.MarkFailed()
+		}
 		return
 	}
 	zap.L().Debug("Reset completed")
@@ -128,7 +178,7 @@ func (c *Crawler) execute(ctx context.Context, crawlTask *state.State) {
 	}
 
 	zap.L().Debug("Reaching target state from home", zap.String("target", crawlTask.Name))
-	if err := c.reachFromHome(ctx, crawlTask); err != nil {
+	if err := c.reachFromHome(ctx, w, crawlTask); err != nil {
 		zap.L().Debug("State unreachable, removing from candidate actions",
 			zap.String("state", crawlTask.Name), zap.Error(err))
 		c.candidates.PurgeState(crawlTask.ID)
@@ -139,7 +189,7 @@ func (c *Crawler) execute(ctx context.Context, crawlTask *state.State) {
 		return
 	}
 
-	c.crawlThroughActions(ctx)
+	c.crawlThroughActions(ctx, w)
 	zap.L().Debug("crawlThroughActions completed")
 }
 
@@ -152,37 +202,37 @@ func (c *Crawler) execute(ctx context.Context, crawlTask *state.State) {
 // 6. Navigate to URL
 // 7. checkOnURLState() using NEW StateMachine
 // 8. crawlDepth.set(0) - LAST THING!
-func (c *Crawler) reset(ctx context.Context, nextTarget string) error {
+func (c *Crawler) reset(ctx context.Context, w *tabWorker, nextTarget string) error {
 	br := c.browser
 	if br == nil {
 		return fmt.Errorf("crawler browser not initialized")
 	}
-	page := br.CurrentPage()
+	page := w.page
 	if page != nil {
 		_ = page.HandlePopups()
 	}
 
-	if c.crawlPath != nil {
-		c.crawlPath.Close()
-		c.session.AddCrawlPath(c.crawlPath.ImmutableCopy())
+	if w.crawlPath != nil {
+		w.crawlPath.Close()
+		c.session.AddCrawlPath(w.crawlPath.ImmutableCopy())
 	}
 
 	var onURLSet []*state.State
 	var previousState *state.State
-	if c.stateMachine != nil {
-		onURLSet = c.stateMachine.GetOnURLSet()
-		previousState = c.stateMachine.GetCurrentState()
+	if w.stateMachine != nil {
+		onURLSet = w.stateMachine.GetOnURLSet()
+		previousState = w.stateMachine.GetCurrentState()
 	} else {
 		onURLSet = make([]*state.State, 0)
 	}
 
 	indexState := c.graph.GetIndexState()
-	c.stateMachine = state.NewStateMachineWithOnURLSet(c.graph, indexState, onURLSet)
+	w.stateMachine = state.NewStateMachineWithOnURLSet(c.graph, indexState, onURLSet)
 	zap.L().Debug("Reset: created NEW StateMachine BEFORE navigate",
 		zap.String("initial_state", indexState.Name),
-		zap.Int("onURLSet_size", c.stateMachine.OnURLSetSize()))
+		zap.Int("onURLSet_size", w.stateMachine.OnURLSetSize()))
 
-	c.crawlPath = state.NewCrawlPath(nextTarget)
+	w.crawlPath = state.NewCrawlPath(nextTarget)
 
 	resetURL := c.config.URL.String()
 	if c.config.BasicAuthUser != "" {
@@ -190,13 +240,19 @@ func (c *Crawler) reset(ctx context.Context, nextTarget string) error {
 	}
 
 	// Reuse br/page from Step 1, or create a new page on the same browser.
+	// Only the first tab can lack a page: an extra tab is opened with one and
+	// keeps it (the popup cleanup's keep-list holds its page).
 	if page == nil {
+		if w != c.primary {
+			return fmt.Errorf("crawl tab %d has no page", w.id)
+		}
 		var err error
 		page, err = br.NewPage()
 		if err != nil {
 			return err
 		}
 		br.SetCurrentPage(page)
+		w.page = page
 		// Extra headers are set per-page in CDP, so a freshly created reset page
 		// needs them re-applied (cookies persist in the browser jar). The outcome
 		// lands in Stats.AuthState.
@@ -218,12 +274,14 @@ func (c *Crawler) reset(ctx context.Context, nextTarget string) error {
 	}
 	c.checkWaitConditions(ctx, page)
 
-	c.checkOnURLState(ctx, page, previousState, resetURL)
+	c.checkOnURLState(ctx, w, page, previousState, resetURL)
 
 	// Go uses newState.Depth for maxDepth check instead of a per-crawler counter.
 
-	c.resetCalled = true
+	w.resetCalled = true
+	c.mu.Lock()
 	c.stats.BacktrackCount++
+	c.mu.Unlock()
 	return nil
 }
 
@@ -231,7 +289,7 @@ func (c *Crawler) reset(ctx context.Context, nextTarget string) error {
 // 1. Try shortest path from CURRENT state to target
 // 2. If fails, try from each onURLSet state
 // 3. Navigate to onURL state, then follow path
-func (c *Crawler) reachFromHome(ctx context.Context, target *state.State) error {
+func (c *Crawler) reachFromHome(ctx context.Context, w *tabWorker, target *state.State) error {
 	zap.L().Debug("Reaching target state", zap.String("target", target.Name))
 
 	indexState := c.graph.GetIndexState()
@@ -239,18 +297,14 @@ func (c *Crawler) reachFromHome(ctx context.Context, target *state.State) error 
 		return fmt.Errorf("no index state")
 	}
 
-	br := c.browser
-	if br == nil {
-		return fmt.Errorf("crawler browser not initialized")
-	}
-	page := br.CurrentPage()
+	page := w.page
 	if page == nil {
-		return fmt.Errorf("no current page on crawler browser")
+		return fmt.Errorf("no page on crawl tab %d", w.id)
 	}
 
 	alreadyTried := make(map[string]bool)
 
-	currentState := c.stateMachine.GetCurrentState()
+	currentState := w.stateMachine.GetCurrentState()
 	if currentState != nil {
 		alreadyTried[currentState.ID] = true
 		path := c.graph.ShortestPath(currentState.ID, target.ID)
@@ -258,31 +312,31 @@ func (c *Crawler) reachFromHome(ctx context.Context, target *state.State) error 
 			zap.L().Debug("Path found from current state",
 				zap.String("from", currentState.Name),
 				zap.Int("path_length", len(path)))
-			err := c.followPath(ctx, path, target)
+			err := c.followPath(ctx, w, path, target)
 			if err == nil {
-				reachedState := c.stateMachine.GetCurrentState()
+				reachedState := w.stateMachine.GetCurrentState()
 				if reachedState.ID != target.ID {
 					zap.L().Debug("Tried reaching target but reached near-duplicate",
 						zap.String("target", target.Name),
 						zap.String("reached", reachedState.Name))
-					c.crawlPath.SetBacktrackSuccess(false)
-					c.crawlPath.SetReachedNearDup(reachedState.ID)
+					w.crawlPath.SetBacktrackSuccess(false)
+					w.crawlPath.SetReachedNearDup(reachedState.ID)
 					c.candidates.StateUpdated(target.ID)
 				} else {
 					zap.L().Debug("Reached the correct target", zap.String("target", target.Name))
-					c.crawlPath.SetBacktrackSuccess(true)
+					w.crawlPath.SetBacktrackSuccess(true)
 				}
 				return nil
 			}
 			zap.L().Debug("Path from current state failed, resetting before trying onURLSet",
 				zap.String("from", currentState.Name),
 				zap.Error(err))
-			c.crawlPath.SetBacktrackSuccess(false)
-			_ = c.reset(ctx, target.ID) // CRITICAL: Reset on first path failure!
+			w.crawlPath.SetBacktrackSuccess(false)
+			_ = c.reset(ctx, w, target.ID) // CRITICAL: Reset on first path failure!
 		}
 	}
 
-	onURLStates := c.stateMachine.GetOnURLSetSlice()
+	onURLStates := w.stateMachine.GetOnURLSetSlice()
 	for _, onURLState := range onURLStates {
 		if c.shouldTerminate(ctx) {
 			return ctx.Err()
@@ -322,25 +376,25 @@ func (c *Crawler) reachFromHome(ctx context.Context, target *state.State) error 
 			}
 		}
 		c.checkWaitConditions(ctx, page)
-		c.stateMachine.SetCurrentState(onURLState)
+		w.stateMachine.SetCurrentState(onURLState)
 
 		// Follow path from onURL to target
-		err := c.followPath(ctx, path, target)
+		err := c.followPath(ctx, w, path, target)
 		if err == nil {
-			reachedState := c.stateMachine.GetCurrentState()
+			reachedState := w.stateMachine.GetCurrentState()
 			if reachedState.ID != target.ID {
 				zap.L().Debug("Tried reaching target but reached near-duplicate",
 					zap.String("from", onURLState.Name),
 					zap.String("target", target.Name),
 					zap.String("reached", reachedState.Name))
-				c.crawlPath.SetBacktrackSuccess(false)
-				c.crawlPath.SetReachedNearDup(reachedState.ID)
+				w.crawlPath.SetBacktrackSuccess(false)
+				w.crawlPath.SetReachedNearDup(reachedState.ID)
 				c.candidates.StateUpdated(target.ID)
 			} else {
 				zap.L().Debug("Reached the correct target",
 					zap.String("from", onURLState.Name),
 					zap.String("target", target.Name))
-				c.crawlPath.SetBacktrackSuccess(true)
+				w.crawlPath.SetBacktrackSuccess(true)
 			}
 			return nil
 		}
@@ -348,22 +402,18 @@ func (c *Crawler) reachFromHome(ctx context.Context, target *state.State) error 
 		zap.L().Debug("Path from onURL state failed, resetting",
 			zap.String("from", onURLState.Name),
 			zap.Error(err))
-		c.crawlPath.SetBacktrackSuccess(false)
-		_ = c.reset(ctx, target.ID)
+		w.crawlPath.SetBacktrackSuccess(false)
+		_ = c.reset(ctx, w, target.ID)
 	}
 
 	return fmt.Errorf("cannot reach state %s from any starting point", target.Name)
 }
 
 // followPath executes actions along a path to reach the target state.
-func (c *Crawler) followPath(ctx context.Context, path []*action.Eventable, target *state.State) error {
-	br := c.browser
-	if br == nil {
-		return fmt.Errorf("crawler browser not initialized")
-	}
-	page := br.CurrentPage()
+func (c *Crawler) followPath(ctx context.Context, w *tabWorker, path []*action.Eventable, target *state.State) error {
+	page := w.page
 	if page == nil {
-		return fmt.Errorf("no current page on crawler browser")
+		return fmt.Errorf("no page on crawl tab %d", w.id)
 	}
 
 	for _, edge := range path {
@@ -393,7 +443,7 @@ func (c *Crawler) followPath(ctx context.Context, path []*action.Eventable, targ
 				} else {
 					// eventable.RelatedFormInputs with DOM-detected inputs
 					zap.L().Debug("No cached input, using getInputElements", zap.Int64("eventable_id", edge.ID))
-					handled := c.handleInputElements(page, edge)
+					handled := c.handleInputElements(w, page, edge)
 					// Cache the handled inputs for future backtracking
 					if len(handled) > 0 {
 						c.candidates.MapInput(edge, handled)
@@ -455,18 +505,18 @@ func (c *Crawler) followPath(ctx context.Context, path []*action.Eventable, targ
 		if !ok {
 			return fmt.Errorf("target state %s not found in graph during path follow", edge.TargetStateID)
 		}
-		if !c.stateMachine.ChangeState(targetState) {
+		if !w.stateMachine.ChangeState(targetState) {
 			return fmt.Errorf("could not switch states during path follow: %s -> %s", edge.SourceStateID, edge.TargetStateID)
 		}
 
 		// crawlpath.add(clickable);
-		if c.crawlPath != nil {
-			c.crawlPath.Add(edge)
+		if w.crawlPath != nil {
+			w.crawlPath.Add(edge)
 		}
 	}
 
 	// Verify we reached the target
-	currentState := c.stateMachine.GetCurrentState()
+	currentState := w.stateMachine.GetCurrentState()
 	if currentState == nil || currentState.ID != target.ID {
 		currentName := "nil"
 		if currentState != nil {
@@ -490,7 +540,7 @@ const DUPLICATE_EVENT_SEED = 100000
 //  6. On failure: setDirectAccess(true), disableInputsForAction(), re-add action if disableInputsForAction returns true
 //  7. afterBacktrack=false for subsequent polls
 //  8. Check crawlerNotInScope() after each action
-func (c *Crawler) crawlThroughActions(ctx context.Context) {
+func (c *Crawler) crawlThroughActions(ctx context.Context, w *tabWorker) {
 	afterBacktrack := true
 
 	for {
@@ -499,7 +549,7 @@ func (c *Crawler) crawlThroughActions(ctx context.Context) {
 		}
 
 		// Poll action for current state only
-		currentState := c.stateMachine.GetCurrentState()
+		currentState := w.stateMachine.GetCurrentState()
 		if currentState == nil {
 			return
 		}
@@ -513,7 +563,7 @@ func (c *Crawler) crawlThroughActions(ctx context.Context) {
 
 		element := act.GetCandidateElement()
 
-		page := c.browser.CurrentPage()
+		page := w.page
 		if page == nil {
 			zap.L().Debug("No current page available, exiting crawl loop")
 			return
@@ -544,10 +594,10 @@ func (c *Crawler) crawlThroughActions(ctx context.Context) {
 		eventable.SourceStateID = sourceStateID
 
 		// Execute the action with eventable (for proper form input handling)
-		newActionsCount, filledFormInputs, err := c.executeActionWithEventable(ctx, act, eventable)
+		newActionsCount, filledFormInputs, err := c.executeActionWithEventable(ctx, w, act, eventable)
 
 		targetStateID := sourceStateID
-		if newState := c.stateMachine.GetCurrentState(); newState != nil {
+		if newState := w.stateMachine.GetCurrentState(); newState != nil {
 			targetStateID = newState.ID
 		}
 		eventable.TargetStateID = targetStateID
@@ -599,11 +649,13 @@ func (c *Crawler) crawlThroughActions(ctx context.Context) {
 				// will not still be true at the end of the crawl.
 				c.recordFailedAction(act, currentState.ID)
 			}
+			c.mu.Lock()
 			c.stats.ActionsFailed++
-			c.stats.ConsecutiveFailures++
+			c.mu.Unlock()
+			c.consecutiveFails.Add(1)
 			// Record failed action to metrics (only when benchmark mode)
 			if c.metricsCollector != nil {
-				c.recordMetrics(act, false, false, false, 0)
+				c.recordMetrics(w, act, false, false, false, 0)
 			}
 			// RLCRAWLER PARITY: Update MAB with zero reward for failed actions
 			// This allows MAB to learn that certain actions are unreliable
@@ -636,13 +688,15 @@ func (c *Crawler) crawlThroughActions(ctx context.Context) {
 		// ONLY when DOM actually changed. NOT here unconditionally.
 
 		c.candidates.MarkExecuted(act)
+		c.mu.Lock()
 		c.stats.ActionsExecuted++
-		c.stats.ConsecutiveFailures = 0 // Reset on success
+		c.mu.Unlock()
+		c.consecutiveFails.Store(0) // Reset on success
 
 		// Record successful action to metrics (only when benchmark mode)
 		if c.metricsCollector != nil {
 			isFormSubmit := act.GetEventType() == action.EventTypeEnter
-			c.recordMetrics(act, true, newActionsCount > 0, isFormSubmit, newActionsCount)
+			c.recordMetrics(w, act, true, newActionsCount > 0, isFormSubmit, newActionsCount)
 		}
 
 		// RLCRAWLER PARITY: Update MAB policy with coverage-based reward
@@ -743,11 +797,10 @@ func (c *Crawler) shouldTerminate(ctx context.Context) bool {
 			zap.Int("max", c.config.MaxStates))
 	}
 
-	// Check max consecutive failures
+	// Check max consecutive failures. The streak is crawl-wide: every tab's
+	// failure extends it and any tab's success resets it.
 	if c.config.MaxConsecutiveFails > 0 {
-		c.mu.Lock()
-		consecutiveFails := c.stats.ConsecutiveFailures
-		c.mu.Unlock()
+		consecutiveFails := int(c.consecutiveFails.Load())
 		if consecutiveFails >= c.config.MaxConsecutiveFails {
 			zap.L().Debug("Max consecutive failures reached",
 				zap.Int("current", consecutiveFails),

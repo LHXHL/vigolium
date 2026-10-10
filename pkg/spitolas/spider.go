@@ -35,6 +35,8 @@ type SpiderConfig struct {
 	MaxConsecutiveFails int
 	Headless            bool
 	BrowserCount        int
+	Tabs                int    // tabs of the one browser crawling the shared state graph; 0 or 1 = single-threaded
+	TabIsolation        string // "shared" (or ""): tabs share the default context; "context": one browser context per extra tab; see TabIsolationModes
 	Strategy            string // "normal", "random", "oldest_first", "shallow_first", "adaptive"
 	IncludeResponseBody bool
 	IncludeHeaders      bool
@@ -339,6 +341,8 @@ func buildCrawlerConfig(cfg SpiderConfig) (*config.Config, error) {
 	if cfg.BrowserCount > 0 {
 		crawlerCfg.BrowserCount = cfg.BrowserCount
 	}
+	crawlerCfg.Tabs = cfg.Tabs
+	crawlerCfg.TabIsolation = cfg.TabIsolation
 	if cfg.Strategy != "" {
 		crawlerCfg.CrawlStrategy = config.CrawlStrategy(cfg.Strategy)
 	}

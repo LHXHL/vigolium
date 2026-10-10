@@ -46,12 +46,24 @@ func NewGraph() *Graph {
 // AddState adds a state to the graph.
 // Returns true if state was added, false if it already exists.
 func (g *Graph) AddState(s *State) bool {
+	_, added := g.PutIfAbsent(s)
+	return added
+}
+
+// PutIfAbsent inserts s unless a state with the same ID (the hash of its
+// stripped DOM) is already present, and returns the canonical state for that
+// ID: s itself when it was added, otherwise a copy of the state already in the
+// graph (the same copy GetState hands out). Check and insert happen under one
+// write lock, so two tabs that capture the same DOM at once get one state and
+// agree on which one it is — a separate HasState/AddState or AddState/GetState
+// pair could interleave with another tab's insert.
+func (g *Graph) PutIfAbsent(s *State) (*State, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if _, exists := g.states[s.ID]; exists {
+	if existing, exists := g.states[s.ID]; exists {
 		zap.L().Debug("State already exists in graph", zap.String("state_id", s.ID))
-		return false
+		return existing.Clone(), false
 	}
 
 	g.setNearDuplicateLocked(s)
@@ -71,7 +83,7 @@ func (g *Graph) AddState(s *State) bool {
 		zap.Float64("dist_to_nearest", s.DistToNearest),
 		zap.Bool("is_near_duplicate", s.IsNearDuplicate))
 
-	return true
+	return s, true
 }
 
 // setNearDuplicateLocked calculates and sets the nearest state information.

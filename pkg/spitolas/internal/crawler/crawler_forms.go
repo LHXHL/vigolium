@@ -53,7 +53,7 @@ func (c *Crawler) recordWaitConditionFailure(selector string) {
 //  4. Order by FormFillOrder (NORMAL, DOM, VISUAL) - not implemented yet
 //
 // Returns DetectedInput for Go extension (value rotation, detection metadata).
-func (c *Crawler) getInputElements(page *browser.Page, eventable *action.Eventable) []*form.DetectedInput {
+func (c *Crawler) getInputElements(w *tabWorker, page *browser.Page, eventable *action.Eventable) []*form.DetectedInput {
 	// Step 1: Start with related inputs from eventable
 	related := make([]*form.DetectedInput, 0)
 	for _, actionInput := range eventable.GetRelatedFormInputs() {
@@ -69,7 +69,7 @@ func (c *Crawler) getInputElements(page *browser.Page, eventable *action.Eventab
 	if id := eventable.Identification; id != nil && id.How == action.HowXPath {
 		actionXPath = id.Value
 	}
-	domInputs, actionForm, _ := c.formHandler.DetectInputsForAction(page, actionXPath)
+	domInputs, actionForm, _ := w.formHandler.DetectInputsForAction(page, actionXPath)
 	formInputs, excluded := c.mergeActionInputs(related, domInputs, actionForm)
 
 	zap.L().Debug("Changing related inputs",
@@ -146,9 +146,9 @@ func (c *Crawler) detectedInputEquals(a, b *form.DetectedInput) bool {
 //  2. return formHandler.handleFormElements(formInputs);
 //
 // Returns action.FormInput (used in candidates cache).
-func (c *Crawler) handleInputElements(page *browser.Page, eventable *action.Eventable) []*action.FormInput {
-	formInputs := c.getInputElements(page, eventable)
-	return c.formHandler.HandleFormElements(page, formInputs)
+func (c *Crawler) handleInputElements(w *tabWorker, page *browser.Page, eventable *action.Eventable) []*action.FormInput {
+	formInputs := c.getInputElements(w, page, eventable)
+	return w.formHandler.HandleFormElements(page, formInputs)
 }
 
 // fillFormsIfPresent detects and fills forms on the page.
@@ -156,7 +156,10 @@ func (c *Crawler) handleInputElements(page *browser.Page, eventable *action.Even
 func (c *Crawler) fillFormsIfPresent(page *browser.Page, actionID string) []*action.FormInput {
 	// Check if we have cached inputs for this action
 	if actionID != "" {
-		if cached, ok := c.formCache[actionID]; ok && len(cached) > 0 {
+		c.formCacheMu.Lock()
+		cached, ok := c.formCache[actionID]
+		c.formCacheMu.Unlock()
+		if ok && len(cached) > 0 {
 			zap.L().Debug("Using cached form inputs for action", zap.String("action_id", actionID))
 			result := c.formHandler.FillInputs(page, cached)
 			if result.HasErrors() {
@@ -244,7 +247,9 @@ func (c *Crawler) fillFormsIfPresent(page *browser.Page, actionID string) []*act
 
 		// Cache the DetectedInput for this action (has metadata for value rotation)
 		if actionID != "" {
+			c.formCacheMu.Lock()
 			c.formCache[actionID] = inputs
+			c.formCacheMu.Unlock()
 		}
 
 		return handled

@@ -20,6 +20,23 @@ func TestStealthModesMatchSpideringConfig(t *testing.T) {
 	}
 }
 
+// spidering.tabs / tab_isolation are validated in internal/config too.
+func TestTabSettingsMatchSpideringConfig(t *testing.T) {
+	if !slices.Equal(TabIsolationModes, appconfig.SpideringTabIsolationModes) {
+		t.Errorf("spitolas.TabIsolationModes = %v, config.SpideringTabIsolationModes = %v", TabIsolationModes, appconfig.SpideringTabIsolationModes)
+	}
+	if MaxTabs != appconfig.SpideringMaxTabs {
+		t.Errorf("spitolas.MaxTabs = %d, config.SpideringMaxTabs = %d", MaxTabs, appconfig.SpideringMaxTabs)
+	}
+	def := appconfig.DefaultSpideringConfig()
+	if def.Tabs != 1 {
+		t.Errorf("default spidering.tabs = %d, want 1 until a multi-tab soak passes", def.Tabs)
+	}
+	if def.TabIsolation != TabIsolationModes[0] {
+		t.Errorf("default spidering.tab_isolation = %q, want %q", def.TabIsolation, TabIsolationModes[0])
+	}
+}
+
 // An unknown mode fails before any browser is launched.
 func TestProbeURLRejectsUnknownStealth(t *testing.T) {
 	_, err := ProbeURL(context.Background(), ProbeConfig{URL: "http://127.0.0.1:1/", Stealth: "max"})

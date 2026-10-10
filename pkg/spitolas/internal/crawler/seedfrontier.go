@@ -212,7 +212,7 @@ func (c *Crawler) crawlSeedURLs(ctx context.Context, page *browser.Page, declare
 		if ctx.Err() != nil || c.shouldTerminate(ctx) {
 			break
 		}
-		previous := c.stateMachine.GetCurrentState()
+		previous := c.primary.stateMachine.GetCurrentState()
 		if err := page.NavigateCtx(ctx, u); err != nil {
 			zap.L().Debug("Seed navigation failed", zap.String("url", u), zap.Error(err))
 			continue
@@ -220,7 +220,7 @@ func (c *Crawler) crawlSeedURLs(ctx context.Context, page *browser.Page, declare
 		if !c.isInScope(page) {
 			continue
 		}
-		c.checkOnURLState(ctx, page, previous, u)
+		c.checkOnURLState(ctx, c.primary, page, previous, u)
 		if i < len(declared) {
 			visited++
 		} else {

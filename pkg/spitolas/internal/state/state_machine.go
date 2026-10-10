@@ -222,11 +222,11 @@ func (sm *StateMachine) canGoTo(sourceID, targetID string) bool {
 func (sm *StateMachine) addStateToCurrentState(newState *State, eventable *action.Eventable) (*State, *action.Eventable) {
 	// putIfAbsent — a state that was already present is a clone, and the edge is
 	// added to the existing instance rather than the one just handed to us.
-	target := newState
+	// Atomic: another tab may be inserting the same DOM right now.
+	target, added := sm.graph.PutIfAbsent(newState)
 	var cloneState *State
-	if !sm.graph.AddState(newState) {
-		cloneState, _ = sm.graph.GetState(newState.ID)
-		target = cloneState
+	if !added {
+		cloneState = target
 	}
 
 	var edge *action.Eventable

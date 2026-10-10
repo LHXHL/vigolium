@@ -63,7 +63,8 @@ spidering:
   max_states: 100         # 0 means unlimited
   max_duration: 10m       # Go duration string
   max_consecutive_fails: 100
-  browser_count: 1        # the crawler is single-threaded; >1 is clamped to 1
+  browser_count: 1        # one browser per crawl; >1 is clamped to 1
+  tabs: 1                 # tabs of that browser crawling in parallel (max 16)
   strategy: adaptive      # normal, random, oldest_first, shallow_first, adaptive
   browser_engine: chromium # chromium, ungoogled, fingerprint
   headless: true
@@ -76,8 +77,13 @@ For large SPAs, increase `max_states`, depth, or duration. CLI
 `--spider-max-time`, `--browsers`, `--browser-engine`, `--headed`, `--no-cdp`,
 and `--no-forms` override the common runtime controls. `browser_count` /
 `--browsers` above 1 does not add parallelism: the crawler drives one browser
-and clamps the count to 1 (with a warning). To crawl several targets at once,
-run them as separate processes.
+and clamps the count to 1 (with a warning). `spidering.tabs` does: N tabs of
+that browser share one state graph and frontier, each claiming a state and
+firing its actions while the others work elsewhere. It stays `1` at every
+intensity until a multi-tab soak has passed. Tabs share one cookie jar, so on
+an app where a click can log the session out, set `tab_isolation: context` to
+give each extra tab its own. To crawl several targets at once, run them as
+separate processes.
 
 ### Web components and shadow DOM
 

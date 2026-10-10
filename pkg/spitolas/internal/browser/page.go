@@ -728,6 +728,20 @@ func (p *Page) Close() error {
 	return err
 }
 
+// CloseWithin closes the tab, giving up after timeout, and stops tracking it
+// on its browser. Used to tear down a crawl's extra tabs, where a wedged tab
+// must not hold up the end of a cancelled crawl.
+func (p *Page) CloseWithin(timeout time.Duration) error {
+	err := closePageWithTimeout(p.rodPage.Context(context.Background()), timeout, 1)
+	if p.release != nil {
+		p.release()
+	}
+	if p.browser != nil {
+		p.browser.forget(p)
+	}
+	return err
+}
+
 // Browser returns the parent browser.
 func (p *Page) Browser() *Browser {
 	return p.browser

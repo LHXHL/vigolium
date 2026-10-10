@@ -111,9 +111,18 @@ account creation, credential attempts, dialog answers — is one explicit policy
   intact, certificate errors ignored like the scanner's HTTP transport. Each
   exception is configurable (`spidering.browser_compat`, `--browser-insecure`)
   and the effective set is printed as `Browser security:`.
-- **One browser**: the crawler is single-threaded; `--browsers N` above 1 is
-  clamped to 1 with a warning. Several targets crawl in parallel only as
-  separate processes.
+- **One browser, N tabs**: `--browsers N` above 1 is clamped to 1 with a
+  warning that points at `spidering.tabs`. With `tabs: N` (default 1, max 16)
+  the crawl runs N consumers of one state graph and candidate queue: a tab
+  claims a state, resets to the start URL, follows the shortest known path to
+  it and fires its actions. It stops when the queue is empty and no tab is
+  crawling, or when any tab hits a budget, the state cap or the (crawl-wide)
+  failure streak. Seeding, the follow-up pass and the retry sweep run on the
+  first tab. Each extra tab has its own window, so it keeps rendering.
+  `tab_isolation: context` gives each extra tab its own cookie jar (seeded with
+  the configured auth and the first tab's cookies); the default `shared` means
+  a logout in one tab logs all of them out. Several targets crawl in parallel
+  only as separate processes.
 - **Cancellation**: a cancelled scan stops browser provisioning (including a
   Chrome for Testing download) and tab creation, not just the crawl loop.
 

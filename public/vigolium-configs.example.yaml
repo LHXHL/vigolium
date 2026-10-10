@@ -1145,11 +1145,26 @@ spidering:
   # Default: true
   headless: true
 
-  # Browser instances to launch. The crawler is single-threaded and drives one
-  # browser, so values above 1 are clamped to 1 (with a warning) and add no
-  # speed; crawl several targets at once by running separate processes.
+  # Browser instances to launch. The crawler drives one browser, so values
+  # above 1 are clamped to 1 (with a warning) and add no speed; use tabs below
+  # to crawl in parallel inside that browser.
   # Default: 1
   browser_count: 1
+
+  # Tabs of the browser that crawl the shared state graph at once (1-16). Each
+  # tab claims a state, reaches it and fires its actions while the others work
+  # elsewhere; the crawl ends when nothing is queued and no tab is busy. Every
+  # tab costs roughly 80-150 MB. Stays 1 at every intensity until a multi-tab
+  # soak has passed.
+  # Default: 1
+  tabs: 1
+
+  # How the tabs share browser state. "shared": one cookie jar and storage, so
+  # a logout fired in one tab logs the others out. "context": each extra tab
+  # gets a browser context of its own, seeded with the configured auth and the
+  # first tab's cookies (more memory, no shared session warmth).
+  # Default: shared
+  tab_isolation: shared
 
   # Crawl strategy for state exploration.
   # Options: "normal", "random", "oldest_first", "shallow_first", "adaptive"

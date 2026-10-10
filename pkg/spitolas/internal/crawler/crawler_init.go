@@ -25,8 +25,10 @@ func (c *Crawler) initializeIndexState(ctx context.Context) error {
 		return err
 	}
 
-	// Set as current page so executeActionDFS can access it
+	// Set as current page so executeActionDFS can access it. It is the first
+	// tab's page; any extra tabs are opened when the crawl loop starts.
 	br.SetCurrentPage(page)
+	c.primary.page = page
 
 	// Seed operator-supplied authentication (cookies + extra headers) before the
 	// first navigation so the crawl explores authenticated rather than only the
@@ -122,18 +124,20 @@ func (c *Crawler) initializeIndexState(ctx context.Context) error {
 	// Add to graph
 	c.graph.AddState(indexState)
 	c.candidates.RecordStateCreation(indexState.ID)
+	c.mu.Lock()
 	c.stats.StatesDiscovered++
+	c.mu.Unlock()
 
 	// RLCRAWLER PARITY: Register index state with MAB policy
 	if c.mabPolicy != nil {
 		c.mabPolicy.AddState(indexState.ID)
 	}
 
-	c.stateMachine = state.NewStateMachine(c.graph, indexState)
+	c.primary.stateMachine = state.NewStateMachine(c.graph, indexState)
 
 	c.session = NewCrawlSession(c.config, indexState)
 
-	c.crawlPath = state.NewCrawlPath(indexState.ID)
+	c.primary.crawlPath = state.NewCrawlPath(indexState.ID)
 
 	zap.L().Debug("Index state captured", zap.String("state", indexState.Name))
 

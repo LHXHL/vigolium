@@ -281,16 +281,16 @@ func TestCrawlerStateMachineNotInitializedBeforeCrawl(t *testing.T) {
 	}
 
 	// It gets initialized in initializeIndexState() during Crawl()
-	if crawler.stateMachine != nil {
-		t.Error("crawler.stateMachine should be nil before Crawl() is called")
+	if crawler.primary.stateMachine != nil {
+		t.Error("crawler.primary.stateMachine should be nil before Crawl() is called")
 	}
 
 	// Session and crawlPath are also nil before crawl
 	if crawler.session != nil {
 		t.Error("crawler.session should be nil before Crawl() is called")
 	}
-	if crawler.crawlPath != nil {
-		t.Error("crawler.crawlPath should be nil before Crawl() is called")
+	if crawler.primary.crawlPath != nil {
+		t.Error("crawler.primary.crawlPath should be nil before Crawl() is called")
 	}
 }
 

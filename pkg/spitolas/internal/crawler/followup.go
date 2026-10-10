@@ -71,7 +71,9 @@ func (c *Crawler) runFollowUpPasses(ctx context.Context) {
 // one URL, and navigating to it once per state would pay the same navigation
 // repeatedly for one re-extraction's worth of information.
 func (c *Crawler) reExtractKnownStates(ctx context.Context) int {
-	page := c.browser.CurrentPage()
+	// Runs between crawl loops, on the first tab: the other tabs are idle.
+	w := c.primary
+	page := w.page
 	if page == nil {
 		return 0
 	}
@@ -106,8 +108,8 @@ func (c *Crawler) reExtractKnownStates(ctx context.Context) int {
 		}
 
 		targetID := c.followUpTargetState(ctx, page, s)
-		c.extractor.SetCurrentState(targetID)
-		actions, err := c.extractor.Extract(ctx, page)
+		w.extractor.SetCurrentState(targetID)
+		actions, err := w.extractor.Extract(ctx, page)
 		if err != nil || len(actions) == 0 {
 			continue
 		}

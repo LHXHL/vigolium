@@ -14,7 +14,9 @@ type SpideringConfig struct {
 	MaxDuration         string `yaml:"max_duration"`          // default: "30m"
 	MaxConsecutiveFails int    `yaml:"max_consecutive_fails"` // default: 100
 	Headless            bool   `yaml:"headless"`              // default: true
-	BrowserCount        int    `yaml:"browser_count"`         // default: 1
+	BrowserCount        int    `yaml:"browser_count"`         // default: 1 (>1 is clamped; parallelism comes from tabs)
+	Tabs                int    `yaml:"tabs"`                  // default: 1; tabs of the one browser crawling a shared state graph (max SpideringMaxTabs)
+	TabIsolation        string `yaml:"tab_isolation"`         // default: "shared"; "context" gives each extra tab its own cookie jar
 	Strategy            string `yaml:"strategy"`              // default: "adaptive"
 	IncludeResponseBody bool   `yaml:"include_response_body"` // default: true
 	BrowserEngine       string `yaml:"browser_engine"`        // "chromium" (default), "ungoogled", or "fingerprint"
@@ -154,6 +156,14 @@ var SpideringDialogPolicies = []string{"record-dismiss", "accept-all"}
 // cannot import the browser package).
 var SpideringStealthModes = []string{"auto", "on", "off"}
 
+// SpideringTabIsolationModes lists the accepted spidering.tab_isolation
+// values, default first. Mirrors spitolas.TabIsolationModes (pinned by a
+// spitolas test; config cannot import the browser package).
+var SpideringTabIsolationModes = []string{"shared", "context"}
+
+// SpideringMaxTabs caps spidering.tabs. Mirrors spitolas.MaxTabs.
+const SpideringMaxTabs = 16
+
 // DefaultSpideringConfig returns sensible defaults for spidering.
 func DefaultSpideringConfig() *SpideringConfig {
 	return &SpideringConfig{
@@ -168,6 +178,9 @@ func DefaultSpideringConfig() *SpideringConfig {
 		MaxConsecutiveFails: 100,
 		Headless:            true,
 		BrowserCount:        1,
+		// One tab at every intensity until a multi-tab soak has passed.
+		Tabs:                1,
+		TabIsolation:        "shared",
 		Strategy:            "adaptive",
 		IncludeResponseBody: true,
 		BrowserEngine:       "chromium",
@@ -211,6 +224,12 @@ func (c *SpideringConfig) Validate() error {
 	}
 	if c.BrowserCount < 0 {
 		return fmt.Errorf("spidering.browser_count must be >= 0")
+	}
+	if c.Tabs < 0 || c.Tabs > SpideringMaxTabs {
+		return fmt.Errorf("spidering.tabs must be 0-%d (0 = 1), got: %d", SpideringMaxTabs, c.Tabs)
+	}
+	if c.TabIsolation != "" && !slices.Contains(SpideringTabIsolationModes, c.TabIsolation) {
+		return fmt.Errorf("spidering.tab_isolation must be one of %s, got: %s", strings.Join(SpideringTabIsolationModes, ", "), c.TabIsolation)
 	}
 	if err := validateNonNegDuration("spidering.max_duration", c.MaxDuration); err != nil {
 		return err

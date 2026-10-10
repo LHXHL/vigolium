@@ -568,14 +568,17 @@ var tabCreateTimeout = browserOpTimeout
 // context whose watchdog (the timeout, or the crawl context ending) is
 // disarmed as soon as the tab exists, leaving it live for the page's lifetime.
 // The returned release ends that context; call it once the page is closed.
-func (b *Browser) createRodPage(crawlCtx context.Context) (*rod.Page, context.CancelFunc, error) {
+func (b *Browser) createRodPage(crawlCtx context.Context, browserContext proto.BrowserBrowserContextID, newWindow bool) (*rod.Page, context.CancelFunc, error) {
 	handle, release := b.rodBrowser.WithCancel()
+	// Empty is the default context; rod's Page creates the target in the
+	// handle's context.
+	handle.BrowserContextID = browserContext
 	timer := time.AfterFunc(tabCreateTimeout, release)
 	stopCrawlWatch := func() bool { return true }
 	if crawlCtx != nil {
 		stopCrawlWatch = context.AfterFunc(crawlCtx, release)
 	}
-	rodPage, err := handle.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	rodPage, err := handle.Page(proto.TargetCreateTarget{URL: "about:blank", NewWindow: newWindow})
 	timer.Stop()
 	stopCrawlWatch()
 	if err == nil && handle.GetContext().Err() != nil {
@@ -596,11 +599,55 @@ func (b *Browser) createRodPage(crawlCtx context.Context) (*rod.Page, context.Ca
 
 // NewPage creates a new page (tab).
 func (b *Browser) NewPage() (*Page, error) {
+	return b.newPage("", false)
+}
+
+// NewWindowPage creates a page in a window of its own. Use it for a page that
+// is driven at the same time as another: Chrome stops rendering a tab hidden
+// behind another tab of its window, so requestAnimationFrame never fires there
+// and every rod action that waits for a repaint (a click's scroll-into-view)
+// blocks for good. A page alone in its window stays visible.
+func (b *Browser) NewWindowPage() (*Page, error) {
+	return b.newPage("", true)
+}
+
+// NewIsolatedPage creates a tab in a browser context of its own (CDP
+// Target.createBrowserContext, the same thing rod's Incognito does): it shares
+// no cookies, storage or cache with the default context or any other isolated
+// tab. Closing the page disposes the context. The browser-level traffic
+// capture still sees it, since every page enables Network on its own session.
+// Like NewWindowPage, the tab gets a window of its own.
+func (b *Browser) NewIsolatedPage() (*Page, error) {
+	res, err := proto.TargetCreateBrowserContext{}.Call(b.boundedBrowser())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create browser context: %w", err)
+	}
+	dispose := func() {
+		_ = proto.TargetDisposeBrowserContext{BrowserContextID: res.BrowserContextID}.Call(b.boundedBrowser())
+	}
+	page, err := b.newPage(res.BrowserContextID, true)
+	if err != nil {
+		dispose()
+		return nil, err
+	}
+	release := page.release
+	page.release = func() {
+		if release != nil {
+			release()
+		}
+		dispose()
+	}
+	return page, nil
+}
+
+// newPage creates a tab in browserContext ("" = the default context), in a
+// window of its own when newWindow is set.
+func (b *Browser) newPage(browserContext proto.BrowserBrowserContextID, newWindow bool) (*Page, error) {
 	b.mu.Lock()
 	crawlCtx := b.crawlCtx
 	b.mu.Unlock()
 
-	rodPage, release, err := b.createRodPage(crawlCtx)
+	rodPage, release, err := b.createRodPage(crawlCtx, browserContext, newWindow)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create page: %w", err)
 	}
@@ -681,6 +728,18 @@ func (b *Browser) Pages() []*Page {
 	result := make([]*Page, len(b.pages))
 	copy(result, b.pages)
 	return result
+}
+
+// forget drops page from the tracked set (it was closed on its own).
+func (b *Browser) forget(page *Page) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, p := range b.pages {
+		if p == page {
+			b.pages = append(b.pages[:i], b.pages[i+1:]...)
+			return
+		}
+	}
 }
 
 // CurrentPage returns the current persistent page, or nil if none exists.
@@ -813,12 +872,14 @@ func closePageWithTimeout(rodPage *rod.Page, timeout time.Duration, maxRetries i
 	return fmt.Errorf("failed to close page %s after %d attempts", targetID, maxRetries)
 }
 
-// CloseOtherWindows closes all pages except the current one with timeout protection.
-// to get ALL actual browser windows (including those opened by target="_blank" or window.open()).
+// CloseOtherWindows closes all pages except the current one and keep, with
+// timeout protection. It queries the browser to get ALL actual windows
+// (including those opened by target="_blank" or window.open()). keep names the
+// crawl's other tabs, which must survive one tab's popup cleanup.
 //
 // CRITICAL: Uses timeout + retry to prevent deadlocks when pages are slow to close.
 // This is essential for target="_blank" links which may open pages faster than we can track them.
-func (b *Browser) CloseOtherWindows() error {
+func (b *Browser) CloseOtherWindows(keep ...*Page) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -828,6 +889,15 @@ func (b *Browser) CloseOtherWindows() error {
 	}
 
 	currentTargetID := b.currentPage.rodPage.TargetID
+	kept := []*Page{b.currentPage}
+	keepIDs := map[proto.TargetTargetID]bool{currentTargetID: true}
+	for _, p := range keep {
+		if p == nil || p.rodPage == nil || keepIDs[p.rodPage.TargetID] {
+			continue
+		}
+		keepIDs[p.rodPage.TargetID] = true
+		kept = append(kept, p)
+	}
 
 	// Query all browser pages including those opened by target="_blank" or window.open()
 	allPages, err := b.boundedBrowser().Pages()
@@ -845,7 +915,7 @@ func (b *Browser) CloseOtherWindows() error {
 	failedCount := 0
 
 	for _, rodPage := range allPages {
-		if rodPage.TargetID == currentTargetID {
+		if keepIDs[rodPage.TargetID] {
 			continue
 		}
 
@@ -865,12 +935,12 @@ func (b *Browser) CloseOtherWindows() error {
 		zap.Int("closed", closedCount),
 		zap.Int("failed", failedCount))
 
-	// Reset internal tracking to only current page
-	b.pages = []*Page{b.currentPage}
+	// Reset internal tracking to only the kept pages
+	b.pages = kept
 
 	// Return error if ALL pages failed to close (indicates serious problem)
-	if failedCount > 0 && closedCount == 0 && len(allPages) > 1 {
-		return fmt.Errorf("failed to close any of %d extra pages", len(allPages)-1)
+	if failedCount > 0 && closedCount == 0 && len(allPages) > len(kept) {
+		return fmt.Errorf("failed to close any of %d extra pages", len(allPages)-len(kept))
 	}
 
 	return nil

@@ -69,9 +69,12 @@ type CandidateElementExtractor struct {
 
 	checkedElements ExtractorManager
 
-	// Internal clickOnce tracking (when no ExtractorManager is provided)
+	// Internal clickOnce tracking (when no ExtractorManager is provided).
+	// clickOnceMutex guards clickOnce and currentStateID, which belong to this
+	// extractor; clickOnceSeen is shared with every ForTab copy, so a state's
+	// elements are deduplicated across the crawl's tabs.
 	clickOnce      bool
-	clickOnceSeen  map[string]bool
+	clickOnceSeen  *clickOnceMemory
 	clickOnceMutex sync.RWMutex
 	// currentStateID namespaces clickOnce dedup by the state being extracted, so
 	// the SAME element location in a DIFFERENT state (a multi-step form / wizard
@@ -108,7 +111,7 @@ func NewCandidateElementExtractor(cfg *config.Config) *CandidateElementExtractor
 		crawlFrames:         cfg.CrawlFrames,
 		frameIgnorePatterns: cfg.ExcludeFrames,
 		clickOnce:           cfg.ClickOnce,
-		clickOnceSeen:       make(map[string]bool),
+		clickOnceSeen:       newClickOnceMemory(),
 		crawlScope:          cfg.CrawlScope,
 		baseURL:             cfg.URL,
 
@@ -129,7 +132,7 @@ func NewCandidateElementExtractorDefault() *CandidateElementExtractor {
 		crawlFrames:         true,
 		frameIgnorePatterns: []string{},
 		clickOnce:           false, // Default: allow same element from different states
-		clickOnceSeen:       make(map[string]bool),
+		clickOnceSeen:       newClickOnceMemory(),
 	}
 }
 
@@ -158,12 +161,12 @@ func (e *CandidateElementExtractor) SetCurrentState(stateID string) {
 // markChecked checks if an element was already extracted and marks it as checked.
 // Returns true if the element is NEW (should be extracted), false if already seen.
 func (e *CandidateElementExtractor) markChecked(candidate *CandidateElement) bool {
-	if !e.clickOnce {
+	e.clickOnceMutex.RLock()
+	clickOnce, stateID := e.clickOnce, e.currentStateID
+	e.clickOnceMutex.RUnlock()
+	if !clickOnce {
 		return true // Always extract when clickOnce is disabled
 	}
-
-	e.clickOnceMutex.Lock()
-	defer e.clickOnceMutex.Unlock()
 
 	// Namespace the element key by the current state so the same element location
 	// in a different state (a wizard/multi-step form reusing one "Next" button
@@ -171,12 +174,58 @@ func (e *CandidateElementExtractor) markChecked(candidate *CandidateElement) boo
 	// which silently dropped later steps of such flows. EventType is included so a
 	// hover-menu action and a click action on the SAME element coexist (a nav
 	// trigger that both clicks through and opens a submenu on hover).
-	key := e.currentStateID + "\x00" + string(candidate.EventType) + "\x00" + candidate.GetUniqueString()
-	if e.clickOnceSeen[key] {
-		return false // Already extracted in this state
+	key := stateID + "\x00" + string(candidate.EventType) + "\x00" + candidate.GetUniqueString()
+	return e.clickOnceSeen.claim(key)
+}
+
+// clickOnceMemory is the crawl-wide set of extracted element keys. Shared by
+// an extractor and its ForTab copies.
+type clickOnceMemory struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func newClickOnceMemory() *clickOnceMemory {
+	return &clickOnceMemory{seen: make(map[string]bool)}
+}
+
+// claim records key and reports whether it was new.
+func (m *clickOnceMemory) claim(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.seen[key] {
+		return false
 	}
-	e.clickOnceSeen[key] = true
-	return true // New element
+	m.seen[key] = true
+	return true
+}
+
+// ForTab returns an extractor for another crawl tab: the same configuration,
+// form handler and crawl-wide clickOnce memory, but its own current-state
+// namespace. SetCurrentState followed by Extract is two calls, so tabs that
+// shared one extractor could extract one state's elements under another's
+// namespace.
+func (e *CandidateElementExtractor) ForTab() *CandidateElementExtractor {
+	e.clickOnceMutex.RLock()
+	defer e.clickOnceMutex.RUnlock()
+	return &CandidateElementExtractor{
+		clickSelectors:        e.clickSelectors,
+		excludeSelectors:      e.excludeSelectors,
+		useCDP:                e.useCDP,
+		followExternalLinks:   e.followExternalLinks,
+		siteHost:              e.siteHost,
+		crawlConditions:       e.crawlConditions,
+		randomizeElements:     e.randomizeElements,
+		crawlFrames:           e.crawlFrames,
+		frameIgnorePatterns:   e.frameIgnorePatterns,
+		maxListenerProbeNodes: e.maxListenerProbeNodes,
+		crawlScope:            e.crawlScope,
+		baseURL:               e.baseURL,
+		formHandler:           e.formHandler,
+		checkedElements:       e.checkedElements,
+		clickOnce:             e.clickOnce,
+		clickOnceSeen:         e.clickOnceSeen,
+	}
 }
 
 // SetSiteHost sets the site host for external link detection.

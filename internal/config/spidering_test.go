@@ -165,6 +165,35 @@ func TestSpideringValidate_Stealth(t *testing.T) {
 	}
 }
 
+func TestSpideringValidate_Tabs(t *testing.T) {
+	for _, n := range []int{0, 1, 3, SpideringMaxTabs} {
+		c := DefaultSpideringConfig()
+		c.Tabs = n
+		if err := c.Validate(); err != nil {
+			t.Errorf("tabs %d rejected: %v", n, err)
+		}
+	}
+	for _, n := range []int{-1, SpideringMaxTabs + 1} {
+		c := DefaultSpideringConfig()
+		c.Tabs = n
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "spidering.tabs") {
+			t.Errorf("tabs %d = %v, want a spidering.tabs error", n, err)
+		}
+	}
+	for _, v := range append([]string{""}, SpideringTabIsolationModes...) {
+		c := DefaultSpideringConfig()
+		c.TabIsolation = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("tab_isolation %q rejected: %v", v, err)
+		}
+	}
+	c := DefaultSpideringConfig()
+	c.TabIsolation = "incognito"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "spidering.tab_isolation") {
+		t.Errorf("tab_isolation \"incognito\" = %v, want a spidering.tab_isolation error", err)
+	}
+}
+
 func TestSpideringRouteSeedKeys(t *testing.T) {
 	c := DefaultSpideringConfig()
 	if !c.RouteSeedsEnabled() || c.ExtraSeedsCap() != DefaultMaxExtraSeeds {

@@ -31,11 +31,24 @@ type Crawler struct {
 	// is used to construct it (and remains owned by the pool), but Pool.Get()
 	// uses round-robin, which would silently switch browsers between calls —
 	// so we cache one reference here and use it for the entire crawl session.
-	browser     *browser.Browser
+	browser *browser.Browser
+	// extractor and formHandler are the first tab's (primary's); the other
+	// tabs get their own (see newTabWorker), sharing the crawl-wide memory
+	// each keeps — the clickOnce set and the fill context.
 	extractor   *action.CandidateElementExtractor
 	comparator  *state.Comparator
 	formHandler *form.Handler
 	fragManager *fragment.Manager
+
+	// primary is the first tab: the page initializeIndexState opens, which
+	// also runs the single-threaded steps around the crawl loop (seeding,
+	// follow-up passes, retry sweep). extraTabs are the spidering.tabs-1 more
+	// tabs crawlLoop opens on first use and crawlWithBrowser closes; guarded by
+	// tabsMu, which is never held while a tab crawls.
+	primary    *tabWorker
+	tabsMu     sync.Mutex
+	extraTabs  []*tabWorker
+	tabsOpened bool
 
 	// Conditions
 	crawlConditions []*condition.Condition
@@ -49,7 +62,9 @@ type Crawler struct {
 
 	// Form input cache - stores successful form inputs per action
 	// Uses DetectedInput for Go extension metadata (value rotation, etc.)
-	formCache map[string][]*form.DetectedInput
+	// Guarded by formCacheMu.
+	formCacheMu sync.Mutex
+	formCache   map[string][]*form.DetectedInput
 
 	// Form trainer (optional) - for reproducible form testing
 	formTrainer *form.FormTrainer
@@ -57,20 +72,15 @@ type Crawler struct {
 	// ND Cluster manager (optional) - for near-duplicate state clustering
 	clusterMgr *state.NDClusterManager
 
-	// Contains currentState, initialState, onURLSet
-	// Reference to graph is shared (GLOBAL)
-	stateMachine *state.StateMachine
-
-	// NEW instance created on each reset()
-	crawlPath *state.CrawlPath
-
 	session *CrawlSession
 
 	// Used to generate action combinations with different form input values.
 	eventableConditions *condition.EventableConditionChecker
 
-	// Used to determine if we need to add final reload edge when crawl finishes.
-	resetCalled bool
+	// consecutiveFails is the crawl-wide streak of failed actions (any tab's
+	// failure extends it, any tab's success resets it), checked against
+	// MaxConsecutiveFails. Mirrored into Stats.ConsecutiveFailures on read.
+	consecutiveFails atomic.Int32
 
 	// Metrics collector for benchmark tracking (optional)
 	metricsCollector *metrics.Collector
@@ -212,7 +222,7 @@ type Stats struct {
 	StatesDuplicate     int
 	ActionsExecuted     int
 	ActionsFailed       int
-	ConsecutiveFailures int // Current streak of consecutive failures
+	ConsecutiveFailures int // Current streak of consecutive failures (across tabs)
 	// FormsSubmitted counts form submissions dispatched by every mechanism
 	// (see submitMechanisms); written only by countSubmitDispatched.
 	// FormSubmitsPrevented counts submissions the interaction policy refused at
@@ -342,8 +352,10 @@ func New(cfg *config.Config) (*Crawler, error) {
 		selfRegisterHosts:   make(map[string]bool),
 		wallHosts:           make(map[string]bool),
 		speculativeScript:   renderSpeculativeScript(cfg.SpeculativeMaxLinks),
-		// NOTE: stateMachine, crawlPath, session initialized in initializeIndexState()
+		// NOTE: the primary tab's stateMachine and crawlPath, and session, are
+		// initialized in initializeIndexState()
 	}
+	c.primary = &tabWorker{id: 0, formHandler: c.formHandler, extractor: c.extractor}
 
 	// Attach a per-crawl fill context so form values become response-aware:
 	// identity values (email/username/password) stay consistent across a
@@ -464,13 +476,13 @@ func (c *Crawler) Run(ctx context.Context) (*Result, error) {
 		c.mu.Unlock()
 	}()
 
-	// The single-threaded crawler pins exactly one browser for the entire crawl
-	// (see the Pool.Get() note below), so launching the configured BrowserCount>1
-	// only burns startup time and memory without adding any crawl throughput. Cap
-	// it to one; multi-browser scheduling is not implemented in this crawler.
+	// The crawler pins exactly one browser for the entire crawl (see the
+	// Pool.Get() note below) and parallelizes with tabs inside it, so launching
+	// the configured BrowserCount>1 only burns startup time and memory without
+	// adding any crawl throughput. Cap it to one and point at tabs.
 	if c.config.BrowserCount > 1 {
 		browserCountClampWarn.Do(func() {
-			zap.L().Warn("Spidering: browser_count > 1 requested, but the crawler is single-threaded — launching 1 browser",
+			zap.L().Warn("Spidering: browser_count > 1 requested, but the crawler drives one browser — launching 1; set spidering.tabs to crawl with several tabs in it",
 				zap.Int("configured", c.config.BrowserCount))
 		})
 		c.config.BrowserCount = 1
@@ -519,11 +531,11 @@ func (c *Crawler) Run(ctx context.Context) (*Result, error) {
 		}
 	}()
 
-	// Start capture at BROWSER level (captures ALL pages).
+	// Start capture at BROWSER level (captures ALL pages, every tab included).
 	// Pin one browser for the entire crawl — Pool.Get() round-robins, so calling
 	// it from each helper would silently rotate to a different browser whose
-	// CurrentPage is nil. This Crawler is single-threaded and not designed to fan
-	// out across multiple browsers.
+	// CurrentPage is nil. This Crawler fans out across tabs of this one browser,
+	// never across browsers.
 	br := pool.Get()
 	if br == nil {
 		return nil, fmt.Errorf("browser pool returned nil browser")
@@ -604,6 +616,11 @@ func (c *Crawler) crawlWithBrowser(ctx context.Context, br *browser.Browser, cap
 		c.extractor.SetFormHandler(&formHandlerAdapter{checker: c.eventableConditions})
 	}
 
+	// Extra tabs are opened by the first crawlLoop; close them however this
+	// returns. The explicit close below runs first on the normal path, so the
+	// DOM-XSS probe does not share the browser with idle tabs.
+	defer c.closeExtraTabs()
+
 	// Initialize
 	if err := c.initializeIndexState(ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize: %w", err)
@@ -640,6 +657,7 @@ func (c *Crawler) crawlWithBrowser(ctx context.Context, br *browser.Browser, cap
 	// no-ops when the crawl stopped on its budget rather than by draining.
 	c.runFollowUpPasses(ctx)
 	c.retryFailedActions(ctx)
+	c.closeExtraTabs()
 
 	// The map of what was reached and how is written by the caller
 	// (WriteGraphDump) once the capture has drained, so the graph's manifest can
@@ -693,10 +711,8 @@ func (c *Crawler) logMABSummary() {
 
 // buildResult builds the crawl result.
 func (c *Crawler) buildResult(ctx context.Context) *Result {
-	if c.crawlPath != nil {
-		c.crawlPath.Close()
-		c.session.AddCrawlPath(c.crawlPath.ImmutableCopy())
-	}
+	// The extra tabs handed their paths over when they closed.
+	c.recordCrawlPath(c.primary)
 	if c.session != nil {
 		c.session.MarkEnd()
 	}
@@ -740,6 +756,7 @@ func (c *Crawler) buildResult(ctx context.Context) *Result {
 	c.stats.EndTime = time.Now()
 	res.Stats = c.stats
 	c.mu.Unlock()
+	res.Stats.ConsecutiveFailures = int(c.consecutiveFails.Load())
 
 	return res
 }
@@ -747,8 +764,10 @@ func (c *Crawler) buildResult(ctx context.Context) *Result {
 // Stats returns current statistics.
 func (c *Crawler) GetStats() Stats {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.stats
+	st := c.stats
+	c.mu.Unlock()
+	st.ConsecutiveFailures = int(c.consecutiveFails.Load())
+	return st
 }
 
 // IsRunning returns true if crawler is running.

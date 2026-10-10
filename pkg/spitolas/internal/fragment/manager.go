@@ -100,6 +100,8 @@ func NewManager() *Manager {
 
 // SetDynamicThreshold sets the threshold for marking fragments as dynamic.
 func (m *Manager) SetDynamicThreshold(threshold int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.dynamicThreshold = threshold
 }
 

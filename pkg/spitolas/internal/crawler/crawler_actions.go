@@ -47,7 +47,7 @@ func (c *Crawler) checkAllConditionsSatisfied(page *browser.Page, element *actio
 // Returns (newActionsCount, filledFormInputs, error) where:
 // - newActionsCount is the number of new actions discovered
 // - filledFormInputs are the form inputs that were filled (for caching in candidates)
-func (c *Crawler) executeActionWithEventable(ctx context.Context, crawlAction *action.CandidateCrawlAction, eventable *action.Eventable) (newActionsCount int, filledInputs []*action.FormInput, err error) {
+func (c *Crawler) executeActionWithEventable(ctx context.Context, w *tabWorker, crawlAction *action.CandidateCrawlAction, eventable *action.Eventable) (newActionsCount int, filledInputs []*action.FormInput, err error) {
 	// CRITICAL: General panic recovery - catch all runtime panics during action execution.
 	// Prevents entire crawl from crashing when an action encounters problems
 	// (cross-origin frames, detached elements, nil pointer dereferences, etc.)
@@ -93,7 +93,7 @@ func (c *Crawler) executeActionWithEventable(ctx context.Context, crawlAction *a
 	if c.browser == nil {
 		return 0, nil, fmt.Errorf("crawler browser not initialized")
 	}
-	page := c.browser.CurrentPage()
+	page := w.page
 	if page == nil {
 		return 0, nil, fmt.Errorf("no page available")
 	}
@@ -122,7 +122,7 @@ func (c *Crawler) executeActionWithEventable(ctx context.Context, crawlAction *a
 	if c.config.FormFillEnabled && !shouldDisableInputs {
 		// 1. eventable.getRelatedFormInputs() (inputs linked from CandidateElement)
 		// 2. formHandler.getFormInputs() (all inputs on current DOM)
-		filledInputs = c.handleInputElements(targetPage, eventable)
+		filledInputs = c.handleInputElements(w, targetPage, eventable)
 	} else if shouldDisableInputs {
 		zap.L().Debug("Form inputs disabled for this action (retry without inputs)")
 	}
@@ -215,8 +215,9 @@ func (c *Crawler) executeActionWithEventable(ctx context.Context, crawlAction *a
 
 	_ = page.HandlePopups()
 
-	// This is CRITICAL for target="_blank" and window.open() links
-	if err := c.browser.CloseOtherWindows(); err != nil {
+	// This is CRITICAL for target="_blank" and window.open() links. The crawl's
+	// other tabs are not popups: they are kept.
+	if err := c.browser.CloseOtherWindows(c.extraTabPages()...); err != nil {
 		// Log but don't fail the crawl - this is a cleanup operation
 		zap.L().Warn("Failed to close other windows, continuing crawl", zap.Error(err))
 	}
@@ -230,7 +231,7 @@ func (c *Crawler) executeActionWithEventable(ctx context.Context, crawlAction *a
 	}
 
 	zap.L().Debug("Inspecting new state after action")
-	newActionsCount = c.inspectNewState(ctx, page, eventable)
+	newActionsCount = c.inspectNewState(ctx, w, page, eventable)
 
 	return newActionsCount, filledInputs, nil
 }
@@ -238,10 +239,10 @@ func (c *Crawler) executeActionWithEventable(ctx context.Context, crawlAction *a
 // inspectNewState checks if the DOM changed after an action and handles new/clone states.
 // Returns the number of new actions discovered (for MAB reward and metrics).
 // The eventable parameter is the FIRED eventable with correct ID (including DUPLICATE_EVENT_SEED).
-func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, eventable *action.Eventable) int {
+func (c *Crawler) inspectNewState(ctx context.Context, w *tabWorker, page *browser.Page, eventable *action.Eventable) int {
 	_ = page.HandlePopups()
 
-	currentState := c.stateMachine.GetCurrentState()
+	currentState := w.stateMachine.GetCurrentState()
 
 	// This MUST be checked before capturing state to prevent out-of-scope states
 	if !c.isInScope(page) {
@@ -297,10 +298,10 @@ func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, event
 	if eventable.ID <= 0 {
 		zap.L().Warn("Adding Eventable to Crawlpath has id less than zero", zap.Int64("id", eventable.ID))
 	}
-	c.crawlPath.Add(eventable)
+	w.crawlPath.Add(eventable)
 
 	// This handles: AddState (putIfAbsent), AddEdge, and ChangeState all in one call.
-	existingState, isClone, graphEdge := c.stateMachine.SwitchToStateAndCheckIfClone(newState, eventable)
+	existingState, isClone, graphEdge := w.stateMachine.SwitchToStateAndCheckIfClone(newState, eventable)
 	if isClone {
 		// Clone state detected
 		zap.L().Debug("State already exists (clone detected)",
@@ -318,7 +319,7 @@ func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, event
 		// Equals per edge, growing with the graph on every duplicate transition.
 		if eventable.ID == -1 {
 			zap.L().Debug("Removing Clone Edge from crawlPath")
-			c.crawlPath.RemoveLast()
+			w.crawlPath.RemoveLast()
 
 			replacement := eventable // fallback: re-add the original eventable
 			if graphEdge != nil && graphEdge != eventable {
@@ -327,7 +328,7 @@ func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, event
 			} else {
 				zap.L().Debug("Crawlpath could not be fixed with graph, using removed eventable")
 			}
-			c.crawlPath.Add(replacement)
+			w.crawlPath.Add(replacement)
 		}
 
 		c.candidates.RediscoveredState(existingState.ID)
@@ -335,7 +336,9 @@ func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, event
 			zap.L().Debug("Restored expired state and its incoming edges", zap.String("state_id", existingState.ID))
 		}
 
+		c.mu.Lock()
 		c.stats.StatesDuplicate++
+		c.mu.Unlock()
 		return 0
 	}
 
@@ -359,7 +362,9 @@ func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, event
 	if c.mabPolicy != nil {
 		c.mabPolicy.AddState(newState.ID)
 	}
+	c.mu.Lock()
 	c.stats.StatesDiscovered++
+	c.mu.Unlock()
 	zap.L().Debug("Current state updated to new state", zap.String("state_id", newState.ID))
 
 	// Let this newly reached state settle and (if it has content below the fold)
@@ -387,8 +392,8 @@ func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, event
 	}
 
 	zap.L().Debug("Extracting actions from new state")
-	c.extractor.SetCurrentState(newState.ID)
-	actions, err := c.extractor.Extract(ctx, page)
+	w.extractor.SetCurrentState(newState.ID)
+	actions, err := w.extractor.Extract(ctx, page)
 	if err != nil {
 		zap.L().Debug("Failed to extract actions", zap.Error(err))
 		return 0
@@ -398,7 +403,7 @@ func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, event
 	added := len(actions)
 	zap.L().Debug("Extracted actions from state", zap.Int("count", added), zap.String("state", newState.Name))
 
-	// NOTE: Frame extraction is already handled by c.extractor.Extract() which
+	// NOTE: Frame extraction is already handled by w.extractor.Extract() which
 	// recursively processes frames with correct framePath. No separate call needed.
 
 	// Submit any GET forms this newly reached state introduced (a per-route search
@@ -431,7 +436,7 @@ func (c *Crawler) inspectNewState(ctx context.Context, page *browser.Page, event
 // 3. if (clone == null): setCurrentState(newState), add to onURLSet
 // 4. else: setCurrentState(clone), add clone to onURLSet if not index
 // 5. Always try to add reload edge (graph handles duplicate)
-func (c *Crawler) checkOnURLState(ctx context.Context, page *browser.Page, previousState *state.State, resetURL string) {
+func (c *Crawler) checkOnURLState(ctx context.Context, w *tabWorker, page *browser.Page, previousState *state.State, resetURL string) {
 	// Same reason as inspectNewState: this DOM read mints a state identity, so it
 	// must not be taken while the reloaded page is still rendering. This path
 	// always follows an explicit navigation, so there is no URL to compare
@@ -459,9 +464,14 @@ func (c *Crawler) checkOnURLState(ctx context.Context, page *browser.Page, previ
 	currentURL, _ := page.URL()
 
 	newState := state.New(currentURL, combinedDOM, strippedDOM, 1)
+	// Marked before the insert: once in the graph the state is visible to the
+	// other tabs, and a later write would race their reads. A clone discards
+	// this copy, so the mark only sticks on a state this call adds.
+	newState.SetOnURL(true)
 
-	// checkOnURLState does NOT use switchToStateAndCheckIfClone — it's a direct putIfAbsent.
-	isNew := c.graph.AddState(newState)
+	// checkOnURLState does NOT use switchToStateAndCheckIfClone — it's a direct
+	// putIfAbsent, atomic against another tab capturing the same DOM.
+	canonical, isNew := c.graph.PutIfAbsent(newState)
 
 	if isNew {
 		// NEW STATE discovered after URL reload!
@@ -472,16 +482,14 @@ func (c *Crawler) checkOnURLState(ctx context.Context, page *browser.Page, previ
 			c.mabPolicy.AddState(newState.ID)
 		}
 
-		c.stateMachine.SetCurrentState(newState)
+		w.stateMachine.SetCurrentState(newState)
 
-		c.stateMachine.AddToOnURLSet(newState)
-
-		newState.SetOnURL(true)
+		w.stateMachine.AddToOnURLSet(newState)
 
 		zap.L().Debug("checkOnURLState: NEW state discovered after reload", zap.String("state", newState.Name))
 
-		c.extractor.SetCurrentState(newState.ID)
-		actions, err := c.extractor.Extract(ctx, page)
+		w.extractor.SetCurrentState(newState.ID)
+		actions, err := w.extractor.Extract(ctx, page)
 		if err == nil && len(actions) > 0 {
 			c.candidates.AddActions(actions, newState.ID)
 			zap.L().Debug("Extracted actions from new onURL state",
@@ -489,26 +497,25 @@ func (c *Crawler) checkOnURLState(ctx context.Context, page *browser.Page, previ
 				zap.String("state", newState.Name))
 		}
 
+		c.mu.Lock()
 		c.stats.StatesDiscovered++
+		c.mu.Unlock()
 	} else {
 		// EXISTING STATE (clone)
-		existingState, _ := c.graph.GetState(newState.ID)
-		if existingState == nil {
-			existingState = newState
-		}
+		existingState := canonical
 
-		c.stateMachine.SetCurrentState(existingState)
+		w.stateMachine.SetCurrentState(existingState)
 
 		//                         if (!onURLSet.contains(clone)) onURLSet.add(clone)
 		if existingState.Name != "index" {
-			c.stateMachine.AddToOnURLSet(existingState)
+			w.stateMachine.AddToOnURLSet(existingState)
 			zap.L().Debug("checkOnURLState: index has changed to", zap.String("state", existingState.Name))
 		}
 	}
 
 	// Graph.AddEdge() handles duplicate detection via Eventable.Equals()
 	if previousState != nil {
-		currentState := c.stateMachine.GetCurrentState()
+		currentState := w.stateMachine.GetCurrentState()
 		if currentState != nil {
 			c.graph.AddEdge(previousState.ID, currentState.ID, action.NewReloadEventable(resetURL))
 			zap.L().Debug("Added reload edge",
@@ -521,15 +528,15 @@ func (c *Crawler) checkOnURLState(ctx context.Context, page *browser.Page, previ
 // addFinalReloadEdge adds a reload edge from current state to index when crawl finishes.
 // If reset() was called at least once, all intermediate states already have reload edges.
 // The final leaf state does NOT get a reload edge because the crawl just terminates.
-func (c *Crawler) addFinalReloadEdge() {
+func (c *Crawler) addFinalReloadEdge(w *tabWorker) {
 	// This handles simple DFS crawls (like SimpleInputSite: index → state, end).
 	// For complex crawls where reset() was called, reload edges are already added during processing.
-	if c.resetCalled {
+	if w == nil || w.resetCalled || w.stateMachine == nil {
 		return
 	}
 
 	indexState := c.graph.GetIndexState()
-	currentState := c.stateMachine.GetCurrentState()
+	currentState := w.stateMachine.GetCurrentState()
 	if indexState == nil || currentState == nil {
 		return
 	}
@@ -579,7 +586,7 @@ func (c *Crawler) captureState(ctx context.Context, page *browser.Page, depth in
 
 // recordMetrics records step metrics to the metrics collector.
 // Called only when metricsCollector is set (benchmark mode).
-func (c *Crawler) recordMetrics(crawlAction *action.CandidateCrawlAction, succeeded, stateDiscovered, formSubmitted bool, newActionsCount int) {
+func (c *Crawler) recordMetrics(w *tabWorker, crawlAction *action.CandidateCrawlAction, succeeded, stateDiscovered, formSubmitted bool, newActionsCount int) {
 	// Get action ID from identification
 	actionID := ""
 	if crawlAction != nil && crawlAction.GetCandidateElement() != nil {
@@ -601,11 +608,8 @@ func (c *Crawler) recordMetrics(crawlAction *action.CandidateCrawlAction, succee
 	ctx.RewardEnv = float64(newActionsCount)
 
 	// Extract links from current page for link coverage
-	if c.browser != nil {
-		if page := c.browser.CurrentPage(); page != nil {
-			links := c.extractLinksFromPage(page)
-			ctx.NewLinks = links
-		}
+	if page := w.page; page != nil {
+		ctx.NewLinks = c.extractLinksFromPage(page)
 	}
 
 	// Record to collector

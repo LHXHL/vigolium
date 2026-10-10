@@ -143,6 +143,19 @@ type Config struct {
 	BrowserEngine string // "chromium" (default), "ungoogled", or "fingerprint"
 	BrowserPath   string // explicit path to browser binary (overrides auto-detection)
 
+	// Tabs is how many tabs of the one browser crawl the shared state graph at
+	// once (0 or 1 = one tab, the single-threaded crawl). Each extra tab is a
+	// consumer of the same frontier: it claims a state, reaches it and fires its
+	// actions while the others do the same elsewhere. See TabsCount.
+	Tabs int
+
+	// TabIsolation is TabIsolationShared ("" too): every tab shares the
+	// browser's default context — one cookie jar, so a logout in one tab logs
+	// the others out — or TabIsolationContext: each extra tab gets a browser
+	// context of its own, seeded with the configured auth and the cookies the
+	// first tab holds when it opens.
+	TabIsolation string
+
 	// Stealth is the stealth mode: StealthAuto (or ""), StealthOn or StealthOff.
 	// See StealthEnabled for what auto resolves to.
 	Stealth string
@@ -749,6 +762,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("BrowserCount must be >= 1, got: %d", c.BrowserCount)
 	}
 
+	if c.Tabs < 0 || c.Tabs > MaxTabs {
+		return fmt.Errorf("Tabs must be 0-%d, got: %d", MaxTabs, c.Tabs)
+	}
+	if err := ValidateTabIsolation(c.TabIsolation); err != nil {
+		return err
+	}
+
 	if c.FormFillMode != FormFillNormal && c.FormFillMode != FormFillRandom {
 		return fmt.Errorf("FormFillMode must be 'normal' or 'random', got: %s", c.FormFillMode)
 	}
@@ -798,6 +818,36 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// MaxTabs caps Config.Tabs. Each tab costs roughly 80-150 MB of browser memory
+// and shares one renderer budget, so past a handful they add contention, not
+// coverage.
+const MaxTabs = 16
+
+// Tab isolation modes (Config.TabIsolation).
+const (
+	TabIsolationShared  = "shared"
+	TabIsolationContext = "context"
+)
+
+// TabIsolationModes lists the accepted Config.TabIsolation values, default first.
+var TabIsolationModes = []string{TabIsolationShared, TabIsolationContext}
+
+// ValidateTabIsolation rejects a mode outside TabIsolationModes ("" is shared).
+func ValidateTabIsolation(mode string) error {
+	if mode != "" && !slices.Contains(TabIsolationModes, mode) {
+		return fmt.Errorf("TabIsolation must be one of %s, got: %s", strings.Join(TabIsolationModes, ", "), mode)
+	}
+	return nil
+}
+
+// TabsCount returns the number of crawl tabs, at least 1.
+func (c *Config) TabsCount() int {
+	if c.Tabs < 1 {
+		return 1
+	}
+	return c.Tabs
 }
 
 // Stealth modes (Config.Stealth). The default, auto, applies the stealth

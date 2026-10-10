@@ -158,7 +158,10 @@ In-process probes (XSS confirmation, `web_fetch mode=browser`,
   provisioning and in-flight waits, but an in-page script already started may
   finish its requests, and nothing the crawl did is undone.
 - **No parallel browsers.** `browser_count` / `--browsers` above 1 is clamped
-  to 1 (single-threaded crawler); run separate processes for parallel targets.
+  to 1; a crawl parallelizes with `spidering.tabs` inside its one browser
+  (default 1). Tabs share one cookie jar unless `spidering.tab_isolation:
+  context`, so a logout one tab fires ends the others' session too. Run
+  separate processes for parallel targets.
 - **No public web search** tool for the agent; `web_fetch` fetches a URL it is
   given.
 - **Form training** (`FormTrainer`) is an internal component with no operator

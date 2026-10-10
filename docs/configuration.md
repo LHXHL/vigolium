@@ -515,7 +515,9 @@ spidering:
   max_duration: 30m
   max_consecutive_fails: 100
   headless: true
-  browser_count: 1           # >1 is clamped to 1 (single-threaded crawler)
+  browser_count: 1           # >1 is clamped to 1 (parallelism comes from tabs)
+  tabs: 1                    # tabs of that browser crawling one shared state graph (max 16); 1 at every intensity for now
+  tab_isolation: shared      # shared (one cookie jar) | context (each extra tab gets its own)
   strategy: adaptive         # normal | random | oldest_first | shallow_first | adaptive
   include_response_body: true
   browser_engine: chromium   # chromium | ungoogled | fingerprint
