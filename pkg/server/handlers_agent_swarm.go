@@ -33,20 +33,18 @@ import (
 func (h *Handlers) HandleAgentSwarm(c fiber.Ctx) error {
 	var req AgentSwarmRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	// Natural language prompt: resolve when explicit fields are empty
 	hasExplicitInput := req.Input != "" || len(req.Inputs) > 0 || req.HTTPRequestBase64 != "" || req.SourcePath != "" || req.Diff != "" || req.LastCommits > 0
 	if req.Prompt != "" && !hasExplicitInput {
-		if refused := h.refuseIfGuardrailBlocks(c, req.Prompt); refused != nil {
-			return refused
+		if refused, err := h.refuseIfGuardrailBlocks(c, req.Prompt); refused {
+			return err
 		}
-		resolved, resolveErr := h.resolvePromptIntent(c, req.Prompt)
-		if resolveErr != nil {
-			return resolveErr // already sent HTTP response
+		resolved, answered, resolveErr := h.resolvePromptIntent(c, req.Prompt)
+		if answered {
+			return resolveErr // error response already written
 		}
 		if req.DryRun {
 			return c.Status(fiber.StatusOK).JSON(fiber.Map{"intent": resolved})
@@ -113,24 +111,22 @@ func (h *Handlers) HandleAgentSwarm(c fiber.Ctx) error {
 
 	// If base64 HTTP request is provided, ingest it and use the record UUID as input.
 	if req.HTTPRequestBase64 != "" {
-		recordUUID, err := h.ingestSwarmBase64(c, &req)
-		if err != nil {
-			return err // already sent HTTP response
+		recordUUID, answered, err := h.ingestSwarmBase64(c, &req)
+		if answered {
+			return err // error response already written
 		}
 		req.Inputs = append(req.Inputs, recordUUID)
 	}
 
 	inputs := req.EffectiveInputs()
 	if len(inputs) == 0 && req.SourcePath == "" && req.Diff == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "at least one input is required (input, inputs, http_request_base64, source, diff, or prompt field)",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "at least one input is required (input, inputs, http_request_base64, source, diff, or prompt field)")
 	}
 
 	// Resolve intensity preset
 	swarmIntensity, intensityErr := agent.ValidateIntensity(req.Intensity)
 	if intensityErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: intensityErr.Error()})
+		return respondError(c, fiber.StatusBadRequest, intensityErr)
 	}
 	{
 		changed := map[string]bool{
@@ -197,9 +193,7 @@ func (h *Handlers) HandleAgentSwarm(c fiber.Ctx) error {
 
 	eng, cleanup, byokErr := h.engineForRequest(req.AgentBYOK)
 	if byokErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "byok: " + byokErr.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("byok: %w", byokErr))
 	}
 
 	return h.startSwarmRun(c, req, timeout, eng, cleanup)
@@ -207,20 +201,14 @@ func (h *Handlers) HandleAgentSwarm(c fiber.Ctx) error {
 
 // ingestSwarmBase64 decodes the base64-encoded HTTP request (and optional response),
 // saves it as an http_record, and returns the record UUID.
-func (h *Handlers) ingestSwarmBase64(c fiber.Ctx, req *AgentSwarmRequest) (string, error) {
+func (h *Handlers) ingestSwarmBase64(c fiber.Ctx, req *AgentSwarmRequest) (recordUUID string, answered bool, err error) {
 	if h.repo == nil {
-		return "", c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return "", true, respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	rawReq, err := base64.StdEncoding.DecodeString(req.HTTPRequestBase64)
 	if err != nil {
-		return "", c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid base64 in http_request_base64: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return "", true, respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid base64 in http_request_base64: %w", err))
 	}
 
 	var rr *httpmsg.HttpRequestResponse
@@ -230,10 +218,7 @@ func (h *Handlers) ingestSwarmBase64(c fiber.Ctx, req *AgentSwarmRequest) (strin
 		rr, err = httpmsg.ParseRawRequest(string(rawReq))
 	}
 	if err != nil {
-		return "", c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse raw request: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return "", true, respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to parse raw request: %w", err))
 	}
 
 	// Attach response if provided.
@@ -254,16 +239,13 @@ func (h *Handlers) ingestSwarmBase64(c fiber.Ctx, req *AgentSwarmRequest) (strin
 		projectUUID = getProjectUUID(c)
 	}
 
-	recordUUID, err := h.saveRecord(c.Context(), rr, "agent-swarm", projectUUID)
+	recordUUID, err = h.saveRecord(c.Context(), rr, "agent-swarm", projectUUID)
 	if err != nil {
 		zap.L().Error("Failed to save ingested record for swarm", zap.Error(err))
-		return "", c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to save record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return "", true, respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to save record: %w", err))
 	}
 
-	return recordUUID, nil
+	return recordUUID, false, nil
 }
 
 // startSwarmRun acquires a heavy agent slot, creates status tracking, and runs the agent swarm.

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -37,14 +38,14 @@ type siteMapSnapshotResponse struct {
 
 func (h *Handlers) HandleBurpSiteMapSnapshot(c fiber.Ctx) error {
 	if h.repo == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{Error: ErrDatabaseRequired.Error()})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 	var req siteMapSnapshotRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "invalid snapshot: " + err.Error()})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid snapshot: %w", err))
 	}
 	if len(req.Records) > maxSiteMapSnapshotChunk {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "snapshot chunk exceeds 200 records"})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "snapshot chunk exceeds 200 records")
 	}
 	resp := siteMapSnapshotResponse{Received: len(req.Records)}
 	projectUUID := getProjectUUID(c)

@@ -775,6 +775,9 @@
                 },
                 "type": "object"
               },
+              "budget_stop": {
+                "type": "string"
+              },
               "confirmed": {
                 "type": "integer"
               },
@@ -948,6 +951,9 @@
                   }
                 },
                 "type": "object"
+              },
+              "timed_out": {
+                "type": "boolean"
               },
               "token_usage": {
                 "properties": {
@@ -1804,9 +1810,53 @@
         },
         "type": "object"
       },
+      "ErrorEnvelopeV2": {
+        "description": "v2 error document: the CLI error envelope with an HTTP status where the CLI has an exit code.",
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorV2"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "generated_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "ok": {
+            "enum": [
+              false
+            ],
+            "type": "boolean"
+          },
+          "route": {
+            "example": "GET /api/findings/{id}",
+            "type": "string"
+          },
+          "schema_version": {
+            "example": 2,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command",
+          "error",
+          "generated_at",
+          "generated_at_ms",
+          "ok",
+          "schema_version"
+        ],
+        "type": "object"
+      },
       "ErrorResponse": {
+        "description": "v1 error body (the default). `code` is always the HTTP status; `error_code` is the stable string classification to branch on. A v2 request (Vigolium-Api-Version: 2) gets ErrorEnvelopeV2 instead.",
         "properties": {
           "code": {
+            "description": "HTTP status of the response (always set).",
             "example": 400,
             "type": "integer"
           },
@@ -1814,12 +1864,154 @@
             "type": "string"
           },
           "error": {
+            "description": "Human-readable message; never branch on it.",
             "example": "invalid request",
+            "type": "string"
+          },
+          "error_code": {
+            "description": "Stable machine-branchable code (shared with the CLI error.code vocabulary).",
+            "enum": [
+              "body_decode_failed",
+              "body_incomplete",
+              "body_unavailable",
+              "budget_exhausted",
+              "config_invalid",
+              "conflict",
+              "database_locked",
+              "database_unavailable",
+              "export_failed",
+              "extension_load_failed",
+              "failed",
+              "finding_not_found",
+              "forbidden",
+              "gate_tripped",
+              "ingest_incomplete",
+              "input_unparsed",
+              "internal_error",
+              "invalid_project_uuid",
+              "invalid_request",
+              "lint_failed",
+              "login_failed",
+              "method_not_allowed",
+              "no_targets_in_scope",
+              "no_targets_reachable",
+              "not_authenticated",
+              "not_found",
+              "not_ready",
+              "output_too_large",
+              "partial",
+              "payload_too_large",
+              "pdf_failed",
+              "preflight_failed",
+              "project_not_found",
+              "provider_missing",
+              "proxy_auth_required",
+              "queue_full",
+              "rate_limited",
+              "record_not_found",
+              "scan_abandoned",
+              "scan_not_found",
+              "schema_outdated",
+              "schema_too_new",
+              "service_unavailable",
+              "source_incompatible",
+              "source_missing",
+              "source_unreadable",
+              "timed_out",
+              "unauthorized",
+              "unsupported_api_version",
+              "unsupported_input_mode",
+              "usage_error",
+              "wait_timeout"
+            ],
+            "example": "invalid_request",
             "type": "string"
           }
         },
         "required": [
-          "error"
+          "code",
+          "error",
+          "error_code"
+        ],
+        "type": "object"
+      },
+      "ErrorV2": {
+        "description": "Error object of a v2 error document.",
+        "properties": {
+          "code": {
+            "description": "Stable machine-branchable code (shared with the CLI error.code vocabulary).",
+            "enum": [
+              "body_decode_failed",
+              "body_incomplete",
+              "body_unavailable",
+              "budget_exhausted",
+              "config_invalid",
+              "conflict",
+              "database_locked",
+              "database_unavailable",
+              "export_failed",
+              "extension_load_failed",
+              "failed",
+              "finding_not_found",
+              "forbidden",
+              "gate_tripped",
+              "ingest_incomplete",
+              "input_unparsed",
+              "internal_error",
+              "invalid_project_uuid",
+              "invalid_request",
+              "lint_failed",
+              "login_failed",
+              "method_not_allowed",
+              "no_targets_in_scope",
+              "no_targets_reachable",
+              "not_authenticated",
+              "not_found",
+              "not_ready",
+              "output_too_large",
+              "partial",
+              "payload_too_large",
+              "pdf_failed",
+              "preflight_failed",
+              "project_not_found",
+              "provider_missing",
+              "proxy_auth_required",
+              "queue_full",
+              "rate_limited",
+              "record_not_found",
+              "scan_abandoned",
+              "scan_not_found",
+              "schema_outdated",
+              "schema_too_new",
+              "service_unavailable",
+              "source_incompatible",
+              "source_missing",
+              "source_unreadable",
+              "timed_out",
+              "unauthorized",
+              "unsupported_api_version",
+              "unsupported_input_mode",
+              "usage_error",
+              "wait_timeout"
+            ],
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "message": {
+            "description": "Human-readable message; never branch on it.",
+            "type": "string"
+          },
+          "status": {
+            "description": "HTTP status of the response.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "status"
         ],
         "type": "object"
       },
@@ -2518,6 +2710,90 @@
         },
         "type": "object"
       },
+      "ListEnvelopeV2": {
+        "description": "v2 list envelope, returned for every list endpoint when the request negotiates v2 (Accept: application/vnd.vigolium.v2+json, Vigolium-Api-Version: 2, or ?api_version=2). Endpoint-specific fields (for example extensions_enabled, table, columns) are added alongside these keys. Server-sent event streams are never wrapped.",
+        "properties": {
+          "command": {
+            "description": "CLI command that reads the same data, or the route when there is none.",
+            "example": "finding",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "generated_at_ms": {
+            "description": "generated_at as epoch milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "The rows; always an array, never null.",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "read"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "ok": {
+            "description": "Always true on a list; errors carry ok:false.",
+            "type": "boolean"
+          },
+          "project_scoped": {
+            "description": "Whether the rows are filtered by X-Project-UUID.",
+            "type": "boolean"
+          },
+          "project_uuid": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "route": {
+            "description": "Matched route.",
+            "example": "GET /api/findings",
+            "type": "string"
+          },
+          "schema_version": {
+            "description": "REST API version (2).",
+            "example": 2,
+            "type": "integer"
+          },
+          "total": {
+            "description": "Total matching rows; -1 when the count is unknown.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command",
+          "generated_at",
+          "generated_at_ms",
+          "has_more",
+          "items",
+          "kind",
+          "limit",
+          "offset",
+          "ok",
+          "project_scoped",
+          "route",
+          "schema_version",
+          "total"
+        ],
+        "type": "object"
+      },
       "LoginRequest": {
         "properties": {
           "access_code": {
@@ -2689,7 +2965,13 @@
         "type": "object"
       },
       "PaginatedResponse": {
+        "description": "v1 paginated list body (the default). A v2 request gets ListEnvelopeV2, which carries the rows under `items`.",
         "properties": {
+          "command": {
+            "description": "CLI command that reads the same data (e.g. finding, traffic), or the route when there is none.",
+            "example": "finding",
+            "type": "string"
+          },
           "data": {
             "items": {
               "type": "object"
@@ -2711,6 +2993,11 @@
           "project_uuid": {
             "format": "uuid",
             "type": "string"
+          },
+          "schema_version": {
+            "description": "REST API version the body is rendered in (1).",
+            "example": 1,
+            "type": "integer"
           },
           "total": {
             "example": 150,
@@ -3546,7 +3833,7 @@
       "name": "Vigolium",
       "url": "https://vigolium.com"
     },
-    "description": "Vigolium — High-fidelity vulnerability scanner fusing agentic AI with native speed, modularity, and precision",
+    "description": "Vigolium — High-fidelity vulnerability scanner fusing agentic AI with native speed, modularity, and precision\n\n## Response versions\n\nResponses default to v1 (server.api_version_default). Ask for v2 with `Accept: application/vnd.vigolium.v2+json`, `Vigolium-Api-Version: 2` or `?api_version=2`; every response reports the version it used in the `Vigolium-Api-Version` header. v1 bodies are the historical shapes (ErrorResponse, PaginatedResponse) plus `error_code`, `schema_version` and `command`. v2 lists use ListEnvelopeV2 and v2 errors use ErrorEnvelopeV2. An unknown X-Project-UUID answers 404 `project_not_found` unless the request sends `X-Project-Create: 1` (or `?create=1`).",
     "title": "Vigolium API",
     "version": "1.0.0"
   },

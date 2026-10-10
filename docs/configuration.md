@@ -810,7 +810,20 @@ server:
   enable_metrics: true
   enable_burp_bridge: false        # opt in to merging live Burp Proxy history into /api/http-records
   burp_bridge_url: 'http://127.0.0.1:9009'
+  api_version_default: 1           # REST body shape for requests that don't negotiate one (1 or 2)
+  auto_create_projects: false      # true = an unknown X-Project-UUID is created instead of 404
 ```
+
+`api_version_default` picks the REST response version for a client that does
+not ask for one (`Accept: application/vnd.vigolium.v2+json`,
+`Vigolium-Api-Version: 2` or `?api_version=2`). v1 is the historical shape;
+v2 is the CLI's envelope (`items`, and an `error` object with a string `code`).
+See [API overview](api-references/overview.md#response-versions).
+
+`auto_create_projects` restores the old behaviour of creating any unknown
+`X-Project-UUID` on first use. Without it the API answers
+`404 project_not_found`, and a client that means to create the project sends
+`X-Project-Create: 1` (or `?create=1`) with the request.
 
 `enable_burp_bridge` is the gate, not `burp_bridge_url`. The URL ships with a
 default address, so the bool is what decides whether the bridge is contacted —

@@ -3,93 +3,153 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"go.uber.org/zap"
 )
 
 const projectUUIDLocalsKey = "project_uuid"
 
+// ProjectMiddlewareConfig tunes ProjectUUIDMiddleware.
+type ProjectMiddlewareConfig struct {
+	// AutoCreate restores the pre-v0.6 behaviour: an unknown X-Project-UUID
+	// is created on first use instead of answering 404 (config
+	// server.auto_create_projects).
+	AutoCreate bool
+}
+
 // ProjectUUIDMiddleware extracts the project UUID from the X-Project-UUID
 // request header and stores it in Fiber locals. Falls back to DefaultProjectUUID
 // when the header is empty.
 //
-// When repo is non-nil and the supplied UUID does not exist in the database,
-// the middleware lazily creates a stub project row so callers (including UIs
-// after a scanner DB reset) can keep working with the UUID stored client-side.
-// Auto-creation is skipped for public/utility endpoints and for the default
-// project UUID, which is seeded separately.
-func ProjectUUIDMiddleware(repo *database.Repository) fiber.Handler {
+// A header that is not a UUID is a 400 invalid_project_uuid. When repo is
+// non-nil, a UUID with no project row is a 404 project_not_found, unless the
+// request opts in to creating it (X-Project-Create: 1 or ?create=1) or
+// cfg.AutoCreate is set; a lookup that fails for any other reason is a 503
+// database_unavailable rather than a request quietly run against a project
+// that may not exist. Public/utility endpoints and the project-management
+// routes (which address a project by path, and must stay reachable to
+// recover from a stale header) skip the check, as does the default project,
+// which is seeded separately.
+func ProjectUUIDMiddleware(repo *database.Repository, cfg ...ProjectMiddlewareConfig) fiber.Handler {
+	var conf ProjectMiddlewareConfig
+	if len(cfg) > 0 {
+		conf = cfg[0]
+	}
 	return func(c fiber.Ctx) error {
-		projectUUID := c.Get("X-Project-UUID")
+		projectUUID := strings.TrimSpace(c.Get("X-Project-UUID"))
 		if projectUUID == "" {
 			projectUUID = database.DefaultProjectUUID
 		}
 		c.Locals(projectUUIDLocalsKey, projectUUID)
 
-		if repo != nil && projectUUID != database.DefaultProjectUUID && !isPublicProjectPath(c.Path()) {
-			ensureProjectExists(c, repo, projectUUID)
+		if projectUUID == database.DefaultProjectUUID || isProjectHeaderExemptPath(c.Path()) {
+			return c.Next()
+		}
+		if !validProjectUUID(projectUUID) {
+			return respondError(c, fiber.StatusBadRequest, ErrInvalidProjectUUID,
+				fmt.Sprintf("got %q; send a UUID such as one from GET /api/projects", projectUUID))
+		}
+		if repo == nil {
+			return c.Next()
 		}
 
-		return c.Next()
+		_, err := repo.GetProjectByUUID(c.Context(), projectUUID)
+		switch {
+		case err == nil:
+			return c.Next()
+		case !errors.Is(err, sql.ErrNoRows):
+			return respondErrorCode(c, fiber.StatusServiceUnavailable, apicontract.CodeDatabaseUnavailable,
+				"project lookup failed: "+err.Error())
+		case conf.AutoCreate || projectCreateRequested(c):
+			if err := createProjectStub(c, repo, projectUUID); err != nil {
+				return respondErrorCode(c, fiber.StatusServiceUnavailable, apicontract.CodeDatabaseUnavailable,
+					"failed to create project: "+err.Error())
+			}
+			return c.Next()
+		default:
+			return respondError(c, fiber.StatusNotFound, ErrProjectNotFound,
+				"no project has UUID "+projectUUID+"; pass "+apicontract.ProjectCreateHeader+": 1 or ?create=1 to create it")
+		}
 	}
 }
 
-// isPublicProjectPath returns true for endpoints that should never trigger
-// project auto-creation (health checks, swagger, static UI, etc.).
+// validProjectUUID accepts the canonical 36-character form only (no braces
+// or urn: prefix), so the value stored in locals is the value in the DB.
+func validProjectUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	_, err := uuid.Parse(s)
+	return err == nil
+}
+
+// projectCreateRequested reports whether the request opted in to creating
+// the project its X-Project-UUID names.
+func projectCreateRequested(c fiber.Ctx) bool {
+	return truthy(c.Get(apicontract.ProjectCreateHeader)) || truthy(c.Query("create"))
+}
+
+func truthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// isPublicProjectPath returns true for public/utility endpoints (health
+// checks, swagger, static UI) that never consult the project.
 func isPublicProjectPath(path string) bool {
-	if path == "/" || path == "/health" || path == "/ready" || path == "/server-info" || path == "/metrics" {
+	if path == "/" || path == "/health" || path == "/ready" || path == "/server-info" || path == "/metrics" || path == "/favicon.ico" {
 		return true
 	}
 	return strings.HasPrefix(path, "/swagger")
 }
 
-// ensureProjectExists looks up the project by UUID and inserts a stub row if
-// it is missing. Errors are logged but never block the request — the next
-// middleware/handler will surface a downstream error if the row truly
-// can't be reached.
-func ensureProjectExists(c fiber.Ctx, repo *database.Repository, projectUUID string) {
-	if _, err := repo.GetProjectByUUID(c.Context(), projectUUID); err == nil {
-		return
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		// Real DB error — log and bail out without trying to write.
-		zap.L().Debug("project lookup failed; skipping auto-create",
-			zap.String("project_uuid", projectUUID),
-			zap.Error(err))
-		return
+// isProjectHeaderExemptPath reports whether X-Project-UUID is ignored for
+// path: the public endpoints, login, and project management (/api/projects
+// and /api/projects/:uuid/...), which must keep working for a client whose
+// stored UUID went stale so it can list projects and pick another. The
+// workbench's client.ts keeps the same list.
+func isProjectHeaderExemptPath(path string) bool {
+	if isPublicProjectPath(path) || path == "/api/auth/login" {
+		return true
 	}
+	return path == "/api/projects" || strings.HasPrefix(path, "/api/projects/")
+}
 
-	name := "auto-" + projectUUID
-	if len(projectUUID) >= 8 {
-		name = "auto-" + projectUUID[:8]
-	}
+// createProjectStub inserts a project row for projectUUID. A concurrent
+// insert of the same UUID counts as success.
+func createProjectStub(c fiber.Ctx, repo *database.Repository, projectUUID string) error {
+	name := "auto-" + projectUUID[:8]
 	now := time.Now().UTC()
 	stub := &database.Project{
 		UUID:        projectUUID,
 		Name:        name,
-		Description: "Auto-created on first use",
+		Description: "Created on first use (X-Project-Create)",
 		OwnerUUID:   database.DefaultUserUUID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 	if err := repo.CreateProject(c.Context(), stub); err != nil {
-		// Likely a race with a concurrent insert — verify the row landed.
 		if _, getErr := repo.GetProjectByUUID(c.Context(), projectUUID); getErr == nil {
-			return
+			return nil
 		}
-		zap.L().Warn("failed to auto-create project",
-			zap.String("project_uuid", projectUUID),
-			zap.Error(err))
-		return
+		return err
 	}
-	zap.L().Info("auto-created project on first use",
+	zap.L().Info("created project on first use",
 		zap.String("project_uuid", projectUUID),
 		zap.String("name", name))
+	return nil
 }
 
 // getProjectUUID retrieves the project UUID from Fiber context locals.
@@ -126,18 +186,12 @@ func BearerAuth(validKeys []string, store *UserStore) fiber.Handler {
 
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{
-				Error: ErrMissingAuthHeader.Error(),
-				Code:  fiber.StatusUnauthorized,
-			})
+			return respondError(c, fiber.StatusUnauthorized, ErrMissingAuthHeader)
 		}
 
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 		if token == authHeader || token == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{
-				Error: ErrInvalidAuthToken.Error(),
-				Code:  fiber.StatusUnauthorized,
-			})
+			return respondError(c, fiber.StatusUnauthorized, ErrInvalidAuthToken)
 		}
 
 		// 1. Try file-based user store first
@@ -156,10 +210,7 @@ func BearerAuth(validKeys []string, store *UserStore) fiber.Handler {
 			return c.Next()
 		}
 
-		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{
-			Error: ErrInvalidAuthToken.Error(),
-			Code:  fiber.StatusUnauthorized,
-		})
+		return respondError(c, fiber.StatusUnauthorized, ErrInvalidAuthToken)
 	}
 }
 
@@ -186,10 +237,7 @@ func RoleGuard(allowed ...string) fiber.Handler {
 			return c.Next()
 		}
 		if !set[user.Role] {
-			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{
-				Error: ErrForbidden.Error(),
-				Code:  fiber.StatusForbidden,
-			})
+			return respondError(c, fiber.StatusForbidden, ErrForbidden)
 		}
 		return c.Next()
 	}
@@ -282,9 +330,7 @@ func DefaultBodyLimitMiddleware() fiber.Handler {
 		// Whatever is left unread would be parsed as the next request on this
 		// connection, so it cannot be reused.
 		c.Response().Header.SetConnectionClose()
-		return c.Status(fiber.StatusRequestEntityTooLarge).JSON(ErrorResponse{
-			Error: "request body exceeds 4 MB limit",
-		})
+		return respondErrorMsg(c, fiber.StatusRequestEntityTooLarge, "request body exceeds 4 MB limit")
 	}
 	return func(c fiber.Ctx) error {
 		if bodyLimitExemptPaths[c.Path()] {
@@ -303,9 +349,7 @@ func DefaultBodyLimitMiddleware() fiber.Handler {
 			// ceiling every time.
 			body, err := io.ReadAll(io.LimitReader(req.BodyStream(), defaultBodyLimit+1))
 			if err != nil {
-				return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-					Error: "failed to read request body: " + err.Error(),
-				})
+				return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to read request body: %w", err))
 			}
 			if len(body) > defaultBodyLimit {
 				return tooLarge(c)

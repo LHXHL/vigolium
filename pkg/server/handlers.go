@@ -644,5 +644,5 @@ func (h *Handlers) HandleMetrics(c fiber.Ctx) error {
 	if h.metricsHandler != nil {
 		return h.metricsHandler(c)
 	}
-	return c.Status(fiber.StatusNotFound).SendString("metrics not configured")
+	return respondErrorMsg(c, fiber.StatusNotFound, "metrics not configured")
 }

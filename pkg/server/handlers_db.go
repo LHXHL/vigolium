@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -17,15 +18,12 @@ import (
 func (h *Handlers) HandleListDBTables(c fiber.Ctx) error {
 	tables, err := database.ListTablesWithCounts(c.Context(), h.db)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to list tables: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to list tables: %w", err))
 	}
-	return c.JSON(fiber.Map{
+	return respondBespokeList(c, fiber.Map{
 		"tables": tables,
 		"total":  len(tables),
-	})
+	}, PaginatedResponse{Data: tables, Total: int64(len(tables))}, nil)
 }
 
 // HandleListDBTableColumns returns column metadata for a specific table.
@@ -33,27 +31,24 @@ func (h *Handlers) HandleListDBTables(c fiber.Ctx) error {
 func (h *Handlers) HandleListDBTableColumns(c fiber.Ctx) error {
 	tableName := c.Params("table")
 	if err := database.ValidateTableName(c.Context(), h.db, tableName); err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, err)
 	}
 
 	columns, err := database.ListColumns(c.Context(), h.db, tableName)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to list columns: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to list columns: %w", err))
 	}
 
 	pk, _ := database.DetectPrimaryKey(c.Context(), h.db, tableName)
 
-	return c.JSON(fiber.Map{
+	return respondBespokeList(c, fiber.Map{
 		"table":       tableName,
 		"columns":     columns,
 		"primary_key": pk.Columns,
 		"total":       len(columns),
+	}, PaginatedResponse{Data: columns, Total: int64(len(columns))}, fiber.Map{
+		"table":       tableName,
+		"primary_key": pk.Columns,
 	})
 }
 
@@ -66,17 +61,16 @@ func (h *Handlers) HandleListDBRecords(c fiber.Ctx) error {
 
 	opts, err := parseGenericQueryOptions(c)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	// Auto-inject project_uuid filter for project-scoped tables
+	projectScopedFilter := false
 	if isProjectScopedTable(tableName) {
 		projectUUID := getProjectUUID(c)
 		allProjects := c.Query("all_projects", "false")
 		if allProjects != "true" && projectUUID != "" {
+			projectScopedFilter = true
 			opts.Filters = append(opts.Filters, database.GenericFilter{
 				Column:   "project_uuid",
 				Operator: "eq",
@@ -91,20 +85,25 @@ func (h *Handlers) HandleListDBRecords(c fiber.Ctx) error {
 		if errors.Is(err, database.ErrTableNotFound) {
 			status = fiber.StatusNotFound
 		}
-		return c.Status(status).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  status,
-		})
+		return respondError(c, status, err)
 	}
 
-	return c.JSON(fiber.Map{
+	return respondBespokeListScoped(c, fiber.Map{
 		"table":   tableName,
 		"total":   total,
 		"limit":   opts.Limit,
 		"offset":  opts.Offset,
 		"columns": columns,
 		"records": records,
-	})
+	}, PaginatedResponse{
+		Data:   records,
+		Total:  int64(total),
+		Limit:  opts.Limit,
+		Offset: opts.Offset,
+	}, fiber.Map{
+		"table":   tableName,
+		"columns": columns,
+	}, projectScopedFilter)
 }
 
 // HandleGetDBRecord returns a single record by primary key.
@@ -116,19 +115,13 @@ func (h *Handlers) HandleGetDBRecord(c fiber.Ctx) error {
 	record, err := database.GetGenericRecord(c.Context(), h.db, tableName, pkValue)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: "record not found",
-				Code:  fiber.StatusNotFound,
-			})
+			return respondErrorMsg(c, fiber.StatusNotFound, "record not found")
 		}
 		status := fiber.StatusInternalServerError
 		if errors.Is(err, database.ErrTableNotFound) || errors.Is(err, database.ErrCompositePKUnsupported) {
 			status = fiber.StatusBadRequest
 		}
-		return c.Status(status).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  status,
-		})
+		return respondError(c, status, err)
 	}
 
 	return c.JSON(fiber.Map{
@@ -144,10 +137,7 @@ func (h *Handlers) HandleCreateDBRecord(c fiber.Ctx) error {
 
 	var fields map[string]interface{}
 	if err := c.Bind().JSON(&fields); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid JSON body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
 	}
 
 	// Auto-inject project_uuid for project-scoped tables
@@ -162,10 +152,7 @@ func (h *Handlers) HandleCreateDBRecord(c fiber.Ctx) error {
 		if errors.Is(err, database.ErrInvalidColumn) || errors.Is(err, database.ErrNoValidFields) {
 			status = fiber.StatusBadRequest
 		}
-		return c.Status(status).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  status,
-		})
+		return respondError(c, status, err)
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -182,27 +169,18 @@ func (h *Handlers) HandleUpdateDBRecord(c fiber.Ctx) error {
 
 	var fields map[string]interface{}
 	if err := c.Bind().JSON(&fields); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid JSON body: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
 	}
 
 	if err := database.UpdateGenericRecord(c.Context(), h.db, tableName, pkValue, fields); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: "record not found",
-				Code:  fiber.StatusNotFound,
-			})
+			return respondErrorMsg(c, fiber.StatusNotFound, "record not found")
 		}
 		status := fiber.StatusInternalServerError
 		if errors.Is(err, database.ErrInvalidColumn) || errors.Is(err, database.ErrImmutablePrimaryKey) || errors.Is(err, database.ErrNoValidFields) {
 			status = fiber.StatusBadRequest
 		}
-		return c.Status(status).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  status,
-		})
+		return respondError(c, status, err)
 	}
 
 	return c.JSON(fiber.Map{
@@ -220,19 +198,13 @@ func (h *Handlers) HandleDeleteDBRecord(c fiber.Ctx) error {
 
 	if err := database.DeleteGenericRecord(c.Context(), h.db, tableName, pkValue); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: "record not found",
-				Code:  fiber.StatusNotFound,
-			})
+			return respondErrorMsg(c, fiber.StatusNotFound, "record not found")
 		}
 		status := fiber.StatusInternalServerError
 		if errors.Is(err, database.ErrTableNotFound) || errors.Is(err, database.ErrCompositePKUnsupported) {
 			status = fiber.StatusBadRequest
 		}
-		return c.Status(status).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  status,
-		})
+		return respondError(c, status, err)
 	}
 
 	return c.JSON(fiber.Map{

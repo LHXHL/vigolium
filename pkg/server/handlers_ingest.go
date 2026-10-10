@@ -224,25 +224,16 @@ func (a *ingestAccumulator) finish() (imported int, errs []string) {
 // HandleIngestHTTP handles POST /api/ingest-http
 func (h *Handlers) HandleIngestHTTP(c fiber.Ctx) error {
 	if h.repo == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	var req IngestHTTPRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid JSON: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 	}
 
 	if req.InputMode == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingMode.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingMode)
 	}
 
 	// Detached on purpose: ingestion persists records, and when the async
@@ -269,21 +260,14 @@ func (h *Handlers) HandleIngestHTTP(c fiber.Ctx) error {
 
 	content, err := resolveContent(&req)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	var format, detected string
 	if mode == ingestModeAuto {
 		det := source.DetectFormatHead(headOf(content), "")
 		if det.Format == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error:   "input_unparsed: could not detect the input format from the content; set input_mode explicitly",
-				Code:    fiber.StatusBadRequest,
-				Details: "supported input_mode values: " + strings.Join(supportedIngestModes(), ", "),
-			})
+			return respondErrorMsg(c, fiber.StatusBadRequest, "input_unparsed: could not detect the input format from the content; set input_mode explicitly", "supported input_mode values: "+strings.Join(supportedIngestModes(), ", "))
 		}
 		format, detected = det.Format, det.Format
 		zap.L().Info("ingest: detected input format",
@@ -291,11 +275,7 @@ func (h *Handlers) HandleIngestHTTP(c fiber.Ctx) error {
 	} else {
 		info, ok := source.LookupFormat(mode)
 		if !ok || mode == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error:   fmt.Sprintf("unsupported_input_mode: %q is not a supported input_mode", req.InputMode),
-				Code:    fiber.StatusBadRequest,
-				Details: "supported input_mode values: " + strings.Join(supportedIngestModes(), ", "),
-			})
+			return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("unsupported_input_mode: %q is not a supported input_mode", req.InputMode), "supported input_mode values: "+strings.Join(supportedIngestModes(), ", "))
 		}
 		format = info.Name
 	}
@@ -367,18 +347,12 @@ func resolveContent(req *IngestHTTPRequest) (string, error) {
 
 func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
 	if req.HTTPRequestBase64 == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "'http_request_base64' is required for burp_base64 mode",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "'http_request_base64' is required for burp_base64 mode")
 	}
 
 	rawReq, err := base64.StdEncoding.DecodeString(req.HTTPRequestBase64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid base64 in http_request_base64: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid base64 in http_request_base64: %w", err))
 	}
 
 	var rr *httpmsg.HttpRequestResponse
@@ -388,10 +362,7 @@ func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *Inges
 		rr, err = httpmsg.ParseRawRequest(string(rawReq))
 	}
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse raw request: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to parse raw request: %w", err))
 	}
 
 	// Attach response if provided
@@ -418,10 +389,7 @@ func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *Inges
 
 	if _, err := h.saveRecord(ctx, rr, ingestSource(c), getProjectUUID(c)); err != nil {
 		zap.L().Error("Failed to save ingested record", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to save record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to save record: %w", err))
 	}
 
 	return c.JSON(IngestHTTPResponse{
@@ -434,18 +402,12 @@ func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *Inges
 func (h *Handlers) ingestCurl(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
 	content, err := resolveContent(req)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	rr, err := curl.ParseSingleCommand(content)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse curl command: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to parse curl command: %w", err))
 	}
 
 	if req.URL != "" {
@@ -466,10 +428,7 @@ func (h *Handlers) ingestCurl(c fiber.Ctx, ctx context.Context, req *IngestHTTPR
 	}
 
 	if _, err := h.saveRecord(ctx, rr, ingestSource(c), getProjectUUID(c)); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to save record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to save record: %w", err))
 	}
 
 	return c.JSON(IngestHTTPResponse{
@@ -516,10 +475,7 @@ func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHT
 	})
 
 	if parseErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse OpenAPI spec: " + parseErr.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to parse OpenAPI spec: %w", parseErr))
 	}
 	imported, errs := acc.finish()
 
@@ -552,10 +508,7 @@ func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHT
 func (h *Handlers) ingestFileFormat(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest, content, format, detected string) error {
 	parser, err := source.NewParser(format)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	// The request `url` is the endpoint for WSDL; for the other formats it
@@ -577,10 +530,7 @@ func (h *Handlers) ingestFileFormat(c fiber.Ctx, ctx context.Context, req *Inges
 	path, cleanup, err := writeIngestTempFile(content)
 	if err != nil {
 		zap.L().Error("ingest: failed to stage content", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to stage ingest content: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to stage ingest content: %w", err))
 	}
 	defer cleanup()
 
@@ -608,10 +558,7 @@ func (h *Handlers) ingestFileFormat(c fiber.Ctx, ctx context.Context, req *Inges
 	imported, errs := acc.finish()
 	if parseErr != nil {
 		if imported == 0 {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: fmt.Sprintf("failed to parse %s input: %s", format, parseErr.Error()),
-				Code:  fiber.StatusBadRequest,
-			})
+			return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("failed to parse %s input: %s", format, parseErr.Error()))
 		}
 		// A partially parseable file keeps its good records; the error is
 		// reported alongside them rather than dropped.
@@ -678,18 +625,12 @@ func writeIngestTempFile(content string) (string, func(), error) {
 func (h *Handlers) ingestURL(c fiber.Ctx, ctx context.Context, req *IngestHTTPRequest) error {
 	content, err := resolveContent(req)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	rr, err := httpmsg.GetRawRequestFromURL(strings.TrimSpace(content))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to create request from URL: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to create request from URL: %w", err))
 	}
 
 	if req.URL != "" {
@@ -710,10 +651,7 @@ func (h *Handlers) ingestURL(c fiber.Ctx, ctx context.Context, req *IngestHTTPRe
 	}
 
 	if _, err := h.saveRecord(ctx, rr, ingestSource(c), getProjectUUID(c)); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to save record: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to save record: %w", err))
 	}
 
 	return c.JSON(IngestHTTPResponse{
@@ -736,10 +674,7 @@ func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHT
 				msg += fmt.Sprintf("; it looks like %s, set input_mode to %q or \"auto\"", ue.Candidate, ue.Candidate)
 			}
 		}
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: msg,
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, msg)
 	}
 
 	var skipped int

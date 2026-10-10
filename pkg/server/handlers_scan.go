@@ -285,17 +285,13 @@ func ResolveRunScanRequest(settings *config.Settings, serverConcurrency int, req
 // This route only accepts target URLs. Use POST /api/scan-all-records to scan DB records.
 func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrDatabaseRequired)
 	}
 
 	var req RunScanRequest
 	if len(c.Body()) > 0 {
 		if err := c.Bind().JSON(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "invalid request body: " + err.Error(),
-			})
+			return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		}
 	}
 
@@ -305,15 +301,11 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 	}
 
 	if len(req.Targets) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "at least one target URL is required (use 'targets' or 'urls' field)",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "at least one target URL is required (use 'targets' or 'urls' field)")
 	}
 
 	if err := validateRunScanRequest(req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	projectUUID := getProjectUUID(c)
@@ -324,10 +316,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 	// on by ResolveRunScanRequest.
 	projectSettings, err := h.settingsForProject(projectUUID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, err)
 	}
 	settings := forceNativePersistLogs(projectSettings)
 
@@ -336,9 +325,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 	// invalid pace config — is the caller's to fix, so it is a 400.
 	opts, strategy, err := ResolveRunScanRequest(settings, h.config.Concurrency, req, projectUUID)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 	resolved := newScanResolved(strategy.Name, opts)
 
@@ -360,7 +347,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 
 	formats, err := resolveAPIOutputFormats(req.OutputFormats, h.config.ReportFormats)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: err.Error(), Code: fiber.StatusBadRequest})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 	var outputs scanOutputs
 	if len(formats) > 0 {
@@ -430,9 +417,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 		// Project busy — queue if enabled, else reject.
 		if h.config.ScanQueueCapacity <= 0 {
 			h.scanMu.Unlock()
-			return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-				Error: ErrScanAlreadyRunning.Error(),
-			})
+			return respondError(c, fiber.StatusConflict, ErrScanAlreadyRunning)
 		}
 		ch, ok := h.scanQueues[projectUUID]
 		if !ok {
@@ -442,9 +427,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 		}
 		if len(ch) >= h.config.ScanQueueCapacity {
 			h.scanMu.Unlock()
-			return c.Status(fiber.StatusTooManyRequests).JSON(ErrorResponse{
-				Error: "scan queue full for this project",
-			})
+			return respondErrorMsg(c, fiber.StatusTooManyRequests, "scan queue full for this project")
 		}
 		qCh = ch
 	}
@@ -457,9 +440,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 	scanRunner, err := runner.New(opts)
 	if err != nil {
 		h.scanMu.Unlock()
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to create scan runner: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to create scan runner: %w", err))
 	}
 	scanRunner.SetSettings(settings)
 	scanRunner.SetRepository(h.repo)
@@ -512,10 +493,7 @@ func (h *Handlers) HandleRunScan(c fiber.Ctx) error {
 // HandleListScans handles GET /api/scans — returns paginated scan history.
 func (h *Handlers) HandleListScans(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	limit := 50
@@ -538,13 +516,10 @@ func (h *Handlers) HandleListScans(c fiber.Ctx) error {
 	projectUUID := getProjectUUID(c)
 	scans, total, err := h.repo.ListScans(c.Context(), projectUUID, limit, offset)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to list scans: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to list scans: %w", err))
 	}
 
-	return c.JSON(PaginatedResponse{
+	return respondList(c, PaginatedResponse{
 		ProjectUUID: projectUUID,
 		Data:        buildScanViews(scans),
 		Total:       total,
@@ -611,38 +586,23 @@ func splitModuleCSV(s string) []string {
 // HandleGetScan handles GET /api/scans/:uuid — returns a single scan by UUID.
 func (h *Handlers) HandleGetScan(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	uuid := c.Params("uuid")
 	if uuid == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	scan, err := h.repo.GetScanByUUID(c.Context(), uuid)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrScanNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrScanNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve scan: %w", err))
 	}
 	if !inRequestProject(c, scan.ProjectUUID) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrScanNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrScanNotFound)
 	}
 
 	return c.JSON(buildScanViews([]*database.Scan{scan})[0])
@@ -651,46 +611,28 @@ func (h *Handlers) HandleGetScan(c fiber.Ctx) error {
 // HandleDeleteScan handles DELETE /api/scans/:uuid — deletes a scan record.
 func (h *Handlers) HandleDeleteScan(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	scanUUID := c.Params("uuid")
 	if scanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	// Verify scan exists and belongs to the request's active project.
 	scan, err := h.repo.GetScanByUUID(c.Context(), scanUUID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrScanNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrScanNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve scan: %w", err))
 	}
 	if !inRequestProject(c, scan.ProjectUUID) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrScanNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrScanNotFound)
 	}
 
 	if err := h.repo.DeleteScan(c.Context(), scanUUID); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to delete scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to delete scan: %w", err))
 	}
 
 	return c.JSON(fiber.Map{
@@ -704,10 +646,7 @@ func (h *Handlers) HandleDeleteScan(c fiber.Ctx) error {
 func (h *Handlers) HandleStopScan(c fiber.Ctx) error {
 	scanUUID := c.Params("uuid")
 	if scanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	// Scope to the request's active project (X-Project-UUID): a scan is stopped
@@ -717,10 +656,7 @@ func (h *Handlers) HandleStopScan(c fiber.Ctx) error {
 	st, ok := h.scanStates[projectUUID]
 	if !ok || !st.running || st.scanID != scanUUID {
 		h.scanMu.Unlock()
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-			Error: "scan " + scanUUID + " is not running",
-			Code:  fiber.StatusConflict,
-		})
+		return respondErrorMsg(c, fiber.StatusConflict, "scan "+scanUUID+" is not running")
 	}
 	scanRunner := st.runner
 	h.scanMu.Unlock()
@@ -784,10 +720,7 @@ func (h *Handlers) HandleScanStatus(c fiber.Ctx) error {
 func (h *Handlers) HandlePauseScan(c fiber.Ctx) error {
 	scanUUID := c.Params("uuid")
 	if scanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	// Scope to the request's active project (see HandleStopScan).
@@ -797,16 +730,10 @@ func (h *Handlers) HandlePauseScan(c fiber.Ctx) error {
 
 	st, ok := h.scanStates[projectUUID]
 	if !ok || !st.running || st.scanID != scanUUID || st.runner == nil {
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-			Error: "scan " + scanUUID + " is not running",
-			Code:  fiber.StatusConflict,
-		})
+		return respondErrorMsg(c, fiber.StatusConflict, "scan "+scanUUID+" is not running")
 	}
 	if st.runner.IsPaused() {
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-			Error: "scan is already paused",
-			Code:  fiber.StatusConflict,
-		})
+		return respondErrorMsg(c, fiber.StatusConflict, "scan is already paused")
 	}
 	st.runner.Pause()
 	if h.repo != nil {
@@ -825,10 +752,7 @@ func (h *Handlers) HandlePauseScan(c fiber.Ctx) error {
 func (h *Handlers) HandleResumeScan(c fiber.Ctx) error {
 	scanUUID := c.Params("uuid")
 	if scanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	// Scope to the request's active project (see HandleStopScan).
@@ -838,16 +762,10 @@ func (h *Handlers) HandleResumeScan(c fiber.Ctx) error {
 
 	st, ok := h.scanStates[projectUUID]
 	if !ok || !st.running || st.scanID != scanUUID || st.runner == nil {
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-			Error: "scan " + scanUUID + " is not running",
-			Code:  fiber.StatusConflict,
-		})
+		return respondErrorMsg(c, fiber.StatusConflict, "scan "+scanUUID+" is not running")
 	}
 	if !st.runner.IsPaused() {
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{
-			Error: "scan is not paused",
-			Code:  fiber.StatusConflict,
-		})
+		return respondErrorMsg(c, fiber.StatusConflict, "scan is not paused")
 	}
 	st.runner.Resume()
 	if h.repo != nil {
@@ -877,39 +795,24 @@ func (h *Handlers) HandleResumeScan(c fiber.Ctx) error {
 //     that predate runtime.log persistence.
 func (h *Handlers) HandleGetScanLogs(c fiber.Ctx) error {
 	if h.db == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	scanUUID := c.Params("uuid")
 	if scanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing uuid parameter",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing uuid parameter")
 	}
 
 	// Verify scan exists and belongs to the request's active project.
 	scan, err := h.repo.GetScanByUUID(c.Context(), scanUUID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-				Error: ErrScanNotFound.Error(),
-				Code:  fiber.StatusNotFound,
-			})
+			return respondError(c, fiber.StatusNotFound, ErrScanNotFound)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve scan: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve scan: %w", err))
 	}
 	if !inRequestProject(c, scan.ProjectUUID) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrScanNotFound.Error(),
-			Code:  fiber.StatusNotFound,
-		})
+		return respondError(c, fiber.StatusNotFound, ErrScanNotFound)
 	}
 
 	// Prefer the on-disk runtime.log — that's what /api/scan-request and
@@ -942,17 +845,20 @@ func (h *Handlers) HandleGetScanLogs(c fiber.Ctx) error {
 
 	logs, total, err := h.repo.ListScanLogs(c.Context(), scanUUID, level, phase, limit, offset)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to retrieve scan logs: " + err.Error(),
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to retrieve scan logs: %w", err))
 	}
 
-	return c.JSON(fiber.Map{
+	return respondBespokeList(c, fiber.Map{
 		"project_uuid": getProjectUUID(c),
 		"logs":         logs,
 		"total":        total,
-	})
+	}, PaginatedResponse{
+		ProjectUUID: getProjectUUID(c),
+		Data:        logs,
+		Total:       int64(total),
+		Limit:       limit,
+		Offset:      offset,
+	}, nil)
 }
 
 // runBackgroundScan runs the scan in a background goroutine. Requested report

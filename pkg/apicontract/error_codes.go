@@ -141,6 +141,21 @@ const (
 	CodeQueueFull      ErrorCode = "queue_full"
 	CodeScanNotFound   ErrorCode = "scan_not_found"
 	CodeInternalError  ErrorCode = "internal_error"
+	// CodeFindingNotFound: no finding carries the given id in this project.
+	CodeFindingNotFound ErrorCode = "finding_not_found"
+	// CodeMethodNotAllowed: the route exists but not for this HTTP method.
+	CodeMethodNotAllowed ErrorCode = "method_not_allowed"
+	// CodePayloadTooLarge: the request body exceeds the route's size limit.
+	CodePayloadTooLarge ErrorCode = "payload_too_large"
+	// CodeServiceUnavailable: the server cannot take the request right now
+	// (shutting down, feature disabled, dependency missing).
+	CodeServiceUnavailable ErrorCode = "service_unavailable"
+	// CodeDatabaseUnavailable: the request needs the database and it is not
+	// configured or not answering.
+	CodeDatabaseUnavailable ErrorCode = "database_unavailable"
+	// CodeUnsupportedAPIVersion: the client asked for a REST API version this
+	// server does not speak.
+	CodeUnsupportedAPIVersion ErrorCode = "unsupported_api_version"
 )
 
 // knownErrorCodes is the closed set, in declaration order.
@@ -159,6 +174,8 @@ var knownErrorCodes = []ErrorCode{
 	CodeProjectNotFound, CodeInvalidProjectUUID,
 	CodeInvalidRequest, CodeUnauthorized, CodeForbidden, CodeConflict,
 	CodeRateLimited, CodeQueueFull, CodeScanNotFound, CodeInternalError,
+	CodeFindingNotFound, CodeMethodNotAllowed, CodePayloadTooLarge,
+	CodeServiceUnavailable, CodeDatabaseUnavailable, CodeUnsupportedAPIVersion,
 }
 
 var knownErrorCodeSet = func() map[ErrorCode]struct{} {

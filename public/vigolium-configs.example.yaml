@@ -68,6 +68,19 @@ server:
   # Default: 30s
   agent_queue_timeout: 30s
 
+  # REST response version for requests that do not negotiate one with
+  # Accept: application/vnd.vigolium.v2+json, Vigolium-Api-Version: 2 or
+  # ?api_version=2. 1 = historical bodies (plus error_code/schema_version),
+  # 2 = the CLI envelope (items; error object with a string code).
+  # Default: 1
+  api_version_default: 1
+
+  # Create the project an unknown X-Project-UUID names on first use instead
+  # of answering 404 project_not_found. A client can opt in per request with
+  # X-Project-Create: 1 (or ?create=1) instead.
+  # Default: false
+  auto_create_projects: false
+
   # Optional license identifier surfaced in /server-info for the UI to display
   # (e.g., "community", "enterprise", or a customer/tenant tag).
   # Leave empty to omit from the response.

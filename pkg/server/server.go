@@ -132,6 +132,9 @@ func NewServer(cfg ServerConfig, q queue.Queue, db *database.DB, repo *database.
 		// DefaultBodyLimitMiddleware reject an oversized declared Content-Length
 		// before allocation; the large-upload routes read their stream on demand.
 		StreamRequestBody: true,
+		// Router errors (unknown route, wrong method, recovered panic) and errors
+		// a handler returns render as the negotiated JSON error, not text/plain.
+		ErrorHandler: apiErrorHandler,
 	})
 
 	registerRoutes(app, handlers, cfg)

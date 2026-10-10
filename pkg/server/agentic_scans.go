@@ -111,9 +111,9 @@ func (h *Handlers) effectiveAgentName(agentName string) string {
 // sync). Anything else is a 500.
 func respondScanPinError(c fiber.Ctx, err error) error {
 	if errors.Is(err, database.ErrScanProjectMismatch) {
-		return c.Status(fiber.StatusConflict).JSON(ErrorResponse{Error: err.Error()})
+		return respondError(c, fiber.StatusConflict, err)
 	}
-	return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{Error: err.Error()})
+	return respondError(c, fiber.StatusInternalServerError, err)
 }
 
 // registerRunningAgenticScan creates the in-memory + DB tracking for a new

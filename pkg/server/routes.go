@@ -12,6 +12,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gofiber/fiber/v3/middleware/static"
 
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/public"
 )
 
@@ -23,6 +24,9 @@ func registerRoutes(app *fiber.App, handlers *Handlers, cfg ServerConfig) {
 		app.Use(AuthorHeaderMiddleware(author))
 	}
 	app.Use(requestid.New())
+	// Negotiate the response version before anything that can answer: auth,
+	// project lookup and the body limit all write errors in it.
+	app.Use(apiVersionMiddleware(cfg.APIVersionDefault))
 	app.Use(fiberlogger.New())
 	app.Use(fiberrecover.New())
 	app.Use(SecurityHeadersMiddleware())
@@ -47,7 +51,10 @@ func registerRoutes(app *fiber.App, handlers *Handlers, cfg ServerConfig) {
 				// the generic ingest-server label. Plugin backends (Caido) are
 				// not browsers and are unaffected either way.
 				IngestSourceHeader,
+				// Version negotiation and opt-in project creation.
+				apicontract.RESTAPIVersionHeader, apicontract.ProjectCreateHeader,
 			},
+			ExposeHeaders: []string{apicontract.RESTAPIVersionHeader},
 		}
 		switch cfg.CORSAllowedOrigins {
 		case "reflect-origin":
@@ -81,7 +88,7 @@ func registerRoutes(app *fiber.App, handlers *Handlers, cfg ServerConfig) {
 	app.Get("/favicon.ico", func(c fiber.Ctx) error {
 		data, err := public.StaticFS.ReadFile("favicon.ico")
 		if err != nil {
-			return c.SendStatus(fiber.StatusNotFound)
+			return respondErrorMsg(c, fiber.StatusNotFound, "favicon not found")
 		}
 		c.Set("Content-Type", "image/x-icon")
 		c.Set("Cache-Control", "public, max-age=86400")
@@ -108,10 +115,10 @@ func registerRoutes(app *fiber.App, handlers *Handlers, cfg ServerConfig) {
 		app.Use(BearerAuth(cfg.APIKeys, cfg.UserStore))
 	}
 
-	// Project UUID extraction from X-Project-UUID header.
-	// Passing the repo enables lazy auto-creation of unknown UUIDs so client-side
-	// state (UI localStorage, CLI configs) keeps working after a scanner DB reset.
-	app.Use(ProjectUUIDMiddleware(handlers.repo))
+	// Project UUID extraction from X-Project-UUID header. An unknown UUID is a
+	// 404 project_not_found unless the request sends X-Project-Create: 1 (or
+	// ?create=1) or server.auto_create_projects is set.
+	app.Use(ProjectUUIDMiddleware(handlers.repo, ProjectMiddlewareConfig{AutoCreate: cfg.AutoCreateProjects}))
 
 	// Routes (public — no role guard needed, auth already skips these)
 	app.Get("/health", handlers.HandleHealth) // liveness (no DB dependency)
@@ -137,10 +144,7 @@ func registerRoutes(app *fiber.App, handlers *Handlers, cfg ServerConfig) {
 		demo.Get("/extensions", handlers.HandleListExtensions)
 		demo.Get("/extensions/:name", handlers.HandleGetExtension)
 		api.All("/*", func(c fiber.Ctx) error {
-			return c.Status(fiber.StatusForbidden).JSON(ErrorResponse{
-				Error: "this API endpoint is disabled in demo mode",
-				Code:  fiber.StatusForbidden,
-			})
+			return respondErrorMsg(c, fiber.StatusForbidden, "this API endpoint is disabled in demo mode")
 		})
 		return
 	}

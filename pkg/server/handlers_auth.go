@@ -13,10 +13,7 @@ func (h *Handlers) HandleUserInfo(c fiber.Ctx) error {
 				Role: RoleAdmin,
 			})
 		}
-		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{
-			Error: ErrInvalidAuthToken.Error(),
-			Code:  fiber.StatusUnauthorized,
-		})
+		return respondError(c, fiber.StatusUnauthorized, ErrInvalidAuthToken)
 	}
 	return c.JSON(LoginUser{
 		UUID:  user.UUID,
@@ -31,26 +28,17 @@ func (h *Handlers) HandleUserInfo(c fiber.Ctx) error {
 func (h *Handlers) HandleLogin(c fiber.Ctx) error {
 	var req LoginRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	if req.Username == "" || req.AccessCode == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "username and access_code are required",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "username and access_code are required")
 	}
 
 	store := h.config.UserStore
 	user := store.LookupByNameAndCode(req.Username, req.AccessCode)
 	if user == nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(ErrorResponse{
-			Error: ErrInvalidCredentials.Error(),
-			Code:  fiber.StatusUnauthorized,
-		})
+		return respondError(c, fiber.StatusUnauthorized, ErrInvalidCredentials)
 	}
 
 	return c.JSON(LoginResponse{

@@ -2,6 +2,7 @@ package server
 
 import (
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
 )
 
@@ -29,6 +30,11 @@ var SwaggerSchemaTypes = map[string]any{
 	"LoginUser":          LoginUser{},
 	"ErrorResponse":      ErrorResponse{},
 	"PaginatedResponse":  PaginatedResponse{},
+
+	// REST v2 envelope (negotiated: Vigolium-Api-Version: 2)
+	"ListEnvelopeV2":  apicontract.RESTList{},
+	"ErrorEnvelopeV2": apicontract.RESTErrorEnvelope{},
+	"ErrorV2":         apicontract.RESTError{},
 
 	// Scans
 	"RunScanRequest":        RunScanRequest{},

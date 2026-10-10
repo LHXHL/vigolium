@@ -28,19 +28,17 @@ import (
 func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 	var req AgentAutopilotRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	// Natural language prompt: resolve when explicit fields are empty
 	if req.Prompt != "" && req.Target == "" && req.Input == "" && req.SourcePath == "" && req.Diff == "" && req.LastCommits == 0 {
-		if refused := h.refuseIfGuardrailBlocks(c, req.Prompt); refused != nil {
-			return refused
+		if refused, err := h.refuseIfGuardrailBlocks(c, req.Prompt); refused {
+			return err
 		}
-		resolved, resolveErr := h.resolvePromptIntent(c, req.Prompt)
-		if resolveErr != nil {
-			return resolveErr // already sent HTTP response
+		resolved, answered, resolveErr := h.resolvePromptIntent(c, req.Prompt)
+		if answered {
+			return resolveErr // error response already written
 		}
 		if req.DryRun {
 			return c.Status(fiber.StatusOK).JSON(fiber.Map{"intent": resolved})
@@ -109,30 +107,24 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 	if req.Target == "" && req.Input != "" {
 		targetURL, err := agent.TargetURLFromInput(context.Background(), req.Input, "", h.repo)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "could not extract target URL from input: " + err.Error(),
-			})
+			return respondError(c, fiber.StatusBadRequest, fmt.Errorf("could not extract target URL from input: %w", err))
 		}
 		req.Target = targetURL
 	}
 
 	if req.Target == "" && req.SourcePath == "" && req.Diff == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "target, source, or diff is required (use target, input, source, diff, or prompt field)",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "target, source, or diff is required (use target, input, source, diff, or prompt field)")
 	}
 
 	// Validate audit_mode if provided
 	if mode := req.ResolvedAuditDriverMode(); mode != "lite" && mode != "balanced" && mode != "scan" && mode != "deep" && mode != "mock" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: fmt.Sprintf("invalid audit_mode %q: must be lite, balanced, deep, or mock", mode),
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("invalid audit_mode %q: must be lite, balanced, deep, or mock", mode))
 	}
 
 	// Resolve intensity preset
 	intensity, intensityErr := agent.ValidateIntensity(req.Intensity)
 	if intensityErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: intensityErr.Error()})
+		return respondError(c, fiber.StatusBadRequest, intensityErr)
 	}
 	{
 		changed := map[string]bool{
@@ -166,9 +158,7 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 
 	eng, cleanup, byokErr := h.engineForRequest(req.AgentBYOK)
 	if byokErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "byok: " + byokErr.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("byok: %w", byokErr))
 	}
 
 	return h.startAutopilotRun(c, req, timeout, eng, cleanup)

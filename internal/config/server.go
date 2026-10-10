@@ -38,6 +38,15 @@ type ServerConfig struct {
 	MirrorFSPath       string   `yaml:"mirror_fs_path"`      // when set, mirror ingested traffic + findings to this dir as a live filesystem tree (see --mirror-fs)
 	EnableBurpBridge   bool     `yaml:"enable_burp_bridge"`  // opt in to merging live Burp Proxy history into /api/http-records using BurpBridgeURL (see -B/--burp-bridge-url)
 	BurpBridgeURL      string   `yaml:"burp_bridge_url"`     // loopback Burp bridge address used when EnableBurpBridge is set; -B/--burp-bridge-url and $VIGOLIUM_BURP_BRIDGE_URL take precedence
+	// APIVersionDefault is the REST response version for requests that do not
+	// negotiate one (Accept: application/vnd.vigolium.v2+json,
+	// Vigolium-Api-Version: 2 or ?api_version=2). 0/1 = v1 (this release's
+	// default), 2 = v2 envelope.
+	APIVersionDefault int `yaml:"api_version_default"`
+	// AutoCreateProjects creates the project an unknown X-Project-UUID names
+	// on first use instead of answering 404 project_not_found. Off by default;
+	// a client can opt in per request with X-Project-Create: 1 or ?create=1.
+	AutoCreateProjects bool `yaml:"auto_create_projects"`
 }
 
 // DefaultServerConfig returns default server configuration

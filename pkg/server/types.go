@@ -77,6 +77,12 @@ type ServerConfig struct {
 	// the CLI so REST output comes from the same generator `scan --format` uses
 	// (pkg/server cannot import pkg/cli). Nil means no report formats.
 	RenderReport ReportRenderFunc
+	// APIVersionDefault is the REST response version a request gets when it
+	// does not negotiate one (server.api_version_default). 0 or 1 = v1, 2 = v2.
+	APIVersionDefault int
+	// AutoCreateProjects creates the project an unknown X-Project-UUID names
+	// instead of answering 404 project_not_found (server.auto_create_projects).
+	AutoCreateProjects bool
 }
 
 // ReportRenderFunc renders one post-scan report file in format to outputPath
@@ -336,11 +342,15 @@ type HealthResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
-// ErrorResponse is returned for error conditions.
+// ErrorResponse is the v1 error body. Code is always the HTTP status;
+// ErrorCode is the stable string classification (pkg/apicontract) a client
+// branches on. v2 clients get apicontract.RESTErrorEnvelope instead. Build it
+// only through respondError and friends (respond.go).
 type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    int    `json:"code,omitempty"`
-	Details string `json:"details,omitempty"`
+	Error     string `json:"error"`
+	Code      int    `json:"code"`
+	ErrorCode string `json:"error_code"`
+	Details   string `json:"details,omitempty"`
 }
 
 // IngestHTTPRequest is the request body for POST /api/ingest-http.
@@ -381,14 +391,18 @@ type IngestHTTPResponse struct {
 	Message        string         `json:"message"`
 }
 
-// PaginatedResponse wraps paginated results.
+// PaginatedResponse is the v1 paginated list body. SchemaVersion (1) and
+// Command are stamped by respondList; v2 clients get apicontract.RESTList,
+// which carries the rows under items.
 type PaginatedResponse struct {
-	ProjectUUID string      `json:"project_uuid,omitempty"`
-	Data        interface{} `json:"data"`
-	Total       int64       `json:"total"`
-	Limit       int         `json:"limit"`
-	Offset      int         `json:"offset"`
-	HasMore     bool        `json:"has_more"`
+	SchemaVersion int         `json:"schema_version"`
+	Command       string      `json:"command"`
+	ProjectUUID   string      `json:"project_uuid,omitempty"`
+	Data          interface{} `json:"data"`
+	Total         int64       `json:"total"`
+	Limit         int         `json:"limit"`
+	Offset        int         `json:"offset"`
+	HasMore       bool        `json:"has_more"`
 }
 
 // ModuleInfo is the response type for module listing.

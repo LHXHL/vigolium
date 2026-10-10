@@ -35,10 +35,10 @@ func (h *Handlers) HandleListModules(c fiber.Ctx) error {
 		result = append(result, buildModuleInfo(m, "passive"))
 	}
 
-	return c.JSON(fiber.Map{
+	return respondBespokeList(c, fiber.Map{
 		"modules": result,
 		"total":   len(result),
-	})
+	}, PaginatedResponse{Data: result, Total: int64(len(result))}, nil)
 }
 
 func buildModuleInfo(m modules.Module, moduleType string) ModuleInfo {

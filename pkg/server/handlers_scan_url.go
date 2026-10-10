@@ -239,22 +239,16 @@ func formatFindingLine(scanID string, result *output.ResultEvent) string {
 func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 	var req ScanURLRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	if req.URL == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingURL.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingURL)
 	}
 
 	// Validate URL
 	if _, err := url.ParseRequestURI(req.URL); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid URL: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid URL: %w", err))
 	}
 
 	// Default method to GET
@@ -266,9 +260,7 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 	// Build raw HTTP request from URL/method/body/headers
 	rr, err := buildRequestFromParams(req.URL, method, req.Body, req.Headers)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to build request: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to build request: %w", err))
 	}
 
 	// Parse module IDs
@@ -307,10 +299,7 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 		if h.repo != nil {
 			_ = h.repo.CompleteScan(context.Background(), scanID, "rejected: too many concurrent scans")
 		}
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: "too many concurrent scans; retry shortly",
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondErrorMsg(c, fiber.StatusServiceUnavailable, "too many concurrent scans; retry shortly")
 	}
 
 	return c.Status(fiber.StatusAccepted).JSON(ScanResponse{
@@ -325,31 +314,23 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 	var req ScanRequestRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	reqB64 := req.ReqBase64()
 	if reqB64 == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingRawRequest.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingRawRequest)
 	}
 
 	// Base64-decode the raw request
 	rawBytes, err := base64.StdEncoding.DecodeString(reqB64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to decode raw_request: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to decode raw_request: %w", err))
 	}
 
 	rawStr := strings.TrimSpace(string(rawBytes))
 	if rawStr == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingRawRequest.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingRawRequest)
 	}
 
 	// Parse raw HTTP request
@@ -360,18 +341,14 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 		rr, err = httpmsg.ParseRawRequest(rawStr)
 	}
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrInvalidRawRequest.Error() + ": " + err.Error(),
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, ErrInvalidRawRequest.Error()+": "+err.Error())
 	}
 
 	// Attach paired response if provided (Burp-style request+response)
 	if respB64 := req.RespBase64(); respB64 != "" {
 		rawRespBytes, decErr := base64.StdEncoding.DecodeString(respB64)
 		if decErr != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-				Error: "failed to decode http_response_base64: " + decErr.Error(),
-			})
+			return respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to decode http_response_base64: %w", decErr))
 		}
 		if resp := httpmsg.NewHttpResponse(rawRespBytes); resp != nil {
 			rr = rr.WithResponse(resp)
@@ -413,10 +390,7 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 		if h.repo != nil {
 			_ = h.repo.CompleteScan(context.Background(), scanID, "rejected: too many concurrent scans")
 		}
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: "too many concurrent scans; retry shortly",
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondErrorMsg(c, fiber.StatusServiceUnavailable, "too many concurrent scans; retry shortly")
 	}
 
 	return c.Status(fiber.StatusAccepted).JSON(ScanResponse{
@@ -440,10 +414,7 @@ func (h *Handlers) refuseOutOfScope(c fiber.Ctx, target string) func() error {
 	settings, err := h.settingsForProject(getProjectUUID(c))
 	if err != nil {
 		return func() error {
-			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-				Error: err.Error(),
-				Code:  fiber.StatusInternalServerError,
-			})
+			return respondError(c, fiber.StatusInternalServerError, err)
 		}
 	}
 	adm := runner.AdmitTargets(settings.Scope, []string{target})
@@ -451,12 +422,10 @@ func (h *Handlers) refuseOutOfScope(c fiber.Ctx, target string) func() error {
 		return nil
 	}
 	return func() error {
-		return c.Status(fiber.StatusUnprocessableEntity).JSON(ErrorResponse{
-			Error: fmt.Sprintf("target rejected by scope: %s; nothing was scanned (fix the scope config)",
-				runner.DescribeRejected(adm.Rejected, 0)),
-			Code:    fiber.StatusUnprocessableEntity,
-			Details: string(apicontract.CodeNoTargetsInScope),
-		})
+		// details keeps carrying the code for clients written before error_code.
+		return respondErrorCode(c, fiber.StatusUnprocessableEntity, apicontract.CodeNoTargetsInScope,
+			fmt.Sprintf("target rejected by scope: %s; nothing was scanned (fix the scope config)",
+				runner.DescribeRejected(adm.Rejected, 0)), string(apicontract.CodeNoTargetsInScope))
 	}
 }
 

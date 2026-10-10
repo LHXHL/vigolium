@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/vigolium/vigolium/pkg/apicontract"
@@ -72,14 +73,9 @@ func retryRead(ctx context.Context, fn func() error) error {
 func respondQueryError(c fiber.Ctx, err error) error {
 	if errors.Is(err, database.ErrDatabaseLocked) {
 		c.Set(fiber.HeaderRetryAfter, "2")
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error:   "query failed: " + err.Error(),
-			Code:    fiber.StatusServiceUnavailable,
-			Details: string(apicontract.CodeDatabaseLocked),
-		})
+		// error_code is database_locked (errorCodeFor); details keeps carrying
+		// it for clients written before error_code existed.
+		return respondError(c, fiber.StatusServiceUnavailable, fmt.Errorf("query failed: %w", err), string(apicontract.CodeDatabaseLocked))
 	}
-	return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-		Error: "query failed: " + err.Error(),
-		Code:  fiber.StatusInternalServerError,
-	})
+	return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("query failed: %w", err))
 }

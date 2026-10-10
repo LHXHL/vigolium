@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -15,10 +16,7 @@ import (
 //   - show_sensitive: "true" to show unredacted sensitive values (optional)
 func (h *Handlers) HandleGetConfig(c fiber.Ctx) error {
 	if h.settings == nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "settings not available",
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondErrorMsg(c, fiber.StatusInternalServerError, "settings not available")
 	}
 
 	filter := c.Query("filter")
@@ -54,35 +52,26 @@ func (h *Handlers) HandleGetConfig(c fiber.Ctx) error {
 		result = []ConfigEntryResponse{}
 	}
 
-	return c.JSON(ConfigListResponse{
+	return respondBespokeList(c, ConfigListResponse{
 		Entries: result,
 		Total:   len(result),
-	})
+	}, PaginatedResponse{Data: result, Total: int64(len(result))}, nil)
 }
 
 // HandleUpdateConfig handles POST /api/config — updates multiple config values.
 // Accepts JSON body: {"dot.key1": "value1", "dot.key2": "value2"}
 func (h *Handlers) HandleUpdateConfig(c fiber.Ctx) error {
 	if h.settings == nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "settings not available",
-			Code:  fiber.StatusInternalServerError,
-		})
+		return respondErrorMsg(c, fiber.StatusInternalServerError, "settings not available")
 	}
 
 	var req ConfigUpdateRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid JSON: " + err.Error(),
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 	}
 
 	if len(req) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "request body must contain at least one key-value pair",
-			Code:  fiber.StatusBadRequest,
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "request body must contain at least one key-value pair")
 	}
 
 	var updated []ConfigEntryResponse
@@ -111,11 +100,7 @@ func (h *Handlers) HandleUpdateConfig(c fiber.Ctx) error {
 		}
 		if err := config.SaveSettings(h.effectiveConfigPath(), h.settings); err != nil {
 			zap.L().Error("Failed to save config", zap.Error(err))
-			return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-				Error:   "failed to save config",
-				Code:    fiber.StatusInternalServerError,
-				Details: err.Error(),
-			})
+			return respondErrorMsg(c, fiber.StatusInternalServerError, "failed to save config", err.Error())
 		}
 	}
 

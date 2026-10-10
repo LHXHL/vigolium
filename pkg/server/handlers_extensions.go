@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,11 +15,11 @@ import (
 // Optional query params: ?type=active|passive|pre_hook|post_hook, ?search=<text>
 func (h *Handlers) HandleListExtensions(c fiber.Ctx) error {
 	if h.settings == nil {
-		return c.JSON(fiber.Map{
+		return respondBespokeList(c, fiber.Map{
 			"extensions":         []ExtensionInfo{},
 			"total":              0,
 			"extensions_enabled": false,
-		})
+		}, PaginatedResponse{Data: []ExtensionInfo{}}, fiber.Map{"extensions_enabled": false})
 	}
 
 	cfg := &h.settings.DynamicAssessment.Extensions
@@ -49,11 +50,11 @@ func (h *Handlers) HandleListExtensions(c fiber.Ctx) error {
 		result = []ExtensionInfo{}
 	}
 
-	return c.JSON(fiber.Map{
+	return respondBespokeList(c, fiber.Map{
 		"extensions":         result,
 		"total":              len(result),
 		"extensions_enabled": cfg.Enabled,
-	})
+	}, PaginatedResponse{Data: result, Total: int64(len(result))}, fiber.Map{"extensions_enabled": cfg.Enabled})
 }
 
 // HandleGetExtension handles GET /api/extensions/:name
@@ -62,9 +63,7 @@ func (h *Handlers) HandleGetExtension(c fiber.Ctx) error {
 	name := c.Params("name")
 
 	if h.settings == nil {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrExtensionNotFound.Error(),
-		})
+		return respondError(c, fiber.StatusNotFound, ErrExtensionNotFound)
 	}
 
 	cfg := &h.settings.DynamicAssessment.Extensions
@@ -97,31 +96,23 @@ func (h *Handlers) HandleGetExtension(c fiber.Ctx) error {
 		}
 	}
 
-	return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-		Error: ErrExtensionNotFound.Error(),
-	})
+	return respondError(c, fiber.StatusNotFound, ErrExtensionNotFound)
 }
 
 // HandleEditExtension handles PUT /api/extensions/:name
 func (h *Handlers) HandleEditExtension(c fiber.Ctx) error {
 	name := c.Params("name")
 	if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".vgm.yaml") {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "extension name must end with .js or .vgm.yaml",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "extension name must end with .js or .vgm.yaml")
 	}
 
 	var req ExtensionEditRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	if h.settings == nil {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrExtensionNotFound.Error(),
-		})
+		return respondError(c, fiber.StatusNotFound, ErrExtensionNotFound)
 	}
 
 	cfg := &h.settings.DynamicAssessment.Extensions
@@ -131,9 +122,7 @@ func (h *Handlers) HandleEditExtension(c fiber.Ctx) error {
 	for _, script := range scripts {
 		if filepath.Base(script.Path) == name {
 			if err := os.WriteFile(script.Path, []byte(req.Content), 0644); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-					Error: "failed to write extension file: " + err.Error(),
-				})
+				return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to write extension file: %w", err))
 			}
 			return c.JSON(fiber.Map{
 				"message":   "extension updated",
@@ -148,9 +137,7 @@ func (h *Handlers) HandleEditExtension(c fiber.Ctx) error {
 	for _, def := range defs {
 		if filepath.Base(def.SourcePath()) == name {
 			if err := os.WriteFile(def.SourcePath(), []byte(req.Content), 0644); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-					Error: "failed to write extension file: " + err.Error(),
-				})
+				return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to write extension file: %w", err))
 			}
 			return c.JSON(fiber.Map{
 				"message":   "extension updated",
@@ -160,9 +147,7 @@ func (h *Handlers) HandleEditExtension(c fiber.Ctx) error {
 		}
 	}
 
-	return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-		Error: ErrExtensionNotFound.Error(),
-	})
+	return respondError(c, fiber.StatusNotFound, ErrExtensionNotFound)
 }
 
 // HandleListExtensionAPI handles GET /api/extensions/docs
@@ -192,11 +177,12 @@ func (h *Handlers) HandleListExtensionAPI(c fiber.Ctx) error {
 		result = []ExtensionAPIFunction{}
 	}
 
-	return c.JSON(fiber.Map{
+	namespaces := jsext.APINamespaces()
+	return respondBespokeList(c, fiber.Map{
 		"functions":  result,
 		"total":      len(result),
-		"namespaces": jsext.APINamespaces(),
-	})
+		"namespaces": namespaces,
+	}, PaginatedResponse{Data: result, Total: int64(len(result))}, fiber.Map{"namespaces": namespaces})
 }
 
 func extensionInfoFromScript(script *jsext.LoadedScript) ExtensionInfo {

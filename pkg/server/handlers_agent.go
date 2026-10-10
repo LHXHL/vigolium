@@ -48,9 +48,7 @@ func (h *Handlers) acquireAgentSlot(c fiber.Ctx, sem chan struct{}) bool {
 		case sem <- struct{}{}:
 			return true
 		case <-time.After(timeout):
-			_ = c.Status(fiber.StatusTooManyRequests).JSON(ErrorResponse{
-				Error: fmt.Sprintf("all %d agent slots busy, try again later", cap(sem)),
-			})
+			_ = respondErrorMsg(c, fiber.StatusTooManyRequests, fmt.Sprintf("all %d agent slots busy, try again later", cap(sem)))
 			return false
 		}
 	}
@@ -96,9 +94,7 @@ func (h *Handlers) acquireHeavyAgentSlotForProject(c fiber.Ctx, projectUUID stri
 		h.projectHeavyMu.Lock()
 		if h.projectHeavyActive[projectUUID] >= perProjectCap {
 			h.projectHeavyMu.Unlock()
-			_ = c.Status(fiber.StatusTooManyRequests).JSON(ErrorResponse{
-				Error: fmt.Sprintf("project %s already has %d heavy agent runs in flight (per-project cap)", projectUUID, perProjectCap),
-			})
+			_ = respondErrorMsg(c, fiber.StatusTooManyRequests, fmt.Sprintf("project %s already has %d heavy agent runs in flight (per-project cap)", projectUUID, perProjectCap))
 			return false
 		}
 		h.projectHeavyActive[projectUUID]++
@@ -143,22 +139,16 @@ func (h *Handlers) decrementProjectHeavy(projectUUID string, perProjectCap int) 
 func (h *Handlers) HandleAgentQuery(c fiber.Ctx) error {
 	var req AgenticScanRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	if req.PromptTemplate == "" && req.PromptFile == "" && req.Prompt == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: ErrMissingPrompt.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, ErrMissingPrompt)
 	}
 
 	eng, cleanup, err := h.engineForRequest(req.AgentBYOK)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "byok: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("byok: %w", err))
 	}
 
 	opts := h.buildQueryOpts(req)
@@ -357,7 +347,7 @@ func (h *Handlers) HandleAgenticScanList(c fiber.Ctx) error {
 				}
 			}
 			h.agentMu.Unlock()
-			return c.JSON(statuses)
+			return respondBespokeList(c, statuses, PaginatedResponse{Data: statuses, Total: int64(len(statuses))}, nil)
 		}
 	}
 
@@ -373,7 +363,7 @@ func (h *Handlers) HandleAgenticScanList(c fiber.Ctx) error {
 		statuses = append(statuses, &snapshot)
 	}
 	h.agentMu.Unlock()
-	return c.JSON(statuses)
+	return respondBespokeList(c, statuses, PaginatedResponse{Data: statuses, Total: int64(len(statuses))}, nil)
 }
 
 // HandleAgenticScanStatus handles GET /api/agent/status/:id — returns status of a specific agent run.
@@ -396,7 +386,7 @@ func (h *Handlers) HandleAgenticScanStatus(c fiber.Ctx) error {
 		// Scope by project: a run owned by another engagement is reported as not
 		// found (404, not 403) so cross-project existence isn't leaked via the UUID.
 		if !inRequestProject(c, snapshot.ProjectUUID) {
-			return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: ErrAgentNotFound.Error()})
+			return respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 		}
 		return c.JSON(&snapshot)
 	}
@@ -406,15 +396,13 @@ func (h *Handlers) HandleAgenticScanStatus(c fiber.Ctx) error {
 		run, err := h.repo.GetAgenticScan(context.Background(), agenticScanUUID)
 		if err == nil {
 			if !inRequestProject(c, run.ProjectUUID) {
-				return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: ErrAgentNotFound.Error()})
+				return respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 			}
 			return c.JSON(agenticScanToStatusResponse(run))
 		}
 	}
 
-	return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-		Error: ErrAgentNotFound.Error(),
-	})
+	return respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 }
 
 // HandleAgentCancel handles POST /api/agent/scans/:uuid/cancel — aborts an
@@ -425,13 +413,13 @@ func (h *Handlers) HandleAgenticScanStatus(c fiber.Ctx) error {
 func (h *Handlers) HandleAgentCancel(c fiber.Ctx) error {
 	agenticScanUUID := c.Params("uuid")
 	if agenticScanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{Error: "missing run uuid"})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing run uuid")
 	}
 	// Only a run owned by the request's project may be cancelled. A run tracked
 	// in-memory but owned by another engagement is reported as not found so an
 	// operator scoped to one project can't abort another's live run via its UUID.
 	notFound := func() error {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{Error: "run not found or already finished"})
+		return respondErrorMsg(c, fiber.StatusNotFound, "run not found or already finished")
 	}
 	h.agentMu.Lock()
 	st, tracked := h.agenticScanStatus[agenticScanUUID]
@@ -480,10 +468,7 @@ func agenticScanToStatusResponse(run *database.AgenticScan) *AgenticScanStatusRe
 // HandleAgentSessionList returns a paginated list of agent sessions from the database.
 func (h *Handlers) HandleAgentSessionList(c fiber.Ctx) error {
 	if h.repo == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	projectUUID := getProjectUUID(c)
@@ -509,9 +494,7 @@ func (h *Handlers) HandleAgentSessionList(c fiber.Ctx) error {
 	// read here transfers up to 500 runs' prompts and results to build a list.
 	runs, total, err := h.repo.ListAgenticScanSummaries(c.Context(), projectUUID, mode, limit, offset)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to list agent sessions: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to list agent sessions: %w", err))
 	}
 
 	summaries := make([]*AgentSessionSummary, len(runs))
@@ -519,7 +502,7 @@ func (h *Handlers) HandleAgentSessionList(c fiber.Ctx) error {
 		summaries[i] = agenticScanToSessionSummary(run)
 	}
 
-	return c.JSON(PaginatedResponse{
+	return respondList(c, PaginatedResponse{
 		ProjectUUID: projectUUID,
 		Data:        summaries,
 		Total:       total,
@@ -532,31 +515,22 @@ func (h *Handlers) HandleAgentSessionList(c fiber.Ctx) error {
 // HandleAgentSessionDetail returns full details for a single agent session.
 func (h *Handlers) HandleAgentSessionDetail(c fiber.Ctx) error {
 	if h.repo == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
 
 	agenticScanUUID := c.Params("id")
 	if agenticScanUUID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing session id",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing session id")
 	}
 
 	run, err := h.repo.GetAgenticScan(c.Context(), agenticScanUUID)
 	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrAgentNotFound.Error(),
-		})
+		return respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 	}
 	// Scope to the request's project: don't expose another engagement's session
 	// metadata (target, source path, session dir) by run UUID.
 	if !inRequestProject(c, run.ProjectUUID) {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrAgentNotFound.Error(),
-		})
+		return respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 	}
 
 	detail := agenticScanToSessionDetail(run)
@@ -658,15 +632,13 @@ func parseBoolParam(v string) bool {
 // terminal (xterm.js, etc.) see what the CLI user would see; pass ?strip=1
 // to get plain text with escape sequences removed.
 func (h *Handlers) HandleAgentSessionLogs(c fiber.Ctx) error {
-	sessionDir, agenticScanUUID, err := h.resolveSessionDirForRun(c)
-	if err != nil {
+	sessionDir, agenticScanUUID, answered, err := h.resolveSessionDirForRun(c)
+	if answered {
 		return err
 	}
 	logPath := resolveRuntimeLogPath(sessionDir)
 	if logPath == "" {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: "runtime.log not found for this session",
-		})
+		return respondErrorMsg(c, fiber.StatusNotFound, "runtime.log not found for this session")
 	}
 
 	strip := parseBoolParam(c.Query("strip"))
@@ -696,9 +668,9 @@ const (
 // relative to the session_dir so they can be passed back to
 // HandleAgentSessionArtifact unchanged.
 func (h *Handlers) HandleAgentSessionArtifacts(c fiber.Ctx) error {
-	sessionDir, agenticScanUUID, err := h.resolveSessionDirForRun(c)
-	if err != nil {
-		return err // already sent
+	sessionDir, agenticScanUUID, answered, err := h.resolveSessionDirForRun(c)
+	if answered {
+		return err // error response already written
 	}
 
 	artifacts := make([]AgentArtifact, 0, 32)
@@ -735,16 +707,18 @@ func (h *Handlers) HandleAgentSessionArtifacts(c fiber.Ctx) error {
 		return nil
 	})
 	if walkErr != nil && !errors.Is(walkErr, errArtifactCapHit) {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "failed to walk session dir: " + walkErr.Error(),
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("failed to walk session dir: %w", walkErr))
 	}
 
-	return c.JSON(AgentArtifactListResponse{
+	return respondBespokeList(c, AgentArtifactListResponse{
 		AgenticScanUUID: agenticScanUUID,
 		SessionDir:      sessionDir,
 		Artifacts:       artifacts,
 		Truncated:       truncated,
+	}, PaginatedResponse{Data: artifacts, Total: int64(len(artifacts)), HasMore: truncated}, fiber.Map{
+		"agentic_scan_uuid": agenticScanUUID,
+		"session_dir":       sessionDir,
+		"truncated":         truncated,
 	})
 }
 
@@ -757,37 +731,29 @@ func (h *Handlers) HandleAgentSessionArtifacts(c fiber.Ctx) error {
 // a content-type derived from the extension. Use ?max_bytes=N to override the
 // default 10 MiB cap (hard cap: 100 MiB).
 func (h *Handlers) HandleAgentSessionArtifact(c fiber.Ctx) error {
-	sessionDir, _, err := h.resolveSessionDirForRun(c)
-	if err != nil {
+	sessionDir, _, answered, err := h.resolveSessionDirForRun(c)
+	if answered {
 		return err
 	}
 
 	name := c.Params("*")
 	if name == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing artifact name",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "missing artifact name")
 	}
 
 	fullPath, err := safeArtifactPath(sessionDir, name)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	f, openErr := os.Open(fullPath)
 	if openErr != nil {
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: "artifact not found",
-		})
+		return respondErrorMsg(c, fiber.StatusNotFound, "artifact not found")
 	}
 	info, statErr := f.Stat()
 	if statErr != nil || info.IsDir() {
 		_ = f.Close()
-		return c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: "artifact not found",
-		})
+		return respondErrorMsg(c, fiber.StatusNotFound, "artifact not found")
 	}
 
 	maxBytes := queryByteLimit(c, maxArtifactReadBytes, maxArtifactReadBytesHardCap)
@@ -823,44 +789,38 @@ func (cr *closingLimitReader) Close() error               { return cr.C.Close() 
 // resolveSessionDirForRun loads the agentic_scans row for the URL :id param
 // and returns the session_dir on disk along with the run UUID. The session
 // dir from the DB is preferred; when missing (legacy rows) the conventional
-// path under the configured sessions_dir is used. Errors are written to the
-// response and returned to the caller.
-func (h *Handlers) resolveSessionDirForRun(c fiber.Ctx) (string, string, error) {
+// path under the configured sessions_dir is used.
+//
+// answered reports that an error response was already written; the caller
+// must return err (the write's own error, usually nil) without touching the
+// session dir. Testing err alone is not enough: a successful error write
+// returns nil, and the caller would go on to serve files relative to an empty
+// session dir.
+func (h *Handlers) resolveSessionDirForRun(c fiber.Ctx) (sessionDir, agenticScanUUID string, answered bool, err error) {
 	if h.repo == nil {
-		return "", "", c.Status(fiber.StatusServiceUnavailable).JSON(ErrorResponse{
-			Error: ErrDatabaseRequired.Error(),
-			Code:  fiber.StatusServiceUnavailable,
-		})
+		return "", "", true, respondError(c, fiber.StatusServiceUnavailable, ErrDatabaseRequired)
 	}
-	agenticScanUUID := c.Params("id")
+	agenticScanUUID = c.Params("id")
 	if agenticScanUUID == "" {
-		return "", "", c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "missing session id",
-		})
+		return "", "", true, respondErrorMsg(c, fiber.StatusBadRequest, "missing session id")
 	}
 	run, err := h.repo.GetAgenticScan(c.Context(), agenticScanUUID)
 	if err != nil || run == nil {
-		return "", "", c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrAgentNotFound.Error(),
-		})
+		return "", "", true, respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 	}
 	// Scope to the request's project so logs/artifacts under a run's session dir
 	// aren't readable by an operator scoped to a different engagement.
 	if !inRequestProject(c, run.ProjectUUID) {
-		return "", "", c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: ErrAgentNotFound.Error(),
-		})
+		return "", "", true, respondError(c, fiber.StatusNotFound, ErrAgentNotFound)
 	}
-	sessionDir := run.SessionDir
+	sessionDir = run.SessionDir
 	if sessionDir == "" {
 		sessionDir = filepath.Join(h.settings.Agent.EffectiveSessionsDir(), agenticScanUUID)
 	}
 	if info, statErr := os.Stat(sessionDir); statErr != nil || !info.IsDir() {
-		return "", "", c.Status(fiber.StatusNotFound).JSON(ErrorResponse{
-			Error: "session directory not found",
-		})
+		return "", "", true, respondErrorMsg(c, fiber.StatusNotFound, "session directory not found")
 	}
-	return sessionDir, agenticScanUUID, nil
+	return sessionDir, agenticScanUUID, false, nil
 }
 
 // errInvalidArtifactName is returned by safeArtifactPath for any name that
@@ -1252,15 +1212,11 @@ func agenticScanToSessionDetail(run *database.AgenticScan) *AgentSessionDetail {
 func (h *Handlers) HandleChatCompletions(c fiber.Ctx) error {
 	var req ChatCompletionRequest
 	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "invalid request body: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 	}
 
 	if len(req.Messages) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "messages must not be empty",
-		})
+		return respondErrorMsg(c, fiber.StatusBadRequest, "messages must not be empty")
 	}
 
 	// Promote `Authorization: Bearer <key>` into AgentBYOK.APIKey when the
@@ -1295,9 +1251,7 @@ func (h *Handlers) HandleChatCompletions(c fiber.Ctx) error {
 
 	eng, cleanup, err := h.engineForRequest(req.AgentBYOK)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "byok: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("byok: %w", err))
 	}
 	defer cleanup()
 
@@ -1308,9 +1262,7 @@ func (h *Handlers) HandleChatCompletions(c fiber.Ctx) error {
 
 	result, err := eng.Run(ctx, opts)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(ErrorResponse{
-			Error: "agent run failed: " + err.Error(),
-		})
+		return respondError(c, fiber.StatusInternalServerError, fmt.Errorf("agent run failed: %w", err))
 	}
 
 	return c.JSON(ChatCompletionResponse{
@@ -1348,31 +1300,33 @@ func parseDurationOrDefault(s string, def time.Duration) time.Duration {
 }
 
 // refuseIfGuardrailBlocks runs the prompt-safety classifier and, on refusal,
-// writes a 400 JSON response and returns its error for early return. Returns
-// nil when the prompt is allowed (or when the classifier failed open). The
-// server has no override flag — this gate is always on for API callers.
-func (h *Handlers) refuseIfGuardrailBlocks(c fiber.Ctx, prompt string) error {
+// writes a 400 JSON response. Allowed prompts (or a classifier that failed
+// open) return refused=false. The server has no override flag — this gate is
+// always on for API callers.
+//
+// refused reports that the 400 was written and the caller must stop; err is
+// the write's own result. (Testing the error alone let a refused prompt run:
+// a successful error write returns nil.)
+func (h *Handlers) refuseIfGuardrailBlocks(c fiber.Ctx, prompt string) (refused bool, err error) {
 	verdict := agent.ClassifyPromptSafety(c.Context(), h.settings, prompt)
 	if verdict.Allowed {
-		return nil
+		return false, nil
 	}
 	zap.L().Info("guardrail refused prompt",
 		zap.String("reason", verdict.Reason),
 		zap.Strings("categories", verdict.Categories))
-	return c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-		Error: "prompt refused by guardrail: " + verdict.Reason,
-		Code:  fiber.StatusBadRequest,
-	})
+	return true, respondErrorMsg(c, fiber.StatusBadRequest, "prompt refused by guardrail: "+verdict.Reason)
 }
 
 // resolvePromptIntent parses a natural language prompt into a ScanIntent using the agent engine.
 // On error, it sends an HTTP error response and returns the error for early return.
-func (h *Handlers) resolvePromptIntent(c fiber.Ctx, prompt string) (*agent.ScanIntent, error) {
-	intent, err := agent.ParseAndResolveIntent(c.Context(), h.agentEngine, prompt)
+//
+// answered reports that an error response was already written; the caller
+// returns err (the write's own result, usually nil) and stops.
+func (h *Handlers) resolvePromptIntent(c fiber.Ctx, prompt string) (intent *agent.ScanIntent, answered bool, err error) {
+	intent, err = agent.ParseAndResolveIntent(c.Context(), h.agentEngine, prompt)
 	if err != nil {
-		return nil, c.Status(fiber.StatusBadRequest).JSON(ErrorResponse{
-			Error: "failed to parse natural language prompt: " + err.Error(),
-		})
+		return nil, true, respondError(c, fiber.StatusBadRequest, fmt.Errorf("failed to parse natural language prompt: %w", err))
 	}
-	return intent, nil
+	return intent, false, nil
 }

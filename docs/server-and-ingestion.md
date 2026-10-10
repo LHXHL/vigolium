@@ -44,13 +44,14 @@ server:
 
 ## Project Scoping
 
-All server operations are scoped to a project via the `X-Project-UUID` request header. If omitted, the default project is used.
+All server operations are scoped to a project via the `X-Project-UUID` request header. If omitted, the default project is used. A UUID that names no project answers `404 project_not_found`; send `X-Project-Create: 1` to create it on first use (or set `server.auto_create_projects: true`).
 
 ```bash
 # Ingest into a specific project
 curl -X POST http://localhost:9002/api/ingest-http \
   -H "Authorization: Bearer my-secret-key" \
   -H "X-Project-UUID: a1b2c3d4-..." \
+  -H "X-Project-Create: 1" \
   -H "Content-Type: application/json" \
   -d '{"input_mode": "url", "content": "https://example.com"}'
 ```

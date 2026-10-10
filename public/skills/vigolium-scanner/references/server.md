@@ -213,8 +213,14 @@ Burp/proxy traffic as files in real time (`ls`/`grep`/`jq`).
 | `GET` | `/` | Swagger UI dashboard |
 
 All data endpoints are project-scoped via the `X-Project-UUID` header (mirrors
-the CLI `--project-uuid` / `--project-name` flags). Ingestion endpoints
-additionally accept any `--alternative-ingest-key`.
+the CLI `--project-uuid` / `--project-name` flags). An unknown UUID is
+`404 project_not_found` unless the request sends `X-Project-Create: 1`; a
+non-UUID is `400 invalid_project_uuid`. Ingestion endpoints additionally accept
+any `--alternative-ingest-key`.
+
+Every error body carries a string code: `error_code` in the default v1 shape,
+`error.code` in v2 (`Vigolium-Api-Version: 2`, which also puts every list
+under `items` in the CLI's envelope). Branch on the code, not the message.
 
 ## Examples
 

@@ -115,7 +115,11 @@ curl http://localhost:9002/api/findings \
   -H 'X-Project-UUID: a1b2c3d4-e5f6-7890-abcd-ef1234567890'
 ```
 
-If the header is omitted, the server uses the default project. Project
+If the header is omitted, the server uses the default project. A UUID with no
+project answers `404 project_not_found` unless the request sends
+`X-Project-Create: 1` (or `?create=1`), or `server.auto_create_projects` is
+true; a value that is not a UUID answers `400 invalid_project_uuid`. See
+[API overview](api-references/overview.md#project-scoping). Project
 selection is data scoping; it is not an email-domain authorization mechanism.
 
 ## Per-Project Configuration

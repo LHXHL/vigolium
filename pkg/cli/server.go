@@ -588,6 +588,8 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 		ConfigPath:         clicommon.EffectiveConfigPath(globalConfig),
 		ReportFormats:      serverReportFormats(),
 		RenderReport:       renderServerReport,
+		APIVersionDefault:  settings.Server.APIVersionDefault,
+		AutoCreateProjects: settings.Server.AutoCreateProjects,
 	}, taskQueue, db, repo, settings, httpRequester, svc)
 
 	// Echo a friendly console line whenever the watcher hot-reloads config

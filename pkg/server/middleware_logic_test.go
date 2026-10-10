@@ -277,7 +277,8 @@ func TestProjectUUIDMiddleware_HeaderAndDefault(t *testing.T) {
 	if got := call(""); got != database.DefaultProjectUUID {
 		t.Errorf("empty header → %q, want default %q", got, database.DefaultProjectUUID)
 	}
-	if got := call("proj-custom-123"); got != "proj-custom-123" {
+	const custom = "33333333-4444-5555-6666-777777777777"
+	if got := call(custom); got != custom {
 		t.Errorf("header value not propagated: %q", got)
 	}
 }
@@ -291,6 +292,7 @@ func TestProjectUUIDMiddleware_AutoCreatesProject(t *testing.T) {
 	const customUUID = "11111111-2222-3333-4444-555555555555"
 	req := httptest.NewRequest(http.MethodGet, "/api/touch", nil)
 	req.Header.Set("X-Project-UUID", customUUID)
+	req.Header.Set("X-Project-Create", "1") // creation is opt-in
 	resp, err := app.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("call: %v", err)
