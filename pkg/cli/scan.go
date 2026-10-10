@@ -368,6 +368,12 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("multiple --format values require -o/--output to specify the base output path (or pass --split-by-host to name per-host files by hostname)")
 	}
 
+	// --discovery-extensions / --discovery-max-depth override the discovery
+	// config before it is validated.
+	if err := applyDiscoveryFlagOverrides(cmd, &settings.Discovery, scanOpts); err != nil {
+		return err
+	}
+
 	// Validate per-phase configs when enabled (strategy + CLI flags are the only sources)
 	if scanOpts.DiscoverEnabled {
 		if err := settings.Discovery.Validate(); err != nil {
@@ -399,9 +405,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 						prev, strings.Join(allKnownIssueScanSeverities, ","))))
 			}
 		}
-		if cmd.Flags().Changed("known-issue-scan-templates-dir") {
-			settings.KnownIssueScan.TemplatesDir = scanOpts.KnownIssueScanTemplatesDir
-		}
+		applyKnownIssueScanTemplateFlags(cmd, &settings.KnownIssueScan, scanOpts)
 		if err := settings.KnownIssueScan.Validate(); err != nil {
 			return fmt.Errorf("invalid known-issue-scan configuration: %w", err)
 		}

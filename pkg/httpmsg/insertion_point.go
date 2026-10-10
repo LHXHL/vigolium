@@ -153,6 +153,17 @@ type InsertionPoint interface {
 //   - List of InsertionPoint interfaces (standard + nested if enabled)
 //   - Error if request analysis fails
 func CreateAllInsertionPoints(request []byte, includeNested bool) ([]InsertionPoint, error) {
+	return createInsertionPoints(request, InsertionPointOptions{IncludeNested: includeNested})
+}
+
+// createInsertionPoints is the factory behind CreateAllInsertionPoints and
+// CreateInsertionPoints. With no extras selected in o it builds exactly the
+// CreateAllInsertionPoints set; the opt-in points (parameter names, entire
+// body, new parameter) are appended before the priority sort, which ranks them
+// after every parameter value (insertionPointPriority's default bucket).
+func createInsertionPoints(request []byte, o InsertionPointOptions) ([]InsertionPoint, error) {
+	includeNested := o.IncludeNested
+
 	// Step 1: Analyze request to extract all parameters
 	info, err := AnalyzeRequest(request)
 	if err != nil {
@@ -194,6 +205,9 @@ func CreateAllInsertionPoints(request []byte, includeNested bool) ([]InsertionPo
 		headerIPs = headerIPs[:maxHeaderInsertionPoints]
 	}
 	points = append(points, headerIPs...)
+
+	// Step 5: opt-in points (CreateInsertionPoints only).
+	points = append(points, extraInsertionPoints(shared, info.Parameters, o)...)
 
 	// Order by likelihood of carrying an application injection sink so whole-request
 	// modules (which loop over every point in a single call) test the high-value

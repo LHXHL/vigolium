@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/replay"
 )
@@ -57,7 +59,17 @@ func Run(ctx context.Context, job Job) (*Report, error) {
 	// send routes through the caller's Sender (e.g. the Burp bridge) when set,
 	// else the built-in replay.SendRaw transport — every send in the run (baseline,
 	// calibration, payloads) shares this one closure.
+	//
+	// The rate limiter sits inside this closure for the same reason: wrapping
+	// the one send path is what guarantees baseline samples and calibration
+	// probes are paced exactly like payloads.
+	limiter := newRateLimiter(job.RateLimit)
 	send := func(raw []byte) *replay.Summary {
+		if limiter != nil {
+			if err := limiter.Wait(ctx); err != nil {
+				return &replay.Summary{Error: err.Error()}
+			}
+		}
 		if job.Sender != nil {
 			return job.Sender(ctx, raw)
 		}
@@ -173,6 +185,15 @@ func Run(ctx context.Context, job Job) (*Report, error) {
 		return report, ctx.Err()
 	}
 	return report, nil
+}
+
+// newRateLimiter returns a smooth (burst 1) limiter for rps requests per
+// second, or nil when rps is not positive (unlimited).
+func newRateLimiter(rps float64) *rate.Limiter {
+	if rps <= 0 {
+		return nil
+	}
+	return rate.NewLimiter(rate.Limit(rps), 1)
 }
 
 // makeResult builds one Result: extract signals, compute baseline deltas and

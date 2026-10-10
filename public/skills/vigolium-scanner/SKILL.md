@@ -250,18 +250,20 @@ vigolium ffuf -u https://t/FUZZ -w words.txt
 → routed to: vigolium run discovery -t https://t --discovery-wordlist words.txt
 ```
 
-The shim prints the translation, runs it through the same command tree, and
-writes to the pinned DB. An argument it can't map is a **hard error naming the
+The shim prints the translation (plus a note per approximation), runs it
+through the same command tree, and writes to the pinned DB. `--dry-run` prints
+it without running; vigolium globals (`--db`, `-j`, …) go before the tool's argv
+or before `--`. An argument it can't map is a **hard error naming the
 native command** — never a silent drop, because a dropped flag is a scan that
 ran with a scope nobody chose.
 
 | Instead of | Shim | Native |
 |---|---|---|
-| `ffuf` / `feroxbuster` | `vigolium ffuf …` | `run discovery --discovery-wordlist`, or `fuzz https://t/FUZZ -w file-long` |
+| `ffuf` / `feroxbuster` | `vigolium ffuf …` | `run discovery --discovery-wordlist` (FUZZ as the last path segment), else `fuzz <url-with-FUZZ> -w <list>` with matchers mapped |
 | `nuclei` | `vigolium nuclei …` | `run known-issue-scan -t <url>` |
 | `katana` / `gospider` | `vigolium katana …` | `run spidering -t <url>` |
 | `gau` / `waybackurls` | `vigolium gau <domain>` | `run external-harvest -t <url>` (into the DB), or `kit harvest <domain>` (stdout, no DB) |
-| `arjun` | `vigolium arjun -u <url>` | `fuzz --fuzz param-name --anomaly <url>` |
+| `arjun` | `vigolium arjun -u <url>` | `fuzz --fuzz new-param -w params --anomaly <url>`, or `kit param-mine -t <url>` (batched) |
 | `httpx` | — | `run probe -T hosts.txt --json` (aliases: `run httpx`/`alive`/`sweep`) |
 | `subfinder` / `amass` | — | **not covered** — pass a host list with `-T` |
 

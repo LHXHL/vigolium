@@ -41,7 +41,8 @@ known_issue_scan:
 | `tags` | Include only Nuclei templates with these tags |
 | `exclude_tags` | Exclude matching template tags |
 | `severities` | Nuclei severity filter; the balanced default is critical/high |
-| `templates_dir` | Custom Nuclei template directory |
+| `templates_dir` | Custom Nuclei template directory (CLI `--known-issue-scan-templates-dir`, repeatable) |
+| `templates` | When set, the only template sources run: files, directories, or paths relative to `templates_dir` (CLI `--known-issue-scan-templates`, repeatable; nuclei's `-t file.yaml`) |
 | `enrich_targets` | Run templates on discovered path prefixes, not only host roots |
 | `severity_overrides` | Remap recorded severity by template ID |
 

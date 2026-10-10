@@ -42,6 +42,7 @@ type Config struct {
 	ExcludeTags  []string      // template tags to exclude
 	Severities   []string      // filter by severity (empty = all)
 	TemplatesDir string        // custom templates directory
+	Templates    []string      // when set, the only template sources (see templateSources)
 	Timeout      time.Duration // max known-issue scan duration (default: 30m)
 	// RequestTimeout bounds a single nuclei request (default: 10s). It also caps
 	// how long an in-flight request can keep the abandoned scan goroutine alive
@@ -328,10 +329,10 @@ func buildEngineOptions(ctx context.Context, cfg Config, logger *gologger.Logger
 	}
 	opts = append(opts, nuclei.WithTemplateFilters(filters))
 
-	// Custom templates directory
-	if cfg.TemplatesDir != "" {
+	// Custom templates directory, or explicit template sources
+	if sources := templateSources(cfg.TemplatesDir, cfg.Templates); len(sources) > 0 {
 		opts = append(opts, nuclei.WithTemplatesOrWorkflows(nuclei.TemplateSources{
-			Templates: []string{cfg.TemplatesDir},
+			Templates: sources,
 		}))
 	}
 
@@ -438,6 +439,31 @@ func convertResult(nr *nucleiOutput.ResultEvent) *output.ResultEvent {
 // download them if missing. When Vigolium embeds nuclei as a library, the
 // automatic template download that the nuclei CLI performs does not run, so
 // fresh environments (Docker, VPS) may not have templates installed.
+// templateSources resolves what nuclei loads: the explicit templates when
+// any are given (a relative entry that exists under dir is anchored there, so
+// `-t http/cves/x.yaml` works against a pinned templates directory), else the
+// templates directory itself. Empty means nuclei's own default directory.
+func templateSources(dir string, templates []string) []string {
+	if len(templates) == 0 {
+		if dir != "" {
+			return []string{dir}
+		}
+		return nil
+	}
+	out := make([]string, 0, len(templates))
+	for _, t := range templates {
+		if dir != "" && !filepath.IsAbs(t) {
+			if _, err := os.Stat(t); err != nil {
+				if _, err := os.Stat(filepath.Join(dir, t)); err == nil {
+					t = filepath.Join(dir, t)
+				}
+			}
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 func ensureTemplates(customDir string) error {
 	dir := customDir
 	if dir == "" {

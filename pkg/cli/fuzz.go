@@ -70,6 +70,8 @@ var (
 	fuzzNoCalibrate bool
 	fuzzConcurrency int
 	fuzzDelayMs     int
+	fuzzRateLimit   float64
+	fuzzSuffixes    []string
 	fuzzTimeout     time.Duration
 	fuzzNoRedirects bool
 	fuzzOutputPath  string
@@ -107,13 +109,19 @@ SOURCE (one of):
 
 POSITIONS (what to fuzz):
   a literal FUZZ marker anywhere (request line, path, header, body) wins if present;
-  otherwise --fuzz method|path|params|param-name|headers|cookies|all (default: all
-  discovered insertion points), or --point TYPE:name (e.g. URL_PARAM:id) / --header Name.
+  otherwise --fuzz method|path|params|headers|cookies|all (default: all discovered
+  insertion points), or --point TYPE:name (e.g. URL_PARAM:id) / --header Name.
+  Opt-in kinds the default set never includes:
+    --fuzz param-name                rename an existing query/form parameter (?id=1 → ?PAYLOAD=1)
+    --fuzz new-param[:query|body|json]  ADD a parameter named PAYLOAD (parameter discovery;
+                                     alias param-add; location inferred when omitted)
+    --fuzz body                      replace the entire request body
 
 PAYLOADS (combine freely):
   --class <name,..>              built-in class: ` + strings.Join(fuzz.PayloadClasses(), ", ") + `
   -w/--wordlist <file|builtin>   builtins: ` + strings.Join(fuzz.BuiltinNames(), ", ") + `
   -p/--payload <literal>         inline payload (repeatable)
+  --suffix .php,.bak             also send each payload with each suffix appended (ffuf -e)
 
 ANOMALY DETECTION (-a/--anomaly) — the alternative to writing matchers by hand:
   Writing a matcher means knowing the interesting size or status up front. Instead,
@@ -175,7 +183,7 @@ func init() {
 	f.StringVarP(&fuzzData, "data", "d", "", "Request body override (refreshes Content-Length)")
 
 	// Positions.
-	f.StringVar(&fuzzSelector, "fuzz", "", "What to fuzz: method|path|params|param-name|headers|cookies|all (default: all insertion points)")
+	f.StringVar(&fuzzSelector, "fuzz", "", "What to fuzz: "+fuzz.SelectorNames+" (default: all insertion points; param-name renames a parameter, new-param adds one, body replaces the body)")
 	f.StringArrayVar(&fuzzPoints, "point", nil, "Explicit insertion point 'TYPE:name' e.g. URL_PARAM:id (repeatable)")
 	f.StringArrayVar(&fuzzFuzzHeaders, "fuzz-header", nil, "Fuzz a specific header by name (repeatable)")
 	f.StringVar(&fuzzKeyword, "keyword", fuzz.DefaultKeyword, "Marker keyword replaced by each payload when present in the request")
@@ -184,6 +192,7 @@ func init() {
 	f.StringSliceVar(&fuzzClasses, "class", nil, "Built-in payload class to inject: "+strings.Join(fuzz.PayloadClasses(), ",")+" (comma-list)")
 	f.StringArrayVarP(&fuzzWordlists, "wordlist", "w", nil, "Payload wordlist: a builtin name or file path (repeatable)")
 	f.StringArrayVarP(&fuzzPayloads, "payload", "p", nil, "Inline payload literal (repeatable)")
+	f.StringSliceVar(&fuzzSuffixes, "suffix", nil, "Also send each payload with each of these suffixes appended, literally (comma-list, e.g. .php,.bak — ffuf's -e)")
 
 	// Matchers keep a response; excludes drop it. Same surface on both sides,
 	// registered from one table so they cannot drift.
@@ -209,6 +218,7 @@ func init() {
 	f.BoolVar(&fuzzNoCalibrate, "no-calibrate", false, "Disable auto-calibration of the target's catch-all response")
 	f.IntVarP(&fuzzConcurrency, "concurrency", "c", 10, "Concurrent requests")
 	f.IntVar(&fuzzDelayMs, "delay", 0, "Delay in ms before each request (per worker)")
+	f.Float64VarP(&fuzzRateLimit, "rate-limit", "r", 0, "Max requests/second across all workers, counting baseline and calibration sends (0 = unlimited; fractions allowed, e.g. 0.5). Not taken from scanning config")
 	f.DurationVar(&fuzzTimeout, "timeout", replay.DefaultTimeout, "Per-request timeout (e.g. 30s)")
 	f.BoolVar(&fuzzNoRedirects, "no-redirects", false, "Don't follow 30x redirects")
 	f.StringVarP(&fuzzOutputPath, "output", "o", "", "Write the per-payload JSONL stream to this file (stdout keeps the human table, or the -j envelope)")
@@ -243,6 +253,12 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 
 	if err := validateFuzzNetFlags(); err != nil {
 		return err
+	}
+	if fuzzRateLimit < 0 {
+		return usageErrorf("--rate-limit must be >= 0 (0 = unlimited), got %v", fuzzRateLimit)
+	}
+	if fuzzDelayMs < 0 {
+		return usageErrorf("--delay must be >= 0, got %d", fuzzDelayMs)
 	}
 	// Where results go is settled before the source is read or anything is
 	// sent: the human table by default, one envelope under -j, the per-payload
@@ -373,8 +389,8 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 			terminal.InfoSymbol(), fuzzSessionID, jarLoaded)
 	}
 
-	fmt.Fprintf(os.Stderr, "%s fuzzing %s://%s (%d position(s), %s, %d sends)\n",
-		terminal.InfoSymbol(), src.Scheme, src.Hostname, len(positions), mode, len(cases))
+	fmt.Fprintf(os.Stderr, "%s fuzzing %s://%s (%d position(s), %s, %d sends, pace: %s)\n",
+		terminal.InfoSymbol(), src.Scheme, src.Hostname, len(positions), mode, len(cases), currentFuzzPace())
 
 	// OnResult is called serially by the engine, so no extra locking is needed
 	// to accumulate the ranked top anomalies for the -j summary.
@@ -399,6 +415,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		NoRedirects: fuzzNoRedirects,
 		Concurrency: fuzzConcurrency,
 		DelayMs:     fuzzDelayMs,
+		RateLimit:   fuzzRateLimit,
 		OnResult: func(r fuzz.Result) {
 			if fuzzAllResults || r.Matched {
 				if table != nil {
@@ -538,9 +555,39 @@ func loadFuzzPayloadSets(positions []fuzz.Position) (shared []string, sets [][]s
 		if lerr != nil {
 			return nil, nil, fmt.Errorf("payloads for %s: %w", positions[idx].Name, lerr)
 		}
-		sets[idx] = list
+		sets[idx] = fuzz.ExpandSuffixes(list, fuzzSuffixes)
 	}
-	return shared, sets, nil
+	return fuzz.ExpandSuffixes(shared, fuzzSuffixes), sets, nil
+}
+
+// fuzzPace is the effective pacing of a fuzz run, as reported on the
+// "fuzzing …" stderr line and in the -j summary and dry-run report. fuzz is a
+// primitive: these come from its own flags only, never scanning config.
+type fuzzPace struct {
+	RateLimit   float64 `json:"rate_limit"` // requests/second across all workers; 0 = unlimited
+	Concurrency int     `json:"concurrency"`
+	DelayMs     int     `json:"delay_ms"`
+}
+
+func currentFuzzPace() fuzzPace {
+	c := fuzzConcurrency
+	if c <= 0 {
+		c = 10 // fuzz.Run's default
+	}
+	return fuzzPace{RateLimit: fuzzRateLimit, Concurrency: c, DelayMs: fuzzDelayMs}
+}
+
+// String renders the pace for the human stderr line.
+func (p fuzzPace) String() string {
+	rate := "unlimited"
+	if p.RateLimit > 0 {
+		rate = strconv.FormatFloat(p.RateLimit, 'f', -1, 64) + " req/s"
+	}
+	s := fmt.Sprintf("%s, %d worker(s)", rate, p.Concurrency)
+	if p.DelayMs > 0 {
+		s += fmt.Sprintf(", %dms delay", p.DelayMs)
+	}
+	return s
 }
 
 // lastCut splits s at the final occurrence of sep.
@@ -644,6 +691,7 @@ type fuzzDryRunReport struct {
 	Sends       int                `json:"sends"`
 	Request     string             `json:"baseline_request"`
 	ExampleCase string             `json:"example_case,omitempty"`
+	Pace        fuzzPace           `json:"pace"`
 }
 
 type fuzzDryRunPos struct {
@@ -673,6 +721,7 @@ func emitFuzzDryRun(cmd *cobra.Command, src *replaySource, positions []fuzz.Posi
 		Mode:    fuzzMode,
 		Sends:   len(cases),
 		Request: string(src.BaselineRequest),
+		Pace:    currentFuzzPace(),
 		Payloads: fuzzDryRunPayloads{
 			Count:  len(payloads),
 			Sample: payloads[:min(len(payloads), fuzzDryRunSample)],
@@ -696,8 +745,8 @@ func emitFuzzDryRun(cmd *cobra.Command, src *replaySource, positions []fuzz.Posi
 	if globalJSON {
 		return emitObject(cmd, ".", report)
 	}
-	fmt.Printf("%s dry run — %d position(s), %s, %d sends, nothing sent\n\n",
-		terminal.InfoSymbol(), len(positions), fuzzMode, report.Sends)
+	fmt.Printf("%s dry run — %d position(s), %s, %d sends, pace: %s, nothing sent\n\n",
+		terminal.InfoSymbol(), len(positions), fuzzMode, report.Sends, report.Pace)
 	for _, p := range report.Positions {
 		fmt.Printf("  %s:%s\n", p.Type, p.Name)
 		if p.Base != "" {
@@ -1066,6 +1115,7 @@ type fuzzJSONSummary struct {
 	AnomaliesElided int           `json:"anomalies_elided,omitempty"`
 	SentViaBurp     bool          `json:"sent_via_burp,omitempty"`
 	OrganizerPushed int           `json:"organizer_pushed,omitempty"`
+	Pace            fuzzPace      `json:"pace"`
 }
 
 func emitFuzzJSONSummary(cmd *cobra.Command, src *replaySource, args []string, positions, payloadCount int, report *fuzz.Report, top []fuzz.Result, sentViaBurp bool, organizerPushed int) error {
@@ -1087,6 +1137,7 @@ func emitFuzzJSONSummary(cmd *cobra.Command, src *replaySource, args []string, p
 		AnomaliesElided: report.AnomaliesElided,
 		SentViaBurp:     sentViaBurp,
 		OrganizerPushed: organizerPushed,
+		Pace:            currentFuzzPace(),
 	}, "top_results")
 	if err != nil {
 		return err

@@ -719,25 +719,57 @@ $ vigolium ffuf -u https://target.example/FUZZ -w words.txt
 
 | Shim | Routes to |
 |---|---|
-| `vigolium ffuf -u <url>/FUZZ -w <list>` | `run discovery --discovery-wordlist` |
+| `vigolium ffuf -u <url>/FUZZ -w <list>` (FUZZ is the whole last path segment, no matchers) | `run discovery --discovery-wordlist` |
+| `vigolium ffuf -u <url>/api/FUZZ.php …`, FUZZ in a query/`-H`/`-d`, or any `-mc/-ms/-mw/-ml/-mr/-fc/-fs/-fw/-fl/-fr` | `fuzz <url> -w <list>` (FUZZ kept, matchers mapped) |
 | `vigolium nuclei -u <url> -severity high -tags cve` | `run known-issue-scan --known-issue-scan-*` |
 | `vigolium katana -u <url>` | `run spidering` |
 | `vigolium gau <domain>` | `run external-harvest` |
-| `vigolium arjun -u <url>` | `fuzz --fuzz param-name --anomaly` |
+| `vigolium arjun -u <url>` | `fuzz --fuzz new-param:query -w params --anomaly` |
 
-Mapped flags include the pace knobs (`-t`/`-threads`/`-c` -> `--concurrency`,
-`-rate`/`-rl` -> `--rate-limit`), headers, proxy, and each tool's own selectors.
-Both `-u X` and `-u=X` parse.
+Notable mappings (the full table is in each shim's `--help`):
 
-Two behaviours to expect:
+| Tool flag | Native |
+|---|---|
+| ffuf `-t` / `-rate` / `-p` (s) / `-timeout` | `--concurrency` / `--rate-limit` / fuzz `--delay` (ms) / `--timeout Ns` |
+| ffuf `-mc -ms -mw -ml -mr` / `-fc -fs -fw -fl -fr` | fuzz `--match-*` / `--exclude-*` |
+| ffuf `-e .php,.bak` | discovery `--discovery-extensions php,bak`; fuzz `--suffix .php,.bak` |
+| ffuf `-recursion` / `-recursion-depth N` | no-op note (discovery recurses by default) / `--discovery-max-depth N` |
+| ffuf `-w list:KEY` | fuzz `-w list --keyword KEY` |
+| ffuf `-ac` / `-of` | no-op notes (both routes calibrate; vigolium picks the file format) |
+| katana `-list FILE` / `-ct 60` / `-jc` | `-T FILE` / `--spider-max-time 60s` / no-op note |
+| nuclei `-l FILE` / `-t DIR` / `-t FILE-or-ID` | `-T FILE` / `--known-issue-scan-templates-dir DIR` (repeatable) / `--known-issue-scan-templates T` |
+| arjun `-m GET/POST/JSON` / `-d` (s) / `--stable` / `-oJ` | `new-param:query` / `-X POST new-param:body` / JSON Content-Type `new-param:json`; `--delay` (ms); `--concurrency=1`; `-o` |
+| gau `--subs` | `--scope-origin=relaxed` (keeps the subdomain URLs; does **not** widen the scan like `--follow-subdomains`) |
 
+Both `-u X` and `-u=X` parse. Vigolium's own globals (`--db`, `--proxy`, `-j`,
+`--project-name`, …) go **before** the tool's argv, or before an explicit `--`
+when a spelling collides with the tool's own (nuclei/katana `-j` is JSONL):
+
+```bash
+vigolium ffuf --db scan.sqlite -u https://t/FUZZ -w words.txt
+vigolium nuclei -j -- -u https://t -severity high
+vigolium ffuf --dry-run -u https://t/api/FUZZ.php -w words.txt   # print, run nothing
+vigolium -j arjun --dry-run -u https://t/api   # envelope: tool, argv, translated, native_command, notes
+```
+
+Behaviours to expect:
+
+- **Every approximation is a printed note** under the `routed to:` line (and in
+  `notes` of the `--dry-run -j` envelope): the ffuf route reason, `-ac`/`-jc`
+  no-ops, gau `--subs`, arjun's one-candidate-per-request.
 - **An unmapped argument is a hard error naming the native command**, never a
   silent drop - a dropped flag is a scan that ran with a scope nobody chose.
-  `vigolium ffuf --mc 200` tells you to run `vigolium run discovery --help`.
+  `vigolium ffuf -json` tells you to run `vigolium run discovery --help` or
+  `vigolium fuzz --help`.
 - **Where a concept does not exist, the shim says so rather than approximating.**
   `katana -d 3` errors: vigolium's spider is a state machine over DOM snapshots,
   not a depth-limited link follower, so bound it with `--spider-max-time`
-  instead.
+  instead. Likewise arjun `-m XML`, ffuf `-p` on the discovery route, ffuf
+  `-recursion` on the fuzz route, and nuclei without `-u`/`-l` (no stdin
+  fallback).
+- arjun maps to `fuzz --fuzz new-param` (one candidate per request). For
+  batched, budgeted parameter mining use `vigolium kit param-mine -t <url>`, or
+  `--param-mining` on a scan.
 
 The shims are a redirect for muscle memory, not a full port. Once you know the
 native form, prefer it - it takes every vigolium flag, the shims only a subset.
@@ -765,6 +797,10 @@ vigolium run known-issue-scan -t https://target.example \
   --known-issue-scan-templates-dir ./my-templates
 ```
 
+`--known-issue-scan-templates-dir` is repeatable; `--known-issue-scan-templates`
+(repeatable) runs only the named template files or paths relative to the
+templates directory, like nuclei's `-t file.yaml`.
+
 `-I nuclei -i templates/` instead *ingests* a template's request definitions as
 scan traffic (it does not run the templates as nuclei would).
 
@@ -777,7 +813,9 @@ vigolium fuzz https://target.example/FUZZ -w file-long --match-status-code 200,3
 ```
 
 For dir/content discovery folded into a scan, use the discovery phase with a
-wordlist: `vigolium run discovery --discovery-wordlist words.txt -t <url>`.
+wordlist: `vigolium run discovery --discovery-wordlist words.txt -t <url>`
+(`--discovery-extensions php,bak` and `--discovery-max-depth N` are ffuf's `-e`
+and `-recursion-depth`).
 
 Or just type ffuf's own argv — `vigolium ffuf -u https://t/FUZZ -w words.txt`
 translates to exactly that and prints what it ran (see "Tool shims" below).

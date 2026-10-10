@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,9 @@ func formatKnownIssueScanTemplateScope(cfg *config.KnownIssueScanConfig) string 
 	}
 	if cfg.TemplatesDir != "" {
 		parts = append(parts, "dir="+terminal.HiCyan(terminal.ShortenHome(config.ExpandPath(cfg.TemplatesDir))))
+	}
+	if n := len(cfg.Templates); n > 0 {
+		parts = append(parts, "templates="+terminal.HiCyan(strconv.Itoa(n)))
 	}
 	if len(parts) == 0 {
 		return terminal.Gray("all built-in")
@@ -271,6 +275,9 @@ func (r *Runner) runKnownIssueScan(ctx context.Context, infra *phaseInfra, onRes
 		cfg.SeverityOverrides = knownIssueScanCfg.SeverityOverrides
 		if knownIssueScanCfg.TemplatesDir != "" {
 			cfg.TemplatesDir = config.ExpandPath(knownIssueScanCfg.TemplatesDir)
+		}
+		for _, t := range knownIssueScanCfg.Templates {
+			cfg.Templates = append(cfg.Templates, config.ExpandPath(t))
 		}
 
 		// scanning_pace.known-issue-scan controls speed

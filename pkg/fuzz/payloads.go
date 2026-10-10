@@ -21,6 +21,9 @@ var builtinWordlists = map[string]string{
 	"dir-long":   "dir-long.txt",
 	"file-short": "file-short.txt",
 	"file-long":  "file-long.txt",
+	// Candidate parameter names, for --fuzz new-param (the list the param
+	// mining phase and `kit param-mine` use).
+	"params": "params.txt",
 }
 
 // PayloadClasses returns the built-in vulnerability-class names accepted by
@@ -113,4 +116,32 @@ func scanLines(data []byte) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// ExpandSuffixes returns payloads with, after each word, that word plus each
+// suffix appended — ffuf's -e semantics (`admin`, `admin.php`, `admin.bak`).
+// Suffixes are appended literally, so pass the dot (".php"). Duplicates are
+// dropped in first-seen order; no suffixes returns payloads unchanged.
+func ExpandSuffixes(payloads, suffixes []string) []string {
+	if len(suffixes) == 0 {
+		return payloads
+	}
+	out := make([]string, 0, len(payloads)*(len(suffixes)+1))
+	seen := make(map[string]struct{}, cap(out))
+	add := func(p string) {
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	for _, p := range payloads {
+		add(p)
+		for _, s := range suffixes {
+			if s != "" {
+				add(p + s)
+			}
+		}
+	}
+	return out
 }

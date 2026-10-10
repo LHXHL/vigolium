@@ -80,6 +80,8 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	flags.StringArrayVar(&scanOpts.FuzzWordlistPaths, "discovery-wordlist", nil, "Custom wordlist file seeding the discovery phase's /FUZZ brute-force (enables fuzzing on the fly). Repeatable: the files are streamed in order and each word is tried once. A missing file is a usage error. Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'.")
 	flags.BoolVar(&scanOpts.NoDiscoveryFuzz, "no-discovery-fuzz", false, "Disable discovery's /FUZZ brute-force (alias --no-fuzz). Overrides every reason it would auto-enable — --intensity deep, a discovery-only run such as 'vigolium run discover', and the low-yield auto-enable. Link extraction, JS parsing, response-word harvesting and the short dir/file wordlists still run.")
 	flags.BoolVar(&scanOpts.NoPrefixBreaker, "no-prefix-breaker", false, "Disable per-prefix circuit breaker that stops discovery from recursing into trap directories")
+	flags.StringSliceVar(&scanOpts.DiscoveryExtensions, "discovery-extensions", nil, "Extensions discovery also tries on every wordlist name, e.g. php,bak (ffuf's -e; leading dots optional). Swept directly, without the confirm-before-fuzzing gate that otherwise guards server-side extensions. Overrides discovery.extensions.custom_list")
+	flags.IntVar(&scanOpts.DiscoveryMaxDepth, "discovery-max-depth", 0, "Maximum directory recursion depth for discovery (ffuf's -recursion-depth); 0 turns recursion off. Overrides discovery.recursion.max_depth (default 5)")
 	flags.BoolVar(&scanOpts.FollowSubdomains, "follow-subdomains", false, "Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep)")
 	flags.StringVar(&scanOpts.PortSweepPorts, "port-sweep-ports", "", "Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; sweep runs at --intensity deep or --follow-subdomains)")
 
@@ -113,7 +115,8 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 	// ~/nuclei-templates (see ensureTemplates). --templates-dir is the short
 	// spelling, registered as an alias rather than a second flag so both drive one
 	// value.
-	flags.StringVar(&scanOpts.KnownIssueScanTemplatesDir, "known-issue-scan-templates-dir", "", "Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates.")
+	flags.StringArrayVar(&scanOpts.KnownIssueScanTemplatesDirs, "known-issue-scan-templates-dir", nil, "Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded.")
+	flags.StringArrayVar(&scanOpts.KnownIssueScanTemplates, "known-issue-scan-templates", nil, "Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too.")
 
 	// OAST flags
 	flags.StringVar(&scanOpts.OastURL, "oast-url", "", "Fixed out-of-band callback URL (overrides auto-generated interactsh URL)")

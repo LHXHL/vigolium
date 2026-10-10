@@ -436,7 +436,9 @@ Confirm a single finding with an AI triager; downgrade severity to info on false
 
 ## vigolium arjun
 
-Discover parameters using arjun's argv (routed to `vigolium fuzz --fuzz param-name`)
+Usage: `vigolium arjun [vigolium globals] [--] [arjun flags]`
+
+Discover parameters using arjun's argv (routed to `vigolium fuzz --fuzz new-param`)
 
 **Compatibility shim.** This command parses another tool's argv itself rather than through cobra, so it accepts that tool's flags, not the ones listed here. It is a subset: run it with `-h` for what is actually translated.
 
@@ -874,7 +876,9 @@ Print or write vigolium.d.ts, the extension API type declarations
 
 ## vigolium ffuf
 
-Run content discovery using ffuf's argv (routed to `vigolium run discovery`)
+Usage: `vigolium ffuf [vigolium globals] [--] [ffuf flags]`
+
+Content discovery / fuzzing with ffuf's argv (routed to `vigolium run discovery` or `vigolium fuzz`)
 
 **Compatibility shim.** This command parses another tool's argv itself rather than through cobra, so it accepts that tool's flags, not the ones listed here. It is a subset: run it with `-h` for what is actually translated.
 
@@ -996,7 +1000,7 @@ Inject payloads into a request and report per-payload response anomalies
 | `--fail-on-match` | - | bool | `false` | Exit non-zero (3) if any result matches (for agent/CI gating) |
 | `--form` | - | stringArray | - | multipart/form-data field 'name=value', 'name=@file' or 'name=<file' (repeatable) |
 | `--form-string` | - | stringArray | - | multipart field whose value is never interpreted (repeatable) |
-| `--fuzz` | - | string | - | What to fuzz: method\|path\|params\|param-name\|headers\|cookies\|all (default: all insertion points) |
+| `--fuzz` | - | string | - | What to fuzz: method\|path\|params\|param-name\|new-param[:query\|body\|json]\|body\|headers\|cookies\|all (default: all insertion points; param-name renames a parameter, new-param adds one, body replaces the body) |
 | `--fuzz-header` | - | stringArray | - | Fuzz a specific header by name (repeatable) |
 | `--get` | - | bool | `false` | Send the accumulated data as query parameters on a GET, curl's -G |
 | `--head` | - | bool | `false` | Use HEAD, curl's -I |
@@ -1032,6 +1036,7 @@ Inject payloads into a request and report per-payload response anomalies
 | `--path-as-is` | - | bool | `false` | Send the path byte-for-byte (already the case; see pkg/replay wire fidelity) — accepted for curl compatibility |
 | `--payload` | `-p` | stringArray | - | Inline payload literal (repeatable) |
 | `--point` | - | stringArray | - | Explicit insertion point 'TYPE:name' e.g. URL_PARAM:id (repeatable) |
+| `--rate-limit` | `-r` | float64 | `0` | Max requests/second across all workers, counting baseline and calibration sends (0 = unlimited; fractions allowed, e.g. 0.5). Not taken from scanning config |
 | `--record-uuid` | `-u` | string | - | Use a stored HTTP record (by UUID) as the request to fuzz |
 | `--referer` | - | string | - | Referer header, curl's -e |
 | `--request` | `-X` | string | - | HTTP method override (default: the source request's, or GET) |
@@ -1039,6 +1044,7 @@ Inject payloads into a request and report per-payload response anomalies
 | `--send-timeout` | - | duration | `0s` | With --send-via-burp: per-request response timeout (<=2m; default uses the bridge's 30s) |
 | `--send-via-burp` | - | bool | `false` | Send each payload through Burp's own HTTP stack (exact bytes — malformed/smuggling preserved) instead of Go's client; requires --burp-bridge-url |
 | `--session-id` | - | string | - | Persist cookies across runs under ~/.vigolium/replay-jars/<id>.json |
+| `--suffix` | - | stringSlice | - | Also send each payload with each of these suffixes appended, literally (comma-list, e.g. .php,.bak — ffuf's -e) |
 | `--target` | `-t` | string | - | Override scheme/host/port the request is sent to (e.g. https://staging.acme.test) |
 | `--timeout` | - | duration | `25s` | Per-request timeout (e.g. 30s) |
 | `--user` | - | string | - | Basic auth 'user:password', curl's -u |
@@ -1047,6 +1053,8 @@ Inject payloads into a request and report per-payload response anomalies
 | `--wordlist` | `-w` | stringArray | - | Payload wordlist: a builtin name or file path (repeatable) |
 
 ## vigolium gau
+
+Usage: `vigolium gau [vigolium globals] [--] [gau flags]`
 
 Harvest archived URLs using gau's argv (routed to `vigolium run external-harvest`)
 
@@ -1139,6 +1147,8 @@ Execute JavaScript with the full vigolium.* API
 | `--timeout` | - | duration | `30s` | Execution timeout |
 
 ## vigolium katana
+
+Usage: `vigolium katana [vigolium globals] [--] [katana flags]`
 
 Crawl using katana's argv (routed to `vigolium run spidering`)
 
@@ -1364,6 +1374,8 @@ List available modules
 
 ## vigolium nuclei
 
+Usage: `vigolium nuclei [vigolium globals] [--] [nuclei flags]`
+
 Run the known-issue scan using nuclei's argv (routed to `vigolium run known-issue-scan`)
 
 **Compatibility shim.** This command parses another tool's argv itself rather than through cobra, so it accepts that tool's flags, not the ones listed here. It is a subset: run it with `-h` for what is actually translated.
@@ -1561,6 +1573,8 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
 | `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
 | `--discover-max-time` | - | duration | `1h0m0s` | Max time for content discovery per target |
+| `--discovery-extensions` | - | stringSlice | - | Extensions discovery also tries on every wordlist name, e.g. php,bak (ffuf's -e; leading dots optional). Swept directly, without the confirm-before-fuzzing gate that otherwise guards server-side extensions. Overrides discovery.extensions.custom_list |
+| `--discovery-max-depth` | - | int | `0` | Maximum directory recursion depth for discovery (ffuf's -recursion-depth); 0 turns recursion off. Overrides discovery.recursion.max_depth (default 5) |
 | `--discovery-wordlist` | - | stringArray | - | Custom wordlist file seeding the discovery phase's /FUZZ brute-force (enables fuzzing on the fly). Repeatable: the files are streamed in order and each word is tried once. A missing file is a usage error. Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
@@ -1580,7 +1594,8 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--known-issue-scan-exclude-tags` | - | stringSlice | - | Nuclei template tags to exclude (comma-separated) |
 | `--known-issue-scan-severities` | - | stringSlice | - | Filter Nuclei templates by severity (critical,high,medium,low,info) |
 | `--known-issue-scan-tags` | - | stringSlice | - | Nuclei template tags to include (comma-separated) |
-| `--known-issue-scan-templates-dir` | - | string | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. |
+| `--known-issue-scan-templates` | - | stringArray | - | Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too. |
+| `--known-issue-scan-templates-dir` | - | stringArray | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded. |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
@@ -1657,6 +1672,8 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
 | `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
 | `--discover-max-time` | - | duration | `1h0m0s` | Max time for content discovery per target |
+| `--discovery-extensions` | - | stringSlice | - | Extensions discovery also tries on every wordlist name, e.g. php,bak (ffuf's -e; leading dots optional). Swept directly, without the confirm-before-fuzzing gate that otherwise guards server-side extensions. Overrides discovery.extensions.custom_list |
+| `--discovery-max-depth` | - | int | `0` | Maximum directory recursion depth for discovery (ffuf's -recursion-depth); 0 turns recursion off. Overrides discovery.recursion.max_depth (default 5) |
 | `--discovery-wordlist` | - | stringArray | - | Custom wordlist file seeding the discovery phase's /FUZZ brute-force (enables fuzzing on the fly). Repeatable: the files are streamed in order and each word is tried once. A missing file is a usage error. Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
@@ -1676,7 +1693,8 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--known-issue-scan-exclude-tags` | - | stringSlice | - | Nuclei template tags to exclude (comma-separated) |
 | `--known-issue-scan-severities` | - | stringSlice | - | Filter Nuclei templates by severity (critical,high,medium,low,info) |
 | `--known-issue-scan-tags` | - | stringSlice | - | Nuclei template tags to include (comma-separated) |
-| `--known-issue-scan-templates-dir` | - | string | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. |
+| `--known-issue-scan-templates` | - | stringArray | - | Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too. |
+| `--known-issue-scan-templates-dir` | - | stringArray | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded. |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |

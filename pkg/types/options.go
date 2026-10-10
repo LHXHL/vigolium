@@ -248,6 +248,13 @@ type Options struct {
 	// preset quietly overruling that is the failure that matters.
 	NoDiscoveryFuzz bool
 	NoPrefixBreaker bool // Disable per-prefix circuit breaker (default: enabled)
+	// DiscoveryExtensions (--discovery-extensions) are extensions every
+	// discovered name is also tried with (ffuf's -e), swept without the
+	// confirmation gate. DiscoveryMaxDepth (--discovery-max-depth) overrides
+	// discovery.recursion.max_depth; 0 with the flag typed turns recursion off.
+	// Both are applied to the discovery settings by the CLI.
+	DiscoveryExtensions []string
+	DiscoveryMaxDepth   int
 
 	// FollowSubdomains, when set, lets the subdomain_harvest passive module pull
 	// the exact in-scope subdomains it discovers in responses into the scan:
@@ -296,11 +303,15 @@ type Options struct {
 	CarryBrowserSession bool
 
 	// Known Issue Scan options
-	KnownIssueScanEnabled      bool
-	KnownIssueScanTags         []string
-	KnownIssueScanExcludeTags  []string
-	KnownIssueScanSeverities   []string
-	KnownIssueScanTemplatesDir string
+	KnownIssueScanEnabled     bool
+	KnownIssueScanTags        []string
+	KnownIssueScanExcludeTags []string
+	KnownIssueScanSeverities  []string
+	// KnownIssueScanTemplatesDirs is the repeatable --known-issue-scan-templates-dir;
+	// KnownIssueScanTemplates the repeatable --known-issue-scan-templates (template
+	// files or IDs, nuclei's -t for a single template).
+	KnownIssueScanTemplatesDirs []string
+	KnownIssueScanTemplates     []string
 
 	// Pre-scan external intelligence harvesting
 	ExternalHarvestEnabled bool

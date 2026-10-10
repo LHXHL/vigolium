@@ -42,16 +42,48 @@ cat req.txt | vigolium fuzz --target http://acme.test  # stdin (scheme-less raw 
   header, body) wins if present. Occurrences in the request line are
   auto-encoded, so a payload with spaces (`' OR '1'='1`) stays well-formed.
   Rename the keyword with `--keyword`.
-- Otherwise `--fuzz method|path|params|param-name|headers|cookies|all`
+- Otherwise `--fuzz method|path|params|headers|cookies|all`
   (default: **all** discovered insertion points).
 - Or target one point: `--point URL_PARAM:id`, or `--fuzz-header X-Forwarded-For`.
+- Three kinds the default set never includes, each its own selector:
+  - `--fuzz param-name` **renames** an existing query or form parameter
+    (`?id=1` → `?PAYLOAD=1`); positions are `PARAM_NAME_URL` / `PARAM_NAME_BODY`.
+  - `--fuzz new-param[:query|body|json]` (alias `param-add`) **adds** a
+    parameter named by each payload, carrying a fixed canary value
+    (`?id=1` → `?id=1&PAYLOAD=vglm7c4n4ry`). This is parameter discovery: pair
+    it with `-w params` and `--anomaly`. The location is inferred from the
+    request (JSON body → `json`, form body → `body`, otherwise `query`) unless
+    given; positions read `NEW_PARAM_QUERY` / `_BODY` / `_JSON`, and a body
+    location supplies a Content-Type when the request has none.
+  - `--fuzz body` replaces the **entire** request body (Content-Length
+    refreshed); it needs a body (`-d`).
 
 ## Payloads — combine freely
 
 ```bash
 --class sqli,xss,lfi,ssrf,cmdi,ssti,xxe,open_redirect,crlf,path_traversal
--w/--wordlist <builtin|file>     # builtins: fuzz, dir-short, dir-long, file-short, file-long
+-w/--wordlist <builtin|file>     # builtins: fuzz, dir-short, dir-long, file-short, file-long, params
 -p/--payload '<literal>'          # inline, repeatable
+--suffix .php,.bak               # also send each payload with each suffix appended (ffuf -e)
+```
+
+`params` is the candidate parameter-name list the param-mining phase and
+`kit param-mine` use. `--suffix` appends literally (pass the dot), so
+`-w dir-short --suffix .php,.bak` sends `admin`, `admin.php`, `admin.bak`, ….
+
+## Pace
+
+`-c/--concurrency` (default 10) bounds parallel sends, `--delay <ms>` waits
+before each send per worker, and `-r/--rate-limit <req/s>` caps the whole run
+across every worker (fractions allowed, `0` = unlimited). The rate limit counts
+**every** send — baseline samples and calibration probes as well as payloads —
+and is smooth (no burst). `fuzz` is a primitive, so `scanning.rate_limit` and the
+scan pace config never apply to it. The effective pace is printed on the
+`fuzzing …` stderr line and returned as `pace` in the `-j` envelope and the
+`--dry-run` report:
+
+```json
+"pace": {"rate_limit": 20, "concurrency": 10, "delay_ms": 0}
 ```
 
 Classes come from the shared `pkg/payloads` catalog (the same set behind the JS
@@ -102,6 +134,7 @@ run summary sits beside them, and `total` is the full matched count:
   "positions": 1, "payloads": 13,
   "sent": 13, "matched": 1, "calibrated": 8, "errors": 0,
   "baseline": {"status": 200, "length": 25, "words": 4, "lines": 0},
+  "pace": {"rate_limit": 0, "concurrency": 10, "delay_ms": 0},
   "total": 1, "offset": 0, "limit": 1,
   "items": [ { "payload": "' OR '1'='1", "status": 500, "reflected": true, "matched": true } ],
   "query": "vigolium scan-request -i 'https://acme.test/item?id=FUZZ' -m xss,sqli,lfi,ssrf,cmdi -j",
@@ -132,6 +165,9 @@ vigolium fuzz -i req.txt --point URL_PARAM:id -w /list/sqli.txt --exclude-status
 
 # Content discovery on a path segment
 vigolium fuzz 'https://acme.test/FUZZ' -w dir-short --match-status-code 200,301,403
+
+# Parameter discovery (Arjun-style): add each candidate name, keep the anomalies
+vigolium fuzz 'https://acme.test/search?q=x' --fuzz new-param -w params --anomaly -r 20
 
 # Method (verb) fuzzing
 vigolium fuzz 'https://acme.test/admin' --fuzz method -p PUT -p DELETE --match-status-code all
