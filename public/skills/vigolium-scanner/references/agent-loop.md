@@ -231,7 +231,15 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
 ```
 
 `scan-url` / `scan-request` under `--json` emit:
-`{"target","method","scan_duration_ms","modules_run","findings":[…],"errors":[]}`.
+`{"target","method","scan_uuid","scan_duration_ms","resolved_target","reachable","modules_loaded","modules_run","findings":[…],"errors":[]}`.
+`modules_run` counts modules that actually executed (`modules_loaded` is the
+selection). A target that never answered still gets its document —
+`"reachable": false`, `"stop_reason": "no_targets_reachable"`,
+`"unreachable": {"target","code","detail"}` — and the command exits `1` with
+`error.code: no_targets_reachable` (a batch: only when no input answered).
+`scan-request` adds `scheme_source`: with no `-t`, absolute-form line, `:80`/`:443`
+or same-origin `Origin`/`Referer`, it probes the target (connect + TLS handshake)
+instead of assuming `https://`; `--no-scheme-probe` keeps the old default.
 
 **Which command?** Use `scan-url` / `scan-request` only when you're confirming
 **one specific request** — full params, a deep path, or custom headers you need
@@ -342,7 +350,7 @@ not empty.
 
 | Field | On | Means |
 |---|---|---|
-| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), and the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), … Reserved, not emitted yet: `targets_unreachable`, `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`, and the stop reason `no_targets_reachable` (the scan did nothing; exit 1). |
+| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), `targets_unreachable` (some admitted targets gave no HTTP answer to the preflight GET, or a quarantined host's items were skipped), the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), and the stop reason `no_targets_reachable` (no admitted target answered; no phase ran, exit 1), … Reserved, not emitted yet: `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`. |
 | `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`, `responses_while_logged_out`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
 | `stop_reason` | `scan.finished` | The scan-level roll-up of why the run stopped launching work. |
 

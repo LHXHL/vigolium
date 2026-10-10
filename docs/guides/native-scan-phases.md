@@ -26,9 +26,17 @@ Every step above is a name in the phase vocabulary, so each `phase.started` /
 `phase.finished` id can be looked up in `vigolium strategy -j` (`phases[]`).
 `harvest-probe`, `targeted-respider`, `param-mining` and `seed` are **internal**: the plan schedules them on its
 own gates, so `--only` rejects them. `--skip harvest-probe`, `--skip targeted-respider` and `--skip param-mining` are accepted
-(external-harvest, spidering and the assessment still run); `seed` cannot be skipped. `preflight` is also reserved as
-an internal, skippable name for the target reachability check; `--skip preflight`
-is accepted today and has no effect until that check lands.
+(external-harvest, spidering and the assessment still run); `seed` cannot be skipped.
+
+**Preflight** (`preflight`, internal, `--skip` only) runs before step 1 whenever the CLI targets are the
+scan's input (`-t`, positional URLs, `-T`, a piped URL list, `scan-url -S`): scope admission, then one GET
+to each admitted target URL through the shared requester. No admitted target answering stops the scan
+with exit `1` (`error.code: no_targets_reachable`) before any phase runs; some not answering keeps them
+all in the plan and marks the scan `partial` (`targets_unreachable`). The heuristics check reuses the
+root page preflight fetched, so with heuristics on the GET costs nothing extra for a root target.
+`--skip preflight` turns the GET off (scope admission still applies). It is skipped for `run probe`,
+plans that never reach the target (`run external-harvest`), scan-on-receive and `-i`/`--all-records`
+input. See [Reachability](../coding-agent.md#reachability).
 
 A full scan with all phases enabled:
 
@@ -253,7 +261,7 @@ Every phase answers to several spellings. They work identically with `--only`, `
 | `targeted-respider` (internal: `--skip` only) | `respider`, `re-spider` |
 | `param-mining` (internal: `--skip` only) | `params`, `arjun`, `param-miner` |
 | `seed` (internal: neither) | |
-| `preflight` (internal: `--skip` only, reserved) | |
+| `preflight` (internal: `--skip` only) | |
 
 `--skip extension` turns extensions off for the run, even when the config or `--ext` enabled them; the built-in modules still run. `--skip heuristics-check` is the same as `--skip-heuristics`.
 

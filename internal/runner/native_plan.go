@@ -24,8 +24,9 @@ const (
 	PhaseKnownIssueScan    NativePhase = "known-issue-scan"
 	PhaseDynamicAssessment NativePhase = "dynamic-assessment"
 	// PhasePreflight carries the CLI-target tally (scope admission,
-	// reachability) on a scan row. Not scheduled by the plan yet; see the
-	// vocabulary entry below.
+	// reachability) on a scan row. Not a plan step: RunNativeScan runs it
+	// before the first phase whenever the targets are the input (see
+	// preflight.go); --skip preflight turns the reachability GET off.
 	PhasePreflight NativePhase = "preflight"
 )
 
@@ -86,9 +87,10 @@ var nativePhaseVocabulary = []nativePhaseSpelling{
 	// param-mine` is the standalone form.
 	{Canonical: "param-mining", Aliases: []string{"params", "arjun", "param-miner"}, Skippable: true, Internal: true},
 	{Canonical: "seed", Skippable: false, Internal: true},
-	// preflight is reserved for the target reachability check that runs before
-	// any phase. --skip preflight is accepted now (opts.SkipPreflight); the step
-	// itself is not in the plan yet.
+	// preflight is the target reachability check (one GET per admitted CLI
+	// target) RunNativeScan runs before any phase. --skip preflight
+	// (opts.SkipPreflight) turns it off; it is not a plan step, so --only
+	// never names it.
 	{Canonical: "preflight", Skippable: true, Internal: true},
 }
 

@@ -206,6 +206,10 @@ func applyScanCompletion(ev *scanevents.Event, scan *database.Scan) {
 		if p.Phase == string(runner.PhasePreflight) && p.Targets != nil {
 			ev.TargetsAdmitted = scanevents.Int(p.Targets.Admitted)
 			ev.TargetsRejected = scanevents.Int(p.Targets.Requested - p.Targets.Admitted)
+			if unreachable, checked := p.Targets.UnreachableCount(); checked {
+				ev.TargetsReached = scanevents.Int(p.Targets.Reached)
+				ev.TargetsUnreachable = scanevents.Int(unreachable)
+			}
 		}
 	}
 	// An empty Completeness means unknown (a row written by an older binary, or

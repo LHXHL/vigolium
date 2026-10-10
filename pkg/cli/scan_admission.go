@@ -133,12 +133,18 @@ func noTargetsInScopeError(adm types.TargetAdmission) error {
 		fmt.Errorf("%w; %s", err, scopeRemediation(adm.Rejected)))
 }
 
-// codedScanError maps the runner's typed scope refusal to the coded CLI error.
-// Every other error passes through untouched.
+// codedScanError maps the runner's typed "did nothing" errors — scope refused
+// every target, or no admitted target answered the preflight — to the coded CLI
+// error (exit 1, error.code no_targets_in_scope / no_targets_reachable). Every
+// other error passes through untouched.
 func codedScanError(err error) error {
 	var rejected *runner.TargetsRejectedError
 	if errors.As(err, &rejected) {
 		return noTargetsInScopeError(rejected.Admission)
+	}
+	var unreachable *runner.TargetsUnreachableError
+	if errors.As(err, &unreachable) {
+		return noTargetsReachableError(unreachable.Unreachable, unreachable.Hint)
 	}
 	return err
 }

@@ -409,11 +409,13 @@ func DirectScanErrorMessage(execErr error, c database.ScanCompletion) string {
 }
 
 // DirectTargetTally is the target tally for one single-request executor run:
-// one requested target, admitted (the direct path applies no scope yet), and
-// reached when the executor got an HTTP answer. An unanswered target carries
-// the first classified baseline failure, so the row says why it did not answer.
+// one requested target, admitted (a refused one never reaches the executor),
+// and reached when the executor got an HTTP answer — the executor's baseline is
+// the reachability check on this path, so the tally is always checked. An
+// unanswered target carries the first classified baseline failure, so the row
+// says why it did not answer.
 func DirectTargetTally(target string, rep core.ExecutionReport, failures []core.BaselineFailure) database.TargetTally {
-	t := database.TargetTally{Requested: 1, Admitted: 1}
+	t := database.TargetTally{Requested: 1, Admitted: 1, ReachabilityChecked: true}
 	if rep.Responded > 0 {
 		t.Reached = 1
 		return t

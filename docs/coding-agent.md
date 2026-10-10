@@ -122,7 +122,9 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
 
   ```json
   { "target": "https://target.example/", "method": "GET",
-    "scan_uuid": "9551f38a-…", "scan_duration_ms": 1840, "modules_run": 325,
+    "scan_uuid": "9551f38a-…", "scan_duration_ms": 1840,
+    "resolved_target": "https://target.example:443", "reachable": true,
+    "modules_loaded": 325, "modules_run": 41,
     "persisted": true, "findings": [ … ] }
   ```
 
@@ -136,6 +138,23 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
   `-S` run, or when no store was named and the scan ran in memory. `errors` is
   omitted when there were none, so test for its presence rather than for an
   empty array. `interrupted: true` appears when a signal cut the scan short.
+  `modules_loaded` is the selected module count; `modules_run` counts the
+  modules that executed at least once (it used to repeat the loaded count).
+- **A target that never answered fails the command** (see
+  [Reachability](#reachability)). Its document is still written, with
+  `"reachable": false`, `"stop_reason": "no_targets_reachable"`,
+  `"unreachable": {"target", "code", "detail"}` (`code`: `dns`, `refused`,
+  `timeout`, `tls`, `reset`, `other`), `modules_run: 0` and the transport error
+  in `errors`; the exit is `1` with `error.code: "no_targets_reachable"` unless
+  another input of the same invocation answered.
+- **`scan-request` reports how it chose the scheme** in `scheme_source`:
+  `explicit` (`-t`, an absolute-form request line, a curl URL), `port` (Host
+  `:80`/`:443`), `origin`/`referer` (a same-origin header), `probe` or
+  `default`. With none of the first four, it probes the target — a TCP connect,
+  plus a TLS handshake on an explicit non-standard port — and scans over the
+  scheme that answered; `resolved_target` is the result. Nothing answered keeps
+  `https://` (`default`), and the unreachable error suggests
+  `-t http://host:port`. `--no-scheme-probe` skips the probe.
 - **Both commands enforce the config scope**, with or without `-S` (see
   [Scope admission](#scope-admission)). A refused input is not sent; its
   document carries `"stop_reason": "no_targets_in_scope"` and
@@ -144,7 +163,8 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
 - **Several targets produce one envelope, not one document each.** `scan-url -j`
   with more than one `-t` emits a single `agentEnvelope` whose `items` are the
   per-target objects above, plus `targets_not_scanned` listing anything an
-  interrupt never reached. A single target keeps the bare shape, unchanged.
+  interrupt never reached and `targets_unreachable` listing every input that
+  got no HTTP answer. A single target keeps the bare shape, unchanged.
 
 ## Query findings
 
@@ -672,8 +692,8 @@ Exit codes:
 | Code | Meaning |
 |------|---------|
 | `0` | success |
-| `1` | the work failed; `error.code` says how (`source_missing`, `export_failed`, `no_targets_in_scope`, …) |
-| `2` | usage error — bad flag, bad value, rejected combination, a search that matched nothing (`module enable`), or a mutation that needed `--force` and had no terminal to ask. Always `error.code: "usage_error"` |
+| `1` | the work failed; `error.code` says how (`source_missing`, `export_failed`, `no_targets_in_scope`, `no_targets_reachable`, …) |
+| `2` | usage error — bad flag, bad value, rejected combination, a search that matched nothing (`module enable`), or a mutation that needed `--force` and had no terminal to ask. `error.code: "usage_error"`, except a scan whose `--ext` extension failed to load before any request: `extension_load_failed` (`--ext-allow-failures` to scan without it) |
 | `3` | `--fail-on-match` / `--fail-on-crack` matched (`fuzz`, `kit secret-scan`, `kit jwt-crack`) |
 | `4` | the `--fail-on <severity>` (or `scan diff --fail-on-new <severity>`) gate tripped |
 | `5` | incomplete — the work ran but did not finish. `error.code` is `timed_out`, `budget_exhausted` or `partial`. Used by agent runs; a native scan that is merely partial still exits `0` (see [Partial scans](#partial-scans)), with an opt-in `--fail-on-partial` planned for a later release |
@@ -777,6 +797,34 @@ anything, with the same matcher the scan then enforces:
   REST `POST /api/scan-url` and `/api/scan-request` answer `422` with
   `details: "no_targets_in_scope"` instead of accepting a scan that would do
   nothing.
+
+### Reachability
+
+After admission, a scan checks that its admitted targets answer, so a dead or
+mis-schemed target is an error instead of a clean-looking empty scan:
+
+- **Runner scans** (`scan`, `run`, `scan-url -S`/`-o`) send one GET to each
+  admitted target URL before the first phase (bounded concurrency, on the
+  egress gate's priority lane). Any HTTP status counts as an answer. The
+  heuristics check reuses the root page this fetched, so with heuristics on
+  the check costs no extra request for a root target.
+- **None answered → exit `1`, `error.code: "no_targets_reachable"`**, and no
+  phase runs. The message names each target and why
+  (`connection refused`, `DNS lookup failed`, …). The row is `failed`,
+  `completeness: partial`, `stop_reason: no_targets_reachable`.
+- **Some answered → every target stays in the plan** (a transient blip is not
+  a silent drop), and the scan is `partial` with reason `targets_unreachable`;
+  the exit code stays `0`.
+- The preflight outcome's `targets` adds `reached`, `reachability_checked` and
+  `unreachable: [{target, code, detail}]`; `scan.finished` carries
+  `targets_reached` and `targets_unreachable` when the check ran.
+- `--skip preflight` turns the GET off. It is skipped for `run probe` (the
+  sweep has its own reachability accounting), plans that never reach the
+  target (`run external-harvest`), scan-on-receive, and input that is not a
+  target list (`-i`, `--all-records`).
+- **The `scan-url`/`scan-request` direct path** sends nothing extra: the
+  baseline request is the check, and the result document carries `reachable`
+  (see [Run a scan and gate on results](#run-a-scan-and-gate-on-results)).
 
 ### Partial scans
 
@@ -1036,7 +1084,8 @@ path.
 - `scan-url`/`scan-request` with `--events` route through the full Runner, so
   the stream is real. Several targets under `-j` emit **one** envelope whose
   `items` are the per-target results, with `targets_not_scanned` naming anything
-  an interrupt cut off; a single target keeps its existing object shape. Each
+  an interrupt cut off and `targets_unreachable` every input that did not
+  answer; a single target keeps its existing object shape. Each
   result carries `persisted` (whether it also reached a database) and, when
   interrupted, `interrupted: true`.
 - `traffic body`/`traffic headers --uuid` are project-scoped like every other

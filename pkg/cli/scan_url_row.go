@@ -52,6 +52,12 @@ type directScanSession struct {
 	// which applies no scope. See admitDirectInputs.
 	admission *directAdmission
 
+	// reach folds reachability across inputs: the exit is 1 only when none
+	// answered (see directReach). schemeSource is how scan-request settled its
+	// request's scheme (the result's scheme_source); empty for scan-url.
+	reach        directReach
+	schemeSource string
+
 	// Shared-row state (pinned only): created once, and the raw inputs of the
 	// verdict, folded across inputs so the verdict is recomputed over all of
 	// them rather than merged from per-input verdicts.

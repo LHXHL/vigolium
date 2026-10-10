@@ -23,6 +23,27 @@ const (
 	TransportErrOther   = "other"   // anything else
 )
 
+// DescribeTransportClass renders a TransportErr* class as the short phrase a
+// console line uses ("connection refused", "DNS lookup failed"), so every
+// "unreachable (...)" line words the same class the same way. An unknown or
+// empty class falls back to "no HTTP answer".
+func DescribeTransportClass(class string) string {
+	switch class {
+	case TransportErrDNS:
+		return "DNS lookup failed"
+	case TransportErrRefused:
+		return "connection refused"
+	case TransportErrTimeout:
+		return "timed out"
+	case TransportErrTLS:
+		return "TLS handshake failed"
+	case TransportErrReset:
+		return "connection reset"
+	default:
+		return "no HTTP answer"
+	}
+}
+
 // ClassifyTransportError maps an error from sending a request to one of the
 // TransportErr* classes, or "" for a nil error. It answers "why did this target
 // not answer" for the never-silent reporting (baseline failures, preflight,

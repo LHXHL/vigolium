@@ -12,7 +12,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
-	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
 // scan-request flags
@@ -39,6 +38,7 @@ func init() {
 	flags.StringVarP(&scanReqTarget, "target", "t", "", "Override target URL (scheme://host)")
 	flags.BoolVar(&scanURLNoPassive, "no-passive", false, "Skip passive modules")
 	flags.BoolVar(&scanIgnoreScope, "ignore-scope", false, ignoreScopeFlagUsage)
+	flags.BoolVar(&scanReqNoSchemeProbe, "no-scheme-probe", false, "Do not probe the target (TCP connect / TLS handshake) when the request carries no scheme signal; keep the https default")
 	registerScanModuleFlags(flags)
 	registerModuleSelectionFlags(flags)
 	registerHTTPClientFlags(flags)
@@ -106,6 +106,9 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	// HTTP — but the raw parser gets the byte-preserving normalization instead,
 	// because for a request with a body those bytes ARE the request.
 	var rr *httpmsg.HttpRequestResponse
+	// normalized is the raw request as parsed; empty for curl input, whose URL
+	// carries its scheme.
+	var normalized string
 	trimmed := strings.TrimSpace(rawStr)
 	detected := detect.DetectStdinFormat(trimmed)
 	if detected == detect.FormatCurl {
@@ -117,7 +120,7 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 		rr = items[0]
 	} else {
 		// Raw HTTP (or fallback) — use existing raw HTTP parser
-		normalized := normalizeRawRequestInput(rawStr)
+		normalized = normalizeRawRequestInput(rawStr)
 		if scanReqTarget != "" {
 			rr, err = httpmsg.ParseRawRequestWithURL(normalized, scanReqTarget)
 		} else {
@@ -125,13 +128,6 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 		}
 		if err != nil {
 			return fmt.Errorf("failed to parse raw request: %w", err)
-		}
-		if scanReqTarget == "" {
-			// No -t override: the request line carries no scheme, so the scheme
-			// was inferred. Surface how it was resolved (and how to override with
-			// -t) so an http service on a non-standard port isn't silently hit
-			// over https.
-			warnInferredRequestScheme(normalized, rr)
 		}
 	}
 
@@ -154,13 +150,29 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	ctx, stop := lightweightScanContext()
 	defer stop()
 
+	// No -t override and no scheme on the request line: settle the scheme from
+	// the request's own signals, else probe the target (after admission, so a
+	// refused target is never contacted). A probe that changed the target is
+	// admitted again over the URL that will actually be sent.
+	_, refused := admission.verdict(target)
+	resolved, schemeSource := settleRequestScheme(ctx, normalized, rr, scanReqTarget != "", scanReqNoSchemeProbe || refused)
+	if resolved != rr {
+		rr, target = resolved, resolved.Target()
+		inputs = []scanInput{{rr: rr, target: target, method: method}}
+		if admission, err = admitDirectInputs(inputs); err != nil {
+			return err
+		}
+	}
+
 	sess := newDirectScanSession(database.ScanNameScanRequest, inputs)
 	sess.admission = admission
+	sess.schemeSource = schemeSource
 	defer sess.close()
 
 	// Route through the Runner when output/persistence/phase flags are in play;
-	// otherwise take the fast in-memory direct path.
-	return withFailOnGate(admission.settle(dispatchSingleScan(ctx, sess, rr, target, method)))
+	// otherwise take the fast in-memory direct path. An input that got no answer
+	// fails the command (no_targets_reachable) after its result was written.
+	return withFailOnGate(admission.settle(sess.reach.settle(dispatchSingleScan(ctx, sess, rr, target, method))))
 }
 
 // normalizeRawRequestInput prepares a raw HTTP request for the parser while
@@ -207,44 +219,6 @@ func rawRequestDeclaresBody(raw string) bool {
 		}
 	}
 	return false
-}
-
-// warnInferredRequestScheme emits a heads-up when the scheme of a raw request had
-// to be inferred (no scheme on the request line, no -t override) and the Host
-// port is non-standard, so the choice is genuinely ambiguous. It names the
-// resolved target, the signal used (a same-origin Origin/Referer header or the
-// https default), and the -t flag to pin it explicitly. A well-known port
-// (80/443) unambiguously fixes the scheme, so nothing is printed there.
-func warnInferredRequestScheme(raw string, rr *httpmsg.HttpRequestResponse) {
-	if rr == nil {
-		return
-	}
-	svc := rr.Service()
-	if svc == nil {
-		return
-	}
-	// An absolute-form request line already carries the scheme — no inference.
-	if requestLineHasScheme(raw) {
-		return
-	}
-	port := svc.Port()
-	if port == 80 || port == 443 {
-		return
-	}
-	host := svc.Host()
-	authority := fmt.Sprintf("%s:%d", host, port)
-	target := rr.Target()
-	if s, header, ok := httpmsg.OriginRefererScheme(raw, host, port); ok {
-		fmt.Fprintf(os.Stderr, "%s request line has no scheme — inferred %s from the %s header; sending to %s\n",
-			terminal.WarnPrefix(), terminal.BoldYellow(s+"://"), header, terminal.Cyan(target))
-		fmt.Fprintf(os.Stderr, "  pass %s to pin the scheme (use %s to force TLS)\n",
-			terminal.BoldCyan("-t "+s+"://"+authority), terminal.Cyan("https://"))
-		return
-	}
-	fmt.Fprintf(os.Stderr, "%s request line has no scheme and no Origin/Referer to infer from — defaulting to %s; sending to %s\n",
-		terminal.WarnPrefix(), terminal.BoldYellow("https://"), terminal.Cyan(target))
-	fmt.Fprintf(os.Stderr, "  if the target is plain http, pass %s\n",
-		terminal.BoldCyan("-t http://"+authority))
 }
 
 // requestLineHasScheme reports whether the request line uses absolute-form (an

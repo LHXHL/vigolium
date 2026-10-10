@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/input/formats/burpscope"
 	"github.com/vigolium/vigolium/pkg/input/formats/urls"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -86,6 +87,8 @@ func runStatelessTargetFile(cmd *cobra.Command, settings *config.Settings, strat
 	// Targets scope refused, folded so a batch whose every target was refused
 	// fails like a single scan would (no_targets_in_scope) instead of exiting 0.
 	var refused types.TargetAdmission
+	// Targets that did not answer the preflight, folded the same way.
+	var dead []database.TargetIssue
 	for i, target := range targets {
 		scanOpts.Targets = []string{target}
 		// Force the scan summary banner to print per target.
@@ -145,6 +148,10 @@ func runStatelessTargetFile(cmd *cobra.Command, settings *config.Settings, strat
 		if errors.As(scanErr, &rejected) {
 			refused.Rejected = append(refused.Rejected, rejected.Admission.Rejected...)
 		}
+		var unreachable *runner.TargetsUnreachableError
+		if errors.As(scanErr, &unreachable) {
+			dead = append(dead, unreachable.Unreachable...)
+		}
 		if scanErr != nil {
 			zap.L().Error("Stateless target scan failed",
 				zap.String("target", target),
@@ -157,6 +164,11 @@ func runStatelessTargetFile(cmd *cobra.Command, settings *config.Settings, strat
 
 	if len(refused.Rejected) == len(targets) {
 		return noTargetsInScopeError(refused)
+	}
+	// Every admitted target was dead: the batch did nothing, as a single scan
+	// whose target did not answer would have.
+	if len(dead) > 0 && len(refused.Rejected)+len(dead) >= len(targets) {
+		return noTargetsReachableError(dead, "")
 	}
 	return nil
 }

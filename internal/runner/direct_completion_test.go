@@ -104,7 +104,7 @@ func TestDirectScanCompletion(t *testing.T) {
 
 func TestDirectTargetTally(t *testing.T) {
 	ok := DirectTargetTally("http://a/", core.ExecutionReport{Responded: 1}, nil)
-	assert.Equal(t, database.TargetTally{Requested: 1, Admitted: 1, Reached: 1}, ok)
+	assert.Equal(t, database.TargetTally{Requested: 1, Admitted: 1, Reached: 1, ReachabilityChecked: true}, ok)
 
 	dead := DirectTargetTally("http://a/", core.ExecutionReport{},
 		[]core.BaselineFailure{{Target: "http://a/", Class: "dns", Detail: "no such host"}})
@@ -112,4 +112,7 @@ func TestDirectTargetTally(t *testing.T) {
 	require.Len(t, dead.Unreachable, 1)
 	assert.Equal(t, "dns", dead.Unreachable[0].Code)
 	assert.Equal(t, "http://a/", dead.Unreachable[0].Target)
+	n, known := dead.UnreachableCount()
+	assert.True(t, known)
+	assert.Equal(t, 1, n)
 }

@@ -56,6 +56,7 @@ func (r *Runner) RunNativeScan() (err error) {
 	// here rather than at construction — otherwise the second run's scan row
 	// would carry the first run's curtailment.
 	r.scanOutcome.reset()
+	r.preflight = nil
 
 	// Total scan budget: when --scanning-max-duration is set, bound the WHOLE scan
 	// (all phases combined). Each phase wraps this ctx with its own per-phase
@@ -177,13 +178,17 @@ func (r *Runner) RunNativeScan() (err error) {
 	// The preflight verdict, recorded whether or not anything was refused so
 	// the row always carries the target tally. A scope that refused every
 	// target ends the run here: nothing was sent, and the finalizer above
-	// stores the row failed with stop_reason no_targets_in_scope.
+	// stores the row failed with stop_reason no_targets_in_scope. Otherwise the
+	// outcome is appended once the reachability check below has filled it in.
+	var preflightOutcome *database.PhaseOutcome
 	if admission != nil {
-		r.scanOutcome.append(admissionOutcome(*admission))
+		pre := admissionOutcome(*admission)
+		preflightOutcome = &pre
 		for _, v := range admission.Rejected {
 			r.scanLogger.Warn(string(PhasePreflight), fmt.Sprintf("target %s rejected by scope (%s)", v.Target, v.Rule))
 		}
 		if admission.NoneAdmitted() {
+			r.scanOutcome.append(pre)
 			r.scanOutcome.setStopReason(database.ReasonNoTargetsInScope)
 			rejected := &TargetsRejectedError{Admission: *admission}
 			r.scanLogger.Error(string(PhasePreflight), rejected.Error())
@@ -325,6 +330,21 @@ func (r *Runner) RunNativeScan() (err error) {
 	// the finished-banner reads the finding count. Idempotent when prior passes already
 	// covered everything; see finalizeFindingGrouping.
 	defer r.finalizeFindingGrouping()
+
+	// Reachability preflight: one GET per admitted CLI target. None answered
+	// ends the run here (stop_reason no_targets_reachable; the CLI exits 1 with
+	// that error.code); some answered marks the scan partial with
+	// targets_unreachable and keeps every target in the plan.
+	if preflightOutcome != nil {
+		var preErr error
+		if r.preflightApplies(plan) {
+			preErr = r.runPreflight(ctx, infra, admission.Admitted, preflightOutcome)
+		}
+		r.scanOutcome.append(*preflightOutcome)
+		if preErr != nil {
+			return preErr
+		}
+	}
 
 	// Full-scan-on-receive: loop waiting for new records, then run all phases
 	// on just the new batch. Each iteration swaps r.inputSource to a one-shot

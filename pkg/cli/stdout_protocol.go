@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/types"
 )
@@ -102,11 +103,17 @@ func scanInputs(
 // two top-level objects to stdout — a stream that `json.Unmarshal` rejects and
 // that the documented "exactly one document per invocation" contract does not
 // allow. They now travel as the `items` array of the standard envelope, with
-// `targets_not_scanned` naming anything an interrupt cut off.
+// `targets_not_scanned` naming anything an interrupt cut off and
+// `targets_unreachable` naming every input that got no HTTP answer (each item's
+// `unreachable` says why). The command exits 1 only when no input answered.
 func writeDirectScanBatch(command string, results []*scanResult, notScanned []string) error {
 	items := make([]any, 0, len(results))
+	unreachable := []string{}
 	for _, r := range results {
 		items = append(items, r)
+		if r.StopReason == database.ReasonNoTargetsReachable {
+			unreachable = append(unreachable, r.Target)
+		}
 	}
 	// Always an array, never null: a consumer that reads this field to decide
 	// whether to re-run the remainder should not have to special-case a nil.
@@ -114,6 +121,7 @@ func writeDirectScanBatch(command string, results []*scanResult, notScanned []st
 		notScanned = []string{}
 	}
 	env := newAgentEnvelope(command, "", items, int64(len(results)), 0, len(results)).
-		With("targets_not_scanned", notScanned)
+		With("targets_not_scanned", notScanned).
+		With("targets_unreachable", unreachable)
 	return writeAgentJSON(env)
 }

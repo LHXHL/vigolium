@@ -323,9 +323,10 @@ type Options struct {
 	// SkipTargetedRespider disables the targeted re-spider step (--skip
 	// targeted-respider) while keeping spidering itself.
 	SkipTargetedRespider bool
-	// SkipPreflight is set by --skip preflight. The phase name is reserved in the
-	// vocabulary; the reachability preflight step that honours it lands later, so
-	// today it has no effect.
+	// SkipPreflight is set by --skip preflight: the runner does not send its
+	// reachability GET to each admitted CLI target before the phases, so a dead
+	// target is no longer reported as no_targets_reachable / targets_unreachable
+	// (scope admission still applies).
 	SkipPreflight bool
 
 	// OastURL is a fixed OAST callback URL (from --oast-url flag)

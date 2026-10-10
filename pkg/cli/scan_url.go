@@ -166,7 +166,9 @@ func dispatchSingleScan(ctx context.Context, sess *directScanSession, rr *httpms
 			}
 			return nil
 		}
-		return err
+		// The runner's preflight decides reachability on this path; fold it
+		// across the batch like the direct path does (directReach).
+		return sess.reach.noteRunnerReach(err, len(sess.targets) > 1)
 	}
 	return runScanWithRR(ctx, sess, rr, target, method)
 }
@@ -267,10 +269,12 @@ func runScanURLCmd(cmd *cobra.Command, args []string) error {
 	sess.admission = admission
 	defer sess.close()
 
+	// An input that got no answer fails the command (no_targets_reachable) only
+	// when no other input answered, after every result was written.
 	if directBatchJSON(inputs) {
-		return withFailOnGate(admission.settle(runDirectScanBatch(ctx, cmd, sess, inputs)))
+		return withFailOnGate(admission.settle(sess.reach.settle(runDirectScanBatch(ctx, cmd, sess, inputs))))
 	}
-	return withFailOnGate(admission.settle(dispatchScanInputs(ctx, sess, inputs)))
+	return withFailOnGate(admission.settle(sess.reach.settle(dispatchScanInputs(ctx, sess, inputs))))
 }
 
 // scanURLInputs resolves the command's inputs: the positional URL argument
@@ -341,13 +345,31 @@ type scanResult struct {
 	// run and, when a store was open, names the scan row (`log <uuid>`,
 	// `scan status <uuid>`, `finding --scan-uuid <uuid>`). Minted per input
 	// unless --scan-uuid pinned one for the whole invocation.
-	ScanUUID       string                `json:"scan_uuid"`
-	ScanDurationMs int64                 `json:"scan_duration_ms"`
-	ModulesRun     int                   `json:"modules_run"`
-	Findings       []*output.ResultEvent `json:"findings"`
-	Candidates     []*output.ResultEvent `json:"candidates,omitempty"`
-	Observations   []*output.ResultEvent `json:"observations,omitempty"`
-	Errors         []string              `json:"errors,omitempty"`
+	ScanUUID       string `json:"scan_uuid"`
+	ScanDurationMs int64  `json:"scan_duration_ms"`
+	// ResolvedTarget is the scheme://host:port the request was actually sent
+	// to — for scan-request, after the scheme was inferred or probed.
+	ResolvedTarget string `json:"resolved_target,omitempty"`
+	// SchemeSource says how scan-request settled the scheme: "explicit" (-t,
+	// an absolute-form request line, a curl URL), "port" (Host :80/:443),
+	// "origin"/"referer" (a same-origin header), "probe" (a connect/TLS
+	// handshake answered) or "default" (nothing did; https assumed).
+	SchemeSource string `json:"scheme_source,omitempty"`
+	// Reachable is true when the target gave any HTTP answer to the baseline
+	// request. False with Unreachable set when it did not: nothing was
+	// assessed, and the command exits 1 (no_targets_reachable) unless another
+	// input of the same invocation answered.
+	Reachable   bool                  `json:"reachable"`
+	Unreachable *database.TargetIssue `json:"unreachable,omitempty"`
+	// ModulesLoaded is the selected module count (active + passive).
+	ModulesLoaded int `json:"modules_loaded"`
+	// ModulesRun counts the modules that executed at least once. It used to be
+	// the loaded count, so a dead target reported hundreds of modules run.
+	ModulesRun   int                   `json:"modules_run"`
+	Findings     []*output.ResultEvent `json:"findings"`
+	Candidates   []*output.ResultEvent `json:"candidates,omitempty"`
+	Observations []*output.ResultEvent `json:"observations,omitempty"`
+	Errors       []string              `json:"errors,omitempty"`
 	// Persisted states whether these findings also reached a database. The direct
 	// path can run with no store at all, and a caller that reads the findings out
 	// of this document and then expects `vigolium finding` to list them needs to
@@ -359,7 +381,8 @@ type scanResult struct {
 	Interrupted bool `json:"interrupted,omitempty"`
 	// StopReason is set when the input was not scanned at all:
 	// "no_targets_in_scope" when scope refused the target (TargetsRejected says
-	// which rule). Nothing was sent for it.
+	// which rule; nothing was sent for it), "no_targets_reachable" when it got
+	// no HTTP answer (Unreachable says why).
 	StopReason string `json:"stop_reason,omitempty"`
 	// TargetsRejected names the target scope refused and the rule that refused
 	// it (scope.host.include, scope.path.exclude, ...).
@@ -860,12 +883,19 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 
 	duration := time.Since(startTime)
 
+	// Reachability from the run itself — the baseline fetch is the probe, so
+	// this costs no request.
+	reached := executor.Report().Responded > 0
 	result := &scanResult{
 		Target:         target,
 		Method:         method,
 		ScanUUID:       scanUUID,
+		ResolvedTarget: resolvedTargetOf(rr),
+		SchemeSource:   sess.schemeSource,
+		Reachable:      reached,
+		ModulesLoaded:  len(active) + len(passive),
+		ModulesRun:     modulesExecuted(executor),
 		ScanDurationMs: duration.Milliseconds(),
-		ModulesRun:     len(active) + len(passive),
 		Findings:       findings,
 		Candidates:     candidates,
 		Observations:   observations,
@@ -875,6 +905,16 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 	}
 	if result.Findings == nil {
 		result.Findings = make([]*output.ResultEvent, 0)
+	}
+	switch {
+	case reached:
+		sess.reach.noteReached()
+	case !interrupted:
+		issue := unreachableIssue(target, executor.BaselineFailures())
+		result.Unreachable = &issue
+		result.StopReason = database.ReasonNoTargetsReachable
+		result.Errors = append(result.Errors, issue.Detail)
+		sess.reach.noteUnreachable(issue, schemeHint(result.SchemeSource, result.ResolvedTarget))
 	}
 
 	// In-memory --fail-on gate: the direct path holds findings in memory rather
@@ -1200,6 +1240,11 @@ func outputScanResult(result *scanResult) error {
 		return writeLegacyResultJSON(result) // B6: becomes the single scan document
 	}
 
+	if result.StopReason == database.ReasonNoTargetsReachable {
+		printUnreachableResult(result)
+		return nil
+	}
+
 	if result.StopReason == database.ReasonNoTargetsInScope {
 		fmt.Fprintf(os.Stderr, "\n%s Not scanned: %s rejected by scope %s — nothing sent — Scan ID: %s\n",
 			terminal.ErrorSymbol(),
@@ -1217,7 +1262,7 @@ func outputScanResult(result *scanResult) error {
 		terminal.SuccessSymbol(),
 		terminal.Cyan(result.Target),
 		result.Method,
-		terminal.Gray(fmt.Sprintf("%d modules", result.ModulesRun)),
+		terminal.Gray(fmt.Sprintf("%d/%d modules ran", result.ModulesRun, result.ModulesLoaded)),
 		(time.Duration(result.ScanDurationMs) * time.Millisecond).Round(time.Second),
 		terminal.BoldCyan(result.ScanUUID))
 

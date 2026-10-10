@@ -13,6 +13,12 @@ type TargetTally struct {
 	Requested int `json:"requested"`
 	Admitted  int `json:"admitted"`
 	Reached   int `json:"reached"`
+	// ReachabilityChecked says every admitted target was asked whether it
+	// answers (the runner's preflight GET, or the direct path's executor), so
+	// Admitted-Reached is the exact unreachable count. False when the check was
+	// skipped (--skip preflight, a probe-only or target-silent plan, an
+	// interrupted preflight): Reached is then not a verdict.
+	ReachabilityChecked bool `json:"reachability_checked,omitempty"`
 	// Rejected are targets scope refused; Code is the scope rule
 	// (e.g. "scope.host.include"). Capped at TargetIssueCap.
 	Rejected []TargetIssue `json:"rejected,omitempty"`
@@ -48,12 +54,27 @@ func (t *TargetTally) Merge(b TargetTally) {
 	t.Requested += b.Requested
 	t.Admitted += b.Admitted
 	t.Reached += b.Reached
+	t.ReachabilityChecked = t.ReachabilityChecked || b.ReachabilityChecked
 	for _, issue := range b.Rejected {
 		t.AddRejected(issue)
 	}
 	for _, issue := range b.Unreachable {
 		t.AddUnreachable(issue)
 	}
+}
+
+// UnreachableCount is the number of admitted targets that did not answer, and
+// whether that number is known (see ReachabilityChecked). Exact past the
+// Unreachable list's cap.
+func (t TargetTally) UnreachableCount() (int, bool) {
+	if !t.ReachabilityChecked {
+		return 0, false
+	}
+	n := t.Admitted - t.Reached
+	if n < 0 {
+		n = 0
+	}
+	return n, true
 }
 
 func appendCappedIssue(list []TargetIssue, issue TargetIssue) []TargetIssue {

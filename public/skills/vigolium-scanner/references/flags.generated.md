@@ -1771,6 +1771,7 @@ Scan a raw HTTP request for vulnerabilities
 | `--no-clustering` | - | bool | `false` | Disable deduplication of identical concurrent HTTP requests |
 | `--no-param-dedup` | - | bool | `false` | Keep testing a parameter with every module of a vuln class after one already reported it (default: one finding per param and class, e.g. sqli-time-blind skips a param sqli-error-based confirmed). For audit runs |
 | `--no-passive` | - | bool | `false` | Skip passive modules |
+| `--no-scheme-probe` | - | bool | `false` | Do not probe the target (TCP connect / TLS handshake) when the request carries no scheme signal; keep the https default |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
 | `--output` | `-o` | string | - | Write findings to this file (use with --format jsonl\|html; pairs with -S/--stateless) |
