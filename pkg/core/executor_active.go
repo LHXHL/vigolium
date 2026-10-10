@@ -230,3 +230,26 @@ func (e *Executor) SetNoParamDedup(disabled bool) {
 		e.scanCtx.NoParamDedup = disabled
 	}
 }
+
+func (e *Executor) runActiveStage(ctx context.Context, req *httpmsg.HttpRequestResponse, filter *moduleFilter, elig *requestEligibility) {
+	// One context-bound requester clone per item, handed to every active-module
+	// task below — they all run under the same PHASE ctx. Binding the context once
+	// here keeps that work off the hottest fan-out loop; runActiveWithTimeout still
+	// takes a second shallow clone per call to attach that call's abandon flag,
+	// which is the minimum needed to carry per-call state into a module that takes
+	// a *http.Requester.
+	// Bound to the phase context, NOT any per-module timeout, so the shared request
+	// clusterer isn't poisoned by one module's timeout (see runActiveWithTimeout).
+	var reqClient *http.Requester
+	if e.httpClient != nil {
+		reqClient = e.httpClient.WithContext(ctx)
+	}
+
+	// conc.WaitGroup automatically catches panics per goroutine and re-panics
+	// on Wait(), which is caught by processItem's top-level panic recovery.
+	var g conc.WaitGroup
+	e.runActivePerHost(ctx, reqClient, req, filter, elig, &g)
+	e.runActivePerRequest(ctx, reqClient, req, filter, elig, &g)
+	e.runActivePerInsertionPoint(ctx, reqClient, req, filter, elig, &g)
+	g.Wait()
+}

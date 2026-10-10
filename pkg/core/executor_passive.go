@@ -96,3 +96,41 @@ func (e *Executor) runPassivePerRequestFiltered(ctx context.Context, item *httpm
 		e.processResults(ctx, results, module, item)
 	}
 }
+
+func (e *Executor) runPassiveStage(ctx context.Context, req *httpmsg.HttpRequestResponse, filter *moduleFilter, inScope bool) {
+	eligiblePerHost := e.filterEligiblePassive(e.perHostPassive, req, filter)
+	eligiblePerRequest := e.filterEligiblePassive(e.perRequestPassive, req, filter)
+	if !inScope {
+		eligiblePerHost = filterNonScopeAware(eligiblePerHost)
+		eligiblePerRequest = filterNonScopeAware(eligiblePerRequest)
+	}
+	e.runPassivePerHostFiltered(ctx, req, eligiblePerHost)
+	e.runPassivePerRequestFiltered(ctx, req, eligiblePerRequest)
+}
+
+// filterEligiblePassive pre-filters passive modules by CanProcess and module filter,
+// computing eligibility once per request instead of per-module in each run method.
+func (e *Executor) filterEligiblePassive(mods []modules.PassiveModule, item *httpmsg.HttpRequestResponse, filter *moduleFilter) []modules.PassiveModule {
+	if len(mods) == 0 {
+		return nil
+	}
+	eligible := make([]modules.PassiveModule, 0, len(mods))
+	for _, m := range mods {
+		if !filter.allows(m.ID()) {
+			continue
+		}
+		if !e.passesTechFilter(m, item) {
+			continue
+		}
+		if !e.passesContentClassFilter(m, item) {
+			continue
+		}
+		// Mark considered before CanProcess so modules that always reject this
+		// input shape still count toward the "modules scanned" status counter.
+		e.moduleMetrics.MarkConsidered(m.ID())
+		if m.CanProcess(item) {
+			eligible = append(eligible, m)
+		}
+	}
+	return eligible
+}
