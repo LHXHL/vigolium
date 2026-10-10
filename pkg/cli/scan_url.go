@@ -774,6 +774,7 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		return nil, err
 	}
 	defer cleanup()
+	defer installDirectProbeDefaults()()
 
 	// Warn once per host when the edge WAF/CDN starts filtering scan traffic.
 	// The Runner-backed path wires this in RunNativeScan; this direct path builds

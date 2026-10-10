@@ -640,7 +640,8 @@ The following phases can be used with `--only` and `--skip`:
 `-I <format>` selects the input type. Without `-I`, an `-i` file is detected from
 its content (HAR, Postman, OpenAPI/Swagger, WSDL, Burp XML/raw/scope, curl,
 nuclei, deparos, URL list); a file that is mostly not URLs and matches nothing
-fails with `input_unparsed`.
+fails with `input_unparsed`. An explicit `-I` (including `-I urls`) turns
+detection off for `scan`, `run` and `ingest`: the file is read as that format.
 
 | Format | Flag | Example |
 |--------|------|---------|
@@ -665,6 +666,8 @@ OpenAPI extras: `--spec-url` (use servers from the spec), `--spec-header`
 (auth), `--spec-var` (parameter values), `--spec-default` (fallback). WSDL
 reuses `--spec-header` (auth) and `--spec-var` (override a body element by its
 local name); `-t` overrides only the endpoint host, keeping the WSDL path.
+Postman: `-t` fills `{{baseUrl}}` / `{{url}}` and `--spec-var` fills other
+`{{variables}}`.
 
 ## Output formats
 

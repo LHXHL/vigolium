@@ -85,7 +85,7 @@ Launches an AI agent that autonomously discovers, scans, and triages vulnerabili
 | Field              | Type     | Required | Description                                                    |
 |--------------------|----------|----------|----------------------------------------------------------------|
 | `prompt`           | string   | No       | Natural language scan prompt (parsed into target/source/focus when explicit fields are empty) |
-| `intensity`        | string   | No       | Scan intensity preset: `"quick"`, `"balanced"` (default), or `"deep"`. Bundles `max_commands`, `timeout`, `audit_mode`, and `browser` settings |
+| `intensity`        | string   | No       | Scan intensity preset: `"quick"`, `"balanced"` (default), or `"deep"`. Bundles `max_commands`, `timeout`, and `browser` settings (never the audit harness) |
 | `target`           | string   | No*      | Target URL to scan (derived from `input` if not set)           |
 | `input`            | string   | No       | Raw input (curl, raw HTTP, Burp XML, URL) — target extracted automatically |
 | `agent`            | string   | No       | Optional descriptive label persisted to the run record (provider is server-side from `agent.olium.*`) |
@@ -101,11 +101,14 @@ Launches an AI agent that autonomously discovers, scans, and triages vulnerabili
 | `stream`           | bool     | No       | If `true`, returns an SSE stream                               |
 | `scan_uuid`        | string   | No       | Link results to a specific scan UUID                           |
 | `project_uuid`     | string   | No       | Scope results to a project (falls back to `X-Project-UUID` header) |
-| `no_audit`        | bool     | No       | Disable automatic vigolium-audit (enabled by default when `source` is set) |
-| `audit_mode`      | string   | No       | Vigolium Audit mode: `"lite"` (default, 3-phase), `"balanced"` (9-phase), or `"deep"` (12-phase) |
+| `audit_mode`      | string   | No       | Run the nested vigolium-audit harness (a claude/codex CLI before the operator; needs `source`): `"lite"` (3-phase), `"balanced"` (9-phase), `"deep"` (12-phase) or `"mock"`. Empty = off |
+| `piolium`         | string   | No       | Run the nested piolium harness instead (needs `source`): `"lite"`, `"balanced"`, `"deep"`, `"longshot"`, … Empty = off; an installed piolium is never auto-selected |
+| `no_audit`        | bool     | No       | Keep the audit harness off (the default; kept for older clients) |
 | `audit`           | string   | No       | **DEPRECATED** — use `no_audit` + `audit_mode` instead. Legacy values: `"lite"`, `"balanced"`, `"deep"`, `"off"` |
 
 \* At least one of `target`, `input`, `source`, `diff`, or `prompt` is required.
+
+**Audit harness:** off by default, as with `vigolium agent autopilot` (`--audit` defaults to `off`). A `source` path or an `intensity` preset no longer starts it; set `audit_mode`, `audit` or `piolium` (or name an audit in `prompt`) to run one.
 
 **Source resolution:** The `source` field accepts local paths, git URLs (HTTPS or SSH), git URLs with embedded OAuth tokens (`https://oauth2:TOKEN@github.com/...`), and archive files. Git repos are cloned with `--depth 1` and archives are extracted into the session directory. OAuth tokens are stripped from logs.
 

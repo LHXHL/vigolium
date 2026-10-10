@@ -145,6 +145,10 @@ type Handlers struct {
 	// Cached scope matcher (lazy-initialized, invalidated on config change)
 	scopeMatcherMu sync.RWMutex
 	scopeMatcher   *config.ScopeMatcher
+	// projectScopes caches the ingest scope of projects with a config overlay
+	// (ingestScopeFor); scopeGen invalidates it on a scope reload.
+	projectScopes map[string]projectScopeEntry
+	scopeGen      uint64
 
 	// Prometheus metrics handler
 	metricsHandler fiber.Handler
@@ -470,6 +474,8 @@ func (h *Handlers) readReloadableScope() config.ScopeConfig {
 func (h *Handlers) resetScopeMatcher() {
 	h.scopeMatcherMu.Lock()
 	h.scopeMatcher = nil
+	h.projectScopes = nil
+	h.scopeGen++
 	h.scopeMatcherMu.Unlock()
 }
 

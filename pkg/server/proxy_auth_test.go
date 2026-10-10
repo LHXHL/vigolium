@@ -13,8 +13,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/vigolium/vigolium/internal/config"
 )
 
 const testProxyToken = "s3cret-proxy-token"
@@ -49,7 +47,7 @@ func (u *upstreamRecorder) leaked() bool {
 func authedProxy(t *testing.T, auth *ProxyAuth) *url.URL {
 	t.Helper()
 	srv := newIngestProxy("127.0.0.1:0", nil, nil, nil, nil,
-		func() *config.ScopeMatcher { return nil }, nil, false, auth)
+		nil, nil, false, auth)
 	pu, err := url.Parse(startProxy(t, srv))
 	require.NoError(t, err)
 	return pu

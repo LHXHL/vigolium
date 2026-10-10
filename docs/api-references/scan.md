@@ -85,8 +85,11 @@ Starts an asynchronous scan from a base64-encoded raw HTTP request, optionally p
 | `target_url`           | string | No       | Override target URL (scheme://host) for the request                                                   |
 | `modules`              | string | No       | Comma-separated module IDs to run                                                                     |
 | `no_passive`           | bool   | No       | Skip passive modules                                                                                  |
+| `no_scheme_probe`      | bool   | No       | Keep the inferred `https` default instead of probing the target (CLI `--no-scheme-probe`)             |
 
 > \* Exactly one of `http_request_base64` or `raw_request` is required. If both are set, `http_request_base64` wins. The same precedence applies to `http_response_base64` / `raw_response`.
+
+> **Scheme resolution:** without `target_url` the request line carries no scheme, so it is settled the way `vigolium scan-request` settles it: an absolute-form request line, a `Host` on `:80`/`:443`, or a same-origin `Origin`/`Referer` decide; otherwise the target is probed (TCP connect, plus a TLS handshake on an explicit non-standard port) instead of assuming `https`, so a plain-http service on `:8080` is scanned over `http://`. Scope is checked first, so a refused target is never contacted. The response's `target` is the URL that will be sent and `scheme_source` says what decided it (`explicit`, `port`, `origin`, `referer`, `probe` or `default`).
 
 > **Paired response behavior:** When `http_response_base64` is provided, passive modules analyze the supplied response directly (no extra traffic sent). Active modules still send their own probe requests — that's the nature of active scanning — but the supplied response is used for baseline passive analysis. When omitted, the scanner fetches the response itself before scanning.
 
@@ -132,7 +135,9 @@ curl -s -X POST http://localhost:9002/api/scan-request \
   "project_uuid": "my-project-uuid",
   "scan_uuid": "661f9511-f3ac-52e5-b827-557766551111",
   "status": "running",
-  "message": "scan-request started for https://example.com/api/login"
+  "message": "scan-request started for https://example.com/api/login",
+  "target": "https://example.com/api/login",
+  "scheme_source": "explicit"
 }
 ```
 

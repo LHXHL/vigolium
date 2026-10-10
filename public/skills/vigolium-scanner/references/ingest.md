@@ -83,7 +83,7 @@ path is indistinguishable from an empty capture.
 | `--scan-on-receive` | After ingesting, scan the records (local mode only). `-S` is a **deprecated alias** here and warns — everywhere else `-S` means `--stateless`. |
 | `--spec-url` | Use server URLs from the OpenAPI/Swagger spec |
 | `--spec-header` | HTTP header(s) for OpenAPI/WSDL requests (repeatable) |
-| `--spec-var` | OpenAPI parameter / WSDL element values as `key=value` (repeatable) |
+| `--spec-var` | OpenAPI parameter / WSDL element / Postman `{{variable}}` values as `key=value` (repeatable) |
 | `--spec-default` | Default value for required parameters (default: `1`) |
 | `--disable-fetch-response` | Store request-only (don't fetch responses) |
 | `--scope-origin` | Origin scope mode for filtering |

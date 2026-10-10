@@ -163,6 +163,71 @@ Accepted values are `draft`, `triaged`, `confirmed`, `false_positive`,
 
 ---
 
+## POST /api/findings/:id/verify — Verify a Finding
+
+`vigolium finding verify` over REST (operator and admin). Re-runs the module
+behind one finding against the request it originally scanned and records
+whether it reproduces. `:id` is the numeric ID or the finding hash (12+
+character prefix); the lookup is scoped to `X-Project-UUID`, so a finding from
+another project returns `404` (`error_code: finding_not_found`). The call is
+synchronous: it answers when the module run ends.
+
+| Verdict          | Meaning |
+|------------------|---------|
+| `confirmed`      | the module reported the same finding again |
+| `not_reproduced` | the module ran against a responding target and did not |
+| `inconclusive`   | target unreachable, module timed out or failed, or the baseline could not be reconstructed |
+| `unsupported`    | no deterministic re-run (agent, audit, OAST and known-issue-scan findings; an `ext-*` module the project's extension config does not load) |
+
+**Request body (optional):**
+
+| Field        | Type   | Description |
+|--------------|--------|-------------|
+| `dry_run`    | bool   | Return the reconstruction (module, baseline, insertion point); send and write nothing |
+| `no_write`   | bool   | Run, but do not store the verdict |
+| `mark`       | bool   | Also set the status: `not_reproduced` → `false_positive`, `confirmed` → `confirmed` (not with `dry_run`/`no_write`) |
+| `refetch`    | bool   | Passive findings: fetch a fresh response instead of re-analyzing the stored one |
+| `rate_limit` | number | Max requests/second (0 = unlimited; fractions allowed) |
+| `timeout`    | string | Go duration bounding the run (default `2m`, at most `10m`; one request is capped at 15s) |
+
+```bash
+curl -s -X POST http://localhost:9002/api/findings/42/verify \
+  -H 'Content-Type: application/json' \
+  -d '{"mark":true}' | jq .
+```
+
+**Response (v1):** the result object, the item `vigolium finding verify -j`
+emits:
+
+```json
+{
+  "id": 42,
+  "finding_hash": "3f9a0c2b71de…",
+  "module_id": "sqli-error-based",
+  "verdict": "confirmed",
+  "plan": {"baseline": {"source": "origin_record", "method": "GET", "url": "http://app.local/item?id=1"}, "insertion_point": {"type": "URL_PARAM", "name": "id"}, "network": true},
+  "results": 1,
+  "matched": 1,
+  "requests": 14,
+  "duration_ms": 812,
+  "written": true,
+  "status_change": {"id": 42, "from": "triaged", "to": "confirmed"}
+}
+```
+
+With `Vigolium-Api-Version: 2` the body is the list envelope (`kind:
+"mutation"`, `items: [result]`) with `changed`, `action: "verify"`,
+`dry_run`, `written` and a `verdicts` tally.
+
+| Status | Description |
+|--------|-------------|
+| 200    | Verified (any verdict) |
+| 400    | Invalid option, or an ambiguous hash prefix |
+| 404    | Finding not found in the selected project |
+| 503    | Database not configured |
+
+---
+
 ## DELETE /api/findings/:id — Delete Finding
 
 Deletes a single finding by its numeric ID. Associated `finding_records` junction rows, `finding_observations` and `finding_status_events` rows are also removed.

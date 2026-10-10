@@ -4,6 +4,7 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/verify"
 )
 
 // SwaggerSchemaTypes maps every generated components.schemas entry in the
@@ -64,12 +65,15 @@ var SwaggerSchemaTypes = map[string]any{
 	"ChatCompletionResponse":    ChatCompletionResponse{},
 
 	// Data
-	"Finding":         database.Finding{},
-	"HTTPRecord":      swaggerHTTPRecord{},
-	"EmbeddedParam":   database.EmbeddedParam{},
-	"OASTInteraction": database.OASTInteraction{},
-	"ModuleInfo":      ModuleInfo{},
-	"StatsResponse":   StatsResponse{},
+	"Finding": database.Finding{},
+	// POST /api/findings/:id/verify
+	"VerifyFindingRequest": VerifyFindingRequest{},
+	"VerifyFindingResult":  verify.Result{},
+	"HTTPRecord":           swaggerHTTPRecord{},
+	"EmbeddedParam":        database.EmbeddedParam{},
+	"OASTInteraction":      database.OASTInteraction{},
+	"ModuleInfo":           ModuleInfo{},
+	"StatsResponse":        StatsResponse{},
 
 	// Scope / config / projects
 	"ScopeConfig":          config.ScopeConfig{},

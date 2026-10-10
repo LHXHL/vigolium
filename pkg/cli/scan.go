@@ -148,6 +148,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.MarkSchemeAssumed(schemeAssumed)
 	scanOpts.TargetsFilePaths = globalTargetFiles
 	scanOpts.InputFileMode = globalInputMode
+	scanOpts.InputFileModeExplicit = cmd.Flags().Changed("input-mode")
 	scanOpts.Timeout = globalTimeout
 	scanOpts.Concurrency = globalConcurrency
 	scanOpts.MaxPerHost = globalMaxPerHost

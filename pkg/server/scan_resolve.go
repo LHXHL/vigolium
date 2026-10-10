@@ -77,7 +77,7 @@ func newScanResolved(strategy string, opts *types.Options) *ScanResolved {
 // settings is mutated and must be the request's own clone.
 func resolveScanAllRecordsOptions(settings *config.Settings, serverConcurrency int, req ScanAllRecordsRequest, projectUUID string) (*types.Options, runner.ResolvedStrategy, error) {
 	opts := types.DefaultOptions()
-	opts.Modules = resolveAPIModules(req.Modules, req.ModuleTags)
+	applyAPIModuleSelection(opts, req.Modules, req.ModuleTags)
 	opts.ProjectUUID = projectUUID
 	applyRequestPace(opts, serverConcurrency, req.Concurrency, req.RateLimit, req.MaxPerHost)
 

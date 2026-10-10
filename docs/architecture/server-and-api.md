@@ -79,7 +79,7 @@ Endpoints group by concern; each group has a dedicated page under [api-reference
 | Auth/user | `POST /api/auth/login`, `GET /api/user/info` | Token issue, identity |
 | Ingestion | `POST /api/ingest-http` | Traffic in (see §2) |
 | HTTP records | `GET/DELETE /api/http-records[/:uuid]` | Query/inspect captured traffic |
-| Findings | `GET /api/findings`, `PATCH /api/findings/:id/status` | Query/triage results |
+| Findings | `GET /api/findings`, `PATCH /api/findings/:id/status`, `POST /api/findings/:id/verify` | Query/triage/verify results |
 | Scan control | `POST /api/scan-url`, `/api/scan-request`, `/api/scans/run`, `/api/scans/:uuid/{stop,pause,resume}` | Trigger & manage native scans |
 | Scope / config | `GET/POST /api/scope`, `/api/config` | Live scope & config |
 | Projects | `GET/POST/PUT/DELETE /api/projects[/:uuid]`, `GET /api/projects/:uuid/stats` | Multi-tenancy management |

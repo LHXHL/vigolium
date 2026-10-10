@@ -220,6 +220,7 @@ func registerRoutes(app *fiber.App, handlers *Handlers, cfg ServerConfig) {
 	operator.Post("/scans/:uuid/update", handlers.HandleUpdateScan)
 	operator.Post("/agent/scans/:uuid/update", handlers.HandleUpdateAgenticScan)
 	operator.Patch("/findings/:id/status", handlers.findingsHandler().HandleUpdateFindingStatus)
+	operator.Post("/findings/:id/verify", handlers.HandleVerifyFinding)
 	if !cfg.NoAgent {
 		operator.Post("/agent/run/query", handlers.HandleAgentQuery)
 		operator.Post("/agent/run/autopilot", handlers.HandleAgentAutopilot)

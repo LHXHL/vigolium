@@ -219,7 +219,7 @@ func NewServer(cfg ServerConfig, q queue.Queue, db *database.DB, repo *database.
 			}
 		}
 		s.proxyServer = newIngestProxy(cfg.IngestProxyAddr, db, repo, recordWriter, settings,
-			handlers.getScopeMatcher, mitmCA, cfg.IngestProxyInsecure, cfg.IngestProxyAuth)
+			handlers.ingestScopeFor, mitmCA, cfg.IngestProxyInsecure, cfg.IngestProxyAuth)
 	}
 
 	return s

@@ -256,6 +256,21 @@ func respondBespokeList(c fiber.Ctx, v1Body any, page PaginatedResponse, extra m
 	return c.JSON(listEnvelope(c, page, extra, nil))
 }
 
+// respondMutationList writes a mutation that answers with the rows it acted
+// on (POST /api/findings/:id/verify): v1 sends v1Body untouched; v2 is the list
+// envelope with kind "mutation", the CLI mutation document's kind, and extra
+// (changed, action, …) flattened in. A page carrying ProjectUUID is reported
+// project-scoped.
+func respondMutationList(c fiber.Ctx, v1Body any, page PaginatedResponse, extra map[string]any) error {
+	if requestAPIVersion(c) != apicontract.RESTAPIVersion2 {
+		return c.JSON(v1Body)
+	}
+	scoped := page.ProjectUUID != ""
+	env := listEnvelope(c, page, extra, &scoped)
+	env.Kind = "mutation"
+	return c.JSON(env)
+}
+
 // respondBespokeListScoped is respondBespokeList for a route whose project
 // scoping depends on the request (the generic table API).
 func respondBespokeListScoped(c fiber.Ctx, v1Body any, page PaginatedResponse, extra map[string]any, projectScoped bool) error {

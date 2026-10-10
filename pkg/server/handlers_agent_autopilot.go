@@ -64,6 +64,9 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 					req.AuditDriverMode = app.Audit
 				}
 			}
+			if app.Piolium != "" && req.Piolium == "" {
+				req.Piolium = app.Piolium
+			}
 			if app.Diff != "" && req.Diff == "" {
 				req.Diff = app.Diff
 			}
@@ -121,6 +124,15 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 		return respondErrorMsg(c, fiber.StatusBadRequest, fmt.Sprintf("invalid audit_mode %q: must be lite, balanced, deep, or mock", mode))
 	}
 
+	// The nested audit harness (a claude/codex or pi CLI run before the
+	// operator) is off unless the request asks for one — audit / audit_mode /
+	// piolium, or the prompt's intent — as `vigolium agent autopilot` has it
+	// (--audit defaults off). Neither the intensity preset nor an installed
+	// piolium turns it on.
+	if !autopilotAuditRequested(req) {
+		req.NoAudit = true
+	}
+
 	// Resolve intensity preset
 	intensity, intensityErr := agent.ValidateIntensity(req.Intensity)
 	if intensityErr != nil {
@@ -130,9 +142,10 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 		changed := map[string]bool{
 			"max-commands": req.MaxCommands != 0,
 			"timeout":      req.Timeout != "",
-			"audit-mode":   req.AuditDriverMode != "",
-			"no-audit":     req.NoAudit || req.Audit == "off",
-			"browser":      req.Browser || req.RequiresBrowser,
+			// The preset's audit mode is never applied (see above).
+			"audit-mode": true,
+			"no-audit":   req.NoAudit || req.Audit == "off",
+			"browser":    req.Browser || req.RequiresBrowser,
 		}
 		result := agent.ResolveAutopilotIntensity(intensity, agent.AutopilotIntensityPreset{
 			MaxCommands:     req.MaxCommands,
@@ -145,9 +158,6 @@ func (h *Handlers) HandleAgentAutopilot(c fiber.Ctx) error {
 		}
 		if req.Timeout == "" {
 			req.Timeout = result.Timeout.String()
-		}
-		if req.AuditDriverMode == "" && req.Audit == "" {
-			req.AuditDriverMode = result.AuditDriverMode
 		}
 		if !req.Browser {
 			req.Browser = result.Browser
@@ -213,20 +223,27 @@ func (h *Handlers) startAutopilotRun(c fiber.Ctx, req AgentAutopilotRequest, tim
 	})
 }
 
-// resolveAutopilotAuditCfgServer mirrors the CLI's audit-harness auto-pick
-// for the server's autopilot endpoint. When the request leaves both `audit`
-// and `piolium` empty, piolium wins if the server has pi+piolium installed,
-// otherwise audit's existing auto-on-source default applies. An explicit
-// `piolium` value disables audit (one harness per scan).
-func (h *Handlers) resolveAutopilotAuditCfgServer(req AgentAutopilotRequest, sourcePath string) (*config.AuditAgentConfig, agent.HarnessSpec) {
-	pioliumMode := req.Piolium
-	if sourcePath != "" && pioliumMode == "" {
-		auditExplicit := req.Audit != "" || req.AuditDriverMode != "" || req.NoAudit
-		if !auditExplicit && h.pioliumAvailableCached() {
-			pioliumMode = req.ResolvedAuditDriverMode()
-		}
+// autopilotAuditRequested reports whether an autopilot request asks for a
+// nested audit harness: an audit / audit_mode other than "off", or a piolium
+// mode.
+func autopilotAuditRequested(req AgentAutopilotRequest) bool {
+	if req.Piolium != "" && req.Piolium != "off" {
+		return true
 	}
-	return agent.PickAuditHarness(pioliumMode, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit(), sourcePath, h.settings.Agent.Audit)
+	if req.Audit == "off" {
+		return false
+	}
+	return req.AuditDriverMode != "" || req.Audit != ""
+}
+
+// resolveAutopilotAuditCfgServer picks the audit harness for the server's
+// autopilot endpoint: piolium when the request names a piolium mode, else
+// vigolium-audit when it names an audit mode, else none (off by default, as
+// on the CLI). An explicit piolium without an audit mode keeps audit off, so
+// the two harnesses never double-run.
+func (h *Handlers) resolveAutopilotAuditCfgServer(req AgentAutopilotRequest, sourcePath string) (*config.AuditAgentConfig, agent.HarnessSpec) {
+	auditMode := req.AuditDriverMode != "" || (req.Audit != "" && req.Audit != "off")
+	return agent.PickAuditHarness(req.Piolium, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit() || !auditMode, sourcePath, h.settings.Agent.Audit)
 }
 
 // resolveSwarmAuditCfgServer is the swarm counterpart. Swarm audit is opt-in

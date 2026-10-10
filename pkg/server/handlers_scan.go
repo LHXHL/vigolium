@@ -70,6 +70,18 @@ func resolveAPIModules(modulePatterns, moduleTags []string) []string {
 	return result
 }
 
+// applyAPIModuleSelection fills opts' module selection from a request's
+// modules / module_tags: the resolved built-in IDs, plus the raw patterns and
+// tags the runner re-applies to the JS/YAML extensions it loads — the same
+// split the CLI makes for -m / --module-tag (applyModuleSelection), so a REST
+// scan narrowed to "xss" narrows the extensions too instead of running every
+// loaded one.
+func applyAPIModuleSelection(opts *types.Options, modulePatterns, moduleTags []string) {
+	opts.Modules = resolveAPIModules(modulePatterns, moduleTags)
+	opts.ModulePatterns = append([]string(nil), modulePatterns...)
+	opts.ModuleTags = append([]string(nil), moduleTags...)
+}
+
 // validateRunScanRequest validates the RunScanRequest fields.
 func validateRunScanRequest(req RunScanRequest) error {
 	if req.Strategy != "" {
@@ -207,7 +219,7 @@ func (o scanOutputs) path(format string) string {
 func buildRunScanOptions(req RunScanRequest, projectUUID string, serverConcurrency int) (*types.Options, error) {
 	opts := types.DefaultOptions()
 	opts.Targets = req.Targets
-	opts.Modules = resolveAPIModules(req.Modules, req.ModuleTags)
+	applyAPIModuleSelection(opts, req.Modules, req.ModuleTags)
 	opts.ProjectUUID = projectUUID
 	applyRequestPace(opts, serverConcurrency, req.Concurrency, req.RateLimit, req.MaxPerHost)
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -217,5 +218,37 @@ func TestHandleRunScan_ResolvedInResponse(t *testing.T) {
 	want := ScanResolved{Strategy: "lite", Concurrency: 10, RateLimit: 20, MaxPerHost: 10}
 	if got.Resolved == nil || *got.Resolved != want {
 		t.Fatalf("resolved = %+v, want %+v", got.Resolved, want)
+	}
+}
+
+// TestRESTModuleSelectionCarriesPatterns: both scan routes hand the runner the
+// raw modules / module_tags (as the CLI does for -m / --module-tag), so the
+// JS/YAML extensions it loads are narrowed by the same patterns.
+func TestRESTModuleSelectionCarriesPatterns(t *testing.T) {
+	run, _, err := ResolveRunScanRequest(testProfilesSettings(t), 0, RunScanRequest{
+		Targets: []string{"http://127.0.0.1:1"}, Modules: []string{"xss"}, ModuleTags: []string{"injection"},
+	}, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, _, err := resolveScanAllRecordsOptions(testProfilesSettings(t), 0, ScanAllRecordsRequest{
+		Modules: []string{"xss"}, ModuleTags: []string{"injection"},
+	}, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, opts := range map[string]*types.Options{"run": run, "records": records} {
+		if !slices.Equal(opts.ModulePatterns, []string{"xss"}) || !slices.Equal(opts.ModuleTags, []string{"injection"}) {
+			t.Errorf("%s: ModulePatterns=%v ModuleTags=%v, want [xss] [injection]", name, opts.ModulePatterns, opts.ModuleTags)
+		}
+	}
+
+	// Unnarrowed: no patterns, so every loaded extension stays.
+	all, _, err := ResolveRunScanRequest(testProfilesSettings(t), 0, RunScanRequest{Targets: []string{"http://127.0.0.1:1"}}, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.ModulePatterns) != 0 || len(all.ModuleTags) != 0 {
+		t.Errorf("unnarrowed: ModulePatterns=%v ModuleTags=%v, want none", all.ModulePatterns, all.ModuleTags)
 	}
 }

@@ -24,8 +24,12 @@ type Options struct {
 	// Targets itself. The runner recomputes the verdict and owns the decision.
 	TargetAdmission *TargetAdmission
 	InputFileMode   string // json, jsonb, list
-	Stream          bool
-	Stdin           bool
+	// InputFileModeExplicit: -I was given, so a URL-list InputFileMode is the
+	// operator's choice and the input file is not content-sniffed into another
+	// format (source.FileSourceConfig.FormatExplicit).
+	InputFileModeExplicit bool
+	Stream                bool
+	Stdin                 bool
 	// --input-read-timeout used to land here and go no further: nothing in the
 	// runner ever read this field, so the advertised deadline was inert and a
 	// pipe that never closed hung the process. The deadline is now applied where

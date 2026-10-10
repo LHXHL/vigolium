@@ -24,8 +24,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
-	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
-	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -331,8 +329,10 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 	var outcome ingestOutcome
 
 	// --- 1. Auto-detect format ---
+	// -I given: the operator's format stands (no sniffing, even for -I urls).
+	formatExplicit := cmd.Flags().Changed("input-mode")
 	inputFormat := ingestOpts.InputFormat
-	if inputFormat == "urls" && ingestOpts.Input != "-" {
+	if inputFormat == "urls" && ingestOpts.Input != "-" && !formatExplicit {
 		if detected := detectInputFormat(ingestOpts.Input); detected != "" {
 			inputFormat = detected
 			zap.L().Info("Auto-detected input format", zap.String("format", inputFormat))
@@ -391,12 +391,13 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 		inputSource = source.NewSliceSource(preloadedNeedFetch, ingestOpts.EnableModules)
 	} else {
 		built, err := source.NewInputSource(source.SourceConfig{
-			Targets:    globalTargets,
-			FilePath:   filePath,
-			FilePaths:  globalTargetFiles,
-			Format:     inputFormat,
-			UseStdin:   useStdin,
-			BufferSize: 100,
+			Targets:        globalTargets,
+			FilePath:       filePath,
+			FilePaths:      globalTargetFiles,
+			Format:         inputFormat,
+			FormatExplicit: formatExplicit,
+			UseStdin:       useStdin,
+			BufferSize:     100,
 		})
 		if err != nil {
 			return outcome, fmt.Errorf("failed to create input source: %w", err)
@@ -408,9 +409,10 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 	// (the preloaded branch above builds a slice source that ignores them).
 	if len(preloadedItems) > 0 && len(globalTargetFiles) > 0 {
 		tfSrc, tfErr := source.NewInputSource(source.SourceConfig{
-			FilePaths:  globalTargetFiles,
-			Format:     inputFormat,
-			BufferSize: 100,
+			FilePaths:      globalTargetFiles,
+			Format:         inputFormat,
+			FormatExplicit: formatExplicit,
+			BufferSize:     100,
 		})
 		if tfErr != nil {
 			return outcome, fmt.Errorf("failed to create target-file source: %w", tfErr)
@@ -419,27 +421,16 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 	}
 	defer func() { _ = inputSource.Close() }()
 
-	// Configure spec-format options on the file parser (same pattern as
-	// runner.go). FirstFileSource unwraps a MultiSource so the override lands even
-	// when -t/-T is combined with -i, and covers a content-sniffed .wsdl too.
-	if fs := source.FirstFileSource(inputSource); fs != nil {
-		switch parser := fs.Format().(type) {
-		case *openapi.Format:
-			parser.SetOpenAPIOptions(openapi.Options{
-				BaseURL:              ingestOpts.TargetURL,
-				UseSpecServers:       ingestOpts.UseSpecServers,
-				Headers:              ingestParseHeaders(ingestOpts.Headers),
-				Variables:            ingestParseVariables(ingestOpts.Variables),
-				DefaultFallbackValue: ingestOpts.DefaultParam,
-			})
-		case *wsdl.Format:
-			parser.SetWSDLOptions(wsdl.Options{
-				EndpointURL: ingestOpts.TargetURL,
-				Headers:     ingestParseHeaders(ingestOpts.Headers),
-				Variables:   ingestParseVariables(ingestOpts.Variables),
-			})
-		}
-	}
+	// Configure spec-format options (OpenAPI, WSDL, Postman) on the file
+	// parser — the same source.ApplySpecOptions scan and the runner use, so it
+	// lands even when -t/-T is combined with -i and covers a sniffed spec.
+	source.ApplySpecOptions(inputSource, source.SpecOptions{
+		BaseURL:              ingestOpts.TargetURL,
+		UseSpecServers:       ingestOpts.UseSpecServers,
+		Headers:              ingestParseHeaders(ingestOpts.Headers),
+		Variables:            ingestParseVariables(ingestOpts.Variables),
+		DefaultFallbackValue: ingestOpts.DefaultParam,
+	})
 
 	// --- 4. Initialize database ---
 	// Global → the resolved project's overlay: the scope judged below (static

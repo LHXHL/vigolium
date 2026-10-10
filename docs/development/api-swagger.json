@@ -254,11 +254,12 @@
             "type": "string"
           },
           "audit_mode": {
-            "description": "Audit harness depth (default \"lite\")",
+            "description": "Run the nested vigolium-audit harness (a claude/codex CLI before the operator; needs source) at this depth. Empty = off: neither the intensity preset nor a source path turns it on.",
             "enum": [
               "lite",
               "balanced",
-              "deep"
+              "deep",
+              "mock"
             ],
             "type": "string"
           },
@@ -352,7 +353,7 @@
             "type": "integer"
           },
           "no_audit": {
-            "description": "Disable automatic vigolium-audit (enabled by default when source is set)",
+            "description": "Keep the nested audit harness off. This is the default; the field is kept for older clients.",
             "type": "boolean"
           },
           "no_post_halt_verify": {
@@ -376,7 +377,7 @@
             "type": "string"
           },
           "piolium": {
-            "description": "Explicit piolium audit mode; empty allows server-side harness auto-selection",
+            "description": "Run the nested piolium audit harness (needs source) in this mode instead of vigolium-audit. Empty = off: an installed piolium is never auto-selected.",
             "type": "string"
           },
           "post_halt_gap_threshold": {
@@ -3423,6 +3424,9 @@
             "description": "Disable passive modules",
             "type": "boolean"
           },
+          "no_scheme_probe": {
+            "type": "boolean"
+          },
           "raw_request": {
             "description": "Alias for http_request_base64 (base64-encoded raw HTTP request)",
             "type": "string"
@@ -3480,8 +3484,14 @@
             "format": "uuid",
             "type": "string"
           },
+          "scheme_source": {
+            "type": "string"
+          },
           "status": {
             "example": "queued",
+            "type": "string"
+          },
+          "target": {
             "type": "string"
           },
           "targets_count": {
@@ -3818,6 +3828,148 @@
           }
         },
         "type": "object"
+      },
+      "VerifyFindingRequest": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "mark": {
+            "type": "boolean"
+          },
+          "no_write": {
+            "type": "boolean"
+          },
+          "rate_limit": {
+            "format": "double",
+            "type": "number"
+          },
+          "refetch": {
+            "type": "boolean"
+          },
+          "timeout": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "VerifyFindingResult": {
+        "properties": {
+          "duration_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "finding_hash": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "matched": {
+            "type": "integer"
+          },
+          "module_id": {
+            "type": "string"
+          },
+          "plan": {
+            "nullable": true,
+            "properties": {
+              "baseline": {
+                "nullable": true,
+                "properties": {
+                  "method": {
+                    "type": "string"
+                  },
+                  "record_uuid": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "finding_hash": {
+                "type": "string"
+              },
+              "id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "insertion_point": {
+                "nullable": true,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "insertion_point_source": {
+                "type": "string"
+              },
+              "module_id": {
+                "type": "string"
+              },
+              "module_type": {
+                "type": "string"
+              },
+              "network": {
+                "type": "boolean"
+              },
+              "payload": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "requests": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "results": {
+            "type": "integer"
+          },
+          "status_change": {
+            "nullable": true,
+            "properties": {
+              "finding_hash": {
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "verdict": {
+            "type": "string"
+          },
+          "written": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -3934,7 +4086,7 @@
     },
     "/api/agent/run/autopilot": {
       "post": {
-        "description": "Starts a durable olium autopilot scan. Source-aware runs can execute the configured audit harness before the autonomous operator. Heavy-run quotas return 429 when saturated.",
+        "description": "Starts a durable olium autopilot scan. The nested audit harness (vigolium-audit or piolium, run before the autonomous operator on a source-aware run) is off unless the request asks for it with audit_mode, audit or piolium (or the prompt does), as with `vigolium agent autopilot --audit`. Heavy-run quotas return 429 when saturated.",
         "operationId": "agentRunAutopilot",
         "parameters": [
           {
@@ -5797,6 +5949,98 @@
         ]
       }
     },
+    "/api/findings/{id}/verify": {
+      "post": {
+        "description": "Re-runs the module behind one finding against the request it originally scanned and records whether it reproduces: `vigolium finding verify` over REST. The finding is named by numeric id or finding hash (12+ char prefix) and must belong to the request's project (X-Project-UUID). Verdicts: confirmed, not_reproduced, inconclusive (target unreachable, module timed out or failed, baseline not reconstructable), unsupported (agent, audit, OAST and known-issue-scan findings; an ext-* module that is not loaded). The verdict is written to the finding's verification field unless no_write or dry_run is set; mark also moves not_reproduced to false_positive and confirmed to confirmed. A passive finding is re-analyzed on its stored record without sending a request unless refetch is set. Answered synchronously (timeout, default 2m, at most 10m). v1 returns the result object; v2 a one-item list envelope (kind mutation) with changed, action, dry_run, written and the verdict tally. Requires operator role.",
+        "operationId": "verifyFinding",
+        "parameters": [
+          {
+            "description": "Finding id or finding hash (12+ char prefix)",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Project UUID",
+            "in": "header",
+            "name": "X-Project-UUID",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyFindingRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyFindingResult"
+                }
+              }
+            },
+            "description": "Verification result (v1 body; v2 wraps it in the list envelope)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid option (mark with dry_run/no_write, bad timeout or rate_limit) or an ambiguous hash prefix"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Finding not found in the selected project (error_code finding_not_found)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Database required"
+          }
+        },
+        "summary": "Verify a finding",
+        "tags": [
+          "Findings"
+        ]
+      }
+    },
     "/api/http-records": {
       "get": {
         "description": "Returns a paginated list of HTTP request/response records. Blob fields (raw_request, raw_response, request_body, response_body) are excluded from list results for performance.",
@@ -6854,7 +7098,7 @@
     },
     "/api/scan-request": {
       "post": {
-        "description": "Performs a synchronous scan of a raw HTTP request and returns findings inline. Accepts a full raw HTTP request string and optional target URL override.",
+        "description": "Starts an asynchronous scan of one raw HTTP request (base64) and answers 202 with the scan UUID. Without target_url the scheme is settled the way `vigolium scan-request` settles it: an absolute-form request line, a Host on :80/:443, or a same-origin Origin/Referer decide; otherwise the target is probed (TCP connect, plus a TLS handshake on an explicit non-standard port) instead of assuming https. no_scheme_probe keeps the https default. The response names the target and its scheme_source (explicit, port, origin, referer, probe, default). Scope is checked before the probe, so a refused target is never contacted.",
         "operationId": "scanRequest",
         "parameters": [
           {
@@ -6878,16 +7122,15 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "Inline findings result",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ScanResponse"
                 }
               }
             },
-            "description": "Scan results"
+            "description": "Scan started"
           },
           "400": {
             "content": {
@@ -6918,9 +7161,19 @@
               }
             },
             "description": "The configured scope refuses the target (details: no_targets_in_scope); nothing is created or sent"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too many concurrent scans; retry shortly"
           }
         },
-        "summary": "Scan a raw HTTP request inline",
+        "summary": "Scan a raw HTTP request",
         "tags": [
           "Scans"
         ]

@@ -200,9 +200,10 @@ func (r *Runner) runDynamicAssessmentPhase(ctx context.Context, infra *phaseInfr
 	daConcurrency := r.phaseConcurrency("dynamic-assessment")
 
 	// Browser confirmations (XSS dialog probes) launch their own Chrome from a
-	// module that has no route back to the scan options; without this default
-	// they went around --proxy entirely. Restored when the phase ends.
-	defer spitolas.SetDefaultProbeProxy(r.options.ProxyURL)()
+	// module that has no route back to the scan options; without these
+	// defaults they went around --proxy entirely and ignored spidering.stealth.
+	// Restored when the phase ends.
+	defer spitolas.SetProbeDefaults(r.options.ProxyURL, r.probeStealth())()
 
 	// OAST registration started with the infrastructure; collect it here with a
 	// bounded wait. Unavailable OAST is reported once and the phase proceeds

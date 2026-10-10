@@ -11,20 +11,13 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/time/rate"
 
 	"github.com/vigolium/vigolium/pkg/apicontract"
-	"github.com/vigolium/vigolium/pkg/core/egress"
-	"github.com/vigolium/vigolium/pkg/core/network"
-	hostlimit "github.com/vigolium/vigolium/pkg/core/ratelimit"
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
-	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/http"
-	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/terminal"
-	"github.com/vigolium/vigolium/pkg/types"
 	"github.com/vigolium/vigolium/pkg/verify"
 )
 
@@ -40,9 +33,6 @@ var (
 
 // findingVerifyActor is recorded on status changes made by --mark.
 const findingVerifyActor = "finding-verify"
-
-// findingVerifyHTTPTimeout caps one request; --timeout bounds the whole run.
-const findingVerifyHTTPTimeout = 15 * time.Second
 
 var findingVerifyCmd = &cobra.Command{
 	Use:   "verify <id|hash>... [--scan-uuid <uuid>]",
@@ -94,7 +84,7 @@ func init() {
 	f.StringVar(&findingVerifyFailIf, "fail-if", "", "Exit 4 when any finding gets one of these verdicts: "+strings.Join(database.VerificationVerdicts, ",")+" (comma-separated)")
 	f.BoolVar(&findingVerifyRefetch, "refetch", false, "Passive findings: fetch a fresh response instead of re-analyzing the stored one")
 	f.Float64Var(&findingVerifyRateLimit, "rate-limit", 0, "Max requests/second across the verification (0 = unlimited; fractions allowed)")
-	f.DurationVar(&findingVerifyTimeout, "timeout", 2*time.Minute, "Time limit for verifying one finding (one request is capped at 15s)")
+	f.DurationVar(&findingVerifyTimeout, "timeout", verify.DefaultTimeout, "Time limit for verifying one finding (one request is capped at 15s)")
 	f.BoolVarP(&globalStateless, "stateless", "S", false, "Use the standalone .sqlite named by --db with project scoping off")
 	// --scan-uuid is the finding command's persistent filter flag; here it
 	// adds every finding of that scan (uuid, 8+ char prefix, latest, previous).
@@ -264,17 +254,11 @@ func loadFindingsToVerify(ctx context.Context, repo *database.Repository, projec
 func verifyOneFinding(ctx context.Context, repo *database.Repository, projectUUID string, f *database.Finding, resolve verify.ModuleResolver, stack *verifyStack) *verify.Result {
 	plan := verify.Reconstruct(ctx, repo, projectUUID, f, resolve)
 	if findingVerifyDryRun {
-		res := &verify.Result{ID: f.ID, FindingHash: f.FindingHash, ModuleID: f.ModuleID, Plan: plan,
-			Verdict: plan.Verdict, Reason: plan.Reason}
-		if plan.Verdict == "" {
-			plan.Network = plan.ModuleType == database.ModuleTypeActive || findingVerifyRefetch
-			res.Reason = "dry run: nothing sent"
-		}
-		return res
+		return verify.DryRun(plan, findingVerifyRefetch)
 	}
 
 	opts := verify.RunOptions{Refetch: findingVerifyRefetch, Timeout: findingVerifyTimeout}
-	if plan.Verdict == "" && (plan.ModuleType == database.ModuleTypeActive || findingVerifyRefetch) {
+	if plan.NeedsNetwork(findingVerifyRefetch) {
 		requester, svc, err := stack.get()
 		if err != nil {
 			plan.Verdict, plan.Reason = database.VerdictInconclusive, "HTTP setup failed: "+err.Error()
@@ -289,38 +273,11 @@ func verifyOneFinding(ctx context.Context, repo *database.Repository, projectUUI
 	if !findingVerifyWrites() || ctx.Err() != nil {
 		return res
 	}
-	v := &database.FindingVerification{
-		Verdict:       res.Verdict,
-		At:            time.Now().UTC(),
+	verify.Record(ctx, repo, projectUUID, f, res, verify.RecordOptions{
+		Mark:          findingVerifyMark,
+		Actor:         findingVerifyActor,
 		ModuleVersion: Version,
-		ScanUUID:      f.ScanUUID,
-		Reason:        res.Reason,
-	}
-	if err := repo.SetFindingVerification(ctx, projectUUID, f.ID, v); err != nil {
-		res.Reason += "; verdict not stored: " + err.Error()
-		return res
-	}
-	res.Written = true
-
-	if findingVerifyMark {
-		status := ""
-		switch res.Verdict {
-		case database.VerdictNotReproduced:
-			status = database.StatusFalsePositive
-		case database.VerdictConfirmed:
-			status = database.StatusConfirmed
-		}
-		if status != "" {
-			upd, err := repo.UpdateFindingStatusScoped(ctx, projectUUID, database.FindingStatusUpdate{
-				IDs: []int64{f.ID}, Status: status, Note: "finding verify: " + res.Reason, Actor: findingVerifyActor,
-			})
-			if err != nil {
-				res.Reason += "; status not set: " + err.Error()
-			} else if len(upd.Changed) > 0 {
-				res.Status = &upd.Changed[0]
-			}
-		}
-	}
+	})
 	return res
 }
 
@@ -439,107 +396,55 @@ func indentBlock(s, prefix string) string {
 // it, the extension engine — a passive-only or dry run never touches the
 // network layer.
 type verifyStack struct {
-	once      sync.Once
-	requester *http.Requester
-	svc       *services.Services
-	cleanup   func()
-	err       error
-
-	extOnce sync.Once
-	ext     map[string]modules.Module
+	once  sync.Once
+	stack *verify.HTTPStack
+	err   error
 }
 
 func (s *verifyStack) get() (*http.Requester, *services.Services, error) {
-	s.once.Do(func() { s.requester, s.svc, s.cleanup, s.err = newVerifyHTTPStack() })
-	return s.requester, s.svc, s.err
+	s.once.Do(func() {
+		s.stack, s.err = verify.NewHTTPStack(verify.HTTPConfig{
+			ProxyURL:    globalProxy,
+			Verbose:     globalVerbose,
+			Debug:       globalDebug,
+			DumpTraffic: globalDumpTraffic,
+			Timeout:     findingVerifyTimeout,
+			RateLimit:   findingVerifyRateLimit,
+		})
+	})
+	if s.err != nil {
+		return nil, nil, s.err
+	}
+	return s.stack.Requester, s.stack.Services, nil
 }
 
-func (s *verifyStack) close() {
-	if s.cleanup != nil {
-		s.cleanup()
-	}
-}
+func (s *verifyStack) close() { s.stack.Close() }
 
 // moduleResolver resolves built-in modules from the registry and ext-* ones
 // from the extension engine, loaded only when a finding names one.
 func (s *verifyStack) moduleResolver(findings []*database.Finding) verify.ModuleResolver {
-	needExt := slices.ContainsFunc(findings, func(f *database.Finding) bool { return strings.HasPrefix(f.ModuleID, "ext-") })
-	return func(id string) modules.Module {
-		if !strings.HasPrefix(id, "ext-") {
-			return verify.DefaultModuleResolver(id)
-		}
-		if !needExt {
-			return nil
-		}
-		s.extOnce.Do(s.loadExtensions)
-		return s.ext[id]
+	if !verify.NeedsExtensions(findings...) {
+		return verify.Resolver(nil)
 	}
+	return verify.Resolver(s.loadExtensions)
 }
 
-func (s *verifyStack) loadExtensions() {
-	s.ext = map[string]modules.Module{}
+func (s *verifyStack) loadExtensions() map[string]modules.Module {
 	settings, err := loadProjectSettings(globalConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s extensions not loaded: %v\n", terminal.WarnPrefix(), err)
-		return
+		return nil
 	}
 	applyGlobalExtFlagsToSettings(settings)
 	requester, _, err := s.get()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s extensions not loaded: %v\n", terminal.WarnPrefix(), err)
-		return
+		return nil
 	}
-	engine, err := jsext.NewEngine(&settings.DynamicAssessment.Extensions, requester, &jsext.EngineOptions{})
+	ext, err := verify.LoadExtensionModules(&settings.DynamicAssessment.Extensions, requester)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s extensions not loaded: %v\n", terminal.WarnPrefix(), err)
-		return
+		return nil
 	}
-	for _, m := range engine.ActiveModules() {
-		s.ext[m.ID()] = m
-	}
-	for _, m := range engine.PassiveModules() {
-		if _, dup := s.ext[m.ID()]; !dup {
-			s.ext[m.ID()] = m
-		}
-	}
-}
-
-// newVerifyHTTPStack builds the requester verify runs modules with: the
-// proxy and debug globals, a per-request timeout, --rate-limit, and an egress
-// gate so the request count can be reported.
-func newVerifyHTTPStack() (*http.Requester, *services.Services, func(), error) {
-	opts := types.DefaultOptions()
-	opts.Timeout = findingVerifyHTTPTimeout
-	if findingVerifyTimeout > 0 && findingVerifyTimeout < opts.Timeout {
-		opts.Timeout = findingVerifyTimeout
-	}
-	opts.ProxyURL = globalProxy
-	opts.Verbose = globalVerbose
-	opts.Debug = globalDebug
-	opts.DumpTraffic = globalDumpTraffic
-	if err := network.Init(opts); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to initialize network: %w", err)
-	}
-	dedupMgr := dedup.NewManager()
-	hostLimiter := hostlimit.NewHostRateLimiter(hostlimit.HostRateLimiterConfig{
-		MaxPerHost:    opts.MaxPerHost,
-		MaxEntries:    100,
-		EvictAfter:    30 * time.Second,
-		EvictInterval: 10 * time.Second,
-	})
-	svc := &services.Services{Options: opts, DedupManager: dedupMgr, HostLimiter: hostLimiter}
-	if findingVerifyRateLimit > 0 {
-		svc.RateLimiter = rate.NewLimiter(rate.Limit(findingVerifyRateLimit), 1)
-	}
-	svc.Egress = egress.New(egress.Config{Rate: svc.RateLimiter, Hosts: hostLimiter, Breaker: svc.HostErrors})
-	cleanup := func() {
-		dedupMgr.Close()
-		_ = hostLimiter.Close()
-	}
-	requester, err := http.NewRequester(opts, svc)
-	if err != nil {
-		cleanup()
-		return nil, nil, nil, fmt.Errorf("failed to create HTTP requester: %w", err)
-	}
-	return requester, svc, cleanup, nil
+	return ext
 }

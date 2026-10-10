@@ -24,6 +24,8 @@ import (
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/requestscheme"
+	"github.com/vigolium/vigolium/pkg/spitolas"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 	"go.uber.org/zap"
@@ -312,6 +314,12 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 
 // HandleScanRequest handles POST /api/scan-request — scans a raw HTTP request asynchronously.
 func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
+	return h.handleScanRequest(c, h.tryStartNativeScan)
+}
+
+// handleScanRequest is HandleScanRequest with the background launcher
+// injected (tests answer the request without running a scan).
+func (h *Handlers) handleScanRequest(c fiber.Ctx, start func(func()) bool) error {
 	var req ScanRequestRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return respondError(c, fiber.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
@@ -344,6 +352,28 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 		return respondErrorMsg(c, fiber.StatusBadRequest, ErrInvalidRawRequest.Error()+": "+err.Error())
 	}
 
+	// Scope admission on the inferred target first, so a refused target is
+	// never contacted by the scheme probe below (see HandleScanURL).
+	if refused := h.refuseOutOfScope(c, rr.Target()); refused != nil {
+		return refused()
+	}
+
+	// No target_url and no scheme on the request line: settle the scheme the
+	// way `vigolium scan-request` does — the request's own signals, else a
+	// connect / TLS handshake — instead of assuming https. A probe that moved
+	// the target is admitted again over the URL that will be sent.
+	settled := requestscheme.Settle(c.Context(), rawStr, rr, requestscheme.Options{
+		Pinned:   req.TargetURL != "",
+		NoProbe:  req.NoSchemeProbe,
+		Resolver: scanRequestSchemeResolver,
+	})
+	if settled.Changed {
+		rr = settled.Request
+		if refused := h.refuseOutOfScope(c, rr.Target()); refused != nil {
+			return refused()
+		}
+	}
+
 	// Attach paired response if provided (Burp-style request+response)
 	if respB64 := req.RespBase64(); respB64 != "" {
 		rawRespBytes, decErr := base64.StdEncoding.DecodeString(respB64)
@@ -367,10 +397,6 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 	}
 
 	target := rr.Target()
-	// Scope admission, synchronously (see HandleScanURL).
-	if refused := h.refuseOutOfScope(c, target); refused != nil {
-		return refused()
-	}
 
 	scanID := uuid.New().String()
 	projectUUID := getProjectUUID(c)
@@ -384,7 +410,7 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 		}
 	}
 
-	if !h.tryStartNativeScan(func() {
+	if !start(func() {
 		h.runBackgroundURLScan(scanID, projectUUID, target, rr, moduleIDs, req.NoPassive)
 	}) {
 		if h.repo != nil {
@@ -394,12 +420,31 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusAccepted).JSON(ScanResponse{
-		ProjectUUID: projectUUID,
-		ScanUUID:    scanID,
-		Status:      "running",
-		Message:     fmt.Sprintf("scan-request started for %s", target),
+		ProjectUUID:  projectUUID,
+		ScanUUID:     scanID,
+		Status:       "running",
+		Message:      fmt.Sprintf("scan-request started for %s", target),
+		Target:       target,
+		SchemeSource: settled.Source,
 	})
 }
+
+// probeStealth is the project's spidering.stealth ("" = auto, also when the
+// project settings cannot be read).
+func (h *Handlers) probeStealth(projectUUID string) string {
+	if h.settings == nil {
+		return ""
+	}
+	settings, err := h.settingsForProject(projectUUID)
+	if err != nil {
+		return ""
+	}
+	return settings.Spidering.Stealth
+}
+
+// scanRequestSchemeResolver replaces the scheme probe behind
+// POST /api/scan-request (tests); nil is portsweep.ResolveScheme.
+var scanRequestSchemeResolver requestscheme.Resolver
 
 // refuseOutOfScope admits target against the request project's scope (the
 // server's settings plus X-Project-UUID's overlay), the verdict the CLI direct
@@ -533,6 +578,10 @@ func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *
 	zap.L().Info("Background URL scan started",
 		zap.String("scan_uuid", scanID),
 		zap.String("target", rr.Target()))
+
+	// Module browser confirmations follow the server's --proxy and the
+	// project's spidering.stealth, as on the CLI paths.
+	defer spitolas.SetProbeDefaults(h.serverProxyURL(), h.probeStealth(projectUUID))()
 
 	sl := openScanSessionLog(scanID, h.settings)
 	defer sl.close()

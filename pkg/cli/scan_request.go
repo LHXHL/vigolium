@@ -226,22 +226,6 @@ func rawRequestDeclaresBody(raw string) bool {
 	return false
 }
 
-// requestLineHasScheme reports whether the request line uses absolute-form (an
-// explicit http(s):// on the request target), in which case the scheme is
-// already pinned and needs no inference.
-func requestLineHasScheme(raw string) bool {
-	line := raw
-	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
-		line = line[:i]
-	}
-	fields := strings.Fields(line)
-	if len(fields) < 2 {
-		return false
-	}
-	target := strings.ToLower(fields[1])
-	return strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
-}
-
 // scanRequestNoInput is the usage message for scan-request with nothing to read.
 const scanRequestNoInput = "no request: scan-request reads a raw HTTP request or curl command from -i <file> or stdin"
 

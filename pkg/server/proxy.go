@@ -18,7 +18,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/server/mitm"
-	"github.com/vigolium/vigolium/pkg/storagesig"
 	"go.uber.org/zap"
 )
 
@@ -32,16 +31,17 @@ import (
 // upstreamInsecure skips verification of the real server's certificate during
 // re-origination (only meaningful when mitmCA is set). auth gates every request
 // (nil = no checks; CheckProxyBind decides whether that is acceptable).
-func newIngestProxy(addr string, db *database.DB, repo *database.Repository, rw *database.RecordWriter, settings *config.Settings, getScopeMatcher func() *config.ScopeMatcher, mitmCA *mitm.CA, upstreamInsecure bool, auth *ProxyAuth) *http.Server {
+func newIngestProxy(addr string, db *database.DB, repo *database.Repository, rw *database.RecordWriter, settings *config.Settings, scopeFor func(projectUUID string) (ingestScope, error), mitmCA *mitm.CA, upstreamInsecure bool, auth *ProxyAuth) *http.Server {
 	handler := &proxyHandler{
-		auth:            auth,
-		db:              db,
-		repo:            repo,
-		recordWriter:    rw,
-		settings:        settings,
-		transport:       &http.Transport{},
-		getScopeMatcher: getScopeMatcher,
-		mitmCA:          mitmCA,
+		auth:         auth,
+		db:           db,
+		repo:         repo,
+		recordWriter: rw,
+		settings:     settings,
+		transport:    &http.Transport{},
+		scopeFor:     scopeFor,
+		projectUUID:  database.DefaultProjectUUID,
+		mitmCA:       mitmCA,
 	}
 
 	if mitmCA != nil {
@@ -75,12 +75,17 @@ type proxyHandler struct {
 	// auth gates the proxy (token and/or client allow-list). Nil = open.
 	auth *ProxyAuth
 
-	db              *database.DB
-	repo            *database.Repository
-	recordWriter    *database.RecordWriter
-	settings        *config.Settings
-	transport       *http.Transport
-	getScopeMatcher func() *config.ScopeMatcher
+	db           *database.DB
+	repo         *database.Repository
+	recordWriter *database.RecordWriter
+	settings     *config.Settings
+	transport    *http.Transport
+	// scopeFor returns the ingest scope of a project (the server's scope with
+	// that project's config overlay); nil admits everything.
+	scopeFor func(projectUUID string) (ingestScope, error)
+	// projectUUID is the project recorded traffic is stored into, and so the
+	// project whose scope judges it.
+	projectUUID string
 
 	// mitmCA, when non-nil, enables TLS interception of CONNECT tunnels.
 	mitmCA *mitm.CA
@@ -521,24 +526,15 @@ func (p *proxyHandler) recordTransaction(r *http.Request, reqBody []byte, resp *
 		rr = rr.WithResponse(httpResp)
 	}
 
-	if p.settings != nil {
-		matcher := p.getScopeMatcher()
-		if matcher != nil {
-			if matcher.IsStaticFile(rr.Request().Path()) {
-				var hg storagesig.HeaderGetter
-				if rr.HasResponse() && rr.Response() != nil {
-					hg = rr.Response()
-				}
-				if !storagesig.KeepStaticAsMeta(rr.Request().Path(), hg) {
-					return
-				}
-				if rr.Response() != nil {
-					rr.Response().TruncateBody(0) // metadata-only: keep headers, drop body
-				}
-			}
-			if p.settings.Scope.AppliedOnIngest && !matcher.InScope(buildScopeMatchInput(rr)) {
-				return
-			}
+	if p.settings != nil && p.scopeFor != nil {
+		scope, err := p.scopeFor(p.projectUUID)
+		if err != nil {
+			zap.L().Warn("Proxy: project scope unavailable; record not stored",
+				zap.String("project_uuid", p.projectUUID), zap.Error(err))
+			return
+		}
+		if !scope.admit(rr) {
+			return
 		}
 	}
 
@@ -546,10 +542,10 @@ func (p *proxyHandler) recordTransaction(r *http.Request, reqBody []byte, resp *
 	defer cancel()
 
 	if p.recordWriter != nil {
-		if _, err := p.recordWriter.Write(ctx, rr, "ingest-proxy", database.DefaultProjectUUID); err != nil {
+		if _, err := p.recordWriter.Write(ctx, rr, "ingest-proxy", p.projectUUID); err != nil {
 			zap.L().Debug("Proxy: failed to save record", zap.Error(err))
 		}
-	} else if _, err := p.repo.SaveRecord(ctx, rr, "ingest-proxy", database.DefaultProjectUUID); err != nil {
+	} else if _, err := p.repo.SaveRecord(ctx, rr, "ingest-proxy", p.projectUUID); err != nil {
 		zap.L().Debug("Proxy: failed to save record", zap.Error(err))
 	}
 }

@@ -22,7 +22,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/input/formats/urls"
 	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
 	"github.com/vigolium/vigolium/pkg/input/source"
-	"github.com/vigolium/vigolium/pkg/storagesig"
 	"go.uber.org/zap"
 )
 
@@ -43,36 +42,19 @@ func buildScopeMatchInput(rr *httpmsg.HttpRequestResponse) config.ScopeMatchInpu
 	return input
 }
 
-// isIngestInScope checks whether a request/response pair should be saved.
-// Static file filtering is always enforced (regardless of applied_on_ingest).
-// Full scope rules are only enforced when applied_on_ingest is true.
-func (h *Handlers) isIngestInScope(rr *httpmsg.HttpRequestResponse) bool {
-	if h.settings == nil {
-		return true
+// isIngestInScope checks whether a request/response pair should be saved into
+// projectUUID: the project's scope (the server's, with its config overlay),
+// static files always filtered, full rules only when applied_on_ingest is set.
+// A project overlay that cannot be read refuses the record (logged) rather
+// than judging it by the wider global scope.
+func (h *Handlers) isIngestInScope(rr *httpmsg.HttpRequestResponse, projectUUID string) bool {
+	scope, err := h.ingestScopeFor(projectUUID)
+	if err != nil {
+		zap.L().Warn("Ingest: project scope unavailable; record not stored",
+			zap.String("project_uuid", projectUUID), zap.Error(err))
+		return false
 	}
-	matcher := h.getScopeMatcher()
-	if matcher == nil {
-		return true
-	}
-	// Always filter static files regardless of applied_on_ingest — except
-	// object-storage assets, kept as metadata-only (body stripped) so the CDN
-	// traversal modules can probe storage-fronted static URLs.
-	if matcher.IsStaticFile(rr.Request().Path()) {
-		var hg storagesig.HeaderGetter
-		if rr.HasResponse() && rr.Response() != nil {
-			hg = rr.Response()
-		}
-		if !storagesig.KeepStaticAsMeta(rr.Request().Path(), hg) {
-			return false
-		}
-		if rr.Response() != nil {
-			rr.Response().TruncateBody(0)
-		}
-	}
-	if !h.settings.Scope.AppliedOnIngest {
-		return true
-	}
-	return matcher.InScope(buildScopeMatchInput(rr))
+	return scope.admit(rr)
 }
 
 // fetchResponseIfNeeded fetches the HTTP response for a request if one isn't
@@ -378,7 +360,7 @@ func (h *Handlers) ingestBurpBase64(c fiber.Ctx, ctx context.Context, req *Inges
 
 	rr = h.fetchResponseIfNeeded(rr)
 
-	if !h.isIngestInScope(rr) {
+	if !h.isIngestInScope(rr, getProjectUUID(c)) {
 		return c.JSON(IngestHTTPResponse{
 			ProjectUUID: getProjectUUID(c),
 			Imported:    0,
@@ -418,7 +400,7 @@ func (h *Handlers) ingestCurl(c fiber.Ctx, ctx context.Context, req *IngestHTTPR
 
 	rr = h.fetchResponseIfNeeded(rr)
 
-	if !h.isIngestInScope(rr) {
+	if !h.isIngestInScope(rr, getProjectUUID(c)) {
 		return c.JSON(IngestHTTPResponse{
 			ProjectUUID: getProjectUUID(c),
 			Imported:    0,
@@ -466,7 +448,7 @@ func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHT
 			rr = rr.WithService(urlOverrideSvc)
 		}
 		rr = h.fetchResponseIfNeeded(rr)
-		if !h.isIngestInScope(rr) {
+		if !h.isIngestInScope(rr, getProjectUUID(c)) {
 			skipped++
 			return true
 		}
@@ -548,7 +530,7 @@ func (h *Handlers) ingestFileFormat(c fiber.Ctx, ctx context.Context, req *Inges
 			rr = rr.WithService(urlOverrideSvc)
 		}
 		rr = h.fetchResponseIfNeeded(rr)
-		if !h.isIngestInScope(rr) {
+		if !h.isIngestInScope(rr, getProjectUUID(c)) {
 			skipped++
 			return true
 		}
@@ -641,7 +623,7 @@ func (h *Handlers) ingestURL(c fiber.Ctx, ctx context.Context, req *IngestHTTPRe
 
 	rr = h.fetchResponseIfNeeded(rr)
 
-	if !h.isIngestInScope(rr) {
+	if !h.isIngestInScope(rr, getProjectUUID(c)) {
 		return c.JSON(IngestHTTPResponse{
 			ProjectUUID: getProjectUUID(c),
 			Imported:    0,
@@ -707,7 +689,7 @@ func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHT
 
 		rr = h.fetchResponseIfNeeded(rr)
 
-		if !h.isIngestInScope(rr) {
+		if !h.isIngestInScope(rr, getProjectUUID(c)) {
 			skipped++
 			continue
 		}

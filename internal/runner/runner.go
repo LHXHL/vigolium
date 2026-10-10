@@ -19,7 +19,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
-	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/notify"
@@ -254,6 +253,7 @@ func New(options *types.Options) (*Runner, error) {
 		Targets:               options.Targets,
 		FilePaths:             options.TargetsFilePaths,
 		Format:                options.InputFileMode,
+		FormatExplicit:        options.InputFileModeExplicit,
 		UseStdin:              options.Stdin,
 		SkipFormatValidation:  options.SkipFormatValidation,
 		FormatUseRequiredOnly: options.FormatUseRequiredOnly,
@@ -264,33 +264,25 @@ func New(options *types.Options) (*Runner, error) {
 		return nil, errors.Wrap(err, "could not create input source")
 	}
 
-	// Configure spec-format options on the file parser. FirstFileSource unwraps a
-	// MultiSource so the override lands when targets/-t are combined with a file,
-	// and covers a content-sniffed .wsdl (resolved parser type, not the format
-	// string). The -t target is the OpenAPI BaseURL / WSDL endpoint host override.
+	// Configure spec-format options (OpenAPI, WSDL, Postman) on the file
+	// parser. The -t target is the OpenAPI BaseURL / WSDL endpoint host
+	// override / Postman {{baseUrl}}.
+	specOpts := source.SpecOptions{
+		BaseURL:              options.OpenAPIBaseURL,
+		UseSpecServers:       options.OpenAPIUseSpecServers,
+		Headers:              parseHeaders(options.SpecHeaders),
+		Variables:            parseVariables(options.OpenAPIVariables),
+		DefaultFallbackValue: options.OpenAPIDefaultParam,
+	}
 	if fs := source.FirstFileSource(inputSource); fs != nil {
-		switch parser := fs.Format().(type) {
-		case *openapi.Format:
-			oaOpts := openapi.Options{
-				BaseURL:              options.OpenAPIBaseURL,
-				UseSpecServers:       options.OpenAPIUseSpecServers,
-				Headers:              parseHeaders(options.SpecHeaders),
-				Variables:            parseVariables(options.OpenAPIVariables),
-				DefaultFallbackValue: options.OpenAPIDefaultParam,
-			}
+		if _, isOpenAPI := fs.Format().(*openapi.Format); isOpenAPI {
 			// Load field type defaults from config
 			if cfg, err := config.LoadSettings(options.ConfigPath); err == nil {
-				oaOpts.FieldTypeDefaults = cfg.MutationStrategy.FieldTypeDefaults.ToMap()
+				specOpts.FieldTypeDefaults = cfg.MutationStrategy.FieldTypeDefaults.ToMap()
 			}
-			parser.SetOpenAPIOptions(oaOpts)
-		case *wsdl.Format:
-			parser.SetWSDLOptions(wsdl.Options{
-				EndpointURL: options.OpenAPIBaseURL,
-				Headers:     parseHeaders(options.SpecHeaders),
-				Variables:   parseVariables(options.OpenAPIVariables),
-			})
 		}
 	}
+	source.ApplySpecOptions(inputSource, specOpts)
 
 	r, err := NewWithInputSource(options, inputSource)
 	if err != nil {

@@ -19,8 +19,6 @@ import (
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
-	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
-	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
@@ -435,8 +433,9 @@ func skipDeferredJSONLExport(err error, stateless bool, statelessOutputPath stri
 // and Phase 3 scans from DB with all modules.
 func runScanWithIngest(settings *config.Settings, db *database.DB, repo *database.Repository, scanStart time.Time) error {
 	// Auto-detect format from file extension
+	// -I given: the operator's format stands (no sniffing, even for -I urls).
 	inputFormat := globalInputMode
-	if inputFormat == "urls" {
+	if inputFormat == "urls" && !scanOpts.InputFileModeExplicit {
 		if detected := detectInputFormat(globalInput); detected != "" {
 			inputFormat = detected
 			zap.L().Info("Auto-detected input format", zap.String("format", inputFormat))
@@ -453,43 +452,32 @@ func runScanWithIngest(settings *config.Settings, db *database.DB, repo *databas
 
 	// Create InputSource from the input file
 	inputSource, err := source.NewInputSource(source.SourceConfig{
-		Targets:       globalTargets,
-		FilePath:      globalInput,
-		Format:        inputFormat,
-		BufferSize:    100,
-		EnableModules: scanOpts.Modules,
+		Targets:        globalTargets,
+		FilePath:       globalInput,
+		Format:         inputFormat,
+		FormatExplicit: scanOpts.InputFileModeExplicit,
+		BufferSize:     100,
+		EnableModules:  scanOpts.Modules,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create input source: %w", err)
 	}
 
-	// Configure spec-format options on the file parser. FirstFileSource unwraps a
-	// MultiSource so the override still lands when -t is combined with -i (a bare
-	// *FileSource assertion would miss it). The -t target is the OpenAPI BaseURL /
-	// WSDL endpoint host override; the shared --spec-header / --spec-var flags
-	// carry headers and field values.
-	if fs := source.FirstFileSource(inputSource); fs != nil {
-		var targetURL string
-		if len(globalTargets) > 0 {
-			targetURL = globalTargets[0]
-		}
-		switch parser := fs.Format().(type) {
-		case *openapi.Format:
-			parser.SetOpenAPIOptions(openapi.Options{
-				BaseURL:              targetURL,
-				UseSpecServers:       useSpecServers,
-				Headers:              ingestParseHeaders(globalSpecHeader),
-				Variables:            ingestParseVariables(globalSpecVar),
-				DefaultFallbackValue: globalSpecDefault,
-			})
-		case *wsdl.Format:
-			parser.SetWSDLOptions(wsdl.Options{
-				EndpointURL: targetURL,
-				Headers:     ingestParseHeaders(globalSpecHeader),
-				Variables:   ingestParseVariables(globalSpecVar),
-			})
-		}
+	// Configure spec-format options (OpenAPI, WSDL, Postman) on the file
+	// parser, even when -t is combined with -i. The -t target is the OpenAPI
+	// BaseURL / WSDL endpoint host override / Postman {{baseUrl}}; the shared
+	// --spec-header / --spec-var flags carry headers and field values.
+	var targetURL string
+	if len(globalTargets) > 0 {
+		targetURL = globalTargets[0]
 	}
+	source.ApplySpecOptions(inputSource, source.SpecOptions{
+		BaseURL:              targetURL,
+		UseSpecServers:       useSpecServers,
+		Headers:              ingestParseHeaders(globalSpecHeader),
+		Variables:            ingestParseVariables(globalSpecVar),
+		DefaultFallbackValue: globalSpecDefault,
+	})
 
 	// Create Runner with the input source — RunNativeScan handles all 3 phases
 	scanRunner, err := runner.NewWithInputSource(scanOpts, inputSource)

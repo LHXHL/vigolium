@@ -91,6 +91,50 @@ func DefaultProbeProxy() string {
 	return ""
 }
 
+// defaultProbeStealth is the stealth mode a ProbeURL call uses when its config
+// names none. See SetDefaultProbeStealth.
+var defaultProbeStealth atomic.Pointer[string]
+
+// SetDefaultProbeStealth makes mode the stealth mode every ProbeURL call uses
+// when its ProbeConfig.Stealth is empty, and returns a func that restores the
+// previous default. An empty mode changes nothing and returns a no-op.
+//
+// The counterpart of SetDefaultProbeProxy for spidering.stealth: the module
+// browser confirmations build their ProbeConfig with no route back to the
+// scan's settings, so they ran with the "auto" default whatever the operator
+// configured — a crawl with stealth off and confirmations with it on saw two
+// different pages. The runner (and the direct scan-url / scan-request paths)
+// install the configured mode for the scan. Process-wide, with the same
+// last-setter-wins caveat as the proxy default.
+func SetDefaultProbeStealth(mode string) (restore func()) {
+	if mode == "" {
+		return func() {}
+	}
+	prev := defaultProbeStealth.Swap(&mode)
+	return func() { defaultProbeStealth.CompareAndSwap(&mode, prev) }
+}
+
+// DefaultProbeStealth returns the mode installed by SetDefaultProbeStealth, or
+// "" (auto).
+func DefaultProbeStealth() string {
+	if p := defaultProbeStealth.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// SetProbeDefaults installs the scan's proxy and stealth mode as the ProbeURL
+// defaults (SetDefaultProbeProxy, SetDefaultProbeStealth) and returns one
+// restore func for both.
+func SetProbeDefaults(proxyURL, stealth string) (restore func()) {
+	restoreProxy := SetDefaultProbeProxy(proxyURL)
+	restoreStealth := SetDefaultProbeStealth(stealth)
+	return func() {
+		restoreStealth()
+		restoreProxy()
+	}
+}
+
 // ProbeConfig configures a single-page probe used to confirm DOM/reflected
 // XSS by observing JavaScript dialogs that fire while the page renders.
 type ProbeConfig struct {
@@ -239,6 +283,9 @@ func ProbeURL(ctx context.Context, cfg ProbeConfig) (res *ProbeResult, err error
 	}
 	if cfg.ProxyURL == "" {
 		cfg.ProxyURL = DefaultProbeProxy()
+	}
+	if cfg.Stealth == "" {
+		cfg.Stealth = DefaultProbeStealth()
 	}
 
 	crawlerCfg, err := config.New(cfg.URL)

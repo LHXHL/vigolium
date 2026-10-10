@@ -286,6 +286,10 @@ type ScanRequestRequest struct {
 	TargetURL          string `json:"target_url"` // scheme://host override
 	Modules            string `json:"modules"`    // comma-separated module IDs
 	NoPassive          bool   `json:"no_passive"`
+	// NoSchemeProbe keeps the inferred https default for a request whose
+	// scheme nothing in it settles, instead of probing the target first (the
+	// CLI's --no-scheme-probe).
+	NoSchemeProbe bool `json:"no_scheme_probe,omitempty"`
 }
 
 // ReqBase64 returns the base64-encoded raw request, preferring http_request_base64 over raw_request.
@@ -313,6 +317,11 @@ type ScanResponse struct {
 	RecordsToScan int64  `json:"records_to_scan,omitempty"`
 	TargetsCount  int    `json:"targets_count,omitempty"`
 	ScanMode      string `json:"scan_mode,omitempty"` // "target", "full", "incremental"
+	// Target is the URL a scan-request will send to, after scheme resolution.
+	Target string `json:"target,omitempty"`
+	// SchemeSource is what decided a scan-request's scheme: explicit, port,
+	// origin, referer, probe or default (the CLI result's scheme_source).
+	SchemeSource string `json:"scheme_source,omitempty"`
 	// Resolved is the pace the scan will run with after profile, strategy and
 	// scanning_pace resolution — the same values `vigolium scan` resolves for
 	// the same inputs.
@@ -610,8 +619,8 @@ type AgentAutopilotRequest struct {
 	// compatibility with older API clients; "off" maps to NoAudit=true and
 	// any other value (e.g. "deep") maps to AuditDriverMode. Slated for removal.
 	Audit           string                      `json:"audit,omitempty"`             // legacy values: "lite", "balanced", "deep", "off"
-	NoAudit         bool                        `json:"no_audit,omitempty"`          // disable automatic vigolium-audit (enabled by default when source is set)
-	AuditDriverMode string                      `json:"audit_mode,omitempty"`        // audit mode: "lite" (default), "balanced", "deep"
+	NoAudit         bool                        `json:"no_audit,omitempty"`          // keep the nested vigolium-audit harness off (the default; kept for older clients)
+	AuditDriverMode string                      `json:"audit_mode,omitempty"`        // run the nested vigolium-audit harness (needs source): "lite", "balanced", "deep", "mock"; empty = off
 	Diff            string                      `json:"diff,omitempty"`              // focus on changed code: PR URL, git ref range, or HEAD~N
 	LastCommits     int                         `json:"last_commits,omitempty"`      // focus on last N commits (shorthand for diff HEAD~N)
 	Browser         bool                        `json:"browser,omitempty"`           // explicitly enable browser tooling
@@ -622,11 +631,9 @@ type AgentAutopilotRequest struct {
 	BrowserStartURL string                      `json:"browser_start_url,omitempty"` // explicit login/start URL for browser-based flows
 	FocusRoutes     []string                    `json:"focus_routes,omitempty"`      // protected/browser focus routes
 
-	// Piolium audit mode (Pi runtime). Empty triggers server-side auto-pick:
-	// when pi+piolium are installed, the server runs piolium instead of
-	// audit. Set explicitly to force piolium; pair with audit:"off" to
-	// keep both off, or with an audit mode to keep audit (auto-pick is
-	// suppressed once either flag is set).
+	// Piolium runs the nested piolium audit harness (Pi runtime; needs
+	// source) in this mode instead of vigolium-audit. Empty = off: an
+	// installed piolium is never picked automatically.
 	Piolium string `json:"piolium,omitempty"`
 
 	// Triage, when true, runs an AI triage pass over the findings after the

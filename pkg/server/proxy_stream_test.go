@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
 )
 
@@ -49,7 +48,7 @@ func TestCaptureBuffer(t *testing.T) {
 func plainProxyClient(t *testing.T, db *database.DB, repo *database.Repository) *http.Client {
 	t.Helper()
 	proxySrv := newIngestProxy("127.0.0.1:0", db, repo, nil, nil,
-		func() *config.ScopeMatcher { return nil }, nil, false, nil)
+		nil, nil, false, nil)
 	proxyURL := startProxy(t, proxySrv)
 	pu, err := url.Parse(proxyURL)
 	if err != nil {

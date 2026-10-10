@@ -34,3 +34,33 @@ func TestSetDefaultProbeProxy(t *testing.T) {
 		t.Fatalf("after outer restore default = %q, want empty", got)
 	}
 }
+
+// TestSetDefaultProbeStealth: the same contract for spidering.stealth, which
+// module confirmations otherwise could not see; SetProbeDefaults installs and
+// restores both.
+func TestSetDefaultProbeStealth(t *testing.T) {
+	if got := DefaultProbeStealth(); got != "" {
+		t.Fatalf("initial default = %q, want empty (auto)", got)
+	}
+	restore := SetDefaultProbeStealth("off")
+	if got := DefaultProbeStealth(); got != "off" {
+		t.Fatalf("default = %q, want off", got)
+	}
+	SetDefaultProbeStealth("")()
+	if got := DefaultProbeStealth(); got != "off" {
+		t.Fatalf("empty SetDefaultProbeStealth changed the default to %q", got)
+	}
+	restore()
+	if got := DefaultProbeStealth(); got != "" {
+		t.Fatalf("after restore default = %q, want empty", got)
+	}
+
+	restoreBoth := SetProbeDefaults("http://127.0.0.1:8080", "on")
+	if DefaultProbeProxy() != "http://127.0.0.1:8080" || DefaultProbeStealth() != "on" {
+		t.Fatalf("SetProbeDefaults = %q / %q", DefaultProbeProxy(), DefaultProbeStealth())
+	}
+	restoreBoth()
+	if DefaultProbeProxy() != "" || DefaultProbeStealth() != "" {
+		t.Fatalf("after restore = %q / %q", DefaultProbeProxy(), DefaultProbeStealth())
+	}
+}
