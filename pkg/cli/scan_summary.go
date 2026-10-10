@@ -11,6 +11,7 @@ import (
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/modules"
+	"github.com/vigolium/vigolium/pkg/scanplan"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
 )
@@ -35,28 +36,32 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 		emitBanner(GetBanner())
 	}
 
-	discoveryEnabled := opts.DiscoverEnabled
-	spideringEnabled := opts.SpideringEnabled
-	knownIssueScanEnabled := opts.KnownIssueScanEnabled
-	daEnabled := !opts.SkipDynamicAssessment
-	ehEnabled := opts.ExternalHarvestEnabled
+	// The banner renders from the scan plan — the same object scan --dry-run
+	// prints and the runner emits as scan.plan — so its phases, targets and
+	// module counts are the ones the run uses (the module counts include the
+	// tier, risk and hygiene gates, which an ad-hoc count here used to miss).
+	plan, planErr := resolveCLIScanPlan(nil, opts, settings, strategyName, repo, false)
+	if planErr != nil {
+		plan = nil
+	}
+	phaseOn := func(id runner.NativePhase, fallback bool) bool {
+		if plan == nil {
+			return fallback
+		}
+		ph := plan.Phase(string(id))
+		return ph != nil && ph.Enabled
+	}
+	discoveryEnabled := phaseOn(runner.PhaseDiscovery, opts.DiscoverEnabled)
+	spideringEnabled := phaseOn(runner.PhaseSpidering, opts.SpideringEnabled)
+	knownIssueScanEnabled := phaseOn(runner.PhaseKnownIssueScan, opts.KnownIssueScanEnabled)
+	daEnabled := phaseOn(runner.PhaseDynamicAssessment, !opts.SkipDynamicAssessment)
+	ehEnabled := phaseOn(runner.PhaseExternalHarvest, opts.ExternalHarvestEnabled)
 
 	// Strategy name
 	strategy := strategyName
 	if strategy == "" {
 		strategy = "default"
 	}
-
-	// Module counts, less the hardening advisories the intensity suppresses —
-	// counting modules the scan will not run makes the gate look like a lost
-	// finding when their rows are absent from the report.
-	var activeMods []modules.ActiveModule
-	if len(opts.Modules) > 0 && opts.Modules[0] == "all" {
-		activeMods = modules.GetActiveModules()
-	} else {
-		activeMods = modules.GetActiveModulesByIDs(opts.Modules)
-	}
-	activeCount, passiveCount, hygieneNote := runner.HygieneBannerCounts(opts, settings, activeMods, modules.GetPassiveModules())
 
 	// Scope origin mode
 	scopeOrigin := config.ResolveCLIOriginMode(settings.Scope.CLIOriginMode)
@@ -107,6 +112,9 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 	// driven entirely by a target file, which reads as though nothing was found.
 	fileTargets := countTargetFileTargets(opts.TargetsFilePaths)
 	seededTargets := len(opts.Targets) + fileTargets
+	if plan != nil && plan.Targets.Seeded > 0 {
+		seededTargets, fileTargets = plan.Targets.Seeded, plan.Targets.FromFiles
+	}
 	targetsLine := fmt.Sprintf("Targets: %s", terminal.Orange(fmt.Sprintf("%d", seededTargets)))
 	if len(opts.Targets) > 0 {
 		targetsLine += fmt.Sprintf(" (CLI: %s)", terminal.HiBlue(summarizeTargetList(opts.Targets, 3)))
@@ -202,17 +210,10 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 		terminal.HiPurple(scopeOrigin),
 		terminal.HiPurple(fmt.Sprintf("%v", settings.Scope.IgnoreStaticFile)),
 		originDescStr)
-	modulesLine := fmt.Sprintf("Modules: %s active, %s passive",
-		terminal.Orange(fmt.Sprintf("%d", activeCount)),
-		terminal.Orange(fmt.Sprintf("%d", passiveCount)))
-	if settings != nil && settings.DynamicAssessment.Extensions.Enabled {
-		extCount := countExtensionFiles(&settings.DynamicAssessment.Extensions)
-		modulesLine += fmt.Sprintf(" + %s extensions", terminal.HiTeal(fmt.Sprintf("%d", extCount)))
+	fmt.Fprintf(os.Stderr, "  %s %s\n", terminal.Purple(terminal.SymbolInfo), modulesBannerLine(plan, opts, settings))
+	if plan != nil {
+		fmt.Fprintf(os.Stderr, "  %s %s\n", terminal.Purple(terminal.SymbolInfo), estimateBannerLine(plan))
 	}
-	if hygieneNote != "" {
-		modulesLine += " " + hygieneNote
-	}
-	fmt.Fprintf(os.Stderr, "  %s %s\n", terminal.Purple(terminal.SymbolInfo), modulesLine)
 	// Output destination & format(s) — shown when -o or a non-default --format
 	// is in play so it's clear where (and in what shape) results land.
 	formats := opts.OutputFormats
@@ -272,6 +273,66 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 		}
 	}
 	fmt.Fprintln(os.Stderr)
+}
+
+// modulesBannerLine renders the banner's module line from the plan: the
+// modules that run, the extensions, and what the hardening-advisory, tier and
+// risk gates hold back. Without a plan it falls back to the hygiene-adjusted
+// selection count.
+func modulesBannerLine(plan *scanplan.Plan, opts *types.Options, settings *config.Settings) string {
+	if plan == nil {
+		var activeMods []modules.ActiveModule
+		if len(opts.Modules) > 0 && opts.Modules[0] == "all" {
+			activeMods = modules.GetActiveModules()
+		} else {
+			activeMods = modules.GetActiveModulesByIDs(opts.Modules)
+		}
+		a, p, note := runner.HygieneBannerCounts(opts, settings, activeMods, modules.GetPassiveModules())
+		line := fmt.Sprintf("Modules: %s active, %s passive", terminal.Orange(fmt.Sprintf("%d", a)), terminal.Orange(fmt.Sprintf("%d", p)))
+		if note != "" {
+			line += " " + note
+		}
+		return line
+	}
+	m := plan.Modules
+	line := fmt.Sprintf("Modules: %s active, %s passive",
+		terminal.Orange(fmt.Sprintf("%d", m.Active)),
+		terminal.Orange(fmt.Sprintf("%d", m.Passive)))
+	if settings != nil && settings.DynamicAssessment.Extensions.Enabled {
+		line += fmt.Sprintf(" + %s extensions", terminal.HiTeal(fmt.Sprintf("%d", m.Extensions)))
+	}
+	if m.HygieneSuppressed > 0 {
+		// Point at the knob that is actually holding them back: --intensity
+		// deep does nothing when the config already forced them off.
+		hint := "--intensity deep or --module-tag hygiene to include"
+		if settings != nil && settings.DynamicAssessment.HygieneModules != nil {
+			hint = "off via dynamic-assessment.hygiene_modules"
+		}
+		line += " " + terminal.Gray(fmt.Sprintf("(%d hardening advisories off; %s)", m.HygieneSuppressed, hint))
+	}
+	var held []string
+	if m.TierFiltered > 0 {
+		held = append(held, fmt.Sprintf("%d above the %s tier", m.TierFiltered, m.TierCeiling))
+	}
+	if m.RiskGated > 0 {
+		held = append(held, fmt.Sprintf("%d risk:high withheld", m.RiskGated))
+	}
+	if len(held) > 0 {
+		line += " " + terminal.Gray("("+strings.Join(held, ", ")+")")
+	}
+	return line
+}
+
+// estimateBannerLine renders the plan's rough request estimate.
+func estimateBannerLine(plan *scanplan.Plan) string {
+	e := plan.Estimate
+	line := fmt.Sprintf("Estimate: %s requests %s", terminal.Orange(formatRange(e.Low, e.High)), terminal.Gray("("+e.Confidence+"; vigolium scan --dry-run for the breakdown)"))
+	if e.CeilingByPace != nil {
+		line = fmt.Sprintf("Estimate: at most %s requests by pace, %s expected %s",
+			terminal.Orange(fmt.Sprintf("%d", *e.CeilingByPace)), terminal.Orange(formatRange(e.Low, e.High)),
+			terminal.Gray("("+e.Confidence+"; vigolium scan --dry-run for the breakdown)"))
+	}
+	return line
 }
 
 // countExtensionFiles counts JS/TS/YAML extension files from the configured directories without loading them.

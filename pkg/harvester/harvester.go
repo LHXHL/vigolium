@@ -295,3 +295,7 @@ func (s *shaper) noteLimit(code string) {
 		slices.Sort(s.stats.Limits)
 	}
 }
+
+// Resolved returns the bounds a harvest with these options runs under: the
+// zero/negative convention applied (0 in the result means unbounded).
+func (o Options) Resolved() Options { return o.resolve() }

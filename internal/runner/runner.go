@@ -19,6 +19,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
+	"github.com/vigolium/vigolium/pkg/input/formats/wsdl"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/notify"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/projectdiscovery/useragent"
+	"github.com/vigolium/vigolium/pkg/scanplan"
 	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -94,11 +96,6 @@ type Runner struct {
 	// See armRequestBudget.
 	requestBudget *egress.Budget
 
-	// authAbort cancels the running scan with an *AuthLostError when a session
-	// configured with reauth.on_failure: abort is lost (see armAuthAbort).
-	// Atomic: the live sessions call it from their own goroutines.
-	authAbort atomic.Pointer[context.CancelCauseFunc]
-
 	// scanOutcome collects the per-phase outcomes this scan produced, which the
 	// finalizer persists on the scan row and the terminal banner reads. Reset at
 	// the top of RunNativeScan; see scanOutcome.
@@ -108,6 +105,10 @@ type Runner struct {
 	// heartbeat columns), nil outside RunNativeScan. Atomic for the same reason
 	// as currentPhase: the finding observer reads it from worker goroutines.
 	liveness atomic.Pointer[Heartbeat]
+
+	// lastPlan is the plan the most recent RunNativeScan resolved and emitted
+	// as scan.plan (see announcePlan, Plan).
+	lastPlan atomic.Pointer[scanplan.Plan]
 	// eventObserverAttached guards attachEventObserver against wrapping the
 	// writer's OnEvent again on a reused Runner.
 	eventObserverAttached atomic.Bool
@@ -179,11 +180,6 @@ type phaseInfra struct {
 	// classifies a failure into some code, so a separate bool would only be
 	// another name for this field being set.
 	authFailureReason string
-
-	// sessions keeps the Manager and the live sessions alive for the scan, so
-	// an expired session can be logged in again mid-scan (see
-	// runner_live_sessions.go). Nil when no session has a check block.
-	sessions *liveSessions
 }
 
 // compareSession pairs a named session with its dedicated HTTP requester.
@@ -197,8 +193,6 @@ type compareSession struct {
 func (p *phaseInfra) Close() {
 	// Idempotent: the dynamic-assessment phase usually closed it already.
 	p.oast.Close()
-	// Stop the live sessions' probe timers and any re-login in flight.
-	p.sessions.close()
 	// Return idle sockets before dropping the requester. This phase owns it, so
 	// nothing else is still reading through its transport. Compare-session
 	// requesters are separate owners with their own pools and are released
@@ -253,7 +247,6 @@ func New(options *types.Options) (*Runner, error) {
 		Targets:               options.Targets,
 		FilePaths:             options.TargetsFilePaths,
 		Format:                options.InputFileMode,
-		FormatExplicit:        options.InputFileModeExplicit,
 		UseStdin:              options.Stdin,
 		SkipFormatValidation:  options.SkipFormatValidation,
 		FormatUseRequiredOnly: options.FormatUseRequiredOnly,
@@ -264,25 +257,33 @@ func New(options *types.Options) (*Runner, error) {
 		return nil, errors.Wrap(err, "could not create input source")
 	}
 
-	// Configure spec-format options (OpenAPI, WSDL, Postman) on the file
-	// parser. The -t target is the OpenAPI BaseURL / WSDL endpoint host
-	// override / Postman {{baseUrl}}.
-	specOpts := source.SpecOptions{
-		BaseURL:              options.OpenAPIBaseURL,
-		UseSpecServers:       options.OpenAPIUseSpecServers,
-		Headers:              parseHeaders(options.SpecHeaders),
-		Variables:            parseVariables(options.OpenAPIVariables),
-		DefaultFallbackValue: options.OpenAPIDefaultParam,
-	}
+	// Configure spec-format options on the file parser. FirstFileSource unwraps a
+	// MultiSource so the override lands when targets/-t are combined with a file,
+	// and covers a content-sniffed .wsdl (resolved parser type, not the format
+	// string). The -t target is the OpenAPI BaseURL / WSDL endpoint host override.
 	if fs := source.FirstFileSource(inputSource); fs != nil {
-		if _, isOpenAPI := fs.Format().(*openapi.Format); isOpenAPI {
+		switch parser := fs.Format().(type) {
+		case *openapi.Format:
+			oaOpts := openapi.Options{
+				BaseURL:              options.OpenAPIBaseURL,
+				UseSpecServers:       options.OpenAPIUseSpecServers,
+				Headers:              parseHeaders(options.SpecHeaders),
+				Variables:            parseVariables(options.OpenAPIVariables),
+				DefaultFallbackValue: options.OpenAPIDefaultParam,
+			}
 			// Load field type defaults from config
 			if cfg, err := config.LoadSettings(options.ConfigPath); err == nil {
-				specOpts.FieldTypeDefaults = cfg.MutationStrategy.FieldTypeDefaults.ToMap()
+				oaOpts.FieldTypeDefaults = cfg.MutationStrategy.FieldTypeDefaults.ToMap()
 			}
+			parser.SetOpenAPIOptions(oaOpts)
+		case *wsdl.Format:
+			parser.SetWSDLOptions(wsdl.Options{
+				EndpointURL: options.OpenAPIBaseURL,
+				Headers:     parseHeaders(options.SpecHeaders),
+				Variables:   parseVariables(options.OpenAPIVariables),
+			})
 		}
 	}
-	source.ApplySpecOptions(inputSource, specOpts)
 
 	r, err := NewWithInputSource(options, inputSource)
 	if err != nil {

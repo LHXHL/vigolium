@@ -218,6 +218,14 @@ func ApplyScanStrategy(settings *config.Settings, opts *types.Options, req Strat
 		if !req.Explicit.ExternalHarvest {
 			opts.ExternalHarvestEnabled = phases.ExternalHarvesting
 		}
+		// Provenance for the scan plan's disabled_by.
+		noteStrategyPhase(opts, PhaseDiscovery, phases.Discovery)
+		noteStrategyPhase(opts, PhaseSpidering, phases.Spidering)
+		noteStrategyPhase(opts, PhaseKnownIssueScan, phases.KnownIssueScan)
+		noteStrategyPhase(opts, PhaseDynamicAssessment, phases.DynamicAssessment)
+		if !req.Explicit.ExternalHarvest {
+			noteStrategyPhase(opts, PhaseExternalHarvest, phases.ExternalHarvesting)
+		}
 		// A strategy is a narrowing request, so its ceiling applies before the
 		// per-phase overrides and before pace validation. Without it `lite`
 		// selected fewer modules and opened exactly as wide as `balanced`.
@@ -248,7 +256,20 @@ func ApplyScanStrategy(settings *config.Settings, opts *types.Options, req Strat
 	if req.SkipHeuristics {
 		opts.HeuristicsCheck = "none"
 	}
+	if opts.HeuristicsCheck == "none" {
+		opts.NotePhaseDisabled(string(PhaseHeuristicsCheck), "heuristics")
+	}
 	return resolved, nil
+}
+
+// noteStrategyPhase records a phase the strategy turned off, or clears a stale
+// record for one it turned on.
+func noteStrategyPhase(opts *types.Options, phase NativePhase, enabled bool) {
+	if enabled {
+		opts.NotePhaseEnabled(string(phase))
+		return
+	}
+	opts.NotePhaseDisabled(string(phase), "strategy")
 }
 
 // ApplyScanPace validates scanning_pace, folds its common values into opts for

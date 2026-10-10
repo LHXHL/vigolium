@@ -11,7 +11,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/input/formats/detect"
-	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
 )
@@ -50,31 +49,11 @@ func stdinHoldsRawRequests(content string, inputModeExplicit bool) bool {
 // stdin, a DB rescan). It reads what executeNativeScan is about to seed without
 // seeding it, because the banner and scan.started go out first.
 func scanTargetAdmission(settings *config.Settings, opts *types.Options, inputModeExplicit bool) *types.TargetAdmission {
-	if settings == nil || opts == nil || (globalInput != "" && globalInput != "-") {
+	if settings == nil {
 		return nil
 	}
-	targets := opts.Targets
-	if len(opts.TargetsFilePaths) > 0 {
-		if !source.IsTargetListFormat(opts.InputFileMode) {
-			return nil
-		}
-		lines, err := readTargetFilesLines(opts.TargetsFilePaths)
-		if err != nil {
-			return nil
-		}
-		targets, _ = mergePositionalTargets(targets, lines)
-	}
-	if opts.Stdin {
-		if !source.IsTargetListFormat(opts.InputFileMode) || !scanStdinPrefetchedReady {
-			return nil
-		}
-		content := strings.TrimSpace(string(scanStdinPrefetched))
-		if stdinHoldsRawRequests(content, inputModeExplicit) {
-			return nil
-		}
-		targets, _ = mergePositionalTargets(targets, targetLinesFrom(content))
-	}
-	if len(targets) == 0 {
+	targets, _, ok := scanSeededTargets(opts, inputModeExplicit)
+	if !ok {
 		return nil
 	}
 	adm := runner.AdmitTargets(settings.Scope, targets)

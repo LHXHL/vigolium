@@ -77,11 +77,6 @@ func (r *Runner) RunNativeScan() (err error) {
 	// out. See armRequestBudget.
 	ctx, stopRequestBudget := r.armRequestBudget(ctx)
 	defer stopRequestBudget()
-	// A session lost mid-scan under reauth.on_failure: abort cancels this ctx
-	// with an *AuthLostError; the phases wind down as for a budget, attributed
-	// to auth_lost, and the run returns the error. See armAuthAbort.
-	ctx, stopAuthAbort := r.armAuthAbort(ctx)
-	defer stopAuthAbort()
 
 	plan := BuildNativeScanPlan(r.options)
 
@@ -144,6 +139,13 @@ func (r *Runner) RunNativeScan() (err error) {
 	// scan-creation sites and only the runner knows the settings the matcher will
 	// actually be built from.
 	r.persistScopeOriginMode(ctx, infra.scanUUID)
+	// The resolved plan: scan.plan on the event stream (right after the CLI's
+	// scan.started, before any phase or the preflight sends a request) and
+	// scans.plan on the row. After the infrastructure, so the loaded
+	// extensions' selection is known; after the row exists, so it can be
+	// stored. A scope that refused every target still gets its plan, every
+	// phase disabled_by scope.
+	r.announcePlan(ctx, infra)
 	// Liveness heartbeat, always on (status.json + the row's heartbeat
 	// columns). Finish is registered BEFORE the finalizer so it runs AFTER it
 	// (defers are LIFO): status.json only states a terminal status once the
@@ -406,9 +408,6 @@ func (r *Runner) RunNativeScan() (err error) {
 			return err
 		}
 	}
-	if lost := authLostCause(ctx); lost != nil {
-		return lost
-	}
 	if r.options.SkipIngestion && !r.options.KnownIssueScanEnabled && r.options.SkipDynamicAssessment {
 		zap.L().Info("Discovery skipped, no downstream phases need DB records")
 		r.scanLogger.Info("discovery", "skipped, no downstream phases need DB records")
@@ -464,9 +463,6 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 	// against the phase that produced it.
 	tracker := r.beginPhase(ctx, string(phase), infra.httpRequester)
 	r.currentPhase.Store(tracker)
-	// Account the phase's logged-out traffic (responses_while_logged_out,
-	// auth_lost) when it finishes.
-	infra.sessions.trackPhase(tracker)
 	// Phases that run core.Executor report done/total off every executor they
 	// start, however deep in the phase it is built (dynamic assessment builds
 	// one per feedback round). A context value rather than a parameter so the

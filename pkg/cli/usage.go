@@ -219,7 +219,7 @@ var scanFlagGroups = []flagGroup{
 	{"Input Format", []string{"required-only", "skip-format-validation"}},
 	{"Spec Options", []string{"spec-url", "spec-header", "spec-var", "spec-default"}},
 	{"Module Selection", []string{"modules", "module-tag", "module-id", "passive-only", "no-passive", "no-tech-filter", "allow-risky-payloads", "no-param-dedup"}},
-	{"Scanning", []string{"only", "skip", "strategy", "scanning-profile", "intensity", "scope-origin", "ignore-scope", "scanning-max-duration", "heuristics-check", "skip-heuristics", "oast-url"}},
+	{"Scanning", []string{"only", "skip", "dry-run", "strategy", "scanning-profile", "intensity", "scope-origin", "ignore-scope", "scanning-max-duration", "heuristics-check", "skip-heuristics", "oast-url"}},
 	{"Discovery", []string{"discover", "discover-max-time", "discovery-wordlist", "discovery-extensions", "discovery-max-depth", "no-discovery-fuzz", "no-prefix-breaker", "follow-subdomains", "port-sweep-ports", "param-mining"}},
 	{"Spidering", []string{"spider", "spider-max-time", "browser-engine", "browsers", "headless", "headed", "no-cdp", "no-forms", "browser-insecure", "require-auth", "no-carry-browser-session"}},
 	{"Probe (host sweep)", []string{"probe", "tls-probe", "redirect-mode", "record-redirect-chain"}},
@@ -229,7 +229,6 @@ var scanFlagGroups = []flagGroup{
 	{"Authentication", []string{"auth", "auth-file"}},
 	{"Speed Control", []string{"timeout", "concurrency", "rate-limit", "max-per-host", "max-requests", "max-requests-per-host", "no-waf-pacing", "max-host-error", "max-findings-per-module", "no-clustering"}},
 	{"Output", []string{"output", "stats", "fail-on", "events", "include-response", "omit-response", "export-only", "report-url", "max-body-bytes", "pdf-timeout", "upload-results", "print-finding", "print-traffic", "print-traffic-tree"}},
-	{"Scan Document (-j)", []string{"limit", "fields", "compact", "full-body", "max-output-bytes"}},
 	{"Stateless & Parallel", []string{"stateless", "keep-db-on-error", "split-by-host", "db-isolate", "parallel", "resume"}},
 }
 
@@ -248,7 +247,7 @@ var agentQueryFlagGroups = []flagGroup{
 	{"Prompt & Input", []string{"prompt", "stdin", "prompt-template", "prompt-file", "append", "instruction", "instruction-file"}},
 	{"Source Code", []string{"source", "files", "source-label"}},
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key", "gcp-project", "gcp-location", "base-url"}},
-	{"Execution", []string{"agent-label", "max-duration", "dry-run", "show-prompt", "preflight-timeout", "no-preflight"}},
+	{"Execution", []string{"agent-label", "max-duration", "dry-run", "show-prompt"}},
 	{"Output", []string{"output", "verbose", "upload-results"}},
 }
 
@@ -256,10 +255,8 @@ var agentQueryFlagGroups = []flagGroup{
 var agentAutopilotFlagGroups = []flagGroup{
 	{"Target & Input", []string{"prompt", "prompt-file", "target", "input", "record-uuid", "burp-bridge-url", "prior-context", "knowledge-base", "knowledge-base-raw", "knowledge-base-no-traffic", "plan-file"}},
 	{"Source & Audit", []string{"source", "files", "audit", "piolium", "diff", "last-commits"}},
-	{"Authentication", []string{"auth-file"}},
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key"}},
-	{"Scan Behavior", []string{"intensity", "skill", "skill-tag", "no-skill-filter", "no-prescan", "no-preflight-discovery", "no-post-halt-verify", "post-halt-gap-threshold", "triage", "disable-guardrail"}},
-	{"Budgets & Preflight", []string{"max-duration", "max-commands", "token-budget", "max-cost-usd", "preflight-timeout", "no-preflight"}},
+	{"Scan Behavior", []string{"intensity", "skill", "skill-tag", "no-skill-filter", "no-prescan", "no-preflight-discovery", "no-post-halt-verify", "post-halt-gap-threshold", "triage", "disable-guardrail", "max-duration"}},
 	{"Execution", []string{"dry-run", "show-prompt", "system-prompt", "system-prompt-file", "resume", "headed"}},
 	{"Output", []string{"stateless", "output", "verbose", "upload-results", "session-dir", "transcript", "db-isolate"}},
 }
@@ -270,9 +267,8 @@ var agentSwarmFlagGroups = []flagGroup{
 	{"Source & Audit", []string{"source", "files", "audit", "piolium", "diff", "last-commits", "code-audit", "source-analysis-only"}},
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key", "gcp-project", "gcp-location", "base-url"}},
 	{"Module & Phase Selection", []string{"modules", "vuln-type", "skill", "skill-tag", "no-skill-filter", "only", "skip", "start-from", "profile", "discover", "with-extensions"}},
-	{"Scan Behavior", []string{"intensity", "triage", "max-iterations", "disable-guardrail"}},
-	{"Budgets & Preflight", []string{"max-duration", "max-commands", "token-budget", "max-cost-usd", "preflight-timeout", "no-preflight"}},
-	{"Authentication", []string{"browser-auth", "cookie", "header", "login-curl", "auth-config", "auth-file"}},
+	{"Scan Behavior", []string{"intensity", "triage", "max-iterations", "max-duration", "disable-guardrail"}},
+	{"Authentication", []string{"browser-auth", "cookie", "header", "login-curl", "auth-config"}},
 	{"Concurrency & Probing", []string{"batch-concurrency", "max-master-retries", "sub-agent-concurrency", "max-plan-records", "master-batch-size", "probe-concurrency", "probe-timeout", "max-probe-body"}},
 	{"Execution", []string{"agent-label", "dry-run", "show-prompt", "headed"}},
 	{"Output", []string{"verbose", "upload-results", "db-isolate"}},
@@ -301,8 +297,7 @@ var agentAuditFlagGroups = []flagGroup{
 // agentTriageFlagGroups categorizes `vigolium agent triage`.
 var agentTriageFlagGroups = []flagGroup{
 	{"AI Provider", []string{"provider", "model", "oauth-cred", "oauth-token", "llm-api-key", "gcp-project", "gcp-location", "base-url"}},
-	{"Verdict", []string{"no-write", "report-only", "no-probe"}},
-	{"Execution", []string{"max-duration", "dry-run", "show-prompt", "verbose", "preflight-timeout", "no-preflight"}},
+	{"Execution", []string{"max-duration", "dry-run", "show-prompt", "verbose"}},
 }
 
 // agentSessionFlagGroups categorizes `vigolium agent session`.

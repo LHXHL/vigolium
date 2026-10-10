@@ -101,6 +101,7 @@ func autoSkipKnownIssueScanForModuleSelection(opts *types.Options) {
 		}
 	}
 	opts.SkipPhases = append(opts.SkipPhases, kis)
+	opts.NotePhaseDisabled(kis, "module_selection")
 	if !opts.Silent {
 		fmt.Fprintf(os.Stderr, "  %s %s\n",
 			terminal.TipPrefix(),

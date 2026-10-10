@@ -284,46 +284,57 @@ func (r *Runner) discoveryWordlistTier() string {
 	}
 }
 
-// resolveDiscoveryWordlists computes the wordlist paths feeding deparos. Operator
-// config (YAML, then the --discovery-wordlist CLI override) wins; any gap is filled
-// from the embedded defaults — short file/dir lists on every scan, the long slot
-// from the wordlist tier (discovery.wordlists.tier; auto = large at --intensity
-// deep, none otherwise), and fuzz.txt (which deparos turns into a full /FUZZ brute
-// of the root) whenever fuzzing is on. This is shared by buildDeparosConfig and the
-// Discovery phase header so the two never disagree on what is actually running.
-func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
-	var w resolvedDiscoveryWordlists
-	expand := func(p string) string {
-		if p == "" {
-			return ""
-		}
-		w.usingConfigured = true
-		return config.ExpandPath(p)
-	}
+// Discovery wordlist slots, as the plan names them.
+const (
+	wordlistSlotShortFile = "short_file"
+	wordlistSlotLongFile  = "long_file"
+	wordlistSlotShortDir  = "short_dir"
+	wordlistSlotLongDir   = "long_dir"
+	wordlistSlotFuzz      = "fuzz"
+)
 
+// wordlistRef is one list feeding deparos, before anything is written to
+// disk: either a configured path or the logical name of an embedded list.
+type wordlistRef struct {
+	slot     string
+	path     string // configured path (expanded); "" for an embedded list
+	embedded string // embedded logical name; "" for a configured path
+}
+
+// discoveryWordlistRefs is the pure half of resolveDiscoveryWordlists: which
+// list fills each slot and whether it is configured or embedded. Operator
+// config (YAML, then the --discovery-wordlist CLI override) wins; any gap is
+// filled from the embedded defaults — short file/dir lists on every scan, the
+// long slot from the wordlist tier (discovery.wordlists.tier; auto = large at
+// --intensity deep, none otherwise), and fuzz.txt (which deparos turns into a
+// full /FUZZ brute of the root) whenever fuzzing is on. Nothing is read from or
+// written to disk, so the scan plan sizes discovery from the same answer the
+// phase runs with.
+func (r *Runner) discoveryWordlistRefs() (refs []wordlistRef, tier string) {
+	var shortFile, longFile, shortDir, longDir string
+	var fuzz []string
 	if r.settings != nil {
 		wl := r.settings.Discovery.Wordlists
-		w.shortFile = expand(wl.ShortFilePath)
-		w.longFile = expand(wl.LongFilePath)
-		w.shortDir = expand(wl.ShortDirPath)
-		w.longDir = expand(wl.LongDirPath)
-		if p := expand(wl.FuzzWordlistPath); p != "" {
-			w.fuzz = []string{p}
+		shortFile = config.ExpandPath(wl.ShortFilePath)
+		longFile = config.ExpandPath(wl.LongFilePath)
+		shortDir = config.ExpandPath(wl.ShortDirPath)
+		longDir = config.ExpandPath(wl.LongDirPath)
+		if wl.FuzzWordlistPath != "" {
+			fuzz = []string{config.ExpandPath(wl.FuzzWordlistPath)}
 		}
 	}
 	// --discovery-wordlist is an explicit operator override and wins over YAML.
 	if len(r.options.FuzzWordlistPaths) > 0 {
-		w.fuzz = w.fuzz[:0:0]
+		fuzz = nil
 		for _, p := range r.options.FuzzWordlistPaths {
 			if p != "" {
-				w.fuzz = append(w.fuzz, config.ExpandPath(p))
+				fuzz = append(fuzz, config.ExpandPath(p))
 			}
 		}
-		w.usingConfigured = true
 	}
 
-	w.tier = r.discoveryWordlistTier()
-	wantLong := w.tier != config.WordlistTierShort
+	tier = r.discoveryWordlistTier()
+	wantLong := tier != config.WordlistTierShort
 	fuzzOn, _ := r.discoveryFuzzingState()
 	// A resolved fuzz path IS the switch as far as deparos is concerned
 	// (buildDeparosConfig copies it to cfg.FuzzWordlistPaths, and the engine
@@ -333,46 +344,78 @@ func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 	// reaches the engine anyway and --no-discovery-fuzz brute-forces the host
 	// while the phase header reports fuzzing as disabled.
 	if !fuzzOn {
-		w.fuzz = nil
+		fuzz = nil
 	}
-	needShortFile := w.shortFile == ""
-	needShortDir := w.shortDir == ""
-	needLongFile := w.longFile == "" && wantLong
-	needLongDir := w.longDir == "" && wantLong
-	needFuzz := len(w.fuzz) == 0 && fuzzOn
-	needAny := needShortFile || needShortDir || needLongFile || needLongDir || needFuzz
-	if !needAny {
-		return w
+	longFileName, longDirName := wordlists.NameLongFile, wordlists.NameLongDir
+	if tier == config.WordlistTierLarge {
+		longFileName, longDirName = wordlists.NameLargeFile, wordlists.NameLargeDir
 	}
+	slot := func(name, path, embedded string, want bool) {
+		switch {
+		case path != "":
+			refs = append(refs, wordlistRef{slot: name, path: path})
+		case want:
+			refs = append(refs, wordlistRef{slot: name, embedded: embedded})
+		}
+	}
+	slot(wordlistSlotShortFile, shortFile, wordlists.NameShortFile, true)
+	slot(wordlistSlotLongFile, longFile, longFileName, wantLong)
+	slot(wordlistSlotShortDir, shortDir, wordlists.NameShortDir, true)
+	slot(wordlistSlotLongDir, longDir, longDirName, wantLong)
+	for _, p := range fuzz {
+		refs = append(refs, wordlistRef{slot: wordlistSlotFuzz, path: p})
+	}
+	if len(fuzz) == 0 && fuzzOn {
+		refs = append(refs, wordlistRef{slot: wordlistSlotFuzz, embedded: wordlists.NameFuzz})
+	}
+	return refs, tier
+}
 
-	paths, err := wordlists.EnsureOnDisk(wordlistDir())
-	if err != nil {
-		zap.L().Warn("Discovery: failed to materialize embedded wordlists; deparos falls back to observed-only", zap.Error(err))
-		return w
+// resolveDiscoveryWordlists computes the wordlist paths feeding deparos:
+// discoveryWordlistRefs, with the embedded lists materialized to disk (deparos
+// loads wordlists from file paths only). This is shared by buildDeparosConfig
+// and the Discovery phase header so the two never disagree on what is
+// actually running.
+func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
+	refs, tier := r.discoveryWordlistRefs()
+	w := resolvedDiscoveryWordlists{tier: tier}
+	needEmbedded := false
+	for _, ref := range refs {
+		if ref.embedded != "" {
+			needEmbedded = true
+		} else {
+			w.usingConfigured = true
+		}
 	}
-	longFile, longDir := paths.LongFile, paths.LongDir
-	if w.tier == config.WordlistTierLarge {
-		longFile, longDir = paths.LargeFile, paths.LargeDir
+	var paths wordlists.DefaultPaths
+	if needEmbedded {
+		var err error
+		paths, err = wordlists.EnsureOnDisk(wordlistDir())
+		if err != nil {
+			zap.L().Warn("Discovery: failed to materialize embedded wordlists; deparos falls back to observed-only", zap.Error(err))
+		}
 	}
-	if needShortFile {
-		w.shortFile = paths.ShortFile
-		w.usingEmbedded = true
-	}
-	if needShortDir {
-		w.shortDir = paths.ShortDir
-		w.usingEmbedded = true
-	}
-	if needLongFile {
-		w.longFile = longFile
-		w.usingEmbedded = true
-	}
-	if needLongDir {
-		w.longDir = longDir
-		w.usingEmbedded = true
-	}
-	if needFuzz {
-		w.fuzz = []string{paths.Fuzz}
-		w.usingEmbedded = true
+	for _, ref := range refs {
+		path := ref.path
+		if ref.embedded != "" {
+			path = paths.ByName(ref.embedded)
+			if path == "" {
+				continue
+			}
+			w.usingEmbedded = true
+		}
+		switch ref.slot {
+		case wordlistSlotShortFile:
+			w.shortFile = path
+		case wordlistSlotLongFile:
+			w.longFile = path
+		case wordlistSlotShortDir:
+			w.shortDir = path
+		case wordlistSlotLongDir:
+			w.longDir = path
+		case wordlistSlotFuzz:
+			w.fuzz = append(w.fuzz, path)
+		}
 	}
 	return w
 }
@@ -661,7 +704,6 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 			MaxASTNodes:        dc.JSTangle.MaxASTNodes,
 			MaxAssetDepth:      dc.JSTangle.MaxAssetDepth, MaxAssetsPerParent: dc.JSTangle.MaxAssetsPerParent,
 			MaxAssetsPerHost: dc.JSTangle.MaxAssetsPerHost, MaxAssetsTotal: dc.JSTangle.MaxAssetsTotal,
-			MaxChunksPerRuntime: dc.JSTangle.MaxChunksPerRuntime,
 		}
 		cfg.JSTemplatePersist = source.JSTemplatePersistConfig{
 			SkipUnreplayed: !boolPtrOr(dc.JSTangle.PersistUnreplayed, true),

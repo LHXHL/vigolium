@@ -97,12 +97,13 @@ section.
 ## The agent loop
 
 ```
-scope → scan → read → confirm → hand off
+scope → plan → scan → read → confirm → hand off
 ```
 
 | Step | Command | Notes |
 |------|---------|-------|
 | **Scope** | `vigolium doctor --json` / `db stats --json` | environment + what's already stored |
+| **Plan** | `scan -t <url> --dry-run -j` (or `run <phase> --dry-run -j`) | sends nothing: phases + why each is off, budgets, modules, scope admission, a rough request estimate; exit `1` `no_targets_in_scope` when scope refuses every target |
 | **Scan** | `scan`, `scan-url`, `scan-request`, `run`, or `agent …` | add `--fail-on high` to gate |
 | **Read** | `finding -j --compact --fields …` | survey first, then drill with `--id --with-records` |
 | **Confirm** | `replay --finding-id <id>` | re-sends and diffs against the baseline |
@@ -123,8 +124,9 @@ vigolium scan -t https://target.example --events ndjson 2>/dev/null | jq -c .
 
 One JSON object per line on **stdout**, flushed per event; the human console
 stays on stderr, so `2>/dev/null` yields clean NDJSON with zero non-JSON lines.
-Types: `scan.started` · `phase.started|progress|finished` · `waf.block` ·
-`waf.pacing` · `finding.new` · `error` · `scan.finished`.
+Types: `scan.started` · `scan.plan` (second, the same plan `--dry-run` prints) ·
+`phase.started|progress|finished` · `waf.block` · `waf.pacing` · `finding.new` ·
+`error` · `scan.finished`.
 
 `--events` owns stdout: combining it with another stdout writer (`-j`,
 `--format jsonl` without `-o`, `--ci-output-format`, `--print-finding`,
@@ -193,10 +195,8 @@ Full event table and field-by-field notes:
 | Pull endpoints, routes, paths, flows out of a JS bundle | `vigolium kit js-beautify -j --extract app.min.js` (check `status`, `truncated`) |
 | Find leaked keys in a JS bundle | `vigolium kit js-beautify -j --secrets app.min.js` |
 | OOB (OAST) callback URL + polling | `vigolium kit oast new` → `vigolium kit oast poll --session run.yaml` |
-| Attribute callbacks logged by your own OAST endpoint (scan ran with `--oast-url 'https://{nonce}.cb.example.com'`) | `vigolium oast ingest cb.log --format raw-log -j` |
 | Harvest known URLs for a domain | `vigolium kit harvest target.example` |
 | Crack a JWT's HMAC secret | `vigolium kit jwt-crack <token>` |
-| Exact shape of a `-j` document, an `--events` line or the error envelope | `vigolium schema command <name>` · `schema event <type>` · `schema error` (JSON Schema 2020-12; `vigolium schema` lists what is covered) |
 | List/print built-in wordlists or payloads | `vigolium kit wordlist [name]` / `vigolium kit payload --class sqli` |
 | Remove leftover vigolium temp scratch | `vigolium kit tmp-clean` |
 | Hand a finding to Burp | `vigolium finding --id 42 --push-to-burp -B http://127.0.0.1:9009` |
@@ -377,8 +377,7 @@ Things `-h` won't tell you:
   table. The one exception: on `server`/`ingest`, where it used to mean
   `--scan-on-receive`, `-S` is now a usage error (exit 2) — **write the long
   `--scan-on-receive` there**.
-- **Which DB a command opens:** `--db` → `$VIGOLIUM_DB` (`--db` from the
-  environment, scoping kept) → `$VIGOLIUM_DB_PATH` →
+- **Which DB a command opens:** `--db` → `$VIGOLIUM_DB_PATH` →
   `database.sqlite.path` in config → the built-in default. Pinning
   `$VIGOLIUM_DB_PATH` also makes **read** commands (`finding`/`traffic`/`log`/
   `fuzz -u`) treat that file as a stateless source — project scoping off — so an

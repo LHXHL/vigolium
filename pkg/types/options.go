@@ -24,12 +24,8 @@ type Options struct {
 	// Targets itself. The runner recomputes the verdict and owns the decision.
 	TargetAdmission *TargetAdmission
 	InputFileMode   string // json, jsonb, list
-	// InputFileModeExplicit: -I was given, so a URL-list InputFileMode is the
-	// operator's choice and the input file is not content-sniffed into another
-	// format (source.FileSourceConfig.FormatExplicit).
-	InputFileModeExplicit bool
-	Stream                bool
-	Stdin                 bool
+	Stream          bool
+	Stdin           bool
 	// --input-read-timeout used to land here and go no further: nothing in the
 	// runner ever read this field, so the advertised deadline was inert and a
 	// pipe that never closed hung the process. The deadline is now applied where
@@ -108,11 +104,6 @@ type Options struct {
 	// progress ticker is suppressed (it's repetitive noise in a file). Set by the
 	// parent on each child via the hidden --captured-console flag; never user-set.
 	CapturedConsole bool
-	// StdoutDocument reserves stdout for the single -j scan document, written
-	// once the scan is over (pkg/cli scan_document.go). The live finding stream
-	// stays off stdout, as under --events: findings are echoed to stderr
-	// instead, and the document carries them.
-	StdoutDocument bool
 	// Events selects the machine event stream written to stdout ("ndjson", or ""
 	// for none). It is orthogonal to OutputFormats: formats decide what a scan
 	// LEAVES BEHIND, Events decides what it REPORTS WHILE RUNNING. The human
@@ -344,6 +335,11 @@ type Options struct {
 	OnlyPhase string
 	// SkipPhases disables one or more phases while keeping all others enabled
 	SkipPhases []string
+	// PhaseSelection records what turned a phase off during scan-options
+	// resolution, keyed by canonical phase id: "strategy", "only", "skip",
+	// "module_selection" or "heuristics". The scan plan reads it for each
+	// phase's disabled_by; a phase absent here is off by default or by a gate.
+	PhaseSelection map[string]string
 	// SkipPortSweep disables the alternate-port sweep even where deep /
 	// --follow-subdomains would schedule it. Set by --skip port-sweep and by any
 	// --only that does not list port-sweep (see runner.ApplyNativePhaseSelection).
@@ -555,4 +551,23 @@ func (o *Options) MarkSchemeAssumed(assumed map[string]struct{}) {
 		o.TargetsSchemeAssumed = make(map[string]struct{}, len(assumed))
 	}
 	maps.Copy(o.TargetsSchemeAssumed, assumed)
+}
+
+// NotePhaseDisabled records why phase was turned off (Options.PhaseSelection).
+// A --skip never relabels a phase the module selection already skipped: the
+// module selection is what added it to the skip list.
+func (o *Options) NotePhaseDisabled(phase, by string) {
+	if o.PhaseSelection == nil {
+		o.PhaseSelection = map[string]string{}
+	}
+	if by == "skip" && o.PhaseSelection[phase] == "module_selection" {
+		return
+	}
+	o.PhaseSelection[phase] = by
+}
+
+// NotePhaseEnabled clears a recorded reason once a later step turns the phase
+// back on (--only naming a phase the strategy turned off).
+func (o *Options) NotePhaseEnabled(phase string) {
+	delete(o.PhaseSelection, phase)
 }

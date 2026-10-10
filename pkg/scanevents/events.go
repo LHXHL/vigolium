@@ -33,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/scanplan"
 )
 
 // SchemaVersion is the event-schema version carried on every line as "v".
@@ -77,11 +79,8 @@ const (
 	TypeHostQuarantined = "host.quarantined"
 	TypeHostRecovered   = "host.recovered"
 	TypeHostDead        = "host.dead"
-	// TypeAuthSessionSuspect says scan responses (or the proactive check probe)
-	// look logged out: Session, Gen (the suspected credential generation),
-	// Detail (status, redirect, body, interval). TypeAuthRelogin reports how a
-	// re-login cycle ended: Session, Gen (the new generation when OK), OK,
-	// Count (logins tried), Message on failure.
+	// TypeAuthSessionSuspect says sampled responses look logged out; TypeAuthRelogin
+	// reports a re-login attempt and its result (E9).
 	TypeAuthSessionSuspect = "auth.session_suspect"
 	TypeAuthRelogin        = "auth.relogin"
 	// TypeModuleError reports module failures, rate-limited: ModuleID, Phase, URL,
@@ -157,6 +156,11 @@ type Event struct {
 	// Keyed by canonical phase id.
 	PhasePace map[string]Pace `json:"phase_pace,omitempty"`
 
+	// Plan is the resolved scan plan (scan.plan): phases enabled and disabled
+	// with the reason, budgets, modules, scope, auth session names, target
+	// admission and a rough request estimate. Same object as `scan --dry-run`.
+	Plan *scanplan.Plan `json:"plan,omitempty"`
+
 	// Phase lifecycle.
 	Phase      string `json:"phase,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
@@ -217,13 +221,6 @@ type Event struct {
 	ErrorKind string `json:"error_kind,omitempty"`
 	// Count is how many occurrences one rate-limited line stands for.
 	Count *int64 `json:"count,omitempty"`
-
-	// Live sessions (auth.session_suspect, auth.relogin): which session, the
-	// credential generation (from 1; each successful re-login adds one), and
-	// whether the re-login worked.
-	Session string `json:"session,omitempty"`
-	Gen     uint64 `json:"gen,omitempty"`
-	OK      *bool  `json:"ok,omitempty"`
 
 	// Setup steps (scan.setup): what is being installed, and where it got to
 	// (started, finished, failed). Bytes is the download size when known.

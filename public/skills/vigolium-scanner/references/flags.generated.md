@@ -88,8 +88,6 @@ run `vigolium <command> -h`.
 - [vigolium module enable](#vigolium-module-enable)
 - [vigolium module ls](#vigolium-module-ls)
 - [vigolium nuclei](#vigolium-nuclei)
-- [vigolium oast](#vigolium-oast)
-- [vigolium oast ingest](#vigolium-oast-ingest)
 - [vigolium olium](#vigolium-olium)
 - [vigolium params](#vigolium-params)
 - [vigolium project](#vigolium-project)
@@ -106,13 +104,6 @@ run `vigolium <command> -h`.
 - [vigolium scan wait](#vigolium-scan-wait)
 - [vigolium scan-request](#vigolium-scan-request)
 - [vigolium scan-url](#vigolium-scan-url)
-- [vigolium schema](#vigolium-schema)
-- [vigolium schema all](#vigolium-schema-all)
-- [vigolium schema command](#vigolium-schema-command)
-- [vigolium schema error](#vigolium-schema-error)
-- [vigolium schema event](#vigolium-schema-event)
-- [vigolium schema list](#vigolium-schema-list)
-- [vigolium schema plan](#vigolium-schema-plan)
 - [vigolium scope](#vigolium-scope)
 - [vigolium scope set](#vigolium-scope-set)
 - [vigolium scope view](#vigolium-scope-view)
@@ -226,7 +217,7 @@ Run audit and/or piolium back-to-back as a unified security audit
 | `--preflight-timeout` | - | duration | `30s` | Per-driver preflight timeout (e.g. 30s, 1m); applies to both pi and claude |
 | `--provider` | - | string | - | [audit] Olium provider hint to drive audit's --agent: anthropic-* → claude, openai-* → codex (also forwards that provider's BYOK auth). Empty inherits agent.olium.provider. For a pure agent switch without changing auth, prefer --agent. |
 | `--show-thinking` | - | bool | `false` | Render the agent's internal thinking blocks (audit NDJSON 'thinking' events) in the live stream. Off by default — thinking is verbose and produces many lines per phase. |
-| `--source` | - | string | - | Source to audit (required): local directory (pass --source . for the current directory), git URL, gs://<project>/<key> archive, or local .zip/.tar.gz |
+| `--source` | - | string | `.` | Source: local directory, git URL, gs://<project>/<key> archive, or local .zip/.tar.gz |
 | `--stateless` | `-S` | bool | `false` | Run the audit into a throwaway temporary database (the main DB is left untouched) and auto-write a self-contained HTML report. Mirrors 'vigolium scan -S'. Not valid with --interactive. |
 | `--upload-results` | - | bool | `false` | Upload session bundle to cloud storage after completion (requires storage config) |
 
@@ -238,8 +229,7 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--audit` | - | string | `off` | Nested vigolium-audit harness (runs a claude/codex CLI before the operator; needs --source): lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off. Default off: the intensity preset never turns it on |
-| `--auth-file` | - | stringArray | - | Native session file, as 'vigolium scan --auth-file' takes (YAML/JSON, single session or sessions: bundle; login flows, steps, OAuth2, check/reauth), or a bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. The sessions log in before the run, the pre-scan uses them, and they are stored for the target so the operator's list_auth_sessions/replay_request can use them. |
+| `--audit` | - | string | `lite` | vigolium-audit mode: lite (3-phase), balanced (9-phase), deep (12-phase), mock (sample output), or off (disable). Default: lite when --source is set |
 | `--burp-bridge-url` | `-B` | string | - | Pull live Burp/Caido proxy history into the project DB before the run (e.g. http://127.0.0.1:9009), so the pre-scan and operator can mine it alongside prior traffic. Also honors $VIGOLIUM_BURP_BRIDGE_URL (alias: --caido-bridge-url) |
 | `--db-isolate` | - | bool | `false` | Run into a private temporary database, then merge results into --db (or the default DB) at the end — lets parallel runs share one --db without write contention (SQLite only) |
 | `--diff` | - | string | - | Focus on changed code: PR URL (github.com/.../pull/123), git ref range (main...branch), or HEAD~N |
@@ -253,26 +243,22 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 | `--knowledge-base-raw` | - | bool | `false` | Skip the LLM distillation of --knowledge-base: front-load a deterministic document index only (offline / reproducible). No-op without --knowledge-base. |
 | `--last-commits` | - | int | `0` | Focus on last N commits (shorthand for --diff HEAD~N) |
 | `--llm-api-key` | - | string | - | Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var) |
-| `--max-commands` | - | int | `0` | Tool-call budget for the operator (0 = the --intensity preset: quick 150, balanced 750, deep 3000). Hitting it stops the run: status budget_exhausted, exit 5 |
-| `--max-cost-usd` | - | float64 | `0` | Cap on the operator's estimated spend in USD, priced per turn from provider usage (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
 | `--max-duration` | - | duration | `6h0m0s` | Maximum wall-clock duration for the autopilot session (e.g. 1h, 6h) |
 | `--model` | - | string | - | Olium model id override (falls back to agent.olium.model) |
 | `--no-post-halt-verify` | - | bool | `false` | Skip the post-halt coverage verification re-entry (operator halts → coverage probe → re-prompt agent when new routes turn up) |
-| `--no-preflight` | - | bool | `false` | Skip the provider preflight ping (a missing or broken provider then fails on the first real call) |
 | `--no-preflight-discovery` | - | bool | `false` | Skip the pre-flight discovery + OpenAPI/Swagger ingestion pass that seeds http_records before the operator agent starts |
 | `--no-prescan` | - | bool | `false` | Skip the native pre-scan that seeds http_records before the operator agent (target-only runs; no-op when --source is set) |
 | `--no-skill-filter` | - | bool | `false` | Load the full skill set; skip the pre-flight skill selection |
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth provider; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--output` | `-o` | string | - | Output base path for the --stateless export; each --format appends its own extension (report.html, report.sqlite). Defaults to vigolium-result/vigolium-autopilot. Only applies with -S/--stateless. |
-| `--piolium` | - | string | - | Nested piolium audit harness (needs --source): lite, balanced, deep, longshot, etc. Default empty = off; set explicitly to run piolium instead of --audit |
+| `--piolium` | - | string | - | Piolium audit mode: lite, balanced, deep, longshot, etc. Default: empty triggers auto-pick (piolium when pi is installed, else audit). Set explicitly to force piolium; set --audit=off alongside to disable audit |
 | `--plan-file` | - | string | - | Path to a plan file mixing free-text guidance and raw HTTP request(s). Owns the instruction + seed input; cannot be combined with --input or a prompt (--prompt / positional) |
 | `--post-halt-gap-threshold` | - | int | `0` | Minimum new (method, URL) routes the post-halt probe must turn up before the agent is re-entered. 0 = built-in default (5) |
-| `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
 | `--prior-context` | - | string | `auto` | Front-load a bounded summary of the traffic + findings already in the project DB so the operator mines them instead of starting from scratch: auto (default; the bounded table when prior data exists), summary (one-line pointer), off |
 | `--prompt` | - | string | - | Free-text task guidance for the agent (same as the positional [prompt]; use --plan-file for a whole plan with seed HTTP requests) |
 | `--prompt-file` | - | string | - | Read task guidance from a file (same channel as --prompt — its contents flow through credential extraction, so role-tagged accounts become primary/compare sessions). Convenient for long/complex prompts; mutually exclusive with --prompt, the positional [prompt], and --plan-file |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config) |
 | `--record-uuid` | - | string | - | Use an HTTP record from the database as the seed input (looked up by UUID) |
 | `--resume` | - | string | - | Resume a previous durable-autopilot run by its agentic-scan UUID: reuses its session dir, project, target, and durable scratchpad/candidates; skips pre-scan and audit re-prep (requires agent.olium.autopilot_mode != legacy) |
 | `--session-dir` | - | string | - | Explicit session directory for this run's debug artifacts (transcript.jsonl, runtime.log, scratchpad, tool-results). Default: <agent.sessions_dir>/<run-uuid>. Pin it to know exactly where to look when debugging (e.g. alongside -S/--stateless scans). |
@@ -284,7 +270,6 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 | `--system-prompt` | - | string | - | Replace the built-in autopilot system prompt with this value (full replace; browser section is not auto-appended) |
 | `--system-prompt-file` | - | string | - | Path to a file whose contents replace the built-in autopilot system prompt (takes precedence over --system-prompt) |
 | `--target` | `-t` | string | - | Target URL (derived from --input if not set) |
-| `--token-budget` | - | int64 | `0` | Cap on the operator's cumulative input+output tokens (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
 | `--transcript` | - | string | - | After the run, also copy the session's transcript.jsonl to this path. The in-session copy is always kept; this is a convenience for debugging (e.g. keep the transcript when the DB is throwaway). |
 | `--triage` | - | bool | `false` | After the scan completes, run an AI triage pass over the findings (confirm real issues vs false positives, written back to finding status) |
 | `--upload-results` | - | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
@@ -308,7 +293,7 @@ Launch vigolium — interactive TUI agent (olium engine)
 | `--oauth-cred` | - | string | - | Path to OAuth/SA credential file (openai-codex-oauth: ~/.codex/auth.json; anthropic-vertex/google-vertex: SA JSON or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--prompt` | `-p` | string | - | Run one prompt non-interactively and stream to stdout (skips the TUI). Pass '-' to read the prompt from stdin |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset); default openai-compatible |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config); default openai-compatible |
 | `--stdin` | - | bool | `false` | Force reading prompt from stdin |
 | `--system` | - | string | - | Override system prompt |
 
@@ -332,15 +317,13 @@ Send a prompt to an AI agent and get a response
 | `--llm-api-key` | - | string | - | Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var) |
 | `--max-duration` | - | duration | `5m0s` | Maximum wall-clock time for agent execution (0 = no limit) |
 | `--model` | - | string | - | Olium model id override (falls back to agent.olium.model) |
-| `--no-preflight` | - | bool | `false` | Skip the provider preflight ping (a missing or broken provider then fails on the first real call) |
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth provider; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--output` | - | string | - | Write agent output to this file |
-| `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
 | `--prompt` | `-p` | string | - | Prompt text to send to the agent |
 | `--prompt-file` | - | string | - | Path to a prompt template file |
 | `--prompt-template` | - | string | - | Prompt template ID (e.g. security-code-review) |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config) |
 | `--show-prompt` | - | bool | `false` | Print rendered prompt to stderr before executing |
 | `--source` | - | string | - | Path to source code repository |
 | `--source-label` | - | string | - | Label for records ingested from agent output (e.g. 'agent-review') |
@@ -376,9 +359,8 @@ Agentic scan: AI-guided targeted vulnerability swarm
 |------|-------|------|---------|-------------|
 | `--agent-label` | - | string | - | Label recorded on the AgenticScan DB row; agent dispatch always uses olium |
 | `--all-records` | - | bool | `false` | Use every HTTP record in the active project as input |
-| `--audit` | - | string | `off` | Nested vigolium-audit harness run alongside the swarm (launches a claude/codex CLI; needs --source): lite (3-phase, bare --audit), balanced (9-phase), deep (12-phase), or off. Default off: the intensity preset never turns it on |
-| `--auth-config` | - | string | - | Path to an existing agent-format auth-config.yaml (a native session file is detected and loaded as --auth-file). Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-file. |
-| `--auth-file` | - | stringArray | - | Native session file, as 'vigolium scan --auth-file' takes (YAML/JSON, single session or sessions: bundle; login flows, steps, OAuth2, check/reauth), or a bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-config. |
+| `--audit` | - | string | - | Run background vigolium-audit for parallel security auditing: 'lite' (3-phase, default), 'balanced' (9-phase), or 'deep' (12-phase). Requires --source |
+| `--auth-config` | - | string | - | Path to an existing auth-config.yaml. Skips both browser auth and --cookie/--header/--login-curl synthesis. |
 | `--base-url` | - | string | - | Endpoint URL for openai-compatible / anthropic-compatible provider (e.g. http://localhost:11434/v1); falls back to agent.olium.custom_provider.base_url |
 | `--batch-concurrency` | - | int | `0` | Max parallel master agent batches (0 = auto, scales with CPU count) |
 | `--browser-auth` | - | bool | `false` | Run the browser-based auth phase before discovery |
@@ -399,8 +381,6 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--llm-api-key` | - | string | - | Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var) |
 | `--login-curl` | - | string | - | Curl command for login flow; replayed by the auth runtime to capture a fresh session. Cookies/headers from a successful response are reused for the scan. |
 | `--master-batch-size` | - | int | `0` | Max records per master agent batch (0 = default 5) |
-| `--max-commands` | - | int | `0` | Tool-call budget across every agent call of the run (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
-| `--max-cost-usd` | - | float64 | `0` | Cap on the run's estimated spend in USD across every agent call (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
 | `--max-duration` | - | duration | `12h0m0s` | Maximum swarm duration (0 = unlimited; e.g. 6h, 24h) |
 | `--max-iterations` | - | int | `3` | Maximum triage-rescan iterations |
 | `--max-master-retries` | - | int | `3` | Max master agent retries on parse failure |
@@ -408,20 +388,18 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--max-probe-body` | - | int | `0` | Max response body size in bytes during probing (0 = default 2MB) |
 | `--model` | - | string | - | Olium model id override (falls back to agent.olium.model) |
 | `--modules` | `-m` | stringSlice | - | Explicit module names to include |
-| `--no-preflight` | - | bool | `false` | Skip the provider preflight ping (a missing or broken provider then fails on the first real call) |
 | `--no-skill-filter` | - | bool | `false` | Load the full skill set into triage; ignore planner selection |
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--only` | - | string | - | Run only this scanning phase (discovery, spidering, spa, dynamic-assessment, external-harvest) |
-| `--piolium` | - | string | - | Nested piolium audit harness (Pi runtime; launches a pi CLI; needs --source): lite, balanced, deep, longshot, etc. Default empty = off; an installed pi is never picked automatically |
+| `--piolium` | - | string | - | Run background piolium audit (Pi runtime): lite, balanced, deep, longshot, etc. Requires --source. Empty triggers auto-pick when --audit is also empty (piolium when pi is installed, else nothing) |
 | `--plan-file` | - | string | - | Path to a plan file mixing free-text guidance and raw HTTP request(s). Every request block becomes a seed input; cannot be combined with --input or a prompt (--prompt / positional) |
-| `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
 | `--probe-concurrency` | - | int | `0` | Max parallel probe requests (0 = default 10) |
 | `--probe-timeout` | - | duration | `0s` | Per-request probe timeout (0 = default 10s) |
 | `--profile` | - | string | - | Scanning profile to use |
 | `--prompt` | - | string | - | Free-text task guidance for the agent (same as the positional [prompt]; use --plan-file for a whole plan with seed HTTP requests) |
 | `--prompt-file` | - | string | - | Read task guidance from a file (same channel as --prompt). Convenient for long/complex prompts; mutually exclusive with --prompt, the positional [prompt], and --plan-file |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config) |
 | `--record-uuid` | - | stringSlice | - | HTTP record UUID from database (repeatable, or comma-separated) |
 | `--records-from` | - | string | - | Filter ingested HTTP records by spec (e.g. "host=example.com,status=200,method=GET,path=/api,since=2026-04-01") |
 | `--show-prompt` | - | bool | `false` | Print rendered prompts to stderr before executing |
@@ -433,7 +411,6 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--start-from` | - | string | - | Resume from a specific phase (native-normalize, source-analysis, code-audit, native-discover, native-recon, plan, native-extension, native-scan, triage) |
 | `--sub-agent-concurrency` | - | int | `3` | Max parallel source analysis sub-agents (routes, auth, extensions) |
 | `--target` | `-t` | string | - | Target URL (required when --source is used) |
-| `--token-budget` | - | int64 | `0` | Cap on the run's cumulative input+output tokens across every agent call (0 = no cap). Hitting it stops the run: status budget_exhausted, exit 5 |
 | `--triage` | - | bool | `false` | Enable AI triage and rescan phases. Intensity preset overrides this: balanced/deep enable triage by default; quick disables it. Use --triage=false to force-disable on balanced/deep. |
 | `--upload-results` | - | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
 | `--verbose` | `-v` | bool | `false` | **(overrides the global `--verbose`)** Show a per-tool head/tail preview of each tool result alongside the standard one-liner |
@@ -444,7 +421,7 @@ Agentic scan: AI-guided targeted vulnerability swarm
 
 Usage: `vigolium agent triage [finding-id]`
 
-Confirm a single finding with an AI triager: confirmed, false_positive or inconclusive
+Confirm a single finding with an AI triager; downgrade severity to info on false_positive
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
@@ -455,14 +432,9 @@ Confirm a single finding with an AI triager: confirmed, false_positive or inconc
 | `--llm-api-key` | - | string | - | Olium API key for key-based providers (falls back to agent.olium.llm_api_key or provider env var) |
 | `--max-duration` | - | duration | `5m0s` | Maximum wall-clock time for the triage run (0 = no limit) |
 | `--model` | - | string | - | Olium model id override (falls back to agent.olium.model) |
-| `--no-preflight` | - | bool | `false` | Skip the provider preflight ping (a missing or broken provider then fails on the first real call) |
-| `--no-probe` | - | bool | `false` | Do not contact the target: the agent gets no HTTP, browser or shell tools and decides from the captured traffic (inconclusive when that cannot settle it) |
-| `--no-write` | - | bool | `false` | Report the verdict without writing it to the finding (no status, description or history change) |
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
-| `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
-| `--report-only` | - | bool | `false` | Alias for --no-write |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config) |
 | `--show-prompt` | - | bool | `false` | Print rendered prompt to stderr before executing |
 | `--verbose` | `-v` | bool | `false` | **(overrides the global `--verbose`)** Show a per-tool head/tail preview of each tool result |
 
@@ -512,7 +484,7 @@ Run a unified security audit (alias for `vigolium agent audit`)
 | `--preflight-timeout` | - | duration | `30s` | Per-driver preflight timeout (e.g. 30s, 1m); applies to both pi and claude |
 | `--provider` | - | string | - | [audit] Olium provider hint to drive audit's --agent: anthropic-* → claude, openai-* → codex (also forwards that provider's BYOK auth). Empty inherits agent.olium.provider. For a pure agent switch without changing auth, prefer --agent. |
 | `--show-thinking` | - | bool | `false` | Render the agent's internal thinking blocks (audit NDJSON 'thinking' events) in the live stream. Off by default — thinking is verbose and produces many lines per phase. |
-| `--source` | - | string | - | Source to audit (required): local directory (pass --source . for the current directory), git URL, gs://<project>/<key> archive, or local .zip/.tar.gz |
+| `--source` | - | string | `.` | Source: local directory, git URL, gs://<project>/<key> archive, or local .zip/.tar.gz |
 | `--stateless` | `-S` | bool | `false` | Run the audit into a throwaway temporary database (the main DB is left untouched) and auto-write a self-contained HTML report. Mirrors 'vigolium scan -S'. Not valid with --interactive. |
 | `--upload-results` | - | bool | `false` | Upload session bundle to cloud storage after completion (requires storage config) |
 
@@ -769,7 +741,7 @@ Check system readiness and diagnose configuration issues
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--fix` | - | bool | `false` | Auto-install/fix failing checks |
-| `--only` | - | stringSlice | - | Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium,skill) |
+| `--only` | - | stringSlice | - | Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium) |
 | `--strict` | - | bool | `false` | Exit 1 when the verdict is degraded, not only when it is not_ready |
 
 ## vigolium endpoints
@@ -1461,23 +1433,6 @@ Run the known-issue scan using nuclei's argv (routed to `vigolium run known-issu
 
 _No command-specific flags._
 
-## vigolium oast
-
-Attribute out-of-band callbacks logged by your own OAST endpoint
-
-_No command-specific flags._
-
-## vigolium oast ingest
-
-Usage: `vigolium oast ingest [file|-]`
-
-Turn logged OAST callbacks into findings of the scan that planted them
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--protocol` | - | string | - | Protocol of every raw-log line (http, https, dns, smtp); default: guessed per line |
-| `--stateless` | `-S` | bool | `false` | Write to the standalone .sqlite named by --db with project scoping off |
-
 ## vigolium olium
 
 Usage: `vigolium olium [prompt...]`
@@ -1498,7 +1453,7 @@ Launch vigolium — interactive TUI agent (alias for `vigolium agent olium`)
 | `--oauth-cred` | - | string | - | Path to OAuth/SA credential file (openai-codex-oauth: ~/.codex/auth.json; anthropic-vertex/google-vertex: SA JSON or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--prompt` | `-p` | string | - | Run one prompt non-interactively and stream to stdout (skips the TUI). Pass '-' to read the prompt from stdin |
-| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset); default openai-compatible |
+| `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config); default openai-compatible |
 | `--stdin` | - | bool | `false` | Force reading prompt from stdin |
 | `--system` | - | string | - | Override system prompt |
 
@@ -1664,8 +1619,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |
 | `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
 | `--browser-insecure` | - | bool | `false` | Spider with every browser security exception on: no sandbox, TLS errors ignored, mixed content allowed, same-origin policy off. For local test apps only |
-| `--browsers` | `-b` | int | `1` | Browser instances to launch for spidering (clamped to 1; for parallel crawling set spidering.tabs in the config, which runs N tabs of the one browser) |
-| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
+| `--browsers` | `-b` | int | `1` | Browser instances to launch for spidering (currently clamped to 1 — the crawler is single-threaded) |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
 | `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
@@ -1673,13 +1627,12 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--discovery-extensions` | - | stringSlice | - | Extensions discovery also tries on every wordlist name, e.g. php,bak (ffuf's -e; leading dots optional). Swept directly, without the confirm-before-fuzzing gate that otherwise guards server-side extensions. Overrides discovery.extensions.custom_list |
 | `--discovery-max-depth` | - | int | `0` | Maximum directory recursion depth for discovery (ffuf's -recursion-depth); 0 turns recursion off. Overrides discovery.recursion.max_depth (default 5) |
 | `--discovery-wordlist` | - | stringArray | - | Custom wordlist file seeding the discovery phase's /FUZZ brute-force (enables fuzzing on the fly). Repeatable: the files are streamed in order and each word is tried once. A missing file is a usage error. Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |
+| `--dry-run` | - | bool | `false` | Resolve and print the scan plan — phases (with why each disabled one is off), budgets, pace, modules, scope, auth session names, scope admission and a rough request estimate — then exit without scanning. Mints no scan UUID, writes no output file or scan row, materializes no wordlist, runs no login and registers no OAST; an existing database is only read. -j prints it as a document (items = phases, plan = the full plan, dry_run: true) |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
-| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
-| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--headed` | - | bool | `false` | Show the browser window during spidering (sugar for --headless=false; wins when both are set) |
 | `--header` | `-H` | stringArray | - | Add custom HTTP header (repeatable, e.g. -H 'Auth: Bearer token'). Commas are literal — repeat -H for multiple headers. |
 | `--headless` | - | bool | `true` | Run browser in headless mode |
@@ -1695,11 +1648,9 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--known-issue-scan-tags` | - | stringSlice | - | Nuclei template tags to include (comma-separated) |
 | `--known-issue-scan-templates` | - | stringArray | - | Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too. |
 | `--known-issue-scan-templates-dir` | - | stringArray | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded. |
-| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
 | `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
 | `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
@@ -1714,7 +1665,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--no-prefix-breaker` | - | bool | `false` | Disable per-prefix circuit breaker that stops discovery from recursing into trap directories |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
-| `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
+| `--oast-url` | - | string | - | Fixed out-of-band callback URL (overrides auto-generated interactsh URL) |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
 | `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |
@@ -1770,8 +1721,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |
 | `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
 | `--browser-insecure` | - | bool | `false` | Spider with every browser security exception on: no sandbox, TLS errors ignored, mixed content allowed, same-origin policy off. For local test apps only |
-| `--browsers` | `-b` | int | `1` | Browser instances to launch for spidering (clamped to 1; for parallel crawling set spidering.tabs in the config, which runs N tabs of the one browser) |
-| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
+| `--browsers` | `-b` | int | `1` | Browser instances to launch for spidering (currently clamped to 1 — the crawler is single-threaded) |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
 | `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
@@ -1779,13 +1729,12 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--discovery-extensions` | - | stringSlice | - | Extensions discovery also tries on every wordlist name, e.g. php,bak (ffuf's -e; leading dots optional). Swept directly, without the confirm-before-fuzzing gate that otherwise guards server-side extensions. Overrides discovery.extensions.custom_list |
 | `--discovery-max-depth` | - | int | `0` | Maximum directory recursion depth for discovery (ffuf's -recursion-depth); 0 turns recursion off. Overrides discovery.recursion.max_depth (default 5) |
 | `--discovery-wordlist` | - | stringArray | - | Custom wordlist file seeding the discovery phase's /FUZZ brute-force (enables fuzzing on the fly). Repeatable: the files are streamed in order and each word is tried once. A missing file is a usage error. Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |
+| `--dry-run` | - | bool | `false` | Resolve and print the scan plan — phases (with why each disabled one is off), budgets, pace, modules, scope, auth session names, scope admission and a rough request estimate — then exit without scanning. Mints no scan UUID, writes no output file or scan row, materializes no wordlist, runs no login and registers no OAST; an existing database is only read. -j prints it as a document (items = phases, plan = the full plan, dry_run: true) |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
-| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
-| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--headed` | - | bool | `false` | Show the browser window during spidering (sugar for --headless=false; wins when both are set) |
 | `--header` | `-H` | stringArray | - | Add custom HTTP header (repeatable, e.g. -H 'Auth: Bearer token'). Commas are literal — repeat -H for multiple headers. |
 | `--headless` | - | bool | `true` | Run browser in headless mode |
@@ -1801,11 +1750,9 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--known-issue-scan-tags` | - | stringSlice | - | Nuclei template tags to include (comma-separated) |
 | `--known-issue-scan-templates` | - | stringArray | - | Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too. |
 | `--known-issue-scan-templates-dir` | - | stringArray | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded. |
-| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
 | `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
 | `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
@@ -1821,7 +1768,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--no-prefix-breaker` | - | bool | `false` | Disable per-prefix circuit breaker that stops discovery from recursing into trap directories |
 | `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
-| `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
+| `--oast-url` | - | string | - | Fixed out-of-band callback URL (overrides auto-generated interactsh URL) |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
 | `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |
@@ -1918,24 +1865,19 @@ Scan a raw HTTP request for vulnerabilities
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
-| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--discover` | - | bool | `false` | Run content discovery before scanning |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
 | `--external-harvest` | - | bool | `false` | Run external intelligence harvesting before scanning |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating; --soft-fail overrides. |
-| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
-| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--ignore-scope` | - | bool | `false` | Scan the target even when the configured scope rejects it (relaxes scope.host/scope.path for this run) |
 | `--input` | `-i` | string | `-` | Input file or - for stdin |
 | `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
 | `--keep-db-on-error` | - | bool | `false` | On a failed -S/--stateless scan, move the throwaway working database to ~/.vigolium/recovered instead of deleting it, so the partial results survive the failure (requires -S) |
 | `--known-issue-scan` | - | bool | `false` | Run known issue scan (Nuclei + native secret scanning) |
-| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
 | `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
 | `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
@@ -1971,24 +1913,19 @@ Scan a single URL for vulnerabilities
 |------|-------|------|---------|-------------|
 | `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
 | `--body` | - | string | - | Request body |
-| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
 | `--discover` | - | bool | `false` | Run content discovery before scanning |
 | `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
 | `--external-harvest` | - | bool | `false` | Run external intelligence harvesting before scanning |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating; --soft-fail overrides. |
-| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
-| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--header` | `-H` | stringArray | - | Custom header (repeatable, e.g. -H 'Cookie: x=1'). Commas are literal — repeat -H for multiple headers. |
 | `--ignore-scope` | - | bool | `false` | Scan the target even when the configured scope rejects it (relaxes scope.host/scope.path for this run) |
 | `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
 | `--keep-db-on-error` | - | bool | `false` | On a failed -S/--stateless scan, move the throwaway working database to ~/.vigolium/recovered instead of deleting it, so the partial results survive the failure (requires -S) |
 | `--known-issue-scan` | - | bool | `false` | Run known issue scan (Nuclei + native secret scanning) |
-| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
 | `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
-| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
 | `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
 | `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
@@ -2013,54 +1950,6 @@ Scan a single URL for vulnerabilities
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
 | `--target` | `-t` | stringArray | - | Target URL to scan (repeatable; alternative to the positional URL argument). Commas are literal. |
 | `--timeout` | - | duration | `15s` | HTTP request timeout (e.g. 30s, 1m, 2h) |
-
-## vigolium schema
-
-Print the JSON Schema of -j documents, --events lines and the error envelope
-
-_No command-specific flags._
-
-## vigolium schema all
-
-Print every schema in one object
-
-_No command-specific flags._
-
-## vigolium schema command
-
-Usage: `vigolium schema command <name>`
-
-Print one command's -j document schema
-
-_No command-specific flags._
-
-## vigolium schema error
-
-Print the -j error envelope schema (error.code is a closed enum)
-
-_No command-specific flags._
-
-## vigolium schema event
-
-Usage: `vigolium schema event [type]`
-
-Print the schema of one --events line type, or of any line
-
-_No command-specific flags._
-
-## vigolium schema list
-
-Aliases: `ls`
-
-List the commands, event types and documents that have a schema
-
-_No command-specific flags._
-
-## vigolium schema plan
-
-Print the scan plan schema (scan --dry-run, the scan.plan event)
-
-_No command-specific flags._
 
 ## vigolium scope
 

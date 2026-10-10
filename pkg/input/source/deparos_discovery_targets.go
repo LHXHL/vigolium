@@ -29,7 +29,13 @@ const (
 
 // targetConcurrency resolves the pool width for n targets.
 func (c DeparosDiscoveryConfig) targetConcurrency(n int) int {
-	width := c.TargetConcurrency
+	return DiscoveryTargetConcurrency(c.TargetConcurrency, n)
+}
+
+// DiscoveryTargetConcurrency is how many of n targets discovery runs at once
+// with discovery.target_concurrency set to configured (0 = default).
+func DiscoveryTargetConcurrency(configured, n int) int {
+	width := configured
 	if width <= 0 {
 		width = defaultDiscoveryTargetConcurrency
 	}

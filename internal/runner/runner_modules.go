@@ -399,108 +399,31 @@ func planRunsPhase(plan NativeScanPlan, phase NativePhase) bool {
 	return false
 }
 
-// getModulesToExecute returns the active and passive modules to execute based on options.
-//
-// Sentinel convention for options.Modules / options.PassiveModules: a nil/empty
-// slice selects ZERO modules for that category; []string{"all"} selects every
-// module; any other list selects those IDs. Callers disable a whole category by
-// leaving its slice empty — e.g. scan-url's --no-passive nils PassiveModules and
-// server's --passive-only nils Modules. Do not make an empty slice default to
-// "all" without updating those callers.
+// getModulesToExecute returns the active and passive modules to execute based
+// on options: FilterModulesForRun (the selection the scan plan reports too),
+// plus a log line for everything a gate dropped.
 func (r *Runner) getModulesToExecute() ([]modules.ActiveModule, []modules.PassiveModule) {
-	var activeModules []modules.ActiveModule
-	var passiveModules []modules.PassiveModule
-
-	// Get active modules
-	activeUsingAll := false
-	if len(r.options.Modules) > 0 {
-		if r.options.Modules[0] == "all" {
-			activeModules = modules.GetActiveModules()
-			activeUsingAll = true
-		} else {
-			activeModules = modules.GetActiveModulesByIDs(r.options.Modules)
-		}
+	sel := FilterModulesForRun(r.options, r.settings)
+	if sel.ActiveByConfig {
+		zap.L().Info("Active modules filtered by config", zap.Strings("ids", r.settings.DynamicAssessment.EnabledModules.ActiveModules))
 	}
-
-	// Get passive modules
-	passiveUsingAll := false
-	if len(r.options.PassiveModules) > 0 {
-		if r.options.PassiveModules[0] == "all" {
-			passiveModules = modules.GetPassiveModules()
-			passiveUsingAll = true
-		} else {
-			passiveModules = modules.GetPassiveModulesByIDs(r.options.PassiveModules)
-		}
+	if sel.PassiveByConfig {
+		zap.L().Info("Passive modules filtered by config", zap.Strings("ids", r.settings.DynamicAssessment.EnabledModules.PassiveModules))
 	}
-
-	// Filter modules based on enabled_modules config (only when CLI uses "all").
-	// A config allowlist is a deliberate selection, so it also opts out of the
-	// intensity tier ceiling below.
-	activeNarrowedByConfig := false
-	passiveNarrowedByConfig := false
-	if r.settings != nil {
-		if activeUsingAll && !isAllModules(r.settings.DynamicAssessment.EnabledModules.ActiveModules) {
-			activeModules = modules.GetActiveModulesByIDs(r.settings.DynamicAssessment.EnabledModules.ActiveModules)
-			activeNarrowedByConfig = true
-			zap.L().Info("Active modules filtered by config", zap.Strings("ids", r.settings.DynamicAssessment.EnabledModules.ActiveModules))
-		}
-
-		if passiveUsingAll && !isAllModules(r.settings.DynamicAssessment.EnabledModules.PassiveModules) {
-			passiveModules = modules.GetPassiveModulesByIDs(r.settings.DynamicAssessment.EnabledModules.PassiveModules)
-			passiveNarrowedByConfig = true
-			zap.L().Info("Passive modules filtered by config", zap.Strings("ids", r.settings.DynamicAssessment.EnabledModules.PassiveModules))
-		}
+	intensity := r.intensityLabel()
+	logTierDeferred(intensity, "Active", sel.TierCeiling, sel.activeTier)
+	logTierDeferred(intensity, "Passive", sel.TierCeiling, sel.passiveTier)
+	logRiskWithheld(intensity, "Active", sel.activeRisk)
+	logRiskWithheld(intensity, "Passive", sel.passiveRisk)
+	logHygieneSuppressed(intensity, "Active", sel.activeHygiene)
+	logHygieneSuppressed(intensity, "Passive", sel.passiveHygiene)
+	if len(sel.Active) > 0 {
+		zap.L().Info("Active modules to execute", zap.Int("count", len(sel.Active)))
 	}
-
-	// Apply the intensity tier ceiling. This only narrows a broad ("all")
-	// selection: an explicit -m / --module-tag list or a config allowlist
-	// reflects deliberate intent and runs verbatim regardless of intensity.
-	ceiling := intensityTierCeiling(r.options.Intensity)
-	if activeUsingAll && !activeNarrowedByConfig {
-		activeModules = r.filterActiveModulesByTier(activeModules, ceiling)
+	if len(sel.Passive) > 0 {
+		zap.L().Info("Passive modules to execute", zap.Int("count", len(sel.Passive)))
 	}
-	if passiveUsingAll && !passiveNarrowedByConfig {
-		passiveModules = r.filterPassiveModulesByTier(passiveModules, ceiling)
-	}
-
-	// Withhold risk:high modules (state-changing or target-degrading probes)
-	// below deep unless the operator opted in. Same "only narrows a broad
-	// selection" rule as the tier ceiling: -m / --module-tag still runs them.
-	if !r.riskyPayloadsAllowed() {
-		if activeUsingAll && !activeNarrowedByConfig {
-			activeModules = filterRiskHighModules(r, activeModules, "Active")
-		}
-		if passiveUsingAll && !passiveNarrowedByConfig {
-			passiveModules = filterRiskHighModules(r, passiveModules, "Passive")
-		}
-	}
-
-	// Apply the hardening-advisory gate. Same "only narrows a broad selection"
-	// rule as the tier ceiling, plus one extra escape hatch: `--module-tag hygiene`
-	// resolves to exact IDs for the active category but leaves passive on the
-	// "all" sentinel, so an explicit selection that names any hygiene module keeps
-	// the whole family on both sides (see hygieneGateActive).
-	if r.hygieneGateActive() {
-		if activeUsingAll && !activeNarrowedByConfig {
-			activeModules = r.filterActiveHygieneModules(activeModules)
-		}
-		if passiveUsingAll && !passiveNarrowedByConfig {
-			passiveModules = r.filterPassiveHygieneModules(passiveModules)
-		}
-	}
-
-	// Sort by execution priority to keep scheduling policy aligned with the executor.
-	if len(activeModules) > 0 {
-		sortActiveModulesByPriority(activeModules)
-		zap.L().Info("Active modules to execute", zap.Int("count", len(activeModules)))
-	}
-
-	if len(passiveModules) > 0 {
-		sortPassiveModulesByPriority(passiveModules)
-		zap.L().Info("Passive modules to execute", zap.Int("count", len(passiveModules)))
-	}
-
-	return activeModules, passiveModules
+	return sel.Active, sel.Passive
 }
 
 func sortActiveModulesByPriority(mods []modules.ActiveModule) {

@@ -470,12 +470,16 @@ func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled b
 		} else {
 			opts.HeuristicsCheck = "none"
 		}
+		noteOnlySelection(opts, allowed)
 	}
 
 	applyProbeOnlyDefaults(opts)
 
 	if len(opts.SkipPhases) > 0 {
 		for _, phase := range opts.SkipPhases {
+			if IsSkippablePhaseSpelling(phase) {
+				opts.NotePhaseDisabled(phase, "skip")
+			}
 			switch phase {
 			case "discovery", "ingestion":
 				opts.SkipIngestion = true
@@ -517,6 +521,31 @@ func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled b
 	}
 
 	return nil
+}
+
+// noteOnlySelection records, for the scan plan, every --only-nameable phase
+// the --only list left out (and clears any earlier record for the ones it
+// names). The phases riding on others (harvest-probe, param-mining, …) are
+// gated, not selected, so they are left to the plan to explain.
+func noteOnlySelection(opts *types.Options, allowed map[string]bool) {
+	for _, p := range nativePhaseVocabulary {
+		if !p.onlyAccepted() {
+			continue
+		}
+		id := p.Canonical
+		on := allowed[id]
+		switch id {
+		case "discovery":
+			on = allowed["discovery"] || allowed["ingestion"]
+		case "dynamic-assessment":
+			on = allowed["dynamic-assessment"] || allowed["extension"]
+		}
+		if on {
+			opts.NotePhaseEnabled(id)
+		} else {
+			opts.NotePhaseDisabled(id, "only")
+		}
+	}
 }
 
 // IsProbeOnlyRun reports whether this invocation is a standalone host sweep:
