@@ -20,6 +20,7 @@ const (
 	PhaseDiscovery         NativePhase = "discovery"
 	PhaseTargetedReSpider  NativePhase = "targeted-respider"
 	PhaseSeed              NativePhase = "seed"
+	PhaseParamMining       NativePhase = "param-mining"
 	PhaseKnownIssueScan    NativePhase = "known-issue-scan"
 	PhaseDynamicAssessment NativePhase = "dynamic-assessment"
 	// PhasePreflight carries the CLI-target tally (scope admission,
@@ -79,6 +80,11 @@ var nativePhaseVocabulary = []nativePhaseSpelling{
 	// those later phases to fetch unchecked.
 	{Canonical: "harvest-probe", Aliases: []string{"harvest-check"}, Skippable: true, Internal: true},
 	{Canonical: "targeted-respider", Aliases: []string{"respider", "re-spider"}, Skippable: true, Internal: true},
+	// param-mining discovers hidden parameters on the endpoints the scan
+	// recorded, for the assessment to test. It rides on dynamic-assessment
+	// (deep or --param-mining), so it cannot run alone; `vigolium kit
+	// param-mine` is the standalone form.
+	{Canonical: "param-mining", Aliases: []string{"params", "arjun", "param-miner"}, Skippable: true, Internal: true},
 	{Canonical: "seed", Skippable: false, Internal: true},
 	// preflight is reserved for the target reachability check that runs before
 	// any phase. --skip preflight is accepted now (opts.SkipPreflight); the step
@@ -240,6 +246,10 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 		// records. The config toggle + runtime gates are checked in the phase.
 		{Phase: PhaseTargetedReSpider, Enabled: opts.SpideringEnabled && !opts.SkipIngestion && !opts.SkipDynamicAssessment && !opts.SkipTargetedRespider},
 		{Phase: PhaseSeed, Enabled: opts.SkipIngestion && !opts.ScanOnReceive && (opts.KnownIssueScanEnabled || !opts.SkipDynamicAssessment)},
+		// Hidden-parameter mining over the records every phase above stored, so
+		// the assessment below tests the parameters it confirms. See
+		// paramMiningEnabled.
+		{Phase: PhaseParamMining, Enabled: paramMiningEnabled(opts)},
 		{Phase: PhaseDynamicAssessment, Enabled: !opts.SkipDynamicAssessment},
 		{Phase: PhaseKnownIssueScan, Enabled: opts.KnownIssueScanEnabled},
 	}
@@ -268,6 +278,21 @@ func gateHarvestProbe(steps []NativePhaseStep, opts *types.Options) {
 			!skipListNames(opts.SkipPhases, PhaseHarvestProbe) &&
 			NativeScanPlan{Steps: steps[i+1:]}.SendsTargetTraffic()
 	}
+}
+
+// paramMiningEnabled gates the param-mining step. It only feeds the assessment,
+// so it never runs without one, and --skip param-mining (any alias) turns it
+// off. Otherwise an explicit --param-mining[=false] decides, and without the
+// flag it follows the intensity: on at deep, except under --only, which
+// narrows a run to the phases it names and param-mining is not nameable there.
+func paramMiningEnabled(opts *types.Options) bool {
+	if opts.SkipDynamicAssessment || skipListNames(opts.SkipPhases, PhaseParamMining) {
+		return false
+	}
+	if opts.ParamMining != nil {
+		return *opts.ParamMining
+	}
+	return strings.EqualFold(opts.Intensity, "deep") && opts.OnlyPhase == ""
 }
 
 // skipListNames reports whether a --skip list names phase under any spelling.
@@ -479,6 +504,8 @@ func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled b
 				// Read off SkipPhases by gateHarvestProbe; nothing to set here.
 			case "targeted-respider":
 				opts.SkipTargetedRespider = true
+			case "param-mining":
+				// Read off SkipPhases by paramMiningEnabled; nothing to set here.
 			case "preflight":
 				opts.SkipPreflight = true
 			default:

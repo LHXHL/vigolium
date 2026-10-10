@@ -26,6 +26,7 @@ transform or probe meant to be driven by an orchestrator or run by hand.
   vigolium kit js-beautify  <file|url|->     unminify + unpack a JS bundle
   vigolium kit oast new|poll                 mint OOB callback URLs and drain hits
   vigolium kit harvest <domain...>           collect known URLs from public archives
+  vigolium kit param-mine -t <url>           discover hidden parameters an endpoint accepts
   vigolium kit jwt-crack <token>             recover a JWT's HMAC secret from a wordlist
   vigolium kit wordlist [name]               list or print the built-in wordlists
   vigolium kit payload --class <c>           emit built-in payloads by class

@@ -30,6 +30,7 @@ const (
 	RecordSourceFinding      = "finding"       // request/response attached to a finding
 	RecordSourceBurp         = "burp"          // Burp Suite, via the loopback bridge or a push to /api/ingest-http
 	RecordSourceCaido        = "caido"         // Caido, via the loopback bridge or a push to /api/ingest-http
+	RecordSourceParamMining  = "param-mining"  // request carrying a hidden parameter the param-mining phase confirmed
 )
 
 // BridgeRecordSources lists the http_records.source values a loopback bridge

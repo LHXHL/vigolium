@@ -81,6 +81,16 @@ func registerScanPipelineFlags(flags *pflag.FlagSet) {
 	flags.BoolVar(&globalSkipHeuristics, "skip-heuristics", false, "Disable pre-scan heuristics (equivalent to --heuristics-check=none)")
 	registerAllowRiskyPayloadsFlag(flags)
 	registerNoParamDedupFlag(flags)
+	registerParamMiningFlag(flags)
+}
+
+// registerParamMiningFlag declares --param-mining for the full pipeline (scan,
+// run). It binds into scanOpts.ParamMining, left nil when absent so the phase
+// follows the intensity (on at deep); an explicit value wins either way.
+func registerParamMiningFlag(flags *pflag.FlagSet) {
+	f := flags.VarPF(optionalBoolFlag{target: &scanOpts.ParamMining}, "param-mining", "",
+		"Mine hidden parameters (Arjun-style) on this scan's dynamic endpoints before the assessment, so injection modules test them too. Default: on at --intensity deep, off below; --param-mining=false turns it off at deep. Budget: dynamic-assessment.param_mining in config")
+	f.NoOptDefVal = "true"
 }
 
 // registerAllowRiskyPayloadsFlag declares --allow-risky-payloads for the scan

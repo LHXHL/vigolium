@@ -18,14 +18,15 @@ truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 7. **Discovery / Ingestion** (`discovery`) - parse inputs and perform content discovery
 8. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl. Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
 9. **Seed** (`seed`) - when discovery/ingestion is skipped (for example `--only dynamic-assessment`), store the CLI targets as records so the assessment phases have something to scan. Not run under scan-on-receive
-10. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
-11. **Known Issue Scan** (`known-issue-scan`) - run Nuclei plus native in-process secret detection
+10. **Param mining** (`param-mining`) - discover hidden parameters (Arjun-style) on this scan's dynamic endpoints and store each one as a record, so the assessment tests it too (see [Param Mining](#param-mining)). On at `--intensity deep` or with `--param-mining`; never without dynamic assessment
+11. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
+12. **Known Issue Scan** (`known-issue-scan`) - run Nuclei plus native in-process secret detection
 
 Every step above is a name in the phase vocabulary, so each `phase.started` /
 `phase.finished` id can be looked up in `vigolium strategy -j` (`phases[]`).
-`harvest-probe`, `targeted-respider` and `seed` are **internal**: the plan schedules them on its
-own gates, so `--only` rejects them. `--skip harvest-probe` and `--skip targeted-respider` are accepted
-(external-harvest and spidering still run); `seed` cannot be skipped. `preflight` is also reserved as
+`harvest-probe`, `targeted-respider`, `param-mining` and `seed` are **internal**: the plan schedules them on its
+own gates, so `--only` rejects them. `--skip harvest-probe`, `--skip targeted-respider` and `--skip param-mining` are accepted
+(external-harvest, spidering and the assessment still run); `seed` cannot be skipped. `preflight` is also reserved as
 an internal, skippable name for the target reachability check; `--skip preflight`
 is accepted today and has no effect until that check lands.
 
@@ -148,6 +149,53 @@ vigolium run known-issue-scan -t https://example.com \
   --known-issue-scan-tags cve,rce
 ```
 
+### Param Mining
+
+Finds parameters an endpoint reads although no recorded request carries them
+(`debug=`, `callback=`, `admin=`) and hands them to dynamic assessment. It is
+internal (no `--only`), and runs right before the assessment when either:
+
+- `--intensity deep` (and no `--only`), or
+- `--param-mining` (any intensity, also with `--only dast`).
+
+`--param-mining=false` or `--skip param-mining` (aliases `params`, `arjun`,
+`param-miner`) turns it off, and it never runs without dynamic assessment.
+
+```bash
+vigolium scan -t https://example.com --intensity deep        # mining included
+vigolium scan -t https://example.com --param-mining          # balanced scan + mining
+vigolium run dast -t https://example.com --param-mining      # rescan stored records with mining first
+```
+
+Endpoints come from the records the assessment will read: 2xx, GET or POST,
+dynamic content (HTML, JSON, XML, text; no static assets), one per method and
+path, the top `max_endpoints_per_host` (50) per origin by `risk_score`. Each is
+mined by the same engine as `vigolium kit param-mine`: two baselines with a random
+parameter (an endpoint whose baselines disagree is skipped as `unstable`), names
+in chunks sized to the transport, bisection to single names, and two fresh-value
+confirmations. The wordlist puts the host's own names first (from jstangle facts
+and the host's recorded traffic), then `dynamic-assessment.param_mining.wordlist`,
+then the built-in list (`vigolium kit wordlist params`). Every request goes
+through the scan's requester (session, rate limit, host limiter);
+`max_requests_per_endpoint` (60) bounds each endpoint, and a burst of 403/429/WAF
+answers stops it.
+
+Each confirmed parameter becomes an `http_records` row with `source:
+param-mining`, a remark `param-mining:name=<n>;signal=<reflect|status|header|length|body>`,
+and `hidden: true` on that parameter. `phase.finished` counts: `candidates`,
+`endpoints`, `mined`, `unstable`, `blocked`, `budget_exhausted`, `failed`,
+`names_tested`, `params_found`, `records_written`, `write_failed`.
+
+```yaml
+dynamic-assessment:
+  param_mining:
+    max_endpoints_per_host: 50
+    max_requests_per_endpoint: 60
+    max_words: 0          # 0 = no cap on the merged wordlist
+    wordlist: ""          # extra names file, tried before the built-in list
+    concurrency: 0        # endpoints at once; 0 = min(-c, 10)
+```
+
 ### DynamicAssessment
 
 Runs active and passive vulnerability scanning modules. This is the core scanning phase. CLI aliases: `audit`, `dast`, `assessment`.
@@ -203,6 +251,7 @@ Every phase answers to several spellings. They work identically with `--only`, `
 | `port-sweep` | `ports`, `portsweep`, `port-scan` |
 | `harvest-probe` (internal: `--skip` only) | `harvest-check` |
 | `targeted-respider` (internal: `--skip` only) | `respider`, `re-spider` |
+| `param-mining` (internal: `--skip` only) | `params`, `arjun`, `param-miner` |
 | `seed` (internal: neither) | |
 | `preflight` (internal: `--skip` only, reserved) | |
 

@@ -41,6 +41,11 @@ type DynamicAssessmentConfig struct {
 	// tagged risk:high. Deep scans always allow them. The --allow-risky-payloads
 	// flag overrides this value in either direction.
 	AllowRiskyPayloads bool `yaml:"allow_risky_payloads,omitempty"`
+
+	// ParamMining bounds the param-mining phase (hidden-parameter discovery),
+	// which runs before the assessment at --intensity deep or with
+	// --param-mining. See ParamMiningConfig.
+	ParamMining ParamMiningConfig `yaml:"param_mining,omitempty"`
 }
 
 func DefaultDynamicAssessmentConfig() *DynamicAssessmentConfig {

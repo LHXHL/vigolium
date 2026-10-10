@@ -415,6 +415,11 @@ type Options struct {
 	// vuln-class) skip so every module of a class tests a parameter even after
 	// another one reported it. For audit runs that want every technique's hit.
 	NoParamDedup bool
+
+	// ParamMining is --param-mining: nil when the flag was not passed (the
+	// phase then follows the intensity: on at deep, off below it), otherwise
+	// the explicit value, which wins in both directions.
+	ParamMining *bool
 }
 
 // DefaultConcurrency is the built-in scan worker count, used wherever nobody

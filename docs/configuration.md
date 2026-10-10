@@ -677,6 +677,11 @@ dynamic-assessment:
   # hygiene_modules: true     # unset = follow intensity (see below)
   # allow_risky_payloads: true # risk:high payloads/modules below deep (see below)
 
+  param_mining:                 # hidden-parameter mining (deep or --param-mining)
+    max_endpoints_per_host: 50  # 0 = default 50
+    max_requests_per_endpoint: 60
+    # wordlist: ~/params.txt    # extra names, tried before the built-in list
+
   extensions:
     enabled: false
     extension_dir: ~/.vigolium/extensions/
@@ -730,6 +735,13 @@ deep` by default (MSSQL time-blind is therefore deep-only). Set
 `--allow-risky-payloads` flag on `scan`, `run`, `scan-url` and `scan-request`
 overrides this value in either direction; deep always allows them. See
 [Risky Payloads](native-scan/modules-reference.md#risky-payloads-riskhigh).
+
+**Param mining (`param_mining`).** Bounds the `param-mining` phase, which runs
+before the assessment at `--intensity deep` or with `--param-mining` and stores
+every hidden parameter it confirms as a `source: param-mining` record. These keys
+shape it only (`max_endpoints_per_host`, `max_requests_per_endpoint`, `max_words`,
+`wordlist`, `concurrency`); `--param-mining=false` or `--skip param-mining` turns
+it off. See [Param Mining](guides/native-scan-phases.md#param-mining).
 
 ### `scope`
 

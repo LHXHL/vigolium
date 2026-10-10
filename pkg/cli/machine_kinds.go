@@ -110,6 +110,7 @@ var machineKinds = map[string]machineKind{
 	"kit jwt-crack":   kindRead,
 	"kit oast new":    kindRead,
 	"kit oast poll":   kindRead,
+	"kit param-mine":  kindRead,
 	"kit payload":     kindRead,
 	"kit secret-scan": kindRead,
 	"kit tmp-clean":   kindMutation,

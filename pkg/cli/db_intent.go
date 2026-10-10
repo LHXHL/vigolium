@@ -134,6 +134,7 @@ var dbIntents = map[string]string{
 	"kit jwt-crack":   dbIntentNone,
 	"kit oast new":    dbIntentNone,
 	"kit oast poll":   dbIntentNone,
+	"kit param-mine":  dbIntentNone,
 	"kit payload":     dbIntentNone,
 	"kit secret-scan": dbIntentNone,
 	"kit tmp-clean":   dbIntentNone,

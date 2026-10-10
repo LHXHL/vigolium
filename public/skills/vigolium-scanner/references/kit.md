@@ -14,6 +14,7 @@ files/stdin, honours `-j/--json` for machine output, and gates via exit codes.
 - [js-beautify](#js-beautify)
 - [oast (new / poll)](#oast-new--poll)
 - [harvest](#harvest)
+- [param-mine](#param-mine)
 - [jwt-crack](#jwt-crack)
 - [wordlist](#wordlist)
 - [payload](#payload)
@@ -45,6 +46,7 @@ the top level, for one release.
 | Unminify / unpack a JS bundle | `vigolium kit js-beautify <file\|url\|->` |
 | Mint OOB callback URLs and drain hits | `vigolium kit oast new` → `vigolium kit oast poll` |
 | Collect known URLs for a domain | `vigolium kit harvest <domain…>` |
+| Find hidden parameters an endpoint accepts | `vigolium kit param-mine -t <url>` |
 | Recover a JWT's HMAC secret | `vigolium kit jwt-crack <token>` |
 | List / print the built-in wordlists | `vigolium kit wordlist [name]` |
 | Emit built-in payloads by class | `vigolium kit payload --class <c>` |
@@ -223,6 +225,43 @@ hanging. Same source set and shaping as the scan's
 and static assets dropped; `.js`/`.map` kept) and sampled to
 `external_harvester.per_shape` URLs per path shape and `max_urls` per domain.
 
+## param-mine
+
+Discover parameters an endpoint reads although no request carries them
+(`debug=`, `callback=`, `admin=`): Arjun-style mining that **sends requests to the
+target** (unlike most kit tools). Two baselines with a random parameter profile
+the endpoint; names go out in chunks sized to the transport (6 KiB request
+target for the query string, 32 KiB for a form/JSON body), each with a random
+value; a chunk whose answer differs is bisected to single names, and every
+candidate must reproduce on two fresh-value re-sends.
+
+```bash
+vigolium kit param-mine -t 'https://target.example/search?q=x'
+vigolium kit param-mine -t https://target.example/login -X POST -d 'user=a' -j
+vigolium kit param-mine -t https://target.example/api -X POST \
+    -H 'Content-Type: application/json' -d '{"id":1}'
+vigolium kit param-mine -t https://target.example/ -w names.txt --max-requests 200
+```
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `-t/--target` | — | endpoint URL (or the positional argument) |
+| `-X/--method`, `-d/--data`, `-H/--header` | `GET` | the base request; names are added to it |
+| `--location` | `auto` | `query`, `form`, `json`; auto = query for GET/HEAD/DELETE, else the body's encoding |
+| `-w/--wordlist` | — | names file(s) tried before the built-in list (`kit wordlist params`, ~1.8k); `--no-builtin` drops it |
+| `--max-requests` | `60` | per-run budget, baselines and confirmations included |
+| `--rate-limit` / `--timeout` | `20` rps / `15s` | pacing; the global `--proxy` applies |
+
+Each hit has a signal: `reflect` (its value came back), `status`, `header`
+(the header-name set changed), `length` (substantial body-length change) or
+`body` (content change at a similar length). `-j` is a read envelope: items
+`{name, signal, location, detail, url, status}` plus top-level `url`, `method`,
+`location`, `names_tested`, `requests`, `aborted`. `aborted` is empty for a full
+run, else `unstable` (the baselines disagree: dynamic page, nothing can be
+pinned on a parameter), `blocked` (3 consecutive 403/429/WAF answers), `budget`,
+`baseline_failed` or `errors`. A full scan runs the same miner per endpoint in
+its `param-mining` phase (`--intensity deep` or `--param-mining`).
+
 ## jwt-crack
 
 Brute-force a JWT's HMAC signing secret (HS256/384/512) against a wordlist. A
@@ -263,8 +302,9 @@ vigolium kit wordlist jwt > jwt.txt # materialize (alias: jwt → jwt.secrets.li
 
 A name matches the embedded filename, its basename without extension, or the
 `jwt` alias. Built-ins: `dir-short`, `dir-long`, `dir-large`, `file-short`,
-`file-long`, `file-large`, `fuzz`, `jwt.secrets.list` (the large lists are
-stored gzip-compressed and printed decompressed).
+`file-long`, `file-large`, `fuzz`, `params` (parameter names for
+`kit param-mine` and the param-mining phase), `jwt.secrets.list` (the large
+lists are stored gzip-compressed and printed decompressed).
 
 ## payload
 

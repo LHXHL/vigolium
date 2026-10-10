@@ -1771,6 +1771,9 @@
       },
       "EmbeddedParam": {
         "properties": {
+          "hidden": {
+            "type": "boolean"
+          },
           "metadata": {
             "type": "string"
           },

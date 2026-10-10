@@ -45,6 +45,7 @@ const teeDrainTimeout = 2 * time.Second
 //	Spidering         — browser-based crawling (opt-in)
 //	Discovery         — ingest all input + deparos content discovery into DB (no modules)
 //	Seed              — ingest CLI targets when discovery is skipped but DB-backed phases still need records
+//	ParamMining       — discover hidden parameters on recorded endpoints (deep / --param-mining)
 //	KnownIssueScan    — nuclei + secret scan (opt-in via --known-issue-scan)
 //	DynamicAssessment — modules + extensions scan DB records
 func (r *Runner) RunNativeScan() (err error) {
@@ -530,6 +531,16 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 			tracker.noteError(err)
 		} else {
 			r.scanLogger.Info("respider", "phase completed")
+		}
+	case PhaseParamMining:
+		r.setPhaseTag("param-mining")
+		r.scanLogger.Info("param-mining", "phase started")
+		if err := r.runParamMiningPhase(ctx, infra); err != nil {
+			zap.L().Error("ParamMining phase failed", zap.Error(err))
+			r.scanLogger.Error("param-mining", "phase failed: "+err.Error())
+			tracker.noteError(err)
+		} else {
+			r.scanLogger.Info("param-mining", "phase completed")
 		}
 	case PhaseSeed:
 		r.setPhaseTag("seed")

@@ -450,6 +450,9 @@ type EmbeddedParam struct {
 	ValueStart int    `json:"value_start,omitempty"`
 	ValueEnd   int    `json:"value_end,omitempty"`
 	Metadata   string `json:"metadata,omitempty"`
+	// Hidden marks a parameter no observed request carried: the param-mining
+	// phase found the endpoint acting on it (see pkg/parammine).
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // Finding represents a vulnerability finding (no FK, soft UUID reference)
