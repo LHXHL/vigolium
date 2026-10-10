@@ -2044,6 +2044,18 @@
             "format": "int64",
             "type": "integer"
           },
+          "insertion_point": {
+            "nullable": true,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "matched_at": {
             "items": {
               "type": "string"
@@ -2066,6 +2078,12 @@
               "active",
               "passive"
             ],
+            "type": "string"
+          },
+          "origin_record_uuid": {
+            "type": "string"
+          },
+          "payload": {
             "type": "string"
           },
           "project_uuid": {
@@ -2100,6 +2118,17 @@
           "status": {
             "type": "string"
           },
+          "status_actor": {
+            "type": "string"
+          },
+          "status_note": {
+            "type": "string"
+          },
+          "status_updated_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
           "tags": {
             "items": {
               "type": "string"
@@ -2107,6 +2136,33 @@
             "type": "array"
           },
           "url": {
+            "type": "string"
+          },
+          "verification": {
+            "nullable": true,
+            "properties": {
+              "at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "module_version": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "scan_uuid": {
+                "type": "string"
+              },
+              "verdict": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "verified_at": {
+            "format": "date-time",
+            "nullable": true,
             "type": "string"
           }
         },
