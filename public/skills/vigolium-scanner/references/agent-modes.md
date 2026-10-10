@@ -188,7 +188,7 @@ Launch an AI agent that autonomously discovers, scans, and triages vulnerabiliti
 
 Autopilot runs a **single autonomous operator session**. When `--source` is set the operator reads the code; one operator agent handles recon, validation, scanning, exploit attempts, and reporting.
 
-**Audit harness: off unless asked for.** A nested audit harness (a `claude`/`codex` CLI via vigolium-audit, or piolium) runs before the operator only when `--audit <mode>` or `--piolium <mode>` is passed (both need `--source`); the intensity preset never turns one on. `--piolium <mode>` alone turns `--audit` off. The run document echoes the choice as `audit_harness: {mode, piolium, harness}`.
+**Audit harness: off unless asked for.** A nested audit harness (a `claude`/`codex` CLI via vigolium-audit, or piolium) runs before the operator only when `--audit <mode>` or `--piolium <mode>` is passed (both need `--source`); the intensity preset never turns one on. `--piolium <mode>` alone turns `--audit` off. The run document echoes the choice as `audit_harness: {mode, piolium, harness, agent_cli}` (`agent_cli` is `claude` for vigolium-audit, `pi` for piolium).
 
 **Budgets:** `--max-commands` (tool calls; default from `--intensity`), `--token-budget` (input+output tokens), `--max-cost-usd` (estimated spend), `--max-duration` (wall clock). Hitting one stops the run cleanly: `status: budget_exhausted` (`timed_out` for `--max-duration`), exit 5.
 
@@ -406,15 +406,17 @@ vigolium agent swarm "scan all source code from ~/src/crAPI, ~/src/DVWA"
 | `--login-curl` | — | string | — | Curl command for the login flow; replayed to capture a fresh session, then reused for the scan |
 | `--auth-config` | — | string | — | Path to an existing agent-format `auth-config.yaml` (a native session file is detected and loaded as `--auth-file`); skips browser auth and `--cookie`/`--header`/`--login-curl` synthesis. Mutually exclusive with `--auth-file` |
 | `--auth-file` | — | []string | — | Native session file, as `scan --auth-file` takes (multi-step, OAuth2, check/reauth kept); repeatable, validated before the run. One file is passed to the native phases as is, several are merged into `auth-config.yaml`. Skips browser auth and inline-auth synthesis |
-| `--audit` | — | string | — | Run background vigolium-audit in parallel: `lite` (default if flag is bare), `balanced`, `deep`. Requires `--source` |
-| `--piolium` | — | string | — | Run background piolium audit (Pi runtime): `lite`, `balanced`, `deep`, `longshot`, etc. Requires `--source`. Empty triggers auto-pick when `--audit` is also empty (piolium when `pi` is installed, else nothing) |
+| `--audit` | — | string | `off` | Nested vigolium-audit harness run alongside the swarm (a `claude`/`codex` CLI; needs `--source`): `lite` (bare `--audit`), `balanced`, `deep`, or `off`. Off unless passed |
+| `--piolium` | — | string | — | Nested piolium harness (a `pi` CLI; needs `--source`): `lite`, `balanced`, `deep`, `longshot`, etc. Empty = off; an installed `pi` is never picked automatically. Wins over `--audit` |
 | `--diff` | — | string | — | Focus on changed code: PR URL, git ref range (`main...branch`), or `HEAD~N` |
 | `--last-commits` | — | int | `0` | Focus on last N commits (shorthand for `--diff HEAD~N`) |
 | `--intensity` | — | string | `balanced` | Scan intensity preset: `quick`, `balanced`, or `deep` (see [Intensity Presets](#intensity-presets)) |
 | `--upload-results` | — | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
 | `--disable-guardrail` | — | bool | `false` | Skip the prompt-safety classifier on the natural-language prompt (use only when refusing a known-good prompt) |
 
-At least one input is required: `--target`, `--input`, `--record-uuid`, `--all-records`, `--records-from`, `--source`, or piped stdin. `--source` requires `--target` for hostname filtering. `--audit` and `--piolium` both require `--source`. The browser is always available (there is **no** `--browser` flag). Swarm also accepts the shared olium provider override flags (`--provider`, `--model`, `--oauth-cred`, `--oauth-token`, `--llm-api-key`, `--base-url`, `--gcp-project`, `--gcp-location`) — note `--system` is olium-TUI-only and is **not** on swarm.
+At least one input is required: `--target`, `--input`, `--record-uuid`, `--all-records`, `--records-from`, `--source`, or piped stdin. `--source` requires `--target` for hostname filtering. `--audit` and `--piolium` both require `--source`.
+
+**Audit harness: off unless asked for.** Swarm launches a nested coding-agent CLI (vigolium-audit → `claude`/`codex`, piolium → `pi`) only when `--audit <mode>` or `--piolium <mode>` is passed, or the natural-language prompt explicitly asks for an audit; the intensity preset never turns one on and an installed `pi` is never auto-picked. The run document echoes the choice as `audit_harness: {mode, piolium, harness, agent_cli}` (`{"mode":"off"}` when none ran). The browser is always available (there is **no** `--browser` flag). Swarm also accepts the shared olium provider override flags (`--provider`, `--model`, `--oauth-cred`, `--oauth-token`, `--llm-api-key`, `--base-url`, `--gcp-project`, `--gcp-location`) — note `--system` is olium-TUI-only and is **not** on swarm.
 
 ### Swarm Phases
 
@@ -963,7 +965,7 @@ vigolium agent session --tui
 | `balanced` (default) | on | on | on | on | off | 12h | 3 |
 | `deep` | on | on | on | on | on | 24h | 5 |
 
-Note: Code Audit only takes effect when `--source` is given; Auth only takes effect when the browser is enabled.
+Note: Code Audit only takes effect when `--source` is given; Auth only takes effect when the browser is enabled. Code Audit is swarm's in-process olium phase; the presets never start a nested audit harness (pass `--audit` / `--piolium`).
 
 ### Audit / Piolium intensity
 

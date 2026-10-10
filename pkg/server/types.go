@@ -931,12 +931,14 @@ type AgentSwarmRequest struct {
 	ProjectUUID string `json:"project_uuid,omitempty"` // optional project UUID
 	ScanUUID    string `json:"scan_uuid,omitempty"`    // optional scan UUID
 
-	// Background vigolium-audit
-	Audit string `json:"audit,omitempty"` // run background vigolium-audit: "lite" (3-phase), "balanced" (6-phase), "deep" (10-phase), "off" to disable
+	// Nested vigolium-audit harness (launches a claude/codex CLI; needs
+	// source): "lite" (3-phase), "balanced" (9-phase), "deep" (12-phase).
+	// Empty or "off" = off; the intensity preset never turns it on.
+	Audit string `json:"audit,omitempty"`
 
-	// Background piolium audit (Pi runtime). Empty triggers server-side
-	// auto-pick when audit is also empty: piolium runs when pi+piolium
-	// are installed, otherwise nothing. Set explicitly to force piolium.
+	// Nested piolium audit harness (Pi runtime; launches a pi CLI; needs
+	// source). Empty = off: an installed piolium is never picked
+	// automatically. Wins over audit when both are set.
 	Piolium string `json:"piolium,omitempty"`
 
 	// Diff context

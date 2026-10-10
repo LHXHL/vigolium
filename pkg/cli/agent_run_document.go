@@ -8,8 +8,11 @@ import (
 	"sort"
 	"time"
 
+	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/agent"
 	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/piolium"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 	"go.uber.org/zap"
 )
@@ -146,12 +149,41 @@ type agentRunError struct {
 	Message string                `json:"message"`
 }
 
-// agentAuditHarness echoes which nested audit harness ran before the operator
-// (autopilot --audit / --piolium): mode "off" when none did.
+// agentAuditHarness echoes which nested audit harness the run launched
+// (autopilot / swarm --audit, --piolium): mode "off" when none did. Harness
+// and AgentCLI are set only when one ran: harness "audit" or "piolium", and
+// agent_cli the coding-agent CLI it launched (claude, codex or pi).
 type agentAuditHarness struct {
-	Mode    string `json:"mode"`
-	Piolium string `json:"piolium,omitempty"`
-	Harness string `json:"harness,omitempty"`
+	Mode     string `json:"mode"`
+	Piolium  string `json:"piolium,omitempty"`
+	Harness  string `json:"harness,omitempty"`
+	AgentCLI string `json:"agent_cli,omitempty"`
+}
+
+// newAgentAuditHarness builds the run document's audit_harness echo from the
+// resolved --audit / --piolium modes and the harness that was picked (zero
+// HarnessSpec when none runs).
+func newAgentAuditHarness(auditMode, pioliumMode string, cfg *config.AuditAgentConfig, harness agent.HarnessSpec) *agentAuditHarness {
+	if pioliumMode == "off" {
+		pioliumMode = ""
+	}
+	doc := &agentAuditHarness{Mode: firstNonEmptyString(auditMode, "off"), Piolium: pioliumMode}
+	if cfg == nil {
+		return doc
+	}
+	doc.Harness = harness.Name
+	doc.AgentCLI = auditHarnessAgentCLI(harness)
+	return doc
+}
+
+// auditHarnessAgentCLI names the coding-agent CLI a nested harness launches:
+// pi for piolium; claude for vigolium-audit, whose default --agent is used
+// when the run passes no driver invocation (autopilot and swarm never do).
+func auditHarnessAgentCLI(harness agent.HarnessSpec) string {
+	if harness.Name == piolium.HarnessName {
+		return "pi"
+	}
+	return string(agent.AuditDriverAgentClaude)
 }
 
 // agentRunOutcome is everything the run document reports.

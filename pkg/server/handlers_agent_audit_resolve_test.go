@@ -9,10 +9,9 @@ import (
 
 // These tests cover the audit-harness picker (no source path → no audit;
 // explicit `audit: "off"` → audit-disabled path; explicit `piolium: <mode>` →
-// piolium harness; nothing asked → no harness). Autopilot has no auto-pick:
-// an installed piolium is never chosen unless the request names it. The
-// swarm picker still auto-picks via `piolium.IsAvailable()`, exercised
-// end-to-end via the e2e tier.
+// piolium harness; nothing asked → no harness). Neither autopilot nor swarm
+// auto-picks: an installed piolium is never chosen unless the request names
+// it, and the intensity preset never turns a harness on.
 
 // stubHandlers builds a Handlers value just rich enough for the resolver
 // methods to read settings off it. Bypasses NewHandlers' background
@@ -151,5 +150,48 @@ func TestAutopilotAuditRequested(t *testing.T) {
 		if got := autopilotAuditRequested(tc.req); got != tc.want {
 			t.Errorf("autopilotAuditRequested(%+v) = %v, want %v", tc.req, got, tc.want)
 		}
+	}
+}
+
+// Swarm's nested audit harness is off unless the request asks for one: a
+// source path, an intensity preset (whose audit mode used to be applied) or
+// an installed pi no longer starts it.
+func TestResolveSwarmAudit_DefaultOff(t *testing.T) {
+	h := stubHandlers()
+	for _, intensity := range []string{"", "quick", "balanced", "deep"} {
+		req := AgentSwarmRequest{SourcePath: "/some/source", Intensity: intensity}
+		if err := applySwarmIntensityPreset(&req); err != nil {
+			t.Fatalf("intensity %q: %v", intensity, err)
+		}
+		if req.Audit != "" || req.Piolium != "" {
+			t.Errorf("intensity %q: preset set audit=%q piolium=%q, want both empty", intensity, req.Audit, req.Piolium)
+		}
+		if cfg, harness := h.resolveSwarmAuditCfgServer(req, "/some/source"); cfg != nil || harness.Name != "" {
+			t.Errorf("intensity %q: expected no audit harness, got cfg=%+v harness=%q", intensity, cfg, harness.Name)
+		}
+	}
+	off := AgentSwarmRequest{SourcePath: "/some/source", Audit: "off", Piolium: "off"}
+	if cfg, _ := h.resolveSwarmAuditCfgServer(off, "/some/source"); cfg != nil {
+		t.Errorf("audit=off piolium=off: expected no audit harness, got %+v", cfg)
+	}
+}
+
+// An explicit audit field survives the intensity preset and picks the
+// vigolium-audit harness.
+func TestResolveSwarmAudit_ExplicitAuditOn(t *testing.T) {
+	h := stubHandlers()
+	req := AgentSwarmRequest{SourcePath: "/some/source", Intensity: "quick", Audit: "deep"}
+	if err := applySwarmIntensityPreset(&req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Audit != "deep" {
+		t.Fatalf("preset overwrote explicit audit: got %q", req.Audit)
+	}
+	cfg, harness := h.resolveSwarmAuditCfgServer(req, "/some/source")
+	if cfg == nil {
+		t.Fatalf("expected non-nil cfg")
+	}
+	if cfg.Mode != "deep" || harness.Name != agent.DefaultAuditHarness().Name {
+		t.Errorf("expected audit harness in deep mode, got mode=%q harness=%q", cfg.Mode, harness.Name)
 	}
 }

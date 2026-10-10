@@ -17,7 +17,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
-	"github.com/vigolium/vigolium/pkg/piolium"
 	"github.com/vigolium/vigolium/pkg/spitolas"
 	"github.com/vigolium/vigolium/pkg/storage"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -205,10 +204,11 @@ func init() {
 	f.StringArrayVar(&swarmAuthFiles, "auth-file", nil, authFileFlagUsage+" Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-config.")
 	addFlagAliases(agentSwarmCmd, authFileAliases)
 
-	// Background vigolium-audit
-	f.StringVar(&swarmAudit, "audit", "", "Run background vigolium-audit for parallel security auditing: 'lite' (3-phase, default), 'balanced' (9-phase), or 'deep' (12-phase). Requires --source")
+	// Nested audit harness: off unless asked for. Each one launches a separate
+	// coding-agent CLI (vigolium-audit drives claude/codex, piolium drives pi).
+	f.StringVar(&swarmAudit, "audit", "off", "Nested vigolium-audit harness run alongside the swarm (launches a claude/codex CLI; needs --source): lite (3-phase, bare --audit), balanced (9-phase), deep (12-phase), or off. Default off: the intensity preset never turns it on")
 	agentSwarmCmd.Flag("audit").NoOptDefVal = "lite" // bare --audit defaults to lite
-	f.StringVar(&swarmPiolium, "piolium", "", "Run background piolium audit (Pi runtime): lite, balanced, deep, longshot, etc. Requires --source. Empty triggers auto-pick when --audit is also empty (piolium when pi is installed, else nothing)")
+	f.StringVar(&swarmPiolium, "piolium", "", "Nested piolium audit harness (Pi runtime; launches a pi CLI; needs --source): lite, balanced, deep, longshot, etc. Default empty = off; an installed pi is never picked automatically")
 	agentSwarmCmd.Flag("piolium").NoOptDefVal = "lite"
 
 	// Diff context
@@ -307,7 +307,9 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 			"code-audit":        cmd.Flags().Changed("code-audit"),
 			"triage":            cmd.Flags().Changed("triage"),
 			"max-iterations":    cmd.Flags().Changed("max-iterations"),
-			"audit":             cmd.Flags().Changed("audit"),
+			// The preset's audit mode is never applied: a nested agent CLI
+			// runs only when --audit/--piolium (or the prompt) asks for one.
+			"audit":             true,
 			"max-plan-records":  cmd.Flags().Changed("max-plan-records"),
 			"master-batch-size": cmd.Flags().Changed("master-batch-size"),
 			"batch-concurrency": cmd.Flags().Changed("batch-concurrency"),
@@ -341,23 +343,6 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		swarmProbeConcurrency = intensityResult.ProbeConcurrency
 		swarmBrowserAuth = intensityResult.Auth
 		swarmMaxDuration = intensityResult.SwarmDuration
-
-		// Same auto-pick rule as autopilot.
-		auditChanged := cmd.Flags().Changed("audit")
-		pioliumChanged := cmd.Flags().Changed("piolium")
-		switch {
-		case !auditChanged && !pioliumChanged && piolium.IsAvailable():
-			// Move whatever audit mode the intensity preset picked over to
-			// piolium; default to lite if audit was empty.
-			if swarmAudit != "" {
-				swarmPiolium = swarmAudit
-			} else {
-				swarmPiolium = "lite"
-			}
-			swarmAudit = ""
-		case pioliumChanged && !auditChanged:
-			swarmAudit = ""
-		}
 	}
 
 	// Enable code-audit by default when --source is provided (unless intensity already set it)
@@ -618,16 +603,12 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 		SkipPreflight:      swarmPreflight.skip || swarmDryRun,
 	}
 
-	// Wire audit harness. Swarm is opt-in: empty/"off" audit means no
-	// audit unless --piolium opted in (or auto-pick moved a mode over).
-	swarmNoAudit := swarmAudit == "" || swarmAudit == "off"
-	swarmAuditDriverMode := swarmAudit
-	if swarmNoAudit {
-		swarmAuditDriverMode = ""
-	}
-	if auditCfg, harness := agent.PickAuditHarness(swarmPiolium, swarmAuditDriverMode, swarmNoAudit, swarmSource, settings.Agent.Audit); auditCfg != nil {
+	// Wire the nested audit harness: only an explicit --audit/--piolium (or a
+	// prompt that asks for one) launches it.
+	auditCfg, auditHarness, auditHarnessDoc := resolveSwarmAuditHarness(swarmAudit, swarmPiolium, swarmSource, settings.Agent.Audit)
+	if auditCfg != nil {
 		cfg.Audit = auditCfg
-		cfg.AuditHarness = harness
+		cfg.AuditHarness = auditHarness
 	}
 
 	// --start-from: build a synthetic checkpoint with all prior phases marked completed
@@ -876,6 +857,7 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 			MaxDurationMS: swarmMaxDuration.Milliseconds(),
 			Exhausted:     end.BudgetExhausted || end.TimedOut,
 		},
+		AuditHarness: auditHarnessDoc,
 	}
 	if sdErr != nil {
 		outcome.addError(fmt.Errorf("create session dir: %w", sdErr))
@@ -1380,6 +1362,21 @@ func forceSwarmBrowserOn(settings *config.Settings) {
 	settings.Agent.Browser.Enable = &enabled
 }
 
+// resolveSwarmAuditHarness picks the nested audit harness for a swarm run from
+// the resolved --audit / --piolium modes. Nothing runs unless one of them names
+// a mode (and --source is set): an installed pi is never picked automatically
+// and the intensity preset never turns one on. Piolium wins when both are set.
+// The third result is the run document's audit_harness echo.
+func resolveSwarmAuditHarness(auditMode, pioliumMode, source string, settingsAudit config.AuditAgentConfig) (*config.AuditAgentConfig, agent.HarnessSpec, *agentAuditHarness) {
+	noAudit := auditMode == "" || auditMode == "off"
+	auditDriverMode := auditMode
+	if noAudit {
+		auditDriverMode = ""
+	}
+	cfg, harness := agent.PickAuditHarness(pioliumMode, auditDriverMode, noAudit, source, settingsAudit)
+	return cfg, harness, newAgentAuditHarness(auditMode, pioliumMode, cfg, harness)
+}
+
 // applyIntentToSwarmFlags populates swarm package-level flags from an AppIntent.
 func applyIntentToSwarmFlags(cmd *cobra.Command, app agent.AppIntent) {
 	swarmIntentApplied = true // NL path owns auth extraction; skip the explicit-path parse
@@ -1394,13 +1391,12 @@ func applyIntentToSwarmFlags(cmd *cobra.Command, app agent.AppIntent) {
 	if app.Instruction != "" && swarmInstruction == "" {
 		swarmInstruction = app.Instruction
 	}
-	if app.Piolium != "" && swarmPiolium == "" {
+	// A nested audit harness runs only when the prompt explicitly asks for one
+	// (the parser leaves both fields empty otherwise); explicit flags win.
+	if app.Piolium != "" && !cmd.Flags().Changed("piolium") {
 		swarmPiolium = app.Piolium
-		if app.Audit == "" && swarmAudit == "" {
-			swarmAudit = "off"
-		}
 	}
-	if app.Audit != "" && swarmAudit == "" {
+	if app.Audit != "" && !cmd.Flags().Changed("audit") {
 		swarmAudit = app.Audit
 	}
 	if app.Diff != "" && swarmDiff == "" {

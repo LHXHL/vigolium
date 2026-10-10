@@ -733,10 +733,14 @@ for a loopback Ollama / LM Studio endpoint) or `--preflight-timeout`; skip the
 ping with `--no-preflight`. The provider is auto-detected unless
 `agent.olium.provider` is set.
 
-**Nested harness**: `agent autopilot --source` no longer starts an audit
-harness (a claude/codex CLI) on its own; pass `--audit lite|balanced|deep` or
-`--piolium <mode>`. `agent audit` needs an explicit `--source` (`--source .`
-for the working directory); without one it exits `2`.
+**Nested harness**: `agent autopilot --source` and `agent swarm --source` no
+longer start an audit harness (a claude/codex CLI, or pi for piolium) on their
+own, and swarm no longer auto-picks an installed piolium; pass
+`--audit lite|balanced|deep` or `--piolium <mode>` (REST: `audit` /
+`piolium`). The run document echoes the choice as
+`audit_harness: {mode, piolium, harness, agent_cli}`. `agent audit` needs an
+explicit `--source` (`--source .` for the working directory); without one it
+exits `2`.
 
 **The agent's own `vigolium` calls.** The operator agent shells out to
 `vigolium`. Its bash tool runs `bash -c` (not a login shell) with `PATH`

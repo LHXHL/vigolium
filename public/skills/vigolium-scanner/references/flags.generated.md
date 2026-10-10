@@ -376,7 +376,7 @@ Agentic scan: AI-guided targeted vulnerability swarm
 |------|-------|------|---------|-------------|
 | `--agent-label` | - | string | - | Label recorded on the AgenticScan DB row; agent dispatch always uses olium |
 | `--all-records` | - | bool | `false` | Use every HTTP record in the active project as input |
-| `--audit` | - | string | - | Run background vigolium-audit for parallel security auditing: 'lite' (3-phase, default), 'balanced' (9-phase), or 'deep' (12-phase). Requires --source |
+| `--audit` | - | string | `off` | Nested vigolium-audit harness run alongside the swarm (launches a claude/codex CLI; needs --source): lite (3-phase, bare --audit), balanced (9-phase), deep (12-phase), or off. Default off: the intensity preset never turns it on |
 | `--auth-config` | - | string | - | Path to an existing agent-format auth-config.yaml (a native session file is detected and loaded as --auth-file). Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-file. |
 | `--auth-file` | - | stringArray | - | Native session file, as 'vigolium scan --auth-file' takes (YAML/JSON, single session or sessions: bundle; login flows, steps, OAuth2, check/reauth), or a bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. Skips both browser auth and --cookie/--header/--login-curl synthesis. Mutually exclusive with --auth-config. |
 | `--base-url` | - | string | - | Endpoint URL for openai-compatible / anthropic-compatible provider (e.g. http://localhost:11434/v1); falls back to agent.olium.custom_provider.base_url |
@@ -413,7 +413,7 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--oauth-cred` | - | string | - | Olium OAuth/SA credential file (openai-codex-oauth, anthropic-vertex, or google-vertex; falls back to agent.olium.oauth_cred_path or $GOOGLE_APPLICATION_CREDENTIALS) |
 | `--oauth-token` | - | string | - | Olium Anthropic OAuth bearer token (anthropic-oauth; falls back to agent.olium.oauth_token or $ANTHROPIC_API_KEY) |
 | `--only` | - | string | - | Run only this scanning phase (discovery, spidering, spa, dynamic-assessment, external-harvest) |
-| `--piolium` | - | string | - | Run background piolium audit (Pi runtime): lite, balanced, deep, longshot, etc. Requires --source. Empty triggers auto-pick when --audit is also empty (piolium when pi is installed, else nothing) |
+| `--piolium` | - | string | - | Nested piolium audit harness (Pi runtime; launches a pi CLI; needs --source): lite, balanced, deep, longshot, etc. Default empty = off; an installed pi is never picked automatically |
 | `--plan-file` | - | string | - | Path to a plan file mixing free-text guidance and raw HTTP request(s). Every request block becomes a seed input; cannot be combined with --input or a prompt (--prompt / positional) |
 | `--preflight-timeout` | - | duration | `0s` | Deadline of the provider preflight ping (0 = agent.olium.preflight_timeout, default 15s; 60s for a local Ollama/LM Studio endpoint) |
 | `--probe-concurrency` | - | int | `0` | Max parallel probe requests (0 = default 10) |

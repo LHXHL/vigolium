@@ -135,7 +135,10 @@ those artifacts instead of discarding valid work. Do not hand-edit
 
 ## Integration with swarm and autopilot
 
-Swarm can launch a source audit alongside its network pipeline:
+Swarm can launch a source audit alongside its network pipeline. Its `--audit`
+defaults to `off` too: the nested harness (a `claude`/`codex` CLI) runs only
+when `--audit` is passed (or the prompt asks for an audit); the intensity preset
+never turns it on.
 
 ```bash
 # Bare --audit means lite for swarm

@@ -1292,7 +1292,7 @@
             "type": "string"
           },
           "audit": {
-            "description": "Run background vigolium-audit. Empty/\"off\" disables (swarm uses opt-in audit).",
+            "description": "Run the nested vigolium-audit harness (launches a claude/codex CLI; needs source) in this mode. Empty/\"off\" = off: the intensity preset never turns it on.",
             "enum": [
               "lite",
               "balanced",
@@ -1464,7 +1464,7 @@
             "type": "string"
           },
           "piolium": {
-            "description": "Optional piolium audit mode",
+            "description": "Run the nested piolium audit harness (launches a pi CLI; needs source) in this mode; wins over audit. Empty = off: an installed piolium is never auto-selected.",
             "type": "string"
           },
           "probe_concurrency": {

@@ -264,6 +264,7 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 	// unless --audit=off (and --piolium empty/off).
 	if auditCfg, harness := resolveAutopilotAuditCfg(settings); auditCfg != nil {
 		outcome.AuditHarness.Harness = harness.Name
+		outcome.AuditHarness.AgentCLI = auditHarnessAgentCLI(harness)
 		return runAutopilotOliumPipeline(ctx, settings, repo, instruction, auditCfg, harness,
 			outcome, streamWriter)
 	}

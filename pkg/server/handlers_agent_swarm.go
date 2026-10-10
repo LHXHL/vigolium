@@ -124,69 +124,8 @@ func (h *Handlers) HandleAgentSwarm(c fiber.Ctx) error {
 	}
 
 	// Resolve intensity preset
-	swarmIntensity, intensityErr := agent.ValidateIntensity(req.Intensity)
-	if intensityErr != nil {
-		return respondError(c, fiber.StatusBadRequest, intensityErr)
-	}
-	{
-		changed := map[string]bool{
-			"discover":          req.Discover,
-			"code-audit":        req.CodeAudit,
-			"triage":            req.Triage,
-			"max-iterations":    req.MaxIterations != 0,
-			"audit":             req.Audit != "",
-			"max-plan-records":  req.MaxPlanRecords != 0,
-			"master-batch-size": req.MasterBatchSize != 0,
-			"batch-concurrency": req.BatchConcurrency != 0,
-			"probe-concurrency": req.ProbeConcurrency != 0,
-			"browser":           req.Browser || req.RequiresBrowser,
-			"auth":              req.Auth || req.AuthRequired || req.RequiresBrowser,
-			"swarm-duration":    req.Timeout != "",
-		}
-		result := agent.ResolveSwarmIntensity(swarmIntensity, agent.SwarmIntensityPreset{
-			Discover:         req.Discover,
-			CodeAudit:        req.CodeAudit,
-			Triage:           req.Triage,
-			MaxIterations:    req.MaxIterations,
-			Audit:            req.Audit,
-			MaxPlanRecords:   req.MaxPlanRecords,
-			MasterBatchSize:  req.MasterBatchSize,
-			BatchConcurrency: req.BatchConcurrency,
-			ProbeConcurrency: req.ProbeConcurrency,
-			Browser:          req.Browser || req.RequiresBrowser,
-			Auth:             req.Auth || req.AuthRequired || req.RequiresBrowser,
-			SwarmDuration:    parseDurationOrDefault(req.Timeout, 12*time.Hour),
-		}, changed)
-		req.Discover = result.Discover
-		req.CodeAudit = result.CodeAudit
-		req.Triage = result.Triage
-		if req.MaxIterations == 0 {
-			req.MaxIterations = result.MaxIterations
-		}
-		if req.Audit == "" {
-			req.Audit = result.Audit
-		}
-		if req.MaxPlanRecords == 0 {
-			req.MaxPlanRecords = result.MaxPlanRecords
-		}
-		if req.MasterBatchSize == 0 {
-			req.MasterBatchSize = result.MasterBatchSize
-		}
-		if req.BatchConcurrency == 0 {
-			req.BatchConcurrency = result.BatchConcurrency
-		}
-		if req.ProbeConcurrency == 0 {
-			req.ProbeConcurrency = result.ProbeConcurrency
-		}
-		if !req.Browser {
-			req.Browser = result.Browser
-		}
-		if !req.Auth {
-			req.Auth = result.Auth
-		}
-		if req.Timeout == "" {
-			req.Timeout = result.SwarmDuration.String()
-		}
+	if err := applySwarmIntensityPreset(&req); err != nil {
+		return respondError(c, fiber.StatusBadRequest, err)
 	}
 
 	timeout := parseDurationOrDefault(req.Timeout, 12*time.Hour)
@@ -197,6 +136,75 @@ func (h *Handlers) HandleAgentSwarm(c fiber.Ctx) error {
 	}
 
 	return h.startSwarmRun(c, req, timeout, eng, cleanup)
+}
+
+// applySwarmIntensityPreset fills the request fields the caller left unset
+// from its intensity preset (quick/balanced/deep). The preset never sets
+// audit/piolium: a nested audit harness runs only when the request asks for
+// one.
+func applySwarmIntensityPreset(req *AgentSwarmRequest) error {
+	swarmIntensity, intensityErr := agent.ValidateIntensity(req.Intensity)
+	if intensityErr != nil {
+		return intensityErr
+	}
+	changed := map[string]bool{
+		"discover":       req.Discover,
+		"code-audit":     req.CodeAudit,
+		"triage":         req.Triage,
+		"max-iterations": req.MaxIterations != 0,
+		// The preset's audit mode is never applied: a nested agent CLI
+		// runs only when audit/piolium (or the prompt) asks for one.
+		"audit":             true,
+		"max-plan-records":  req.MaxPlanRecords != 0,
+		"master-batch-size": req.MasterBatchSize != 0,
+		"batch-concurrency": req.BatchConcurrency != 0,
+		"probe-concurrency": req.ProbeConcurrency != 0,
+		"browser":           req.Browser || req.RequiresBrowser,
+		"auth":              req.Auth || req.AuthRequired || req.RequiresBrowser,
+		"swarm-duration":    req.Timeout != "",
+	}
+	result := agent.ResolveSwarmIntensity(swarmIntensity, agent.SwarmIntensityPreset{
+		Discover:         req.Discover,
+		CodeAudit:        req.CodeAudit,
+		Triage:           req.Triage,
+		MaxIterations:    req.MaxIterations,
+		Audit:            req.Audit,
+		MaxPlanRecords:   req.MaxPlanRecords,
+		MasterBatchSize:  req.MasterBatchSize,
+		BatchConcurrency: req.BatchConcurrency,
+		ProbeConcurrency: req.ProbeConcurrency,
+		Browser:          req.Browser || req.RequiresBrowser,
+		Auth:             req.Auth || req.AuthRequired || req.RequiresBrowser,
+		SwarmDuration:    parseDurationOrDefault(req.Timeout, 12*time.Hour),
+	}, changed)
+	req.Discover = result.Discover
+	req.CodeAudit = result.CodeAudit
+	req.Triage = result.Triage
+	if req.MaxIterations == 0 {
+		req.MaxIterations = result.MaxIterations
+	}
+	if req.MaxPlanRecords == 0 {
+		req.MaxPlanRecords = result.MaxPlanRecords
+	}
+	if req.MasterBatchSize == 0 {
+		req.MasterBatchSize = result.MasterBatchSize
+	}
+	if req.BatchConcurrency == 0 {
+		req.BatchConcurrency = result.BatchConcurrency
+	}
+	if req.ProbeConcurrency == 0 {
+		req.ProbeConcurrency = result.ProbeConcurrency
+	}
+	if !req.Browser {
+		req.Browser = result.Browser
+	}
+	if !req.Auth {
+		req.Auth = result.Auth
+	}
+	if req.Timeout == "" {
+		req.Timeout = result.SwarmDuration.String()
+	}
+	return nil
 }
 
 // ingestSwarmBase64 decodes the base64-encoded HTTP request (and optional response),
@@ -427,7 +435,8 @@ func (h *Handlers) buildSwarmConfig(req AgentSwarmRequest, projectUUID string) a
 		}
 	}
 
-	// Wire audit harness (audit or piolium, with auto-pick on availability).
+	// Wire the nested audit harness: only an explicit audit/piolium field (or
+	// a prompt that asks for one) launches it.
 	auditCfg, harness := h.resolveSwarmAuditCfgServer(req, sourcePath)
 	if auditCfg != nil {
 		cfg.Audit = auditCfg

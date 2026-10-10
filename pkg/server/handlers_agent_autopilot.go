@@ -246,15 +246,11 @@ func (h *Handlers) resolveAutopilotAuditCfgServer(req AgentAutopilotRequest, sou
 	return agent.PickAuditHarness(req.Piolium, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit() || !auditMode, sourcePath, h.settings.Agent.Audit)
 }
 
-// resolveSwarmAuditCfgServer is the swarm counterpart. Swarm audit is opt-in
-// (empty = nothing), so auto-pick fires only when both `audit` and `piolium`
-// are empty AND a source path is set.
+// resolveSwarmAuditCfgServer is the swarm counterpart. Swarm audit is opt-in:
+// with `audit` and `piolium` both empty/"off" nothing runs, even when pi is
+// installed and a source path is set.
 func (h *Handlers) resolveSwarmAuditCfgServer(req AgentSwarmRequest, sourcePath string) (*config.AuditAgentConfig, agent.HarnessSpec) {
-	pioliumMode := req.Piolium
-	if pioliumMode == "" && req.Audit == "" && sourcePath != "" && h.pioliumAvailableCached() {
-		pioliumMode = "lite"
-	}
-	return agent.PickAuditHarness(pioliumMode, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit(), sourcePath, h.settings.Agent.Audit)
+	return agent.PickAuditHarness(req.Piolium, req.ResolvedAuditDriverMode(), req.ResolvedNoAudit(), sourcePath, h.settings.Agent.Audit)
 }
 
 // buildAutopilotPipelineConfig creates an AutopilotPipelineConfig from an autopilot request.
