@@ -74,8 +74,6 @@ var exemptPaths = []inventoryEntry{
 		phases: []string{"dynamic-assessment"}},
 	{path: "http_request_smuggling.cl0", reason: "own dialer (raw socket): bypasses --proxy, the rate limit and host slots",
 		phases: []string{"dynamic-assessment"}},
-	{path: "h2race", reason: "own dialer (HTTP/2 single-packet race): honours an http:// CONNECT proxy, not the rate limit or host slots",
-		phases: []string{"dynamic-assessment"}},
 	{path: "probe-tls", reason: "own dialer: one TLS handshake per host:port for certificate metadata, cached",
 		phases: []string{"probe"}},
 	{path: "scheme-detection", reason: "bare TCP connect to choose http or https for a schemeless target",

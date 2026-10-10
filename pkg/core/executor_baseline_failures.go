@@ -32,16 +32,14 @@ type BaselineFailure struct {
 // Workers write it concurrently, so it is mutex-guarded; it is written only on
 // the failure path, never per successful request.
 type baselineFailureRing struct {
-	mu    sync.Mutex
-	buf   []BaselineFailure
-	next  int   // slot the next write goes to once buf is full
-	total int64 // every failure recorded, including overwritten ones
+	mu   sync.Mutex
+	buf  []BaselineFailure
+	next int // slot the next write goes to once buf is full
 }
 
 func (r *baselineFailureRing) add(f BaselineFailure) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.total++
 	if len(r.buf) < baselineFailureCap {
 		r.buf = append(r.buf, f)
 		return
@@ -61,12 +59,6 @@ func (r *baselineFailureRing) snapshot() []BaselineFailure {
 	out = append(out, r.buf[r.next:]...)
 	out = append(out, r.buf[:r.next]...)
 	return out
-}
-
-func (r *baselineFailureRing) count() int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.total
 }
 
 // recordBaselineFailure classifies and keeps one failed baseline fetch.
@@ -95,10 +87,4 @@ func (e *Executor) recordBaselineFailure(target string, err error) {
 // abandoned because the phase was cancelled are not included.
 func (e *Executor) BaselineFailures() []BaselineFailure {
 	return e.baselineFailures.snapshot()
-}
-
-// BaselineFailureCount returns how many baseline fetches failed in total,
-// including the ones BaselineFailures no longer retains.
-func (e *Executor) BaselineFailureCount() int64 {
-	return e.baselineFailures.count()
 }

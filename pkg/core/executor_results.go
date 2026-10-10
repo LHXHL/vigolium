@@ -13,6 +13,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 	"go.uber.org/zap"
 )
 
@@ -192,10 +193,7 @@ func injectedValue(rawRequest string, ip httpmsg.InsertionPoint) string {
 		return ""
 	}
 	v := found.BaseValue()
-	if len(v) > maxStoredPayload {
-		v = v[:maxStoredPayload]
-	}
-	return v
+	return v[:textutil.CutIndex(v, maxStoredPayload)]
 }
 
 // moduleFindingAllowed returns true if the module has not exceeded its finding cap.

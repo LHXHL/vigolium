@@ -127,13 +127,6 @@ func (e *Executor) Responded() int64 {
 	return e.responded.Load()
 }
 
-// ScopeRejected returns how many input items the scope matcher dropped, before
-// the request was sent or after its baseline came back. Cumulative over the
-// executor's lifetime; Report().ScopeRejected is the last run's share.
-func (e *Executor) ScopeRejected() int64 {
-	return e.scopeRejected.Load()
-}
-
 // InFlight returns the number of worker goroutines currently processing items.
 // Zero means the executor is quiescent (all workers idle, no items in flight).
 // Exposed for status reporting — callers typically combine this with source-level

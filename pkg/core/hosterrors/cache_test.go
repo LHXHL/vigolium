@@ -341,3 +341,20 @@ func TestTrippedSnapshot(t *testing.T) {
 	require.Equal(t, StateOpen, got[0].State)
 	require.ErrorIs(t, got[0].LastErr, errRefused)
 }
+
+// AnyTripped stays false until a host opens, and stays true after it recovers.
+func TestAnyTripped(t *testing.T) {
+	c, clock, _ := newTestCache(t)
+	const key = "example.com:443"
+	c.MarkFailed(key, errRefused, false)
+	require.False(t, c.AnyTripped(), "below threshold")
+
+	trip(c, key)
+	require.True(t, c.AnyTripped())
+
+	clock.Advance(31 * time.Second)
+	require.True(t, c.Admit(key), "probe")
+	c.MarkSuccess(key)
+	require.Equal(t, StateClosed, c.State(key))
+	require.True(t, c.AnyTripped(), "never cleared")
+}

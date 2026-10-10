@@ -58,10 +58,10 @@ func (r *Runner) armRequestBudget(ctx context.Context) (context.Context, func())
 }
 
 // trackUngatedRequests registers a request counter of an engine that bypasses
-// the egress gate (soft enforcement; see armRequestBudget). The returned func
-// stops tracking it and must be called when the engine is done.
-func (r *Runner) trackUngatedRequests(read func() int64) func() {
-	return r.requestBudget.Track(read)
+// the egress gate (soft enforcement; see armRequestBudget). It stays counted for
+// the rest of the scan.
+func (r *Runner) trackUngatedRequests(read func() int64) {
+	r.requestBudget.Track(read)
 }
 
 // noteHostBudget records that host used its whole --max-requests-per-host

@@ -81,7 +81,9 @@ func (e *Executor) hostErrors() *hosterrors.Cache {
 // a pre-filter that claimed it would leave the host with no probe at all.
 func (e *Executor) skipQuarantined(req *httpmsg.HttpRequestResponse) bool {
 	hc := e.hostErrors()
-	if hc == nil {
+	if hc == nil || !hc.AnyTripped() {
+		// No host has ever tripped: nothing can be quarantined, so skip
+		// building this item's key.
 		return false
 	}
 	key := httpmsg.HostPortKey(req)

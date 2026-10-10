@@ -29,7 +29,6 @@ import (
 	"context"
 	"errors"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -117,15 +116,6 @@ type Transition struct {
 	Err error
 }
 
-// HostStatus is a snapshot of one tripped host.
-type HostStatus struct {
-	Key     string
-	State   State
-	Errors  int32
-	Trips   int32
-	LastErr error
-}
-
 // Cache is the host:port circuit breaker. All methods are safe for concurrent
 // use; Quarantined, Admit and the healthy-host paths of MarkSuccess take no lock
 // beyond a sync.Map load.
@@ -147,6 +137,9 @@ type Cache struct {
 	// host cannot silently become healthy by falling out of the ARC; bounded by
 	// the number of failing hosts, which is small.
 	tripped sync.Map // key → *cacheItem
+	// anyTripped is set before the first entry is stored in tripped and never
+	// cleared, so a false load proves Quarantined is false for every key.
+	anyTripped atomic.Bool
 	// createMu serialises counter creation (the first error for a host) so two
 	// concurrent first errors share one counter.
 	createMu sync.Mutex
@@ -278,6 +271,13 @@ func (c *Cache) Quarantined(key string) bool {
 	}
 }
 
+// AnyTripped reports whether any host has ever opened. While it is false,
+// Quarantined is false for every key, so a caller filtering many items can
+// skip building their keys.
+func (c *Cache) AnyTripped() bool {
+	return c.anyTripped.Load()
+}
+
 // Admit reports whether a request to key may be sent now. Call it immediately
 // before the send. For an Open host whose cooldown has elapsed it performs the
 // Open→HalfOpen transition, and exactly one concurrent caller gets true — the
@@ -389,6 +389,7 @@ func (c *Cache) open(key string, it *cacheItem, err error) {
 	it.openedAt.Store(c.nowNanos())
 	it.cooldown.Store(int64(cooldown))
 	it.trips.Store(0)
+	c.anyTripped.Store(true)
 	c.tripped.LoadOrStore(key, it)
 	it.state.Store(int32(StateOpen))
 	errs := it.errors.Load()
@@ -491,27 +492,6 @@ func (c *Cache) QuarantinedCount() int {
 		return true
 	})
 	return count
-}
-
-// Tripped returns a snapshot of every host that has ever opened, sorted by key.
-func (c *Cache) Tripped() []HostStatus {
-	var out []HostStatus
-	c.tripped.Range(func(k, v any) bool {
-		it := v.(*cacheItem)
-		st := HostStatus{
-			Key:    k.(string),
-			State:  State(it.state.Load()),
-			Errors: it.errors.Load(),
-			Trips:  it.trips.Load(),
-		}
-		if p := it.lastErr.Load(); p != nil {
-			st.LastErr = *p
-		}
-		out = append(out, st)
-		return true
-	})
-	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-	return out
 }
 
 var reCheckError = regexp.MustCompile(`(no address found for host|Client\.Timeout exceeded while awaiting headers|could not resolve host|connection refused|connection reset by peer|i/o timeout|could not connect to any address found for host|timeout awaiting response headers)`)

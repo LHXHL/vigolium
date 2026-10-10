@@ -411,7 +411,6 @@ runs, as `egress: {gated: [...], exempt: [{path, reason}]}`:
 | `spidering` | the Chrome crawl; requests are counted, not gated |
 | `browser-confirmations` | Chrome used by confirmation modules; low volume |
 | `http_request_smuggling.cl0` | own raw-socket dialer; also bypasses `--proxy` |
-| `h2race` | own HTTP/2 dialer; honours an `http://` CONNECT proxy |
 | `probe-tls`, `scheme-detection` | one TLS handshake / TCP connect per host:port in the probe phase |
 | `external-harvest`, `oast`, `npm-registry` | not target traffic |
 

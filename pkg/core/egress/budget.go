@@ -114,11 +114,9 @@ type Budget struct {
 	hooks atomic.Pointer[BudgetHooks]
 
 	mu sync.Mutex
-	// tracked are the live soft counters by id; retired is what counters that
-	// were untracked had sent, which still counts.
-	tracked map[int]trackedCounter
-	nextID  int
-	retired int64
+	// tracked are the soft counters registered with Track. Append-only: an
+	// engine that finished keeps its final count, which still counts.
+	tracked []trackedCounter
 }
 
 type trackedCounter struct {
@@ -133,14 +131,6 @@ func NewBudget(maxRequests, perHost int64) *Budget {
 		return nil
 	}
 	return &Budget{max: max(maxRequests, 0), perHost: max(perHost, 0)}
-}
-
-// Limits returns the configured limits (0 = off). Nil-safe.
-func (b *Budget) Limits() (maxRequests, perHost int64) {
-	if b == nil {
-		return 0, 0
-	}
-	return b.max, b.perHost
 }
 
 // SetHooks installs the exhaustion callbacks. Call before traffic starts.
@@ -185,49 +175,59 @@ func budgetHostKey(host string) string {
 	return strings.ToLower(strings.TrimSuffix(host, "."))
 }
 
-func (b *Budget) hostCounter(key string) *atomic.Int64 {
+// hostBudget is one host's per-host counter, resolved once per attempt so the
+// check, the reservation and a refund share one key and one map lookup. The
+// zero value (per-host limit off, or no host) skips the per-host limit.
+type hostBudget struct {
+	key string
+	n   *atomic.Int64
+}
+
+// forHost resolves host's per-host counter. host "" (a redirect hop, which has
+// no host of its own here) and a budget without a per-host limit give the zero
+// hostBudget.
+func (b *Budget) forHost(host string) hostBudget {
+	if b == nil || b.perHost <= 0 {
+		return hostBudget{}
+	}
+	key := budgetHostKey(host)
+	if key == "" {
+		return hostBudget{}
+	}
 	if c, ok := b.hosts.Load(key); ok {
-		return c.(*atomic.Int64)
+		return hostBudget{key: key, n: c.(*atomic.Int64)}
 	}
 	c, _ := b.hosts.LoadOrStore(key, &atomic.Int64{})
-	return c.(*atomic.Int64)
+	return hostBudget{key: key, n: c.(*atomic.Int64)}
 }
 
 // check is the read-only test run before an attempt waits for anything, so a
 // request that cannot be admitted never takes a rate token or a host slot.
-func (b *Budget) check(host string) error {
+func (b *Budget) check(hb hostBudget) error {
 	if b == nil {
 		return nil
 	}
 	if b.max > 0 && (b.globalHit.Load() || b.used.Load()+b.external.Load() >= b.max) {
 		return b.refuseGlobal()
 	}
-	if key := budgetHostKey(host); b.perHost > 0 && key != "" {
-		if b.hostCounter(key).Load() >= b.perHost {
-			return b.refuseHost(key)
-		}
+	if hb.n != nil && hb.n.Load() >= b.perHost {
+		return b.refuseHost(hb.key)
 	}
 	return nil
 }
 
-// take reserves one attempt against both limits, or refuses it. host "" skips
-// the per-host limit (a redirect hop, which has no host of its own here).
-func (b *Budget) take(host string) error {
+// take reserves one attempt against both limits, or refuses it.
+func (b *Budget) take(hb hostBudget) error {
 	if b == nil {
 		return nil
 	}
-	var hc *atomic.Int64
-	key := budgetHostKey(host)
-	if b.perHost > 0 && key != "" {
-		hc = b.hostCounter(key)
-		if !reserve(hc, 0, b.perHost) {
-			return b.refuseHost(key)
-		}
+	if hb.n != nil && !reserve(hb.n, 0, b.perHost) {
+		return b.refuseHost(hb.key)
 	}
 	if b.max > 0 {
 		if b.globalHit.Load() || !reserve(&b.used, b.external.Load(), b.max) {
-			if hc != nil {
-				hc.Add(-1)
+			if hb.n != nil {
+				hb.n.Add(-1)
 			}
 			return b.refuseGlobal()
 		}
@@ -238,13 +238,13 @@ func (b *Budget) take(host string) error {
 }
 
 // refund gives back one attempt take reserved but that was never sent.
-func (b *Budget) refund(host string) {
+func (b *Budget) refund(hb hostBudget) {
 	if b == nil {
 		return
 	}
 	b.used.Add(-1)
-	if key := budgetHostKey(host); b.perHost > 0 && key != "" {
-		b.hostCounter(key).Add(-1)
+	if hb.n != nil {
+		hb.n.Add(-1)
 	}
 }
 
@@ -297,32 +297,16 @@ func (b *Budget) refuseHost(key string) error {
 }
 
 // Track registers the request counter of an engine that bypasses the gate,
-// read as a delta from its value now. The returned func stops tracking it; what
-// it counted up to then still counts. Nil-safe on both sides.
-func (b *Budget) Track(read func() int64) (untrack func()) {
+// read as a delta from its value now. A counter stays registered for the rest
+// of the scan, so what an engine sent still counts after it finishes. Nil-safe
+// on both sides.
+func (b *Budget) Track(read func() int64) {
 	if b == nil || read == nil {
-		return func() {}
+		return
 	}
 	b.mu.Lock()
-	id := b.nextID
-	b.nextID++
-	if b.tracked == nil {
-		b.tracked = make(map[int]trackedCounter)
-	}
-	b.tracked[id] = trackedCounter{read: read, base: read()}
+	b.tracked = append(b.tracked, trackedCounter{read: read, base: read()})
 	b.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			b.mu.Lock()
-			if c, ok := b.tracked[id]; ok {
-				b.retired += c.read() - c.base
-				delete(b.tracked, id)
-			}
-			b.mu.Unlock()
-			b.sample()
-		})
-	}
 }
 
 // sample refreshes the tracked-traffic total and fires the global hook when
@@ -331,7 +315,7 @@ func (b *Budget) Track(read func() int64) (untrack func()) {
 // overshoot, while the next gated attempt is refused by take.
 func (b *Budget) sample() {
 	b.mu.Lock()
-	total := b.retired
+	var total int64
 	for _, c := range b.tracked {
 		total += c.read() - c.base
 	}

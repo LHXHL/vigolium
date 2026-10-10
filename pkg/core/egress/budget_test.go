@@ -195,8 +195,7 @@ func TestBudget_TokenAndCount(t *testing.T) {
 }
 
 // Soft enforcement: tracked (ungated) traffic counts toward the scan-wide
-// limit, the watcher fires the global hook once it goes past it, and an
-// untracked counter keeps what it had sent.
+// limit and the watcher fires the global hook once it goes past it.
 func TestBudget_TrackedCountersSoftEnforcement(t *testing.T) {
 	b := NewBudget(10, 0)
 	fired := make(chan *BudgetError, 1)
@@ -204,7 +203,7 @@ func TestBudget_TrackedCountersSoftEnforcement(t *testing.T) {
 
 	var browser atomic.Int64
 	browser.Store(100) // value before tracking does not count
-	untrack := b.Track(browser.Load)
+	b.Track(browser.Load)
 	stop := b.Watch(context.Background(), 5*time.Millisecond)
 	defer stop()
 
@@ -222,10 +221,8 @@ func TestBudget_TrackedCountersSoftEnforcement(t *testing.T) {
 		}
 		release(Outcome{})
 	}
-	untrack()
-	browser.Add(50) // after untrack: not counted
 	if b.Used() != 10 {
-		t.Fatalf("Used = %d after untrack, want 10", b.Used())
+		t.Fatalf("Used = %d, want 10", b.Used())
 	}
 	if b.Exhausted() {
 		t.Fatal("reaching the limit exactly is not exhaustion")
@@ -270,7 +267,7 @@ func TestNewBudgetOff(t *testing.T) {
 		t.Fatal("NewBudget(0,0) should be nil (unlimited)")
 	}
 	var b *Budget
-	if err := b.take("x"); err != nil || b.Exhausted() || b.Used() != 0 {
+	if err := b.take(b.forHost("x")); err != nil || b.Exhausted() || b.Used() != 0 {
 		t.Fatal("nil budget must admit everything")
 	}
 }

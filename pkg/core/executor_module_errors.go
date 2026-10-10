@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Module error kinds, the error_kind of a module.error event. "load" is the
@@ -111,24 +112,23 @@ func (e *Executor) noteModuleError(module modules.Module, item *httpmsg.HttpRequ
 		total = e.cfg.OnModuleError(id, kind)
 	}
 
-	msg := ""
-	if err != nil {
-		msg = err.Error()
-	}
+	// The error text is built only if a log line or an event is written: a
+	// module failing on every item mostly logs at a disabled Debug level.
+	level, logMsg := zapcore.WarnLevel, "Active module error"
 	switch {
 	case IsExtensionModule(id) && total == 1:
-		zap.L().Warn("Extension module failed; further failures are counted in module_errors (vigolium log --scan-uuid <uuid>)",
-			zap.String("module", id), zap.String("kind", kind), zap.String("error", msg))
+		logMsg = "Extension module failed; further failures are counted in module_errors (vigolium log --scan-uuid <uuid>)"
 	case IsExtensionModule(id), kind == ModuleErrorTimeout:
 		// Extensions after their first failure, and timeouts (their call sites
 		// keep their own log line).
-		zap.L().Debug("Module error", zap.String("module", id), zap.String("kind", kind), zap.String("error", msg))
+		level, logMsg = zapcore.DebugLevel, "Module error"
 	default:
-		if _, active := module.(modules.ActiveModule); active {
-			zap.L().Warn("Active module error", zap.String("module", id), zap.String("kind", kind), zap.String("error", msg))
-		} else {
-			zap.L().Debug("Passive module error", zap.String("module", id), zap.String("kind", kind), zap.String("error", msg))
+		if _, active := module.(modules.ActiveModule); !active {
+			level, logMsg = zapcore.DebugLevel, "Passive module error"
 		}
+	}
+	if ce := zap.L().Check(level, logMsg); ce != nil {
+		ce.Write(zap.String("module", id), zap.String("kind", kind), zap.String("error", errText(err)))
 	}
 
 	if total > moduleErrorBurst && total%moduleErrorEvery != 0 {
@@ -142,11 +142,19 @@ func (e *Executor) noteModuleError(module modules.Module, item *httpmsg.HttpRequ
 		ModuleID:  id,
 		Phase:     e.cfg.Phase,
 		ErrorKind: kind,
-		Message:   msg,
+		Message:   errText(err),
 		Count:     scanevents.Int64(total),
 	}
 	if item != nil {
 		ev.URL = item.Target()
 	}
 	scanevents.Emit(ev)
+}
+
+// errText is err's message, "" for nil.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

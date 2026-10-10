@@ -448,7 +448,7 @@ func (e *Executor) runActiveWithTimeout(
 		moduleResultChanPool.Put(ch) // goroutine done; channel drained and safe to reuse
 		e.moduleMetrics.Record(module.ID(), time.Since(start), len(r.events), r.err)
 		if r.err != nil {
-			if isLevelDBClosed(r.err) {
+			if IsLevelDBClosed(r.err) {
 				// A store closed under a module at shutdown is not the module's
 				// failure, so it is not counted.
 				zap.L().Debug("Active module error (shutdown)",
@@ -511,19 +511,16 @@ func (e *Executor) timedOutCount() int64 {
 	return e.moduleTimeouts.Load()
 }
 
-// IsLevelDBClosed reports whether err comes from a closed LevelDB store (see
-// isLevelDBClosed). The runner treats it as a fatal phase error.
-func IsLevelDBClosed(err error) bool { return isLevelDBClosed(err) }
-
-// isLevelDBClosed returns true if the error is caused by a closed LevelDB instance,
+// IsLevelDBClosed returns true if the error is caused by a closed LevelDB instance,
 // which happens during shutdown when the dedup manager is closed before workers finish.
+// The runner treats it as a fatal phase error.
 //
 // The typed sentinel (errors.Is) is the primary check and survives any future
 // change to goleveldb's error message, but we keep a string fallback because the
 // error reaches us through module/storage call chains that may format it with %v
 // (non-wrapping), which defeats errors.Is. Matching both is strictly more robust
 // than either alone.
-func isLevelDBClosed(err error) bool {
+func IsLevelDBClosed(err error) bool {
 	if err == nil {
 		return false
 	}

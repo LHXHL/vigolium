@@ -35,8 +35,8 @@ func TestScopeRejectedPreSend(t *testing.T) {
 	if _, err := e.Execute(context.Background()); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if got := e.ScopeRejected(); got != n {
-		t.Errorf("ScopeRejected() = %d, want %d", got, n)
+	if got := e.scopeRejected.Load(); got != n {
+		t.Errorf("scopeRejected = %d, want %d", got, n)
 	}
 	rep := e.Report()
 	if rep.ScopeRejected != n || rep.Responded != 0 {
@@ -56,8 +56,8 @@ func TestScopeRejectedPreSend(t *testing.T) {
 	if rep := e.Report(); rep.ScopeRejected != 1 {
 		t.Errorf("second run Report().ScopeRejected = %d, want 1", rep.ScopeRejected)
 	}
-	if got := e.ScopeRejected(); got != n+1 {
-		t.Errorf("cumulative ScopeRejected() = %d, want %d", got, n+1)
+	if got := e.scopeRejected.Load(); got != n+1 {
+		t.Errorf("cumulative scopeRejected = %d, want %d", got, n+1)
 	}
 }
 
@@ -74,8 +74,8 @@ func TestScopeRejectedPostFetch(t *testing.T) {
 	item, _ := makeTestItem("example.com", "/page", "<html>x</html>") // 200 response
 	e.processItem(context.Background(), item)
 
-	if got := e.ScopeRejected(); got != 1 {
-		t.Errorf("ScopeRejected() = %d, want 1", got)
+	if got := e.scopeRejected.Load(); got != 1 {
+		t.Errorf("scopeRejected = %d, want 1", got)
 	}
 	if got := e.Responded(); got != 1 {
 		t.Errorf("Responded() = %d, want 1 (the baseline answered before scope refused it)", got)
@@ -86,7 +86,7 @@ func TestScopeRejectedPostFetch(t *testing.T) {
 	scopeCfg.StatusCode = config.ScopeRule{Include: []string{"*"}}
 	e.cfg.ScopeMatcher = config.NewScopeMatcher(scopeCfg)
 	e.processItem(context.Background(), inScope)
-	if got := e.ScopeRejected(); got != 1 {
-		t.Errorf("ScopeRejected() after in-scope item = %d, want 1", got)
+	if got := e.scopeRejected.Load(); got != 1 {
+		t.Errorf("scopeRejected after in-scope item = %d, want 1", got)
 	}
 }

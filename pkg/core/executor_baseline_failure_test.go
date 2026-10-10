@@ -78,7 +78,4 @@ func TestBaselineFailureRingBounded(t *testing.T) {
 	if len(got[0].Detail) > baselineFailureDetailMax || got[0].Class != http.TransportErrOther {
 		t.Errorf("entry = %+v", got[0])
 	}
-	if c := e.BaselineFailureCount(); c != n {
-		t.Errorf("BaselineFailureCount() = %d, want %d", c, n)
-	}
 }

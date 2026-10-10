@@ -3,9 +3,11 @@ package egress
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -359,6 +361,21 @@ func TestInventory(t *testing.T) {
 	for _, e := range all.Exempt {
 		if e.Reason == "" {
 			t.Fatalf("exemption %q has no reason", e.Path)
+		}
+	}
+}
+
+// AcquireHost must resolve exactly what Acquire does for the joined host:port.
+func TestHostTargetMatchesParse(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		port int
+	}{
+		{"a.test", 443}, {"A.Test", 80}, {"::1", 8443}, {"[::1]", 443}, {"", 80}, {"a]b", 1},
+	} {
+		want := parseTarget(net.JoinHostPort(tc.host, strconv.Itoa(tc.port)))
+		if got := hostTarget(tc.host, tc.port); got != want {
+			t.Errorf("hostTarget(%q, %d) = %+v, want %+v", tc.host, tc.port, got, want)
 		}
 	}
 }

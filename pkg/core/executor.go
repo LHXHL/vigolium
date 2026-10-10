@@ -396,6 +396,7 @@ func NewExecutor(
 	}
 	e.scanCtx.DeepScan = cfg.DeepScan
 	e.scanCtx.AllowRiskyPayloads = cfg.AllowRiskyPayloads
+	e.scanCtx.NoParamDedup = cfg.NoParamDedup
 	e.scanCtx.ParamFindings = &modkit.ParameterFindingRegistry{}
 	e.scanCtx.TechStack = modkit.NewTechRegistry()
 	e.scanCtx.TechStack.OnDetect = cfg.OnTechDetected
@@ -444,8 +445,8 @@ func (e *Executor) Execute(ctx context.Context) (bool, error) {
 	// inherit a previous run's abandonment.
 	e.report = ExecutionReport{}
 	e.unacked.Store(0)
-	// Responded()/ScopeRejected() stay cumulative for the executor's lifetime;
-	// the report's copies are this run's share.
+	// Responded() and the scopeRejected counter stay cumulative for the
+	// executor's lifetime; the report's copies are this run's share.
 	e.reportBase.responded = e.responded.Load()
 	e.reportBase.scopeRejected = e.scopeRejected.Load()
 	e.quarantine.reset()

@@ -38,6 +38,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -139,14 +140,6 @@ func (g *Gate) WithBudget(b *Budget) *Gate {
 	return &view
 }
 
-// Budget returns the request budget the gate enforces (nil when none).
-func (g *Gate) Budget() *Budget {
-	if g == nil {
-		return nil
-	}
-	return g.budget
-}
-
 // Sent is the number of wire attempts admitted by g and every view sharing its
 // counter.
 func (g *Gate) Sent() int64 {
@@ -185,7 +178,7 @@ func (g *Gate) Token(ctx context.Context) error {
 	if g == nil {
 		return nil
 	}
-	if err := g.budget.check(""); err != nil {
+	if err := g.budget.check(hostBudget{}); err != nil {
 		return err
 	}
 	if g.cfg.Rate != nil {
@@ -193,7 +186,7 @@ func (g *Gate) Token(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := g.budget.take(""); err != nil {
+	if err := g.budget.take(hostBudget{}); err != nil {
 		return err
 	}
 	g.count(1)
@@ -227,19 +220,29 @@ func noopRelease(Outcome) {}
 // before anything is waited for or sent; a cancelled ctx, the rate wait or the
 // slot wait timing out return that error.
 func (g *Gate) Acquire(ctx context.Context, hostPort string, lane Lane) (Release, error) {
+	return g.acquire(ctx, parseTarget(hostPort), lane)
+}
+
+// AcquireHost is Acquire for a host and port the caller holds separately, so
+// they are not joined only to be split again.
+func (g *Gate) AcquireHost(ctx context.Context, host string, port int, lane Lane) (Release, error) {
+	return g.acquire(ctx, hostTarget(host, port), lane)
+}
+
+func (g *Gate) acquire(ctx context.Context, t target, lane Lane) (Release, error) {
 	if g == nil {
 		return noopRelease, nil
 	}
-	host, key := splitHostPort(hostPort)
-	breaker := g.cfg.Breaker
-	if key == "" {
-		breaker = nil
+	a := admission{host: t.host, key: t.key, breaker: g.cfg.Breaker}
+	if t.key == "" {
+		a.breaker = nil
 	}
 
-	if breaker != nil && breaker.Quarantined(key) {
+	if a.breaker != nil && a.breaker.Quarantined(t.key) {
 		return nil, hosterrors.ErrUnresponsiveHost
 	}
-	if err := g.budget.check(host); err != nil {
+	hb := g.budget.forHost(t.host)
+	if err := g.budget.check(hb); err != nil {
 		return nil, err
 	}
 	if g.cfg.Rate != nil {
@@ -248,61 +251,100 @@ func (g *Gate) Acquire(ctx context.Context, hostPort string, lane Lane) (Release
 		}
 	}
 
-	freeSlot := func() {}
-	if hosts := g.cfg.Hosts; hosts != nil && host != "" {
+	if hosts := g.cfg.Hosts; hosts != nil && t.host != "" {
 		if lane == LanePriority {
-			release, err := hosts.AcquirePriority(ctx, host)
+			release, err := hosts.AcquirePriority(ctx, t.host)
 			if err != nil {
 				return nil, err
 			}
-			freeSlot = release
+			a.freePriority = release
 		} else {
 			// Acquire timeout/cancellation is our own saturation or shutdown,
 			// not host distress, so nothing is reported to the breaker.
-			if err := hosts.AcquireWithTimeoutContext(ctx, host); err != nil {
+			if err := hosts.AcquireWithTimeoutContext(ctx, t.host); err != nil {
 				return nil, err
 			}
-			freeSlot = func() { hosts.Release(host) }
+			a.hosts = hosts
 		}
 	}
 
 	// Reserved before Admit: a refusal after Admit would leave the breaker's
 	// half-open probe claimed by a request that never went out.
-	if err := g.budget.take(host); err != nil {
-		freeSlot()
+	if err := g.budget.take(hb); err != nil {
+		a.freeSlot()
 		return nil, err
 	}
-	if breaker != nil && !breaker.Admit(key) {
-		g.budget.refund(host)
-		freeSlot()
+	if a.breaker != nil && !a.breaker.Admit(t.key) {
+		g.budget.refund(hb)
+		a.freeSlot()
 		return nil, hosterrors.ErrUnresponsiveHost
 	}
 
 	g.count(1)
-	return func(o Outcome) {
-		if breaker != nil && !o.Neutral {
-			if o.Err != nil {
-				breaker.MarkFailed(key, o.Err, o.IgnoreTimeout)
-			} else {
-				breaker.MarkSuccess(key)
-			}
-		}
-		freeSlot()
-	}, nil
+	if a.breaker == nil && a.hosts == nil && a.freePriority == nil {
+		return noopRelease, nil
+	}
+	return a.release, nil
 }
 
-// splitHostPort returns the host-limiter key (the host as given, so it agrees
-// with the key every other limiter caller uses) and the breaker key (lower-cased
-// host:port, as httpmsg.HostPortKey builds it).
-func splitHostPort(hostPort string) (host, key string) {
+// admission is what an admitted attempt's Release has to undo. Its release
+// method value is the Release, one allocation per attempt.
+type admission struct {
+	host, key string
+	breaker   *hosterrors.Cache
+	// hosts is set when a normal-lane slot is held; freePriority when a
+	// priority-lane slot is.
+	hosts        *ratelimit.HostRateLimiter
+	freePriority func()
+}
+
+func (a admission) release(o Outcome) {
+	if a.breaker != nil && !o.Neutral {
+		if o.Err != nil {
+			a.breaker.MarkFailed(a.key, o.Err, o.IgnoreTimeout)
+		} else {
+			a.breaker.MarkSuccess(a.key)
+		}
+	}
+	a.freeSlot()
+}
+
+func (a admission) freeSlot() {
+	switch {
+	case a.freePriority != nil:
+		a.freePriority()
+	case a.hosts != nil:
+		a.hosts.Release(a.host)
+	}
+}
+
+// target is an Acquire destination: the host-limiter key (the host as given,
+// so it agrees with the key every other limiter caller uses) and the breaker
+// key (lower-cased host:port, as httpmsg.HostPortKey builds it).
+type target struct {
+	host, key string
+}
+
+func parseTarget(hostPort string) target {
 	if hostPort == "" {
-		return "", ""
+		return target{}
 	}
 	h, _, err := net.SplitHostPort(hostPort)
 	if err != nil {
-		return hostPort, strings.ToLower(hostPort)
+		return target{host: hostPort, key: strings.ToLower(hostPort)}
 	}
-	return h, strings.ToLower(hostPort)
+	return target{host: h, key: strings.ToLower(hostPort)}
+}
+
+// hostTarget is parseTarget(net.JoinHostPort(host, port)) without the split.
+// A host carrying a bracket does not survive that round trip unchanged, so it
+// takes the parse.
+func hostTarget(host string, port int) target {
+	hostPort := net.JoinHostPort(host, strconv.Itoa(port))
+	if strings.ContainsAny(host, "[]") {
+		return parseTarget(hostPort)
+	}
+	return target{host: host, key: strings.ToLower(hostPort)}
 }
 
 // HostPort renders u's host:port, defaulting the port from the scheme, in the
@@ -359,9 +401,10 @@ func (g *Gate) Do(ctx context.Context, hostPort string, lane Lane, p RetryPolicy
 	if backoff == nil {
 		backoff = DefaultBackoff
 	}
+	t := parseTarget(hostPort) // once, not per attempt
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		release, err := g.Acquire(ctx, hostPort, lane)
+		release, err := g.acquire(ctx, t, lane)
 		if err != nil {
 			if lastErr != nil && errors.Is(err, hosterrors.ErrUnresponsiveHost) {
 				return attempt, lastErr

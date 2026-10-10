@@ -1401,7 +1401,7 @@ func (r *Requester) AcquireDial(host string, port int) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	release, err := r.gate.Acquire(ctx, net.JoinHostPort(host, strconv.Itoa(port)), r.lane)
+	release, err := r.gate.AcquireHost(ctx, host, port, r.lane)
 	if err != nil {
 		return nil, err
 	}
