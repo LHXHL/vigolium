@@ -33,6 +33,9 @@ func generateReportFromDB(ctx context.Context, db *database.DB, outputPath strin
 		// export path passes a collector so the trim summary folds into "Exports".
 		OnTrim: onTrim,
 	}
+	// A stateless run renders from its temp DB, which is gone once the command
+	// exits, so its reports carry no follow-up commands.
+	applyReportFlags(&meta, globalStateless)
 	// Prefer the streaming generator when the format has one: it renders the
 	// report by pulling rows one at a time instead of loading the whole result
 	// set into memory. The HTML renderer derives the displayed request/response
@@ -77,57 +80,49 @@ func parseFormats(raw string) []string {
 	return formats
 }
 
-// scanOutputFormats is the canonical set of --format values the scan commands
-// and the agentic-scan -S export accept — one list, because both materialize
-// their output through the same exporter (finishStatelessExport).
-var scanOutputFormats = []string{"console", "jsonl", "html", "report", "pdf", "sarif", "sqlite", "fs"}
-
-// formatAliases maps every accepted alias spelling onto its canonical format
-// name, so only canonical names reach the downstream switches and path helpers.
-//
-// One table for both `--format` flavors rather than one per command: `fs` is
-// valid on the scan commands AND on `vigolium export`, so a per-command table
-// would have to carry its aliases twice — the kind of split that leaves an
-// alias working on one command and unknown on the other. An alias that
-// canonicalizes to a format a given command does not accept still fails that
-// command's own valid-list check, and the error quotes what the user typed.
-var formatAliases = map[string]string{
-	"md":          "markdown",
-	"gz":          "bundle",
-	"sqlite3":     "sqlite",
-	"db":          "sqlite",
-	"file-system": "fs",
-}
-
-// canonicalFormat resolves one --format token to its canonical name. Matching is
-// case-insensitive, which `vigolium export` already was; the scan side used to
-// fold case only for the sqlite aliases, so `--format SQLITE` worked while
-// `--format HTML` did not.
-func canonicalFormat(token string) string {
-	lower := strings.ToLower(strings.TrimSpace(token))
-	if canonical, ok := formatAliases[lower]; ok {
-		return canonical
-	}
-	return lower
-}
-
-// normalizeScanFormats canonicalizes aliases in place and rejects anything
-// outside scanOutputFormats. Shared by reconcileOutputFormats and
-// planAgentStateless so a format accepted by `scan -S` is accepted by
-// `agent autopilot -S` too.
+// normalizeScanFormats canonicalizes aliases in place and rejects anything the
+// scan surface of the output format table does not accept. Shared by
+// reconcileOutputFormats and planAgentStateless so a format accepted by
+// `scan -S` is accepted by `agent autopilot -S` too — both materialize their
+// output through the same exporter (finishStatelessExport).
 func normalizeScanFormats(formats []string) error {
 	for i, f := range formats {
-		formats[i] = canonicalFormat(f)
-		if !slices.Contains(scanOutputFormats, formats[i]) {
-			return usageErrorf("invalid --format value %q; valid formats: %s", f, strings.Join(scanOutputFormats, ", "))
+		of, err := output.Lookup(f, output.SurfaceScan)
+		if err != nil {
+			return usageErrorf("invalid --format value %q; valid formats: %s",
+				strings.TrimSpace(f), strings.Join(output.Names(output.SurfaceScan), ", "))
 		}
+		formats[i] = of.Name
 	}
 	return nil
+}
+
+// githubToStdout reports whether the github format will write its workflow
+// commands to stdout: it was requested and there is no -o to name a file.
+func githubToStdout(formats []string, outputPath string) bool {
+	if outputPath != "" {
+		return false
+	}
+	return slices.ContainsFunc(formats, func(f string) bool { return output.CanonicalFormat(f) == "github" })
 }
 
 // reconcileOutputFormats applies --json and --ci-output-format overrides to
 // OutputFormats and validates the result. Shared by scan and scan-url commands.
 func reconcileOutputFormats(opts *types.Options) error {
+	if err := validateReportFlags(); err != nil {
+		return err
+	}
+	// The github format's workflow commands own stdout when there is no -o. The
+	// -j document and the CI jsonl stream want stdout too, and a consumer
+	// parsing either would choke on the other.
+	if githubToStdout(opts.OutputFormats, opts.Output) {
+		if globalJSON {
+			return usageErrorf("--format github writes workflow commands to stdout and cannot be combined with -j/--json; pass -o FILE to write them to a file instead")
+		}
+		if globalCIOutput {
+			return usageErrorf("--format github cannot be combined with --ci-output-format, which replaces --format with a jsonl stream on stdout")
+		}
+	}
 	if globalJSON && len(opts.OutputFormats) == 1 && opts.OutputFormats[0] == "console" {
 		opts.OutputFormats = []string{"jsonl"}
 	}
@@ -157,7 +152,8 @@ func reconcileOutputFormats(opts *types.Options) error {
 	return nil
 }
 
-// reportFormatEntry maps a --format value to its generator and display label.
+// reportFormatEntry is one post-run report format, as the scan commands and
+// the REST server render it: the format table's renderer for the name.
 type reportFormatEntry struct {
 	format string
 	label  string
@@ -168,32 +164,48 @@ type reportFormatEntry struct {
 	// time from a producer, so the result set never lives in memory at once.
 	streamGenerate func(output.ReportItemProducer, string, output.HTMLReportMeta) error
 	beforeMsg      string // optional stderr message before generation
+	// needsOutputPath is false for a report that streams to stdout without -o
+	// (github).
+	needsOutputPath bool
 }
 
-var reportFormats = []reportFormatEntry{
-	{format: "html", label: "HTML report", generate: output.GenerateHTMLReport, streamGenerate: output.GenerateHTMLReportStreaming},
-	{format: "report", label: "Document report", generate: output.GenerateDocumentReport},
-	{format: "pdf", label: "PDF report", generate: output.GeneratePDFReport, beforeMsg: "Generating PDF report (headless Chrome)..."},
-	{format: "sarif", label: "SARIF report", generate: output.GenerateSARIFReport},
+// reportFormatEntries derives the report entries a surface renders from the
+// output format table, in table order.
+func reportFormatEntries(s output.Surface) []reportFormatEntry {
+	var out []reportFormatEntry
+	for _, f := range output.ReportFormats(s) {
+		e := reportFormatEntry{
+			format:          f.Name,
+			label:           f.Label,
+			generate:        f.Render,
+			streamGenerate:  f.RenderStream,
+			needsOutputPath: f.NeedsOutputPath,
+		}
+		if f.NeedsChrome {
+			e.beforeMsg = "Generating " + f.Label + " (headless Chrome)..."
+		}
+		out = append(out, e)
+	}
+	return out
 }
+
+// reportFormats are the report formats the scan commands render after the run.
+var reportFormats = reportFormatEntries(output.SurfaceScan)
 
 // formatNeedsOutput reports whether a format writes a file the command cannot
-// name on its own, so `--format X` without `-o` must be rejected rather than
-// silently producing nothing. Shared by the scan commands and `export`/`import`,
-// which previously carried two predicates whose defaults for an unrecognized
-// format were opposite.
+// name on its own, so `--format X` without -o must be rejected rather than
+// silently producing nothing. Shared by the scan commands and `export`/`import`.
 //
-// A deny-list on purpose: `console` writes nothing, `jsonl` streams to stdout,
-// and `fs` defaults its base to the cwd — every other format names a file.
-// Stated the other way round, as a list of file formats, a newly added format
-// defaults to "needs no -o" and silently no-ops, which is exactly how `sarif`
+// The answer is the format table's NeedsOutputPath, and an unknown format
+// defaults to true: stated the other way round, a newly added format would
+// default to "needs no -o" and silently no-op, which is exactly how `sarif`
 // shipped able to be requested and unable to be written.
 func formatNeedsOutput(format string) bool {
-	switch canonicalFormat(format) {
-	case "console", "jsonl", "fs":
-		return false
+	f, ok := output.FormatByName(format)
+	if !ok {
+		return true
 	}
-	return true
+	return f.NeedsOutputPath
 }
 
 // maybeGenerateReports generates all requested file-based reports post-scan and
@@ -212,7 +224,12 @@ func formatNeedsOutput(format string) bool {
 // is still attempted independently, so one unwritable destination does not cost
 // the others.
 func maybeGenerateReports(db *database.DB, opts *types.Options) error {
-	if opts.Output == "" {
+	// No -o renders only the reports that stream to stdout (github); the rest
+	// were rejected by validation before the scan ran. On a stateless run an
+	// empty opts.Output means finishStatelessExport owns the reports (it blanks
+	// the field while it does), stdout ones included.
+	stdoutOnly := opts.Output == ""
+	if stdoutOnly && opts.Stateless {
 		return nil
 	}
 	ctx := context.Background()
@@ -228,15 +245,30 @@ func maybeGenerateReports(db *database.DB, opts *types.Options) error {
 		if !opts.HasFormat(rf.format) {
 			continue
 		}
-		outPath := opts.OutputPathForFormat(rf.format)
+		if stdoutOnly && rf.needsOutputPath {
+			continue
+		}
+		outPath := ""
+		if !stdoutOnly {
+			outPath = opts.OutputPathForFormat(rf.format)
+		}
 		if rf.beforeMsg != "" {
 			fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(), rf.beforeMsg)
 		}
 		if err := generateReportFromDB(ctx, db, outPath, opts.OmitResponse, exportProjectScope(opts), scanScope, rf, nil); err != nil {
-			failures = append(failures, fmt.Errorf("generate %s %s: %w", rf.label, outPath, err))
+			failures = append(failures, fmt.Errorf("generate %s %s: %w", rf.label, reportDestination(outPath), err))
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "%s %s: %s\n", terminal.InfoSymbol(), rf.label, terminal.Cyan(outPath))
+		fmt.Fprintf(os.Stderr, "%s %s: %s\n", terminal.InfoSymbol(), rf.label, terminal.Cyan(reportDestination(outPath)))
 	}
 	return errors.Join(failures...)
+}
+
+// reportDestination names where a report went, for messages: its path, or
+// "stdout" for a report rendered without one.
+func reportDestination(path string) string {
+	if path == "" {
+		return "stdout"
+	}
+	return path
 }

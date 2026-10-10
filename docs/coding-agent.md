@@ -708,7 +708,8 @@ that outranks the gate: a `4` whose artifact is missing would send a CI job to
 read a file that is not there. Each `--format` is attempted independently, so
 some of them may still have landed; the "Exports" summary on stderr lists the
 ones that did. This covers every artifact the run was asked for — reports
-(`html`/`report`/`pdf`/`markdown`/`sarif`), the `fs` tree, the `jsonl` export
+(`html`/`report`/`pdf`/`markdown`/`sarif`/`csv`/`junit`/`github`; a failed PDF
+render reports the more specific `pdf_failed`), the `fs` tree, the `jsonl` export
 and `--upload-results` — on the persisted path as well as under `-S`; a
 `--upload-results` that could not reach storage is the run failing to deliver,
 while the configured webhook stays best-effort. `--soft-fail` forces the process status to `0` for all of

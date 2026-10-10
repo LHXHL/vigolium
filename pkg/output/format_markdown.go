@@ -12,14 +12,20 @@ import (
 )
 
 func GenerateMarkdownReport(items []any, outputPath string, meta HTMLReportMeta) error {
-	data := buildReportData(items, meta.Title, meta)
-
 	f, err := os.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
+	_, err = f.WriteString(renderMarkdownReport(items, meta))
+	return err
+}
+
+// renderMarkdownReport renders the whole Markdown report to a string. Shared by
+// the markdown format and the github format's GITHUB_STEP_SUMMARY append.
+func renderMarkdownReport(items []any, meta HTMLReportMeta) string {
+	data := buildReportData(items, meta.Title, meta)
 	w := &strings.Builder{}
 
 	writeMarkdownHeader(w, data)
@@ -31,9 +37,17 @@ func GenerateMarkdownReport(items []any, outputPath string, meta HTMLReportMeta)
 	writeMarkdownFindings(w, "Medium", data.MediumFindings, opts)
 	writeMarkdownFindings(w, "Low", data.LowFindings, opts)
 	writeMarkdownFindings(w, "Info", data.InfoFindings, opts)
+	return w.String()
+}
 
-	_, err = f.WriteString(w.String())
-	return err
+// renderMarkdownSummary renders only the report header and executive summary,
+// for destinations with a size limit the full report can exceed.
+func renderMarkdownSummary(items []any, meta HTMLReportMeta) string {
+	data := buildReportData(items, meta.Title, meta)
+	w := &strings.Builder{}
+	writeMarkdownHeader(w, data)
+	writeMarkdownExecutiveSummary(w, data)
+	return w.String()
 }
 
 func writeMarkdownHeader(w *strings.Builder, data ReportData) {

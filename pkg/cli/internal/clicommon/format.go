@@ -161,12 +161,3 @@ func SplitCSV(s string) []string {
 	}
 	return out
 }
-
-// CSVEscape quotes and escapes s for CSV output when it contains commas,
-// quotes, or newlines.
-func CSVEscape(s string) string {
-	if strings.ContainsAny(s, ",\"\n") {
-		return fmt.Sprintf("\"%s\"", strings.ReplaceAll(s, "\"", "\"\""))
-	}
-	return s
-}

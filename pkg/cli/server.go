@@ -26,6 +26,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
+	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/queue"
 	"github.com/vigolium/vigolium/pkg/server"
 	"github.com/vigolium/vigolium/pkg/server/mitm"
@@ -887,12 +888,15 @@ func parseAgentQueueTimeout(s string) time.Duration {
 	return d
 }
 
-// serverReportFormats lists the post-scan report formats REST `output_formats`
-// accepts beyond jsonl: exactly the ones renderServerReport can produce, taken
-// from the same reportFormats table `scan --format` uses.
+// serverReportEntries are the post-scan report formats REST `output_formats`
+// accepts beyond jsonl: the REST surface of the output format table.
+var serverReportEntries = reportFormatEntries(output.SurfaceREST)
+
+// serverReportFormats lists the names of serverReportEntries, the formats
+// renderServerReport can produce.
 func serverReportFormats() []string {
-	formats := make([]string, 0, len(reportFormats))
-	for _, rf := range reportFormats {
+	formats := make([]string, 0, len(serverReportEntries))
+	for _, rf := range serverReportEntries {
 		formats = append(formats, rf.format)
 	}
 	return formats
@@ -903,7 +907,7 @@ func serverReportFormats() []string {
 // scoped to the scan. Injected into the server (pkg/server cannot import
 // pkg/cli).
 func renderServerReport(ctx context.Context, db *database.DB, format, outputPath, projectUUID, scanUUID string) error {
-	for _, rf := range reportFormats {
+	for _, rf := range serverReportEntries {
 		if rf.format != format {
 			continue
 		}

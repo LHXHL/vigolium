@@ -86,7 +86,7 @@ func init() {
 	importCmd.Flags().Bool("upload", false, "Upload the local import source to cloud storage after import")
 	importCmd.Flags().String("upload-key", "", "Explicit storage key for --upload (default: imports/<basename>-<ts>.<ext>)")
 	importCmd.Flags().StringVar(&globalGlobDB, "glob-db", "", "Glob of local files to import alongside any positional paths (use one format per run), e.g. --glob-db 'prefix-*.sqlite' or '*.jsonl'")
-	importCmd.Flags().String("format", "", "Also write a report after import: html, report, pdf, markdown (md), or sarif. Mirrors 'vigolium export --format'.")
+	importCmd.Flags().String("format", "", "Also write a report after import: "+output.FormatsHelp(output.SurfaceImport)+". Mirrors 'vigolium export --format'.")
 	importCmd.Flags().StringP("output", "o", "", "Report output path or gs://<project>/<key> URL (required when --format is set; supports {ts})")
 	// Report customization + finding filters — mirror `vigolium export` so a
 	// single import step can emit a fully-branded, filtered report.
@@ -100,6 +100,7 @@ func init() {
 	// path needs this value too (see importBridgeSearchTerm), and reaching for
 	// importCmd from a function runImport calls would make importCmd's own
 	// initializer cyclic.
+	registerReportFlags(importCmd.Flags())
 	importCmd.Flags().StringVar(&importSearchFilter, "search", "", "Fuzzy search filter across finding fields included in the report; under --burp-bridge-url, narrows which records are imported")
 	rootCmd.AddCommand(importCmd)
 }
@@ -176,8 +177,12 @@ func runImport(cmd *cobra.Command, args []string) error {
 		if bridgeURL != "" {
 			return usageErrorf("--format is not applicable to a traffic-only Burp bridge import")
 		}
-		if _, _, ok := reportGenerator(reportFormat); !ok {
-			return usageErrorf("--format %q is not a report format; use html, report, pdf, markdown, or sarif", reportFormat)
+		if _, err := output.Lookup(reportFormat, output.SurfaceImport); err != nil {
+			return usageErrorf("--format %q is not a report format; valid formats: %s",
+				reportFormat, strings.Join(output.Names(output.SurfaceImport), ", "))
+		}
+		if err := validateReportFlags(); err != nil {
+			return err
 		}
 		if reportOutput == "" {
 			return usageErrorf("--format %s requires -o/--output for the report path", reportFormat)
@@ -748,10 +753,11 @@ func printMergeResult(srcPath string, s *database.MergeStats) {
 // cosmetic: {ts} resolves to the current second, so a second expansion names a
 // file that does not exist.
 func emitImportReport(ctx context.Context, db *database.DB, scan *database.AgenticScan, format, outputArg string, opts importReportOpts) (string, error) {
-	gen, defaultTitle, ok := reportGenerator(format)
+	rf, ok := reportGenerator(format)
 	if !ok {
 		return "", fmt.Errorf("unsupported report format %q", format)
 	}
+	gen, defaultTitle := rf.Render, rf.DefaultTitle
 
 	dest, err := expandOutputPlaceholders(outputArg)
 	if err != nil {
@@ -820,10 +826,11 @@ func emitImportReport(ctx context.Context, db *database.DB, scan *database.Agent
 	if opts.duration != "" {
 		meta.ScanDuration = opts.duration
 	}
+	applyReportFlags(&meta, false)
 
 	if !globalJSON {
 		detail := ""
-		if format == "pdf" {
+		if rf.NeedsChrome {
 			detail = " (headless Chrome)"
 		}
 		fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(),

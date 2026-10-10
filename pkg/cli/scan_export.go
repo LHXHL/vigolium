@@ -129,7 +129,17 @@ func finishStatelessExport(db *database.DB, opts *types.Options, outputPath stri
 			}
 			printExportSummary(fsExportOutputs(stats))
 		}
-		return nil
+		// Reports that need no path (github) stream to stdout.
+		var failures []error
+		for _, rf := range reportFormats {
+			if rf.needsOutputPath || !opts.HasFormat(rf.format) {
+				continue
+			}
+			if err := generateReportFromDB(ctx, db, "", opts.OmitResponse, "", "", rf, nil); err != nil {
+				failures = append(failures, fmt.Errorf("generate %s %s: %w", rf.label, reportDestination(""), err))
+			}
+		}
+		return errors.Join(failures...)
 	}
 
 	basePath := types.StripFormatExtension(outputPath)

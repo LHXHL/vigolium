@@ -41,6 +41,10 @@ type HTMLReportMeta struct {
 	// PDFTimeout bounds the headless Chrome PDF render. Zero means
 	// VIGOLIUM_PDF_TIMEOUT (a Go duration) when set, else DefaultPDFTimeout.
 	PDFTimeout time.Duration
+	// FailOn is the severity threshold (the --fail-on value) at or above which
+	// the junit format reports a finding as a failure. Empty means
+	// DefaultJUnitFailOn.
+	FailOn string
 }
 
 // ReportTrimInfo summarizes the body-capping the HTML report applied, so a

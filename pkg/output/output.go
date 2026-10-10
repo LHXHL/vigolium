@@ -306,6 +306,12 @@ func NewStandardWriter(options *types.Options) (*StandardWriter, error) {
 	if options.Events != "" {
 		disableStdout = true
 	}
+	// --format github without -o writes its workflow commands to stdout after
+	// the scan; the live finding lines go to stderr instead (as under --events),
+	// so the annotations are the only thing on stdout.
+	if options.HasFormat("github") && options.Output == "" {
+		disableStdout = true
+	}
 
 	// CapturedConsole renders the live finding stream in the human-readable
 	// console format even when jsonl set JSONOutput: the captured per-target log

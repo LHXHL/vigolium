@@ -228,7 +228,7 @@ var scanFlagGroups = []flagGroup{
 	{"Request", []string{"method", "body", "header", "advanced-options", "retries", "stream"}},
 	{"Authentication", []string{"auth", "auth-file"}},
 	{"Speed Control", []string{"timeout", "concurrency", "rate-limit", "max-per-host", "max-requests", "max-requests-per-host", "no-waf-pacing", "max-host-error", "max-findings-per-module", "no-clustering"}},
-	{"Output", []string{"output", "stats", "fail-on", "events", "include-response", "omit-response", "export-only", "report-url", "upload-results", "print-finding", "print-traffic", "print-traffic-tree"}},
+	{"Output", []string{"output", "stats", "fail-on", "events", "include-response", "omit-response", "export-only", "report-url", "max-body-bytes", "pdf-timeout", "upload-results", "print-finding", "print-traffic", "print-traffic-tree"}},
 	{"Stateless & Parallel", []string{"stateless", "keep-db-on-error", "split-by-host", "db-isolate", "parallel", "resume"}},
 }
 
@@ -404,7 +404,7 @@ var serverFlagGroups = []flagGroup{
 var exportFlagGroups = []flagGroup{
 	{"Output Format", []string{"format", "output", "omit-response", "no-url-dedup"}},
 	{"Filter", []string{"search", "exclude", "severity", "scan-uuid", "only", "limit"}},
-	{"Report Metadata", []string{"report-title", "report-target", "report-duration", "report-generated-at", "report-url"}},
+	{"Report Metadata", []string{"report-title", "report-target", "report-duration", "report-generated-at", "report-url", "max-body-bytes", "pdf-timeout"}},
 	{"Data Source", []string{"db", "stateless", "glob-db", "glob-strict"}},
 }
 
@@ -412,7 +412,7 @@ var exportFlagGroups = []flagGroup{
 var importFlagGroups = []flagGroup{
 	{"Output Format", []string{"format", "output"}},
 	{"Filter", []string{"search", "severity"}},
-	{"Report Metadata", []string{"report-title", "report-target", "report-duration", "report-generated-at", "report-url"}},
+	{"Report Metadata", []string{"report-title", "report-target", "report-duration", "report-generated-at", "report-url", "max-body-bytes", "pdf-timeout"}},
 	{"Source & Upload", []string{"glob-db", "upload", "upload-key", "burp-bridge-url"}},
 	// Bridge-pull narrowing. An unfiltered -B pull copies the operator's entire
 	// proxy history — every host they have browsed, with its cookies — so these

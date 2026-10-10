@@ -53,6 +53,7 @@ func registerNativeScanFlags(flags *pflag.FlagSet, includeAuth bool) {
 		"Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field.")
 	flags.StringVar(&scanReportSharedURL, "report-url", "",
 		"URL for the \"Raw Report URL\" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL)")
+	registerReportFlags(flags)
 	registerEventsFlag(flags)
 
 	// Optimization group

@@ -18,6 +18,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/notify/webhook"
+	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 )
@@ -155,11 +156,12 @@ func validateRunScanRequest(req RunScanRequest) error {
 }
 
 // resolveAPIOutputFormats validates and normalizes the output_formats request
-// field. "jsonl" (the runner's live stream) is always accepted; every other
-// value must be one of reportFormats, the post-scan report formats the server
-// can actually render (ServerConfig.ReportFormats). Anything else is rejected,
-// so a requested format is never accepted and then silently not produced.
-// Returns a deduplicated, lowercased slice. Empty input yields a nil slice.
+// field against the REST surface of the output format table (aliases and case
+// folded, e.g. "MD" → "markdown"). "jsonl" (the runner's live stream) is always
+// produced; every other value must also be one of reportFormats, the report
+// formats this server has a renderer for (ServerConfig.ReportFormats), so a
+// requested format is never accepted and then silently not produced.
+// Returns a deduplicated slice of canonical names. Empty input yields nil.
 func resolveAPIOutputFormats(formats, reportFormats []string) ([]string, error) {
 	if len(formats) == 0 {
 		return nil, nil
@@ -168,18 +170,18 @@ func resolveAPIOutputFormats(formats, reportFormats []string) ([]string, error) 
 	seen := make(map[string]struct{}, len(formats))
 	out := make([]string, 0, len(formats))
 	for _, f := range formats {
-		norm := strings.ToLower(strings.TrimSpace(f))
-		if norm == "" {
+		if strings.TrimSpace(f) == "" {
 			continue
 		}
-		if !slices.Contains(supported, norm) {
+		of, err := output.Lookup(f, output.SurfaceREST)
+		if err != nil || !slices.Contains(supported, of.Name) {
 			return nil, fmt.Errorf("invalid output_format %q; supported: %s", f, strings.Join(supported, ", "))
 		}
-		if _, dup := seen[norm]; dup {
+		if _, dup := seen[of.Name]; dup {
 			continue
 		}
-		seen[norm] = struct{}{}
-		out = append(out, norm)
+		seen[of.Name] = struct{}{}
+		out = append(out, of.Name)
 	}
 	return out, nil
 }

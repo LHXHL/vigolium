@@ -65,7 +65,7 @@ JSONL coverage is a view, not a lossless archive: HTTP exchanges sharing a URL c
 
 func init() {
 	rootCmd.AddCommand(exportCmd)
-	exportCmd.Flags().StringVar(&topExportFormat, "format", "jsonl", "Export format(s), comma-separated: html, report, pdf, jsonl, markdown (alias: md), sarif (SARIF 2.1.0 for GitHub code scanning / DefectDojo / SARIF viewers), bundle (alias: gz), fs (alias: file-system; flat request/response + finding tree)")
+	exportCmd.Flags().StringVar(&topExportFormat, "format", "jsonl", "Export format(s), comma-separated: "+output.FormatsHelp(output.SurfaceExport))
 	exportCmd.Flags().StringVarP(&topExportOutput, "output", "o", "", "Output file path or gs://<project>/<key> URL (required for html; base path when multiple formats are given); supports {ts} and {project-uuid} placeholders")
 	exportCmd.Flags().StringSliceVar(&topExportOnly, "only", nil,
 		"Export only these tables (repeatable: http, findings, scans, modules, oast, source-repos, scopes)")
@@ -93,6 +93,7 @@ func init() {
 		"Filter findings by severity (comma-separated: critical,high,medium,low,info)")
 	exportCmd.Flags().StringSliceVar(&topExportScanUUIDs, "scan-uuid", nil,
 		"Agentic scan UUID(s) whose session directories to include in --format bundle (repeatable)")
+	registerReportFlags(exportCmd.Flags())
 	exportCmd.Flags().BoolVarP(&globalStateless, "stateless", "S", false,
 		"Read from --db (a standalone .sqlite or .jsonl export) instead of your project DB; never writes to it")
 	exportCmd.Flags().StringVar(&globalGlobDB, "glob-db", "",
@@ -182,10 +183,6 @@ func scopeProjectBun(q *bun.SelectQuery, projectUUID string) *bun.SelectQuery {
 	return q
 }
 
-// validExportFormats lists the canonical --format values `vigolium export`
-// accepts. Aliases are normalized onto these by parseExportFormats.
-var validExportFormats = []string{"html", "report", "pdf", "jsonl", "markdown", "sarif", "bundle", "fs"}
-
 // exportFormatSpec is one requested format after alias normalization: the
 // canonical name, the token the user actually typed (so errors quote their
 // spelling), and the output path assigned to it.
@@ -208,10 +205,11 @@ func parseExportFormats(raw string) ([]exportFormatSpec, error) {
 		if token == "" {
 			continue
 		}
-		canonical := canonicalFormat(token)
-		if !slices.Contains(validExportFormats, canonical) {
-			return nil, usageErrorf("unsupported format %q; valid formats: %s", token, strings.Join(validExportFormats, ", "))
+		f, err := output.Lookup(token, output.SurfaceExport)
+		if err != nil {
+			return nil, usageErrorf("unsupported format %q; valid formats: %s", token, strings.Join(output.Names(output.SurfaceExport), ", "))
 		}
+		canonical := f.Name
 		if seen[canonical] {
 			continue
 		}
@@ -219,7 +217,7 @@ func parseExportFormats(raw string) ([]exportFormatSpec, error) {
 		specs = append(specs, exportFormatSpec{format: canonical, raw: token})
 	}
 	if len(specs) == 0 {
-		return nil, usageErrorf("--format requires at least one format; valid formats: %s", strings.Join(validExportFormats, ", "))
+		return nil, usageErrorf("--format requires at least one format; valid formats: %s", strings.Join(output.Names(output.SurfaceExport), ", "))
 	}
 	return specs, nil
 }
@@ -276,6 +274,9 @@ func runExportCmd(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 
 	if err := validateExportOnly(); err != nil {
+		return err
+	}
+	if err := validateReportFlags(); err != nil {
 		return err
 	}
 
@@ -503,12 +504,13 @@ func (r *exportRun) runFormat(ctx context.Context, s exportFormatSpec) ([]export
 // exportReport renders one of the document formats (html, report, pdf, markdown)
 // from the run's shared item set.
 func (r *exportRun) exportReport(ctx context.Context, format, outputPath string) ([]exportedFile, error) {
-	generate, defaultTitle, ok := reportGenerator(format)
+	rf, ok := reportGenerator(format)
 	if !ok {
-		return nil, fmt.Errorf("unsupported format %q; valid formats: %s", format, strings.Join(validExportFormats, ", "))
+		return nil, fmt.Errorf("unsupported format %q; valid formats: %s", format, strings.Join(output.Names(output.SurfaceExport), ", "))
 	}
-	if format == "pdf" {
-		fmt.Fprintf(os.Stderr, "%s Generating PDF report (headless Chrome)...\n", terminal.InfoSymbol())
+	generate, defaultTitle := rf.Render, rf.DefaultTitle
+	if rf.NeedsChrome {
+		fmt.Fprintf(os.Stderr, "%s Generating %s (headless Chrome)...\n", terminal.InfoSymbol(), rf.Label)
 	}
 
 	db, err := r.openDB()
@@ -544,36 +546,28 @@ func (r *exportRun) exportReport(ctx context.Context, format, outputPath string)
 		GeneratedAt:     topExportGeneratedAt,
 		ReportSharedURL: topExportReportURL,
 	}
+	applyReportFlags(&meta, false)
 	if err := generate(items, outputPath, meta); err != nil {
 		return nil, err
 	}
 	r.printStats(format, outputPath, countExportItems(items))
+	if outputPath == "" {
+		return nil, nil // streamed to stdout (github); nothing to list
+	}
 	return []exportedFile{{label: format, path: outputPath}}, nil
 }
 
-// reportGenerator maps a document/report format to its generator and default
-// title. It is the single source of truth shared by `vigolium export` and the
-// `vigolium import --format <fmt> -o <file>` post-import shortcut, so both
-// commands stay in lockstep when a format is added or renamed.
-func reportGenerator(format string) (gen func([]any, string, output.HTMLReportMeta) error, defaultTitle string, ok bool) {
-	// Resolve through the shared alias table rather than matching the raw token:
-	// `vigolium import --format` calls this directly with what the user typed, so
-	// a case-folded spelling or an alias must mean the same thing here as it does
-	// on `export`. Idempotent for exportRun, which passes an already-canonical
-	// format.
-	switch canonicalFormat(format) {
-	case "html":
-		return output.GenerateHTMLReport, "Vigolium Static Report", true
-	case "report":
-		return output.GenerateDocumentReport, "Vigolium Scan Report", true
-	case "pdf":
-		return output.GeneratePDFReport, "Vigolium Scan Report", true
-	case "markdown":
-		return output.GenerateMarkdownReport, "Vigolium Scan Report", true
-	case "sarif":
-		return output.GenerateSARIFReport, "Vigolium Scan Report", true
+// reportGenerator resolves a document/report format (alias-aware,
+// case-insensitive) to its row in the output format table, renderer bound. It
+// is shared by `vigolium export` and the `vigolium import --format <fmt> -o
+// <file>` post-import shortcut, so both render through the same table; each
+// caller checks its own surface (output.Lookup) before rendering.
+func reportGenerator(format string) (output.OutputFormat, bool) {
+	f, ok := output.FormatByName(format)
+	if !ok || f.Kind != output.KindReport || f.Render == nil {
+		return output.OutputFormat{}, false
 	}
-	return nil, "", false
+	return f, true
 }
 
 // computeReportMeta auto-detects scanTarget and scanDuration from the database.

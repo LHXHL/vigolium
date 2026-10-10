@@ -46,6 +46,11 @@ type ReportFinding struct {
 	// evidence with `vigolium traffic body --uuid <record>`.
 	ScanUUID    string
 	RecordUUIDs []string
+	// Hostname, Status and CreatedAt come straight from the finding row; the
+	// tabular renderers (csv, junit, github) key and filter on them.
+	Hostname  string
+	Status    string
+	CreatedAt string
 }
 
 type ReportModule struct {
@@ -239,6 +244,9 @@ func parseFinding(data json.RawMessage, md goldmark.Markdown) ReportFinding {
 		RepoName           string   `json:"repo_name"`
 		ScanUUID           string   `json:"scan_uuid"`
 		RecordUUIDs        []string `json:"http_record_uuids"`
+		Hostname           string   `json:"hostname"`
+		Status             string   `json:"status"`
+		CreatedAt          string   `json:"created_at"`
 	}
 	// best-effort: render whatever fields decode; a malformed finding yields a sparse row.
 	_ = json.Unmarshal(data, &f)
@@ -254,7 +262,7 @@ func parseFinding(data json.RawMessage, md goldmark.Markdown) ReportFinding {
 	}
 
 	var descHTML template.HTML
-	if f.Description != "" {
+	if f.Description != "" && md != nil {
 		var buf bytes.Buffer
 		if err := md.Convert([]byte(f.Description), &buf); err == nil {
 			descHTML = template.HTML(buf.String())
@@ -287,7 +295,32 @@ func parseFinding(data json.RawMessage, md goldmark.Markdown) ReportFinding {
 		RepoName:           f.RepoName,
 		ScanUUID:           f.ScanUUID,
 		RecordUUIDs:        f.RecordUUIDs,
+		Hostname:           f.Hostname,
+		Status:             f.Status,
+		CreatedAt:          f.CreatedAt,
 	}
+}
+
+// collectReportFindings decodes the finding envelopes of an export item set in
+// item order, without the HTML description rendering buildReportData does.
+// Used by the tabular renderers (csv, junit, github).
+func collectReportFindings(items []any) []ReportFinding {
+	var out []ReportFinding
+	for _, item := range items {
+		raw, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		var envelope struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Type != "finding" {
+			continue
+		}
+		out = append(out, parseFinding(envelope.Data, nil))
+	}
+	return out
 }
 
 // truncateStr caps s at maxLen bytes plus a "..." marker, never splitting a

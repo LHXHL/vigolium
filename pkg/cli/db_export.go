@@ -10,7 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,7 +52,7 @@ var (
 func init() {
 	dbCmd.AddCommand(dbExportCmd)
 
-	dbExportCmd.Flags().StringVarP(&exportFormat, "format", "f", "jsonl", "Export format: jsonl, json, raw, csv, markdown, markdown-table, bundle, fs")
+	dbExportCmd.Flags().StringVarP(&exportFormat, "format", "f", "jsonl", "Export format: "+output.FormatsHelp(output.SurfaceDBExport))
 	dbExportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "Output file path, defaults to stdout")
 
 	dbExportCmd.Flags().StringVar(&exportHost, "host", "", "Filter records by hostname pattern")
@@ -75,15 +75,6 @@ func init() {
 		"URL for the \"Raw Report URL\" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL)")
 }
 
-// dbExportFormats is the closed set runDBExport accepts, in canonical spelling.
-// Aliases (md, md-table, file-system, …) are resolved by canonicalFormat before
-// the check, so this list and the dispatch switch below agree without either one
-// restating the alias table.
-var dbExportFormats = []string{
-	"jsonl", "json", "raw", "csv", "markdown",
-	"markdown-table", "bundle", "fs",
-}
-
 // validateDBExportFlags rejects everything knowable from the flags alone, before
 // the destination is opened. See the call site for why the ordering matters.
 //
@@ -95,11 +86,12 @@ var dbExportFormats = []string{
 //
 // The parsed date range is returned so the callers do not re-parse it.
 func validateDBExportFlags() (dateFrom, dateTo *time.Time, err error) {
-	exportFormat = canonicalFormat(exportFormat)
-	if !slices.Contains(dbExportFormats, exportFormat) {
+	f, err := output.Lookup(exportFormat, output.SurfaceDBExport)
+	if err != nil {
 		return nil, nil, usageErrorf("unsupported export format: %s\n\nsupported formats: %s",
-			exportFormat, strings.Join(dbExportFormats, ", "))
+			strings.TrimSpace(exportFormat), strings.Join(output.Names(output.SurfaceDBExport), ", "))
 	}
+	exportFormat = f.Name
 	if exportFormat == "bundle" && exportOutput == "" {
 		return nil, nil, usageErrorf("--format bundle requires -o/--output to specify the archive path")
 	}
@@ -330,36 +322,40 @@ func exportRaw(records []*database.HTTPRecord, out io.Writer) error {
 	return nil
 }
 
+// exportCSV writes the records through the shared safe CSV writer: quoted by
+// encoding/csv (commas, quotes, CR/LF) and guarded against formula injection,
+// since paths, sources and remarks come from scanned traffic.
 func exportCSV(records []*database.HTTPRecord, out io.Writer) error {
-	_, _ = fmt.Fprintln(out, "uuid,hostname,port,method,path,status_code,response_time_ms,content_type,source,risk_score,surface_score,remarks,created_at")
-
+	cw := output.NewSafeCSVWriter(out)
+	if err := cw.Write([]string{"uuid", "hostname", "port", "method", "path", "status_code", "response_time_ms", "content_type", "source", "risk_score", "surface_score", "remarks", "created_at"}); err != nil {
+		return err
+	}
 	for _, rec := range records {
 		statusCode := ""
 		responseTime := ""
 		if rec.HasResponse {
-			statusCode = fmt.Sprintf("%d", rec.StatusCode)
-			responseTime = fmt.Sprintf("%d", rec.ResponseTimeMs)
+			statusCode = strconv.Itoa(rec.StatusCode)
+			responseTime = strconv.FormatInt(int64(rec.ResponseTimeMs), 10)
 		}
-
-		remarks := strings.Join(rec.Remarks, "; ")
-
-		_, _ = fmt.Fprintf(out, "%s,%s,%d,%s,%s,%s,%s,%s,%s,%d,%d,%s,%s\n",
+		if err := cw.Write([]string{
 			rec.UUID,
 			rec.Hostname,
-			rec.Port,
+			strconv.Itoa(rec.Port),
 			rec.Method,
-			clicommon.CSVEscape(rec.Path),
+			rec.Path,
 			statusCode,
 			responseTime,
-			clicommon.CSVEscape(rec.RequestContentType),
-			clicommon.CSVEscape(rec.Source),
-			rec.RiskScore,
-			rec.SurfaceScore,
-			clicommon.CSVEscape(remarks),
+			rec.RequestContentType,
+			rec.Source,
+			strconv.Itoa(rec.RiskScore),
+			strconv.Itoa(rec.SurfaceScore),
+			strings.Join(rec.Remarks, "; "),
 			rec.CreatedAt.Format(time.RFC3339),
-		)
+		}); err != nil {
+			return err
+		}
 	}
-	return nil
+	return cw.Flush()
 }
 
 func convertFindingToEvent(finding *database.Finding, rec *database.HTTPRecord) *output.ResultEvent {

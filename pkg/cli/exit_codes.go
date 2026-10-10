@@ -116,7 +116,9 @@ func asMatchErrorf(format string, args ...any) error {
 // re-derive it here.
 //
 // Exit code and machine code come from the coded error, which classifyExitCode
-// maps to ExitError and classifyErrorCode reports as errCodeExportFailed.
+// maps to ExitError and classifyErrorCode reports as errCodeExportFailed — or as
+// the renderer's own artifact code when the failure carries one (a PDF render
+// is pdf_failed).
 //
 // The exporters print nothing themselves — the root handler renders whatever
 // error a command returns, so printing there too said the same thing twice. That
@@ -131,7 +133,18 @@ func recordExportFailure(err *error, exportErr error) {
 			terminal.ErrorPrefix(), exportErr)
 		return
 	}
-	*err = clicommon.NewCodedError(errCodeExportFailed, exportErr)
+	code := errCodeExportFailed
+	var specific interface{ Code() apicontract.ErrorCode }
+	if errors.As(exportErr, &specific) && isExportFailureCode(specific.Code()) {
+		code = specific.Code()
+	}
+	*err = clicommon.NewCodedError(code, exportErr)
+}
+
+// isExportFailureCode reports whether code names a requested artifact that was
+// not written: export_failed, or a renderer's more specific pdf_failed.
+func isExportFailureCode(code apicontract.ErrorCode) bool {
+	return code == errCodeExportFailed || code == apicontract.CodePDFFailed
 }
 
 // writeRequestedFile publishes an artifact the caller asked for with -o, and
@@ -165,7 +178,7 @@ func writeRequestedFile(dest string, data []byte) error {
 // the command.
 func isExportFailure(err error) bool {
 	var coded codedError
-	return errors.As(err, &coded) && coded.Code() == errCodeExportFailed
+	return errors.As(err, &coded) && isExportFailureCode(coded.Code())
 }
 
 // classifyExitCode maps a command's error to its exit code.

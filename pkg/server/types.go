@@ -187,8 +187,9 @@ type RunScanRequest struct {
 
 	// OutputFormats selects extra result formats to materialize on disk: "jsonl"
 	// (written live during the scan) plus the report formats in
-	// ServerConfig.ReportFormats (html, report, pdf, sarif; rendered after the
-	// scan). Any other value is a 400. When set, files are
+	// ServerConfig.ReportFormats — the REST surface of the output format table
+	// (html, report, pdf, markdown, sarif, csv, junit; rendered after the
+	// scan). Aliases and case are folded. Any other value is a 400. When set, files are
 	// written to <sessions_dir>/<scan_uuid>/output.<ext> and — if
 	// upload_results is also true — bundled into the uploaded tar.gz alongside
 	// runtime.log.

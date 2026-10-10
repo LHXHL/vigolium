@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/internal/scratch"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 
 	"github.com/go-rod/rod/lib/launcher"
 	"go.uber.org/zap"
@@ -28,9 +29,15 @@ const DefaultPDFTimeout = 90 * time.Second
 // The tail is where the fatal line lands; the head is allocator chatter.
 const pdfStderrTailBytes = 4096
 
-// ErrPDFFailed marks every PDF-export failure so callers can map it to the
-// pdf_failed error code with errors.Is.
-var ErrPDFFailed = errors.New("pdf export failed")
+// ErrPDFFailed marks every PDF-export failure. It carries the pdf_failed error
+// code (Code()), so the CLI's error classifier and a REST handler report it
+// without matching on text; errors.Is(err, ErrPDFFailed) still works.
+var ErrPDFFailed error = pdfFailedError{}
+
+type pdfFailedError struct{}
+
+func (pdfFailedError) Error() string               { return "pdf export failed" }
+func (pdfFailedError) Code() apicontract.ErrorCode { return apicontract.CodePDFFailed }
 
 // GeneratePDFReport renders the report as HTML and prints it to PDF with
 // headless Chrome. It keeps the shared report-generator signature; use

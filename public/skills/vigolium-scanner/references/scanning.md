@@ -673,7 +673,12 @@ local name); `-t` overrides only the endpoint host, keeping the WSDL path.
 | Console *(default)* | `--format console` | human-readable tables to stderr |
 | JSONL | `--format jsonl` | bulk `{"type":…,"data":{…}}` stream |
 | HTML | `--format html -o report.html` | interactive ag-grid report; requires `-o` |
+| Document / PDF | `--format report -o r.html` / `--format pdf -o r.pdf` | PDF via headless Chrome; `--pdf-timeout` bounds it (exit 1 `pdf_failed`) |
+| Markdown | `--format markdown -o r.md` (alias `md`) | per-finding sections with finding_hash/scan_uuid/record_uuids; `--max-body-bytes` caps bodies |
 | SARIF | `--format sarif -o out.sarif` | SARIF 2.1.0 for GitHub code scanning / DefectDojo |
+| CSV | `--format csv -o f.csv` | one row per finding; formula-injection guarded |
+| JUnit | `--format junit -o f.junit.xml` | suite per module, failure per finding at/above `--fail-on` (default `low`) |
+| GitHub annotations | `--format github` | `::error`/`::warning`/`::notice` on stdout (or `-o FILE`); not with `-j`; appends to `$GITHUB_STEP_SUMMARY` |
 | SQLite | `--format sqlite -S -o run.sqlite` | standalone per-run DB via `VACUUM INTO`; requires `-S` + `-o`; aliases `sqlite3`, `db` |
 | Filesystem tree | `--format fs -o run` | browsable `run-traffic/` + `run-findings/`; see [agent-loop.md](agent-loop.md) |
 

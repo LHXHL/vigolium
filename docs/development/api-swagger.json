@@ -2892,7 +2892,7 @@
             "type": "string"
           },
           "output_formats": {
-            "description": "Extra result formats to write to <sessions_dir>/<scan_uuid>/output.<ext>: \"jsonl\" (written live during the scan) plus the report formats the server enables (html, report, pdf, sarif; rendered after the scan). Any other value is a 400. With upload_results the files are bundled into the uploaded archive alongside runtime.log.",
+            "description": "Extra result formats to write to <sessions_dir>/<scan_uuid>/output.<ext>: \"jsonl\" (written live during the scan) plus the report formats of the REST surface of the output format table (html, report, pdf, markdown (alias md), sarif, csv, junit; rendered after the scan). Names are case-insensitive. Any other value is a 400. With upload_results the files are bundled into the uploaded archive alongside runtime.log.",
             "example": [
               "jsonl",
               "sarif"

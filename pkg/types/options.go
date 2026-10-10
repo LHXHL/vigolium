@@ -2,9 +2,9 @@ package types
 
 import (
 	"maps"
-	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/output/formats"
 )
 
 type Options struct {
@@ -515,67 +515,21 @@ func (options *Options) OutputPathForFormat(format string) string {
 	return FormatOutputPath(options.OutputBasePath(), format)
 }
 
-// multiPartFormatExtensions lists extensions filepath.Ext cannot recover on its
-// own: it sees only ".gz" of ".tar.gz", so stripping through it would leave a
-// dangling ".tar" on the base and derive sibling paths like "out.tar.html".
-// Checked before the single-part list below.
-//
-// ".report.html" is deliberately absent: StripFormatExtension strips only the
-// last extension by contract (TestStripFormatExtension), so a base that already
-// ends in ".report" keeps it.
-var multiPartFormatExtensions = []string{".tar.gz", ".tgz"}
-
 // StripFormatExtension removes a known format extension (.jsonl, .html, .json,
 // .md, .tar.gz, …) from a path, returning the base suitable for appending a new
-// extension.
+// extension. The extension set comes from the output format table
+// (pkg/output/formats); only the last extension is stripped.
 func StripFormatExtension(path string) string {
-	if path == "" {
-		return ""
-	}
-	lower := strings.ToLower(path)
-	for _, ext := range multiPartFormatExtensions {
-		if strings.HasSuffix(lower, ext) {
-			return path[:len(path)-len(ext)]
-		}
-	}
-	ext := filepath.Ext(path)
-	switch strings.ToLower(ext) {
-	case ".jsonl", ".html", ".json", ".pdf", ".sqlite", ".sqlite3", ".db", ".md", ".markdown", ".sarif":
-		return strings.TrimSuffix(path, ext)
-	default:
-		return path
-	}
+	return formats.StripExtension(path)
 }
 
-// FormatOutputPath appends the appropriate file extension for the given format.
-// It is the single source of truth for format→extension naming, shared by the
-// scan commands and `vigolium export`; markdown, bundle, and fs are export-only
-// formats. fs falls through to the default because it names a directory base
-// (<base>-traffic/, <base>-findings/) rather than a file.
+// FormatOutputPath appends the given format's file extension (aliases
+// accepted) to basePath. The format→extension mapping is the output format
+// table's (pkg/output/formats), shared by the scan commands, `vigolium export`
+// and the REST server. fs and console have no extension: fs names a directory
+// base (<base>-traffic/, <base>-findings/) and console's transcript is the base.
 func FormatOutputPath(basePath, format string) string {
-	if basePath == "" {
-		return ""
-	}
-	switch format {
-	case "jsonl":
-		return basePath + ".jsonl"
-	case "html":
-		return basePath + ".html"
-	case "report":
-		return basePath + ".report.html"
-	case "pdf":
-		return basePath + ".pdf"
-	case "sqlite":
-		return basePath + ".sqlite"
-	case "markdown", "md":
-		return basePath + ".md"
-	case "sarif":
-		return basePath + ".sarif"
-	case "bundle", "gz":
-		return basePath + ".tar.gz"
-	default:
-		return basePath
-	}
+	return formats.OutputPath(basePath, format)
 }
 
 // MarkSchemeAssumed merges assumed into TargetsSchemeAssumed, creating the map

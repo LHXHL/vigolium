@@ -1,0 +1,6 @@
+id,finding_hash,severity,confidence,module_id,title,url,matched_at,host,method,scan_uuid,record_uuids,status,cwe_id,found_at,created_at
+12,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,high,firm,sqli-error,Error-based SQL injection,https://shop.example/item?id=1',https://shop.example/item?id=1'; id,shop.example,GET,scan-1,rec-1; rec-2,triaged,CWE-89,2026-10-10T00:00:00Z,2026-10-10T00:00:01Z
+13,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,critical,certain,sqli-error,Error-based SQL injection,https://api.example/v1/users,,api.example,POST,scan-1,,confirmed,,2026-10-10T00:00:02Z,
+14,cccccccccccccccccccccccccccccccccccccccc,info,,tech-detect,"Technology =HYPERLINK(""x"")",https://shop.example/,"'+cmd|' /C calc'!A0; @SUM(1,1)",shop.example,,,,triaged,,,
+15,dddddddddddddddddddddddddddddddddddddddd,medium,,tech-detect,Technology,https://shop.example/admin,,shop.example,,,,false_positive,,,
+16,eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee,medium,,audit-hardcoded-secret,"Hardcoded secret, in config: key",,,shop-api,,,,,,,

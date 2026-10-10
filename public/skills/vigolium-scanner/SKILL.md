@@ -549,7 +549,8 @@ aliases: `ingestion` (`ingest`,`ingesting`) · `probe`
 **Input** (`-I`, optional: auto-detected from content): `urls` (default) · `openapi` ·
 `swagger` · `wsdl` · `burp` · `curl` · `nuclei` · `har` · `postman` ·
 `burpscope`. **Output** (`--format`, comma-combinable): `console` (default) ·
-`jsonl` · `html` · `sarif` · `sqlite` · `fs`.
+`jsonl` · `html` · `report` · `pdf` · `markdown` (`md`) · `sarif` · `csv` · `junit` ·
+`github` · `sqlite` · `fs`.
 
 Full tables — strategy matrix, phase descriptions, per-format input examples,
 spec flags, format constraints, precedence: **`references/scanning.md`**.

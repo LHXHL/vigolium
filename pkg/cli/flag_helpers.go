@@ -178,6 +178,7 @@ func registerLightweightScanIOFlags(flags *pflag.FlagSet) {
 	flags.BoolVar(&scanPrintTrafficTree, "print-traffic-tree", false, "After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent.")
 	flags.BoolVar(&scanPrintTraffic, "print-traffic", false, "After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent.")
 	registerEventsFlag(flags)
+	registerReportFlags(flags)
 	// scan-url and scan-request read a request from stdin just as scan does,
 	// so they get the same deadline dial. Neither registers
 	// registerInputSourceFlags, so there is no double registration.

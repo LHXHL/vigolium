@@ -29,7 +29,7 @@ func TestRenderServerReport(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "<html")
 
-	assert.Error(t, renderServerReport(context.Background(), db, "csv", out, proj, ""),
+	assert.Error(t, renderServerReport(context.Background(), db, "fs", out, proj, ""),
 		"a format with no renderer must error, never silently succeed")
 	assert.Contains(t, serverReportFormats(), "html")
 	assert.NotContains(t, serverReportFormats(), "jsonl", "jsonl is the runner's live stream, not a report")

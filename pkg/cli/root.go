@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/olium"
+	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"go.uber.org/zap"
 )
@@ -354,7 +355,7 @@ func init() {
 	registerStatelessRootFlag(rootCmd)
 
 	pf.StringVar(&globalScanUUID, "scan-uuid", "", "Pin scan UUID for this session (use to sync results across nodes; defaults to a freshly-minted UUID)")
-	pf.StringVar(&globalFormat, "format", "console", "Output format (comma-separated for multiple): console, jsonl, html, sarif, sqlite (needs -S), fs (alias: file-system; flat traffic/finding tree)")
+	pf.StringVar(&globalFormat, "format", "console", "Output format (comma-separated for multiple): "+output.FormatsHelp(output.SurfaceScan))
 	pf.BoolVar(&globalCIOutput, "ci-output-format", false, "CI-friendly output: JSONL findings only, no color, no banners")
 	pf.BoolVar(&globalNoColor, "no-color", false, "Disable ANSI color in all output (same as --color=never; also honored via the NO_COLOR env var)")
 	registerOutputHygieneFlags(pf)
