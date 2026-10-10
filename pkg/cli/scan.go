@@ -148,6 +148,7 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	scanOpts.MarkSchemeAssumed(schemeAssumed)
 	scanOpts.TargetsFilePaths = globalTargetFiles
 	scanOpts.InputFileMode = globalInputMode
+	scanOpts.InputFileModeExplicit = cmd.Flags().Changed("input-mode")
 	scanOpts.Timeout = globalTimeout
 	scanOpts.Concurrency = globalConcurrency
 	scanOpts.MaxPerHost = globalMaxPerHost
@@ -206,12 +207,16 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 	if err := reconcileOutputFormats(scanOpts); err != nil {
 		return err
 	}
-	// After reconcileOutputFormats, so the --json → jsonl mapping it performs is
-	// already visible: --events --json is the same stdout collision as
-	// --events --format jsonl, and checking before the mapping would miss it.
+	// After reconcileOutputFormats, which sets CIOutput from the flag: -j's scan
+	// document and --events each own stdout, and any second writer there is a
+	// usage error.
 	if err := validateStdoutProtocol(scanOpts); err != nil {
 		return err
 	}
+	if err := validateScanDocumentFlags(); err != nil {
+		return err
+	}
+	noteCIOutputDeprecated()
 
 	// Stateless mode validation. The db-isolate precedence runs BEFORE the flag
 	// is copied into Options, so the copy below is already the resolved value and
@@ -262,11 +267,11 @@ func runScanCmd(cmd *cobra.Command, args []string) (err error) {
 		if globalDB != "" {
 			return usageErrorf("--stateless and --db are mutually exclusive")
 		}
-		// Not warned under --json/--ci-output: those stream every record and
-		// finding to stdout as they are written, so the results are NOT
-		// discarded — they have already left the process by the time the
-		// temporary database goes away. Telling an operator piping that stream
-		// that their output is being thrown away is worse than saying nothing.
+		// Not warned under --json/--ci-output: the scan document (findings up
+		// to --limit, with the counts) and the CI finding lines carry the
+		// results to stdout before the temporary database goes away. Telling
+		// an operator reading them that their output is being thrown away is
+		// worse than saying nothing.
 		if scanOpts.Output == "" && !scanOpts.Silent && !splitByHostNaming && !globalJSON && !globalCIOutput {
 			fmt.Fprintf(os.Stderr,
 				"%s %s: no %s set — scan results will be discarded with the temporary database. "+

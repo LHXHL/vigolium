@@ -24,8 +24,12 @@ type Options struct {
 	// Targets itself. The runner recomputes the verdict and owns the decision.
 	TargetAdmission *TargetAdmission
 	InputFileMode   string // json, jsonb, list
-	Stream          bool
-	Stdin           bool
+	// InputFileModeExplicit: -I was given, so a URL-list InputFileMode is the
+	// operator's choice and the input file is not content-sniffed into another
+	// format (source.FileSourceConfig.FormatExplicit).
+	InputFileModeExplicit bool
+	Stream                bool
+	Stdin                 bool
 	// --input-read-timeout used to land here and go no further: nothing in the
 	// runner ever read this field, so the advertised deadline was inert and a
 	// pipe that never closed hung the process. The deadline is now applied where
@@ -104,6 +108,11 @@ type Options struct {
 	// progress ticker is suppressed (it's repetitive noise in a file). Set by the
 	// parent on each child via the hidden --captured-console flag; never user-set.
 	CapturedConsole bool
+	// StdoutDocument reserves stdout for the single -j scan document, written
+	// once the scan is over (pkg/cli scan_document.go). The live finding stream
+	// stays off stdout, as under --events: findings are echoed to stderr
+	// instead, and the document carries them.
+	StdoutDocument bool
 	// Events selects the machine event stream written to stdout ("ndjson", or ""
 	// for none). It is orthogonal to OutputFormats: formats decide what a scan
 	// LEAVES BEHIND, Events decides what it REPORTS WHILE RUNNING. The human

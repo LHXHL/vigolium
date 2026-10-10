@@ -273,16 +273,26 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
   | vigolium scan-request --json
 ```
 
-`scan-url` / `scan-request` under `--json` emit:
-`{"target","method","scan_uuid","scan_duration_ms","resolved_target","reachable","modules_loaded","modules_run","findings":[…],"errors":[]}`.
-`modules_run` counts modules that actually executed (`modules_loaded` is the
-selection). A target that never answered still gets its document —
-`"reachable": false`, `"stop_reason": "no_targets_reachable"`,
-`"unreachable": {"target","code","detail"}` — and the command exits `1` with
-`error.code: no_targets_reachable` (a batch: only when no input answered).
-`scan-request` adds `scheme_source`: with no `-t`, absolute-form line, `:80`/`:443`
-or same-origin `Origin`/`Referer`, it probes the target (connect + TLS handshake)
-instead of assuming `https://`; `--no-scheme-probe` keeps the old default.
+`scan`, `run`, `scan-url` and `scan-request` under `--json` print **one scan
+document** when the scan ends (`kind: "scan"`, `schema_version: 2`), on every
+path — direct, `-S`, `-o`, one target or many, success or failure:
+`{"scan_uuid","scan_uuids","persisted","status","completeness","stop_reason","reasons","targets":[{"target","method","scan_uuid","admitted","reached","reason","code","detail","resolved_target","scheme_source","findings","duration_ms"}],"targets_not_scanned","phase_outcomes","modules":{"selected","executed"},"counts_by_severity","candidates","observations","errors":[{"code","message"}],"total","items":[…],"items_truncated","query","query_argv"}`.
+`items` are finding rows in the `finding -j` shape (plus `request` /
+`response_evidence`), highest severity first, capped at `-n/--limit` (default
+200); `total`/`counts_by_severity` are exact and `query` (`finding --scan-uuid
+<uuid> -j`) lists the rest. An unpersisted finding (`-S`) has no `id` — use
+`finding_hash`. `status` is `completed`, `curtailed`, `failed` or
+`interrupted`; a failed scan still prints its document with `errors[]` and the
+exit code carries the failure. A target that never answered: `reached: false`,
+`reason: "unreachable"`, `code` (`refused`, `dns`, …), `stop_reason:
+"no_targets_reachable"`, exit `1` (a batch: only when no input answered).
+`modules.executed` counts modules that actually ran (`selected` is the
+selection). `scan-request` fills `scheme_source`: with no `-t`, absolute-form
+line, `:80`/`:443` or same-origin `Origin`/`Referer`, it probes the target
+(connect + TLS handshake) instead of assuming `https://`; `--no-scheme-probe`
+keeps the old default. `--fields`, `--compact`, `--full-body` and
+`--max-output-bytes` shape `items` as on `finding`. `-j` no longer means
+`--format jsonl`; use `--format jsonl -o <file>` for the bulk stream.
 
 **Which command?** Use `scan-url` / `scan-request` only when you're confirming
 **one specific request** — full params, a deep path, or custom headers you need
@@ -311,9 +321,10 @@ lines. Available on `scan`, `run`, `scan-url`, `scan-request`.
 
 **`--events` owns stdout.** Anything else that would write there is refused with
 exit `2` rather than interleaved into a stream that is neither contract:
-`--ci-output-format`, `--format jsonl` without `-o` (including `-j`, which maps
-to jsonl on the scan path), `--print-finding`, `--print-traffic` and
-`--print-traffic-tree`. The error names the conflicting flag; give the other
+`-j` (the scan document — read it afterwards with `finding --scan-uuid`),
+`--ci-output-format`, `--format jsonl` without `-o`, `--print-finding`,
+`--print-traffic` and `--print-traffic-tree`. `-j` owns stdout the same way:
+it refuses those writers too, and a `-P`/`--split-by-host` fan-out. The error names the conflicting flag; give the other
 writer an `-o <file>` and both work. `--events` is also refused under a
 `-P/--parallel` fan-out, where each child's stdout is captured to its own log.
 
@@ -349,6 +360,8 @@ What each type is for:
 | `phase.finished` | `status` plus `reasons`/`limits` (below) for that phase. |
 | `scan.interrupting` | **Nonterminal.** A shutdown began (SIGINT/SIGTERM). The terminal event still follows — do not treat this as the end of the stream. |
 | `scan.finished` | Terminal. `status`, `findings_by_severity`, `records_written`, and `stop_reason`/`reasons` when coverage was lost. `--max-requests` running out ends the scan `curtailed` with `stop_reason: request_budget`; hosts that used their `--max-requests-per-host` are listed in `budget_exhausted_hosts` (their phases carry the `host_request_budget` limit). `extensions_failed` lists the paths of extensions that failed to load. |
+| `auth.session_suspect` | A session's responses (or its proactive probe) look logged out: `session`, `gen` (credential generation), `detail` (`status`/`redirect`/`body`/`interval`). The `check.url` probe confirms before any re-login. |
+| `auth.relogin` | A re-login cycle ended: `session`, `gen` (new generation when `ok`), `ok`, `count` (logins tried), `message` on failure. `ok: false` means the session is lost: phases go partial with `auth_lost`. |
 
 ### Reserved types and fields
 
@@ -360,7 +373,6 @@ them while they are missing.
 | Type | Carries | Emitted from |
 |---|---|---|
 | `scan.setup` | A first-run install step: `component`, `state` (`started`/`finished`/`failed`), `bytes`, `duration_ms`. | v0.7 |
-| `auth.session_suspect` / `auth.relogin` | Responses look logged out; a re-login attempt and its result. | not yet scheduled |
 | `module.error` | Module failures, rate-limited: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`/`load`), `message`, `count`. | v0.7 |
 | `extension.failed` | An extension failed to load or run: `module_id`, `message`. | v0.6 |
 
@@ -393,8 +405,8 @@ not empty.
 
 | Field | On | Means |
 |---|---|---|
-| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), `targets_unreachable` (some admitted targets gave no HTTP answer to the preflight GET, or a quarantined host's items were skipped), the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), and the stop reason `no_targets_reachable` (no admitted target answered; no phase ran, exit 1), … Reserved, not emitted yet: `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`. |
-| `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`, `responses_while_logged_out`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
+| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), `targets_unreachable` (some admitted targets gave no HTTP answer to the preflight GET, or a quarantined host's items were skipped), the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), and the stop reason `no_targets_reachable` (no admitted target answered; no phase ran, exit 1), `auth_lost` (a session expired mid-scan and re-login did not restore it; with `reauth.on_failure: abort` it is also the `stop_reason`), … Reserved, not emitted yet: `request_budget`, `phase_error`, `extensions_all_failed`. |
+| `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`, and `responses_while_logged_out` — responses a phase received while a session was logged out, counted in the phase's `counts`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
 | `stop_reason` | `scan.finished` | The scan-level roll-up of why the run stopped launching work. |
 
 The same facts are persisted on the scan row as `completeness`
@@ -868,8 +880,12 @@ vigolium finding -S --db ./run.sqlite --json --with-records
 ```
 
 **Pin a session DB with `$VIGOLIUM_DB_PATH`** to avoid repeating `--db` on every
-command. The open order is `--db` → `$VIGOLIUM_DB_PATH` → `database.sqlite.path`
-in config → the built-in default. Setting it also makes **read** commands
+command. The open order is `--db` → `$VIGOLIUM_DB` → `$VIGOLIUM_DB_PATH` →
+`database.sqlite.path` in config → the built-in default. `$VIGOLIUM_DB` is
+exactly `--db` from the environment (project scoping stays on); it is what an
+agent run hands the `vigolium` commands its bash tool runs, alongside
+`$VIGOLIUM_PROJECT_UUID`, `$VIGOLIUM_CONFIG` (`--config` from the environment)
+and `$VIGOLIUM_BIN`. Setting it also makes **read** commands
 (`finding`/`traffic`/`fuzz -u`) treat that file as a stateless source — project
 scoping off, same as `-S --db` above — while writes still go to it. It never
 turns a *scan* stateless (that would collide with `--db`).
@@ -965,8 +981,7 @@ server-ingestion-only — CLI scans are unaffected.
 ## Agentic scans
 
 These run an LLM-driven scan into the DB. With `--json`, the live agent stream
-goes to **stderr** and a single summary object is printed to **stdout** at the
-end:
+goes to **stderr** and one run document is printed to **stdout** at the end:
 
 ```bash
 vigolium agent audit --source . --intensity balanced --json
@@ -975,14 +990,30 @@ vigolium agent swarm -t https://target.example --json
 vigolium agent query --prompt-template security-code-review --source . --json
 ```
 
-Summary shape (stdout):
+Run document (autopilot / swarm / audit; `kind: "scan"`, the scan document's
+spine):
 
 ```json
-{ "agentic_scan_uuid": "…", "status": "completed", "session_dir": "…",
-  "total_findings": 7, "counts_by_severity": {"critical":1,"high":3},
-  "top_findings": [ … ],
-  "query": "vigolium finding --agentic-scan <uuid> --json --with-records" }
+{ "kind": "scan", "ok": true, "agentic_scan_uuid": "…", "mode": "autopilot",
+  "session_dir": "…", "status": "completed", "completeness": "complete",
+  "persisted": true, "usage": {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0},
+  "budget": {"max_commands": 750, "token_budget": 0, "max_cost_usd": 0, "exhausted": false},
+  "total": 7, "counts_by_severity": {"critical":1,"high":3, …},
+  "items": [ … top 20 finding views … ], "errors": [], "warnings": [],
+  "query": "vigolium … finding --agentic-scan <uuid> -j" }
 ```
+
+Branch on `status`: `completed` / `completed_with_warnings` (exit 0);
+`timed_out`, `budget_exhausted`, `completed_with_errors` (exit **5**, the run's
+work is still in the DB); `failed` / `cancelled` (exit 1). The database spells
+`timed_out` as `timeout`. With no DB the document still prints,
+`persisted: false`. `provider_missing` / `preflight_failed` (exit 1, error
+envelope) mean nothing ran. Budgets: `--max-commands`, `--token-budget`,
+`--max-cost-usd`, `--max-duration`. `agent audit` needs `--source` (`.` for
+cwd); `agent autopilot` runs a nested `--audit`/`--piolium` harness only when
+asked. `agent triage <id> -j` is a mutation document (`--no-write` to report
+only; a `false_positive` keeps its severity). `agent query` / `triage` print
+their `agentic_scan_uuid` on stderr.
 
 Run the `query` line to pull full results. `--agentic-scan` expands to the whole
 run tree (audit driver legs, swarm sub-runs), so one UUID returns every finding
@@ -1019,7 +1050,7 @@ Two shape notes that are not exceptions to the envelope, just to `items`:
 scrape prose:
 
 ```jsonc
-{ "schema_version": 1, "command": "traffic", "ok": false,
+{ "schema_version": 2, "command": "traffic", "ok": false,
   "error": { "code": "source_missing", "message": "…", "exit_code": 1 } }
 ```
 
@@ -1066,7 +1097,7 @@ captured, and the two no longer share an answer.
 
 ```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "traffic",
   "kind": "read",
   "ok": true,
@@ -1086,7 +1117,7 @@ captured, and the two no longer share an answer.
 
 | Field | Why it is there |
 |---|---|
-| `schema_version` | Gate on it. Bumped on any breaking field change. |
+| `schema_version` | Gate on it. Bumped on any breaking field change; `2` since v0.6 (scan document, every `-j` an envelope; `--json-legacy-keys` renders old row names for one release). |
 | `ok` | `true` on every result document; the error object carries `"ok": false`, so `.ok` is a valid branch on anything `-j` prints. |
 | `kind` | The document's shape: `read` (rows, or one object as `items: [obj]`), `mutation` (adds `changed`, `action`, and `dry_run` on a dry run) or `scan`. `changed` is always present on a mutation and is `false` on a dry run. |
 | `finding_hash` | (on finding rows) The finding's stable identity — the dedup key and what SARIF fingerprints use. Selectable with `--fields`. |
