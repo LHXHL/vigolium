@@ -396,7 +396,6 @@ func NewExecutor(
 	}
 	e.scanCtx.DeepScan = cfg.DeepScan
 	e.scanCtx.AllowRiskyPayloads = cfg.AllowRiskyPayloads
-	e.scanCtx.NoParamDedup = cfg.NoParamDedup
 	e.scanCtx.ParamFindings = &modkit.ParameterFindingRegistry{}
 	e.scanCtx.TechStack = modkit.NewTechRegistry()
 	e.scanCtx.TechStack.OnDetect = cfg.OnTechDetected
