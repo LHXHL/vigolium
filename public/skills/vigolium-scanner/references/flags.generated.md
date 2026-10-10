@@ -45,6 +45,7 @@ run `vigolium <command> -h`.
 - [vigolium db seed](#vigolium-db-seed)
 - [vigolium db stats](#vigolium-db-stats)
 - [vigolium doctor](#vigolium-doctor)
+- [vigolium endpoints](#vigolium-endpoints)
 - [vigolium export](#vigolium-export)
 - [vigolium extensions](#vigolium-extensions)
 - [vigolium extensions docs](#vigolium-extensions-docs)
@@ -83,6 +84,7 @@ run `vigolium <command> -h`.
 - [vigolium module ls](#vigolium-module-ls)
 - [vigolium nuclei](#vigolium-nuclei)
 - [vigolium olium](#vigolium-olium)
+- [vigolium params](#vigolium-params)
 - [vigolium project](#vigolium-project)
 - [vigolium project config](#vigolium-project-config)
 - [vigolium project create](#vigolium-project-create)
@@ -709,6 +711,35 @@ Check system readiness and diagnose configuration issues
 | `--only` | - | stringSlice | - | Fix only specific items (nuclei,chrome,bun,claude,agent-browser,pi,piolium) |
 | `--strict` | - | bool | `false` | Exit 1 when the verdict is degraded, not only when it is not_ready |
 
+## vigolium endpoints
+
+Usage: `vigolium endpoints [search-term]`
+
+Aliases: `endpoint`
+
+List endpoints (origin + path template) aggregated from stored traffic
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--collapse` | - | int | `0` | Merge N or more sibling literal segments sharing the same child templates into {var} (0 = off; >= 2) |
+| `--from` | - | string | - | Only records sent at or after this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339 (alias: --since) |
+| `--glob-db` | - | string | - | Read across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S |
+| `--glob-strict` | - | bool | `false` | Fail the read on the first --glob-db source that cannot be imported, instead of skipping it with a warning |
+| `--host` | - | string | - | Filter by hostname pattern (wildcard supported) |
+| `--limit` | `-n` | int | `100` | Maximum endpoints to list (0 = all); the aggregate always covers every matched record |
+| `--method` | - | stringSlice | - | Filter by HTTP method (repeatable) |
+| `--min-records` | - | int64 | `0` | Only endpoints seen in at least this many records |
+| `--offset` | - | int | `0` | Number of endpoints to skip (for pagination) |
+| `--output` | `-o` | string | - | With --json: write the result document to this file and print a receipt instead; '-' forces stdout |
+| `--path` | - | string | - | Filter by URL path pattern (wildcard supported) |
+| `--remark` | - | stringArray | - | Keep records carrying a remark containing this text (repeatable, AND-combined; e.g. --remark jstangle: for JS-derived records, --remark jstangle:not_found) |
+| `--scan-uuid` | - | string | - | **(overrides the global `--scan-uuid`)** Only records first stored by this scan (http_records.scan_uuid; records deduplicated against an earlier scan keep that scan's uuid) |
+| `--sort` | - | string | `records` | Sort by: records, findings, template, last_seen |
+| `--source` | - | string | - | Filter by record source (e.g. scanner, deparos, jstangle, html-form, api-spec, ingest-cli, ingest-proxy) |
+| `--stateless` | `-S` | bool | `false` | Read from --db (a .jsonl export or standalone .sqlite) with project scoping off; never writes to your project DB |
+| `--status` | - | intSlice | - | Filter by HTTP status code (repeatable) |
+| `--to` | - | string | - | Only records sent at or before this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339; a bare date covers the whole day (alias: --until) |
+
 ## vigolium export
 
 Export database tables and module registry
@@ -850,6 +881,8 @@ Browse vulnerability findings with fuzzy search and filtering
 | `--columns` | - | stringSlice | - | Columns to show (comma-separated, e.g. ID,SEVERITY,MODULE) |
 | `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--confidence` | - | string | - | Filter by confidence: certain,firm,tentative (comma-separated) |
+| `--curl` | - | bool | `false` | Render each selected finding's proving request (its stored evidence, else its first linked record) as a curl command; -j gives {id, finding_hash, record_uuid, curl, argv} |
+| `--curl-all` | - | bool | `false` | Like --curl, but render every HTTP record linked to each finding |
 | `--exclude-body` | - | string | - | Exclude findings whose linked request/response body contains the term (inverse of --body; bodies only) |
 | `--exclude-columns` | - | stringSlice | - | Columns to hide (comma-separated) |
 | `--exclude-header` | - | string | - | Exclude findings whose linked request/response header block contains the term (inverse of --header; headers only) |
@@ -880,6 +913,7 @@ Browse vulnerability findings with fuzzy search and filtering
 | `--record-fields` | - | stringSlice | - | With --with-records: restrict each embedded HTTP record to these keys (independent of --fields) |
 | `--record-kind` | - | string | - | Filter by record kind (finding, candidate, observation; comma-separated). Default: finding |
 | `--record-limit` | - | int | `20` | With --with-records: max HTTP records embedded per finding (0 = no cap) |
+| `--redact-auth` | - | bool | `false` | With --curl/--curl-all: replace Authorization/Cookie/API-key header values with <redacted> |
 | `--scan-uuid` | - | string | - | **(overrides the global `--scan-uuid`)** Filter by scan UUID |
 | `--search` | - | stringArray | - | Search across the finding's module metadata, matched location, and the linked request/response (headers + body); repeatable, AND-combined (each term further narrows) |
 | `--send-via-burp` | - | bool | `false` | With --push-to-burp/--to-repeater: re-issue the request through Burp's engine and store the fresh response |
@@ -1323,6 +1357,37 @@ Launch vigolium — interactive TUI agent (alias for `vigolium agent olium`)
 | `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (falls back to agent.olium.provider config); default openai-compatible |
 | `--stdin` | - | bool | `false` | Force reading prompt from stdin |
 | `--system` | - | string | - | Override system prompt |
+
+## vigolium params
+
+Usage: `vigolium params [search-term]`
+
+Aliases: `param`, `parameters`
+
+List parameters per endpoint with value-type histograms, from stored traffic
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--endpoint` | - | string | - | Only this endpoint: an id from 'vigolium endpoints' or a path template (/users/{int}) |
+| `--from` | - | string | - | Only records sent at or after this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339 (alias: --since) |
+| `--glob-db` | - | string | - | Read across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S |
+| `--glob-strict` | - | bool | `false` | Fail the read on the first --glob-db source that cannot be imported, instead of skipping it with a warning |
+| `--host` | - | string | - | Filter by hostname pattern (wildcard supported) |
+| `--limit` | `-n` | int | `100` | Maximum parameters to list (0 = all); the aggregate always covers every matched record |
+| `--location` | - | stringSlice | - | Only these locations (comma-separated): query, body, json, xml, cookie, multipart, header, path, other |
+| `--method` | - | stringSlice | - | Filter by HTTP method (repeatable) |
+| `--min-occurrences` | - | int64 | `0` | Only parameters seen at least this many times |
+| `--offset` | - | int | `0` | Number of parameters to skip (for pagination) |
+| `--output` | `-o` | string | - | With --json: write the result document to this file and print a receipt instead; '-' forces stdout |
+| `--path` | - | string | - | Filter by URL path pattern (wildcard supported) |
+| `--remark` | - | stringArray | - | Keep records carrying a remark containing this text (repeatable, AND-combined; e.g. --remark jstangle: for JS-derived records, --remark jstangle:not_found) |
+| `--scan-uuid` | - | string | - | **(overrides the global `--scan-uuid`)** Only records first stored by this scan (http_records.scan_uuid; records deduplicated against an earlier scan keep that scan's uuid) |
+| `--show-values` | - | bool | `false` | Print sample values unredacted (cookies, headers and secret-looking names are redacted by default) |
+| `--source` | - | string | - | Filter by record source (e.g. scanner, deparos, jstangle, html-form, api-spec, ingest-cli, ingest-proxy) |
+| `--stateless` | `-S` | bool | `false` | Read from --db (a .jsonl export or standalone .sqlite) with project scoping off; never writes to your project DB |
+| `--status` | - | intSlice | - | Filter by HTTP status code (repeatable) |
+| `--to` | - | string | - | Only records sent at or before this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339; a bare date covers the whole day (alias: --until) |
+| `--type` | - | stringSlice | - | Only parameters whose dominant value type is one of these (comma-separated, e.g. integer,uuid,sequential_id) |
 
 ## vigolium project
 
@@ -1951,6 +2016,7 @@ Browse or replay HTTP traffic (alias: db ls --table http_records)
 | `--columns` | - | stringSlice | - | Columns to show (comma-separated, e.g. HOST,METHOD,PATH,STATUS) |
 | `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
 | `--concurrency` | `-c` | int | `10` | Concurrent replays (--replay); keep low to avoid overwhelming an intercepting proxy like Burp |
+| `--curl` | - | bool | `false` | Render each matched record as a curl command (URL from the stored scheme/host/port; renders at most 20 without -a); -j gives {uuid, url, curl, argv} |
 | `--exclude-body` | - | string | - | Exclude records whose request/response body contains the term (inverse of --body; bodies only, not headers) |
 | `--exclude-columns` | - | stringSlice | - | Columns to hide (comma-separated) |
 | `--exclude-header` | - | string | - | Exclude records whose HTTP header block contains the term (inverse of --header; headers only, not bodies) |
@@ -1974,9 +2040,11 @@ Browse or replay HTTP traffic (alias: db ls --table http_records)
 | `--output` | `-o` | string | - | With --json: write the result document to this file and print a receipt instead; '-' forces stdout |
 | `--path` | - | string | - | Filter by URL path pattern |
 | `--raw` | - | bool | `false` | Show full raw HTTP request and response |
+| `--redact-auth` | - | bool | `false` | With --curl: replace Authorization/Cookie/API-key header values with <redacted> |
 | `--replay` | - | bool | `false` | Re-send the matched requests and compare original vs new response (instead of listing) |
 | `--save-to-burp` | - | bool | `false` | Copy the database records selected by the active filters into Burp's Target Site map |
 | `--save-to-vigolium-db` | - | bool | `false` | Persist the live Burp records selected by the active filters into the database |
+| `--scan-uuid` | - | string | - | **(overrides the global `--scan-uuid`)** Only records first stored by this scan (http_records.scan_uuid; a record deduplicated against an earlier scan keeps that scan's uuid) |
 | `--search` | - | stringArray | - | Search across URL, path, and the raw request/response (headers + body); repeatable, AND-combined (each term further narrows) |
 | `--sort` | - | string | `created_at` | Sort by: uuid, created_at, sent_at, method, status, time |
 | `--source` | - | string | - | Filter by record source (e.g. burp, caido, scanner, probe, ingest-cli, ingest-server, ingest-proxy, seed) |

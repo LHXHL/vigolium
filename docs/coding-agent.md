@@ -338,7 +338,48 @@ vigolium traffic --host target.example --status 200 --json -n 5
 
 # Everything for one record, full bodies.
 vigolium traffic search-term --json --full-body -n 1
+
+# Only the records one scan stored first (stamped on insert, never on a dedup hit).
+vigolium traffic --scan-uuid <uuid> --json --compact
+
+# A stored request as a curl command (URL from the stored scheme/host/port).
+vigolium traffic --uuid <id> --curl
+vigolium finding --id 42 --curl -j              # items: {id, finding_hash, record_uuid, curl, argv}
 ```
+
+`--scan-uuid` on `traffic` (and `db ls`/`db export`/`db clean`, which used to
+ignore it for records) selects `http_records.scan_uuid`. When a scan exists but
+no record carries its uuid — it predates stamping — the envelope says
+`provenance_warning: "scan_uuid_not_stamped"` and `provenance_detail` gives the
+`--from/--to` window to use instead; an unknown uuid says `scan_not_found`.
+
+`--curl` renders, never sends: arguments are POSIX single-quoted, a binary body
+is piped through `base64 --decode` (`stdin_base64` in `-j`), and
+`--redact-auth` masks Authorization/Cookie/API-key values. `traffic --curl`
+renders at most 20 commands without `-a`.
+
+## Endpoint and parameter inventory
+
+```bash
+# One row per origin + path template (/users/{int}), with methods, params by
+# location, status mix, auth split, sources, jstangle outcomes, live findings.
+vigolium endpoints --host target.example -j
+vigolium endpoints --source jstangle -j          # routes known only from JS
+vigolium endpoints --collapse 5 -n 0             # opt-in: merge slug siblings into {var}
+
+# One row per (endpoint, location, name) with a mutation.Classify histogram.
+vigolium params --type integer,uuid,sequential_id -j
+vigolium params --endpoint <endpoint-id> --show-values
+```
+
+Both stream light record columns (never bodies) through `traffic`'s filters —
+`--host --method --status --path --source --remark --scan-uuid --from/--to`,
+`-S`, `--db`, `--glob-db` — so they cover exactly what `traffic` would list.
+`-n` pages the inventory (default 100, `0` = all), not the records. Endpoint ids
+are stable across databases (sha1 of origin + template). `params` redacts
+sample values for cookies, headers and secret-looking names unless
+`--show-values`. Field reference:
+[data.md → endpoints](../public/skills/vigolium-scanner/references/data.md#endpoints).
 
 ## Read a standalone export (`-S/--stateless`)
 

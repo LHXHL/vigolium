@@ -297,6 +297,7 @@ func runListHTTPRecords(ctx context.Context, db *database.DB) error {
 		RecordUUIDs:     listUUIDs,
 		URLsExact:       listURLs,
 		HostPattern:     listHost,
+		ScanUUID:        listScanUUID,
 		Methods:         listMethods,
 		StatusCodes:     listStatus,
 		PathPattern:     listPath,
@@ -714,7 +715,7 @@ func runListGenericTable(ctx context.Context, db *database.DB, tableName string)
 	return nil
 }
 
-func displayJSON(ctx context.Context, db *database.DB, records []*database.HTTPRecord, total int64, offset, limit int) error {
+func displayJSON(ctx context.Context, db *database.DB, records []*database.HTTPRecord, total int64, offset, limit int, extra ...envOpt) error {
 	// effectiveProjectUUID, not resolveProjectUUID: under -S scoping is off and
 	// the rows span every project, so naming one here was a false claim.
 	projectUUID, err := effectiveProjectUUID()
@@ -739,7 +740,7 @@ func displayJSON(ctx context.Context, db *database.DB, records []*database.HTTPR
 	if len(records) > 0 {
 		env.WithQuery("traffic", "--uuid", records[0].UUID, "--json", "--full-body")
 	}
-	return writeAgentJSON(env)
+	return writeAgentJSON(applyEnvOpts(env, extra))
 }
 
 func displayRaw(records []*database.HTTPRecord) error {

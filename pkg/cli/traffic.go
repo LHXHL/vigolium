@@ -128,6 +128,14 @@ var (
 	// trafficURLs selects exact stored records by URL (--url).
 	trafficURLs []string
 
+	// trafficScanUUID selects the records a scan stored first (--scan-uuid).
+	trafficScanUUID string
+
+	// trafficCurl renders the matched records as curl commands (--curl);
+	// trafficRedactAuth masks their credential headers (--redact-auth).
+	trafficCurl       bool
+	trafficRedactAuth bool
+
 	// trafficBurpBridgeURL enables live Burp records as an additional source.
 	trafficBurpBridgeURL    string
 	trafficSaveToVigoliumDB bool
@@ -173,6 +181,7 @@ func init() {
 	pf.StringVar(&trafficExcludeHeader, "exclude-header", "", "Exclude records whose HTTP header block contains the term (inverse of --header; headers only, not bodies)")
 	pf.StringVar(&trafficExcludeBody, "exclude-body", "", "Exclude records whose request/response body contains the term (inverse of --body; bodies only, not headers)")
 	pf.StringVar(&trafficSource, "source", "", "Filter by record source (e.g. burp, caido, scanner, probe, ingest-cli, ingest-server, ingest-proxy, seed)")
+	pf.StringVar(&trafficScanUUID, "scan-uuid", "", "Only records first stored by this scan (http_records.scan_uuid; a record deduplicated against an earlier scan keeps that scan's uuid)")
 	pf.StringVar(&trafficSort, "sort", "created_at", "Sort by: uuid, created_at, sent_at, method, status, time")
 	pf.BoolVar(&trafficAsc, "asc", false, "Sort in ascending order (default: descending)")
 	pf.IntVarP(&trafficLimit, "limit", "n", 100, "Maximum records to display")
@@ -187,6 +196,8 @@ func init() {
 	f.BoolVar(&trafficTree, "tree", false, "Display as host/path hierarchy tree")
 	f.BoolVar(&trafficRaw, "raw", false, "Show full raw HTTP request and response")
 	f.BoolVar(&trafficBurp, "burp", false, "Display in Burp Suite-style format (colored request/response)")
+	f.BoolVar(&trafficCurl, "curl", false, "Render each matched record as a curl command (URL from the stored scheme/host/port; renders at most 20 without -a); -j gives {uuid, url, curl, argv}")
+	f.BoolVar(&trafficRedactAuth, "redact-auth", false, "With --curl: replace Authorization/Cookie/API-key header values with <redacted>")
 	f.BoolVar(&trafficMarkdown, "markdown", false, "Render the matched records as Markdown (request/response in fenced http blocks) to stdout; response bodies are compacted to a preview by default (use --full-body for whole bodies)")
 	f.BoolVarP(&globalStateless, "stateless", "S", false, "Read from --db (a .jsonl export or standalone .sqlite) with project scoping off; never writes to your project DB")
 	f.StringVar(&globalGlobDB, "glob-db", "", "Read across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S")
@@ -282,6 +293,9 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if err := rejectTrafficHumanViewsUnderJSON(); err != nil {
+		return err
+	}
+	if err := validateTrafficCurlFlags(cmd); err != nil {
 		return err
 	}
 
@@ -398,6 +412,15 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to query database: %w", err)
 		}
+		// An empty --scan-uuid read is explained, not left to read as "this scan
+		// stored nothing" (see scanProvenanceWarning).
+		var provenance []envOpt
+		if total == 0 && filters.ScanUUID != "" {
+			provenance = noteProvenance(scanProvenanceWarning(ctx, db, filters.ProjectUUID, filters.ScanUUID))
+		}
+		if trafficCurl {
+			return renderTrafficCurl(cmd, records, total, provenance)
+		}
 
 		if tuiActive {
 			if len(records) == 0 {
@@ -408,7 +431,7 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		}
 
 		if globalJSON {
-			return displayJSON(ctx, db, records, total, trafficOffset, trafficLimit)
+			return displayJSON(ctx, db, records, total, trafficOffset, trafficLimit, provenance...)
 		}
 
 		// Echo the active filter conditions (search, host, method, status, …) so
@@ -503,6 +526,7 @@ func buildTrafficFilters(fuzzyTerm string) (database.QueryFilters, error) {
 		StatusCodes:         trafficStatus,
 		PathPattern:         trafficPath,
 		Source:              trafficSource,
+		ScanUUID:            strings.TrimSpace(trafficScanUUID),
 		DateFrom:            dateFrom,
 		DateTo:              dateTo,
 		FuzzyTerm:           fuzzyTerm,
@@ -521,9 +545,10 @@ func buildTrafficFilters(fuzzyTerm string) (database.QueryFilters, error) {
 
 // trafficRendersRawBodies reports whether any part of this invocation reads
 // HTTPRecord.RawRequest/RawResponse off the records it fetches: --raw/--burp/
-// --markdown and the TUI's detail view print them, --replay re-sends them, the
-// Burp bridge and --save-to-burp ship them to Burp, --json embeds them, and a
-// --columns selection carrying a needsRawBodies column parses them. Everything
+// --markdown and the TUI's detail view print them, --replay re-sends them,
+// --curl renders them as commands, the Burp bridge and --save-to-burp ship them
+// to Burp, --json embeds them, and a --columns selection carrying a
+// needsRawBodies column parses them. Everything
 // else — the table and tree — renders metadata only.
 //
 // A new output mode MUST be added here. This list is exhaustive by construction,
@@ -535,7 +560,7 @@ func trafficRendersRawBodies() bool {
 	// flag is set: that errs toward keeping the bodies, and covers the non-TTY
 	// case where Active errors out before rendering. The TUI's selection handler
 	// renders a full raw view.
-	return trafficRaw || trafficBurp || trafficMarkdown || trafficReplay ||
+	return trafficRaw || trafficBurp || trafficMarkdown || trafficReplay || trafficCurl ||
 		trafficSaveToBurp || trafficSaveToVigoliumDB || globalJSON ||
 		trafficTUI || trafficBurpBridgeURL != "" || trafficColumnsUseRawBodies()
 }
@@ -575,6 +600,7 @@ func printActiveTrafficFilters(filters database.QueryFilters, fuzzyTerm string) 
 	s.add("exclude-header", filters.ExcludeHeaderSearch)
 	s.add("exclude-body", filters.ExcludeBodySearch)
 	s.add("source", filters.Source)
+	s.add("scan-uuid", filters.ScanUUID)
 	if filters.DateFrom != nil {
 		s.add("from", clicommon.FormatTimeFilter(*filters.DateFrom))
 	}

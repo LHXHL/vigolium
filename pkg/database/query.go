@@ -50,7 +50,7 @@ type QueryFilters struct {
 	Methods          []string // HTTP methods (GET, POST, etc.)
 	PathPattern      string   // Path pattern (supports wildcards)
 	StatusCodes      []int    // Status codes (200, 404, etc.)
-	ScanUUID         string   // Scan session UUID (for findings filtering)
+	ScanUUID         string   // Scan UUID: findings.scan_uuid for findings, http_records.scan_uuid (first-stored-by) for records
 	AgenticScanUUIDs []string // Agentic-scan UUID(s) (links agent-produced findings; pass the scan tree for nested audit/swarm runs)
 	Source           string   // Filter by record source (e.g. scanner, ingest-cli, ingest-server)
 
@@ -452,6 +452,14 @@ func (qb *QueryBuilder) applyFilters(query *bun.SelectQuery) {
 	// Source filtering
 	if qb.filters.Source != "" {
 		query.Where("r.source = ?", qb.filters.Source)
+	}
+
+	// Scan provenance: the records this scan stored first (http_records.scan_uuid
+	// is stamped on insert, never on a dedup hit). Before this predicate existed
+	// the field was honored for findings only, so `db clean --scan-uuid` and
+	// `db export --scan-uuid` silently selected every record in scope.
+	if qb.filters.ScanUUID != "" {
+		query.Where("r.scan_uuid = ?", qb.filters.ScanUUID)
 	}
 
 	// Risk score filtering

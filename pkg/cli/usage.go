@@ -330,6 +330,18 @@ var listQueryFlagGroups = []flagGroup{
 	{"Data Source", []string{"stateless", "glob-db", "glob-strict", "table", "list-tables", "list-columns"}},
 	{"Replay", []string{"replay", "concurrency", "with-browser", "burp-bridge-url", "save-to-vigolium-db", "save-to-burp", "in-replace", "timeout"}},
 	{"Burp Push", []string{"push-to-burp", "to-repeater", "send-via-burp", "http-mode"}},
+	{"Curl", []string{"curl", "curl-all", "redact-auth"}},
+}
+
+// inventoryFlagGroups categorizes `vigolium endpoints` and `vigolium params`
+// (the union of their local flags).
+var inventoryFlagGroups = []flagGroup{
+	{"Filter", []string{"host", "method", "status", "path", "source", "remark", "scan-uuid", "endpoint", "location", "type"}},
+	{"Date Range", []string{"from", "to"}},
+	{"Aggregate", []string{"min-records", "min-occurrences", "collapse", "show-values"}},
+	{"Pagination & Sort", []string{"limit", "offset", "sort"}},
+	{"Output", []string{"output"}},
+	{"Data Source", []string{"stateless", "glob-db", "glob-strict"}},
 }
 
 // fuzzFlagGroups categorizes `vigolium fuzz`. Every visible local flag must land
@@ -437,15 +449,17 @@ var commandFlagGroups = map[*cobra.Command][]flagGroup{
 	agentTriageCmd:    agentTriageFlagGroups,
 	agentSessionCmd:   agentSessionFlagGroups,
 
-	findingCmd: listQueryFlagGroups,
-	trafficCmd: listQueryFlagGroups,
-	dbListCmd:  listQueryFlagGroups,
-	replayCmd:  replayFlagGroups,
-	fuzzCmd:    fuzzFlagGroups,
-	ingestCmd:  ingestFlagGroups,
-	serverCmd:  serverFlagGroups,
-	exportCmd:  exportFlagGroups,
-	importCmd:  importFlagGroups,
+	findingCmd:   listQueryFlagGroups,
+	trafficCmd:   listQueryFlagGroups,
+	dbListCmd:    listQueryFlagGroups,
+	endpointsCmd: inventoryFlagGroups,
+	paramsCmd:    inventoryFlagGroups,
+	replayCmd:    replayFlagGroups,
+	fuzzCmd:      fuzzFlagGroups,
+	ingestCmd:    ingestFlagGroups,
+	serverCmd:    serverFlagGroups,
+	exportCmd:    exportFlagGroups,
+	importCmd:    importFlagGroups,
 }
 
 // localFlagUsages renders a command's local flags. Commands registered in

@@ -36,7 +36,7 @@ var globalReadOnly bool
 // thing this flag exists to prevent. Subcommands that are genuinely read-only
 // are listed individually.
 var readOnlyCapableCommands = []string{
-	"finding", "traffic", "traffic body", "traffic headers",
+	"finding", "traffic", "traffic body", "traffic headers", "endpoints", "params",
 	"db list", "db stats", "db export",
 	"log", "log ls", "export", "replay", "fuzz", "scan diff",
 }

@@ -372,6 +372,39 @@ This replaces scraping `vigolium log` for `[waf-block-detected]` /
 `[waf-pacing-armed]` markers — every notice that reaches the log also reaches the
 stream, with no `log` invocation and no session-listing walk.
 
+### Watching a scan you did not start in this shell
+
+Backgrounded the scan, or lost its stream? Pin its UUID and poll it:
+
+```bash
+ID=$(uuidgen | tr A-Z a-z)
+vigolium scan -t https://target.example --scan-uuid "$ID" >/dev/null 2>&1 &
+vigolium scan status "$ID" -j                  # where is it now (one item)
+vigolium scan wait "$ID" --timeout 45m -j --fail-on high   # block until it ends
+```
+
+- `scan status -j` → `items[0]`: `effective_status`
+  (`running|abandoned|completed|failed|cancelled`), `phase`, `phases_done`,
+  `requests_sent`, `findings_by_severity`, `progress {done,total,unit}` (null
+  without a count), `eta {estimate_ms, upper_bound_ms, basis}`, and
+  `liveness {last_write_at, stale, sources, process_gone}`.
+- **Act on `effective_status`, not `status`.** `abandoned` = the row still says
+  `running` but nothing has written for 2 minutes, or its PID on this host is
+  gone. The process died; do not wait on it.
+- **ETA is null when there is no basis** — never read null as "almost done".
+  `upper_bound_ms` is the remaining `--scanning-max-duration`; `estimate_ms`
+  exists only in the last phase with a known total.
+- `scan wait` exits `0` completed, `1` failed/cancelled (`failed`),
+  `scan_abandoned` or `wait_timeout` (default `--timeout 30m`), `4` on
+  `--fail-on`, `5` on `--fail-on-partial` with a partial scan. On success it
+  prints the final `scan status` item; progress goes to stderr (or, with
+  `--events ndjson`, as `phase.progress` lines on stdout).
+- Works for `-S` and `--db-isolate` scans too: the runner's heartbeat file
+  (`<sessions_dir>/<uuid>/status.json`) answers when the row is not in the
+  store yet.
+- `log ls -j` rows carry the same verdict: `effective_status`, `stale`,
+  `last_write_at`, `liveness_sources`. Use them to find dead `running` rows.
+
 ## Step 3 — Read the results
 
 ```bash
@@ -385,13 +418,32 @@ vigolium finding --id 42 --json --with-records
 # Narrow a search to the Nth match by list position (1-based).
 vigolium finding --search 'Reverse Proxy' --pick 2 --raw
 
-# Survey endpoints without bodies — cheap.
+# The endpoint inventory: one row per origin + path template (/users/{int}),
+# methods, params by location, status mix, auth split, live finding counts.
+vigolium endpoints --host api.example.com --json
+vigolium endpoints --source jstangle --json        # routes known only from JS
+
+# Parameters with value-type histograms: IDOR candidates in one call.
+vigolium params --type integer,uuid,sequential_id --json
+
+# Survey raw records without bodies — cheap.
 vigolium traffic --json --compact \
   --fields uuid,method,url,status_code,response_content_type
+
+# Only what one scan stored first (records are stamped on insert).
+vigolium traffic --scan-uuid <uuid> --json --compact
 
 # Everything for one record.
 vigolium traffic search-term --json --full-body -n 1
 ```
+
+`endpoints` and `params` aggregate in one streaming pass over light columns
+(never bodies), through the same filters as `traffic`, so they are safe on a
+large corpus. Their `-j` items and caps are in
+[data.md → endpoints](data.md#endpoints) / [params](data.md#params). An empty
+`--scan-uuid` read for a scan with no stamped records carries
+`provenance_warning: "scan_uuid_not_stamped"` (it predates stamping — use the
+`--from/--to` window in `provenance_detail`), not a silent empty list.
 
 Filters shared by `finding` / `traffic` / `db ls`: `--host --path --method
 --status --severity --min-severity --from/--to --search --scan-uuid
@@ -544,6 +596,20 @@ smuggling/desync work so `auto` doesn't reframe the request.
 
 Reading Burp's live history, Site map sync, limits, and the full flag surface:
 **[burp.md](burp.md)**.
+
+### As a curl command
+
+```bash
+vigolium finding --id 42 --curl                 # the finding's proving request
+vigolium finding --id 42 --curl-all -j          # every linked record, as items
+vigolium traffic --uuid <id> --curl --redact-auth
+```
+
+The URL comes from the stored scheme/host/port, arguments are POSIX
+single-quoted (safe for `sh -c`), and a binary body is piped through
+`base64 --decode`. Under `-j` each item carries `curl` (the shell line) and
+`argv` (the exec vector). `traffic --curl` renders at most 20 without `-a`.
+Nothing is sent. Details: [data.md](data.md#traffic---curl--finding---curl).
 
 ### To a report
 

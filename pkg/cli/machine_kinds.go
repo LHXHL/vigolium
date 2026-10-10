@@ -89,6 +89,8 @@ var machineKinds = map[string]machineKind{
 	"finding load":    kindMutation,
 	"finding mark":    kindMutation,
 	"traffic":         kindRead,
+	"endpoints":       kindRead,
+	"params":          kindRead,
 	"traffic body":    kindRead,
 	"traffic headers": kindRead,
 	"fuzz":            kindStream,

@@ -2,7 +2,7 @@
 
 > **Related:** [agent-loop.md](agent-loop.md) for the `-j` triage contracts · [flags.generated.md](flags.generated.md) for any flag
 
-Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `module`, `extensions` (alias `ext`), `js`, `config`, `scope`, `auth`, `project`, `storage`, `strategy`, `export`, `version`, and `update` commands.
+Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `traffic`, `endpoints`, `params`, `module`, `extensions` (alias `ext`), `js`, `config`, `scope`, `auth`, `project`, `storage`, `strategy`, `export`, `version`, and `update` commands.
 
 ## Table of Contents
 
@@ -24,6 +24,9 @@ Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `modu
 - [finding mark](#finding-mark)
 - [traffic](#traffic)
 - [traffic --replay](#traffic---replay)
+- [traffic --curl / finding --curl](#traffic---curl--finding---curl)
+- [endpoints](#endpoints)
+- [params](#params)
 - [export (top-level)](#export)
 - [module](#module)
 - [extensions](#extensions)
@@ -660,6 +663,9 @@ Browse vulnerability findings with fuzzy search, filtering, raw display, and col
 | `--tree` | bool | `false` | Display as a host/path hierarchy tree (repeated titles collapse into one node) |
 | `--markdown` | bool | `false` | Render the matched findings as Markdown (evidence + request/response in fenced blocks) to stdout |
 | `--pick` | string | — | Select finding(s) by 1-based position after filters + sort (e.g. `2`, `1,3`, `2-4`) |
+| `--curl` | bool | `false` | Render each finding's proving request (its stored evidence, else its first linked record) as a curl command (see [finding --curl](#traffic---curl--finding---curl)) |
+| `--curl-all` | bool | `false` | Like `--curl`, but one command per linked HTTP record |
+| `--redact-auth` | bool | `false` | With `--curl`/`--curl-all`: mask Authorization/Cookie/API-key header values as `<redacted>` |
 | `--columns` | []string | — | Columns to show (comma-separated, e.g. ID,SEVERITY,MODULE) |
 | `--exclude-columns` | []string | — | Columns to hide (comma-separated) |
 | `--stateless` / `-S` + `--glob-db` | bool / string | — | Read from a `.jsonl`/`.sqlite` export (or a glob merged into one temp DB) with project scoping off |
@@ -862,6 +868,7 @@ redirect: `a.example` (301) → `www.a.example` (302) → the 200 that answered.
 | `--header` | string | — | Search **only the header block** of the request/response — not bodies. Use `--search` to span the whole exchange |
 | `--body` | string | — | Search **only the request/response body** — not headers. Use `--search` to span the whole exchange |
 | `--source` | string | — | Filter by record source (e.g. scanner, probe, burp, caido, ingest-cli, ingest-server, ingest-proxy, seed) |
+| `--scan-uuid` | string | — | Only records **first stored** by this scan (`http_records.scan_uuid`, stamped on insert). A record deduplicated against an earlier scan keeps that scan's uuid. An empty result for a scan that has no stamped records (it predates stamping) carries `provenance_warning: "scan_uuid_not_stamped"` with a `--from/--to` window to use instead; an unknown uuid gives `scan_not_found` |
 | `--sort` | string | `created_at` | Sort field: uuid, created_at, sent_at, method, status, time, risk_score, surface_score |
 | `--asc` | bool | `false` | Sort in ascending order (default: descending) |
 | `--limit` / `-n` | int | `100` | Maximum records to display |
@@ -877,6 +884,8 @@ redirect: `a.example` (301) → `www.a.example` (302) → the 200 that answered.
 | `--markdown` | bool | `false` | Render matched records as Markdown (request/response in fenced http blocks) to stdout |
 | `--group-by` | string | — | **Count** the matched records by one field instead of listing them: `host`, `method`, `status_code`, `response_content_type`, `source`, `scan_uuid`, `ip`, `is_authenticated`. An unknown name is a usage error listing the set |
 | `--group-limit` | int | `20` | With `--group-by`: maximum buckets, largest first (`0` = every bucket) |
+| `--curl` | bool | `false` | Render each matched record as a curl command instead of listing it (see [traffic --curl](#traffic---curl--finding---curl)); at most 20 without `-a` |
+| `--redact-auth` | bool | `false` | With `--curl`: mask Authorization/Cookie/API-key header values as `<redacted>` |
 | `--columns` | []string | — | Columns to show (comma-separated, e.g. HOST,METHOD,PATH,STATUS) |
 | `--exclude-columns` | []string | — | Columns to hide (comma-separated) |
 | `--exclude-search` / `--exclude-header` / `--exclude-body` | []string / string | — | Inverse-search filters (drop records where the term appears) |
@@ -1023,6 +1032,127 @@ Burp-bridge **listing** sync flags stay here because they operate on the
 The two `--save-to-*` flags are mutually exclusive with `--replay`.
 
 ---
+
+## traffic --curl / finding --curl
+
+Render stored requests as curl commands — the hand-off for re-sending one
+exchange by hand. Nothing is sent.
+
+```bash
+vigolium traffic --uuid <id> --curl
+vigolium traffic --host api.example.com --path /login --curl -j
+vigolium finding --id 42 --curl
+vigolium finding --id 42 --curl-all --redact-auth
+```
+
+- The URL comes from the record's stored **scheme, host and port**, never from
+  the `Host` header alone. A `Host` that matches the URL is dropped (curl sends
+  it); a different one (virtual host) is kept.
+- Every argument is POSIX single-quoted, so the command is safe to paste or run
+  with `sh -c` — `$`, backticks, quotes and newlines in a body survive.
+- A body that is not printable UTF-8 is piped in:
+  `printf '%s' <base64> | base64 --decode | curl … --data-binary @-`.
+- `--http2` for HTTP/2 records, `--path-as-is` for `..`/`.` segments or `%2f`,
+  `--compressed` when the request had `Accept-Encoding`, `-g` when the URL holds
+  `[]`/`{}`. `Content-Length` and `Transfer-Encoding` are dropped (curl
+  recomputes them).
+- `traffic --curl` renders at most **20** commands unless `-a` asks for all.
+  `--curl` cannot be combined with `--replay`, `--group-by` or another view.
+- Credentials are printed as stored. `--redact-auth` masks them; when stdout is
+  not a terminal and commands carry credentials, a note on stderr says so.
+
+`finding --curl` renders the finding's own stored evidence request (the one the
+module sent) when present, else its first linked record; `--curl-all` renders
+every linked record.
+
+Under `-j` the envelope's `items` are the commands:
+`traffic` gives `{uuid, method, url, curl, argv}` and `finding` gives
+`{id, finding_hash, record_uuid, method, url, curl, argv}` (`record_uuid` is
+empty when the finding's own evidence was used). `argv` is the exec vector;
+when `stdin_base64` is set, write its decoded bytes to curl's stdin.
+
+---
+
+## endpoints
+
+**Usage:** `vigolium endpoints [search-term] [flags]` · **Alias:** `endpoint`
+
+The application's endpoint inventory, aggregated from stored traffic: one row
+per **origin + path template**, with every method seen on it.
+
+```bash
+vigolium endpoints
+vigolium endpoints --host api.example.com -j
+vigolium endpoints --source jstangle --sort findings     # routes known from JS
+vigolium endpoints --remark jstangle:not_found           # JS routes that 404'd
+vigolium endpoints --scan-uuid <uuid> --min-records 2
+vigolium endpoints --collapse 5 -n 0                     # merge slug siblings
+```
+
+- Paths group by structural template (the shared `pathshape` normalizer):
+  `/users/42` and `/users/7` are `/users/{int}`; uuids, long hex, dates,
+  timestamps, emails, JWTs and base64 blobs collapse too. `/users/me`, `/about`
+  and `v1` stay literal.
+- `--collapse N` (off by default) also merges N or more sibling literal
+  segments with the same child templates into `{var}` (`/blog/a`, `/blog/b`, …
+  → `/blog/{var}`). It can merge real routes, so it is opt-in.
+- The filters are `traffic`'s (`--host`, `--method`, `--status`, `--path`,
+  `--source`, `--remark` (repeatable, AND), `--scan-uuid`, `--from/--to`, the
+  positional search term, `-S`, `--db`, `--glob-db`), so the aggregate covers
+  exactly the records `traffic` would list. Bodies are never read; the pass
+  streams light columns, so it is safe on large corpora.
+- `--min-records N`, `--sort records|findings|template|last_seen`, `-n`
+  (default 100, `0` = all) and `--offset` page the endpoint list, not the records.
+
+Each `-j` item:
+
+| Field | Meaning |
+|---|---|
+| `id` | Stable id: sha1(origin + " " + template), 12 hex chars — the same in every DB |
+| `origin`, `host`, `template`, `methods` | What the endpoint is |
+| `records`, `distinct_paths` (`distinct_paths_capped`), `sample_paths` (≤3) | How often, how many concrete paths |
+| `params` | Parameter names by location (`query`, `body`, `json`, `cookie`, `xml`, `multipart`, `path`), ≤50 each; `param_count` totals them |
+| `request_content_types`, `response_content_types` | Top 5 media types |
+| `status`, `top_status` | Status-code histogram |
+| `auth` | `{authenticated, anonymous}` record counts (auth flag or an `Authorization` header) |
+| `sources`, `js_outcomes` | Record sources; `jstangle:*` outcomes (`found`, `not_found`, `withheld`, …) of JS-derived records |
+| `findings`, `findings_by_severity`, `max_severity` | Live findings whose URL maps here (`false_positive`/`accepted_risk` excluded) |
+| `first_seen`, `last_seen` | Record timestamps |
+
+The envelope adds `records_scanned`, `capped`/`unbucketed_records` (a 100,000
+distinct-endpoint safety cap; overflow is counted, never dropped silently) and
+a `query` follow-up: `vigolium traffic --host <h> --path <template glob> -j`.
+`--scan-uuid` provenance warnings are the same as `traffic`'s.
+
+---
+
+## params
+
+**Usage:** `vigolium params [search-term] [flags]` · **Aliases:** `param`, `parameters`
+
+Every parameter of every endpoint, with a value-type histogram — the starting
+point for IDOR and param-mining work.
+
+```bash
+vigolium params --host api.example.com
+vigolium params --type integer,uuid,sequential_id -j    # IDOR candidates
+vigolium params --endpoint <endpoint-id> --show-values
+vigolium params --location query,json --min-occurrences 3
+```
+
+- One row per (endpoint, location, name); `endpoint_id` is the `endpoints` id.
+- Dynamic path segments are parameters too: location `path`, named
+  `{kind}@index` (`{int}@1` in `/users/{int}`), with `after` naming the literal
+  segment before it.
+- `types` is a `mutation.Classify` histogram over at most **200** values per
+  parameter (`classified` says how many); `dominant_type` is its mode.
+  `distinct_values` stops counting at 1000 (`distinct_capped`).
+- `samples` (≤3, ≤64 chars) are **redacted by default** for cookies, headers
+  and secret-looking names (token, session, password, key, auth, …) —
+  `--show-values` prints them. The envelope says `values_redacted`.
+- Filters: everything `endpoints` takes, plus `--endpoint <id|template>`,
+  `--location <list>`, `--type <value types>` (dominant type; an unknown name is
+  a usage error listing the set) and `--min-occurrences N`.
 
 ## export
 

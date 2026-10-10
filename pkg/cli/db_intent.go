@@ -114,6 +114,8 @@ var dbIntents = map[string]string{
 	"finding load":    "write",
 	"finding mark":    "write",
 	"traffic":         "read",
+	"endpoints":       "read",
+	"params":          "read",
 	"traffic body":    "read",
 	"traffic headers": "read",
 	"fuzz":            "write",

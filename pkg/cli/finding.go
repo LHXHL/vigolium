@@ -248,6 +248,9 @@ func runFinding(cmd *cobra.Command, args []string) error {
 	if err := validateJSONOutputFlag(cmd); err != nil {
 		return err
 	}
+	if err := validateFindingCurlFlags(cmd); err != nil {
+		return err
+	}
 	var fuzzyTerm string
 	// Argument routing mirrors traffic: "tree" activates tree mode, "ls"/"list"
 	// are no-ops (default table view), anything else is a fuzzy search term.
@@ -319,6 +322,9 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		// evidence to Burp and return before any table/TUI/JSON render.
 		if findingPushToBurp || findingToRepeater {
 			return pushFindingsToBurp(ctx, cmd, db, findings)
+		}
+		if findingCurl || findingCurlAll {
+			return renderFindingCurl(ctx, cmd, db, findings, total, filters.ProjectUUID)
 		}
 
 		if active, tuiErr := tui.Active(findingTUIFlag, findingNoTUIFlag, globalJSON); tuiErr != nil {
