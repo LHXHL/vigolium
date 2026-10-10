@@ -5,20 +5,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
-
-// makeHTTPCtx builds an HTML request/response pair with the given body.
-func makeHTTPCtx(body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	resp := httpmsg.NewHttpResponse([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + body))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -33,7 +22,7 @@ func TestNew(t *testing.T) {
 func TestScanPerRequest_ActionCableMeta(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx(`<meta name="action-cable-url" content="/cable" />`)
+	ctx := modtest.HTTPCtx("/", "text/html", `<meta name="action-cable-url" content="/cable" />`)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
@@ -46,7 +35,7 @@ func TestScanPerRequest_ActionCableMeta(t *testing.T) {
 func TestScanPerRequest_CableURL(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx(`var x = {cableUrl: "wss://example.com/cable"};`)
+	ctx := modtest.HTTPCtx("/", "text/html", `var x = {cableUrl: "wss://example.com/cable"};`)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
@@ -58,7 +47,7 @@ func TestScanPerRequest_CableURL(t *testing.T) {
 func TestScanPerRequest_Benign(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("<html><body>Plain page</body></html>")
+	ctx := modtest.HTTPCtx("/", "text/html", "<html><body>Plain page</body></html>")
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	assert.Empty(t, results)

@@ -10,22 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
-
-func makeHTTPCtx(url, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", url))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n%s", body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func makeHTTPCtxWithReqBody(url, reqBody, respBody string) *httpmsg.HttpRequestResponse {
 	rawReq := []byte(fmt.Sprintf("POST %s HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n%s", url, reqBody))
@@ -71,7 +59,7 @@ func TestScanPerRequest_JSONBase64InResponse(t *testing.T) {
 	m := New()
 	// eyJ = base64 for '{"'
 	body := `<input value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9">`
-	ctx := makeHTTPCtx("/page", body)
+	ctx := modtest.HTTPCtx("/page", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -88,7 +76,7 @@ func TestScanPerRequest_PHPArrayInResponse(t *testing.T) {
 	m := New()
 	// YTo = base64 for 'a:' (PHP serialized array)
 	body := `data=YToxOntzOjQ6InRlc3QiO3M6NToidmFsdWUiO30=`
-	ctx := makeHTTPCtx("/api", body)
+	ctx := modtest.HTTPCtx("/api", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -100,7 +88,7 @@ func TestScanPerRequest_PHPObjectInResponse(t *testing.T) {
 	m := New()
 	// Tzo = base64 for 'O:' (PHP serialized object)
 	body := `cookie=TzoxMDoiUGhwT2JqZWN0IjoxOntzOjQ6InRlc3QiO3M6NToidmFsdWUiO30=`
-	ctx := makeHTTPCtx("/api", body)
+	ctx := modtest.HTTPCtx("/api", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -112,7 +100,7 @@ func TestScanPerRequest_JavaSerializedInResponse(t *testing.T) {
 	m := New()
 	// rO0 = Java serialized object prefix
 	body := `session=rO0ABXNyABFqYXZhLmxhbmcuQm9vbGVhbtA=`
-	ctx := makeHTTPCtx("/api", body)
+	ctx := modtest.HTTPCtx("/api", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -124,7 +112,7 @@ func TestScanPerRequest_HTTPSURLInResponse(t *testing.T) {
 	m := New()
 	// aHR0cHM6L = base64 for 'https:/'
 	body := `redirect=aHR0cHM6Ly9leGFtcGxlLmNvbS9sb2dpbg==`
-	ctx := makeHTTPCtx("/redirect", body)
+	ctx := modtest.HTTPCtx("/redirect", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -149,7 +137,7 @@ func TestScanPerRequest_Base64InRequest(t *testing.T) {
 func TestScanPerRequest_NoMatch(t *testing.T) {
 	m := New()
 	body := `<html><body>Hello world</body></html>`
-	ctx := makeHTTPCtx("/page", body)
+	ctx := modtest.HTTPCtx("/page", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -160,7 +148,7 @@ func TestScanPerRequest_NoMatch(t *testing.T) {
 func TestScanPerRequest_MediaURL(t *testing.T) {
 	m := New()
 	body := `eyJhbGciOiJIUzI1NiJ9`
-	ctx := makeHTTPCtx("/image.png", body)
+	ctx := modtest.HTTPCtx("/image.png", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -306,7 +294,7 @@ func TestBuildExtracted_BinaryHasNoDecodedLine(t *testing.T) {
 
 func TestScanPerRequest_URLSafeBlobDecodedEndToEnd(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/login?authctx="+urlSafeJSON, "OK")
+	ctx := modtest.HTTPCtx("/login?authctx="+urlSafeJSON, "text/html", "OK")
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -345,8 +333,8 @@ func mustScanResp(t *testing.T, m *Module, ctx *httpmsg.HttpRequestResponse) *ou
 func TestStructuralSignatureCoalescesRotatingJSON(t *testing.T) {
 	m := New()
 
-	a := mustScanResp(t, m, makeHTTPCtx("/p1", `x="`+b64(`{"nonce":"AAAAAAAAAAAA"}`)+`"`))
-	b := mustScanResp(t, m, makeHTTPCtx("/p2", `x="`+b64(`{"nonce":"BBBBBBBBBBBB"}`)+`"`))
+	a := mustScanResp(t, m, modtest.HTTPCtx("/p1", "text/html", `x="`+b64(`{"nonce":"AAAAAAAAAAAA"}`)+`"`))
+	b := mustScanResp(t, m, modtest.HTTPCtx("/p2", "text/html", `x="`+b64(`{"nonce":"BBBBBBBBBBBB"}`)+`"`))
 	require.NotNil(t, a)
 	require.NotNil(t, b)
 	require.NotEmpty(t, a.DedupKey, "JSON blob should get a structural dedup key")
@@ -354,7 +342,7 @@ func TestStructuralSignatureCoalescesRotatingJSON(t *testing.T) {
 	assert.Equal(t, a.ID(), b.ID(), "coalesced findings share one identity hash")
 
 	// A different JSON shape is a distinct signal → distinct identity.
-	c := mustScanResp(t, m, makeHTTPCtx("/p3", `x="`+b64(`{"apiKey":"secret-value-here-1234"}`)+`"`))
+	c := mustScanResp(t, m, modtest.HTTPCtx("/p3", "text/html", `x="`+b64(`{"apiKey":"secret-value-here-1234"}`)+`"`))
 	require.NotNil(t, c)
 	assert.NotEqual(t, a.DedupKey, c.DedupKey, "different JSON shape must not coalesce")
 }

@@ -5,23 +5,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 )
-
-// makeHTTPCtx builds a request/response pair from the given path, response
-// headers, and body.
-func makeHTTPCtx(path, headers, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte("GET " + path + " HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := "HTTP/1.1 200 OK\r\n" + headers + "\r\n" + body
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -38,7 +25,7 @@ func TestScanPerRequest_StateAWSKey(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<html><script>window.__NUXT__={"awsKey":"AKIA1234567890ABCDEF"};</script></html>`
-	ctx := makeHTTPCtx("/", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/", "Content-Type: text/html\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -55,7 +42,7 @@ func TestScanPerRequest_DevtoolsEnabled(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `export default { devtools: true }`
-	ctx := makeHTTPCtx("/nuxt.config.js", "Content-Type: application/javascript\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/nuxt.config.js", "Content-Type: application/javascript\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -75,7 +62,7 @@ func TestScanPerRequest_PrivateStateTokenIsCandidate(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<html><script>window.__NUXT__={"api_token":"sk_live_01` + `23456789ab` + `cdef"};</script></html>`
-	ctx := makeHTTPCtx("/", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/", "Content-Type: text/html\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -92,7 +79,7 @@ func TestScanPerRequest_Benign(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<html><script>window.__NUXT__={"page":"home"};</script></html>`
-	ctx := makeHTTPCtx("/", "Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/", "Content-Type: text/html\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

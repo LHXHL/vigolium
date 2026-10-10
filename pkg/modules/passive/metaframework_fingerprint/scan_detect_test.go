@@ -5,22 +5,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
-
-// makeHTTPCtx builds a request/response pair from the given response headers
-// and HTML body.
-func makeHTTPCtx(headers, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := "HTTP/1.1 200 OK\r\n" + headers + "\r\n" + body
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -36,7 +23,7 @@ func TestScanPerRequest_Remix(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<html><script>window.__remixContext = {};</script></html>`
-	ctx := makeHTTPCtx("Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/", "Content-Type: text/html\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -50,7 +37,7 @@ func TestScanPerRequest_Astro(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `<html><body><astro-island uid="1"></astro-island></body></html>`
-	ctx := makeHTTPCtx("Content-Type: text/html\r\n", body)
+	ctx := modtest.HTTPCtxHeaders("/", "Content-Type: text/html\r\n", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -62,7 +49,7 @@ func TestScanPerRequest_Astro(t *testing.T) {
 func TestScanPerRequest_NonHTML(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("Content-Type: application/json\r\n", `{"__remixContext":1}`)
+	ctx := modtest.HTTPCtxHeaders("/", "Content-Type: application/json\r\n", `{"__remixContext":1}`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -73,7 +60,7 @@ func TestScanPerRequest_NonHTML(t *testing.T) {
 func TestScanPerRequest_Benign(t *testing.T) {
 	t.Parallel()
 	m := New()
-	ctx := makeHTTPCtx("Content-Type: text/html\r\n", `<html><body>Hello World</body></html>`)
+	ctx := modtest.HTTPCtxHeaders("/", "Content-Type: text/html\r\n", `<html><body>Hello World</body></html>`)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

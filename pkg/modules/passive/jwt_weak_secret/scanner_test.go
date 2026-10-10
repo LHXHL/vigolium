@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -30,37 +31,27 @@ func signHS256(headerJSON, payload string, secret []byte) string {
 	return signingInput + "." + sig
 }
 
-// makeHTTPCtx builds a test HttpRequestResponse from raw request/response strings.
-func makeHTTPCtx(rawReq, rawResp string) *httpmsg.HttpRequestResponse {
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		[]byte(rawReq),
-	)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
-
 const defaultReq = "GET /api HTTP/1.1\r\nHost: example.com\r\n\r\n"
 const defaultResp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}"
 
 func makeHTTPCtxWithAuth(token string) *httpmsg.HttpRequestResponse {
 	rawReq := fmt.Sprintf("GET /api HTTP/1.1\r\nHost: example.com\r\nAuthorization: Bearer %s\r\n\r\n", token)
-	return makeHTTPCtx(rawReq, defaultResp)
+	return modtest.RawCtx(rawReq, defaultResp)
 }
 
 func makeHTTPCtxWithResponseHeader(headerName, headerValue string) *httpmsg.HttpRequestResponse {
 	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n%s: %s\r\n\r\n{}", headerName, headerValue)
-	return makeHTTPCtx(defaultReq, rawResp)
+	return modtest.RawCtx(defaultReq, rawResp)
 }
 
 func makeHTTPCtxWithResponseBody(body string) *httpmsg.HttpRequestResponse {
 	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n%s", body)
-	return makeHTTPCtx(defaultReq, rawResp)
+	return modtest.RawCtx(defaultReq, rawResp)
 }
 
 func makeHTTPCtxWithSetCookie(cookieName, cookieValue string) *httpmsg.HttpRequestResponse {
 	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: %s=%s; Path=/\r\n\r\n{}", cookieName, cookieValue)
-	return makeHTTPCtx(defaultReq, rawResp)
+	return modtest.RawCtx(defaultReq, rawResp)
 }
 
 // --- tryBruteForce unit tests ---
@@ -164,7 +155,7 @@ func TestFindJWTs_DeduplicatesAcrossLocations(t *testing.T) {
 	token := signHS256(`{"typ":"JWT","alg":"HS256"}`, `{"sub":"1"}`, []byte("secret"))
 	rawReq := fmt.Sprintf("GET /api HTTP/1.1\r\nHost: example.com\r\nAuthorization: Bearer %s\r\n\r\n", token)
 	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"token\":\"%s\"}", token)
-	ctx := makeHTTPCtx(rawReq, rawResp)
+	ctx := modtest.RawCtx(rawReq, rawResp)
 
 	// findJWTs should return exactly one token despite appearing in two locations
 	tokens := findJWTs(ctx)
