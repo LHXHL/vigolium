@@ -220,7 +220,7 @@ is rate-limited, metered, or behind a WAF you do not want to trip.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--probe` | bool | `false` | Enable the host-sweep phase (same as `vigolium run probe`) |
-| `--tls-probe` | bool | `false` | Handshake each HTTPS target; report negotiated version/cipher and the leaf certificate inline in `--json`. Not stored |
+| `--tls-probe` | bool | `false` | Handshake each HTTPS target; report negotiated version/cipher and the leaf certificate inline in the `--format jsonl` record. Not stored |
 | `--redirect-mode` | string | `any` | `off` \| `same-host` \| `same-apex` \| `any`. `same-apex` follows within the registrable domain (`www.example.com` → `example.com` yes, `example.com` → `tracker.example.net` no). Applies to **every** phase, not just probe |
 | `--record-redirect-chain` | bool | `false` | Each followed hop becomes its own `http_records` row, chained by `parent_uuid`. Read by the probe phase |
 | `--no-response` | bool | `false` | Drop raw request/response bytes from output, keep every derived field (alias of `--omit-response`) |
@@ -478,26 +478,24 @@ Run a single scan phase directly. Equivalent to `vigolium scan --only <phase>`.
 
 ### Valid phases
 
-| Phase | Aliases | Description |
-|-------|---------|-------------|
-| `ingestion` | — | Parse and store input into the database |
-| `probe` | `httpx`, `alive`, `sweep`, `probing` | Host sweep: one request per target, passive tech fingerprinting + surface scoring, no content discovery or fuzzing |
-| `discovery` | `deparos`, `discover` | Adaptive content discovery |
-| `external-harvest` | — | Wayback / Common Crawl / OTX URL aggregation |
-| `spidering` | `spitolas` | Headless-browser crawling for JS-driven routes |
-| `known-issue-scan` | `cve`, `kis`, `known-issues` | Nuclei templates + Kingfisher secrets |
-| `dynamic-assessment` | `dast`, `assessment` | Core active + passive vulnerability scanning |
-| `extension` | `ext` | JavaScript extension modules only |
+Phase names and aliases come from the binary, not from this file:
+`vigolium strategy -j` lists every phase in `phases[]` with `canonical`,
+`aliases`, `skippable` and `only_accepted` (`internal` phases such as
+`param-mining` or `targeted-respider` can be skipped but not run alone).
+`vigolium run -h` and the `--only`/`--skip` help list the same names.
 
-`audit` is also an alias for `dynamic-assessment` on `--only` / `--skip`, but **not** as a `vigolium run` argument: `vigolium run audit` is rejected because it reads as the AI source-code audit (`vigolium agent audit`). Use `vigolium run dast` for the native module scan.
+The one alias with a catch: `audit` means `dynamic-assessment` on `--only` and
+`--skip`, but `vigolium run audit` is refused as ambiguous with the AI source
+audit (`vigolium agent audit`). Type `vigolium run dast` for the native module
+scan.
 
 The `run` command accepts the same flag groups as `scan` (Spidering, Discovery, Harvest, KnownIssueScan, Input Format, Request, Output, and `--oast-url`), **except** the module-selection flags `--module-id` / `--passive-only`, which are only on `scan` / `scan-url` / `scan-request`.
 
 ### Examples
 
 ```bash
-vigolium run probe -T hosts.txt --json --no-response        # host sweep, httpx-style
-vigolium run probe -T hosts.txt --json --tls-probe -c 50    # + TLS certificates
+vigolium run probe -T hosts.txt --format jsonl --no-response        # host sweep, httpx-style
+vigolium run probe -T hosts.txt --format jsonl --tls-probe -c 50    # + TLS certificates
 vigolium run discover -t https://example.com
 vigolium run spidering -t https://example.com
 vigolium run dast -t https://example.com
@@ -564,10 +562,9 @@ Speed settings have a layered precedence:
 5. The strategy's own pace ceiling (`lite` only — see below)
 6. Built-in defaults — lowest
 
-**The pace flags apply whether or not you type them.** `--rate-limit` used to be
-enforced only when passed, so silence meant *unlimited* while the help text
-advertised 100. It now applies at its documented default; pass `--rate-limit 0`
-for genuinely no cap. A negative value is a usage error (exit 2), not
+**The pace flags apply whether or not you type them.** `--rate-limit` is
+enforced at its documented default when unset; pass `--rate-limit 0` for
+genuinely no cap. A negative value is a usage error (exit 2), not
 "unlimited".
 
 **Each of the three dials takes an optional phase qualifier, repeatable and
@@ -618,9 +615,8 @@ start filtering.
 
 ### Valid `--only` Phases
 
-The following phases can be used with `--only` and `--skip`:
-
-`ingestion`, `probe` (aliases `httpx`, `alive`, `sweep`), `discovery`, `external-harvest`, `known-issue-scan`, `spidering`, `dynamic-assessment` (aliases `audit`, `dast`, `assessment`), `extension`
+Every phase in `vigolium strategy -j` with `only_accepted: true`; `--skip`
+takes every phase with `skippable: true`. Aliases are accepted on both.
 
 ### HTML Format Constraints
 
@@ -725,6 +721,18 @@ $ vigolium ffuf -u https://target.example/FUZZ -w words.txt
 ◆ routed to: vigolium run discovery -t https://target.example --discovery-wordlist words.txt
 ```
 
+| Instead of | Shim | Native |
+|---|---|---|
+| `ffuf` / `feroxbuster` | `vigolium ffuf …` | `run discovery --discovery-wordlist` (FUZZ as the last path segment), else `fuzz <url-with-FUZZ> -w <list>` with matchers mapped |
+| `nuclei` | `vigolium nuclei …` | `run known-issue-scan -t <url>` |
+| `katana` / `gospider` | `vigolium katana …` | `run spidering -t <url>` |
+| `gau` / `waybackurls` | `vigolium gau <domain>` | `run external-harvest -t <url>` (into the DB), or `kit harvest <domain>` (stdout, no DB) |
+| `arjun` | `vigolium arjun -u <url>` | `fuzz --fuzz new-param -w params --anomaly <url>`, or `kit param-mine -t <url>` (batched) |
+| `httpx` | none | `run probe -T hosts.txt --format jsonl` (aliases: `run httpx`/`alive`/`sweep`) |
+| `subfinder` / `amass` | none | **not covered**: pass a host list with `-T` |
+
+How each shim routes its argv:
+
 | Shim | Routes to |
 |---|---|
 | `vigolium ffuf -u <url>/FUZZ -w <list>` (FUZZ is the whole last path segment, no matchers) | `run discovery --discovery-wordlist` |
@@ -767,8 +775,8 @@ Behaviours to expect:
   no-ops, gau `--subs`, arjun's one-candidate-per-request.
 - **An unmapped argument is a hard error naming the native command**, never a
   silent drop - a dropped flag is a scan that ran with a scope nobody chose.
-  `vigolium ffuf -json` tells you to run `vigolium run discovery --help` or
-  `vigolium fuzz --help`.
+  An ffuf `-json` flag is refused with a pointer to `vigolium run discovery --help`
+  and `vigolium fuzz --help`.
 - **Where a concept does not exist, the shim says so rather than approximating.**
   `katana -d 3` errors: vigolium's spider is a state machine over DOM snapshots,
   not a depth-limited link follower, so bound it with `--spider-max-time`
@@ -854,13 +862,15 @@ fingerprinting and attack-surface scoring, no content discovery and no fuzzing �
 built for host lists in the thousands.
 
 ```bash
-vigolium run probe -T hosts.txt --json --no-response          # stdout = JSONL
-vigolium run probe -T hosts.txt --json --tls-probe -c 50      # + certificates
+vigolium run probe -T hosts.txt --format jsonl --no-response   # stdout = JSONL
+vigolium run probe -T hosts.txt --format jsonl --tls-probe -c 50   # + certificates
 vigolium run probe -T hosts.txt -S --format sqlite -o sweep   # keep the DB
 ```
 
-**stdout is pure JSONL; progress goes to stderr.** Pipe with `2>/dev/null`, or
-add `--silent` for a fully quiet run. One object per record:
+**`--format jsonl` makes stdout pure JSONL; progress goes to stderr.** Pipe with
+`2>/dev/null`, or add `--silent` for a fully quiet run. (`-j` prints the one
+scan document instead, without the per-record DNS/TLS fields.) Each line is
+`{"type":"http_record","data":{…}}`, where `data` is:
 
 ```json
 {"url":"https://www.example.com/","status_code":200,"response_time_ms":601,
@@ -880,7 +890,7 @@ against that output reads these unmodified.
 
 | Flag | Effect |
 |---|---|
-| `--json` | JSONL on stdout (human progress stays on stderr) |
+| `--format jsonl` | JSONL on stdout (human progress stays on stderr) |
 | `--no-response` | Drop raw request/response bytes; keep every derived field (alias of `--omit-response`) |
 | `--tls-probe` | Handshake each HTTPS target; report version/cipher + leaf certificate |
 | `--redirect-mode` | `off` \| `same-host` \| `same-apex` \| `any` — probe defaults to `same-apex` |

@@ -722,7 +722,7 @@ If one driver fails under `--driver=both`, the other still runs — the parent r
 ### The piolium driver
 
 Reached with `--driver=piolium` (or as the `auto` fallback). There is **no**
-`vigolium agent piolium` command.
+`agent piolium` subcommand.
 
 Drives the user's installed **piolium** Pi extension via
 `pi --mode json -p /piolium-<mode>` against the resolved source tree, syncs audit

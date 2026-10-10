@@ -102,9 +102,10 @@ vigolium server \
 | `--proxy` | Proxy for outgoing requests |
 
 **Write `--scan-on-receive`, not `-S`.** `-S` means `--stateless` on every other
-command; on `server` and `ingest` it used to mean scan-on-receive and is now a
-usage error (exit 2) naming `--scan-on-receive`. Pair the flag with `-t <url>` so the auto-scan has
-a scope; without a scope it scans every host it receives.
+command; on `server` and `ingest` it is a usage error (exit 2) naming
+`--scan-on-receive`. `server` takes no target: the project's `scope.*` rules
+(`vigolium scope view`) bound the auto-scan, and without any it scans every
+host it receives.
 
 ---
 

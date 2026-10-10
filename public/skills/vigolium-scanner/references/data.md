@@ -80,7 +80,7 @@ vigolium db clean --before 30d --force               # prune records older than 
 
 **Usage:** `vigolium init [--force]`
 
-Create `~/.vigolium/` with a default config file (including a freshly generated API key), database schema, default scanning profiles, prompt templates, JavaScript extensions, and SAST rules. Idempotent: skips components that already exist unless `--force` is passed.
+Create `~/.vigolium/` with a default config file (including a freshly generated API key), database schema, default scanning profiles, prompt templates, and JavaScript extensions. Idempotent: skips components that already exist unless `--force` is passed.
 
 With `--force`, the existing config is rewritten with a new API key and the preset directories (`profiles/`, `extensions/`, `prompts/`) are re-extracted from the embedded assets.
 
@@ -207,10 +207,8 @@ The legacy `run.log` filename is also resolved for older sessions. Agent audit c
 
 ### `--follow` will not hang on a dead scan
 
-Auto-follow used to fire whenever the scan row said `running` — and a scan reaped
-by a deadline or SIGKILL leaves it saying that **forever**, so an omitted
-`--follow` parked the read until the caller's own timeout, on precisely the runs
-that had already timed out. Three gates now apply:
+A scan reaped by a deadline or SIGKILL leaves its row saying `running`
+**forever**, so auto-follow is gated:
 
 - a **non-TTY stdout** (a pipe — i.e. a program, which wants the log and an exit)
   never auto-follows,
@@ -234,8 +232,7 @@ for the most important thing in it. Any `[waf-block-detected]` /
 
 `log` reads through the same path `finding`/`traffic` do, so a shell pinned with
 `$VIGOLIUM_DB_PATH` (or `-S --db <file>`) reaches that session's database with
-project scoping off. It used to reject `-S` outright with "unknown shorthand
-flag" — a non-zero exit and no output.
+project scoping off.
 
 ### log ls
 
@@ -436,9 +433,9 @@ vigolium db ls --raw --limit 5
 
 Show database statistics including record counts, finding breakdowns, and host summaries.
 
-Under `-j/--json` it emits the **standard envelope** like every other read command: the stats report is the one element of `items` (`items[0]`, `total: 1`), and `--json-legacy-keys` adds it back bare as `stats`. It used to be a documented exception that dumped its raw struct — a contract with a hole in it is one consumers special-case forever.
+Under `-j/--json` it emits the **standard envelope** like every other read command: the stats report is the one element of `items` (`items[0]`, `total: 1`), and `--json-legacy-keys` adds it back bare as `stats`.
 
-`items[0].database` names the source: `path` is the file actually opened and `size` is its bytes **including the `-wal`/`-shm` siblings** — on a WAL store the main file alone can be a fraction of what the store occupies. Both used to be declared and never filled, so every `db stats -j` reported `"path": "", "size": 0` for a database it had open. The human view carries the same as a `Source:` line under `Driver:`.
+`items[0].database` names the source: `path` is the file actually opened and `size` is its bytes **including the `-wal`/`-shm` siblings** — on a WAL store the main file alone can be a fraction of what the store occupies. The human view carries the same as a `Source:` line under `Driver:`.
 
 ### stats-specific flags
 
@@ -700,7 +697,7 @@ Every search term is matched **literally**: `%` and `_` are ordinary characters,
 
 Hand each selected finding's evidence request (and response, where available) to Burp for manual confirmation. This is an action, not a display: it returns before any table/JSON render and never runs the scanner. Only `finding` has these (traffic/`db ls` do not).
 
-`--push-to-burp` (Organizer) and `--to-repeater` are **independent destinations that compose**, exactly as they do on `vigolium replay` — one invocation can file a finding *and* open it. `--to-repeater` alone still means Repeater only. (They used to be mutually exclusive here and composable on `replay`: the same operation with two different rules.)
+`--push-to-burp` (Organizer) and `--to-repeater` are **independent destinations that compose**, exactly as they do on `vigolium replay` — one invocation can file a finding *and* open it. `--to-repeater` alone still means Repeater only.
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
@@ -1015,8 +1012,7 @@ vigolium traffic headers --uuid <id> --name set-cookie -j
 partial fails with `body_incomplete` rather than writing a prefix — pass
 `--allow-incomplete` to write it anyway, and the receipt keeps `complete: false`.
 
-These distinguish states that used to collapse into an empty file, each with its
-own `error.code`:
+Each state has its own `error.code`:
 
 | Condition | `error.code` |
 |---|---|
@@ -1104,7 +1100,7 @@ Burp-bridge **listing** sync flags stay here because they operate on the
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--burp-bridge-url` / `-B` | string | `$VIGOLIUM_BURP_BRIDGE_URL` | Merge live traffic from this loopback Burp bridge URL with local DB records |
-| `--save-to-vigolium-db` | bool | `false` | Persist the live Burp records selected by the active filters into the database (requires `--burp-bridge-url`; not with `--replay`). The **write** is not bounded by `-n`'s listing default — an untyped `-n` no longer silently truncates the import at 100 records; a typed `-n` is honored and warns when it bit |
+| `--save-to-vigolium-db` | bool | `false` | Persist the live Burp records selected by the active filters into the database (requires `--burp-bridge-url`; not with `--replay`). The **write** is not bounded by `-n`'s listing default — an untyped `-n` does not truncate the import at 100 records; a typed `-n` is honored and warns when it bit |
 | `--save-to-burp` | bool | `false` | Copy the DB records selected by the active filters into Burp's Target site map (requires `--burp-bridge-url`; not with `--replay`) |
 
 The two `--save-to-*` flags are mutually exclusive with `--replay`.
@@ -1550,7 +1546,7 @@ Config file location: `~/.vigolium/vigolium-configs.yaml`
 
 **Usage:** `vigolium config clean [--force]`
 
-Reset Vigolium to a clean state: remove the entire `~/.vigolium/` directory (config, database, extensions, prompts, SAST rules, session directories) and regenerate fresh defaults by running the same bootstrap as `vigolium init`.
+Reset Vigolium to a clean state: remove the entire `~/.vigolium/` directory (config, database, extensions, prompts, session directories) and regenerate fresh defaults by running the same bootstrap as `vigolium init`.
 
 Prompts for `yes` confirmation unless `--force` is passed.
 
@@ -1566,7 +1562,7 @@ Warning shown:
 Proceed? (type 'yes' to confirm):
 ```
 
-Use this at the start of a new engagement or when an installation has drifted out of sync with the binary. After cleaning, the default API key is regenerated and all preset data (profiles, prompts, extensions, SAST rules, vigolium-audit harness) is re-extracted.
+Use this at the start of a new engagement or when an installation has drifted out of sync with the binary. After cleaning, the default API key is regenerated and all preset data (profiles, prompts, extensions) is re-extracted.
 
 ---
 

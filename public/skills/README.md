@@ -60,13 +60,16 @@ vigolium-scanner --agent <name> --yes`, or clone
 
 ```
 vigolium-scanner/
-├── SKILL.md                      # always loaded: router, mental model, invariants
+├── SKILL.md                      # always loaded: contract, loop, router, rules
 └── references/                   # loaded on demand, one hop from SKILL.md
     ├── agent-loop.md             # ★ driving vigolium from an agent: the -j envelope,
-    │                             #   --events stream, triage, replay, exports, exit codes
+    │                             #   --events stream, verify/mark/diff, exports, exit codes
+    ├── invariants.md             # cross-command rules -h won't tell you, by topic
+    ├── recipes.md                # multi-step workflows (plan → wait → new-since, …)
     ├── scanning.md               # scan, scan-url, scan-request, run, phases, strategies,
     │                             #   pace + per-phase dials, tool shims (ffuf/nuclei/…)
     ├── fuzzing.md                # vigolium fuzz: positions, attack modes, anomaly scoring
+    ├── kit.md                    # vigolium kit: secret-scan, js-beautify, oast, harvest, …
     ├── burp.md                   # Burp bridge, Repeater/Organizer/Site map, --send-via-burp
     ├── agent-modes.md            # agent query/autopilot/swarm/audit/olium/triage/session
     ├── auth.md                   # --auth-file / --auth, YAML format, extract rules
@@ -79,9 +82,10 @@ vigolium-scanner/
 
 `SKILL.md` is the only file always in context; it routes to at most one reference
 per task. If you are building an agent integration, start with
-`references/agent-loop.md` — it documents the `scope → scan → read → confirm →
-hand off` loop, the three machine contracts (`-j` envelope, bulk `jsonl`, live
-`--events` stream), the exit-code table, and the token-bounding flags.
+`references/agent-loop.md` — it documents the `scope → plan → scan → watch →
+read → confirm → mark → diff → hand off` loop, the three output channels (`-j`
+document, bulk `jsonl`, live `--events` stream), the exit-code table, and the
+token-bounding flags.
 
 ## Maintaining
 

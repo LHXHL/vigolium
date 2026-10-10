@@ -61,9 +61,7 @@ path is indistinguishable from an empty capture.
 
 > **A batch emits ONE document for the whole run.** `ingest -i a.har -i b.har -j`
 > prints a single envelope whose `records_ingested` covers every source, so
-> `... -j | jq .records_ingested` is the batch total. (It used to print one
-> object per source, which made that same `jq` read only the last source's count
-> and silently undercount.) The human console prints one "Ingestion completed"
+> `... -j | jq .records_ingested` is the batch total. The human console prints one "Ingestion completed"
 > line for the run, under the `ingesting N source(s) in one process` header.
 
 > Concurrent `vigolium ingest` processes against one SQLite file are safe (every
@@ -249,10 +247,7 @@ fields, not a row array):
 ```
 
 **`records_ingested` is what the database holds**, not what was attempted.
-`select count(*) from http_records` after the run equals it. It used to count
-items the executor *attempted*, so a capture replayed against a host that no
-longer resolved reported "30 records ingested" and exited `0` over an empty
-table.
+`select count(*) from http_records` after the run equals it.
 
 **`records_failed > 0` exits `1`** with `error.code: "ingest_incomplete"` — a
 record was read and could not be stored, either because the write was refused

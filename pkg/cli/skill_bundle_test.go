@@ -52,6 +52,9 @@ func TestFlagsGeneratedIsCurrent(t *testing.T) {
 		strings.Join(diffs, "\n  "))
 }
 
+// skillLineBudget caps SKILL.md, which every agent loads in full.
+const skillLineBudget = 300
+
 var skillReferenceLink = regexp.MustCompile(`references/([A-Za-z0-9_.-]+\.md)`)
 
 // SKILL.md is the router: every reference file it names must ship, and every
@@ -89,27 +92,31 @@ func TestSkillReferenceRouter(t *testing.T) {
 	}
 
 	t.Run("line budget", func(t *testing.T) {
+		// SKILL.md is always in context: it routes, it does not restate what
+		// -h, `vigolium strategy -j` or `vigolium schema` can print.
 		lines := strings.Count(string(skill), "\n")
-		if lines > 300 {
-			// TODO(H8): the SKILL.md rewrite cuts it to ~250 lines; make this
-			// an error then.
-			t.Skipf("SKILL.md is %d lines; budget is 300 (enforced once H8 lands)", lines)
+		if lines > skillLineBudget {
+			t.Errorf("SKILL.md is %d lines; budget is %d. Move detail into a reference (invariants.md, recipes.md, agent-loop.md)", lines, skillLineBudget)
 		}
 	})
 
 	t.Run("no version-skew narration", func(t *testing.T) {
-		// "On older builds …" / "pre-v0.5.2 …" belong in invariants.md#history
-		// once the installed skill is version-stamped. TODO(H8): make this an
-		// error when that file exists.
+		// The installed skill is version-stamped (skills install manifest,
+		// doctor's skill check), so "on older builds …" / "pre-v0.5.2 …" is
+		// noise everywhere except invariants.md's History section.
 		stale := regexp.MustCompile(`(?i)older build|pre-v\d`)
 		_ = fs.WalkDir(public.StaticFS, skillBundleDir, func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || path.Base(p) == "invariants.md" {
+			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
 				return nil
 			}
 			data, _ := public.StaticFS.ReadFile(p)
+			inHistory := false
 			for i, line := range strings.Split(string(data), "\n") {
-				if stale.MatchString(line) {
-					t.Logf("%s:%d: version-skew narration: %s", p, i+1, strings.TrimSpace(line))
+				if strings.HasPrefix(line, "## ") {
+					inHistory = path.Base(p) == "invariants.md" && strings.TrimSpace(line) == "## History"
+				}
+				if stale.MatchString(line) && !inHistory {
+					t.Errorf("%s:%d: version-skew narration belongs in references/invariants.md#history: %s", p, i+1, strings.TrimSpace(line))
 				}
 			}
 			return nil

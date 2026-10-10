@@ -50,6 +50,7 @@ the top level, for one release.
 | Recover a JWT's HMAC secret | `vigolium kit jwt-crack <token>` |
 | List / print the built-in wordlists | `vigolium kit wordlist [name]` |
 | Emit built-in payloads by class | `vigolium kit payload --class <c>` |
+| Remove leftover vigolium temp scratch | `vigolium kit tmp-clean` |
 
 ---
 

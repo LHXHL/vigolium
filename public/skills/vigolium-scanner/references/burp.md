@@ -149,7 +149,7 @@ vigolium import -B http://127.0.0.1:9009 --all-hosts --yes
 vigolium traffic -B http://127.0.0.1:9009 --host acme.test --compact -j
 
 # Keep the subset worth scanning. The WRITE is not bounded by -n's listing
-# default — an untyped -n no longer truncates the import at 100 records.
+# default: an untyped -n does not truncate the import at 100 records.
 vigolium traffic -B http://127.0.0.1:9009 --host acme.test --method POST \
   --save-to-vigolium-db
 
@@ -375,8 +375,8 @@ The diff between the two responses **is** the access-control check.
   on the request being sent. On `replay` the filter is `--header-search`.
 - `--send-via-burp` changes *how* the request is sent; `--proxy` only lets Burp
   *watch*. They are different channels — use the bridge when the bytes matter.
-- On `finding`, `--push-to-burp` and `--to-repeater` **compose** (they used to be
-  mutually exclusive). Same rule as `replay` now — one operation, one rule.
+- On `finding`, `--push-to-burp` and `--to-repeater` **compose**, the same rule
+  as on `replay`.
 - `--http-mode` without `--send-via-burp` is ignored (with a warning).
 - Live bridge records aren't in the database: they can't be updated
   (`--in-replace`) and vanish when Burp's history is cleared. `import -B` or

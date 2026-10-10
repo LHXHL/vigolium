@@ -1310,25 +1310,20 @@ func TestDocCommandsCobraHelp(t *testing.T) {
 }
 
 // TestDocCommandsInlineSkillSpans checks `vigolium …` code spans in the skill
-// files (the router tables carry most of the commands an agent sees).
-// Report-only for now: synopsis heuristics are noisy. TODO(H8): flip to
-// t.Errorf once SKILL.md is rewritten.
+// files (the router tables carry most of the commands an agent sees, one
+// command per cell). A span that is a synopsis rather than a command is
+// skipped by docInlineSynopsis; mark anything else with `doccheck: skip`.
 func TestDocCommandsInlineSkillSpans(t *testing.T) {
 	prepareCommandTree(rootCmd)
-	bad := 0
 	for _, f := range embeddedSkillDocs(t) {
 		for _, c := range inlineSkillSpans(f.path, f.body) {
 			if _, err := validateDocArgv(rootCmd, c.argv, c.deprecatedOK, 0); err != nil {
 				if strings.Contains(err.Error(), "flag needs an argument") {
 					continue // `--flag` fragment naming a flag, not a command
 				}
-				bad++
-				t.Logf("%s: `%s`\n  -> %v", c.where(), c.text, err)
+				t.Errorf("%s: `%s`\n  -> %v\n  (fix the command, or mark a synopsis line with `doccheck: skip`)", c.where(), c.text, err)
 			}
 		}
-	}
-	if bad > 0 {
-		t.Logf("%d inline spans fail (report-only)", bad)
 	}
 }
 
