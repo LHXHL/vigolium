@@ -93,6 +93,7 @@ build: ensure-audit
 		echo "$(PREFIX) First build on this machine — jstangle binaries not found, running 'make deps' to prepare dependencies..."; \
 		$(MAKE) deps; \
 	fi
+	@$(MAKE) --no-print-directory pack-jstangle-host
 	@echo "$(PREFIX) Building $(BINARY_NAME)..."
 	@mkdir -p $(BINARY_DIR)
 	$(GOBUILD) $(LDFLAGS) -o $(BINARY_DIR)/$(BINARY_NAME) ./cmd/vigolium
@@ -103,7 +104,7 @@ build: ensure-audit
 	@echo "$(PREFIX) Build complete! Binary: $(BINARY_DIR)/$(BINARY_NAME) and $(GOPATH_BIN)/$(BINARY_NAME)"
 
 # Build with embedded Chromium (requires 'make deps-chrome' first)
-build-embedded: ensure-audit
+build-embedded: ensure-audit pack-jstangle-host
 	@echo "$(PREFIX) Building $(BINARY_NAME) with embedded Chromium..."
 	@mkdir -p $(BINARY_DIR)
 	$(GOBUILD) $(LDFLAGS) -tags=embed_chromium -o $(BINARY_DIR)/$(BINARY_NAME) ./cmd/vigolium
@@ -122,7 +123,7 @@ build-embedded: ensure-audit
 #   make build-prof
 #   sample $$(pgrep -n -f 'vigolium-prof scan') 15 -f /tmp/scan.sample
 build-prof: VERSION_SUFFIX=-prof
-build-prof: ensure-audit
+build-prof: ensure-audit pack-jstangle-host
 	@echo "$(PREFIX) Building $(BINARY_NAME)-prof (symbols retained, not installed)..."
 	@mkdir -p $(BINARY_DIR)
 	$(GOBUILD) -ldflags "$(LDFLAGS_STAMP)" -o $(BINARY_DIR)/$(BINARY_NAME)-prof ./cmd/vigolium
@@ -761,7 +762,7 @@ test-smoke-autopilot-juiceshop: build juiceshop-up
 
 # jstangle binary management
 # update-jstangle and ensure-jstangle are already declared .PHONY at the top.
-.PHONY: verify-jstangle-fresh build-jstangle-current build-jstangle-target ensure-jstangle-dist
+.PHONY: verify-jstangle-fresh build-jstangle-current build-jstangle-target ensure-jstangle-dist pack-jstangle pack-jstangle-host
 JSTANGLE_SRC_DIR=platform/jstangle/bin
 JSTANGLE_DST_DIR=internal/resources/deparos/jstangle
 
@@ -769,6 +770,13 @@ JSTANGLE_DST_DIR=internal/resources/deparos/jstangle
 JSTANGLE_RES_SRC_DIR=platform/jstangle/bin
 JSTANGLE_RES_DST_DIR=internal/resources/deparos/jstangle
 JSTANGLE_RES_BINS=jstangle-darwin-amd64 jstangle-darwin-arm64 jstangle-linux-amd64 jstangle-linux-arm64 jstangle-windows-amd64.exe
+JSTANGLE_RES_TARGETS=darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64
+
+# Helpers are embedded zstd-compressed (<blob>.zst) with a pin file (<blob>.pin)
+# recording the sha256/size of the uncompressed executable; the raw blobs stay
+# in place for the --capabilities and fingerprint gates. blobpack is
+# content-addressed, so re-running it on an unchanged blob only re-hashes it.
+BLOBPACK=$(GORUN) ./internal/tools/blobpack
 
 # Build every release helper from source and copy binaries.
 update-jstangle:
@@ -777,6 +785,7 @@ update-jstangle:
 	@echo "$(PREFIX) Copying jstangle binaries to $(JSTANGLE_DST_DIR)..."
 	@mkdir -p $(JSTANGLE_DST_DIR)
 	@cp -R $(JSTANGLE_SRC_DIR)/* $(JSTANGLE_DST_DIR)/
+	@$(MAKE) --no-print-directory pack-jstangle
 	@echo "$(PREFIX) jstangle release binaries updated"
 
 # Build and stage only the current host helper. Ordinary tests and development
@@ -792,7 +801,8 @@ build-jstangle-current:
 	bun run build:bin:host; \
 	cd ../..; \
 	mkdir -p $(JSTANGLE_RES_DST_DIR); \
-	cp "$(JSTANGLE_SRC_DIR)/$$name" "$(JSTANGLE_RES_DST_DIR)/$$name"
+	cp "$(JSTANGLE_SRC_DIR)/$$name" "$(JSTANGLE_RES_DST_DIR)/$$name"; \
+	$(MAKE) --no-print-directory pack-jstangle JSTANGLE_TARGET=$$os-$$arch
 
 # Build and stage the jstangle helper for ONE target triple, e.g.
 #     make build-jstangle-target JSTANGLE_TARGET=windows-amd64
@@ -815,7 +825,43 @@ build-jstangle-target:
 	cd ../..; \
 	mkdir -p $(JSTANGLE_RES_DST_DIR); \
 	cp "$(JSTANGLE_SRC_DIR)/$$name" "$(JSTANGLE_RES_DST_DIR)/$$name"; \
+	$(MAKE) --no-print-directory pack-jstangle JSTANGLE_TARGET=$$target; \
 	echo "$(PREFIX) Staged $$name for cross-compile"
+
+# Compress staged jstangle helpers for go:embed: JSTANGLE_TARGET=<os>-<arch>
+# packs one (failing if its raw blob is missing), otherwise every raw blob
+# present is packed. The source fingerprint is recorded in the pin when the
+# blob carries it, which keeps it visible in the vigolium binary for the npm
+# release gate (build/npm/build.mjs) now that the blob bytes are compressed.
+pack-jstangle:
+	@set -e; \
+	source_hash=$$(cd platform/jstangle 2>/dev/null && bun scripts/source-fingerprint.ts 2>/dev/null || true); \
+	targets="$(JSTANGLE_TARGET)"; \
+	[ -n "$$targets" ] || targets="$(JSTANGLE_RES_TARGETS)"; \
+	for target in $$targets; do \
+		name="jstangle-$$target"; \
+		case "$$target" in windows-*) name="$$name.exe" ;; esac; \
+		raw="$(JSTANGLE_RES_DST_DIR)/$$name"; \
+		if [ ! -f "$$raw" ]; then \
+			if [ -n "$(JSTANGLE_TARGET)" ]; then \
+				echo "\033[31m[!] $$raw is missing; build it with 'make build-jstangle-target JSTANGLE_TARGET=$$target'\033[0m"; \
+				exit 1; \
+			fi; \
+			continue; \
+		fi; \
+		$(BLOBPACK) -in "$$raw" -platform "$$(echo $$target | tr - /)" $${source_hash:+-marker "$$source_hash"}; \
+	done
+
+# Pack the host helper only when its raw blob exists. Every `make build`
+# runs this so a checkout whose raw helper predates compression (or a CI
+# cache that restored only the raw blob) still has the .zst go:embed needs.
+pack-jstangle-host:
+	@os=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	arch=$$(uname -m); \
+	case "$$arch" in x86_64|amd64) arch=amd64 ;; arm64|aarch64) arch=arm64 ;; esac; \
+	if [ -f "$(JSTANGLE_RES_DST_DIR)/jstangle-$$os-$$arch" ]; then \
+		$(MAKE) --no-print-directory pack-jstangle JSTANGLE_TARGET=$$os-$$arch; \
+	fi
 
 # Pre-test step: compare the executable's compiled source fingerprint and
 # protocol contract with the current TypeScript tree. A source edit that keeps
@@ -841,6 +887,7 @@ ensure-jstangle:
 		$(MAKE) --no-print-directory build-jstangle-current; \
 	else \
 		echo "$(PREFIX) jstangle host helper is fresh ($$source_hash)"; \
+		$(MAKE) --no-print-directory pack-jstangle JSTANGLE_TARGET=$$os-$$arch; \
 	fi
 
 verify-jstangle-fresh:
@@ -885,6 +932,15 @@ ensure-jstangle-dist:
 			fi; \
 		done; \
 	fi; \
+	$(MAKE) --no-print-directory pack-jstangle; \
+	for name in $(JSTANGLE_RES_BINS); do \
+		pin="$(JSTANGLE_RES_DST_DIR)/$$name.pin"; \
+		if ! grep -q -F "\"source_hash\": \"$$source_hash\"" "$$pin" 2>/dev/null; then \
+			echo "\033[31m[!] $$pin does not pin the current source fingerprint ($$source_hash).\033[0m"; \
+			echo "\033[31m    The embedded (compressed) jstangle would not match the raw blob checked above.\033[0m"; \
+			exit 1; \
+		fi; \
+	done; \
 	echo "$(PREFIX) jstangle blobs for all targets built from current source ($$source_hash)"
 
 # vigolium-audit security audit binary management.
@@ -896,7 +952,12 @@ ensure-jstangle-dist:
 # at the same path before running the cross GOOS/GOARCH build.
 AUDIT_TS_DIR=platform/vigolium-audit
 AUDIT_BIN_DST_DIR=pkg/audit/bin/_bin
+# Base path of the staged helper: stage-audit-blob.sh writes
+# $(AUDIT_BIN_HOST).zst and $(AUDIT_BIN_HOST).pin (never the raw executable,
+# which `go:embed all:_bin` would embed uncompressed).
 AUDIT_BIN_HOST=$(AUDIT_BIN_DST_DIR)/vigolium-audit
+AUDIT_HOST_GOOS=$(shell uname -s | tr '[:upper:]' '[:lower:]')
+AUDIT_HOST_GOARCH=$(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 
 # Upstream vigolium-audit checkout, expected as a sibling of the vigolium repo.
 # Override on the command line, e.g. `make sync-audit AUDIT_UPSTREAM=...`.
@@ -954,25 +1015,30 @@ update-audit:
 		fi; \
 		echo "  $$target  $$(wc -c < "$$bin" | tr -d ' ') bytes"; \
 	done
-	@host_arch=$$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
-	host_os=$$(uname | tr '[:upper:]' '[:lower:]'); \
-	host_bin="$(AUDIT_DIST_DIR)/vigolium-audit-$$host_os-$$host_arch"; \
-	cp "$$host_bin" $(AUDIT_BIN_HOST); \
-	chmod +x $(AUDIT_BIN_HOST); \
-	echo "$(PREFIX) Staged $(AUDIT_BIN_HOST) (vigolium-audit-$$host_os-$$host_arch)"; \
-	echo "$(PREFIX) Cross-compile artifacts available under $(AUDIT_DIST_DIR)/"
+	@bash build/scripts/stage-audit-blob.sh $(AUDIT_HOST_GOOS) $(AUDIT_HOST_GOARCH)
+	@echo "$(PREFIX) Cross-compile artifacts available under $(AUDIT_DIST_DIR)/"
 
-# Pre-build step: compile vigolium-audit when the embedded binary is missing
-# or is the .gitkeep stub. The `go:embed all:_bin` pattern accepts an empty/
-# stub _bin directory at build time — this guard ensures the runtime extract
-# finds a real binary instead of failing with ErrBinaryMissing.
+# Pre-build step: make sure _bin holds the HOST's packed helper. The
+# `go:embed all:_bin` pattern accepts an empty/stub _bin directory at build
+# time — this guard ensures the runtime extract finds a real binary instead of
+# failing with ErrBinaryMissing. A raw _bin/vigolium-audit left by a checkout
+# that predates compression is repacked (or dropped when it is not a host
+# blob); a missing or foreign-platform pin is restaged from the dist blob, and
+# only rebuilt from source when that is absent too.
 ensure-audit:
-	@f="$(AUDIT_BIN_HOST)"; \
-	size=0; \
-	if [ -f "$$f" ]; then size=$$(wc -c < "$$f" | tr -d ' '); fi; \
-	if [ -z "$$size" ] || [ "$$size" -lt 1048576 ]; then \
-		echo "$(PREFIX) vigolium-audit binary missing or stub, building from source..."; \
-		$(MAKE) update-audit; \
+	@set -e; \
+	f="$(AUDIT_BIN_HOST)"; \
+	host="$(AUDIT_HOST_GOOS)/$(AUDIT_HOST_GOARCH)"; \
+	if [ -f "$$f" ]; then \
+		echo "$(PREFIX) Repacking raw $$f (the helper is now embedded zstd-compressed)..."; \
+		$(BLOBPACK) -in "$$f" -out "$$f" -platform "$$host" || rm -f "$$f.zst" "$$f.pin"; \
+		rm -f "$$f"; \
+	fi; \
+	pinned() { [ -s "$$f.zst" ] && grep -q -F "\"platform\": \"$$host\"" "$$f.pin" 2>/dev/null; }; \
+	if ! pinned; then \
+		echo "$(PREFIX) vigolium-audit helper missing, stub or not built for $$host; staging..."; \
+		$(MAKE) --no-print-directory restage-host-audit; \
+		pinned || $(MAKE) update-audit; \
 	fi
 
 # Alias for ensure-audit used by build targets — kept short for readability.
@@ -1007,13 +1073,31 @@ ensure-audit-dist:
 # is absent (fresh tree); ensure-audit-dist guarantees it exists in the release
 # flow.
 restage-host-audit:
-	@host_arch=$$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
-	host_os=$$(uname | tr '[:upper:]' '[:lower:]'); \
-	host_bin="$(AUDIT_DIST_DIR)/vigolium-audit-$$host_os-$$host_arch"; \
+	@host_bin="$(AUDIT_DIST_DIR)/vigolium-audit-$(AUDIT_HOST_GOOS)-$$(echo $(AUDIT_HOST_GOARCH) | sed 's/amd64/x64/')"; \
 	if [ -f "$$host_bin" ]; then \
-		cp "$$host_bin" $(AUDIT_BIN_HOST); chmod +x $(AUDIT_BIN_HOST); \
-		echo "$(PREFIX) Restored host vigolium-audit blob ($$host_os-$$host_arch) to $(AUDIT_BIN_HOST)"; \
+		bash build/scripts/stage-audit-blob.sh $(AUDIT_HOST_GOOS) $(AUDIT_HOST_GOARCH); \
+		echo "$(PREFIX) Restored host vigolium-audit blob ($(AUDIT_HOST_GOOS)/$(AUDIT_HOST_GOARCH)) to $(AUDIT_BIN_HOST).zst"; \
 	fi
+
+# Opt-in lazy vigolium-audit (`-tags audit_external`): no helper is embedded;
+# the binary downloads the pinned helper on first use from
+# VIGOLIUM_AUDIT_BASE_URL (or AUDIT_EXTERNAL_BASE_URL baked in at link time),
+# https only, sha256-verified. Default builds keep embedding because no CDN
+# hosts the helpers yet. audit-external-pins writes the gitignored
+# pkg/audit/bin/pins_gen.go and the upload assets
+# $(AUDIT_EXTERNAL_ASSET_DIR)/vigolium-audit_<sha12>_<os>_<arch>.zst.
+AUDIT_EXTERNAL_ASSET_DIR=build/dist-helpers
+AUDIT_EXTERNAL_BASE_URL ?=
+.PHONY: audit-external-pins build-audit-external
+audit-external-pins: ensure-audit-dist
+	@bash build/scripts/stage-audit-blob.sh --pins $(AUDIT_EXTERNAL_ASSET_DIR)
+
+# Writes bin/vigolium-audit-external; not installed to $(GOPATH_BIN).
+build-audit-external: audit-external-pins pack-jstangle-host
+	@echo "$(PREFIX) Building $(BINARY_NAME) with -tags audit_external..."
+	@mkdir -p $(BINARY_DIR)
+	$(GOBUILD) -tags audit_external -ldflags "$(LDFLAGS_INNER) -X github.com/vigolium/vigolium/pkg/audit/bin.defaultBaseURL=$(AUDIT_EXTERNAL_BASE_URL)" -o $(BINARY_DIR)/$(BINARY_NAME)-audit-external ./cmd/vigolium
+	@echo "$(PREFIX) Binary: $(BINARY_DIR)/$(BINARY_NAME)-audit-external (upload $(AUDIT_EXTERNAL_ASSET_DIR)/*.zst to the base URL)"
 
 # Regenerate the native secret-detection rule catalog (pkg/secretscan/catalog.json)
 # from the pinned kingfisher rule set. Requires network + git.

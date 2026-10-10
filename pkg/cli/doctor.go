@@ -281,6 +281,10 @@ func focusedCheck(r *diagnostics.Report, name string) (label string, c *diagnost
 		if r.Piolium != nil {
 			return "Piolium", r.Piolium, true
 		}
+	case "vigolium-audit":
+		if c := r.EmbeddedBinaries["vigolium-audit"]; c != nil {
+			return "vigolium-audit helper", c, true
+		}
 	}
 	return "", nil, false
 }

@@ -40,7 +40,7 @@ func TestDiscoveryEndToEnd_JSPersistence(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the jstangle helper; skipped in -short")
 	}
-	if len(deparosresources.JSTangleBinary) <= 1024 {
+	if len(deparosresources.JSTangleBinaryZst) <= 1024 {
 		t.Skip("no valid embedded jstangle helper for this platform")
 	}
 

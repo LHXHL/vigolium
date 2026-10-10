@@ -42,9 +42,17 @@ func TestJSTangleEmbedCoverage(t *testing.T) {
 		if !strings.Contains(src, wantBuild) {
 			t.Errorf("%s: missing build constraint %q", file, wantBuild)
 		}
-		wantEmbed := fmt.Sprintf("//go:embed jstangle/jstangle-%s-%s", goos, goarch)
-		if !strings.Contains(src, wantEmbed) {
-			t.Errorf("%s: missing embed directive %q", file, wantEmbed)
+		// The helper is embedded zstd-compressed with its pin file; embedding
+		// the raw executable would undo the compression (and its pin check).
+		blob := fmt.Sprintf("jstangle/jstangle-%s-%s", goos, goarch)
+		if goos == "windows" {
+			blob += ".exe"
+		}
+		for _, ext := range []string{".zst", ".pin"} {
+			wantEmbed := "//go:embed " + blob + ext + "\n"
+			if !strings.Contains(src, wantEmbed) {
+				t.Errorf("%s: missing embed directive %q", file, strings.TrimSpace(wantEmbed))
+			}
 		}
 	}
 }

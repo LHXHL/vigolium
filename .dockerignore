@@ -24,6 +24,7 @@ platform/*/dist/
 # by go:embed. Keep the build-host's copy out of the context; Docker stages the
 # correct Linux blob from platform/vigolium-audit/build/dist/ per target arch.
 pkg/audit/bin/_bin/vigolium-audit
+pkg/audit/bin/_bin/vigolium-audit.*
 
 # Test fixtures (large, not needed for build)
 test/testdata/

@@ -33,8 +33,9 @@ external toolchains (Bun, GoReleaser, the UI build) and are **not** verified by
 
 | Artifact | Path | Regenerate with |
 |---|---|---|
-| jstangle binaries (embedded per-platform) | `internal/resources/deparos/jstangle/` | `make ensure-jstangle` / `make update-jstangle` |
-| vigolium-audit harness binary | `pkg/audit/bin/_bin/` | `make update-audit` |
+| jstangle binaries (embedded per-platform as `.zst` + `.pin`) | `internal/resources/deparos/jstangle/` | `make ensure-jstangle` / `make update-jstangle` / `make pack-jstangle` |
+| vigolium-audit harness binary (embedded as `vigolium-audit.zst` + `.pin`) | `pkg/audit/bin/_bin/` | `make update-audit` / `make ensure-audit` |
+| `audit_external` pins table and download assets | `pkg/audit/bin/pins_gen.go`, `build/dist-helpers/` | `make audit-external-pins` |
 | Workbench UI bundle & report template | `public/ui/`, `public/static-reports/template.html` | `make update-ui` |
 | Release metadata | `build/dist/metadata.json` | `make generate-metadata` |
 

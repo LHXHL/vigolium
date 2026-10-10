@@ -943,17 +943,50 @@ func shortDigest(value string) string {
 }
 
 func checkAuditBinary() *CheckResult {
+	st := bin.Status()
 	details := []string{
 		fmt.Sprintf("runtime: %s/%s", runtime.GOOS, runtime.GOARCH),
-		"extracting embedded vigolium-audit and validating executable platform",
+		fmt.Sprintf("source: %s", st.Source),
+	}
+	if st.SHA256 != "" {
+		details = append(details, fmt.Sprintf("pinned sha256: %s (%d bytes uncompressed)", st.SHA256, st.Size))
+	}
+	if st.Source == bin.SourceDownload && st.Origin != "" {
+		details = append(details, fmt.Sprintf("download: %s", st.Origin))
+	}
+	if st.Path != "" {
+		details = append(details, fmt.Sprintf("cache: %s (installed=%t)", config.ContractPath(st.Path), st.Cached))
+	}
+
+	// An audit_external build fetches the helper on first use. A plain doctor
+	// run reports that without downloading; `--fix` prefetches it.
+	if st.Source == bin.SourceDownload && st.Err == nil && !st.Cached {
+		return &CheckResult{
+			Status:  StatusWarning,
+			Message: "vigolium-audit helper not downloaded yet",
+			Details: details,
+			Tip:     "It is fetched on first audit use. Prefetch it now with `vigolium doctor --fix --only vigolium-audit`, or set " + bin.BinaryEnv + "=/path/to/vigolium-audit for an offline install.",
+		}
+	}
+	if st.Source == bin.SourceDownload && st.Err != nil {
+		return &CheckResult{
+			Status:  StatusError,
+			Message: fmt.Sprintf("vigolium-audit helper unavailable: %v", st.Err),
+			Details: details,
+			Tip:     "This build downloads vigolium-audit instead of embedding it. Set " + bin.BaseURLEnv + " to an https mirror of the pinned helper, or " + bin.BinaryEnv + "=/path/to/vigolium-audit.",
+		}
 	}
 
 	if !bin.Available() {
+		msg, tip := "vigolium-audit binary not embedded", "This installed Vigolium binary does not contain vigolium-audit. Reinstall the latest release; source builds should use `make build` or `make release`, not raw `go build`."
+		if st.Source == bin.SourceOverride {
+			msg, tip = fmt.Sprintf("%s is not usable: %v", bin.BinaryEnv, st.Err), "Point "+bin.BinaryEnv+" at an executable vigolium-audit, or unset it to use the built-in helper."
+		}
 		return &CheckResult{
 			Status:  StatusError,
-			Message: "vigolium-audit binary not embedded",
+			Message: msg,
 			Details: details,
-			Tip:     "This installed Vigolium binary does not contain vigolium-audit. Reinstall the latest release; source builds should use `make build` or `make release`, not raw `go build`.",
+			Tip:     tip,
 		}
 	}
 
@@ -965,6 +998,9 @@ func checkAuditBinary() *CheckResult {
 		}
 		if errors.Is(err, bin.ErrBinaryPlatformMismatch) {
 			tip = "The installed Vigolium package embedded a vigolium-audit binary for the wrong OS/arch. Reinstall the latest release; if it persists, report this as a packaging bug."
+		}
+		if errors.Is(err, bin.ErrChecksumMismatch) {
+			tip = "The vigolium-audit helper did not match its pinned sha256 and was not installed. Reinstall Vigolium; if it persists, report this doctor output."
 		}
 		return &CheckResult{
 			Status:  StatusError,

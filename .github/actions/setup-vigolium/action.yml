@@ -69,14 +69,18 @@ runs:
 
     # Key on the same inputs scripts/source-fingerprint.ts hashes, so a cache
     # hit means the helper's embedded sourceHash matches the tree. The host leg
-    # re-checks that anyway via `make ensure-jstangle` below.
+    # re-checks that anyway via `make ensure-jstangle` below. go:embed takes the
+    # zstd-packed .zst and its .pin, so those are cached with the raw blob.
     - name: Restore jstangle helper
       id: cache
       if: steps.target.outputs.available == 'true'
       uses: actions/cache@v4
       with:
-        path: ${{ steps.target.outputs.path }}
-        key: jstangle-${{ steps.target.outputs.target }}-${{ hashFiles('platform/jstangle/src/**', 'platform/jstangle/scripts/**', 'platform/jstangle/package.json', 'platform/jstangle/bun.lock', 'platform/jstangle/tsconfig.json', 'platform/jstangle/tsconfig.build.json', 'platform/jstangle/vitest.config.ts') }}
+        path: |
+          ${{ steps.target.outputs.path }}
+          ${{ steps.target.outputs.path }}.zst
+          ${{ steps.target.outputs.path }}.pin
+        key: jstangle-zst-${{ steps.target.outputs.target }}-${{ hashFiles('platform/jstangle/src/**', 'platform/jstangle/scripts/**', 'platform/jstangle/package.json', 'platform/jstangle/bun.lock', 'platform/jstangle/tsconfig.json', 'platform/jstangle/tsconfig.build.json', 'platform/jstangle/vitest.config.ts') }}
 
     # Host leg: ensure-jstangle is cheap on a hit (it only compares the
     # helper's --capabilities sourceHash with the tree) and rebuilds when the
@@ -94,6 +98,15 @@ runs:
         steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: make build-jstangle-target JSTANGLE_TARGET=${{ steps.target.outputs.target }}
+
+    # Content-addressed: a no-op when the restored .zst/.pin already pin the
+    # raw blob, and a repack when only the raw blob is present.
+    - name: Pack jstangle helper for ${{ steps.target.outputs.target }}
+      if: >-
+        steps.target.outputs.available == 'true' &&
+        steps.target.outputs.is-host != 'true'
+      shell: bash
+      run: make pack-jstangle JSTANGLE_TARGET=${{ steps.target.outputs.target }}
 
     - name: Fall back to the jstangle stub
       if: steps.target.outputs.available != 'true'
