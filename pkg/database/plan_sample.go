@@ -24,13 +24,24 @@ func (r *Repository) SampleInsertionPoints(ctx context.Context, projectUUID stri
 	if limit <= 0 {
 		limit = 1000
 	}
-	var rows []HTTPRecord
-	q := r.db.NewSelect().Model(&rows).Column("parameters", "path")
+	// Only the parameter count is needed, so SQL measures the JSON array
+	// instead of every row's parameters being decoded. parameters is TEXT on
+	// both drivers; NULL, '' and a non-array count as no parameters.
+	paramCount := "CASE WHEN parameters IS NULL OR parameters = '' THEN 0 ELSE json_array_length(parameters) END"
+	if r.db.Driver() == driverPostgres {
+		paramCount = "CASE WHEN parameters IS NULL OR parameters = '' THEN 0" +
+			" WHEN jsonb_typeof(parameters::jsonb) = 'array' THEN jsonb_array_length(parameters::jsonb) ELSE 0 END"
+	}
+	var rows []struct {
+		ParamCount int    `bun:"param_count"`
+		Path       string `bun:"path"`
+	}
+	q := r.db.NewSelect().Model((*HTTPRecord)(nil)).ColumnExpr(paramCount + " AS param_count").Column("path")
 	if projectUUID != "" {
 		q = q.Where("project_uuid = ?", projectUUID)
 	}
 	q = applyHostScopeFilter(q, hosts)
-	if err := q.Limit(limit).Scan(ctx); err != nil {
+	if err := q.Limit(limit).Scan(ctx, &rows); err != nil {
 		return InsertionPointSample{}, fmt.Errorf("sample records: %w", err)
 	}
 	var s InsertionPointSample
@@ -39,7 +50,7 @@ func (r *Repository) SampleInsertionPoints(ctx context.Context, projectUUID stri
 	}
 	var params, segments int
 	for _, rec := range rows {
-		params += len(rec.Parameters)
+		params += rec.ParamCount
 		for _, seg := range strings.Split(strings.Trim(rec.Path, "/"), "/") {
 			if seg != "" {
 				segments++

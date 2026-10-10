@@ -276,9 +276,14 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 		}
 	}
 
+	settings, err := h.scanSettings(c)
+	if err != nil {
+		return respondError(c, fiber.StatusInternalServerError, err)
+	}
+
 	// Scope admission, synchronously: a target the configured scope refuses is
 	// a 422 now rather than a 202 for a scan that silently does nothing.
-	if refused := h.refuseOutOfScope(c, req.URL); refused != nil {
+	if refused := refuseOutOfScope(c, settings, req.URL); refused != nil {
 		return refused()
 	}
 
@@ -296,7 +301,7 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 	}
 
 	if !h.tryStartNativeScan(func() {
-		h.runBackgroundURLScan(scanID, projectUUID, req.URL, rr, moduleIDs, req.NoPassive)
+		h.runBackgroundURLScan(scanID, projectUUID, req.URL, rr, moduleIDs, req.NoPassive, probeStealth(settings))
 	}) {
 		if h.repo != nil {
 			_ = h.repo.CompleteScan(context.Background(), scanID, "rejected: too many concurrent scans")
@@ -352,9 +357,14 @@ func (h *Handlers) handleScanRequest(c fiber.Ctx, start func(func()) bool) error
 		return respondErrorMsg(c, fiber.StatusBadRequest, ErrInvalidRawRequest.Error()+": "+err.Error())
 	}
 
+	settings, err := h.scanSettings(c)
+	if err != nil {
+		return respondError(c, fiber.StatusInternalServerError, err)
+	}
+
 	// Scope admission on the inferred target first, so a refused target is
 	// never contacted by the scheme probe below (see HandleScanURL).
-	if refused := h.refuseOutOfScope(c, rr.Target()); refused != nil {
+	if refused := refuseOutOfScope(c, settings, rr.Target()); refused != nil {
 		return refused()
 	}
 
@@ -369,7 +379,7 @@ func (h *Handlers) handleScanRequest(c fiber.Ctx, start func(func()) bool) error
 	})
 	if settled.Changed {
 		rr = settled.Request
-		if refused := h.refuseOutOfScope(c, rr.Target()); refused != nil {
+		if refused := refuseOutOfScope(c, settings, rr.Target()); refused != nil {
 			return refused()
 		}
 	}
@@ -411,7 +421,7 @@ func (h *Handlers) handleScanRequest(c fiber.Ctx, start func(func()) bool) error
 	}
 
 	if !start(func() {
-		h.runBackgroundURLScan(scanID, projectUUID, target, rr, moduleIDs, req.NoPassive)
+		h.runBackgroundURLScan(scanID, projectUUID, target, rr, moduleIDs, req.NoPassive, probeStealth(settings))
 	}) {
 		if h.repo != nil {
 			_ = h.repo.CompleteScan(context.Background(), scanID, "rejected: too many concurrent scans")
@@ -429,14 +439,20 @@ func (h *Handlers) handleScanRequest(c fiber.Ctx, start func(func()) bool) error
 	})
 }
 
-// probeStealth is the project's spidering.stealth ("" = auto, also when the
-// project settings cannot be read).
-func (h *Handlers) probeStealth(projectUUID string) string {
+// scanSettings resolves the request project's settings (the server's, plus
+// X-Project-UUID's overlay) once per scan request. nil, nil when the server
+// has no settings to judge by.
+func (h *Handlers) scanSettings(c fiber.Ctx) (*config.Settings, error) {
 	if h.settings == nil {
-		return ""
+		return nil, nil
 	}
-	settings, err := h.settingsForProject(projectUUID)
-	if err != nil {
+	return h.settingsForProject(getProjectUUID(c))
+}
+
+// probeStealth is the project's spidering.stealth ("" = auto, also when there
+// are no settings).
+func probeStealth(settings *config.Settings) string {
+	if settings == nil {
 		return ""
 	}
 	return settings.Spidering.Stealth
@@ -446,21 +462,14 @@ func (h *Handlers) probeStealth(projectUUID string) string {
 // POST /api/scan-request (tests); nil is portsweep.ResolveScheme.
 var scanRequestSchemeResolver requestscheme.Resolver
 
-// refuseOutOfScope admits target against the request project's scope (the
-// server's settings plus X-Project-UUID's overlay), the verdict the CLI direct
-// path and the runner enforce. When scope refuses it, it returns the responder
-// for 422 with details "no_targets_in_scope" (the apicontract code) and the
-// rule in the message; nothing is created or sent. nil means admitted, or no
-// settings to judge by.
-func (h *Handlers) refuseOutOfScope(c fiber.Ctx, target string) func() error {
-	if h.settings == nil {
+// refuseOutOfScope admits target against the request project's scope
+// (scanSettings), the verdict the CLI direct path and the runner enforce. When
+// scope refuses it, it returns the responder for 422 with details
+// "no_targets_in_scope" (the apicontract code) and the rule in the message;
+// nothing is created or sent. nil means admitted, or no settings to judge by.
+func refuseOutOfScope(c fiber.Ctx, settings *config.Settings, target string) func() error {
+	if settings == nil {
 		return nil
-	}
-	settings, err := h.settingsForProject(getProjectUUID(c))
-	if err != nil {
-		return func() error {
-			return respondError(c, fiber.StatusInternalServerError, err)
-		}
 	}
 	adm := runner.AdmitTargets(settings.Scope, []string{target})
 	if !adm.NoneAdmitted() {
@@ -553,7 +562,7 @@ func (h *Handlers) nativeScanContext() (context.Context, context.CancelFunc) {
 	return context.WithCancel(parent)
 }
 
-func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *httpmsg.HttpRequestResponse, moduleIDs []string, noPassive bool) {
+func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *httpmsg.HttpRequestResponse, moduleIDs []string, noPassive bool, stealth string) {
 	// Any panic escaping this goroutine (nil deref in a module, panic inside
 	// a goroutine spawned by a module, etc.) would otherwise take the entire
 	// server process down. Recover here, log the stack, and mark the scan as
@@ -581,7 +590,7 @@ func (h *Handlers) runBackgroundURLScan(scanID, projectUUID, target string, rr *
 
 	// Module browser confirmations follow the server's --proxy and the
 	// project's spidering.stealth, as on the CLI paths.
-	defer spitolas.SetProbeDefaults(h.serverProxyURL(), h.probeStealth(projectUUID))()
+	defer spitolas.SetProbeDefaults(h.serverProxyURL(), stealth)()
 
 	sl := openScanSessionLog(scanID, h.settings)
 	defer sl.close()

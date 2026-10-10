@@ -350,8 +350,6 @@ type routeContract struct {
 	// Command is the CLI command that reads the same data. Empty when the
 	// route has no CLI equivalent; the route key is reported instead.
 	Command string
-	// List marks a route whose v2 body is the list envelope.
-	List bool
 	// ProjectScoped reports whether the rows are filtered by X-Project-UUID.
 	ProjectScoped bool
 }
@@ -361,22 +359,22 @@ type routeContract struct {
 // without being classified here or in restObjectRoutes, so a new list endpoint
 // is born on the envelope.
 var restRouteContracts = map[string]routeContract{
-	"GET /api/findings":                     {Command: "finding", List: true, ProjectScoped: true},
-	"GET /api/http-records":                 {Command: "traffic", List: true, ProjectScoped: true},
-	"GET /api/scans":                        {Command: "log ls", List: true, ProjectScoped: true},
-	"GET /api/scans/:uuid/logs":             {List: true, ProjectScoped: true},
-	"GET /api/oast-interactions":            {List: true, ProjectScoped: true},
-	"GET /api/modules":                      {Command: "module ls", List: true},
-	"GET /api/extensions":                   {Command: "extensions ls", List: true},
-	"GET /api/extensions/docs":              {Command: "extensions docs", List: true},
-	"GET /api/projects":                     {Command: "project list", List: true},
-	"GET /api/config":                       {Command: "config ls", List: true},
-	"GET /api/agent/status/list":            {List: true, ProjectScoped: true},
-	"GET /api/agent/sessions":               {Command: "agent session", List: true, ProjectScoped: true},
-	"GET /api/agent/sessions/:id/artifacts": {List: true, ProjectScoped: true},
-	"GET /api/db/tables":                    {List: true},
-	"GET /api/db/tables/:table/columns":     {List: true},
-	"GET /api/db/tables/:table/records":     {List: true},
+	"GET /api/findings":                     {Command: "finding", ProjectScoped: true},
+	"GET /api/http-records":                 {Command: "traffic", ProjectScoped: true},
+	"GET /api/scans":                        {Command: "log ls", ProjectScoped: true},
+	"GET /api/scans/:uuid/logs":             {ProjectScoped: true},
+	"GET /api/oast-interactions":            {ProjectScoped: true},
+	"GET /api/modules":                      {Command: "module ls"},
+	"GET /api/extensions":                   {Command: "extensions ls"},
+	"GET /api/extensions/docs":              {Command: "extensions docs"},
+	"GET /api/projects":                     {Command: "project list"},
+	"GET /api/config":                       {Command: "config ls"},
+	"GET /api/agent/status/list":            {ProjectScoped: true},
+	"GET /api/agent/sessions":               {Command: "agent session", ProjectScoped: true},
+	"GET /api/agent/sessions/:id/artifacts": {ProjectScoped: true},
+	"GET /api/db/tables":                    {},
+	"GET /api/db/tables/:table/columns":     {},
+	"GET /api/db/tables/:table/records":     {},
 }
 
 // restObjectRoutes are the GET routes that answer a single object, a file or

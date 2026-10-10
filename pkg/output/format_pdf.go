@@ -15,6 +15,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/scratch"
 	"github.com/vigolium/vigolium/pkg/apicontract"
+	"github.com/vigolium/vigolium/pkg/utils"
 
 	"github.com/go-rod/rod/lib/launcher"
 	"go.uber.org/zap"
@@ -254,7 +255,7 @@ func currentPDFHost() pdfHost {
 // Linux, and containers usually lack the namespaces it needs. The container
 // test mirrors rod's (and spitolas') so every browser launch agrees.
 func pdfNoSandbox(h pdfHost) (bool, string) {
-	if v := strings.TrimSpace(h.getenv("VIGOLIUM_CHROME_NO_SANDBOX")); v == "1" || strings.EqualFold(v, "true") {
+	if utils.Truthy(h.getenv("VIGOLIUM_CHROME_NO_SANDBOX")) {
 		return true, "VIGOLIUM_CHROME_NO_SANDBOX=1"
 	}
 	if h.goos != "linux" {

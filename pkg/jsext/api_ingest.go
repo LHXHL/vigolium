@@ -12,7 +12,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/input/formats/curl"
 	"github.com/vigolium/vigolium/pkg/input/formats/openapi"
 	"github.com/vigolium/vigolium/pkg/input/formats/postman"
-	"github.com/vigolium/vigolium/pkg/storagesig"
 	"go.uber.org/zap"
 )
 
@@ -316,45 +315,11 @@ func fetchResponseForIngest(rr *httpmsg.HttpRequestResponse, httpClient *http.Re
 	return rr.WithResponse(httpmsg.NewHttpResponseWithDuration(raw, elapsed))
 }
 
-// isExtIngestInScope checks whether a request/response pair should be saved.
-// Static file filtering is always enforced when a scopeMatcher is available.
-// Full scope rules are also checked when the matcher is present.
-// Returns true when scopeMatcher is nil (no scope filtering).
+// isExtIngestInScope checks whether a request/response pair should be saved:
+// static files are always filtered and the full scope rules always apply
+// (config.ScopeMatcher.AdmitIngest). A nil scopeMatcher admits everything.
 func isExtIngestInScope(scopeMatcher *config.ScopeMatcher, rr *httpmsg.HttpRequestResponse) bool {
-	if scopeMatcher == nil {
-		return true
-	}
-
-	// Always filter static files — except object-storage assets, which are kept
-	// as metadata-only (body stripped) so the CDN traversal modules can probe
-	// storage-fronted static URLs.
-	if scopeMatcher.IsStaticFile(rr.Request().Path()) {
-		var hg storagesig.HeaderGetter
-		if rr.HasResponse() && rr.Response() != nil {
-			hg = rr.Response()
-		}
-		if !storagesig.KeepStaticAsMeta(rr.Request().Path(), hg) {
-			return false
-		}
-		if rr.Response() != nil {
-			rr.Response().TruncateBody(0)
-		}
-	}
-
-	input := config.ScopeMatchInput{
-		Host:               rr.Service().Host(),
-		Path:               rr.Request().Path(),
-		RequestContentType: rr.Request().Header("Content-Type"),
-		RequestRaw:         string(rr.Request().Raw()),
-	}
-	if rr.HasResponse() {
-		resp := rr.Response()
-		input.StatusCode = resp.StatusCode()
-		input.ResponseContentType = resp.Header("Content-Type")
-		input.ResponseBody = resp.BodyToString()
-	}
-
-	return scopeMatcher.InScope(input)
+	return scopeMatcher.AdmitIngest(rr, true)
 }
 
 // ingestResultToJS creates a JS IngestResult object.

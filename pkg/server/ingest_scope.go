@@ -8,7 +8,6 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
-	"github.com/vigolium/vigolium/pkg/storagesig"
 )
 
 // ingestScope is the scope a recorded request is judged by before it is
@@ -19,31 +18,9 @@ type ingestScope struct {
 	appliedOnIngest bool
 }
 
-// admit reports whether rr should be stored. Static files are always filtered
-// (regardless of applied_on_ingest) — except object-storage assets, kept as
-// metadata-only (body stripped) so the CDN traversal modules can probe
-// storage-fronted static URLs. The full scope rules apply only when
-// applied_on_ingest is set.
+// admit reports whether rr should be stored (config.ScopeMatcher.AdmitIngest).
 func (s ingestScope) admit(rr *httpmsg.HttpRequestResponse) bool {
-	if s.matcher == nil {
-		return true
-	}
-	if s.matcher.IsStaticFile(rr.Request().Path()) {
-		var hg storagesig.HeaderGetter
-		if rr.HasResponse() && rr.Response() != nil {
-			hg = rr.Response()
-		}
-		if !storagesig.KeepStaticAsMeta(rr.Request().Path(), hg) {
-			return false
-		}
-		if rr.Response() != nil {
-			rr.Response().TruncateBody(0) // metadata-only: keep headers, drop body
-		}
-	}
-	if !s.appliedOnIngest {
-		return true
-	}
-	return s.matcher.InScope(buildScopeMatchInput(rr))
+	return s.matcher.AdmitIngest(rr, s.appliedOnIngest)
 }
 
 // projectScopeEntry caches one project's overlaid ingest scope, valid while

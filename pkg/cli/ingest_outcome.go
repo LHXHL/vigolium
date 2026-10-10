@@ -8,7 +8,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/source"
-	"github.com/vigolium/vigolium/pkg/storagesig"
 	"github.com/vigolium/vigolium/pkg/work"
 	"go.uber.org/zap"
 )
@@ -93,30 +92,11 @@ func (s *ingestSaver) save(ctx context.Context, rr *httpmsg.HttpRequestResponse)
 		return
 	}
 
-	if s.staticMatcher != nil && s.staticMatcher.IsStaticFile(rr.Request().Path()) {
-		var hg storagesig.HeaderGetter
-		if rr.HasResponse() && rr.Response() != nil {
-			hg = rr.Response()
-		}
-		if !storagesig.KeepStaticAsMeta(rr.Request().Path(), hg) {
-			s.count(func(o *ingestOutcome) { o.Skipped++ })
-			return
-		}
-		if rr.Response() != nil {
-			rr.Response().TruncateBody(0) // metadata-only: keep headers, drop body
-		}
-	}
-
-	if s.scopeMatcher != nil {
-		if !s.scopeMatcher.InScopeRequest(
-			rr.Service().Host(),
-			rr.Request().Path(),
-			rr.Request().Header("Content-Type"),
-			string(rr.Request().Raw()),
-		) {
-			s.count(func(o *ingestOutcome) { o.Skipped++ })
-			return
-		}
+	// staticMatcher and scopeMatcher are built from the same scope and
+	// targets; scopeMatcher only marks that applied_on_ingest is set.
+	if !s.staticMatcher.AdmitIngest(rr, s.scopeMatcher != nil) {
+		s.count(func(o *ingestOutcome) { o.Skipped++ })
+		return
 	}
 
 	if _, err := s.repo.SaveRecord(ctx, rr, database.RecordSourceIngestCLI, s.projectUUID); err != nil {

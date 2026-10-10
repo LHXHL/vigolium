@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/utils"
 	"go.uber.org/zap"
 )
 
@@ -24,6 +25,10 @@ type ProjectMiddlewareConfig struct {
 	// is created on first use instead of answering 404 (config
 	// server.auto_create_projects).
 	AutoCreate bool
+	// Reader, when set, serves the project lookup so the per-request check
+	// never borrows a writer connection (Handlers.readerRepo). The writer
+	// repo passed to ProjectUUIDMiddleware still creates opted-in projects.
+	Reader *database.Repository
 }
 
 // ProjectUUIDMiddleware extracts the project UUID from the X-Project-UUID
@@ -62,7 +67,11 @@ func ProjectUUIDMiddleware(repo *database.Repository, cfg ...ProjectMiddlewareCo
 			return c.Next()
 		}
 
-		_, err := repo.GetProjectByUUID(c.Context(), projectUUID)
+		lookup := repo
+		if conf.Reader != nil {
+			lookup = conf.Reader
+		}
+		_, err := lookup.GetProjectByUUID(c.Context(), projectUUID)
 		switch {
 		case err == nil:
 			return c.Next()
@@ -95,15 +104,7 @@ func validProjectUUID(s string) bool {
 // projectCreateRequested reports whether the request opted in to creating
 // the project its X-Project-UUID names.
 func projectCreateRequested(c fiber.Ctx) bool {
-	return truthy(c.Get(apicontract.ProjectCreateHeader)) || truthy(c.Query("create"))
-}
-
-func truthy(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "1", "true", "yes":
-		return true
-	}
-	return false
+	return utils.Truthy(c.Get(apicontract.ProjectCreateHeader)) || utils.Truthy(c.Query("create"))
 }
 
 // isPublicProjectPath returns true for public/utility endpoints (health

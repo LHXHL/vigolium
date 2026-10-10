@@ -18,8 +18,8 @@ func TestJSFactQueryNames(t *testing.T) {
 	}
 }
 
-func TestByFrequency(t *testing.T) {
-	got := byFrequency(map[string]int{"b": 1, "a": 1, "hot": 5})
+func TestKeysByCount(t *testing.T) {
+	got := keysByCount(map[string]int{"b": 1, "a": 1, "hot": 5}, 0)
 	if strings.Join(got, ",") != "hot,a,b" {
 		t.Errorf("order = %v", got)
 	}

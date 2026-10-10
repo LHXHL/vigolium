@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -25,36 +24,27 @@ import (
 	"go.uber.org/zap"
 )
 
-// buildScopeMatchInput extracts scope-relevant fields from an HttpRequestResponse.
-func buildScopeMatchInput(rr *httpmsg.HttpRequestResponse) config.ScopeMatchInput {
-	input := config.ScopeMatchInput{
-		Host:               rr.Service().Host(),
-		Path:               rr.Request().Path(),
-		RequestContentType: rr.Request().Header("Content-Type"),
-		RequestRaw:         string(rr.Request().Raw()),
-	}
-	if rr.HasResponse() {
-		resp := rr.Response()
-		input.StatusCode = resp.StatusCode()
-		input.ResponseContentType = resp.Header("Content-Type")
-		input.ResponseBody = resp.BodyToString()
-	}
-	return input
-}
-
 // isIngestInScope checks whether a request/response pair should be saved into
 // projectUUID: the project's scope (the server's, with its config overlay),
 // static files always filtered, full rules only when applied_on_ingest is set.
 // A project overlay that cannot be read refuses the record (logged) rather
 // than judging it by the wider global scope.
 func (h *Handlers) isIngestInScope(rr *httpmsg.HttpRequestResponse, projectUUID string) bool {
+	return h.ingestAdmitter(projectUUID)(rr)
+}
+
+// ingestAdmitter resolves projectUUID's ingest scope once and returns its
+// admit rule, so a batch ingest judges every record without re-resolving the
+// scope per record. When the scope cannot be resolved the error is logged
+// once and every record is refused.
+func (h *Handlers) ingestAdmitter(projectUUID string) func(*httpmsg.HttpRequestResponse) bool {
 	scope, err := h.ingestScopeFor(projectUUID)
 	if err != nil {
-		zap.L().Warn("Ingest: project scope unavailable; record not stored",
+		zap.L().Warn("Ingest: project scope unavailable; records not stored",
 			zap.String("project_uuid", projectUUID), zap.Error(err))
-		return false
+		return func(*httpmsg.HttpRequestResponse) bool { return false }
 	}
-	return scope.admit(rr)
+	return scope.admit
 }
 
 // fetchResponseIfNeeded fetches the HTTP response for a request if one isn't
@@ -426,6 +416,7 @@ func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHT
 
 	var skipped int
 	acc := h.newIngestAccumulator(ctx, ingestSource(c), getProjectUUID(c))
+	admit := h.ingestAdmitter(getProjectUUID(c))
 
 	var urlOverrideSvc *httpmsg.Service
 	if req.URL != "" {
@@ -448,7 +439,7 @@ func (h *Handlers) ingestOpenAPI(c fiber.Ctx, ctx context.Context, req *IngestHT
 			rr = rr.WithService(urlOverrideSvc)
 		}
 		rr = h.fetchResponseIfNeeded(rr)
-		if !h.isIngestInScope(rr, getProjectUUID(c)) {
+		if !admit(rr) {
 			skipped++
 			return true
 		}
@@ -525,12 +516,13 @@ func (h *Handlers) ingestFileFormat(c fiber.Ctx, ctx context.Context, req *Inges
 
 	var skipped int
 	acc := h.newIngestAccumulator(ctx, ingestSource(c), getProjectUUID(c))
+	admit := h.ingestAdmitter(getProjectUUID(c))
 	parseErr := parser.Parse(path, func(rr *httpmsg.HttpRequestResponse) bool {
 		if urlOverrideSvc != nil {
 			rr = rr.WithService(urlOverrideSvc)
 		}
 		rr = h.fetchResponseIfNeeded(rr)
-		if !h.isIngestInScope(rr, getProjectUUID(c)) {
+		if !admit(rr) {
 			skipped++
 			return true
 		}
@@ -662,6 +654,7 @@ func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHT
 	var skipped int
 	var parseErrors []string // per-line parse errors keep their line context
 	acc := h.newIngestAccumulator(ctx, ingestSource(c), getProjectUUID(c))
+	admit := h.ingestAdmitter(getProjectUUID(c))
 
 	var urlOverrideSvc *httpmsg.Service
 	if req.URL != "" {
@@ -689,7 +682,7 @@ func (h *Handlers) ingestURLFile(c fiber.Ctx, ctx context.Context, req *IngestHT
 
 		rr = h.fetchResponseIfNeeded(rr)
 
-		if !h.isIngestInScope(rr, getProjectUUID(c)) {
+		if !admit(rr) {
 			skipped++
 			continue
 		}

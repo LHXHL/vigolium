@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/uptrace/bun"
@@ -121,7 +120,7 @@ func (r *Repository) ParamNamesForHost(ctx context.Context, projectUUID, hostnam
 			js[n]++
 		}
 	}
-	return HostParamNames{JS: byFrequency(js), Observed: byFrequency(observed)}, nil
+	return HostParamNames{JS: keysByCount(js, 0), Observed: keysByCount(observed, 0)}, nil
 }
 
 // jsFactBundleNames is the slice of a jstangle-facts artifact that carries
@@ -151,21 +150,6 @@ func jsFactQueryNames(content []byte) []string {
 			}
 		}
 	}
-	return out
-}
-
-// byFrequency returns the keys of counts, most frequent first, ties by name.
-func byFrequency(counts map[string]int) []string {
-	out := make([]string, 0, len(counts))
-	for n := range counts {
-		out = append(out, n)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if counts[out[i]] != counts[out[j]] {
-			return counts[out[i]] > counts[out[j]]
-		}
-		return out[i] < out[j]
-	})
 	return out
 }
 

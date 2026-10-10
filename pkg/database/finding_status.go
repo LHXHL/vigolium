@@ -141,6 +141,8 @@ func (r *Repository) UpdateFindingStatusScoped(ctx context.Context, projectUUID 
 		res.NotFound = notFound
 
 		now := time.Now().UTC()
+		var changedIDs []int64
+		var events []FindingStatusEvent
 		for _, row := range targets {
 			from := row.Status
 			if from == "" {
@@ -151,16 +153,8 @@ func (r *Repository) UpdateFindingStatusScoped(ctx context.Context, projectUUID 
 				res.Unchanged = append(res.Unchanged, change)
 				continue
 			}
-			if _, err := tx.NewUpdate().Model((*Finding)(nil)).
-				Set("status = ?", req.Status).
-				Set("status_note = ?", nullIfEmpty(req.Note)).
-				Set("status_actor = ?", nullIfEmpty(req.Actor)).
-				Set("status_updated_at = ?", now).
-				Where("id = ?", row.ID).
-				Exec(ctx); err != nil {
-				return fmt.Errorf("update finding %d status: %w", row.ID, err)
-			}
-			ev := &FindingStatusEvent{
+			changedIDs = append(changedIDs, row.ID)
+			events = append(events, FindingStatusEvent{
 				FindingID:   row.ID,
 				ProjectUUID: defaultProjectUUID(row.ProjectUUID),
 				FromStatus:  from,
@@ -168,11 +162,26 @@ func (r *Repository) UpdateFindingStatusScoped(ctx context.Context, projectUUID 
 				Note:        req.Note,
 				Actor:       req.Actor,
 				CreatedAt:   now,
-			}
-			if _, err := tx.NewInsert().Model(ev).Exec(ctx); err != nil {
-				return fmt.Errorf("record status event for finding %d: %w", row.ID, err)
-			}
+			})
 			res.Changed = append(res.Changed, change)
+		}
+		for chunk := range slices.Chunk(changedIDs, SQLChunkSize) {
+			if _, err := tx.NewUpdate().Model((*Finding)(nil)).
+				Set("status = ?", req.Status).
+				Set("status_note = ?", nullIfEmpty(req.Note)).
+				Set("status_actor = ?", nullIfEmpty(req.Actor)).
+				Set("status_updated_at = ?", now).
+				Where("id IN (?)", bun.List(chunk)).
+				Exec(ctx); err != nil {
+				return fmt.Errorf("update finding status: %w", err)
+			}
+		}
+		// Events carry 8 columns each; keep every INSERT well under the
+		// driver's bind-parameter limit.
+		for chunk := range slices.Chunk(events, SQLChunkSize/8) {
+			if _, err := tx.NewInsert().Model(&chunk).Exec(ctx); err != nil {
+				return fmt.Errorf("record finding status events: %w", err)
+			}
 		}
 		return nil
 	})

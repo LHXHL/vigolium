@@ -535,8 +535,12 @@ func mergeFindingObservations(ctx context.Context, tx *sql.Tx, rows []bufferedRo
 		return fmt.Errorf("finding_observations table missing finding_id column")
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(cols)), ", ")
-	insertQ := fmt.Sprintf("INSERT OR IGNORE INTO main.finding_observations (%s) VALUES (%s)",
-		strings.Join(cols, ", "), placeholders)
+	stmt, err := tx.PrepareContext(ctx, fmt.Sprintf("INSERT OR IGNORE INTO main.finding_observations (%s) VALUES (%s)",
+		strings.Join(cols, ", "), placeholders))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
 
 	for _, row := range rows {
 		srcFID, ok := toInt64(row[findingIdx])
@@ -549,7 +553,7 @@ func mergeFindingObservations(ctx context.Context, tx *sql.Tx, rows []bufferedRo
 		}
 		args := slices.Clone([]any(row))
 		args[findingIdx] = dstFID
-		res, err := tx.ExecContext(ctx, insertQ, args...)
+		res, err := stmt.ExecContext(ctx, args...)
 		if err != nil {
 			return err
 		}
@@ -578,14 +582,18 @@ func mergeFindingStatusEvents(ctx context.Context, tx *sql.Tx, rows []bufferedRo
 	}
 	insertCols := dropColumn(cols, "id")
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(insertCols)), ", ")
-	insertQ := fmt.Sprintf(
+	stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(
 		`INSERT INTO main.finding_status_events (%s) SELECT %s
 		 WHERE NOT EXISTS (
 		     SELECT 1 FROM main.finding_status_events
 		     WHERE finding_id = ? AND to_status = ? AND created_at = ?
 		       AND COALESCE(from_status, '') = COALESCE(?, '')
 		 )`,
-		strings.Join(insertCols, ", "), placeholders)
+		strings.Join(insertCols, ", "), placeholders))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
 
 	for _, row := range rows {
 		srcFID, ok := toInt64(row[findingIdx])
@@ -607,7 +615,7 @@ func mergeFindingStatusEvents(ctx context.Context, tx *sql.Tx, rows []bufferedRo
 			args = append(args, val)
 		}
 		args = append(args, dstFID, row[toIdx], row[createdIdx], row[fromIdx])
-		res, err := tx.ExecContext(ctx, insertQ, args...)
+		res, err := stmt.ExecContext(ctx, args...)
 		if err != nil {
 			return err
 		}

@@ -252,21 +252,28 @@ func (r *Repository) observationHistory(ctx context.Context, scans ...*Scan) (st
 }
 
 // firstObservingScans maps each finding id to the scan of its earliest
-// observation.
+// observation (ties by scan uuid). The pick happens in SQL: ROW_NUMBER is a
+// window function both SQLite (3.25+) and PostgreSQL support, so only one row
+// per finding crosses the driver.
 func (r *Repository) firstObservingScans(ctx context.Context, ids []int64) (map[int64]string, error) {
 	out := make(map[int64]string, len(ids))
 	for chunk := range slices.Chunk(ids, SQLChunkSize) {
-		var obs []FindingObservation
-		if err := r.db.NewSelect().Model(&obs).Column("finding_id", "scan_uuid", "observed_at").
-			Where("finding_id IN (?)", bun.List(chunk)).
-			OrderExpr("observed_at ASC, scan_uuid ASC").
-			Scan(ctx); err != nil {
+		ranked := r.db.NewSelect().Model((*FindingObservation)(nil)).
+			Column("finding_id", "scan_uuid").
+			ColumnExpr("ROW_NUMBER() OVER (PARTITION BY fo.finding_id ORDER BY fo.observed_at ASC, fo.scan_uuid ASC) AS rn").
+			Where("finding_id IN (?)", bun.List(chunk))
+		var first []struct {
+			FindingID int64  `bun:"finding_id"`
+			ScanUUID  string `bun:"scan_uuid"`
+		}
+		if err := r.db.NewSelect().TableExpr("(?) AS first_obs", ranked).
+			Column("finding_id", "scan_uuid").
+			Where("rn = 1").
+			Scan(ctx, &first); err != nil {
 			return nil, fmt.Errorf("load first observations: %w", err)
 		}
-		for _, o := range obs {
-			if _, ok := out[o.FindingID]; !ok {
-				out[o.FindingID] = o.ScanUUID
-			}
+		for _, o := range first {
+			out[o.FindingID] = o.ScanUUID
 		}
 	}
 	return out, nil

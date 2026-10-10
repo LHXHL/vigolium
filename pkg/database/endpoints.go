@@ -140,13 +140,45 @@ func EndpointID(origin, template string) string {
 
 // EndpointTemplate is the path's structural template (query stripped).
 func EndpointTemplate(path string) (template string, segments []string, kinds []pathshape.SegKind) {
+	path = endpointPath(path)
+	template, kinds = pathshape.Shape(path)
+	return template, pathshape.Segments(path), kinds
+}
+
+// endpointShape is EndpointTemplate without the segments, for callers that
+// only need the template and kinds.
+func endpointShape(path string) (template string, kinds []pathshape.SegKind) {
+	return pathshape.Shape(endpointPath(path))
+}
+
+// endpointPath strips the query and fragment; an empty path is "/".
+func endpointPath(path string) string {
 	path, _, _ = strings.Cut(path, "?")
 	path, _, _ = strings.Cut(path, "#")
 	if path == "" {
 		path = "/"
 	}
-	template, kinds = pathshape.Shape(path)
-	return template, pathshape.Segments(path), kinds
+	return path
+}
+
+// endpointOriginKey is the input of EndpointOrigin.
+type endpointOriginKey struct {
+	scheme, host string
+	port         int
+}
+
+// originCache memoizes EndpointOrigin: an inventory pass sees many records
+// over few origins.
+type originCache map[endpointOriginKey]string
+
+func (c originCache) origin(scheme, host string, port int) string {
+	k := endpointOriginKey{scheme, host, port}
+	o, ok := c[k]
+	if !ok {
+		o = EndpointOrigin(scheme, host, port)
+		c[k] = o
+	}
+	return o
 }
 
 // paramLocation maps a stored EmbeddedParam type to the inventory's location
@@ -327,7 +359,7 @@ func addCount(m map[string]int64, k string, n int64, limit int) {
 	}
 }
 
-func (a *endpointAcc) observe(r *inventoryRecord, segments []string, kinds []pathshape.SegKind) {
+func (a *endpointAcc) observe(r *inventoryRecord, kinds []pathshape.SegKind) {
 	a.records++
 	a.methods[strings.ToUpper(r.Method)] = struct{}{}
 	path, _, _ := strings.Cut(r.Path, "?")
@@ -343,13 +375,13 @@ func (a *endpointAcc) observe(r *inventoryRecord, segments []string, kinds []pat
 		a.addParam(loc, p.Name)
 	}
 	for i, k := range kinds {
-		if k.Dynamic() && i < len(segments) {
+		if k.Dynamic() {
 			a.addParam("path", pathParamName(k, i))
 		}
 	}
-	addCount(a.reqCT, shortMediaType(r.RequestContentType), 1, endpointContentTypesHeld)
+	addCount(a.reqCT, compactMediaType(r.RequestContentType), 1, endpointContentTypesHeld)
 	if r.HasResponse {
-		addCount(a.respCT, shortMediaType(r.ResponseContentType), 1, endpointContentTypesHeld)
+		addCount(a.respCT, compactMediaType(r.ResponseContentType), 1, endpointContentTypesHeld)
 		if _, ok := a.status[r.StatusCode]; ok || len(a.status) < endpointStatusCap {
 			a.status[r.StatusCode]++
 		}
@@ -382,12 +414,6 @@ func jstangleOutcome(remark string) (string, bool) {
 		return "", false
 	}
 	return rest, true
-}
-
-// shortMediaType drops parameters (charset, boundary) and lower-cases.
-func shortMediaType(ct string) string {
-	ct, _, _ = strings.Cut(ct, ";")
-	return strings.ToLower(strings.TrimSpace(ct))
 }
 
 func (a *endpointAcc) merge(b *endpointAcc) {
@@ -464,8 +490,8 @@ func (a *endpointAcc) view() EndpointView {
 		v.Params[loc] = sortedSetKeys(names)
 		v.ParamCount += len(names)
 	}
-	v.RequestContentTypes = topKeys(a.reqCT, endpointContentTypesOut)
-	v.ResponseContentTypes = topKeys(a.respCT, endpointContentTypesOut)
+	v.RequestContentTypes = keysByCount(a.reqCT, endpointContentTypesOut)
+	v.ResponseContentTypes = keysByCount(a.respCT, endpointContentTypesOut)
 	var top int64 = -1
 	for code, n := range a.status {
 		v.Status[strconv.Itoa(code)] = n
@@ -503,19 +529,20 @@ func sortedSetKeys(m map[string]struct{}) []string {
 	return out
 }
 
-// topKeys returns up to n keys by count desc, ties by key.
-func topKeys(m map[string]int64, n int) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
+// keysByCount returns the keys of counts, most frequent first, ties by key;
+// n > 0 keeps only the first n.
+func keysByCount[N int | int64](counts map[string]N, n int) []string {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		if m[keys[i]] != m[keys[j]] {
-			return m[keys[i]] > m[keys[j]]
+		if counts[keys[i]] != counts[keys[j]] {
+			return counts[keys[i]] > counts[keys[j]]
 		}
 		return keys[i] < keys[j]
 	})
-	if len(keys) > n {
+	if n > 0 && len(keys) > n {
 		keys = keys[:n]
 	}
 	return keys
@@ -545,9 +572,10 @@ func (qb *QueryBuilder) Endpoints(ctx context.Context, opts EndpointOptions) (En
 	}
 	var res EndpointResult
 	accs := map[string]*endpointAcc{}
+	origins := originCache{}
 	seen, err := qb.forEachInventoryRecord(ctx, func(r *inventoryRecord) {
-		origin := EndpointOrigin(r.Scheme, r.Hostname, r.Port)
-		template, segments, kinds := EndpointTemplate(r.Path)
+		origin := origins.origin(r.Scheme, r.Hostname, r.Port)
+		template, kinds := endpointShape(r.Path)
 		key := endpointKey(origin, template)
 		acc := accs[key]
 		if acc == nil {
@@ -559,7 +587,7 @@ func (qb *QueryBuilder) Endpoints(ctx context.Context, opts EndpointOptions) (En
 			acc = newEndpointAcc(origin, strings.ToLower(r.Hostname), template)
 			accs[key] = acc
 		}
-		acc.observe(r, segments, kinds)
+		acc.observe(r, kinds)
 	})
 	if err != nil {
 		return EndpointResult{}, err
@@ -643,11 +671,11 @@ var dismissedForInventory = []string{"false_positive", "accepted_risk"}
 // collapsed says collapseEndpoints ran, so a finding whose concrete template
 // has no exact match may belong to a {var} endpoint.
 func (qb *QueryBuilder) attachEndpointFindings(ctx context.Context, accs map[string]*endpointAcc, collapsed bool) error {
-	var withVar []*endpointAcc
+	var withVar []collapsedCandidate
 	if collapsed {
 		for _, a := range accs {
 			if strings.Contains(a.template, collapseVar) {
-				withVar = append(withVar, a)
+				withVar = append(withVar, collapsedCandidate{acc: a, parts: strings.Split(a.template, "/")})
 			}
 		}
 	}
@@ -687,7 +715,7 @@ func (qb *QueryBuilder) attachEndpointFindings(ctx context.Context, accs map[str
 				port, _ = strconv.Atoi(p)
 			}
 			origin := EndpointOrigin(u.Scheme, u.Hostname(), port)
-			template, _, _ := EndpointTemplate(u.EscapedPath())
+			template, _ := endpointShape(u.EscapedPath())
 			acc := accs[endpointKey(origin, template)]
 			if acc == nil && len(withVar) > 0 {
 				acc = collapsedMatch(withVar, origin, template)
@@ -799,15 +827,22 @@ func isTemplatePlaceholder(seg string) bool {
 	return strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}")
 }
 
+// collapsedCandidate is a collapsed endpoint with its template pre-split, so
+// matching a finding against every candidate splits no candidate template.
+type collapsedCandidate struct {
+	acc   *endpointAcc
+	parts []string
+}
+
 // collapsedMatch finds the collapsed endpoint a concrete template now belongs
 // to: same origin, same segment count, every segment equal or {var}.
-func collapsedMatch(candidates []*endpointAcc, origin, template string) *endpointAcc {
+func collapsedMatch(candidates []collapsedCandidate, origin, template string) *endpointAcc {
 	parts := strings.Split(template, "/")
-	for _, a := range candidates {
-		if a.origin != origin {
+	for _, c := range candidates {
+		if c.acc.origin != origin {
 			continue
 		}
-		ap := strings.Split(a.template, "/")
+		ap := c.parts
 		if len(ap) != len(parts) {
 			continue
 		}
@@ -819,7 +854,7 @@ func collapsedMatch(candidates []*endpointAcc, origin, template string) *endpoin
 			}
 		}
 		if match {
-			return a
+			return c.acc
 		}
 	}
 	return nil

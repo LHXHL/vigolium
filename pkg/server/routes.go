@@ -118,7 +118,7 @@ func registerRoutes(app *fiber.App, handlers *Handlers, cfg ServerConfig) {
 	// Project UUID extraction from X-Project-UUID header. An unknown UUID is a
 	// 404 project_not_found unless the request sends X-Project-Create: 1 (or
 	// ?create=1) or server.auto_create_projects is set.
-	app.Use(ProjectUUIDMiddleware(handlers.repo, ProjectMiddlewareConfig{AutoCreate: cfg.AutoCreateProjects}))
+	app.Use(ProjectUUIDMiddleware(handlers.repo, ProjectMiddlewareConfig{AutoCreate: cfg.AutoCreateProjects, Reader: handlers.readerRepo()}))
 
 	// Routes (public — no role guard needed, auth already skips these)
 	app.Get("/health", handlers.HandleHealth) // liveness (no DB dependency)

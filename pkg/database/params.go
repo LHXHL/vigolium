@@ -2,12 +2,12 @@ package database
 
 import (
 	"context"
-	"hash/fnv"
 	"sort"
 	"strings"
 
 	"github.com/vigolium/vigolium/internal/redact"
 	"github.com/vigolium/vigolium/pkg/mutation"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // The parameter inventory (`vigolium params`): one row per (endpoint,
@@ -100,9 +100,7 @@ type paramAcc struct {
 func (a *paramAcc) observe(method, value string, showValues bool) {
 	a.occurrences++
 	a.methods[strings.ToUpper(method)] = struct{}{}
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(value))
-	sum := h.Sum64()
+	sum := fnv64a(value)
 	if _, ok := a.distinct[sum]; !ok {
 		if len(a.distinct) >= paramDistinctCap {
 			a.distinctCapped = true
@@ -140,19 +138,22 @@ func classifyParamValue(value string, hint *mutation.SchemaHint, inPath bool) mu
 	return t
 }
 
+// fnv64a is FNV-1a over s, without a hasher and a []byte copy per value.
+func fnv64a(s string) uint64 {
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
+}
+
 func truncateSample(v string) string {
 	if len(v) <= paramSampleLen {
 		return v
 	}
-	// Cut on a rune boundary.
-	cut := paramSampleLen
-	for cut > 0 && !utf8RuneStart(v[cut]) {
-		cut--
-	}
-	return v[:cut] + "…"
+	return textutil.TruncateUTF8(v, paramSampleLen) + "…"
 }
-
-func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
 // paramRedacted reports whether a parameter's values are hidden by default:
 // cookies and headers always, any location when the name reads as a secret.
@@ -206,10 +207,27 @@ func (qb *QueryBuilder) Params(ctx context.Context, opts ParamOptions) (ParamRes
 	}
 	wantLoc := func(l string) bool { return len(locations) == 0 || locations[l] }
 
+	// Struct keys keep the per-parameter lookup allocation-free; endpoint ids
+	// (a sha1 each) are computed once per endpoint, not once per record.
+	type endpointKey struct{ origin, template string }
+	type paramKey struct {
+		endpointKey
+		loc, name string
+	}
+	endpointIDs := map[endpointKey]string{}
+	endpointID := func(ek endpointKey) string {
+		id, ok := endpointIDs[ek]
+		if !ok {
+			id = EndpointID(ek.origin, ek.template)
+			endpointIDs[ek] = id
+		}
+		return id
+	}
+
 	var res ParamResult
-	accs := map[string]*paramAcc{}
-	get := func(origin, template, loc, name, after string) *paramAcc {
-		key := origin + " " + template + "\x00" + loc + "\x00" + name
+	accs := map[paramKey]*paramAcc{}
+	get := func(ek endpointKey, loc, name, after string) *paramAcc {
+		key := paramKey{ek, loc, name}
 		if a := accs[key]; a != nil {
 			return a
 		}
@@ -218,7 +236,7 @@ func (qb *QueryBuilder) Params(ctx context.Context, opts ParamOptions) (ParamRes
 			return nil
 		}
 		a := &paramAcc{
-			endpointID: EndpointID(origin, template), origin: origin, template: template,
+			endpointID: endpointID(ek), origin: ek.origin, template: ek.template,
 			location: loc, name: name, after: after,
 			methods: map[string]struct{}{}, distinct: map[uint64]struct{}{},
 			types: map[string]int64{}, redacted: paramRedacted(loc, name),
@@ -227,10 +245,12 @@ func (qb *QueryBuilder) Params(ctx context.Context, opts ParamOptions) (ParamRes
 		return a
 	}
 
+	origins := originCache{}
 	seen, err := qb.forEachInventoryRecord(ctx, func(r *inventoryRecord) {
-		origin := EndpointOrigin(r.Scheme, r.Hostname, r.Port)
+		origin := origins.origin(r.Scheme, r.Hostname, r.Port)
 		template, segments, kinds := EndpointTemplate(r.Path)
-		if opts.Endpoint != "" && opts.Endpoint != template && opts.Endpoint != EndpointID(origin, template) {
+		ek := endpointKey{origin, template}
+		if opts.Endpoint != "" && opts.Endpoint != template && opts.Endpoint != endpointID(ek) {
 			return
 		}
 		dropped := false
@@ -239,7 +259,7 @@ func (qb *QueryBuilder) Params(ctx context.Context, opts ParamOptions) (ParamRes
 			if loc == "path" || !wantLoc(loc) || p.Name == "" {
 				continue
 			}
-			if a := get(origin, template, loc, p.Name, ""); a != nil {
+			if a := get(ek, loc, p.Name, ""); a != nil {
 				a.observe(r.Method, p.Value, opts.ShowValues)
 			} else {
 				dropped = true
@@ -254,7 +274,7 @@ func (qb *QueryBuilder) Params(ctx context.Context, opts ParamOptions) (ParamRes
 				if i > 0 && !kinds[i-1].Dynamic() {
 					after = segments[i-1]
 				}
-				if a := get(origin, template, "path", pathParamName(k, i), after); a != nil {
+				if a := get(ek, "path", pathParamName(k, i), after); a != nil {
 					a.observe(r.Method, segments[i], opts.ShowValues)
 				} else {
 					dropped = true
