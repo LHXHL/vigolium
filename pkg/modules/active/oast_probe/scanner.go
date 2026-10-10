@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -140,7 +141,7 @@ func (m *Module) ScanPerRequest(
 	}
 
 	for _, header := range oastHeaders {
-		oastURL := oast.GenerateURL(urlx.String(), header.name, "header", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.HeaderHarvest, urlx.String(), header.name, "header", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}
@@ -207,7 +208,7 @@ func (m *Module) ScanPerInsertionPoint(
 	}
 
 	requestHash := ctx.Request().ID()
-	oastURL := oast.GenerateURL(urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
+	oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
 	if oastURL == "" {
 		return nil, nil
 	}

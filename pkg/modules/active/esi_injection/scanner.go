@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
@@ -33,9 +34,8 @@ const (
 	esiElement     = `<esi:comment text="vgo"/>`
 	controlElement = `<vgx:comment text="vgo"/>`
 
-	// injectionType labels the OAST include leg. It avoids the substrings the
-	// OAST classifier dispatches on, so the HTTP fetch is rated as SSRF by the
-	// edge.
+	// injectionType labels the OAST include leg; the URL is minted with
+	// oastclass.ESI so the include fetch is rated as ESI injection.
 	injectionType = "esi include"
 )
 
@@ -215,7 +215,7 @@ func (m *Module) fireIncludeOAST(
 	if oast == nil || !oast.Enabled() {
 		return
 	}
-	host := oast.GenerateURL(urlStr, ip.Name(), injectionType, ModuleID, ctx.Request().ID())
+	host := modkit.OASTURLFor(oast, oastclass.ESI, urlStr, ip.Name(), injectionType, ModuleID, ctx.Request().ID())
 	if host == "" {
 		return
 	}

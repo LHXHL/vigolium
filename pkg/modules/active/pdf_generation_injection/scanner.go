@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 	"github.com/vigolium/vigolium/pkg/utils"
@@ -199,7 +200,7 @@ func (m *Module) ScanPerInsertionPoint(
 	requestHash := ctx.Request().ID()
 
 	for _, ot := range oastPayloadTemplates {
-		oastURL := oast.GenerateURL(urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
+		oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, urlx.String(), ip.Name(), "parameter", ModuleID, requestHash)
 		if oastURL == "" {
 			continue
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -265,7 +266,7 @@ func (m *Module) scanBlindXXE(ctx *httpmsg.HttpRequestResponse, httpClient *http
 
 	requestHash := ctx.Request().ID()
 	for _, p := range oobXXEPayloads {
-		host := oast.GenerateURL(target, "body", injectionTypeXXE, ModuleID, requestHash)
+		host := modkit.OASTURLFor(oast, oastclass.XXE, target, "body", injectionTypeXXE, ModuleID, requestHash)
 		if host == "" {
 			return
 		}

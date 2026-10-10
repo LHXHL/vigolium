@@ -19,7 +19,7 @@ import (
 // injectionType is the OAST finding label. It carries "header" so a callback's
 // finding rebuilds the planting request with the poisoned header
 // (ParameterName is the header name). The callback is rated by
-// oastclass.HostRouting, not by this wording.
+// oastclass.PasswordResetPoisoning, not by this wording.
 const injectionType = "password reset poisoning header"
 
 // maxBodyScan bounds how much of a request body is searched for the reset
@@ -142,7 +142,7 @@ func (m *Module) ScanPerRequest(
 	requestHash := ctx.Request().ID()
 	var plants []plant
 	for _, v := range infra.LinkHostHeaderVariants() {
-		host := modkit.OASTURLFor(oast, oastclass.HostRouting, urlx.String(), v.Header, injectionType, ModuleID, requestHash)
+		host := modkit.OASTURLFor(oast, oastclass.PasswordResetPoisoning, urlx.String(), v.Header, injectionType, ModuleID, requestHash)
 		if host == "" {
 			continue
 		}

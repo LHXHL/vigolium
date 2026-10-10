@@ -947,7 +947,7 @@ Session objects expose: `get()`, `post()`, `request()`, `send()`, `setHeader()`,
 |---|---|
 | `enabled()` | Check if OAST service is active |
 | `payload(targetURL?, paramName?, injectionType?)` | Generate unique OAST callback URL → `{url}` (callbacks rated by a class guessed from `injectionType`) |
-| `url({class?, target?, param?, label?})` | Generate unique OAST callback URL → string, or `null` when OAST is unavailable. `class` sets how a callback is rated: `ssrf`, `ssrf-smuggle`, `xxe`, `cmdi`, `sqli`, `jwt-key-url`, `host-routing`, `header-harvest`, `blind-xss`, `ssti`, `deserialization`, `jndi`, `text4shell`, `esi`, `smtp`, `mcp-arg`, or `generic` (default). An unknown class throws, and `ext lint` reports a literal unknown class as an error |
+| `url({class?, target?, param?, label?})` | Generate unique OAST callback URL → string, or `null` when OAST is unavailable. `class` sets how a callback is rated: `ssrf`, `ssrf-smuggle`, `xxe`, `cmdi`, `sqli`, `jwt-key-url`, `host-routing`, `header-harvest`, `password-reset-poisoning`, `blind-xss`, `ssti`, `deserialization`, `jndi`, `text4shell`, `esi`, `smtp`, `mcp-arg`, or `generic` (default). An unknown class throws, and `ext lint` reports a literal unknown class as an error |
 | `poll(timeoutMs?)` | Wait then return all OAST interactions → `[{protocol, unique_id, remote_address, target_url, parameter_name, module_id, interacted_at}]` |
 
 ### vigolium.db

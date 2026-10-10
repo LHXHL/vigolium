@@ -1,6 +1,7 @@
 package jsext
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/grafana/sobek"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 )
 
 // LintSeverity categorizes lint issues.
@@ -26,7 +28,42 @@ type LintIssue struct {
 	Col      int // 1-based, 0 if unknown
 	Message  string
 	Source   string // the offending source snippet
+	// Rule is the stable id of the check that raised the issue (see the
+	// Rule* constants), so a caller can filter without matching messages.
+	Rule string
 }
+
+// Lint rule ids. They are part of the `ext lint -j` contract: add new ones,
+// never rename.
+const (
+	RuleSyntax          = "syntax"             // the source does not parse
+	RuleTranspile       = "transpile"          // TypeScript did not transpile
+	RuleUnknownAPI      = "unknown-api"        // vigolium.* member that does not exist
+	RuleUnknownOASTCls  = "unknown-oast-class" // vigolium.oast.url class literal that does not exist
+	RuleMetadata        = "metadata"           // top-level code threw, or module.exports is unusable
+	RuleNoExports       = "no-exports"         // the file exports nothing
+	RuleInvalidType     = "invalid-type"       // type is not active/passive/pre_hook/post_hook
+	RuleMissingSeverity = "missing-severity"   // an active/passive extension declares no severity
+	RuleBadSeverity     = "bad-severity"       // severity is not a known level
+	RuleBadConfidence   = "bad-confidence"     // confidence is not tentative/firm/certain
+	RuleBadScanType     = "bad-scan-type"      // scanTypes holds an unknown value
+	RuleBadScope        = "bad-scope"          // passive scope is not request/response/both
+	RuleMissingHandler  = "missing-handler"    // the handler a declared scan type needs is not exported
+	RuleTopLevelEffect  = "top-level-effect"   // top-level code calls an effectful API (stubbed at load)
+)
+
+// LintOptions tunes LintSourceWithOptions.
+type LintOptions struct {
+	// Extension says the file was named as an extension: a path given to
+	// `ext lint`, a file in an extension directory, or --stdin. A file that
+	// fails metadata extraction, or exports nothing, is then an error; without
+	// it only files that look like an extension are held to that.
+	Extension bool
+}
+
+// ScriptPragma marks a plain script (for `vigolium js`) that is linted from
+// an extension location but is not an extension: it may export nothing.
+const ScriptPragma = "// vigolium:script"
 
 // LintResult holds the outcome of linting a single file.
 type LintResult struct {
@@ -45,9 +82,17 @@ func (r *LintResult) HasErrors() bool {
 	return false
 }
 
-// LintSource validates extension source code and returns any issues found.
-// It checks for: syntax errors, unknown vigolium.* API calls, and metadata problems.
+// LintSource validates source that may or may not be an extension (see
+// LintOptions); `ext lint` uses LintSourceWithOptions with Extension set.
 func LintSource(source, filename string) *LintResult {
+	return LintSourceWithOptions(source, filename, LintOptions{})
+}
+
+// LintSourceWithOptions validates extension source code and returns any
+// issues found: syntax errors, unknown vigolium.* API calls, and — by running
+// the top-level code in the same load-mode VM the scan loader uses — metadata
+// problems, missing handlers, and effectful calls made at load time.
+func LintSourceWithOptions(source, filename string, opts LintOptions) *LintResult {
 	result := &LintResult{Path: filename, SourceLines: strings.Split(source, "\n")}
 
 	// Phase 1: Compile check — catches syntax errors with line:col info
@@ -55,6 +100,7 @@ func LintSource(source, filename string) *LintResult {
 	if compileErr != nil {
 		issue := parseSobekError(compileErr)
 		issue.Severity = LintError
+		issue.Rule = RuleSyntax
 		result.Issues = append(result.Issues, issue)
 		// Syntax errors prevent further analysis
 		return result
@@ -62,9 +108,16 @@ func LintSource(source, filename string) *LintResult {
 
 	// Phase 2: Check for unknown vigolium.* API calls
 	result.Issues = append(result.Issues, checkUnknownAPICalls(source)...)
+	oast := checkOASTClassLiterals(source)
+	for i := range oast {
+		if oast[i].Rule == "" {
+			oast[i].Rule = RuleUnknownOASTCls
+		}
+	}
+	result.Issues = append(result.Issues, oast...)
 
-	// Phase 3: Metadata validation — run in a stub VM to extract module.exports
-	result.Issues = append(result.Issues, checkMetadata(source)...)
+	// Phase 3: Metadata validation — the scan loader's own extractor.
+	result.Issues = append(result.Issues, checkMetadata(source, filename, opts)...)
 
 	return result
 }
@@ -145,6 +198,11 @@ func checkUnknownAPICalls(source string) []LintIssue {
 		for _, loc := range matches {
 			fullMatch := line[loc[0]:loc[1]]
 
+			// vigolium.config.<key> is whatever extensions.variables defines.
+			if strings.HasPrefix(fullMatch, NsConfig+".") {
+				continue
+			}
+
 			// Try to resolve the call: work backwards from longest to shortest prefix
 			// to find if any known function or namespace matches.
 			if isKnownAPIRef(fullMatch, known, namespaces) {
@@ -165,10 +223,42 @@ func checkUnknownAPICalls(source string) []LintIssue {
 				Col:      col,
 				Message:  fmt.Sprintf("unknown API reference: %s", fullMatch),
 				Source:   strings.TrimSpace(line),
+				Rule:     RuleUnknownAPI,
 			})
 		}
 	}
 
+	return issues
+}
+
+// reOASTURLClass matches a string-literal class in a vigolium.oast.url({...})
+// call written on one line; group 2 is the class value.
+var reOASTURLClass = regexp.MustCompile("\\bvigolium\\.oast\\.url\\s*\\(\\s*\\{[^}]*?\\bclass\\s*:\\s*([\"'`])([^\"'`]*)[\"'`]")
+
+// checkOASTClassLiterals reports a vigolium.oast.url call whose class literal
+// is not a known OAST class. The runtime throws on such a call; lint catches
+// the literal case before a scan. Dynamic class values are not checked.
+func checkOASTClassLiterals(source string) []LintIssue {
+	var issues []LintIssue
+	for lineNum, line := range strings.Split(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+		for _, m := range reOASTURLClass.FindAllStringSubmatchIndex(line, -1) {
+			val := line[m[4]:m[5]]
+			if _, ok := oastclass.Parse(val); ok {
+				continue
+			}
+			issues = append(issues, LintIssue{
+				Severity: LintError,
+				Line:     lineNum + 1,
+				Col:      m[4] + 1,
+				Message:  fmt.Sprintf("unknown OAST class %q in vigolium.oast.url (valid: %s)", val, strings.Join(oastclass.Names(), ", ")),
+				Source:   trimmed,
+			})
+		}
+	}
 	return issues
 }
 
@@ -212,22 +302,55 @@ func isKnownAPIRef(ref string, known map[string]bool, namespaces []string) bool 
 	return false
 }
 
-// checkMetadata runs the source in a stub VM and validates module.exports.
-func checkMetadata(source string) []LintIssue {
+// checkMetadata runs the source's top-level code in the loader's load-mode VM
+// and validates what module.exports declares.
+func checkMetadata(source, filename string, opts LintOptions) []LintIssue {
 	var issues []LintIssue
 
-	extractor := newMetadataExtractor()
-	meta, err := extractor.Extract(source, "lint")
+	res, err := newMetadataExtractor().extract(source, filename)
 	if err != nil {
-		// Not an extension (no module.exports with type) — this is fine for
-		// standalone scripts, but warn for files that look like extensions.
-		if looksLikeExtension(source) {
-			issues = append(issues, LintIssue{
-				Severity: LintWarning,
+		if errors.Is(err, ErrNoModuleExports) {
+			if opts.Extension && !strings.Contains(source, ScriptPragma) {
+				issues = append(issues, LintIssue{
+					Severity: LintError,
+					Rule:     RuleNoExports,
+					Message: "no module.exports: an extension must export its metadata and handlers " +
+						"(a plain script for `vigolium js` can say so with a `" + ScriptPragma + "` line)",
+				})
+			}
+			return issues
+		}
+		// A file named as an extension, or one that looks like one, must load.
+		if opts.Extension || looksLikeExtension(source) {
+			issue := LintIssue{
+				Severity: LintError,
+				Rule:     RuleMetadata,
 				Message:  fmt.Sprintf("metadata extraction failed: %v", err),
-			})
+			}
+			issue.Line, issue.Col = exceptionPosition(err)
+			issues = append(issues, issue)
 		}
 		return issues
+	}
+	meta := res.Meta
+
+	// Effectful calls made by top-level code: stubbed at load, so the script
+	// loads, but they run for real in every scan VM.
+	seen := map[string]bool{}
+	for _, c := range res.TopLevelEffects {
+		key := fmt.Sprintf("%s@%d:%d", c.API, c.Line, c.Col)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		issues = append(issues, LintIssue{
+			Severity: LintWarning,
+			Rule:     RuleTopLevelEffect,
+			Line:     c.Line,
+			Col:      c.Col,
+			Message: fmt.Sprintf("top-level %s (%s) runs at load time and is stubbed there; move it into a handler",
+				c.API, c.Effect),
+		})
 	}
 
 	// Validate type
@@ -238,6 +361,7 @@ func checkMetadata(source string) []LintIssue {
 	if !validTypes[meta.Type] {
 		issues = append(issues, LintIssue{
 			Severity: LintError,
+			Rule:     RuleInvalidType,
 			Message:  fmt.Sprintf("invalid extension type %q; must be one of: active, passive, pre_hook, post_hook", meta.Type),
 		})
 	}
@@ -247,11 +371,13 @@ func checkMetadata(source string) []LintIssue {
 		if meta.Severity == "" {
 			issues = append(issues, LintIssue{
 				Severity: LintWarning,
+				Rule:     RuleMissingSeverity,
 				Message:  "active/passive extension should declare a severity (critical, high, medium, low, info, suspect)",
 			})
 		} else if !isValidSeverity(meta.Severity) {
 			issues = append(issues, LintIssue{
 				Severity: LintWarning,
+				Rule:     RuleBadSeverity,
 				Message:  fmt.Sprintf("unknown severity %q; expected one of: critical, high, medium, low, info, suspect", meta.Severity),
 			})
 		}
@@ -261,6 +387,7 @@ func checkMetadata(source string) []LintIssue {
 	if !IsValidConfidence(meta.Confidence) {
 		issues = append(issues, LintIssue{
 			Severity: LintError,
+			Rule:     RuleBadConfidence,
 			Message:  fmt.Sprintf("unknown confidence %q; expected one of: tentative, firm, certain", meta.Confidence),
 		})
 	}
@@ -271,6 +398,7 @@ func checkMetadata(source string) []LintIssue {
 			if !isValidScanType(st) {
 				issues = append(issues, LintIssue{
 					Severity: LintWarning,
+					Rule:     RuleBadScanType,
 					Message:  fmt.Sprintf("unknown scan type %q; expected: per_insertion_point, per_request, per_host", st),
 				})
 			}
@@ -282,84 +410,78 @@ func checkMetadata(source string) []LintIssue {
 		if !isValidPassiveScope(meta.Scope) {
 			issues = append(issues, LintIssue{
 				Severity: LintWarning,
+				Rule:     RuleBadScope,
 				Message:  fmt.Sprintf("unknown passive scope %q; expected: request, response, both", meta.Scope),
 			})
 		}
 	}
 
 	// Check that required handler functions are exported
-	issues = append(issues, checkExportedHandlers(source, meta)...)
+	issues = append(issues, checkExportedHandlers(meta, res.Handlers)...)
 
 	return issues
 }
 
-// checkExportedHandlers verifies that the script exports the expected handler functions
-// for its declared type.
-func checkExportedHandlers(source string, meta *ScriptMetadata) []LintIssue {
+// exceptionPosition is the source position of a JS exception thrown by
+// top-level code, or 0, 0.
+func exceptionPosition(err error) (line, col int) {
+	var ex *sobek.Exception
+	if !errors.As(err, &ex) {
+		return 0, 0
+	}
+	for _, f := range ex.Stack() {
+		if pos := f.Position(); pos.Line > 0 {
+			return pos.Line, pos.Column
+		}
+	}
+	return 0, 0
+}
+
+// scanTypeHandlers maps a scan type to the module.exports function it calls.
+var scanTypeHandlers = map[string]string{
+	"per_insertion_point": "scanPerInsertionPoint",
+	"per_request":         "scanPerRequest",
+	"per_host":            "scanPerHost",
+}
+
+// checkExportedHandlers verifies that module.exports defines, as a function,
+// every handler its declared type and scan types make the runtime call. A
+// missing one is an error: the runtime skips it silently, so the extension
+// would load and never run.
+func checkExportedHandlers(meta *ScriptMetadata, handlers map[string]bool) []LintIssue {
 	var issues []LintIssue
+	missing := func(format string, args ...any) {
+		issues = append(issues, LintIssue{
+			Severity: LintError,
+			Rule:     RuleMissingHandler,
+			Message:  fmt.Sprintf(format, args...),
+		})
+	}
 
 	switch meta.Type {
-	case ScriptTypeActive:
+	case ScriptTypeActive, ScriptTypePassive:
 		scanTypes := meta.ScanTypes
 		if len(scanTypes) == 0 {
 			scanTypes = []string{"per_request"} // default
 		}
 		for _, st := range scanTypes {
-			var funcName string
-			switch st {
-			case "per_insertion_point":
-				funcName = "scanPerInsertionPoint"
-			case "per_request":
-				funcName = "scanPerRequest"
-			case "per_host":
-				funcName = "scanPerHost"
+			st = strings.ToLower(strings.TrimSpace(st))
+			fn := scanTypeHandlers[st]
+			if fn == "" || (meta.Type == ScriptTypePassive && st == "per_insertion_point") {
+				continue
 			}
-			if funcName != "" && !exportsFunction(source, funcName) {
-				issues = append(issues, LintIssue{
-					Severity: LintWarning,
-					Message:  fmt.Sprintf("active extension with scan type %q should export %s()", st, funcName),
-				})
+			if !handlers[fn] {
+				missing("%s extension with scan type %q must export a %s() function", meta.Type, st, fn)
 			}
-		}
-
-	case ScriptTypePassive:
-		if !exportsFunction(source, "scanPerRequest") {
-			issues = append(issues, LintIssue{
-				Severity: LintWarning,
-				Message:  "passive extension should export scanPerRequest()",
-			})
 		}
 
 	case ScriptTypePreHook, ScriptTypePostHook:
-		if !exportsFunction(source, "execute") {
-			issues = append(issues, LintIssue{
-				Severity: LintWarning,
-				Message:  fmt.Sprintf("%s extension should export execute()", meta.Type),
-			})
+		if !handlers["execute"] {
+			missing("%s extension must export an execute() function", meta.Type)
 		}
 	}
 
 	return issues
-}
-
-// exportsFunction checks whether the source contains a pattern that exports the given function name.
-// This is a heuristic check — it looks for common assignment patterns.
-func exportsFunction(source, funcName string) bool {
-	patterns := []string{
-		funcName + `:`,        // { scanPerRequest: function() ... } or { scanPerRequest: (ctx) => ... }
-		funcName + ` :`,       // with space before colon
-		`"` + funcName + `"`,  // quoted property name
-		`'` + funcName + `'`,  // single-quoted property name
-		funcName + `(`,        // method shorthand: scanPerRequest(ctx) { ... }
-		`exports.` + funcName, // module.exports.scanPerRequest = ...
-	}
-
-	for _, pat := range patterns {
-		if strings.Contains(source, pat) {
-			return true
-		}
-	}
-	return false
 }
 
 // looksLikeExtension returns true if the source appears to be a vigolium extension

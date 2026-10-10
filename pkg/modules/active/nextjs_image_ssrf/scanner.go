@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/modules/shared/jsframework"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -151,7 +152,7 @@ func (m *Module) ScanPerHost(
 	// Step 2: OAST probe (if available). Fire-and-forget — a hit is observed
 	// out-of-band, not in this response.
 	if oast := scanCtx.OASTProv(); oast != nil && oast.Enabled() {
-		if oastURL := oast.GenerateURL(target, "url", "parameter", ModuleID, ctx.Request().ID()); oastURL != "" {
+		if oastURL := modkit.OASTURLFor(oast, oastclass.SSRF, target, "url", "parameter", ModuleID, ctx.Request().ID()); oastURL != "" {
 			m.optimizerProbe(ctx, httpClient, oastURL)
 		}
 	}

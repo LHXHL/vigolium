@@ -13,6 +13,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/modules/shared/jsframework"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -113,7 +114,7 @@ func (m *Module) ScanPerInsertionPoint(
 	if oast := scanCtx.OASTProv(); oast != nil && oast.Enabled() {
 		requestHash := ctx.Request().ID()
 		for _, tmpl := range oastPayloads {
-			host := oast.GenerateURL(urlx.String(), ip.Name(), "server-side-javascript command execution", ModuleID, requestHash)
+			host := modkit.OASTURLFor(oast, oastclass.CMDI, urlx.String(), ip.Name(), "server-side-javascript command execution", ModuleID, requestHash)
 			if host == "" {
 				break
 			}

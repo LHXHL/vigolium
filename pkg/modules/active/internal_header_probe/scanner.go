@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/utils"
 )
@@ -375,7 +376,7 @@ func (m *Module) plantOAST(
 	}
 	reqHash := ctx.Request().ID()
 	for _, name := range candidates {
-		ou := oast.GenerateURL(target, name, "internal-header", ModuleID, reqHash)
+		ou := modkit.OASTURLFor(oast, oastclass.HeaderHarvest, target, name, "internal-header", ModuleID, reqHash)
 		if ou == "" {
 			continue
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -106,7 +107,7 @@ func (m *Module) runOASTOracle(
 	if oast == nil || !oast.Enabled() {
 		return
 	}
-	oastHost := oast.GenerateURL(urlx.String(), "request-line", "routing-ssrf (request-line)", ModuleID, ctx.Request().ID())
+	oastHost := modkit.OASTURLFor(oast, oastclass.HostRouting, urlx.String(), "request-line", "routing-ssrf (request-line)", ModuleID, ctx.Request().ID())
 	if oastHost == "" {
 		return
 	}

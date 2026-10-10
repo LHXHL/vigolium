@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/modules/shared/authzutil"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
@@ -89,7 +90,7 @@ func (m *Module) ScanPerInsertionPoint(
 	// a plain-recipient callback is email-sending capability, while a Bcc-graft
 	// callback confirms the injected header was honoured (header injection).
 	for _, mk := range payloadMakers(base) {
-		host := oast.GenerateURL(urlx.String(), ip.Name(), mk.injectionType, ModuleID, requestHash)
+		host := modkit.OASTURLFor(oast, oastclass.SMTP, urlx.String(), ip.Name(), mk.injectionType, ModuleID, requestHash)
 		if host == "" {
 			return nil, nil
 		}

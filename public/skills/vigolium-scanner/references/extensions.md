@@ -118,6 +118,22 @@ vigolium ext docs -j     # API catalog as JSON
 vigolium ext types -o ./my-extensions/
 ```
 
+### Lint, and what happens when an extension does not load
+
+```bash
+vigolium ext lint custom-check.js        # exit 1, error.code lint_failed, on errors
+vigolium ext lint ./my-extensions/ -j    # one document: items = files, summary {files, errors, warnings}
+vigolium ext lint custom-check.js --strict   # warnings fail too
+cat check.vgm.yaml | vigolium ext lint --stdin   # sniffed; --stdin-kind js|ts|yaml to force
+```
+
+- Lint runs the top-level code in the same side-effect-free VM the scan loader uses. Pure APIs (`parse.*`, encoding/hash/regex utils, `log.*`, `payloads()`, `config.*`) run; effectful ones (`http.*`, `utils.exec`/`writeFile`, `db.*`, `ingest.*`, `agent.*`, `oast.*`, `scan.createFinding`) are stubbed and reported as `top-level-effect` warnings with a line. Every namespace exists at load time, so `if (vigolium.db)` feature detection belongs in a handler.
+- Errors: `syntax`, `transpile`, `metadata` (top-level code threw / no `type`), `no-exports` (unless the file has a `// vigolium:script` line), `missing-handler` (a declared `scanTypes` entry, default `per_request`, or a hook's `execute` is not a function), `invalid-type`, `bad-confidence`, `yaml-parse`, `yaml-schema`, `yaml-unknown-key`.
+- Each `-j` issue is `{severity, line, col, message, rule}`; `ok` is false exactly when there are errors.
+- A file passed with `--ext` (or `custom_dir`) that fails to load stops the scan before any request: exit `2`, `error.code` `extension_load_failed`, naming the file and stage. `--ext-allow-failures` scans without it. A failure in the extension directory is a warning only.
+- Every load failure emits `extension.failed` (`module_id`, `path`, `stage`, `explicit`, `message`) on `--events` and appears in `scan.finished.extensions_failed`.
+- YAML unknown keys only warn at load time unless `extensions.yaml_strict: true` (the default flips to true next minor).
+
 ### Module selection applies to extensions
 
 Extension modules have IDs `ext-<id>` and follow the same selection flags as built-in modules:
@@ -380,6 +396,7 @@ The global `vigolium.record` also provides access to the current record context.
 ### vigolium.oast (Out-of-Band Testing)
 - `enabled()` — check if OAST service is active
 - `payload(targetURL?, paramName?, injectionType?)` — generate a unique callback URL
+- `url({class?, target?, param?, label?})` — callback URL string (or null) rated as `class` (`ssrf`, `xxe`, `cmdi`, `sqli`, `ssti`, `jndi`, `esi`, … see `OASTClass` in vigolium.d.ts; default `generic`); an unknown class throws and fails `ext lint`
 - `poll(timeoutMs?)` — wait and return all OAST interactions
 
 ### vigolium.db
@@ -598,12 +615,12 @@ module.exports = {
   scanPerInsertionPoint: function(ctx, insertion) {
     if (!vigolium.oast.enabled()) return null;
 
-    // Generate a unique OAST callback URL
-    var oast = vigolium.oast.payload(ctx.request.url, insertion.name, "ssrf");
-    if (!oast) return null;
+    // Generate a unique OAST callback URL; class "ssrf" decides how a callback is rated
+    var cb = vigolium.oast.url({class: "ssrf", target: ctx.request.url, param: insertion.name});
+    if (!cb) return null;
 
     // Inject the callback URL as the parameter value
-    var req = insertion.buildRequest(oast.url);
+    var req = insertion.buildRequest(cb);
     vigolium.http.send(req);
 
     // Wait for out-of-band interactions
@@ -977,18 +994,24 @@ tags:
   - error
   - information-disclosure
   - light
-scanTypes:
+scan_types:
   - per_request
-patterns:
-  - name: "Stack Trace Detected"
-    regex: "(?:at\\s+[\\w.$]+\\(|Traceback \\(most recent|Exception in thread)"
-    severity: suspect
-  - name: "SQL Error Message"
-    regex: "(?:mysql_|pg_|sqlite_|ORA-\\d{5}|SQLSTATE\\[)"
-    severity: medium
-  - name: "Debug Mode Enabled"
-    regex: "(?:DEBUG\\s*=\\s*True|DJANGO_DEBUG|app\\.debug\\s*=)"
-    severity: low
+rules:
+  - match:
+      body_regex: "(?:at\\s+[\\w.$]+\\(|Traceback \\(most recent|Exception in thread)"
+    finding:
+      name: "Stack Trace Detected"
+      severity: suspect
+  - match:
+      body_regex: "(?:mysql_|pg_|sqlite_|ORA-\\d{5}|SQLSTATE\\[)"
+    finding:
+      name: "SQL Error Message"
+      severity: medium
+  - match:
+      body_regex: "(?:DEBUG\\s*=\\s*True|DJANGO_DEBUG|app\\.debug\\s*=)"
+    finding:
+      name: "Debug Mode Enabled"
+      severity: low
 ```
 
-YAML extensions match regex patterns against response bodies and automatically create findings.
+YAML extensions match rules (or `matchers`) against requests and responses and create findings. Keys are snake_case (`scan_types`, `matchers_condition`, `confirmation_criteria`); `ext lint` reports an unknown key with its line and the closest real key. `payloads` are only sent under `scan_types: [per_insertion_point]`.

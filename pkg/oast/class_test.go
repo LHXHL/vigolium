@@ -124,6 +124,7 @@ func TestClassifyInteractionByClass(t *testing.T) {
 		{oastclass.SQLi, want{severity.Critical, severity.Certain}, want{severity.High, severity.Firm}},
 		{oastclass.Text4Shell, want{severity.Critical, severity.Certain}, want{severity.High, severity.Firm}},
 		{oastclass.ESI, want{severity.High, severity.Certain}, want{severity.Info, severity.Tentative}},
+		{oastclass.PasswordResetPoisoning, want{severity.High, severity.Firm}, want{severity.Medium, severity.Tentative}},
 		{oastclass.HostRouting, want{severity.Info, severity.Certain}, want{severity.Info, severity.Tentative}},
 		{oastclass.SSRFSmuggle, want{severity.High, severity.Certain}, want{severity.Info, severity.Tentative}},
 		{oastclass.SSRF, want{severity.High, severity.Certain}, want{severity.Info, severity.Tentative}},

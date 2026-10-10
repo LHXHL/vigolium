@@ -10,12 +10,14 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/infra"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
-// injectionType labels the OAST payload context. It deliberately avoids the
-// substrings the OAST classifier dispatches on ("header", "command", "sql",
-// "xxe", "jwt", "smuggle"), so callbacks are rated by the generic DNS/HTTP rules.
+// injectionType labels the OAST payload context; the URL is minted with
+// oastclass.Text4Shell so callbacks are rated as Commons Text interpolation.
+// The label avoids "header", which would make the finding rebuild the planting
+// request as a header injection.
 const injectionType = "text4shell interpolation"
 
 // lookupTemplates are Commons Text lookups that make the server reach the OAST
@@ -86,7 +88,7 @@ func (m *Module) ScanPerInsertionPoint(
 	requestHash := ctx.Request().ID()
 	for _, tmpl := range lookupTemplates {
 		// One host per template, so a callback names the lookup that fired.
-		host := oast.GenerateURL(urlx.String(), ip.Name(), injectionType, ModuleID, requestHash)
+		host := modkit.OASTURLFor(oast, oastclass.Text4Shell, urlx.String(), ip.Name(), injectionType, ModuleID, requestHash)
 		if host == "" {
 			continue
 		}

@@ -280,6 +280,11 @@ declare namespace vigolium {
     function enabled(): boolean;
     /** Generate a unique OAST callback URL for out-of-band testing. Returns null if OAST is unavailable. */
     function payload(targetURL?: string, paramName?: string, injectionType?: string): OASTPayload | null;
+    /**
+     * Generate a unique OAST callback URL whose callbacks are rated as `class`
+     * (default "generic"). An unknown class throws. Returns null if OAST is unavailable.
+     */
+    function url(opts?: OASTURLOptions): string | null;
     /** Wait for the specified timeout then return all OAST interactions from the current scan. */
     function poll(timeoutMs?: number): OASTInteraction[];
   }
@@ -382,6 +387,38 @@ interface HttpResponse {
   headers: Record<string, string>;
   /** Response time in milliseconds. */
   elapsed_ms: number;
+}
+
+/** Vulnerability class an OAST callback URL is minted for; decides how a callback is rated. */
+type OASTClass =
+  | "ssrf"
+  | "ssrf-smuggle"
+  | "xxe"
+  | "cmdi"
+  | "sqli"
+  | "jwt-key-url"
+  | "host-routing"
+  | "header-harvest"
+  | "password-reset-poisoning"
+  | "blind-xss"
+  | "ssti"
+  | "deserialization"
+  | "jndi"
+  | "text4shell"
+  | "esi"
+  | "smtp"
+  | "mcp-arg"
+  | "generic";
+
+interface OASTURLOptions {
+  /** Vulnerability class (default "generic"). */
+  class?: OASTClass;
+  /** URL being injected into, recorded for correlation. */
+  target?: string;
+  /** Parameter or header name carrying the payload. */
+  param?: string;
+  /** Human label shown in the finding (defaults to the class). */
+  label?: string;
 }
 
 interface OASTPayload {

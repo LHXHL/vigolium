@@ -15,6 +15,7 @@ import (
 
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/modules/modtest"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
@@ -24,7 +25,17 @@ func TestMain(m *testing.M) { modtest.VerifyNoLeaks(m) }
 type fakeOAST struct {
 	mu       sync.Mutex
 	types    []string
+	classes  []oastclass.Class
 	recorded []string
+}
+
+// GenerateURLFor records the class the module mints with, so the test pins
+// that callbacks are rated as this module's class.
+func (f *fakeOAST) GenerateURLFor(cls oastclass.Class, target, param, label, moduleID, reqHash string) string {
+	f.mu.Lock()
+	f.classes = append(f.classes, cls)
+	f.mu.Unlock()
+	return f.GenerateURL(target, param, label, moduleID, reqHash)
 }
 
 func (f *fakeOAST) GenerateURL(_, _, injectionType, _, _ string) string {
@@ -132,6 +143,10 @@ func TestEscapedReflection_FiresInclude(t *testing.T) {
 	defer oast.mu.Unlock()
 	for _, typ := range oast.types {
 		assert.NotContains(t, strings.ToLower(typ), "header")
+	}
+	require.NotEmpty(t, oast.classes)
+	for _, c := range oast.classes {
+		assert.Equal(t, oastclass.ESI, c)
 	}
 }
 

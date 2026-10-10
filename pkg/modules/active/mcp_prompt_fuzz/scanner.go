@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	mcpinfra "github.com/vigolium/vigolium/pkg/modules/infra/mcp"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -260,7 +261,7 @@ func buildPayloads(scanCtx *modkit.ScanContext, targetURL, argName string) []pay
 	// timing oracle above. (Reflection of a prompt argument is normal behaviour,
 	// not a vulnerability, so there is no reflective-injection payload here.)
 	if oast := scanCtx.OASTProv(); oast != nil && oast.Enabled() {
-		if cb := oast.GenerateURL(targetURL, argName, "mcp-prompt-arg-rce", ModuleID, ""); cb != "" {
+		if cb := modkit.OASTURLFor(oast, oastclass.MCPArg, targetURL, argName, "mcp-prompt-arg-rce", ModuleID, ""); cb != "" {
 			cmd := fmt.Sprintf("; curl -s %s", cb)
 			oast.RecordPayload(cb, cmd)
 			out = append(out, payload{

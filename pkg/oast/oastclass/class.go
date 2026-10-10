@@ -34,6 +34,10 @@ const (
 	// HeaderHarvest is a URL planted in a request header (Referer,
 	// X-Forwarded-For, internal headers, …) that a backend may harvest and fetch.
 	HeaderHarvest Class = "header-harvest"
+	// PasswordResetPoisoning is a poisoned Host / X-Forwarded-Host on a
+	// recorded password-reset request; a callback means the emailed reset link
+	// was built from the injected host.
+	PasswordResetPoisoning Class = "password-reset-poisoning"
 	// BlindXSS is a stored script/resource reference rendered later by a browser.
 	BlindXSS Class = "blind-xss"
 	// SSTI is a server-side template expression that reaches out.
@@ -60,7 +64,7 @@ const (
 // (kept in sync by a jsext drift test).
 var all = []Class{
 	SSRF, SSRFSmuggle, XXE, CMDI, SQLi, JWTKeyURL, HostRouting, HeaderHarvest,
-	BlindXSS, SSTI, Deserialization, JNDI, Text4Shell, ESI, SMTP, MCPArg, Generic,
+	PasswordResetPoisoning, BlindXSS, SSTI, Deserialization, JNDI, Text4Shell, ESI, SMTP, MCPArg, Generic,
 }
 
 // All returns every known class in a stable order.

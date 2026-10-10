@@ -954,6 +954,8 @@ func classifyInteraction(protocol string, pctx PayloadContext) (severity.Severit
 		return classifyText4Shell(proto, injectionDesc)
 	case oastclass.ESI:
 		return classifyESI(proto, injectionDesc)
+	case oastclass.PasswordResetPoisoning:
+		return classifyResetPoisoning(proto, injectionDesc)
 	}
 
 	// Host-routing / host-reflection SSRF — request-line manipulation
@@ -1052,6 +1054,25 @@ func classifyESI(proto, injectionDesc string) (severity.Severity, severity.Confi
 		return severity.Info, severity.Tentative, "DNS-only OAST callback for an injected esi:include (" + injectionDesc + "). Resolution alone does not show an ESI processor evaluated the include; the reflected tag may have been harvested and resolved by a URL-scanning pipeline. Confirm via the HTTP-fetch leg or the in-band ESI check."
 	default:
 		return severity.Medium, severity.Firm, "Possible ESI injection via out-of-band " + proto + " interaction (" + injectionDesc + ")"
+	}
+}
+
+// classifyResetPoisoning rates callbacks for a password-reset request replayed
+// with a poisoned Host / X-Forwarded-Host. An HTTP fetch of the OAST host means
+// something followed a link built from the injected host — normally the emailed
+// reset link (opened by a mail link scanner or the recipient), which leaks the
+// reset token to the attacker's host. It stays Firm because a reverse proxy that
+// routes on the poisoned header can fetch the host itself. A DNS-only lookup is
+// what such a proxy (or a mail scanner that never fetched) produces, so it is a
+// Tentative lead.
+func classifyResetPoisoning(proto, injectionDesc string) (severity.Severity, severity.Confidence, string) {
+	switch proto {
+	case "http", "https":
+		return severity.High, severity.Firm, "Password reset poisoning likely: a link built from the poisoned host header on a password-reset request was fetched from the OAST server (" + injectionDesc + "). The emailed reset link (and its token) points at the injected host. Firm, not Certain: a reverse proxy that routes on this header can fetch the host itself — confirm the reset email's link host."
+	case "dns":
+		return severity.Medium, severity.Tentative, "Possible password reset poisoning: the OAST host injected into a password-reset request's host header was resolved over DNS (" + injectionDesc + "). Proxies resolve forwarded host headers for routing, so DNS alone does not show the reset link used it — confirm via the HTTP-fetch leg or the reset email."
+	default:
+		return severity.High, severity.Firm, "Password reset poisoning likely via out-of-band " + proto + " interaction (" + injectionDesc + ")"
 	}
 }
 

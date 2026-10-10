@@ -2,9 +2,11 @@ package jsext
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/grafana/sobek"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"go.uber.org/zap"
 )
 
@@ -14,6 +16,7 @@ func oastFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsOAST, Name: "enabled",
+			Effect:   EffectPure,
 			Category: "OAST", Signature: ".enabled()", Returns: "boolean",
 			Description: "Returns whether the OAST service is enabled and available.",
 			Example:     "",
@@ -26,6 +29,7 @@ func oastFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsOAST, Name: "payload",
+			Effect:   EffectOAST,
 			Category: "OAST", Signature: ".payload(targetURL?: string, paramName?: string, injectionType?: string)", Returns: "{url: string}|null",
 			Description: "Generates a unique OAST callback URL for out-of-band testing.",
 			Example:     "",
@@ -61,7 +65,45 @@ func oastFuncDefs() []JSFuncDef {
 			},
 		},
 		{
+			Namespace: NsOAST, Name: "url",
+			Effect:   EffectOAST,
+			Category: "OAST", Signature: ".url(opts?: {class?: OASTClass, target?: string, param?: string, label?: string})", Returns: "string|null",
+			Description: "Generates a unique OAST callback URL whose callbacks are rated as the given vulnerability class (" + strings.Join(oastclass.Names(), ", ") + "; default generic). An unknown class throws. Returns null if OAST is unavailable.",
+			Example:     `vigolium.oast.url({class: "ssrf", target: ctx.url, param: "next"})`,
+			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
+				svc := opts.OASTService
+				return func(call sobek.FunctionCall) sobek.Value {
+					cls, targetURL, paramName, label := oastclass.Generic, "", "", ""
+					if v := call.Argument(0); !sobek.IsUndefined(v) && !sobek.IsNull(v) {
+						o := v.ToObject(vm)
+						if c := o.Get("class"); c != nil && !sobek.IsUndefined(c) && !sobek.IsNull(c) {
+							parsed, ok := oastclass.Parse(c.String())
+							if !ok {
+								panic(vm.NewTypeError("vigolium.oast.url: unknown class %q (valid: %s)", c.String(), strings.Join(oastclass.Names(), ", ")))
+							}
+							cls = parsed
+						}
+						targetURL = stringField(vm, o, "target", "")
+						paramName = stringField(vm, o, "param", "")
+						label = stringField(vm, o, "label", "")
+					}
+					if svc == nil || !svc.Enabled() {
+						return sobek.Null()
+					}
+					if label == "" {
+						label = string(cls)
+					}
+					url := svc.GenerateURLFor(cls, targetURL, paramName, label, "ext-"+opts.ScriptID, "")
+					if url == "" {
+						return sobek.Null()
+					}
+					return vm.ToValue(url)
+				}
+			},
+		},
+		{
 			Namespace: NsOAST, Name: "poll",
+			Effect:   EffectOAST,
 			Category: "OAST", Signature: ".poll(timeoutMs?: number)", Returns: "OASTInteraction[]",
 			Description: "Waits for the specified timeout then queries for OAST interactions from the current scan.",
 			Example:     "",

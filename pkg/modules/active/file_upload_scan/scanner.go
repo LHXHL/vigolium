@@ -10,6 +10,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/oast/oastclass"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -79,7 +80,7 @@ func (m *Module) ScanPerRequest(
 	// arrive asynchronously via the OAST polling callback.
 	var oastHost string
 	if oast := scanCtx.OASTProv(); oast != nil && oast.Enabled() {
-		oastHost = oast.GenerateURL(urlx.String(), "file", "file-upload code execution (command)", ModuleID, ctx.Request().ID())
+		oastHost = modkit.OASTURLFor(oast, oastclass.CMDI, urlx.String(), "file", "file-upload code execution (command)", ModuleID, ctx.Request().ID())
 		if oastHost != "" {
 			oast.RecordPayload(oastHost, "Uploaded PHP web shell / SVG image issuing an out-of-band request on execution or render")
 		}

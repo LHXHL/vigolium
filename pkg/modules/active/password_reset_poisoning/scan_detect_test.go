@@ -142,7 +142,7 @@ func TestPlantsAllLinkHeadersInOneRequest(t *testing.T) {
 	assert.Equal(t, "host=forwarded.oast.test", oast.recorded["forwarded.oast.test"], "the planted header value is recorded")
 	require.Len(t, oast.classes, 4)
 	for _, cls := range oast.classes {
-		assert.Equal(t, oastclass.HostRouting, cls)
+		assert.Equal(t, oastclass.PasswordResetPoisoning, cls)
 	}
 	for _, typ := range oast.types {
 		assert.Contains(t, typ, "header", "the label must mark a header plant so the finding rebuilds the request")
