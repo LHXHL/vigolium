@@ -83,7 +83,7 @@ func TestBuildDeparosConfigCarriesRate(t *testing.T) {
 		options:  &types.Options{Targets: []string{"https://example.com"}, Concurrency: 25},
 		settings: paceSettings(func(p *config.ScanningPaceConfig) { p.Discovery.RateLimit = 11 }),
 	}
-	if got := r.buildDeparosConfig(nil).RateLimit; got != 11 {
+	if got := r.buildDeparosConfig(nil, resolvedDiscoveryWordlists{}).RateLimit; got != 11 {
 		t.Fatalf("DeparosDiscoveryConfig.RateLimit = %d, want 11", got)
 	}
 
@@ -91,7 +91,7 @@ func TestBuildDeparosConfigCarriesRate(t *testing.T) {
 		options:  &types.Options{Targets: []string{"https://example.com"}, Concurrency: 25, RateLimit: 100},
 		settings: paceSettings(nil),
 	}
-	if got := unpaced.buildDeparosConfig(nil).RateLimit; got != 0 {
+	if got := unpaced.buildDeparosConfig(nil, resolvedDiscoveryWordlists{}).RateLimit; got != 0 {
 		t.Fatalf("unconfigured DeparosDiscoveryConfig.RateLimit = %d, want 0", got)
 	}
 }

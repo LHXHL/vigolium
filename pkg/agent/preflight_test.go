@@ -47,7 +47,7 @@ func TestPreflightHonorsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
-	err := e.Preflight(ctx, "")
+	err := e.Preflight(ctx)
 	require.Error(t, err)
 	assert.Less(t, time.Since(start), 2*time.Second, "a cancelled ctx must return immediately")
 	var pe *PreflightError
@@ -59,7 +59,7 @@ func TestPreflightHonorsContext(t *testing.T) {
 // and the message tells the operator which knob to turn.
 func TestPreflightTimeoutNamesTheFlag(t *testing.T) {
 	e := preflightEngine(&blockingRuntime{}, "50ms")
-	err := e.Preflight(context.Background(), "")
+	err := e.Preflight(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--preflight-timeout")
 	assert.Contains(t, err.Error(), "50ms")
@@ -72,7 +72,7 @@ func TestPreflightTimeoutNamesTheFlag(t *testing.T) {
 // provider_missing, with the shared setup hint (decision D25).
 func TestPreflightProviderMissing(t *testing.T) {
 	e := preflightEngine(&blockingRuntime{newErr: errors.New("OPENAI_API_KEY is not set")}, "")
-	err := e.Preflight(context.Background(), "")
+	err := e.Preflight(context.Background())
 	require.Error(t, err)
 	var pe *PreflightError
 	require.True(t, errors.As(err, &pe))
@@ -83,7 +83,7 @@ func TestPreflightProviderMissing(t *testing.T) {
 // TestPreflightOK: a provider that answers passes.
 func TestPreflightOK(t *testing.T) {
 	e := preflightEngine(&fakeRuntime{output: "OK"}, "")
-	require.NoError(t, e.Preflight(context.Background(), ""))
+	require.NoError(t, e.Preflight(context.Background()))
 }
 
 // TestEffectivePreflightTimeout: 15s by default, 60s for a loopback endpoint,

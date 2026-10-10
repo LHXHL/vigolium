@@ -20,6 +20,7 @@
 package selfupdate
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -135,7 +136,7 @@ func Check(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{From: normalize(opts.CurrentVersion), BaseURL: u.base}
+	res := Result{From: NormalizeVersion(opts.CurrentVersion), BaseURL: u.base}
 	latest, err := u.fetchVersion(ctx)
 	if err != nil {
 		return res, err
@@ -159,7 +160,7 @@ func Update(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{From: normalize(opts.CurrentVersion), BaseURL: u.base, DryRun: opts.DryRun}
+	res := Result{From: NormalizeVersion(opts.CurrentVersion), BaseURL: u.base, DryRun: opts.DryRun}
 
 	u.logf("resolving latest release from %s/metadata.json", u.base)
 	latest, err := u.fetchVersion(ctx)
@@ -185,7 +186,7 @@ func Update(ctx context.Context, opts Options) (Result, error) {
 		return res, err
 	}
 
-	archive := archiveName(latest, u.goos, u.goarch)
+	archive := archiveName(latest, u.opts.GOOS, u.opts.GOARCH)
 	res.Archive = archive
 	u.logf("verifying signed checksums.txt")
 	sum, err := u.signedChecksum(ctx, latest, archive)
@@ -197,7 +198,7 @@ func Update(ctx context.Context, opts Options) (Result, error) {
 		return res, nil
 	}
 
-	binTmp, err := os.CreateTemp(dir, tempPrefix+"*"+exeSuffix(u.goos))
+	binTmp, err := os.CreateTemp(dir, tempPrefix+"*"+exeSuffix(u.opts.GOOS))
 	if err != nil {
 		return res, notWritable(target, err)
 	}
@@ -217,7 +218,7 @@ func Update(ctx context.Context, opts Options) (Result, error) {
 	}
 	defer func() { _ = os.Remove(archivePath) }()
 
-	if err := extractBinary(archivePath, u.goos, binTmp, u.maxBinary); err != nil {
+	if err := extractBinary(archivePath, u.opts.GOOS, binTmp, u.opts.MaxBinaryBytes); err != nil {
 		return res, err
 	}
 	if err := binTmp.Close(); err != nil {
@@ -233,7 +234,7 @@ func Update(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	u.logf("replacing %s", target)
-	if err := replaceFile(u.goos, binPath, target); err != nil {
+	if err := replaceFile(u.opts.GOOS, binPath, target); err != nil {
 		return res, notWritable(target, err)
 	}
 	installed = true
@@ -268,14 +269,8 @@ func CleanupOld(exe string) {
 func BinaryName(goos string) string { return "vigolium" + exeSuffix(goos) }
 
 type updater struct {
-	opts       Options
-	base       string
-	goos       string
-	goarch     string
-	client     *http.Client
-	keys       []string
-	maxArchive int64
-	maxBinary  int64
+	opts Options // defaults resolved in place by newUpdater
+	base string
 }
 
 func newUpdater(opts Options) (*updater, error) {
@@ -290,29 +285,19 @@ func newUpdater(opts Options) (*updater, error) {
 	if err := checkBaseURL(base); err != nil {
 		return nil, err
 	}
-	u := &updater{
-		opts:       opts,
-		base:       base,
-		goos:       firstNonEmpty(opts.GOOS, runtime.GOOS),
-		goarch:     firstNonEmpty(opts.GOARCH, runtime.GOARCH),
-		client:     opts.Client,
-		keys:       opts.TrustedKeys,
-		maxArchive: opts.MaxArchiveBytes,
-		maxBinary:  opts.MaxBinaryBytes,
+	opts.GOOS = cmp.Or(opts.GOOS, runtime.GOOS)
+	opts.GOARCH = cmp.Or(opts.GOARCH, runtime.GOARCH)
+	opts.Client = cmp.Or(opts.Client, &http.Client{Timeout: 10 * time.Minute})
+	if opts.TrustedKeys == nil {
+		opts.TrustedKeys = trustedKeys
 	}
-	if u.client == nil {
-		u.client = &http.Client{Timeout: 10 * time.Minute}
+	if opts.MaxArchiveBytes <= 0 {
+		opts.MaxArchiveBytes = DefaultMaxArchiveBytes
 	}
-	if u.keys == nil {
-		u.keys = trustedKeys
+	if opts.MaxBinaryBytes <= 0 {
+		opts.MaxBinaryBytes = DefaultMaxBinaryBytes
 	}
-	if u.maxArchive <= 0 {
-		u.maxArchive = DefaultMaxArchiveBytes
-	}
-	if u.maxBinary <= 0 {
-		u.maxBinary = DefaultMaxBinaryBytes
-	}
-	return u, nil
+	return &updater{opts: opts, base: base}, nil
 }
 
 // checkBaseURL requires https, allowing plain http only to a loopback host
@@ -353,9 +338,9 @@ func (u *updater) target() (string, error) {
 			return "", err
 		}
 		if err := os.MkdirAll(abs, 0o755); err != nil {
-			return "", notWritable(filepath.Join(abs, BinaryName(u.goos)), err)
+			return "", notWritable(filepath.Join(abs, BinaryName(u.opts.GOOS)), err)
 		}
-		return filepath.Join(abs, BinaryName(u.goos)), nil
+		return filepath.Join(abs, BinaryName(u.opts.GOOS)), nil
 	}
 	if u.opts.Target != "" {
 		t := u.opts.Target
@@ -380,7 +365,7 @@ func (u *updater) fetchVersion(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return "", fmt.Errorf("metadata.json: %w", err)
 	}
-	v := normalize(meta.Version)
+	v := NormalizeVersion(meta.Version)
 	if !semver.IsValid(v) {
 		return "", fmt.Errorf("metadata.json: version %q is not a valid release version", meta.Version)
 	}
@@ -399,7 +384,7 @@ func (u *updater) signedChecksum(ctx context.Context, version, archive string) (
 	if err != nil {
 		return "", fmt.Errorf("release is not signed: %w", err)
 	}
-	comment, err := verifyMinisign(u.keys, sums, sig)
+	comment, err := verifyMinisign(u.opts.TrustedKeys, sums, sig)
 	if err != nil {
 		return "", err
 	}
@@ -421,8 +406,8 @@ func (u *updater) download(ctx context.Context, dir, archive, wantSum string) (s
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.ContentLength > u.maxArchive {
-		return "", fmt.Errorf("%s is %d bytes, over the %d byte limit", archive, resp.ContentLength, u.maxArchive)
+	if resp.ContentLength > u.opts.MaxArchiveBytes {
+		return "", fmt.Errorf("%s is %d bytes, over the %d byte limit", archive, resp.ContentLength, u.opts.MaxArchiveBytes)
 	}
 	f, err := os.CreateTemp(dir, tempPrefix+"*.download")
 	if err != nil {
@@ -437,12 +422,12 @@ func (u *updater) download(ctx context.Context, dir, archive, wantSum string) (s
 		}
 	}()
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, u.maxArchive+1))
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, u.opts.MaxArchiveBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("download %s: %w", archive, err)
 	}
-	if n > u.maxArchive {
-		return "", fmt.Errorf("%s exceeds the %d byte limit", archive, u.maxArchive)
+	if n > u.opts.MaxArchiveBytes {
+		return "", fmt.Errorf("%s exceeds the %d byte limit", archive, u.opts.MaxArchiveBytes)
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, wantSum) {
 		return "", fmt.Errorf("%s sha256 mismatch: signed checksums.txt says %s, downloaded file is %s", archive, wantSum, got)
@@ -490,7 +475,7 @@ func (u *updater) open(ctx context.Context, name string, bust bool) (*http.Respo
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "vigolium-selfupdate")
-	resp, err := u.client.Do(req)
+	resp, err := u.opts.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", name, err)
 	}
@@ -557,11 +542,11 @@ func replaceViaOld(tmp, target string) error {
 // newer reports whether latest is strictly newer than current. A current
 // version that is not semver (a dev build) is always behind.
 func newer(current, latest string) (bool, error) {
-	l := normalize(latest)
+	l := NormalizeVersion(latest)
 	if !semver.IsValid(l) {
 		return false, fmt.Errorf("latest version %q is not valid semver", latest)
 	}
-	c := normalize(current)
+	c := NormalizeVersion(current)
 	if !semver.IsValid(c) {
 		return true, nil
 	}
@@ -571,9 +556,9 @@ func newer(current, latest string) (bool, error) {
 // commentNamesVersion reports whether a trusted comment such as
 // "vigolium v0.5.3" names version (with or without the leading v).
 func commentNamesVersion(comment, version string) bool {
-	want := normalize(version)
+	want := NormalizeVersion(version)
 	for _, f := range strings.Fields(comment) {
-		if normalize(f) == want {
+		if NormalizeVersion(f) == want {
 			return true
 		}
 	}
@@ -617,7 +602,9 @@ func exeSuffix(goos string) string {
 	return ""
 }
 
-func normalize(v string) string {
+// NormalizeVersion trims v and ensures a leading "v", so it can be fed to
+// golang.org/x/mod/semver. "" stays "".
+func NormalizeVersion(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return ""
@@ -626,11 +613,4 @@ func normalize(v string) string {
 		v = "v" + v
 	}
 	return v
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

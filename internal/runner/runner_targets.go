@@ -375,7 +375,8 @@ func (r *Runner) discoveryWordlistRefs() (refs []wordlistRef, tier string) {
 // discoveryWordlistRefs, with the embedded lists materialized to disk (deparos
 // loads wordlists from file paths only). This is shared by buildDeparosConfig
 // and the Discovery phase header so the two never disagree on what is
-// actually running.
+// actually running; the Discovery phase resolves it once and hands the result
+// to both.
 func (r *Runner) resolveDiscoveryWordlists() resolvedDiscoveryWordlists {
 	refs, tier := r.discoveryWordlistRefs()
 	w := resolvedDiscoveryWordlists{tier: tier}
@@ -593,7 +594,9 @@ func (r *Runner) discoveryConcurrency() int { return r.phaseConcurrency("discove
 
 // buildDeparosConfig maps YAML DiscoveryConfig + CLI flags into a DeparosDiscoveryConfig.
 // additionalTargets are merged (deduplicated) with CLI targets to expand the discovery scope.
-func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDiscoveryConfig {
+// wls is the phase's resolveDiscoveryWordlists answer, resolved once by the
+// caller so the config and the phase header share one materialization.
+func (r *Runner) buildDeparosConfig(additionalTargets []string, wls resolvedDiscoveryWordlists) source.DeparosDiscoveryConfig {
 	// Resolve discovery concurrency: scanning_pace.discovery overrides global when CLI not explicit
 	discoveryConcurrency := r.discoveryConcurrency()
 
@@ -743,11 +746,10 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string) source.DeparosDi
 		// MaxDuration is resolved via scanning_pace (applied to r.options by scan.go)
 	}
 
-	// Resolve wordlist paths: YAML config → CLI --discovery-wordlist → embedded
+	// Wordlist paths: YAML config → CLI --discovery-wordlist → embedded
 	// defaults (short file/dir always; the long slot per discovery.wordlists.tier;
-	// fuzz.txt when fuzzing is on). Done here, outside the settings block above,
+	// fuzz.txt when fuzzing is on). Applied here, outside the settings block above,
 	// so the embedded defaults still apply when no YAML config is loaded.
-	wls := r.resolveDiscoveryWordlists()
 	cfg.ShortFilePath = wls.shortFile
 	cfg.LongFilePath = wls.longFile
 	cfg.ShortDirPath = wls.shortDir

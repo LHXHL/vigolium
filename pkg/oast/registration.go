@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 	"go.uber.org/zap"
 )
 
@@ -73,8 +74,8 @@ func (e *UnavailableError) Unwrap() error { return e.Err }
 // registration with the interactsh server starts in the background and New
 // returns without waiting: until registration succeeds Enabled() is false and
 // GenerateURL returns "". Polling starts automatically once registered. Use
-// WaitReady to wait a bounded time for the outcome, and OnUnavailable to hear
-// about a failure. Close stops polling (or abandons an unfinished registration)
+// WaitReady to wait a bounded time for the outcome (a failure included).
+// Close stops polling (or abandons an unfinished registration)
 // and deregisters.
 //
 // resolveRequestUUID is an optional function that maps a request hash to a database
@@ -201,9 +202,9 @@ func (s *Service) register(token string, newClient func(*interactshclient.Option
 		zap.Duration("grace_period", s.gracePeriod))
 }
 
-// fail records a registration failure, closes ready and runs the
-// OnUnavailable callbacks. The operator-facing notice is the caller's job (the
-// runner prints one line at dynamic-assessment start), so this logs at Debug.
+// fail records a registration failure and closes ready. The operator-facing
+// notice is the caller's job (the runner prints one line at dynamic-assessment
+// start), so this logs at Debug.
 func (s *Service) fail(uerr *UnavailableError) {
 	s.regErr.Store(uerr)
 	zap.L().Debug("OAST: interactsh registration failed",
@@ -212,35 +213,7 @@ func (s *Service) fail(uerr *UnavailableError) {
 		zap.Error(uerr.Err))
 
 	s.lifeMu.Lock()
-	fns := s.unavailableFns
-	s.unavailableFns = nil
 	close(s.ready)
-	s.lifeMu.Unlock()
-	for _, fn := range fns {
-		fn(uerr)
-	}
-}
-
-// OnUnavailable registers fn to be called once if registration fails. When it
-// has already failed, fn runs immediately on the caller's goroutine; otherwise
-// it runs on the registration goroutine. Never called after a successful
-// registration, in fixed-URL mode, or for a WaitReady timeout (the
-// registration may still succeed later).
-func (s *Service) OnUnavailable(fn func(error)) {
-	if s == nil || fn == nil || s.ready == nil {
-		return
-	}
-	s.lifeMu.Lock()
-	select {
-	case <-s.ready:
-		s.lifeMu.Unlock()
-		if uerr := s.regErr.Load(); uerr != nil && !errors.Is(uerr, ErrClosed) {
-			fn(uerr)
-		}
-		return
-	default:
-	}
-	s.unavailableFns = append(s.unavailableFns, fn)
 	s.lifeMu.Unlock()
 }
 
@@ -385,7 +358,7 @@ func briefRegistrationError(err error) string {
 	}
 	short := strings.Join(strings.Fields(err.Error()), " ")
 	if len(short) > 160 {
-		short = short[:160] + "…"
+		short = textutil.TruncateUTF8(short, 160) + "…"
 	}
 	return short
 }

@@ -91,13 +91,21 @@ func (e *TargetsRejectedError) Unwrap() error { return ErrNoTargetsInScope }
 // DescribeRejected renders rejected targets as "target (rule)", comma
 // separated, naming at most limit of them (limit <= 0 names all).
 func DescribeRejected(rejected []TargetVerdict, limit int) string {
-	parts := make([]string, 0, len(rejected))
-	for i, v := range rejected {
+	return describeTargets(rejected, limit, func(v TargetVerdict) (string, string) { return v.Target, v.Rule })
+}
+
+// describeTargets renders items as "target (detail)", comma separated, naming
+// at most limit of them (limit <= 0 names all) and summarising the rest as
+// "and N more".
+func describeTargets[T any](items []T, limit int, describe func(T) (target, detail string)) string {
+	parts := make([]string, 0, len(items))
+	for i, v := range items {
 		if limit > 0 && i == limit {
-			parts = append(parts, fmt.Sprintf("and %d more", len(rejected)-limit))
+			parts = append(parts, fmt.Sprintf("and %d more", len(items)-limit))
 			break
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s)", v.Target, v.Rule))
+		target, detail := describe(v)
+		parts = append(parts, fmt.Sprintf("%s (%s)", target, detail))
 	}
 	return strings.Join(parts, ", ")
 }

@@ -36,12 +36,6 @@ var tierNames = map[int]string{
 	modules.TierRankIntrusive: modules.TagTierIntrusive,
 }
 
-// TierCeilingName is the tier tag of the intensity's ceiling ("moderate",
-// "intrusive", …).
-func TierCeilingName(intensity string) string {
-	return tierNames[intensityTierCeiling(intensity)]
-}
-
 // FilterModulesForRun resolves the built-in modules a scan with these options
 // and settings runs. Pure: no logging, no I/O.
 //

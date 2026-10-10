@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/utils/yamlschema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -714,10 +715,10 @@ func lintCheck(c *SessionCheck, prefix string) []LintIssue {
 	}
 	var issues []LintIssue
 	errorf := func(field, format string, args ...any) {
-		issues = append(issues, LintIssue{Field: joinField(prefix, field), Severity: "error", Message: fmt.Sprintf(format, args...)})
+		issues = append(issues, LintIssue{Field: yamlschema.JoinPath(prefix, field), Severity: "error", Message: fmt.Sprintf(format, args...)})
 	}
 	warnf := func(field, format string, args ...any) {
-		issues = append(issues, LintIssue{Field: joinField(prefix, field), Severity: "warning", Message: fmt.Sprintf(format, args...)})
+		issues = append(issues, LintIssue{Field: yamlschema.JoinPath(prefix, field), Severity: "warning", Message: fmt.Sprintf(format, args...)})
 	}
 
 	if c.URL != "" {
@@ -743,9 +744,9 @@ func lintCheck(c *SessionCheck, prefix string) []LintIssue {
 		if c.LoggedIn.empty() {
 			warnf("logged_in", "logged_in block is empty (no status, body_contains, body_regex or header_regex)")
 		}
-		issues = append(issues, lintStatuses(c.LoggedIn.Status, joinField(prefix, "logged_in.status"))...)
-		issues = append(issues, lintRegex(c.LoggedIn.BodyRegex, joinField(prefix, "logged_in.body_regex"))...)
-		issues = append(issues, lintRegex(c.LoggedIn.HeaderRegex, joinField(prefix, "logged_in.header_regex"))...)
+		issues = append(issues, lintStatuses(c.LoggedIn.Status, yamlschema.JoinPath(prefix, "logged_in.status"))...)
+		issues = append(issues, lintRegex(c.LoggedIn.BodyRegex, yamlschema.JoinPath(prefix, "logged_in.body_regex"))...)
+		issues = append(issues, lintRegex(c.LoggedIn.HeaderRegex, yamlschema.JoinPath(prefix, "logged_in.header_regex"))...)
 		if c.URL == "" && !c.LoggedIn.empty() {
 			warnf("logged_in", "logged_in is evaluated on the check.url probe, and there is no check.url")
 		}
@@ -754,9 +755,9 @@ func lintCheck(c *SessionCheck, prefix string) []LintIssue {
 		if c.LoggedOut.empty() {
 			warnf("logged_out", "logged_out block is empty (no status, redirect_regex or body_regex)")
 		}
-		issues = append(issues, lintStatuses(c.LoggedOut.Status, joinField(prefix, "logged_out.status"))...)
-		issues = append(issues, lintRegex(c.LoggedOut.RedirectRegex, joinField(prefix, "logged_out.redirect_regex"))...)
-		issues = append(issues, lintRegex(c.LoggedOut.BodyRegex, joinField(prefix, "logged_out.body_regex"))...)
+		issues = append(issues, lintStatuses(c.LoggedOut.Status, yamlschema.JoinPath(prefix, "logged_out.status"))...)
+		issues = append(issues, lintRegex(c.LoggedOut.RedirectRegex, yamlschema.JoinPath(prefix, "logged_out.redirect_regex"))...)
+		issues = append(issues, lintRegex(c.LoggedOut.BodyRegex, yamlschema.JoinPath(prefix, "logged_out.body_regex"))...)
 	}
 	if c.SampleEvery < 0 {
 		errorf("sample_every", "sample_every must be >= 1 (omit it for the default %d), got %d", DefaultCheckSampleEvery, c.SampleEvery)
@@ -775,7 +776,7 @@ func lintReauth(s *Session, prefix string) []LintIssue {
 	}
 	var issues []LintIssue
 	errorf := func(field, format string, args ...any) {
-		issues = append(issues, LintIssue{Field: joinField(prefix, field), Severity: "error", Message: fmt.Sprintf(format, args...)})
+		issues = append(issues, LintIssue{Field: yamlschema.JoinPath(prefix, field), Severity: "error", Message: fmt.Sprintf(format, args...)})
 	}
 	if r.MaxAttempts < 0 {
 		errorf("max_attempts", "max_attempts must be >= 1 (omit it for the default %d), got %d", DefaultReauthMaxAttempts, r.MaxAttempts)

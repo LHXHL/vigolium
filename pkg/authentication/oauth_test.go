@@ -201,7 +201,7 @@ func TestOAuth2RefreshToken_RotatesAcrossRehydrate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer at-2", h["Authorization"])
 	assert.False(t, exp.IsZero())
-	assert.Equal(t, "rt-3", sess.Login.RefreshToken, "Rehydrate writes the rotation back")
+	assert.Equal(t, "rt-3", sess.Login.RefreshToken, "rehydrate writes the rotation back")
 
 	reqs := ts.reqs()
 	require.Len(t, reqs, 2)

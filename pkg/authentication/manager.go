@@ -35,7 +35,7 @@ type Manager struct {
 	// loginBudget caps the total hydration time across every session and step.
 	// <= 0 means DefaultLoginBudget.
 	loginBudget time.Duration
-	// flowMu guards the login flows Rehydrate copies and writes back (a
+	// flowMu guards the login flows rehydrate copies and writes back (a
 	// rotated OAuth2 refresh_token).
 	flowMu sync.Mutex
 }
@@ -159,8 +159,9 @@ func (m *Manager) HydrateSessionsContext(ctx context.Context) error {
 	return nil
 }
 
-// Rehydrate runs the named session's login flow again and returns the fresh
-// credential headers, for a scan whose session expired mid-run (LiveSession).
+// rehydrate runs the named session's login flow again and returns the fresh
+// credential headers, for a scan whose session expired mid-run (LiveSession),
+// and when they expire (zero when the login did not say).
 //
 // It is safe to call from several goroutines and while the scan reads the
 // sessions: the flow runs on a CLONE of the session with an empty header map,
@@ -168,16 +169,9 @@ func (m *Manager) HydrateSessionsContext(ctx context.Context) error {
 // setup) is never mutated. The login goes out over the manager's login
 // transport, so it follows the scan's proxy, TLS stance and egress gate (the
 // priority lane under GatedLoginTransport), bounded by ctx and by the
-// manager's login budget.
-func (m *Manager) Rehydrate(ctx context.Context, name string) (map[string]string, error) {
-	headers, _, err := m.rehydrate(ctx, name)
-	return headers, err
-}
-
-// rehydrate is Rehydrate that also returns when the fresh credentials expire
-// (zero when the login did not say). An OAuth2 refresh token the server
-// rotated is written back to the managed session's flow, so the next
-// re-login presents the new one.
+// manager's login budget. An OAuth2 refresh token the server rotated is
+// written back to the managed session's flow, so the next re-login presents
+// the new one.
 func (m *Manager) rehydrate(ctx context.Context, name string) (map[string]string, time.Time, error) {
 	if ctx == nil {
 		ctx = context.Background()

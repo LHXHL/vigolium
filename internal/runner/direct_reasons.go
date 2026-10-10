@@ -20,6 +20,13 @@ func ApplyDirectPhaseReason(c database.ScanCompletion, reason string) database.S
 		State:   database.PhasePartial,
 		Reasons: []string{reason},
 	}
+	return mergeDirectNote(c, note, c.StopReason)
+}
+
+// mergeDirectNote merges note into c's outcome for the same phase (appending
+// it when c has none) and rebuilds the completion with stop as the stop
+// reason. c's phases are copied, never modified.
+func mergeDirectNote(c database.ScanCompletion, note database.PhaseOutcome, stop string) database.ScanCompletion {
 	phases := append([]database.PhaseOutcome(nil), c.Phases...)
 	merged := false
 	for i := range phases {
@@ -31,5 +38,5 @@ func ApplyDirectPhaseReason(c database.ScanCompletion, reason string) database.S
 	if !merged {
 		phases = append(phases, note)
 	}
-	return completionOf(phases, c.StopReason)
+	return completionOf(phases, stop)
 }

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/vigolium/vigolium/pkg/utils/yamlschema"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 )
@@ -202,10 +203,10 @@ func oauth2FieldsSet(lf *LoginFlow) []string {
 func lintOAuth2Flow(lf *LoginFlow, prefix string) []LintIssue {
 	var issues []LintIssue
 	errorf := func(field, format string, args ...any) {
-		issues = append(issues, LintIssue{Field: joinField(prefix, field), Severity: "error", Message: fmt.Sprintf(format, args...)})
+		issues = append(issues, LintIssue{Field: yamlschema.JoinPath(prefix, field), Severity: "error", Message: fmt.Sprintf(format, args...)})
 	}
 	warnf := func(field, format string, args ...any) {
-		issues = append(issues, LintIssue{Field: joinField(prefix, field), Severity: "warning", Message: fmt.Sprintf(format, args...)})
+		issues = append(issues, LintIssue{Field: yamlschema.JoinPath(prefix, field), Severity: "warning", Message: fmt.Sprintf(format, args...)})
 	}
 
 	if strings.TrimSpace(lf.TokenURL) == "" {
@@ -264,7 +265,7 @@ func lintOAuth2Flow(lf *LoginFlow, prefix string) []LintIssue {
 		{"token_url", lf.TokenURL}, {"client_id", lf.ClientID}, {"client_secret", lf.ClientSecret},
 		{"scope", lf.Scope}, {"audience", lf.Audience}, {"refresh_token", lf.RefreshToken},
 	} {
-		issues = append(issues, lintTemplates(f.v, joinField(prefix, f.name))...)
+		issues = append(issues, lintTemplates(f.v, yamlschema.JoinPath(prefix, f.name))...)
 	}
 	return issues
 }

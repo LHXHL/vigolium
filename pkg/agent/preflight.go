@@ -40,14 +40,13 @@ func NewProviderMissingError(err error) error {
 // Preflight verifies that the olium provider can be built AND that its
 // credentials work, by issuing a one-token ping. Call it before a multi-phase
 // pipeline so a credential or network problem fails in seconds instead of
-// after a minute of normalize + discovery work. agentName is retained for
-// call-site compatibility; it no longer affects dispatch.
+// after a minute of normalize + discovery work.
 //
 // The ping is bounded by the caller's ctx (so Ctrl-C stops it) and by
 // agent.olium.preflight_timeout (EffectivePreflightTimeout: 15s, 60s for a
 // local endpoint). Failures are *PreflightError values: provider_missing when
 // no provider could be built, preflight_failed when the ping failed.
-func (e *Engine) Preflight(ctx context.Context, agentName string) error {
+func (e *Engine) Preflight(ctx context.Context) error {
 	if e.settings == nil {
 		return &PreflightError{code: apicontract.CodeProviderMissing, err: fmt.Errorf("agent settings are nil")}
 	}

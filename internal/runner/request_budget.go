@@ -117,20 +117,9 @@ func ApplyRequestBudget(c database.ScanCompletion, b *egress.Budget) database.Sc
 		note.Reasons = []string{database.ReasonRequestBudget}
 		note.State = database.PhasePartial
 	}
-	phases := append([]database.PhaseOutcome(nil), c.Phases...)
-	merged := false
-	for i := range phases {
-		if phases[i].Phase == note.Phase {
-			phases[i].Merge(note)
-			merged = true
-		}
-	}
-	if !merged {
-		phases = append(phases, note)
-	}
 	stop := c.StopReason
 	if stop == "" && exhausted {
 		stop = database.ReasonRequestBudget
 	}
-	return completionOf(phases, stop)
+	return mergeDirectNote(c, note, stop)
 }

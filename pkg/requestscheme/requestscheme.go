@@ -173,23 +173,12 @@ func RequestLineHasScheme(raw string) bool {
 // HostPort returns the Host header's hostname and explicit port ("" when the
 // header names none).
 func HostPort(raw string) (host, port string, ok bool) {
-	head := raw
-	if i := strings.Index(head, "\r\n\r\n"); i >= 0 {
-		head = head[:i]
-	} else if i := strings.Index(head, "\n\n"); i >= 0 {
-		head = head[:i]
+	value, err := httpmsg.GetHeaderValue([]byte(raw), "Host")
+	if err != nil || value == "" {
+		return "", "", false
 	}
-	lines := strings.Split(head, "\n")
-	for _, line := range lines[1:] {
-		name, value, cut := strings.Cut(strings.TrimRight(line, "\r"), ":")
-		if !cut || !strings.EqualFold(strings.TrimSpace(name), "host") {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		if h, p, err := net.SplitHostPort(value); err == nil {
-			return h, p, h != ""
-		}
-		return strings.Trim(value, "[]"), "", value != ""
+	if h, p, err := net.SplitHostPort(value); err == nil {
+		return h, p, h != ""
 	}
-	return "", "", false
+	return strings.Trim(value, "[]"), "", true
 }

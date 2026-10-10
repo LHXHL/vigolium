@@ -558,8 +558,19 @@ func TestUpdateRejectsDuplicateEntries(t *testing.T) {
 	assertUnchanged(t, target)
 }
 
+// trustedKeysConfigured reports whether at least one built-in key slot holds a
+// real public key.
+func trustedKeysConfigured() bool {
+	for _, k := range trustedKeys {
+		if _, err := parsePublicKey(k); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func TestUpdateBuiltInPlaceholderKeysFailClosed(t *testing.T) {
-	if TrustedKeysConfigured() {
+	if trustedKeysConfigured() {
 		t.Skip("real release keys are configured")
 	}
 	signer := newTestSigner(1)
@@ -693,5 +704,19 @@ func TestLookupChecksum(t *testing.T) {
 	}
 	if _, ok := lookupChecksum([]byte("zz  a.tar.gz\n"), "a.tar.gz"); ok {
 		t.Errorf("malformed digest accepted")
+	}
+}
+
+func TestNormalizeVersion(t *testing.T) {
+	cases := map[string]string{
+		"0.1.41-beta":  "v0.1.41-beta",
+		"v0.1.41-beta": "v0.1.41-beta",
+		"  1.2.3  ":    "v1.2.3",
+		"":             "",
+	}
+	for in, want := range cases {
+		if got := NormalizeVersion(in); got != want {
+			t.Errorf("NormalizeVersion(%q)=%q want %q", in, got, want)
+		}
 	}
 }

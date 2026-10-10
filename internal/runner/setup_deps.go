@@ -55,7 +55,7 @@ func (r *Runner) beginSetup(component, label, eta string) *setupStep {
 	r.printPhaseDetail(fmt.Sprintf("Setup: %s — %s", terminal.HiTeal(label), eta))
 	scanevents.Emit(scanevents.Event{
 		Type:      scanevents.TypeScanSetup,
-		Phase:     r.setupPhase(),
+		Phase:     r.currentPhaseName(),
 		Component: component,
 		State:     "started",
 	})
@@ -69,13 +69,13 @@ func (s *setupStep) progress(bytes, total int64) {
 	}
 	if !s.announced {
 		s.announced = true
-		s.r.printPhaseDetail(fmt.Sprintf("Setup: downloading %s %s …", s.label, terminal.HiTeal(fmtMB(total))))
+		s.r.printPhaseDetail(fmt.Sprintf("Setup: downloading %s %s …", s.label, terminal.HiTeal(terminal.HumanBytes(total))))
 	}
 	quarter := bytes * 4 / total
 	if quarter > s.lastQuarter && quarter < 4 {
 		s.lastQuarter = quarter
 		s.r.printPhaseDetail(fmt.Sprintf("Setup: %s %d%% (%s of %s, %s elapsed)", s.label, quarter*25,
-			fmtMB(bytes), fmtMB(total), fmtDuration(time.Since(s.start))))
+			terminal.HumanBytes(bytes), terminal.HumanBytes(total), fmtDuration(time.Since(s.start))))
 	}
 }
 
@@ -84,7 +84,7 @@ func (s *setupStep) finish(bytes int64, err error) {
 	elapsed := time.Since(s.start)
 	ev := scanevents.Event{
 		Type:       scanevents.TypeScanSetup,
-		Phase:      s.r.setupPhase(),
+		Phase:      s.r.currentPhaseName(),
 		Component:  s.component,
 		State:      "finished",
 		DurationMS: elapsed.Milliseconds(),
@@ -99,23 +99,11 @@ func (s *setupStep) finish(bytes int64, err error) {
 	} else {
 		size := ""
 		if bytes > 0 {
-			size = fmtMB(bytes) + " in "
+			size = terminal.HumanBytes(bytes) + " in "
 		}
 		s.r.printPhaseDetail(fmt.Sprintf("Setup: %s ready (%s%s)", s.label, size, fmtDuration(elapsed)))
 	}
 	scanevents.Emit(ev)
-}
-
-// setupPhase is the canonical id of the phase a setup step runs in.
-func (r *Runner) setupPhase() string {
-	if t := r.currentPhase.Load(); t != nil {
-		return t.phase
-	}
-	return ""
-}
-
-func fmtMB(n int64) string {
-	return fmt.Sprintf("%.0f MB", float64(n)/1024/1024)
 }
 
 // provisionSpideringBrowser downloads Chrome for Testing when the crawl would

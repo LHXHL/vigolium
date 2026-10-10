@@ -60,6 +60,9 @@ type PlanInput struct {
 	// them and their active modules (which count in by_scope).
 	extensions      *scanplan.ExtensionSelection
 	extensionActive []modules.ActiveModule
+	// admission is the runner's own verdict over Targets (targetAdmission),
+	// reused instead of re-admitting when TargetsAreInput.
+	admission *TargetAdmission
 }
 
 // ResolvePlan resolves the scan plan for already-resolved options and
@@ -120,7 +123,10 @@ func ResolvePlan(ctx context.Context, in PlanInput) (*scanplan.Plan, error) {
 
 	// Targets and scope admission (the same AdmitTargets the runner enforces).
 	adm := TargetAdmission{Admitted: targets}
-	if in.TargetsAreInput {
+	switch {
+	case in.TargetsAreInput && in.admission != nil:
+		adm = *in.admission
+	case in.TargetsAreInput:
 		adm = AdmitTargets(settings.Scope, targets)
 	}
 	p.Targets = scanplan.Targets{
@@ -354,7 +360,7 @@ func planPhaseBudget(settings *config.Settings, opts *types.Options, phase Nativ
 		if per <= 0 {
 			per = config.DefaultSpideringConfig().MaxDurationParsed()
 		}
-		resolved := pace.ResolvePhase("spidering")
+		resolved := pace.ResolvePhase(string(PhaseSpidering))
 		b := &scanplan.PhaseBudget{
 			PerTargetMS:    per.Milliseconds(),
 			PhaseCeilingMS: spideringPhaseCeiling(per, max(targets, 1)).Milliseconds(),
@@ -378,7 +384,7 @@ func planPhaseBudget(settings *config.Settings, opts *types.Options, phase Nativ
 		return b
 	case PhaseDiscovery:
 		per := DiscoveryBudget(settings, opts)
-		resolved := pace.ResolvePhase("discovery")
+		resolved := pace.ResolvePhase(string(PhaseDiscovery))
 		b := &scanplan.PhaseBudget{PerTargetMS: per.Milliseconds(), Semantics: scanplan.SemanticsPerTarget}
 		switch {
 		case resolved.MaxDuration > 0 && per == resolved.MaxDuration:
@@ -642,16 +648,18 @@ func planHarvest(settings *config.Settings, probe *scanplan.Phase) *scanplan.Har
 }
 
 // resolveRunPlan is the runner's plan: ResolvePlan over its own options,
-// settings and repository, with the loaded extensions' selection.
-func (r *Runner) resolveRunPlan(ctx context.Context, infra *phaseInfra) (*scanplan.Plan, error) {
+// settings and repository, with the loaded extensions' selection. admission
+// is the run's targetAdmission (nil when the targets are not its input).
+func (r *Runner) resolveRunPlan(ctx context.Context, infra *phaseInfra, admission *TargetAdmission) (*scanplan.Plan, error) {
 	in := PlanInput{
 		Opts:            r.options,
 		Settings:        r.settings,
 		StrategyName:    r.options.ScanningStrategy,
 		Repo:            r.repository,
 		Targets:         r.options.Targets,
-		TargetsAreInput: r.targetAdmission() != nil,
+		TargetsAreInput: admission != nil,
 		Verbose:         r.options.Verbose,
+		admission:       admission,
 	}
 	if infra != nil && infra.jsEngine != nil {
 		sel := r.selectExtensionModules(infra.jsEngine)
@@ -683,13 +691,12 @@ func (r *Runner) resolveRunPlan(ctx context.Context, infra *phaseInfra) (*scanpl
 // event of the stream: the CLI's scan.started is the first, and nothing in the
 // runner emits before this) and stores it on the scan row. A plan that cannot
 // be resolved is logged and skipped: it describes the scan, it is not the scan.
-func (r *Runner) announcePlan(ctx context.Context, infra *phaseInfra) {
-	plan, err := r.resolveRunPlan(ctx, infra)
+func (r *Runner) announcePlan(ctx context.Context, infra *phaseInfra, admission *TargetAdmission) {
+	plan, err := r.resolveRunPlan(ctx, infra, admission)
 	if err != nil {
 		zap.L().Warn("Failed to resolve the scan plan", zap.Error(err))
 		return
 	}
-	r.lastPlan.Store(plan)
 	zap.L().Debug("Scan plan resolved", zap.String("plan", planSummaryLine(plan)))
 	scanevents.Emit(scanevents.Event{Type: scanevents.TypeScanPlan, Plan: plan})
 	if r.repository == nil || infra == nil || infra.scanUUID == "" {
@@ -703,17 +710,6 @@ func (r *Runner) announcePlan(ctx context.Context, infra *phaseInfra) {
 	if err := r.repository.UpdateScanPartial(ctx, &database.Scan{UUID: infra.scanUUID, Plan: raw}); err != nil {
 		zap.L().Warn("Failed to store the scan plan on the scan row", zap.Error(err))
 	}
-}
-
-// Plan returns the plan of the runner's most recent RunNativeScan, or nil
-// before one has resolved it. B6's scan document embeds it verbatim; a caller
-// with only the scan uuid reads the same object from scans.plan
-// (scanplan.Decode).
-func (r *Runner) Plan() *scanplan.Plan {
-	if r == nil {
-		return nil
-	}
-	return r.lastPlan.Load()
 }
 
 // planSummaryLine renders a one-line digest of a plan, for logs.

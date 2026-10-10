@@ -28,7 +28,6 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/projectdiscovery/useragent"
-	"github.com/vigolium/vigolium/pkg/scanplan"
 	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -114,9 +113,6 @@ type Runner struct {
 	// as currentPhase: the finding observer reads it from worker goroutines.
 	liveness atomic.Pointer[Heartbeat]
 
-	// lastPlan is the plan the most recent RunNativeScan resolved and emitted
-	// as scan.plan (see announcePlan, Plan).
-	lastPlan atomic.Pointer[scanplan.Plan]
 	// eventObserverAttached guards attachEventObserver against wrapping the
 	// writer's OnEvent again on a reused Runner.
 	eventObserverAttached atomic.Bool
@@ -193,7 +189,7 @@ type phaseInfra struct {
 	// another name for this field being set.
 	authFailureReason string
 
-	// sessions keeps the Manager and the live sessions alive for the scan, so
+	// sessions keeps the live sessions (and their Manager) alive for the scan, so
 	// an expired session can be logged in again mid-scan (see
 	// runner_live_sessions.go). Nil when no session has a check block.
 	sessions *liveSessions

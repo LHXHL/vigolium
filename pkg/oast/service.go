@@ -82,8 +82,6 @@ type Service struct {
 	// that finishes after Close never leaves a polling client behind.
 	lifeMu sync.Mutex
 	closed bool
-	// unavailableFns are the OnUnavailable callbacks; guarded by lifeMu.
-	unavailableFns []func(error)
 	// minted counts callback URLs handed out since the last Flush, so Flush
 	// only waits out the grace period when a blind payload was planted.
 	minted atomic.Int64

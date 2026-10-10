@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/utils/yamlschema"
 )
 
 // Role identifies how a session is used during scanning.
@@ -417,7 +419,7 @@ func lintSession(s *Session, prefix string) []LintIssue {
 
 	if s.Name == "" {
 		issues = append(issues, LintIssue{
-			Field: joinField(prefix, "name"), Severity: "error",
+			Field: yamlschema.JoinPath(prefix, "name"), Severity: "error",
 			Message: "session name is required",
 		})
 	}
@@ -427,7 +429,7 @@ func lintSession(s *Session, prefix string) []LintIssue {
 		// ok
 	default:
 		issues = append(issues, LintIssue{
-			Field: joinField(prefix, "role"), Severity: "error",
+			Field: yamlschema.JoinPath(prefix, "role"), Severity: "error",
 			Message: fmt.Sprintf("invalid role %q (must be \"primary\" or \"compare\")", s.Role),
 		})
 	}
@@ -459,10 +461,10 @@ func lintSession(s *Session, prefix string) []LintIssue {
 	}
 
 	if hasLogin {
-		issues = append(issues, lintLoginFlow(s.Login, joinField(prefix, "login"))...)
+		issues = append(issues, lintLoginFlow(s.Login, yamlschema.JoinPath(prefix, "login"))...)
 	}
-	issues = append(issues, lintCheck(s.Check, joinField(prefix, "check"))...)
-	issues = append(issues, lintReauth(s, joinField(prefix, "reauth"))...)
+	issues = append(issues, lintCheck(s.Check, yamlschema.JoinPath(prefix, "check"))...)
+	issues = append(issues, lintReauth(s, yamlschema.JoinPath(prefix, "reauth"))...)
 
 	return issues
 }
@@ -627,7 +629,7 @@ const loginTypeList = `"bearer", "cookie", "oauth2_client_credentials" or "oauth
 func lintHeaderMap(h map[string]string, prefix string) []LintIssue {
 	var issues []LintIssue
 	for _, name := range headerNames(h) {
-		field := joinField(prefix, name)
+		field := yamlschema.JoinPath(prefix, name)
 		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " :\t\r\n") {
 			issues = append(issues, LintIssue{
 				Field: field, Severity: "error",

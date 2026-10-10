@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // flagErrorFunc augments cobra's flag-parse errors with a "did you mean" hint.
@@ -64,7 +65,7 @@ func closestFlagName(cmd *cobra.Command, typed string) string {
 		if f.Hidden {
 			return
 		}
-		d := levenshtein(typed, f.Name)
+		d := textutil.Levenshtein(typed, f.Name)
 		// Ties go to the first name in pflag's (lexical) visit order rather than
 		// to whichever happened to be registered last, so the hint is stable
 		// across builds.
@@ -89,47 +90,4 @@ func suggestionBudget(typed string) int {
 		return 1
 	}
 	return len(typed) / 3
-}
-
-// levenshtein is the classic edit distance between a and b, computed with a
-// two-row rolling buffer.
-func levenshtein(a, b string) int {
-	if a == b {
-		return 0
-	}
-	ra, rb := []rune(a), []rune(b)
-	if len(ra) == 0 {
-		return len(rb)
-	}
-	if len(rb) == 0 {
-		return len(ra)
-	}
-	prev := make([]int, len(rb)+1)
-	curr := make([]int, len(rb)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(ra); i++ {
-		curr[0] = i
-		for j := 1; j <= len(rb); j++ {
-			cost := 1
-			if ra[i-1] == rb[j-1] {
-				cost = 0
-			}
-			curr[j] = min3(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-		}
-		prev, curr = curr, prev
-	}
-	return prev[len(rb)]
-}
-
-func min3(a, b, c int) int {
-	m := a
-	if b < m {
-		m = b
-	}
-	if c < m {
-		m = c
-	}
-	return m
 }

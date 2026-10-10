@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"syscall"
+
+	"github.com/vigolium/vigolium/pkg/procutil"
 )
 
 // tryLockFile opens path (0600) and takes an exclusive, non-blocking flock.
@@ -31,12 +33,8 @@ func unlockFile(f *os.File) {
 	_ = f.Close()
 }
 
-// pidKnownDead reports whether pid definitely names no running process.
-// EPERM means it exists under another user, which counts as alive.
+// pidKnownDead reports whether pid definitely names no running process
+// (procutil counts one that exists under another user as alive).
 func pidKnownDead(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return errors.Is(err, syscall.ESRCH)
+	return pid > 0 && !procutil.IsProcessAlive(pid)
 }

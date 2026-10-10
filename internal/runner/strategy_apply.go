@@ -170,14 +170,6 @@ func ApplyScanSettingOverrides(settings *config.Settings, opts *types.Options) {
 	}
 }
 
-// markExplicitPace records the caller's explicit knobs on opts, which is where
-// the runner reads them (host limiter, per-phase concurrency, discovery rate).
-func markExplicitPace(opts *types.Options, explicit ExplicitPace) {
-	opts.ConcurrencyExplicitlySet = explicit.Concurrency
-	opts.RateLimitExplicitlySet = explicit.RateLimit
-	opts.MaxPerHostExplicitlySet = explicit.MaxPerHost
-}
-
 // ApplyScanStrategy is the one place a strategy turns into Options and pace.
 //
 // Order: an explicit rate limit is written into scanning_pace first (so
@@ -188,7 +180,6 @@ func markExplicitPace(opts *types.Options, explicit ExplicitPace) {
 // Phase selection (--only/--skip) is NOT applied here: callers run
 // ApplyNativePhaseSelection next, so a selection overrides the strategy.
 func ApplyScanStrategy(settings *config.Settings, opts *types.Options, req StrategyRequest) (ResolvedStrategy, error) {
-	markExplicitPace(opts, req.Explicit)
 	pace := &settings.ScanningPace
 
 	// A typed rate limit outranks the profile's scanning_pace.rate_limit, which
@@ -279,8 +270,14 @@ func noteStrategyPhase(opts *types.Options, phase NativePhase, enabled bool) {
 //
 // Run it last — after the strategy ceiling, the phase selection and any
 // per-phase qualifiers — so the values it folds are the final ones.
+//
+// It also records the caller's explicit knobs on opts, which is where the
+// runner reads them (host limiter, per-phase concurrency, discovery rate);
+// every entry point runs it after ApplyScanStrategy with the same ExplicitPace.
 func ApplyScanPace(settings *config.Settings, opts *types.Options, explicit ExplicitPace) error {
-	markExplicitPace(opts, explicit)
+	opts.ConcurrencyExplicitlySet = explicit.Concurrency
+	opts.RateLimitExplicitlySet = explicit.RateLimit
+	opts.MaxPerHostExplicitlySet = explicit.MaxPerHost
 	pace := &settings.ScanningPace
 	if err := pace.Validate(); err != nil {
 		return fmt.Errorf("invalid scanning_pace configuration: %w", err)
@@ -303,12 +300,12 @@ func ApplyScanPace(settings *config.Settings, opts *types.Options, explicit Expl
 	if !explicit.MaxRequestsPerHost && pace.MaxRequestsPerHost > 0 {
 		opts.MaxRequestsPerHost = pace.MaxRequestsPerHost
 	}
-	if d := pace.ResolvePhase("discovery").MaxDuration; !explicit.DiscoverMaxDuration && d > 0 {
+	if d := pace.ResolvePhase(string(PhaseDiscovery)).MaxDuration; !explicit.DiscoverMaxDuration && d > 0 {
 		opts.DiscoverMaxDuration = d
 	}
 	// The source travels with the value so SpideringBudget can tell a derived
 	// budget (which gets the spidering floor) from one somebody chose.
-	switch spider := pace.ResolvePhase("spidering"); {
+	switch spider := pace.ResolvePhase(string(PhaseSpidering)); {
 	case explicit.SpideringMaxDuration:
 		opts.SpideringMaxDurationSource = SpideringSourceFlag
 	case spider.MaxDuration > 0:

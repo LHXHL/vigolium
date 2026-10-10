@@ -37,20 +37,6 @@ func TestIsVersionBehind(t *testing.T) {
 	}
 }
 
-func TestNormalizedSemver(t *testing.T) {
-	cases := map[string]string{
-		"0.1.41-beta":  "v0.1.41-beta",
-		"v0.1.41-beta": "v0.1.41-beta",
-		"  1.2.3  ":    "v1.2.3",
-		"":             "",
-	}
-	for in, want := range cases {
-		if got := normalizedSemver(in); got != want {
-			t.Errorf("normalizedSemver(%q)=%q want %q", in, got, want)
-		}
-	}
-}
-
 func TestCacheStale(t *testing.T) {
 	now := time.Now().Unix()
 	if cacheStale(updateCacheData{CheckedAt: now}) {

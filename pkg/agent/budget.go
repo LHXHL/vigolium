@@ -6,15 +6,16 @@ import (
 
 	"github.com/vigolium/vigolium/pkg/agent/agenttypes"
 	"github.com/vigolium/vigolium/pkg/audit/claudecost"
+	oautopilot "github.com/vigolium/vigolium/pkg/olium/autopilot"
 )
 
-// Budget stop kinds, shared with pkg/olium/autopilot's Result.BudgetStop so a
-// caller reports one vocabulary whichever loop ran.
+// Budget stop kinds: aliases of pkg/olium/autopilot's Result.BudgetStop kinds,
+// so a caller reports one vocabulary whichever loop ran.
 const (
-	BudgetStopWallTime = "wall_time"
-	BudgetStopTokens   = "tokens"
-	BudgetStopCost     = "cost"
-	BudgetStopCommands = "commands"
+	BudgetStopWallTime = oautopilot.BudgetWallTime
+	BudgetStopTokens   = oautopilot.BudgetTokens
+	BudgetStopCost     = oautopilot.BudgetCost
+	BudgetStopCommands = oautopilot.BudgetCommands
 )
 
 // RunBudget caps the cumulative spend of every agent call an Engine makes:

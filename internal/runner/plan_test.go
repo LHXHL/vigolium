@@ -466,9 +466,6 @@ func TestPlanEventOrderAndPersist(t *testing.T) {
 	if planEv == nil || planEv.ScanUUID != opts.ScanUUID || !planEv.Phase(string(PhaseProbe)).Enabled {
 		t.Fatalf("scan.plan payload = %+v", planEv)
 	}
-	if r.Plan() == nil || r.Plan().ScanUUID != opts.ScanUUID {
-		t.Errorf("Runner.Plan() = %+v", r.Plan())
-	}
 
 	row, err := repo.GetScanByUUID(context.Background(), opts.ScanUUID)
 	if err != nil {

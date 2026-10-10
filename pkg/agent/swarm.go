@@ -377,7 +377,7 @@ func (s *SwarmRunner) Run(ctx context.Context, cfg SwarmConfig) (*SwarmResult, e
 	// missing credential. Mirrors autopilot's RunAutonomous preflight.
 	var err error
 	if s.engine != nil && !cfg.SkipPreflight {
-		if perr := s.engine.Preflight(ctx, cfg.AgentName); perr != nil {
+		if perr := s.engine.Preflight(ctx); perr != nil {
 			err = fmt.Errorf("swarm preflight failed: %w", perr)
 		}
 	}

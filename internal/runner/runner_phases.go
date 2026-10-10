@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -152,7 +153,7 @@ func (r *Runner) RunNativeScan() (err error) {
 	// extensions' selection is known; after the row exists, so it can be
 	// stored. A scope that refused every target still gets its plan, every
 	// phase disabled_by scope.
-	r.announcePlan(ctx, infra)
+	r.announcePlan(ctx, infra, admission)
 	// Liveness heartbeat, always on (status.json + the row's heartbeat
 	// columns). Finish is registered BEFORE the finalizer so it runs AFTER it
 	// (defers are LIFO): status.json only states a terminal status once the
@@ -601,12 +602,12 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 	}
 	r.setPhaseTag(p.tag)
 	if !p.selfStart {
-		r.scanLogger.Info(p.label, orDefault(p.started, "phase started"))
+		r.scanLogger.Info(p.label, cmp.Or(p.started, "phase started"))
 	}
 	runErr := p.run(r, ctx, infra)
 	switch {
 	case runErr == nil:
-		r.scanLogger.Info(p.label, orDefault(p.completed, "phase completed"))
+		r.scanLogger.Info(p.label, cmp.Or(p.completed, "phase completed"))
 		if p.after != nil {
 			p.after(r, ctx)
 		}
@@ -615,7 +616,7 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		return nil
 	}
 
-	r.scanLogger.Error(p.label, orDefault(p.failed, "phase failed: ")+runErr.Error())
+	r.scanLogger.Error(p.label, cmp.Or(p.failed, "phase failed: ")+runErr.Error())
 	switch {
 	case stoppedByScanContext(ctx, runErr):
 		// The scan's context ended under the phase. finish marks the phase
@@ -634,12 +635,4 @@ func (r *Runner) executeNativePhase(ctx context.Context, infra *phaseInfra, phas
 		tracker.markPartial(database.ReasonPhaseError)
 		return nil
 	}
-}
-
-// orDefault returns s, or def when s is empty.
-func orDefault(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }

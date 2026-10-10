@@ -17,13 +17,13 @@ func TestBuildDeparosConfigCarriesSitemap(t *testing.T) {
 	settings.Discovery.Sitemap.MaxURLs = 50
 	r := &Runner{options: &types.Options{Targets: []string{"https://example.com"}, Concurrency: 25}, settings: settings}
 
-	got := r.buildDeparosConfig(nil).Sitemap
+	got := r.buildDeparosConfig(nil, resolvedDiscoveryWordlists{}).Sitemap
 	if got == nil || got.Enabled || got.MaxURLs != 50 || !got.FollowIndex {
 		t.Fatalf("Sitemap = %+v, want disabled, max_urls 50, follow_index on", got)
 	}
 
 	defaults := (&Runner{options: &types.Options{Targets: []string{"https://example.com"}}, settings: paceSettings(nil)}).
-		buildDeparosConfig(nil).Sitemap
+		buildDeparosConfig(nil, resolvedDiscoveryWordlists{}).Sitemap
 	if defaults == nil || !defaults.Enabled || defaults.MaxURLs != 2000 || defaults.PerShape != 3 || !defaults.FollowIndex {
 		t.Fatalf("default Sitemap = %+v, want enabled, 2000, 3, follow_index", defaults)
 	}

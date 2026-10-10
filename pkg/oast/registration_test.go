@@ -163,11 +163,6 @@ func TestNew_FixedURLIsReadyImmediately(t *testing.T) {
 	if got := svc.GenerateURL("", "", "", "", ""); got != "cb.example.test" {
 		t.Errorf("GenerateURL = %q, want the fixed URL", got)
 	}
-	called := false
-	svc.OnUnavailable(func(error) { called = true })
-	if called {
-		t.Error("OnUnavailable fired in fixed-URL mode")
-	}
 	svc.Close()
 }
 
@@ -212,7 +207,7 @@ func TestFlush_WaitsGraceAfterMint(t *testing.T) {
 	}
 }
 
-func TestOnUnavailable_FiresOnceOnFailure(t *testing.T) {
+func TestWaitReady_ReportsRegistrationFailure(t *testing.T) {
 	gate := make(chan struct{})
 	boom := errors.New("dial tcp 10.0.0.1:443: connect: connection refused")
 	withClientFactory(t, func(*interactshclient.Options) (*interactshclient.Client, error) {
@@ -223,30 +218,14 @@ func TestOnUnavailable_FiresOnceOnFailure(t *testing.T) {
 	svc, _ := New(&config.OASTConfig{Enabled: true, ServerURL: "oast.example.test"}, nil, nil, "", "", nil)
 	t.Cleanup(svc.Close)
 
-	var before, after atomic.Int32
-	var got error
-	var mu sync.Mutex
-	svc.OnUnavailable(func(err error) {
-		before.Add(1)
-		mu.Lock()
-		got = err
-		mu.Unlock()
-	})
 	close(gate)
-	if err := svc.WaitReady(context.Background(), 5*time.Second); err == nil {
+	got := svc.WaitReady(context.Background(), 5*time.Second)
+	if got == nil {
 		t.Fatal("WaitReady = nil after a failed registration")
 	}
-	// Registered after the failure: runs immediately.
-	svc.OnUnavailable(func(error) { after.Add(1) })
-
-	if before.Load() != 1 || after.Load() != 1 {
-		t.Fatalf("callbacks fired before=%d after=%d, want 1 and 1", before.Load(), after.Load())
-	}
-	mu.Lock()
-	defer mu.Unlock()
 	var uerr *UnavailableError
 	if !errors.As(got, &uerr) || uerr.Reason != "connection refused" || !errors.Is(got, boom) {
-		t.Errorf("callback error = %v, want an UnavailableError wrapping the cause with reason \"connection refused\"", got)
+		t.Errorf("WaitReady error = %v, want an UnavailableError wrapping the cause with reason \"connection refused\"", got)
 	}
 }
 

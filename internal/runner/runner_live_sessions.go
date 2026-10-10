@@ -20,12 +20,12 @@ import (
 // limit.
 const CountResponsesWhileLoggedOut = database.LimitResponsesWhileLoggedOut
 
-// liveSessions is the scan's in-flight authentication: the Manager (kept for
-// re-logins) and one LiveSession per session that has a `check` block or an
-// expiring credential. Built by initSessions, closed by phaseInfra.Close. A
-// nil *liveSessions is a scan with no live session; every method is nil-safe.
+// liveSessions is the scan's in-flight authentication: one LiveSession per
+// session that has a `check` block or an expiring credential (each holds the
+// Manager it re-logs in through). Built by initSessions, closed by
+// phaseInfra.Close. A nil *liveSessions is a scan with no live session; every
+// method is nil-safe.
 type liveSessions struct {
-	manager *authentication.Manager
 	// primary is the primary session's live owner, nil when it has no check.
 	primary *authentication.LiveSession
 	// assessment is primary when only the assessment phases carry it

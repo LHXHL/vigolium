@@ -211,7 +211,7 @@ func scheduleUpdateNotice(current string) {
 	cache, ok := readUpdateCache()
 	if ok && !cacheStale(cache) {
 		if cache.LatestVersion != "" && isVersionBehind(current, cache.LatestVersion) {
-			pendingUpdateNotice = formatUpdateNotice(current, normalizedSemver(cache.LatestVersion))
+			pendingUpdateNotice = formatUpdateNotice(current, selfupdate.NormalizeVersion(cache.LatestVersion))
 		}
 		return
 	}
@@ -233,7 +233,7 @@ func flushUpdateNotice() {
 		select {
 		case latest := <-updateFetch.ch:
 			if latest != "" && isVersionBehind(updateFetch.current, latest) {
-				pendingUpdateNotice = formatUpdateNotice(updateFetch.current, normalizedSemver(latest))
+				pendingUpdateNotice = formatUpdateNotice(updateFetch.current, selfupdate.NormalizeVersion(latest))
 			}
 		case <-time.After(updateCheckNetTimeout + 250*time.Millisecond):
 			// Still fetching — skip the notice this run; the cache will be warm
@@ -259,7 +259,7 @@ func runAutoUpdate(current string) {
 		terminal.White("Auto-updating vigolium"),
 		terminal.Yellow(current),
 		terminal.Gray("→"),
-		terminal.BoldCyan(normalizedSemver(latest)),
+		terminal.BoldCyan(selfupdate.NormalizeVersion(latest)),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), updateStepTimeout)
@@ -418,27 +418,14 @@ func formatUpdateNotice(current, latest string) string {
 // currentSemver returns the running binary's version normalized for semver
 // comparison (leading "v" guaranteed).
 func currentSemver() string {
-	return normalizedSemver(getVersion())
-}
-
-// normalizedSemver ensures a leading "v" so the value can be fed to
-// golang.org/x/mod/semver (npm reports "0.1.42-beta"; we compare "v0.1.42-beta").
-func normalizedSemver(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return ""
-	}
-	if !strings.HasPrefix(v, "v") {
-		v = "v" + v
-	}
-	return v
+	return selfupdate.NormalizeVersion(getVersion())
 }
 
 // isVersionBehind reports whether current is strictly older than latest. Invalid
 // versions (e.g. a dev build) are treated as "not behind" so they never nag.
 func isVersionBehind(current, latest string) bool {
-	c := normalizedSemver(current)
-	l := normalizedSemver(latest)
+	c := selfupdate.NormalizeVersion(current)
+	l := selfupdate.NormalizeVersion(latest)
 	if !semver.IsValid(c) || !semver.IsValid(l) {
 		return false
 	}

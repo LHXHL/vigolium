@@ -124,7 +124,7 @@ func runAgentTriage(cmd *cobra.Command, args []string) error {
 
 	engine := agent.NewEngine(settings, repo)
 	if !agentTriageDryRun && !agentTriagePreflight.skip {
-		if err := engine.Preflight(ctx, ""); err != nil {
+		if err := engine.Preflight(ctx); err != nil {
 			return err
 		}
 	}

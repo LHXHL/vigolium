@@ -100,7 +100,7 @@ func (r *Runner) initSessions(ctx context.Context, infra *phaseInfra) error {
 	// are pinned: a live session never overrides them, and its frozen copy
 	// is left out of the headers below so the explicit value is the one sent.
 	pinned := headerNames(baseHeaders)
-	live := &liveSessions{manager: mgr}
+	live := &liveSessions{}
 	liveFor := func(s *authentication.Session) *authentication.LiveSession {
 		ls := r.newLiveSession(ctx, mgr, s, pinned)
 		if ls != nil {

@@ -104,7 +104,7 @@ func (r *Runner) runParamMiningPhase(ctx context.Context, infra *phaseInfra) err
 		send:    parammine.RequesterSender(infra.httpRequester),
 		extra:   extra,
 		builtin: builtin,
-		words:   make(map[string][]string),
+		words:   make(map[string]*hostWords),
 	}
 	tracker.setProgress("endpoints", func() (int64, int64) {
 		return m.done.Load(), int64(len(endpoints))
@@ -202,7 +202,7 @@ type paramMiner struct {
 	builtin []string
 
 	wordsMu sync.Mutex
-	words   map[string][]string // hostname -> merged wordlist
+	words   map[string]*hostWords // hostname -> merged wordlist
 
 	done, mined, unstable, blocked, budget, failed atomic.Int64
 	names, found, records, writeFailed             atomic.Int64
@@ -224,39 +224,36 @@ func (m *paramMiner) counts() map[string]int64 {
 
 // run mines endpoints on workers goroutines, stopping new work once ctx ends.
 func (m *paramMiner) run(ctx context.Context, endpoints []paramMineEndpoint, workers int) {
-	var next atomic.Int64
-	var wg sync.WaitGroup
-	for range min(workers, len(endpoints)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for ctx.Err() == nil {
-				i := int(next.Add(1)) - 1
-				if i >= len(endpoints) {
-					return
-				}
-				m.mineOne(ctx, endpoints[i])
-				m.done.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
+	parallelEach(ctx, len(endpoints), workers, func(i int) {
+		m.mineOne(ctx, endpoints[i])
+		m.done.Add(1)
+	})
 }
 
-// wordsFor returns the host's merged wordlist, built once per host.
+// hostWords is one host's merged wordlist, loaded once.
+type hostWords struct {
+	once  sync.Once
+	words []string
+}
+
+// wordsFor returns the host's merged wordlist, built once per host. The DB
+// load runs outside wordsMu, so workers on other hosts are not held behind it.
 func (m *paramMiner) wordsFor(ctx context.Context, hostname string) []string {
 	m.wordsMu.Lock()
-	defer m.wordsMu.Unlock()
-	if w, ok := m.words[hostname]; ok {
-		return w
+	hw := m.words[hostname]
+	if hw == nil {
+		hw = &hostWords{}
+		m.words[hostname] = hw
 	}
-	host, err := m.r.repository.ParamNamesForHost(ctx, m.r.options.ProjectUUID, hostname)
-	if err != nil {
-		zap.L().Debug("ParamMining: host parameter names unavailable", zap.String("host", hostname), zap.Error(err))
-	}
-	w := parammine.MergeWordlists(m.cfg.MaxWords, host.JS, host.Observed, m.extra, m.builtin)
-	m.words[hostname] = w
-	return w
+	m.wordsMu.Unlock()
+	hw.once.Do(func() {
+		host, err := m.r.repository.ParamNamesForHost(ctx, m.r.options.ProjectUUID, hostname)
+		if err != nil {
+			zap.L().Debug("ParamMining: host parameter names unavailable", zap.String("host", hostname), zap.Error(err))
+		}
+		hw.words = parammine.MergeWordlists(m.cfg.MaxWords, host.JS, host.Observed, m.extra, m.builtin)
+	})
+	return hw.words
 }
 
 func (m *paramMiner) mineOne(ctx context.Context, ep paramMineEndpoint) {

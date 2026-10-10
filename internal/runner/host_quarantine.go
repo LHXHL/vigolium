@@ -70,7 +70,8 @@ func emitHostTransition(tr hosterrors.Transition, phase func() string) {
 	scanevents.Emit(ev)
 }
 
-// currentPhaseName is the phase source for the runner's breaker events.
+// currentPhaseName is the canonical id of the running phase ("" outside one),
+// the phase source for the runner's breaker and scan.setup events.
 func (r *Runner) currentPhaseName() string {
 	if t := r.currentPhase.Load(); t != nil {
 		return t.phase

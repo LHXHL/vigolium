@@ -58,7 +58,7 @@ type TargetsUnreachableError struct {
 
 func (e *TargetsUnreachableError) Error() string {
 	msg := fmt.Sprintf("%s: none of %d admitted target(s) answered: %s",
-		ErrNoTargetsReachable, len(e.Unreachable), DescribeUnreachable(e.Unreachable, 5))
+		ErrNoTargetsReachable, len(e.Unreachable), describeUnreachable(e.Unreachable, 5))
 	if e.Hint != "" {
 		msg += "; " + e.Hint
 	}
@@ -67,18 +67,12 @@ func (e *TargetsUnreachableError) Error() string {
 
 func (e *TargetsUnreachableError) Unwrap() error { return ErrNoTargetsReachable }
 
-// DescribeUnreachable renders unreachable targets as "target (connection
+// describeUnreachable renders unreachable targets as "target (connection
 // refused)", comma separated, naming at most limit of them (limit <= 0 names all).
-func DescribeUnreachable(issues []database.TargetIssue, limit int) string {
-	parts := make([]string, 0, len(issues))
-	for i, v := range issues {
-		if limit > 0 && i == limit {
-			parts = append(parts, fmt.Sprintf("and %d more", len(issues)-limit))
-			break
-		}
-		parts = append(parts, fmt.Sprintf("%s (%s)", v.Target, http.DescribeTransportClass(v.Code)))
-	}
-	return strings.Join(parts, ", ")
+func describeUnreachable(issues []database.TargetIssue, limit int) string {
+	return describeTargets(issues, limit, func(v database.TargetIssue) (string, string) {
+		return v.Target, http.DescribeTransportClass(v.Code)
+	})
 }
 
 // preflightApplies reports whether this run checks its admitted targets before

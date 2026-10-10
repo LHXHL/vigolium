@@ -273,7 +273,7 @@ func runAutopilotOlium(parentCtx context.Context, settings *config.Settings, rep
 	// scanning on a run whose first model call would fail. (The pipeline path
 	// above runs its own, degrading to a blackbox scan on failure.)
 	if !autopilotPreflight.skip && !autopilotDryRun {
-		if perr := agent.NewEngine(settings, repo).Preflight(ctx, ""); perr != nil {
+		if perr := agent.NewEngine(settings, repo).Preflight(ctx); perr != nil {
 			end := database.AgenticRunEnd{Err: perr}
 			dbStatus, _ := agentRunStatus(end)
 			finishAgenticScanRow(repo, parentAgenticScanUUID, startedAt, agenticScanRowFinish{Status: dbStatus, ErrorMessage: perr.Error()})

@@ -18,7 +18,7 @@ func TestBuildDeparosConfigCarriesJSTemplatePersistence(t *testing.T) {
 	settings.Discovery.JSTangle.MaxPersistedJSTemplates = 50
 	r := &Runner{options: &types.Options{Targets: []string{"https://example.com"}, Concurrency: 25}, settings: settings}
 
-	got := r.buildDeparosConfig(nil).JSTemplatePersist
+	got := r.buildDeparosConfig(nil, resolvedDiscoveryWordlists{}).JSTemplatePersist
 	want := source.JSTemplatePersistConfig{SkipUnreplayed: true, EmitStatuses: []int{422}, MaxPerTarget: 50}
 	if got.SkipUnreplayed != want.SkipUnreplayed || got.MaxPerTarget != want.MaxPerTarget ||
 		len(got.EmitStatuses) != 1 || got.EmitStatuses[0] != 422 {
@@ -26,7 +26,7 @@ func TestBuildDeparosConfigCarriesJSTemplatePersistence(t *testing.T) {
 	}
 
 	defaults := (&Runner{options: &types.Options{Targets: []string{"https://example.com"}}, settings: paceSettings(nil)}).
-		buildDeparosConfig(nil).JSTemplatePersist
+		buildDeparosConfig(nil, resolvedDiscoveryWordlists{}).JSTemplatePersist
 	if defaults.SkipUnreplayed || defaults.EmitStatuses != nil || defaults.MaxPerTarget != 2000 {
 		t.Fatalf("default JSTemplatePersist = %+v, want persist on, default emit list, cap 2000", defaults)
 	}

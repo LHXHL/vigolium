@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/audit/bin"
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // runListModes prints the embedded vigolium-audit binary's mode graph. audit
@@ -91,7 +92,7 @@ func parseListModesNDJSON(raw []byte) ([]map[string]any, error) {
 
 func truncateForError(s string) string {
 	if len(s) > 80 {
-		return s[:80] + "…"
+		return textutil.TruncateUTF8(s, 80) + "…"
 	}
 	return s
 }

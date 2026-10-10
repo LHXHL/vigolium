@@ -15,6 +15,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/utils/textutil"
 )
 
 // extractBinary copies the archive's single vigolium entry into dst, refusing
@@ -135,7 +137,7 @@ func runVersionCheck(ctx context.Context, binPath, want string) error {
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if len(msg) > 300 {
-			msg = msg[:300] + "…"
+			msg = textutil.TruncateUTF8(msg, 300) + "…"
 		}
 		return fmt.Errorf("downloaded binary failed to run `version --json`: %w %s", err, msg)
 	}
@@ -143,7 +145,7 @@ func runVersionCheck(ctx context.Context, binPath, want string) error {
 	if err != nil {
 		return fmt.Errorf("downloaded binary: %w", err)
 	}
-	if normalize(got) != normalize(want) {
+	if NormalizeVersion(got) != NormalizeVersion(want) {
 		return fmt.Errorf("downloaded binary reports version %s, expected %s", got, want)
 	}
 	return nil

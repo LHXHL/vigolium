@@ -18,7 +18,7 @@ import (
 // owns the session's current credentials (lock-free for the request path),
 // watches the scan's responses for the session's `check.logged_out` signs, and
 // when they appear confirms with the `check.url` probe and re-runs the login
-// (Manager.Rehydrate). The Requester applies Credentials() to every request,
+// (Manager.rehydrate). The Requester applies Credentials() to every request,
 // calls Wait before admitting one (so a re-login is not raced by requests that
 // would only come back logged out) and Observe after the response.
 //
@@ -124,7 +124,7 @@ type LiveEvent struct {
 
 // LiveOptions configures a LiveSession.
 type LiveOptions struct {
-	// Manager re-runs the login (Rehydrate) and supplies the probe transport.
+	// Manager re-runs the login (rehydrate) and supplies the probe transport.
 	// Nil disables re-login: a confirmed logout goes straight to failed.
 	Manager *Manager
 	// ProbeClient sends the check.url probe. Nil uses the manager's login

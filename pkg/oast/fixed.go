@@ -48,11 +48,6 @@ type fixedTemplate struct {
 	prefix, suffix string
 }
 
-// HasNoncePlaceholder reports whether an oast_url value is a {nonce} template.
-func HasNoncePlaceholder(oastURL string) bool {
-	return strings.Contains(oastURL, NoncePlaceholder)
-}
-
 // parseFixedTemplate parses an oast_url carrying exactly one {nonce}. It
 // returns nil for a URL without the placeholder (or with more than one, which
 // cannot be rendered unambiguously).

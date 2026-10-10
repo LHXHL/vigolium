@@ -456,7 +456,7 @@ func TestLiveSession_PinnedHeaderNotOwned(t *testing.T) {
 	assert.False(t, owned)
 }
 
-// Rehydrate runs on a clone: the manager's session keeps its headers.
+// rehydrate runs on a clone: the manager's session keeps its headers.
 func TestManagerRehydrate_DoesNotMutateSession(t *testing.T) {
 	app := newFakeApp(t)
 	sess := app.session(defaultCheck(), nil)
@@ -470,13 +470,13 @@ func TestManagerRehydrate_DoesNotMutateSession(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			h, err := m.Rehydrate(context.Background(), "admin")
+			h, _, err := m.rehydrate(context.Background(), "admin")
 			assert.NoError(t, err)
 			assert.True(t, strings.HasPrefix(h["Cookie"], "sid="))
 		}()
 	}
 	wg.Wait()
 	assert.Equal(t, "sid=1", sess.Headers["Cookie"])
-	_, err = m.Rehydrate(context.Background(), "nobody")
+	_, _, err = m.rehydrate(context.Background(), "nobody")
 	assert.Error(t, err)
 }

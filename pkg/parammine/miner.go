@@ -355,17 +355,7 @@ func (m *miner) evaluate(ctx context.Context, p *probe, names []string, add func
 	if p == nil || p.resp == nil {
 		return
 	}
-	rest := names
-	if m.prof.reflectUsable && len(p.reflected) > 0 {
-		rest = rest[:0:0]
-		for _, n := range names {
-			if p.reflected[n] {
-				add(candidate{name: n, signal: SignalReflect, detail: "canary value reflected in the response"})
-			} else {
-				rest = append(rest, n)
-			}
-		}
-	}
+	rest := m.splitReflected(p, names, add)
 	sig, detail, diff := m.prof.differs(p)
 	if !diff || len(rest) == 0 {
 		return
@@ -382,6 +372,24 @@ func (m *miner) evaluate(ctx context.Context, p *probe, names []string, add func
 		}
 	}
 	m.bisect(ctx, rest, sig, detail, add)
+}
+
+// splitReflected adds every name whose canary p reflected as a reflect
+// candidate and returns the others (names itself when reflection is unusable
+// or nothing reflected).
+func (m *miner) splitReflected(p *probe, names []string, add func(candidate)) []string {
+	if !m.prof.reflectUsable || len(p.reflected) == 0 {
+		return names
+	}
+	var rest []string
+	for _, n := range names {
+		if p.reflected[n] {
+			add(candidate{name: n, signal: SignalReflect, detail: "canary value reflected in the response"})
+		} else {
+			rest = append(rest, n)
+		}
+	}
+	return rest
 }
 
 // bisect narrows a group of names that differs as a whole down to the single
@@ -408,17 +416,7 @@ func (m *miner) bisect(ctx context.Context, names []string, sig Signal, detail s
 		if p == nil || p.resp == nil {
 			continue
 		}
-		rest := h
-		if m.prof.reflectUsable && len(p.reflected) > 0 {
-			rest = rest[:0:0]
-			for _, n := range h {
-				if p.reflected[n] {
-					add(candidate{name: n, signal: SignalReflect, detail: "canary value reflected in the response"})
-				} else {
-					rest = append(rest, n)
-				}
-			}
-		}
+		rest := m.splitReflected(p, h, add)
 		s, d, diff := m.prof.differs(p)
 		if diff && len(rest) > 0 {
 			m.bisect(ctx, rest, s, d, add)

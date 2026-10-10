@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/samber/lo"
 )
 
 // Issue is one finding of the shared config validator. The same rules run at
@@ -188,14 +191,14 @@ func ValidateScope(s ScopeConfig) []Issue {
 		}
 	}
 
-	if mode := strings.ToLower(strings.TrimSpace(s.CLIOriginMode)); mode != "" && !contains(validCLIOriginModes, mode) {
+	if mode := strings.ToLower(strings.TrimSpace(s.CLIOriginMode)); mode != "" && !slices.Contains(validCLIOriginModes, mode) {
 		issues = append(issues, Issue{
 			Key: "scope.cli_origin_mode", Severity: SeverityError, Code: IssueScopeOriginModeInvalid,
 			Message: fmt.Sprintf("scope.cli_origin_mode = %q: must be one of %s", s.CLIOriginMode, strings.Join(validCLIOriginModes, ", ")),
 			Fix:     "vigolium config set scope.cli_origin_mode " + DefaultCLIOriginMode,
 		})
 	}
-	if a := s.BodySizeExceededAction; a != "" && !contains(validBodyActions, a) {
+	if a := s.BodySizeExceededAction; a != "" && !slices.Contains(validBodyActions, a) {
 		issues = append(issues, Issue{
 			Key: "scope.body_size_exceeded_action", Severity: SeverityError, Code: IssueScopeBodyActionInvalid,
 			Message: fmt.Sprintf("scope.body_size_exceeded_action = %q: must be one of %s", a, strings.Join(validBodyActions, ", ")),
@@ -237,7 +240,7 @@ func ValidateRecentTargets(s ScopeConfig, targets []string) []Issue {
 	return []Issue{{
 		Key: "scope.host.include", Severity: SeverityWarning, Code: IssueScopeIncludeMatchesNoRecentTarget,
 		Message: fmt.Sprintf("scope.host.include (%s) admits none of the recent scan targets (%s); a scan of them would drop every request",
-			strings.Join(quoteAll(inc), ", "), strings.Join(dedupe(hosts), ", ")),
+			strings.Join(quoteAll(inc), ", "), strings.Join(lo.Uniq(hosts), ", ")),
 		Fix: "vigolium config set scope.host.include '[\"*\"]'",
 	}}
 }
@@ -440,25 +443,4 @@ func quoteAll(ss []string) []string {
 		out[i] = strconv.Quote(s)
 	}
 	return out
-}
-
-func dedupe(ss []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, s := range ss {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func contains(ss []string, s string) bool {
-	for _, x := range ss {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }

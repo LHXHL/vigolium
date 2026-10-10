@@ -8,11 +8,11 @@ import (
 	"os"
 	"reflect"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/vigolium/vigolium/pkg/agent/agenttypes"
+	"github.com/vigolium/vigolium/pkg/utils/yamlschema"
 	"gopkg.in/yaml.v3"
 )
 
@@ -170,13 +170,14 @@ func ParseSessionDocument(content []byte, name string, opt ParseOptions) (*Sessi
 		severity = "error"
 	}
 	if top != nil {
-		walkFields(top, reflect.TypeOf(target).Elem(), "", asJSON, func(path string, key *yaml.Node, known []string) {
+		walkOpts := yamlschema.Options{CaseFold: asJSON, MapKeys: true}
+		yamlschema.Walk(top, reflect.TypeOf(target).Elem(), "", walkOpts, func(path string, key *yaml.Node, known []string) {
 			doc.positions[path] = filePos{key.Line, key.Column}
 			if known == nil {
 				return
 			}
 			msg := fmt.Sprintf("unknown field %q", key.Value)
-			if s := closestField(key.Value, known); s != "" {
+			if s := yamlschema.Closest(key.Value, known, 2); s != "" {
 				msg += fmt.Sprintf(" (did you mean %q?)", s)
 			}
 			doc.Issues = append(doc.Issues, LintIssue{
@@ -360,135 +361,6 @@ func decodeAgentSessions(text string) ([]*Session, error) {
 		sessions[0].Role = RolePrimary
 	}
 	return sessions, nil
-}
-
-// walkFields walks n against Go type t, calling visit for every mapping key
-// that corresponds to a struct field or map entry. known is nil for a key the
-// type has, and the type's field names for one it lacks (an unknown key, not
-// descended into). JSON keys match case-insensitively, as encoding/json does.
-func walkFields(n *yaml.Node, t reflect.Type, path string, caseFold bool, visit func(path string, key *yaml.Node, known []string)) {
-	for n.Kind == yaml.AliasNode && n.Alias != nil {
-		n = n.Alias
-	}
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	switch t.Kind() {
-	case reflect.Struct:
-		if n.Kind != yaml.MappingNode {
-			return // a type mismatch; the decoder reports it
-		}
-		fields := yamlFields(t)
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			key, val := n.Content[i], n.Content[i+1]
-			if key.Value == "<<" {
-				continue // YAML merge key
-			}
-			child := joinField(path, key.Value)
-			ft, ok := fields[key.Value]
-			if !ok && caseFold {
-				for name, typ := range fields {
-					if strings.EqualFold(name, key.Value) {
-						ft, ok = typ, true
-						break
-					}
-				}
-			}
-			if !ok {
-				visit(child, key, sortedKeys(fields))
-				continue
-			}
-			visit(child, key, nil)
-			walkFields(val, ft, child, caseFold, visit)
-		}
-	case reflect.Slice:
-		if n.Kind != yaml.SequenceNode {
-			return
-		}
-		for i, item := range n.Content {
-			walkFields(item, t.Elem(), fmt.Sprintf("%s[%d]", path, i), caseFold, visit)
-		}
-	case reflect.Map:
-		if n.Kind != yaml.MappingNode {
-			return
-		}
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			visit(joinField(path, n.Content[i].Value), n.Content[i], nil)
-		}
-	}
-}
-
-// yamlFields maps a struct's yaml key names to their field types.
-func yamlFields(t reflect.Type) map[string]reflect.Type {
-	out := map[string]reflect.Type{}
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-		name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
-		if name == "-" {
-			continue
-		}
-		if name == "" {
-			name = strings.ToLower(f.Name)
-		}
-		out[name] = f.Type
-	}
-	return out
-}
-
-func joinField(prefix, name string) string {
-	if prefix == "" {
-		return name
-	}
-	return prefix + "." + name
-}
-
-func sortedKeys(m map[string]reflect.Type) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// closestField suggests the known field within edit distance 2 of name.
-func closestField(name string, known []string) string {
-	best, bestDist := "", 3
-	for _, k := range known {
-		if d := editDistance(strings.ToLower(name), k); d < bestDist {
-			best, bestDist = k, d
-		}
-	}
-	return best
-}
-
-func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		cur := make([]int, len(b)+1)
-		cur[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			cur[j] = prev[j] + 1
-			if v := cur[j-1] + 1; v < cur[j] {
-				cur[j] = v
-			}
-			if v := prev[j-1] + cost; v < cur[j] {
-				cur[j] = v
-			}
-		}
-		prev = cur
-	}
-	return prev[len(b)]
 }
 
 func documentRoot(n *yaml.Node) *yaml.Node {

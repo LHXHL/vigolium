@@ -240,29 +240,7 @@ func (p *harvestProber) fetch(ctx context.Context, rr *httpmsg.HttpRequestRespon
 // forEach runs fn over n items on the prober's worker count, stopping new work
 // once ctx is done. Returns how many items were never started.
 func (p *harvestProber) forEach(ctx context.Context, n int, fn func(i int)) int64 {
-	var next atomic.Int64
-	var skipped atomic.Int64
-	var wg sync.WaitGroup
-	workers := min(p.workers, n)
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				i := int(next.Add(1) - 1)
-				if i >= n {
-					return
-				}
-				if ctx.Err() != nil {
-					skipped.Add(1)
-					continue
-				}
-				fn(i)
-			}
-		}()
-	}
-	wg.Wait()
-	return skipped.Load()
+	return parallelEach(ctx, n, p.workers, fn)
 }
 
 // checkLiveness sends one request per origin, to a path that should not exist.

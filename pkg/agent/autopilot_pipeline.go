@@ -181,7 +181,7 @@ func (r *AutopilotPipelineRunner) RunAutonomous(ctx context.Context, cfg Autopil
 
 	var preflightErr error
 	if !cfg.SkipPreflight {
-		preflightErr = r.engine.Preflight(ctx, cfg.AgentName)
+		preflightErr = r.engine.Preflight(ctx)
 	}
 	if err := preflightErr; err != nil {
 		// The olium provider drives both the audit operator and the

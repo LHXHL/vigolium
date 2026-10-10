@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // gzSuffix marks an embedded list stored gzip-compressed. Its logical name is
@@ -138,17 +139,30 @@ func readGzip(name string) ([]byte, error) {
 	return data, nil
 }
 
+// decodedSizes caches each embedded list's decompressed length by logical
+// name, so a repeat EnsureOnDisk can confirm an on-disk copy is current from a
+// stat alone instead of gunzipping the large lists again.
+var decodedSizes sync.Map // name -> int64
+
 // materialize writes a single embedded wordlist into dir under its logical
 // name, returning its path. It skips the write when an up-to-date copy (same
 // size as the decompressed content) is already present.
 func materialize(dir, name string) (string, error) {
+	dst := filepath.Join(dir, name)
+	current := func(size int64) bool {
+		info, statErr := os.Stat(dst)
+		return statErr == nil && info.Mode().IsRegular() && info.Size() == size
+	}
+	if size, ok := decodedSizes.Load(name); ok && current(size.(int64)) {
+		return dst, nil // already current
+	}
+
 	data, err := ReadList(name)
 	if err != nil {
 		return "", fmt.Errorf("read embedded wordlist %s: %w", name, err)
 	}
-
-	dst := filepath.Join(dir, name)
-	if info, statErr := os.Stat(dst); statErr == nil && info.Mode().IsRegular() && info.Size() == int64(len(data)) {
+	decodedSizes.Store(name, int64(len(data)))
+	if current(int64(len(data))) {
 		return dst, nil // already current
 	}
 

@@ -68,6 +68,7 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 	r.autoFuzzDiscovery = r.shouldAutoFuzzDiscovery()
 
 	var discoverSrc *source.DeparosDiscoverySource
+	var wls resolvedDiscoveryWordlists
 	if r.options.DiscoverEnabled && len(r.options.Targets) > 0 {
 		// In-scope origins (scheme/host/port) for this scan's CLI targets, shared by the
 		// host-URL expansion and the path enrichment below so neither pulls in records
@@ -114,7 +115,8 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 		}
 
 		discoveryTargets = dedupTargets(r.options.Targets, additionalTargets)
-		deparosCfg := r.buildDeparosConfig(additionalTargets)
+		wls = r.resolveDiscoveryWordlists()
+		deparosCfg := r.buildDeparosConfig(additionalTargets, wls)
 		// The egress seam. Deparos has its own HTTP client, so the executor's scope
 		// check (which runs on records it has already fetched) could only ever
 		// discard an excluded host's response AFTER contacting it. An explicit
@@ -183,7 +185,7 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 	// on — each on its own line. Shown unconditionally because "is this scan
 	// discovering/fuzzing, and with what" is the first thing operators ask of the
 	// Discovery phase.
-	r.printDiscoveryStatusLines(discoverSrc != nil)
+	r.printDiscoveryStatusLines(discoverSrc != nil, wls)
 
 	if r.autoFuzzDiscovery && !r.options.Silent {
 		reason := fmt.Sprintf("spidering found little content (%d records)", r.spidering.records)
@@ -439,16 +441,17 @@ func (r *Runner) reportDiscoveryCoverage(stats source.DiscoveryStats) {
 // printDiscoveryStatusLines prints the Discovery phase's content-discovery status
 // and, when deparos is active, its wordlist and fuzzing lines as separate detail
 // rows. deparosActive mirrors the runDiscoveryPhase gate (DiscoverEnabled &&
-// targets present && source init succeeded).
-func (r *Runner) printDiscoveryStatusLines(deparosActive bool) {
+// targets present && source init succeeded); wls is the phase's resolved
+// wordlists, read only when deparos is active.
+func (r *Runner) printDiscoveryStatusLines(deparosActive bool, wls resolvedDiscoveryWordlists) {
 	if !deparosActive {
 		r.printPhaseDetail(fmt.Sprintf("Content discovery: %s — %s",
 			terminal.Orange("disabled"), terminal.Gray(r.discoveryDisabledReason())))
 		return
 	}
 	r.printPhaseDetail(fmt.Sprintf("Content discovery: %s (deparos)", terminal.HiTeal("enabled")))
-	r.printPhaseDetail("Wordlists: " + r.discoveryWordlistSummary())
-	r.printPhaseDetail("Fuzzing: " + r.discoveryFuzzingSummary())
+	r.printPhaseDetail("Wordlists: " + r.discoveryWordlistSummary(wls))
+	r.printPhaseDetail("Fuzzing: " + r.discoveryFuzzingSummary(wls))
 }
 
 // discoveryDisabledReason explains why deparos content discovery is not running,
@@ -469,8 +472,7 @@ func (r *Runner) discoveryDisabledReason() string {
 // harvested while crawling) are on. Lists are tagged embedded vs operator-supplied
 // by comparing their directory to the materialized-defaults dir. The fuzz list is
 // reported separately by discoveryFuzzingSummary, so it is excluded here.
-func (r *Runner) discoveryWordlistSummary() string {
-	w := r.resolveDiscoveryWordlists()
+func (r *Runner) discoveryWordlistSummary(w resolvedDiscoveryWordlists) string {
 	embeddedDir := wordlistDir()
 
 	var dicts []string
@@ -559,13 +561,12 @@ func wordlistEntryCount(path string) int {
 
 // discoveryFuzzingSummary reports whether deparos FUZZ fuzzing is on (it appends
 // /FUZZ and brute-forces the fuzz wordlist), the wordlist in play, and why.
-func (r *Runner) discoveryFuzzingSummary() string {
+func (r *Runner) discoveryFuzzingSummary(w resolvedDiscoveryWordlists) string {
 	enabled, reason := r.discoveryFuzzingState()
 	if !enabled {
 		return fmt.Sprintf("%s — %s", terminal.Orange("disabled"), terminal.Gray(reason))
 	}
 
-	w := r.resolveDiscoveryWordlists()
 	src := "embedded default"
 	if len(r.options.FuzzWordlistPaths) > 0 {
 		src = "via --discovery-wordlist"

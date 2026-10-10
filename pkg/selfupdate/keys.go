@@ -25,14 +25,3 @@ var trustedKeys = []string{
 // ErrNoTrustedKeys means this build carries no usable release signing key.
 var ErrNoTrustedKeys = errors.New("this build has no release signing key configured; " +
 	"reinstall with the install script (https://vigolium.com/install.sh) instead")
-
-// TrustedKeysConfigured reports whether at least one built-in key slot holds a
-// real public key.
-func TrustedKeysConfigured() bool {
-	for _, k := range trustedKeys {
-		if _, err := parsePublicKey(k); err == nil {
-			return true
-		}
-	}
-	return false
-}

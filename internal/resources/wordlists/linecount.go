@@ -58,21 +58,6 @@ func EmbeddedLineCount(name string) (int64, bool) {
 	return n, true
 }
 
-// EmbeddedLineCounts returns EmbeddedLineCount for every embedded list.
-func EmbeddedLineCounts() map[string]int64 {
-	names, err := ListNames()
-	if err != nil {
-		return nil
-	}
-	out := make(map[string]int64, len(names))
-	for _, n := range names {
-		if c, ok := EmbeddedLineCount(n); ok {
-			out[n] = c
-		}
-	}
-	return out
-}
-
 // CountWords counts the non-blank lines of a wordlist.
 func CountWords(data []byte) int64 {
 	var n int64
