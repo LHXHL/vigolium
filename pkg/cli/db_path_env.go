@@ -61,7 +61,8 @@ var statelessWriteCommands = map[string]bool{
 // statelessWriteRequested reports whether the user explicitly asked cmd for the
 // throwaway-database flavor of -S. It reads the flag rather than globalStateless
 // because that variable is only one of the bindings behind the name: `audit -S`
-// sets auditStateless and `ingest -S` is --scan-on-receive entirely.
+// sets auditStateless, and on server/ingest -S is the retired --scan-on-receive
+// tombstone (a usage error), not a stateless flag at all.
 // flagOn, not Changed: `scan --stateless=false VIGOLIUM_DB_PATH=…` means "I know
 // about -S and I do not want it", and reading Changed as enabled dropped the pin
 // and sent the scan's writes to the default database instead.

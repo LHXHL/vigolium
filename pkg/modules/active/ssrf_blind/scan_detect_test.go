@@ -71,8 +71,8 @@ type recordingOAST struct {
 }
 
 func (f *recordingOAST) GenerateURL(_, _, _, _, _ string) string { return "ssrfnonce.oast.example" }
-func (f *recordingOAST) RecordPayload(_, payload string)        { f.payloads = append(f.payloads, payload) }
-func (f *recordingOAST) Enabled() bool                          { return true }
+func (f *recordingOAST) RecordPayload(_, payload string)         { f.payloads = append(f.payloads, payload) }
+func (f *recordingOAST) Enabled() bool                           { return true }
 
 // TestScanPerInsertionPoint_BlindSSRFParamNames drives the real scan against a
 // local server: blind-SSRF sink names (webhook, avatar, ?host=, nextUrl) get an

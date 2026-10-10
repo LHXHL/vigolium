@@ -16,7 +16,8 @@ const DefaultCLIOriginMode = "balanced"
 // It takes the MERGED ScopeConfig value, not the raw --scope-origin flag, because
 // settings.Scope is the only thing that applies: NewScopeMatcher and
 // InScopeHosts read it and nothing else. The CLI entry points merge the flag into
-// it first (pkg/cli/scan.go, scan_url.go, ingest.go), so by the time anything
+// it first (runner.ApplyScanSettingOverrides for scan; pkg/cli scan_url.go,
+// scan_admission.go and ingest.go), so by the time anything
 // reports the mode there is one value to report. Resolving from the raw override
 // instead would let a reporter claim a mode the matcher never used — a confident
 // lie about which hosts a scan was allowed to touch, which is worse than the

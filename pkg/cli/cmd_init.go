@@ -19,7 +19,7 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize Vigolium with default configuration and preset data",
 	Long: `Create the ~/.vigolium directory with a default config file, database schema,
-scanning profiles, prompt templates, extensions, and SAST rules.
+scanning profiles, prompt templates, and extensions.
 
 Safe to run on an existing installation — skips components that already exist
 unless --force is passed, which regenerates the config (with a new API key)

@@ -293,11 +293,12 @@ func TestApplyProfile_KeyPreservingOverlayFromFile(t *testing.T) {
 	}
 }
 
-// TestApplyProfile_OverwritesScanningPaceRateLimit documents why pkg/cli/scan.go
-// copies a typed --rate-limit into the pace AFTER ApplyProfile rather than
-// before. A profile carrying its own scanning_pace.rate_limit overwrites whatever
-// is there; done in the wrong order, known-issue-scan quietly paced itself at the
-// profile's rate while the native scan honored the operator's flag.
+// TestApplyProfile_OverwritesScanningPaceRateLimit documents why
+// runner.ApplyScanStrategy copies a typed --rate-limit into the pace AFTER
+// ApplyProfile rather than before. A profile carrying its own
+// scanning_pace.rate_limit overwrites whatever is there; done in the wrong
+// order, known-issue-scan quietly paced itself at the profile's rate while the
+// native scan honored the operator's flag.
 func TestApplyProfile_OverwritesScanningPaceRateLimit(t *testing.T) {
 	settings := &Settings{}
 	settings.ScanningPace = *DefaultScanningPaceConfig()

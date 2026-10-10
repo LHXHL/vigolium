@@ -127,10 +127,6 @@ var presetConsumers = map[string]string{
 	"profiles":   "code",
 	"prompts":    "code",
 	"sessions":   "docs", // auth-file examples, linked from README and the auth guide
-	// TODO(H5 follow-up): no loader reads sast-rules and no doc points at it
-	// (`vigolium init` says it installs "SAST rules" but never copies them).
-	// Wire it into init or delete it.
-	"sast-rules": "orphan",
 }
 
 func TestNoOrphanPresets(t *testing.T) {
@@ -170,10 +166,6 @@ func TestNoOrphanPresets(t *testing.T) {
 		case "docs":
 			if docs != "" && !strings.Contains(docs, needle) {
 				t.Errorf("presets/%s is marked doc-consumed but README.md/docs never mention %q", d, needle)
-			}
-		case "orphan":
-			if strings.Contains(goSource, `"`+needle) {
-				t.Errorf("presets/%s now has a loader; mark it \"code\" in presetConsumers", d)
 			}
 		}
 	}

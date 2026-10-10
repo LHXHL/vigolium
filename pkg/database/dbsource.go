@@ -620,10 +620,12 @@ func (s *RiskPrioritizedDBInputSource) WithHostScopes(hosts []HostTarget) *RiskP
 	return s
 }
 
-// WithParamShapeCoalescing enables param-shape coalescing of the snapshot: GET
-// records that share a (host, path, query-param-name-set) are reduced to at most
-// maxSamples value-distinct representatives, cutting redundant dynamic-assessment
-// fan-out over value-only-different URLs (e.g. /search?q=1..N). Records stay in
+// WithParamShapeCoalescing enables param-shape coalescing of the snapshot:
+// records that share a param shape (host + path shape + method +
+// query/form/JSON param-name-set; see paramShapeRepresentative) are reduced to
+// at most maxSamples value-distinct representatives, cutting redundant
+// dynamic-assessment fan-out over value-only-different requests (e.g.
+// /search?q=1..N, /users/1..N). Records stay in
 // the database; only this scan's iteration list is pruned. The scan cursor still
 // advances past every record, so coalesced-away records are not re-scanned in a
 // later feedback round. maxSamples <= 0 (the default) disables it.

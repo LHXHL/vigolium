@@ -303,10 +303,10 @@ func runAgentSwarm(cmd *cobra.Command, args []string) (err error) {
 	}
 	{
 		changed := map[string]bool{
-			"discover":          cmd.Flags().Changed("discover"),
-			"code-audit":        cmd.Flags().Changed("code-audit"),
-			"triage":            cmd.Flags().Changed("triage"),
-			"max-iterations":    cmd.Flags().Changed("max-iterations"),
+			"discover":       cmd.Flags().Changed("discover"),
+			"code-audit":     cmd.Flags().Changed("code-audit"),
+			"triage":         cmd.Flags().Changed("triage"),
+			"max-iterations": cmd.Flags().Changed("max-iterations"),
 			// The preset's audit mode is never applied: a nested agent CLI
 			// runs only when --audit/--piolium (or the prompt) asks for one.
 			"audit":             true,

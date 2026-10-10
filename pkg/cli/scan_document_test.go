@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"github.com/vigolium/vigolium/pkg/contract/contracttest"
 	"context"
 	"encoding/json"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/apicontract"
+	"github.com/vigolium/vigolium/pkg/contract/contracttest"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"

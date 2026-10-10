@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"github.com/vigolium/vigolium/pkg/contract/contracttest"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -17,6 +16,7 @@ import (
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/apicontract"
+	"github.com/vigolium/vigolium/pkg/contract/contracttest"
 	"github.com/vigolium/vigolium/pkg/database"
 )
 

@@ -28,7 +28,7 @@ import (
 //	vigolium run discover   -t <url> --stateless --format jsonl,html --omit-response -o content-discovery-result
 //	vigolium run spidering  -t <url> --stateless --format jsonl       --omit-response -o sample
 //
-// In stateless mode (pkg/cli/scan.go), the scan runs against a throwaway temp
+// In stateless mode (pkg/cli/scan_execute.go), the scan runs against a throwaway temp
 // SQLite database and results are materialized to the -o file(s) after the scan
 // via finishStatelessExport. These tests reproduce that flow end-to-end:
 //   1. allocate a file-based temp SQLite DB (mirrors os.CreateTemp in executeNativeScan),
@@ -112,7 +112,7 @@ func statelessExportItems(t *testing.T, db *database.DB, omitResponse bool) []an
 	return items
 }
 
-// writeStatelessOutputs mirrors pkg/cli/scan.go finishStatelessExport: it
+// writeStatelessOutputs mirrors pkg/cli/scan_export.go finishStatelessExport: it
 // materializes every requested --format from the temp DB to opts.Output, using
 // the production HTML generator and the same JSONL envelope encoding.
 func writeStatelessOutputs(t *testing.T, db *database.DB, opts *types.Options) {

@@ -8,10 +8,12 @@ type DynamicAssessmentConfig struct {
 	Extensions        ExtensionsConfig     `yaml:"extensions"`
 
 	// MaxParamShapeSamples caps how many value-distinct samples of the same
-	// param shape (host + path + method + query/form/JSON param-name-set) are
-	// scanned in the dynamic-assessment phase. It collapses redundant fan-out over
-	// requests that differ only in param values (e.g. /search?q=1..N, or repeated
-	// same-shape form/JSON POSTs) without touching stored records; a request whose
+	// param shape (host + path shape + method + query/form/JSON param-name-set,
+	// where the path shape normalizes id-like segments: /users/1 and /users/2
+	// share /users/{int}) are scanned in the dynamic-assessment phase. It
+	// collapses redundant fan-out over requests that differ only in param or
+	// path-id values (e.g. /search?q=1..N, /users/1..N, or repeated same-shape
+	// form/JSON POSTs) without touching stored records; a request whose
 	// body shape can't be seen (unseen or multipart body) is never coalesced.
 	// Following the MaxFeedbackRounds convention, 0 (or unset, including
 	// when a scanning profile overlays this section) means "use the built-in

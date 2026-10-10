@@ -9,7 +9,7 @@ import "github.com/spf13/cobra"
 // as "enabled" turned the flag ON when the operator had explicitly turned it
 // off. Three of those had teeth — `scan --stateless=false` with
 // VIGOLIUM_DB_PATH set dropped the pin and wrote to the default database,
-// `ingest -S=false` enabled scan-on-receive, and `--read-only
+// `ingest --scan-on-receive=false` enabled scan-on-receive, and `--read-only
 // --save-to-vigolium-db=false` was rejected as a conflict that did not exist.
 //
 // A non-boolean flag is reported as on when it was set at all: for those,

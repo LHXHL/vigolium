@@ -1,8 +1,0 @@
-id: gohttp-handle-func
-language: go
-severity: info
-message: "Route: ANY $PATH"
-rule:
-  any:
-    - pattern: http.HandleFunc($PATH, $$$HANDLERS)
-    - pattern: $MUX.HandleFunc($PATH, $$$HANDLERS)
