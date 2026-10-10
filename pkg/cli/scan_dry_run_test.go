@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/apicontract"
+	"github.com/vigolium/vigolium/pkg/contract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/scanplan"
 )
@@ -100,6 +101,16 @@ func TestScanDryRunHasNoSideEffects(t *testing.T) {
 	assert.Zero(t, countScanRows(t, dbPath), "dry run created a scan row")
 
 	doc := decodeDryRunDoc(t, stdout)
+	// Every key the document carries is in its published schema mirror.
+	var keys map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &keys))
+	published := map[string]bool{}
+	for _, k := range append(contract.JSONFieldNames(scanDryRunDocSchema{}), contract.JSONFieldNames(contract.EnvelopeCommon{})...) {
+		published[k] = true
+	}
+	for k := range keys {
+		assert.True(t, published[k], "dry-run key %q missing from scanDryRunDocSchema", k)
+	}
 	assert.Equal(t, "scan", doc.Command)
 	assert.Equal(t, "scan", doc.Kind)
 	assert.True(t, doc.OK)

@@ -228,5 +228,15 @@
     "name": "error",
     "kind": "error",
     "description": "The -j error envelope (ok:false)."
+  },
+  {
+    "name": "plan",
+    "kind": "document",
+    "description": "The resolved scan plan: phases with disabled_by, budgets, modules, scope, auth names, target admission and a rough request estimate. Printed by scan --dry-run, carried by the scan.plan event, stored on scans.plan."
+  },
+  {
+    "name": "scan-dry-run",
+    "kind": "document",
+    "description": "The scan --dry-run / run \u003cphase\u003e --dry-run -j document: items are the plan's phases, plan the full plan, dry_run true."
   }
 ]

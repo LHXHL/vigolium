@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/contract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/scanplan"
@@ -401,4 +402,35 @@ func storedScanPlan(scan *database.Scan) *scanplan.Plan {
 		return nil
 	}
 	return plan
+}
+
+// scanDryRunDocSchema mirrors the `scan --dry-run -j` document for `vigolium
+// schema`: the scan envelope spine with dry_run true, the plan's phases as
+// items and the full plan beside them. It is a separate document because the
+// scan document's items are finding views.
+type scanDryRunDocSchema struct {
+	SchemaVersion int              `json:"schema_version"`
+	Command       string           `json:"command" jsonschema:"enum=scan,enum=run"`
+	Kind          string           `json:"kind" jsonschema:"enum=scan"`
+	OK            bool             `json:"ok"`
+	DryRun        bool             `json:"dry_run"`
+	ProjectSource string           `json:"project_source,omitempty"`
+	DBPath        string           `json:"db_path,omitempty"`
+	Total         int64            `json:"total"`
+	Offset        int              `json:"offset"`
+	Limit         int              `json:"limit"`
+	Items         []scanplan.Phase `json:"items"`
+	Plan          scanplan.Plan    `json:"plan"`
+	GeneratedAt   string           `json:"generated_at,omitempty"`
+	GeneratedAtMS int64            `json:"generated_at_ms,omitempty"`
+}
+
+// schemaDocScanDryRun names the dry-run document in `vigolium schema`.
+const schemaDocScanDryRun = "scan-dry-run"
+
+func init() {
+	contract.RegisterDocument(contract.Document{Name: schemaDocPlan, Value: scanplan.Plan{},
+		Description: "The resolved scan plan: phases with disabled_by, budgets, modules, scope, auth names, target admission and a rough request estimate. Printed by scan --dry-run, carried by the scan.plan event, stored on scans.plan."})
+	contract.RegisterDocument(contract.Document{Name: schemaDocScanDryRun, Value: scanDryRunDocSchema{},
+		Description: "The scan --dry-run / run <phase> --dry-run -j document: items are the plan's phases, plan the full plan, dry_run true."})
 }
