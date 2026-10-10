@@ -444,6 +444,14 @@ func (t *phaseTracker) noteExecution(rep core.ExecutionReport) {
 		t.markPartial(database.ReasonDeferredFlushSkipped)
 	}
 	t.noteQuarantineSkips(rep)
+	// Every item scope looked at was refused and none got an answer: the
+	// executor ran and covered nothing. For CLI targets the preflight admission
+	// says so before the run; this is the same signal for input that is not a
+	// target list (-i specs, DB rescans, scan-on-receive), where scope only
+	// meets the records one by one.
+	if rep.ScopeRejected > 0 && rep.Responded == 0 {
+		t.markPartial(database.ReasonTargetsOutOfScope)
+	}
 	if rep.Unacked > 0 {
 		t.mu.Lock()
 		t.unacked += rep.Unacked

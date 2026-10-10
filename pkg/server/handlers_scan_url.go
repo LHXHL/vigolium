@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -281,6 +282,12 @@ func (h *Handlers) HandleScanURL(c fiber.Ctx) error {
 		}
 	}
 
+	// Scope admission, synchronously: a target the configured scope refuses is
+	// a 422 now rather than a 202 for a scan that silently does nothing.
+	if refused := h.refuseOutOfScope(c, req.URL); refused != nil {
+		return refused()
+	}
+
 	scanID := uuid.New().String()
 
 	projectUUID := getProjectUUID(c)
@@ -382,8 +389,13 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 		}
 	}
 
-	scanID := uuid.New().String()
 	target := rr.Target()
+	// Scope admission, synchronously (see HandleScanURL).
+	if refused := h.refuseOutOfScope(c, target); refused != nil {
+		return refused()
+	}
+
+	scanID := uuid.New().String()
 	projectUUID := getProjectUUID(c)
 
 	// Create scan record if database is available
@@ -413,6 +425,29 @@ func (h *Handlers) HandleScanRequest(c fiber.Ctx) error {
 		Status:      "running",
 		Message:     fmt.Sprintf("scan-request started for %s", target),
 	})
+}
+
+// refuseOutOfScope admits target against the server's configured scope, the
+// verdict the CLI direct path and the runner enforce. When scope refuses it, it
+// returns the responder for 422 with details "no_targets_in_scope" (the
+// apicontract code) and the rule in the message; nothing is created or sent.
+// nil means admitted, or no settings to judge by.
+func (h *Handlers) refuseOutOfScope(c fiber.Ctx, target string) func() error {
+	if h.settings == nil {
+		return nil
+	}
+	adm := runner.AdmitTargets(h.settings.Scope, []string{target})
+	if !adm.NoneAdmitted() {
+		return nil
+	}
+	return func() error {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(ErrorResponse{
+			Error: fmt.Sprintf("target rejected by scope: %s; nothing was scanned (fix the scope config)",
+				runner.DescribeRejected(adm.Rejected, 0)),
+			Code:    fiber.StatusUnprocessableEntity,
+			Details: string(apicontract.CodeNoTargetsInScope),
+		})
+	}
 }
 
 // buildRequestFromParams constructs an HttpRequestResponse from URL, method, body, and headers.

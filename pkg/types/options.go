@@ -17,9 +17,15 @@ type Options struct {
 	// fan-out hint would offer -P to a -t-only run, where it degrades back to a
 	// single serial scan with a warning.
 	TargetsSeededFromFile bool
-	InputFileMode         string // json, jsonb, list
-	Stream                bool
-	Stdin                 bool
+	// TargetAdmission is the CLI's scope verdict over Targets, set when the
+	// targets ARE the scan's input (not a -i spec's base URL, a raw-request
+	// stdin, or a DB rescan). The CLI reads it for the banner and scan.started;
+	// non-nil also tells a runner built on a custom input source to admit
+	// Targets itself. The runner recomputes the verdict and owns the decision.
+	TargetAdmission *TargetAdmission
+	InputFileMode   string // json, jsonb, list
+	Stream          bool
+	Stdin           bool
 	// --input-read-timeout used to land here and go no further: nothing in the
 	// runner ever read this field, so the advertised deadline was inert and a
 	// pipe that never closed hung the process. The deadline is now applied where

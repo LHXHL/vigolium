@@ -71,6 +71,16 @@ func (r *Runner) RunNativeScan() (err error) {
 
 	plan := BuildNativeScanPlan(r.options)
 
+	// Scope admission over the CLI targets, before anything is built: when
+	// scope refuses every target the run sends nothing, so it must not build
+	// the infrastructure that does (session logins, OAST registration). An
+	// empty plan is how buildInfrastructure is told; the run fails below, once
+	// the scan row exists to say why.
+	admission := r.targetAdmission()
+	if admission != nil && admission.NoneAdmitted() {
+		plan = NativeScanPlan{}
+	}
+
 	infra, err := r.buildInfrastructure(ctx, plan)
 	if err != nil {
 		return err
@@ -149,6 +159,23 @@ func (r *Runner) RunNativeScan() (err error) {
 			}
 			r.finalized.Store(true)
 		}()
+	}
+
+	// The preflight verdict, recorded whether or not anything was refused so
+	// the row always carries the target tally. A scope that refused every
+	// target ends the run here: nothing was sent, and the finalizer above
+	// stores the row failed with stop_reason no_targets_in_scope.
+	if admission != nil {
+		r.scanOutcome.append(admissionOutcome(*admission))
+		for _, v := range admission.Rejected {
+			r.scanLogger.Warn(string(PhasePreflight), fmt.Sprintf("target %s rejected by scope (%s)", v.Target, v.Rule))
+		}
+		if admission.NoneAdmitted() {
+			r.scanOutcome.setStopReason(database.ReasonNoTargetsInScope)
+			rejected := &TargetsRejectedError{Admission: *admission}
+			r.scanLogger.Error(string(PhasePreflight), rejected.Error())
+			return rejected
+		}
 	}
 
 	// Set up TeeWriter to capture raw stderr output as trace-level scan logs.

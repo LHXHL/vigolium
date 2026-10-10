@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/input/formats/burpscope"
 	"github.com/vigolium/vigolium/pkg/input/formats/urls"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -81,6 +83,9 @@ func runStatelessTargetFile(cmd *cobra.Command, settings *config.Settings, strat
 	}
 
 	multi := len(targets) > 1
+	// Targets scope refused, folded so a batch whose every target was refused
+	// fails like a single scan would (no_targets_in_scope) instead of exiting 0.
+	var refused types.TargetAdmission
 	for i, target := range targets {
 		scanOpts.Targets = []string{target}
 		// Force the scan summary banner to print per target.
@@ -136,6 +141,10 @@ func runStatelessTargetFile(cmd *cobra.Command, settings *config.Settings, strat
 				terminal.InfoSymbol(), terminal.Cyan(consolePath))
 		}
 
+		var rejected *runner.TargetsRejectedError
+		if errors.As(scanErr, &rejected) {
+			refused.Rejected = append(refused.Rejected, rejected.Admission.Rejected...)
+		}
 		if scanErr != nil {
 			zap.L().Error("Stateless target scan failed",
 				zap.String("target", target),
@@ -146,6 +155,9 @@ func runStatelessTargetFile(cmd *cobra.Command, settings *config.Settings, strat
 		}
 	}
 
+	if len(refused.Rejected) == len(targets) {
+		return noTargetsInScopeError(refused)
+	}
 	return nil
 }
 

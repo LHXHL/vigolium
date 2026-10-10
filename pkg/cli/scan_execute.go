@@ -134,6 +134,12 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 	// the runner reuses the same identifier instead of minting its own.
 	scanOpts.ScanUUID = pinnedOrNewUUID(scanOpts.ScanUUID)
 
+	// Scope admission over the targets this run is about to seed, for the
+	// banner and scan.started (the runner recomputes it and owns the verdict).
+	// Assigned on every pass: executeNativeScan runs once per target under the
+	// per-host fan-outs, and a stale verdict must not leak into the next one.
+	scanOpts.TargetAdmission = scanTargetAdmission(settings, scanOpts, cmd != nil && cmd.Flags().Changed("input-mode"))
+
 	// Machine event stream (--events). Installed here, after the uuid is pinned
 	// and the database is open, so scan.started can name both. The totals are
 	// gathered as the OUTERMOST of the post-scan defers below — while the
@@ -219,36 +225,34 @@ func executeNativeScan(cmd *cobra.Command, settings *config.Settings, strategyNa
 		}
 		content := strings.TrimSpace(string(raw))
 		// An explicit -I urls pins the format; only an unset -I is auto-detected.
-		if content != "" && !inputModeExplicit {
+		if stdinHoldsRawRequests(content, inputModeExplicit) {
 			detected := detect.DetectStdinFormat(content)
-			if detected != detect.FormatURLs {
-				// Raw HTTP or curl — parse eagerly and use SliceSource
-				items, parseErr := detect.ParseStdinContent(content, detected)
-				if parseErr != nil {
-					return fmt.Errorf("failed to parse stdin as %s: %w", detected, parseErr)
-				}
-				inputSrc := source.NewSliceSource(items, scanOpts.Modules)
-				scanOpts.Stdin = false
-
-				scanRunner, runnerErr := runner.NewWithInputSource(scanOpts, inputSrc)
-				if runnerErr != nil {
-					return fmt.Errorf("failed to create scan runner: %w", runnerErr)
-				}
-
-				scanRunner.SetSettings(settings)
-				if repo != nil {
-					scanRunner.SetRepository(repo)
-				}
-
-				// Close before reporting (so any flush lands in the DB the reports
-				// read) — matching the main runner.New path below.
-				scanErr := runNativeScanPass(scanRunner)
-				if scanErr != nil {
-					return scanErr
-				}
-				recordExportFailure(&err, reportNativeScanSuccess(db, settings, repo, scanStart))
-				return err
+			// Raw HTTP or curl — parse eagerly and use SliceSource
+			items, parseErr := detect.ParseStdinContent(content, detected)
+			if parseErr != nil {
+				return fmt.Errorf("failed to parse stdin as %s: %w", detected, parseErr)
 			}
+			inputSrc := source.NewSliceSource(items, scanOpts.Modules)
+			scanOpts.Stdin = false
+
+			scanRunner, runnerErr := runner.NewWithInputSource(scanOpts, inputSrc)
+			if runnerErr != nil {
+				return fmt.Errorf("failed to create scan runner: %w", runnerErr)
+			}
+
+			scanRunner.SetSettings(settings)
+			if repo != nil {
+				scanRunner.SetRepository(repo)
+			}
+
+			// Close before reporting (so any flush lands in the DB the reports
+			// read) — matching the main runner.New path below.
+			scanErr := runNativeScanPass(scanRunner)
+			if scanErr != nil {
+				return scanErr
+			}
+			recordExportFailure(&err, reportNativeScanSuccess(db, settings, repo, scanStart))
+			return err
 		}
 		// URLs — fall through to the runner.New() path below. Stdin is already
 		// drained, so the lines are passed as targets rather than left to a

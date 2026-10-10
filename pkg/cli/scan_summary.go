@@ -136,6 +136,7 @@ func printScanSummary(opts *types.Options, settings *config.Settings, strategyNa
 		}
 	}
 	fmt.Fprintf(os.Stderr, "  %s %s\n", terminal.Purple(terminal.SymbolTarget), targetsLine)
+	printTargetAdmission(os.Stderr, opts.TargetAdmission)
 	fmt.Fprintf(os.Stderr, "  %s Phases: %s | %s | %s\n",
 		terminal.Purple(terminal.SymbolInfo),
 		runner.PhaseLabel(settings, "ExternalHarvest", "external_harvester", ehEnabled, 0),

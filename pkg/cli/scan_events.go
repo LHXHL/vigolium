@@ -59,7 +59,7 @@ func beginScanEventStream(db *database.DB, opts *types.Options, settings *config
 		dbPath = config.ExpandPath(settings.Database.SQLite.Path)
 	}
 
-	scanevents.Emit(scanevents.Event{
+	started := scanevents.Event{
 		Type:      scanevents.TypeScanStarted,
 		Target:    target,
 		Targets:   len(opts.Targets),
@@ -69,7 +69,14 @@ func beginScanEventStream(db *database.DB, opts *types.Options, settings *config
 		Project:   opts.ProjectUUID,
 		Pace:      &globalPace,
 		PhasePace: phasePace,
-	})
+	}
+	// Present only when the targets are the input (see scanTargetAdmission); a
+	// zero is written, so "0 admitted" is visible before the run fails.
+	if adm := opts.TargetAdmission; adm != nil {
+		started.TargetsAdmitted = scanevents.Int(len(adm.Admitted))
+		started.TargetsRejected = scanevents.Int(len(adm.Rejected))
+	}
+	scanevents.Emit(started)
 
 	// A consumer that goes away must not take the scan with it. Without this the
 	// first event written to a closed stdout killed the process outright on the
@@ -188,6 +195,13 @@ func applyScanCompletion(ev *scanevents.Event, scan *database.Scan) {
 	}
 	if reasons := unionPhaseReasons(scan.PhaseOutcomes); len(reasons) > 0 {
 		ev.Reasons = reasons
+	}
+	// The preflight tally, as the runner recorded it (scope admission).
+	for _, p := range scan.PhaseOutcomes {
+		if p.Phase == string(runner.PhasePreflight) && p.Targets != nil {
+			ev.TargetsAdmitted = scanevents.Int(p.Targets.Admitted)
+			ev.TargetsRejected = scanevents.Int(p.Targets.Requested - p.Targets.Admitted)
+		}
 	}
 	// An empty Completeness means unknown (a row written by an older binary, or
 	// by a caller with no outcome data) and must never change the status.

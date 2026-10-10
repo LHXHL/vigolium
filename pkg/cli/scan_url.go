@@ -85,6 +85,7 @@ func init() {
 	flags.StringVar(&scanURLBody, "body", "", "Request body")
 	flags.StringArrayVarP(&scanURLHeaders, "header", "H", nil, "Custom header (repeatable, e.g. -H 'Cookie: x=1'). Commas are literal — repeat -H for multiple headers.")
 	flags.BoolVar(&scanURLNoPassive, "no-passive", false, "Skip passive modules")
+	flags.BoolVar(&scanIgnoreScope, "ignore-scope", false, ignoreScopeFlagUsage)
 	flags.StringArrayVarP(&globalTargets, "target", "t", nil, "Target URL to scan (repeatable; alternative to the positional URL argument). Commas are literal.")
 	registerScanModuleFlags(flags)
 	registerModuleSelectionFlags(flags)
@@ -154,7 +155,18 @@ func needsRunnerScan() bool {
 // batch on both paths.
 func dispatchSingleScan(ctx context.Context, sess *directScanSession, rr *httpmsg.HttpRequestResponse, target, method string) error {
 	if needsRunnerScan() {
-		return runRunnerScan(rr, target)
+		err := runRunnerScan(rr, target)
+		// A refused input in a batch that also has admitted ones is recorded on
+		// its own row and named on stderr; the admitted inputs decide the exit,
+		// as on the direct path (directAdmission.settle).
+		if _, refused := sess.admission.verdict(target); refused && errors.Is(err, runner.ErrNoTargetsInScope) &&
+			!sess.admission.adm.NoneAdmitted() {
+			if !globalSilent {
+				fmt.Fprintf(os.Stderr, "%s %v\n", terminal.WarnPrefix(), err)
+			}
+			return nil
+		}
+		return err
 	}
 	return runScanWithRR(ctx, sess, rr, target, method)
 }
@@ -240,18 +252,25 @@ func runScanURLCmd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Scope admission over every input, before any network activity.
+	scopeEscapeHint = "or pass --ignore-scope to scan it anyway"
+	admission, err := admitDirectInputs(inputs)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := lightweightScanContext()
 	defer stop()
 
 	// The scan rows and the store of the direct path; see directScanSession.
 	sess := newDirectScanSession(database.ScanNameScanURL, inputs)
+	sess.admission = admission
 	defer sess.close()
 
 	if directBatchJSON(inputs) {
-		return withFailOnGate(runDirectScanBatch(ctx, cmd, sess, inputs))
+		return withFailOnGate(admission.settle(runDirectScanBatch(ctx, cmd, sess, inputs)))
 	}
-	return withFailOnGate(dispatchScanInputs(ctx, sess, inputs))
+	return withFailOnGate(admission.settle(dispatchScanInputs(ctx, sess, inputs)))
 }
 
 // scanURLInputs resolves the command's inputs: the positional URL argument
@@ -338,6 +357,13 @@ type scanResult struct {
 	// executor finished. The findings below are whatever had landed by then, which
 	// is a different claim from "these are the findings".
 	Interrupted bool `json:"interrupted,omitempty"`
+	// StopReason is set when the input was not scanned at all:
+	// "no_targets_in_scope" when scope refused the target (TargetsRejected says
+	// which rule). Nothing was sent for it.
+	StopReason string `json:"stop_reason,omitempty"`
+	// TargetsRejected names the target scope refused and the rule that refused
+	// it (scope.host.include, scope.path.exclude, ...).
+	TargetsRejected []types.TargetVerdict `json:"targets_rejected,omitempty"`
 }
 
 // buildRequestFromFlags constructs an HttpRequestResponse from CLI flags.
@@ -671,6 +697,12 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 	}
 	scanUUID := sess.scanUUID()
 
+	// Scope refused this input: report it without sending anything (no HTTP
+	// stack, no request).
+	if verdict, refused := sess.admission.verdict(target); refused {
+		return sess.rejectInput(ctx, scanUUID, target, method, verdict)
+	}
+
 	// Set up HTTP stack
 	httpRequester, svc, cleanup, err := setupScanHTTPStack()
 	if err != nil {
@@ -733,6 +765,10 @@ func executeDirectScan(ctx context.Context, sess *directScanSession, rr *httpmsg
 		ProjectUUID:          scanProjectUUID,
 		MaxFindingsPerModule: globalMaxFindingsPerModule,
 		TechFilterDisabled:   globalNoTechFilter,
+		// The configured scope, as the runner applies it, so a redirect or a
+		// module's follow-up leaving scope is dropped here too. Nil under
+		// --ignore-scope.
+		ScopeMatcher: sess.admission.scopeMatcher(),
 		// The direct path loads no settings, so only the flag can opt in here.
 		AllowRiskyPayloads: scanOpts.AllowRiskyPayloads != nil && *scanOpts.AllowRiskyPayloads,
 		OnResult: func(result *output.ResultEvent) {
@@ -1004,6 +1040,14 @@ func runRunnerScan(rr *httpmsg.HttpRequestResponse, target string) (err error) {
 	if opts.ScopeOriginMode != "" {
 		settings.Scope.CLIOriginMode = opts.ScopeOriginMode
 	}
+	if scanIgnoreScope {
+		relaxScopeForIgnore(&settings.Scope)
+	}
+	// The target is this scan's input even when the exact request is fed
+	// through a SingleSource, so the runner admits it against scope before it
+	// sends anything (and fails with no_targets_in_scope when it is refused).
+	admission := runner.AdmitTargets(settings.Scope, opts.Targets)
+	opts.TargetAdmission = &admission
 
 	// Stateless mode: scan into a throwaway temp SQLite DB that is removed after
 	// the run, so the main DB stays untouched (mirrors `vigolium scan -S`).
@@ -1152,6 +1196,16 @@ func outputScanResult(result *scanResult) error {
 
 	if globalJSON {
 		return writeAgentJSON(result)
+	}
+
+	if result.StopReason == database.ReasonNoTargetsInScope {
+		fmt.Fprintf(os.Stderr, "\n%s Not scanned: %s rejected by scope %s — nothing sent — Scan ID: %s\n",
+			terminal.ErrorSymbol(),
+			terminal.Cyan(result.Target),
+			terminal.Gray("("+runner.DescribeRejected(result.TargetsRejected, 0)+")"),
+			terminal.BoldCyan(result.ScanUUID))
+		fmt.Fprintf(os.Stderr, "  %s %s\n", terminal.TipPrefix(), terminal.Gray(scopeRemediation(result.TargetsRejected)))
+		return nil
 	}
 
 	// Human-readable output. The scan ID is on the completion line because it

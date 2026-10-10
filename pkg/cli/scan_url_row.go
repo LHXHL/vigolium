@@ -10,7 +10,9 @@ import (
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/terminal"
+	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -44,6 +46,11 @@ type directScanSession struct {
 	modules string
 
 	storeOpened bool
+
+	// admission is the scope verdict over every input, computed before any
+	// request went out; nil under --ignore-scope (and for an ad-hoc session),
+	// which applies no scope. See admitDirectInputs.
+	admission *directAdmission
 
 	// Shared-row state (pinned only): created once, and the raw inputs of the
 	// verdict, folded across inputs so the verdict is recomputed over all of
@@ -155,9 +162,42 @@ func (s *directScanSession) end(ctx context.Context, repo *database.Repository, 
 		return
 	}
 	rep := executor.Report()
-	reached := rep.Responded > 0
 	failures := executor.BaselineFailures()
-	tally := runner.DirectTargetTally(target, rep, failures)
+	s.complete(ctx, repo, scanUUID, target, rep, failures, interrupted, execErr, runner.DirectTargetTally(target, rep, failures), findings)
+}
+
+// rejectInput reports an input scope refused, without sending anything: the
+// row is created and completed failed with stop_reason no_targets_in_scope, and
+// the result names the target and the rule. The command's exit code is decided
+// over all inputs (directAdmission.settle).
+func (s *directScanSession) rejectInput(ctx context.Context, scanUUID, target, method string, v types.TargetVerdict) (*scanResult, error) {
+	repo, projectUUID, err := acquireDirectScanDB(getDB)
+	if err != nil {
+		return nil, err
+	}
+	if repo != nil {
+		s.noteStore()
+	}
+	s.begin(ctx, repo, projectUUID, scanUUID, target, method, 0, 0)
+	tally := runner.AdmissionTally(types.TargetAdmission{Rejected: []types.TargetVerdict{v}})
+	s.complete(ctx, repo, scanUUID, target, core.ExecutionReport{}, nil, false, nil, tally, 0)
+	return &scanResult{
+		Target:          target,
+		Method:          method,
+		ScanUUID:        scanUUID,
+		Findings:        []*output.ResultEvent{},
+		Persisted:       repo != nil,
+		StopReason:      database.ReasonNoTargetsInScope,
+		TargetsRejected: []types.TargetVerdict{v},
+	}, nil
+}
+
+// complete finishes one input's row from the run's report and target tally.
+func (s *directScanSession) complete(ctx context.Context, repo *database.Repository, scanUUID, target string, rep core.ExecutionReport, failures []core.BaselineFailure, interrupted bool, execErr error, tally database.TargetTally, findings int) {
+	if repo == nil {
+		return
+	}
+	reached := rep.Responded > 0
 
 	completion := runner.DirectScanCompletion(rep, reached, interrupted, execErr, tally)
 	if s.pinned != "" {
@@ -167,7 +207,10 @@ func (s *directScanSession) end(ctx context.Context, repo *database.Repository, 
 	}
 
 	logger := database.NewScanLogger(repo, scanUUID)
-	if !reached && !interrupted {
+	for _, issue := range tally.Rejected {
+		logger.Error(string(runner.PhasePreflight), fmt.Sprintf("target %s rejected by scope (%s); nothing sent", issue.Target, issue.Code))
+	}
+	if !reached && !interrupted && tally.Admitted > 0 {
 		detail := "no HTTP answer"
 		if len(failures) > 0 {
 			detail = failures[0].Class + ": " + failures[0].Detail

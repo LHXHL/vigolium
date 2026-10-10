@@ -134,6 +134,11 @@ printf 'GET /api?q=1 HTTP/1.1\r\nHost: target.example\r\n\r\n' \
   `-S` run, or when no store was named and the scan ran in memory. `errors` is
   omitted when there were none, so test for its presence rather than for an
   empty array. `interrupted: true` appears when a signal cut the scan short.
+- **Both commands enforce the config scope**, with or without `-S` (see
+  [Scope admission](#scope-admission)). A refused input is not sent; its
+  document carries `"stop_reason": "no_targets_in_scope"` and
+  `"targets_rejected": [{"target", "host", "rule"}]`, and when every input was
+  refused the command exits `1`. `--ignore-scope` scans it anyway.
 - **Several targets produce one envelope, not one document each.** `scan-url -j`
   with more than one `-t` emits a single `agentEnvelope` whose `items` are the
   per-target objects above, plus `targets_not_scanned` listing anything an
@@ -587,6 +592,33 @@ in the active project; it cannot be combined with `-t`, `-T`, `-i` or `-S`
 release, with a deprecation warning; under `-j`, `--events`, `--ci-output`, or
 when stdout or stderr is not a terminal it is already an error.
 
+### Scope admission
+
+Every scan checks its targets against the configured scope before it sends
+anything, with the same matcher the scan then enforces:
+
+- **Every target refused → exit `1`, `error.code: "no_targets_in_scope"`, and
+  no request is sent.** The message names each target with the rule that
+  refused it (`scope.host.include`, `scope.host.exclude`, `scope.path.include`,
+  `scope.path.exclude`, `scope.cli_origin_mode`, `static_file`) and the config
+  key to fix. The scan row still exists — `failed`, `completeness: partial`,
+  `stop_reason: no_targets_in_scope` — so `log <uuid>` explains it.
+- **Some refused → the rest are scanned**, the scan is `partial` with reason
+  `targets_out_of_scope`, and the exit code stays `0`.
+- The verdict is on the row as the `preflight` phase outcome:
+  `targets: {requested, admitted, reached, rejected: [{target, code}]}`.
+  `scan.started` and `scan.finished` carry `targets_admitted` and
+  `targets_rejected` (zeros are written).
+- It applies when the targets are the input (`-t`, positional URLs, `-T`, a
+  piped URL list, `scan-url`, `scan-request`). For `-i` specs, `--all-records`
+  and scan-on-receive, scope meets the records one by one; a phase whose every
+  item it dropped, with nothing answered, is `partial` with
+  `targets_out_of_scope`.
+- `scan-url`/`scan-request --ignore-scope` scans a target the scope refuses.
+  REST `POST /api/scan-url` and `/api/scan-request` answer `422` with
+  `details: "no_targets_in_scope"` instead of accepting a scan that would do
+  nothing.
+
 ### Partial scans
 
 A scan that ran to its end having covered less than it was given is a **partial**
@@ -693,7 +725,7 @@ terminal `scan.finished`. Human output stays on stderr throughout.
 New event types and fields are added, never renamed; an event type you do not
 recognise is safe to ignore. Some types and fields (`scan.plan`, `scan.setup`,
 `host.*`, `auth.*`, `module.error`, `extension.failed`,
-`targets_admitted`, …) are already reserved in the vocabulary before anything
+`targets_reached`, …) are already reserved in the vocabulary before anything
 emits them; the skill's `references/agent-loop.md` lists each with the release
 expected to start emitting it.
 

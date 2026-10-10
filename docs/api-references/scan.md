@@ -141,6 +141,8 @@ curl -s -X POST http://localhost:9002/api/scan-request \
 | Code | Condition                                                      |
 |------|----------------------------------------------------------------|
 | 400  | Missing required fields, invalid base64, or unparseable request |
+| 422  | The server's configured scope refuses the target. `details` is `no_targets_in_scope` and `error` names the rule (e.g. `scope.host.include`); no scan row is created and nothing is sent |
+| 503  | Too many concurrent single-request scans; retry shortly          |
 
 Use `GET /api/scan/status` to check the progress of the scan.
 

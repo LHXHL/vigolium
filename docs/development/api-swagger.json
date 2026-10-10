@@ -6546,6 +6546,16 @@
               }
             },
             "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The configured scope refuses the target (details: no_targets_in_scope); nothing is created or sent"
           }
         },
         "summary": "Scan a raw HTTP request inline",
@@ -6610,6 +6620,16 @@
               }
             },
             "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The configured scope refuses the target (details: no_targets_in_scope); nothing is created or sent"
           }
         },
         "summary": "Scan a single URL inline",

@@ -224,5 +224,7 @@ func runNativeScanPass(r *runner.Runner) error {
 	// Close before the caller's export defers read the database, so buffered
 	// records land first.
 	r.Close()
-	return err
+	// A scope that refused every target is exit 1 with error.code
+	// no_targets_in_scope, not a generic failure.
+	return codedScanError(err)
 }

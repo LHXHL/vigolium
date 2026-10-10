@@ -63,6 +63,10 @@ type Runner struct {
 	sessionLogFile    *os.File             // Optional: runtime.log handle for verbose file-only writes
 	sessionLogMu      sync.Mutex           // serializes concurrent writes to sessionLogFile
 	sharedInfra       *SharedInfra         // Optional: pre-built infrastructure for reuse across rescans
+	// targetsAreInput is set by New when the input source was built from
+	// options.Targets alone, so scope admission over them covers the whole
+	// input (see targetAdmission).
+	targetsAreInput bool
 
 	ctx       context.Context       // cancellable context for graceful shutdown
 	cancel    context.CancelFunc    // cancels ctx to signal workers to stop
@@ -364,7 +368,15 @@ func New(options *types.Options) (*Runner, error) {
 		}
 	}
 
-	return NewWithInputSource(options, inputSource)
+	r, err := NewWithInputSource(options, inputSource)
+	if err != nil {
+		return nil, err
+	}
+	// The input source above was built from Targets alone when no stdin or
+	// target file feeds it, so scope admission over Targets is a verdict on the
+	// whole input. See targetAdmission.
+	r.targetsAreInput = !options.Stdin && len(options.TargetsFilePaths) == 0
+	return r, nil
 }
 
 // parseHeaders parses header strings in "Name: Value" format.

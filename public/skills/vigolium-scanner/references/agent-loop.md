@@ -281,7 +281,7 @@ What each type is for:
 
 | Type | Read it for |
 |---|---|
-| `scan.started` | The canonical `phases[]` the aliases resolved to, the `db_path` to query afterwards, and the `pace` that actually applied (plus `phase_pace` when a phase differs). |
+| `scan.started` | The canonical `phases[]` the aliases resolved to, the `db_path` to query afterwards, and the `pace` that actually applied (plus `phase_pace` when a phase differs). `targets_admitted`/`targets_rejected` (also on `scan.finished`) when the targets are the input: a `targets_admitted: 0` scan fails next with `stop_reason: no_targets_in_scope`, exit 1, nothing sent. |
 | `phase.progress` | Liveness. `requests_sent` every 5s is the real slope — a crawl that is working versus one that is wedged. Where the phase has a work-item count, `done`/`total`/`unit` give progress: `records` for `dynamic-assessment` and `seed`, `targets` for `heuristics-check`, `port-sweep`, `spidering` and `probe` (also on `phase.finished`). `total` is a **non-decreasing upper bound**, not a fixed denominator: it can grow (a feedback round adds records) but never shrinks or drops below `done`, and is omitted until a bound is known. |
 | `waf.block` | The edge started filtering. Results for that host are **incomplete** — do not read a thin surface as a clean target. |
 | `waf.pacing` | Vigolium slowed itself down on purpose. Attribute the slowdown here, not to the target. |
@@ -312,7 +312,6 @@ them while they are missing.
 
 | Field | On | Means | Emitted from |
 |---|---|---|---|
-| `targets_admitted` / `targets_rejected` | `scan.started` | CLI targets scope admitted / rejected. A zero is written, not omitted. | v0.6 |
 | `targets_reached` / `targets_unreachable` | `scan.finished` | Admitted targets that did / did not give an HTTP answer. | v0.6 |
 | `budgets` | `scan.started` | `{max_requests, max_requests_per_host}`; 0 means unlimited. | not yet scheduled |
 | `egress` | `scan.started` | `{gated: [...], exempt: [{path, reason}]}`: which outbound paths share the rate and host limits. | not yet scheduled |
@@ -342,7 +341,7 @@ not empty.
 
 | Field | On | Means |
 |---|---|---|
-| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, … Reserved, not emitted yet: `targets_out_of_scope`, `targets_unreachable`, `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`, and the stop reasons `no_targets_in_scope` / `no_targets_reachable` (the scan did nothing; exit 1). |
+| `reasons[]` | both | Coverage was **lost**: `scan_budget`, `phase_deadline`, `cancelled`, `targets_failed`, `targets_skipped`, `persistence_incomplete`, `auth_unavailable`, `oast_unavailable` (blind/out-of-band checks skipped; a caveat, never the `stop_reason` while another reason exists), `checkpoint_failed`, `input_incomplete`, `targets_out_of_scope` (scope refused some targets, or every item of a phase), and the stop reason `no_targets_in_scope` (scope refused every target; nothing was sent, exit 1), … Reserved, not emitted yet: `targets_unreachable`, `request_budget`, `auth_lost`, `phase_error`, `extensions_all_failed`, and the stop reason `no_targets_reachable` (the scan did nothing; exit 1). |
 | `limits[]` | both | A configured bound was **reached** — designed behaviour (currently `target_budget`; reserved: `host_request_budget`, `js_request_cap`, `js_input_over_hard_limit`, `js_template_persist_cap`, `cdx_max_rows`, `sitemap_cap`, `responses_while_logged_out`). Never downgrades a status; do not read a correctly time-boxed target as degraded. |
 | `stop_reason` | `scan.finished` | The scan-level roll-up of why the run stopped launching work. |
 

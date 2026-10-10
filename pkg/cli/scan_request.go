@@ -38,6 +38,7 @@ func init() {
 	flags.StringVarP(&scanReqInput, "input", "i", "-", "Input file or - for stdin")
 	flags.StringVarP(&scanReqTarget, "target", "t", "", "Override target URL (scheme://host)")
 	flags.BoolVar(&scanURLNoPassive, "no-passive", false, "Skip passive modules")
+	flags.BoolVar(&scanIgnoreScope, "ignore-scope", false, ignoreScopeFlagUsage)
 	registerScanModuleFlags(flags)
 	registerModuleSelectionFlags(flags)
 	registerHTTPClientFlags(flags)
@@ -138,18 +139,28 @@ func runScanRequestCmd(cmd *cobra.Command, _ []string) error {
 	method := rr.Request().Method()
 	target := rr.Target()
 
+	// Scope admission, before any network activity: a refused request is
+	// reported (exit 1, no_targets_in_scope) without being sent.
+	inputs := []scanInput{{rr: rr, target: target, method: method}}
+	scopeEscapeHint = "or pass --ignore-scope to scan it anyway"
+	admission, err := admitDirectInputs(inputs)
+	if err != nil {
+		return err
+	}
+
 	// One cancellation context for the invocation — scan-request scans exactly one
 	// request, but the handler lives in the direct path shared with scan-url, and
 	// installing the signal trap per request is what leaked a goroutine there.
 	ctx, stop := lightweightScanContext()
 	defer stop()
 
-	sess := newDirectScanSession(database.ScanNameScanRequest, []scanInput{{rr: rr, target: target, method: method}})
+	sess := newDirectScanSession(database.ScanNameScanRequest, inputs)
+	sess.admission = admission
 	defer sess.close()
 
 	// Route through the Runner when output/persistence/phase flags are in play;
 	// otherwise take the fast in-memory direct path.
-	return withFailOnGate(dispatchSingleScan(ctx, sess, rr, target, method))
+	return withFailOnGate(admission.settle(dispatchSingleScan(ctx, sess, rr, target, method)))
 }
 
 // normalizeRawRequestInput prepares a raw HTTP request for the parser while

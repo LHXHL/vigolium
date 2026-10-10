@@ -51,7 +51,12 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 		infra.svc = r.sharedInfra.Services
 		infra.jsEngine = r.sharedInfra.JSEngine
 		infra.hookChain = r.sharedInfra.HookChain
-		// Still need to initialize sessions
+		// Still need to initialize sessions, unless nothing in the plan reaches
+		// the target (a login is target traffic; see SendsTargetTraffic).
+		if !plan.SendsTargetTraffic() {
+			r.startOASTRegistration(plan, infra)
+			return infra, nil
+		}
 		if err := r.initSessions(ctx, infra); err != nil {
 			if len(r.options.AuthFiles) > 0 || len(r.options.AuthInline) > 0 {
 				return nil, fmt.Errorf("session initialization failed: %w", err)
