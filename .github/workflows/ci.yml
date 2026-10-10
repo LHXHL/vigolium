@@ -152,6 +152,25 @@ jobs:
             exit 1
           fi
 
+      # Core repository scenarios and the legacy bool-column migration against
+      # Postgres (pkg/database/pg_suite_test.go). They skip without
+      # VIGOLIUM_PG_DSN and FAIL when it is set but unreachable; the grep guards
+      # against a rename leaving the step green with nothing run.
+      - name: pkg/database TestPg_ suite
+        env:
+          VIGOLIUM_PG_DSN: postgres://vigolium_test:vigolium_test_pass@localhost:5433/vigolium_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -count=1 -v -timeout 10m -run 'TestPg_' ./pkg/database/ 2>&1 | tee pg-db-test.log
+          if grep -q -- '--- SKIP: TestPg_' pg-db-test.log; then
+            echo "::error::pkg/database TestPg_ tests were skipped"
+            exit 1
+          fi
+          if ! grep -q -- '--- PASS: TestPg_CoreRepository' pg-db-test.log; then
+            echo "::error::pkg/database TestPg_CoreRepository did not run"
+            exit 1
+          fi
+
   macos:
     name: macOS (arm64)
     runs-on: macos-14

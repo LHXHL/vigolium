@@ -47,6 +47,25 @@ Vigolium uses the **repository pattern over Bun ORM**, with two interchangeable 
 
 The schema is intentionally **denormalized** — there are no separate hosts or parameters tables; JSONB columns carry structured sub-data. This keeps a single `http_records` row self-contained and avoids join fan-out on the hot ingestion path.
 
+### Schema DDL per dialect
+
+The schema lives in one place, `pkg/database/schema_ddl.go`: `schemaTables`, `columnMigrations`, `schemaIndexes` and `recordSecondaryIndexes`. Each statement is a template that names its dialect-sensitive types with a token, and `renderDDL` spells the token for the driver:
+
+| Token | SQLite | PostgreSQL |
+|---|---|---|
+| `{{AUTOINC_PK}}` | `INTEGER PRIMARY KEY AUTOINCREMENT` | `SERIAL PRIMARY KEY` |
+| `{{BLOB}}` | `BLOB` | `BYTEA` |
+| `{{BOOL}}`, `{{TRUE}}`/`{{FALSE}}` | `INTEGER`, `1`/`0` | `BOOLEAN`, `TRUE`/`FALSE` |
+| `{{TIMESTAMP}}` | `TIMESTAMP` | `TIMESTAMP` |
+| `{{JSON}}` | `TEXT` | `TEXT` (queries cast to `jsonb` where they need it) |
+| `{{FLOAT}}` | `REAL` | `DOUBLE PRECISION` |
+
+Tests render both dialects without a server: no SQLite-only token (`AUTOINCREMENT`, `BLOB`, `INSERT OR`, …) reaches Postgres, the SQLite spelling of every column is unchanged, every bool / `type:jsonb` / float field of a bun model is declared with its token, and both renders create the same tables, columns and indexes in the same order. A template that spells one of these types literally fails a test.
+
+Postgres stores created before the templates may hold a bool column as `INTEGER` (`http_records.chain_truncated` always did; `is_authenticated` did when added by a column migration), and every bool write to it fails. The readiness check reports such a column as a gap (`http_records.chain_truncated is integer, not boolean`), and the schema pass (`vigolium db migrate`, or any writer's open) converts it in place to `BOOLEAN` (non-zero becomes `TRUE`), one column per transaction. The conversion rewrites the table once.
+
+`pkg/database/pg_suite_test.go` runs the core repository scenarios (record, finding lifecycle, scan row, bool columns, project isolation) against SQLite always and against Postgres when `VIGOLIUM_PG_DSN` is set, plus the legacy-column conversion. Without the variable the `TestPg_` tests skip; when it is set but unreachable, they fail. Locally: `make postgres-up`, then `VIGOLIUM_PG_DSN='postgres://vigolium_test:vigolium_test_pass@localhost:5433/vigolium_test?sslmode=disable' go test -run TestPg_ ./pkg/database/`. CI's `postgres` job runs them next to the e2e `TestPg_` suite. Per decision D22 the job stays non-blocking for now.
+
 ### Core models (`pkg/database/models.go`)
 
 **`HTTPRecord`** (table `http_records`) — the unit of ingested traffic:
@@ -128,7 +147,7 @@ Transient lock contention is retried by `database.RetryBusy(ctx, fn, policy)` (e
 - reads a store when `min_reader_version <= C`;
 - writes or migrates it only when `version <= C`; otherwise it refuses with `error.code: "schema_too_new"` ("upgrade vigolium").
 
-Schema history: v1 introduced `schema_meta`; v2 added the guard columns; v3 added the finding-lifecycle and run-liveness columns and the `finding_observations`, `finding_status_events` and `oast_payloads` tables (all additive, `min_reader_version` stays 1). Every schema statement, column migrations and indexes included, is rendered for Postgres by `adaptDDLFor`.
+Schema history: v1 introduced `schema_meta`; v2 added the guard columns; v3 added the finding-lifecycle and run-liveness columns and the `finding_observations`, `finding_status_events` and `oast_payloads` tables (all additive, `min_reader_version` stays 1). Every schema statement, column migrations and indexes included, is a per-dialect template (see [Schema DDL per dialect](#schema-ddl-per-dialect)).
 
 Additive migrations leave `min_reader_version` unchanged, so an older binary keeps reading a store a newer one upgraded; a breaking migration raises it. The stored version only ever moves up. `vigolium version --json` reports `db_schema_version` and `db_min_reader_version`; `vigolium doctor` shows the store's version, reader floor and `written_by`. Binaries from before the guard (schema v1) cannot be stopped from opening a newer store; the guard protects stores from v2 on.
 

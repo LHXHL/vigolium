@@ -745,7 +745,7 @@ func (db *DB) DeferRecordIndexes() { db.deferRecordIndexes = true }
 // harmless.
 func (db *DB) CreateRecordIndexes(ctx context.Context) error {
 	for _, ddl := range recordSecondaryIndexes {
-		if _, err := db.ExecContext(ctx, db.adaptDDL(ddl)); err != nil {
+		if _, err := db.ExecContext(ctx, db.renderDDL(ddl)); err != nil {
 			return fmt.Errorf("failed to create record index: %w", err)
 		}
 	}
@@ -886,11 +886,11 @@ func (db *DB) ServerVersion(ctx context.Context) (string, error) {
 	return strings.TrimSpace(version), nil
 }
 
-// adaptDDL rewrites SQLite-specific DDL for PostgreSQL when needed. Applied to
-// every schema statement CreateSchema issues — tables, column migrations and
-// indexes — through adaptDDLFor (schema_ddl.go).
-func (db *DB) adaptDDL(ddl string) string {
-	return adaptDDLFor(db.driver, ddl)
+// renderDDL spells a schema template (schema_ddl.go) for this handle's driver.
+// Every schema statement CreateSchema issues goes through it: tables, column
+// migrations and indexes.
+func (db *DB) renderDDL(tmpl string) string {
+	return renderDDL(db.driver, tmpl)
 }
 
 // currentSchemaVersion is the schema revision this binary expects. Bump it when
@@ -991,7 +991,7 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 	}
 	zap.L().Debug("Initializing database tables")
 	for _, ddl := range schemaTables {
-		if _, err := db.ExecContext(ctx, db.adaptDDL(ddl)); err != nil {
+		if _, err := db.ExecContext(ctx, db.renderDDL(ddl)); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
 	}
@@ -1051,10 +1051,18 @@ func (db *DB) CreateSchema(ctx context.Context) error {
 	// before the column exists fails schema init entirely and leaves repo nil.
 	db.runColumnMigrations(ctx)
 
+	// A Postgres store created before the per-dialect templates may hold bool
+	// columns as INTEGER, which no CREATE/ADD COLUMN can fix and every bool
+	// write fails on (schema_pg_bool.go). Fatal: a store left that way cannot
+	// save records.
+	if err := db.convertLegacyBoolColumns(ctx); err != nil {
+		return fmt.Errorf("failed to migrate bool columns: %w", err)
+	}
+
 	// Create indexes now that all column migrations above have run — some indexes
 	// reference newly added columns (e.g. idx_records_norm_hash → response_norm_hash).
 	for _, ddl := range schemaIndexes {
-		if _, err := db.ExecContext(ctx, db.adaptDDL(ddl)); err != nil {
+		if _, err := db.ExecContext(ctx, db.renderDDL(ddl)); err != nil {
 			return fmt.Errorf("failed to create index: %w", err)
 		}
 	}
@@ -1270,7 +1278,7 @@ func (db *DB) execBestEffort(ctx context.Context, op, query string, args ...any)
 
 // addColumnIfNotExists attempts to add a column, ignoring errors if it already exists.
 func (db *DB) addColumnIfNotExists(ctx context.Context, table, column, definition string) {
-	ddl := db.adaptDDL(columnMigrationDDL(columnMigration{table, column, definition}))
+	ddl := db.renderDDL(columnMigrationDDL(columnMigration{table, column, definition}))
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		// Ignore "duplicate column" errors (SQLite: "duplicate column name", Postgres: "already exists")
 		errMsg := err.Error()
@@ -1290,160 +1298,6 @@ func (db *DB) addColumnIfNotExists(ctx context.Context, table, column, definitio
 // add a full-table UPDATE per open for three tables that cannot need it.
 var projectUUIDMigrationTables = []string{
 	"scans", "http_records", "findings", "scopes", "oast_interactions", "scan_logs",
-}
-
-// runColumnMigrations applies every additive column migration. It is the SINGLE
-// list of columns this binary expects on an existing database — CreateSchema
-// calls it to apply them, and checkSchemaCurrent calls it in dry-run mode to
-// report the ones a read-only handle is missing. Keeping one list is what stops
-// the read-only check from drifting into a stale copy that passes a database the
-// queries then fail on.
-// columnMigration is one additive column an existing database may be missing.
-type columnMigration struct{ Table, Column, Def string }
-
-// columnMigrations is the SINGLE list of columns this binary expects on an
-// existing database. Data rather than a sequence of method calls, because it has
-// two consumers that must never disagree: CreateSchema APPLIES it, and
-// missingColumns ASKS it. Expressing "ask instead of apply" as a mode flag on
-// the mutating method meant a field on the shared *DB handle that silently
-// turned every addColumn into a no-op for whoever else held that handle.
-//
-// Notes that used to sit on individual calls:
-//   - surface_score is separate from risk_score deliberately: risk_score holds
-//     anomaly_ranking's batch percentile, a different scale from different
-//     inputs, and one column cannot carry both without the later writer silently
-//     erasing the other. DEFAULT 0 reads as "no surface signals", the correct
-//     floor for every row that predates the column.
-//   - The project_uuid entries are appended at init from
-//     projectUUIDMigrationTables, which is narrower than projectOwnedTables: the
-//     newer project-scoped tables declare the column in their own CREATE TABLE
-//     and need neither the ALTER nor the O(rows) backfill.
-var columnMigrations = []columnMigration{
-	{"findings", "request", "TEXT"},
-	{"findings", "response", "TEXT"},
-	{"http_records", "request_authorization", "TEXT"},
-	{"http_records", "response_title", "TEXT"},
-	{"http_records", "response_words", "INTEGER DEFAULT 0"},
-	{"http_records", "response_norm_hash", "TEXT"},
-	{"http_records", "response_location", "TEXT"},
-	{"http_records", "source", "TEXT DEFAULT ''"},
-	{"http_records", "remarks", "TEXT"},
-	{"http_records", "risk_score", "INTEGER DEFAULT 0"},
-	{"http_records", "surface_score", "INTEGER DEFAULT 0"},
-	{"findings", "confidence", "TEXT NOT NULL DEFAULT 'firm'"},
-	{"findings", "scan_uuid", "TEXT"},
-	{"findings", "module_type", "TEXT DEFAULT ''"},
-	{"findings", "finding_source", "TEXT DEFAULT ''"},
-	{"findings", "record_kind", "TEXT NOT NULL DEFAULT 'finding'"},
-	{"findings", "evidence_grade", "TEXT DEFAULT ''"},
-	{"findings", "module_short", "TEXT DEFAULT ''"},
-	{"scans", "scan_source", "TEXT"},
-	{"scans", "scan_mode", "TEXT"},
-	{"scans", "start_cursor_at", "TIMESTAMP"},
-	{"scans", "start_cursor_uuid", "TEXT"},
-	{"scans", "cursor_at", "TIMESTAMP"},
-	{"scans", "cursor_uuid", "TEXT"},
-	{"scans", "processed_count", "INTEGER DEFAULT 0"},
-	{"agentic_scans", "session_id", "TEXT"},
-	{"projects", "tags", "TEXT"},
-	{"projects", "default_target", "TEXT"},
-	{"projects", "last_scan_at", "TIMESTAMP"},
-	{"scans", "profile", "TEXT"},
-	{"scans", "source_path", "TEXT"},
-	{"scans", "source_type", "TEXT"},
-	{"scans", "http_record_uuid", "TEXT"},
-	{"scans", "tags", "TEXT"},
-	{"scans", "triggered_by", "TEXT"},
-	{"scans", "agentic_scan_uuid", "TEXT"},
-	{"http_records", "scan_uuid", "TEXT"},
-	{"http_records", "technology", "TEXT"},
-	{"http_records", "content_hash", "TEXT"},
-	{"http_records", "is_authenticated", "INTEGER NOT NULL DEFAULT 0"},
-	{"http_records", "parent_uuid", "TEXT"},
-	{"http_records", "target", "TEXT"},
-	{"http_records", "root_uuid", "TEXT"},
-	{"http_records", "chain_truncated", "INTEGER NOT NULL DEFAULT 0"},
-	{"findings", "agentic_scan_uuid", "TEXT"},
-	{"findings", "url", "TEXT"},
-	{"findings", "hostname", "TEXT"},
-	{"findings", "status", "TEXT DEFAULT 'triaged'"},
-	{"findings", "remediation", "TEXT"},
-	{"findings", "cwe_id", "TEXT"},
-	{"findings", "cvss_score", "REAL DEFAULT 0"},
-	{"findings", "source_file", "TEXT"},
-	{"findings", "repo_name", "TEXT"},
-	{"agentic_scans", "source_path", "TEXT"},
-	{"agentic_scans", "token_usage", "TEXT"},
-	{"agentic_scans", "retry_count", "INTEGER DEFAULT 0"},
-	{"agentic_scans", "parent_run_uuid", "TEXT"},
-	{"agentic_scans", "input_record_count", "INTEGER DEFAULT 0"},
-	{"agentic_scans", "session_dir", "TEXT"},
-	{"agentic_scans", "protocol", "TEXT"},
-	{"agentic_scans", "model", "TEXT"},
-	{"agentic_scans", "total_input_tokens", "INTEGER NOT NULL DEFAULT 0"},
-	{"agentic_scans", "total_output_tokens", "INTEGER NOT NULL DEFAULT 0"},
-	{"agentic_scans", "estimated_cost_usd", "REAL NOT NULL DEFAULT 0"},
-	{"scans", "storage_url", "TEXT"},
-	{"scans", "scope_origin_mode", "TEXT"},
-	{"agentic_scans", "storage_url", "TEXT"},
-	{"oast_interactions", "finding_id", "INTEGER"},
-	{"oast_interactions", "payload", "TEXT"},
-	{"scopes", "content_type_pattern", "TEXT"},
-	{"scopes", "hit_count", "INTEGER DEFAULT 0"},
-	{"scopes", "last_matched_at", "TIMESTAMP"},
-	{"authentication_hostnames", "session_token", "TEXT"},
-	{"authentication_hostnames", "hydrated_at", "TIMESTAMP"},
-	// Scan completeness. Nullable with NO default on purpose: an empty value
-	// means "unknown", which is what a row written by an older binary — or by a
-	// caller that has no outcome data — honestly is. A DEFAULT of 'complete'
-	// would retroactively declare every historical scan fully covered.
-	{"scans", "completeness", "TEXT"},
-	{"scans", "stop_reason", "TEXT"},
-	{"scans", "phase_outcomes", "TEXT"},
-	// Body compaction marker (`db compact`). Nullable with no default: NULL
-	// means the stored bodies are the bodies as captured, which is what every
-	// row written before this column existed honestly holds.
-	{"http_records", "body_compaction", "TEXT"},
-	// Schema v2: the compatibility guard (schema_guard.go). min_reader_version
-	// defaults to 1, which backfills every existing row with the floor a v1
-	// store has always had.
-	{"schema_meta", "min_reader_version", "INTEGER NOT NULL DEFAULT 1"},
-	{"schema_meta", "written_by", "TEXT"},
-	{"schema_meta", "updated_at", "TIMESTAMP"},
-	// Schema v3. Every column nullable with no default: NULL honestly means
-	// "not recorded" for every row an older binary wrote.
-	//   - findings: the current verdict's provenance (the full history is
-	//     finding_status_events), what `finding verify` needs to replay a
-	//     finding (the baseline record, insertion point and payload), and the
-	//     last verification result (JSON) kept apart from status.
-	//   - scans: run liveness (heartbeat, phase, pid, host), the resolved plan
-	//     (JSON), and the per-module error / failed-extension tallies (JSON)
-	//     that scan.finished reads back from the row.
-	{"findings", "status_note", "TEXT"},
-	{"findings", "status_actor", "TEXT"},
-	{"findings", "status_updated_at", "TIMESTAMP"},
-	{"findings", "origin_record_uuid", "TEXT"},
-	{"findings", "insertion_point", "TEXT"},
-	{"findings", "payload", "TEXT"},
-	{"findings", "verification", "TEXT"},
-	{"findings", "verified_at", "TIMESTAMP"},
-	{"scans", "plan", "TEXT"},
-	{"scans", "heartbeat_at", "TIMESTAMP"},
-	{"scans", "current_phase", "TEXT"},
-	{"scans", "pid", "INTEGER"},
-	{"scans", "runner_host", "TEXT"},
-	{"scans", "module_errors", "TEXT"},
-	{"scans", "extensions_failed", "TEXT"},
-	{"schema_meta", "observation_history_since", "TIMESTAMP"},
-}
-
-func init() {
-	for _, table := range projectUUIDMigrationTables {
-		columnMigrations = append(columnMigrations, columnMigration{
-			Table: table, Column: "project_uuid",
-			Def: fmt.Sprintf("TEXT NOT NULL DEFAULT '%s'", DefaultProjectUUID),
-		})
-	}
 }
 
 // runColumnMigrations applies every additive column migration.

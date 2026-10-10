@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -523,76 +521,5 @@ func TestMigrateFindingHistory_FoldsOntoSurvivor(t *testing.T) {
 	}
 	if n := scalarInt(t, db, "SELECT COUNT(*) FROM finding_status_events WHERE finding_id = ?", survivor); n != 1 {
 		t.Errorf("status event not re-pointed to survivor")
-	}
-}
-
-// sqliteOnlyDDLTokens must never reach Postgres.
-var sqliteOnlyDDLTokens = []string{"AUTOINCREMENT", "BLOB", "INSERT OR", "OR IGNORE", "PRAGMA", "WITHOUT ROWID"}
-
-// TestSchemaDDL_PostgresRender renders every statement CreateSchema issues for
-// Postgres, with no live server: no SQLite-only token survives, every bool
-// model field is a BOOLEAN column, and both renderings create the same objects.
-func TestSchemaDDL_PostgresRender(t *testing.T) {
-	pg := schemaDDLStatements(driverPostgres)
-	lite := schemaDDLStatements(driverSQLite)
-	if len(pg) != len(lite) {
-		t.Fatalf("render lengths differ: pg %d sqlite %d", len(pg), len(lite))
-	}
-	all := strings.Join(pg, "\n")
-	for _, tok := range sqliteOnlyDDLTokens {
-		if strings.Contains(strings.ToUpper(all), tok) {
-			t.Errorf("Postgres DDL contains SQLite-only token %q", tok)
-		}
-	}
-
-	// Every bool field on a bun model must be BOOLEAN in Postgres: writing a
-	// Go bool into an INTEGER column fails there.
-	models := []any{User{}, Project{}, Scan{}, HTTPRecord{}, AnalysisArtifact{}, HostObservation{}, Finding{},
-		FindingObservation{}, FindingStatusEvent{}, OASTPayload{}, AuthenticationHostname{}, OASTInteraction{},
-		ScanLog{}, AgenticScan{}, AgentSection{}, AgentFindingCandidate{}, Scope{}}
-	for _, m := range models {
-		rt := reflect.TypeOf(m)
-		for i := 0; i < rt.NumField(); i++ {
-			f := rt.Field(i)
-			tag, ok := f.Tag.Lookup("bun")
-			if !ok || f.Type.Kind() != reflect.Bool {
-				continue
-			}
-			col, _, _ := strings.Cut(tag, ",")
-			if !slices.Contains(postgresBoolColumns, col) {
-				t.Errorf("%s.%s is a bool but %q is not in postgresBoolColumns", rt.Name(), f.Name, col)
-			}
-			if regexp.MustCompile(`\b` + col + ` INTEGER\b`).MatchString(all) {
-				t.Errorf("Postgres DDL declares bool column %q as INTEGER", col)
-			}
-		}
-	}
-	if !strings.Contains(all, "SERIAL PRIMARY KEY") || !strings.Contains(all, "BYTEA") {
-		t.Error("Postgres rewrites did not apply")
-	}
-
-	// Catalog parity: same objects, same column migrations.
-	pattern := regexp.MustCompile(ddlObjectPattern)
-	names := func(stmts []string) []string {
-		var out []string
-		for _, s := range stmts {
-			if m := pattern.FindStringSubmatch(s); m != nil {
-				out = append(out, m[1])
-			}
-		}
-		return out
-	}
-	if !slices.Equal(names(pg), names(lite)) {
-		t.Error("Postgres and SQLite renderings create different objects")
-	}
-	for _, tbl := range v3Tables {
-		if !slices.Contains(names(pg), tbl) {
-			t.Errorf("Postgres DDL does not create %s", tbl)
-		}
-	}
-	for _, s := range pg {
-		if strings.HasPrefix(s, "ALTER TABLE findings ADD COLUMN verification ") && !strings.HasSuffix(s, " TEXT") {
-			t.Errorf("unexpected Postgres render for verification column: %s", s)
-		}
 	}
 }

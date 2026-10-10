@@ -138,6 +138,24 @@ func (db *DB) schemaGapsDetail(ctx context.Context) ([]string, error) {
 		gaps = append(gaps, missing...)
 	}
 
+	// A legacy integer bool column on Postgres: present, so the column check
+	// passes it, but every bool write to it fails until CreateSchema converts
+	// it (convertLegacyBoolColumns).
+	if len(gaps) == 0 && db.driver == driverPostgres {
+		legacy, err := db.legacyBoolColumns(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("column type catalog unreadable: %w", err)
+		}
+		for b, typ := range legacy {
+			// Only what CreateSchema can convert: an unexpected type it leaves
+			// alone would otherwise be a gap no migration ever closes.
+			if pgIntegerTypes[typ] {
+				gaps = append(gaps, fmt.Sprintf("%s.%s is %s, not boolean", b.Table, b.Column, typ))
+			}
+		}
+		slices.Sort(gaps)
+	}
+
 	// The recorded version last. It gates the one-time O(rows) backfills, so a
 	// database holding every object but stuck at an older version still has
 	// migration work owed.
