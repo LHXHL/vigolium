@@ -1180,7 +1180,6 @@ Import scan data, databases, or live Burp Proxy history
 | `--all-hosts` | - | bool | `false` | Import the operator's ENTIRE proxy history, unfiltered. Required when no filter is given — an unfiltered pull copies every host ever browsed, with its cookies and tokens, into this database. |
 | `--burp-bridge-url` | `-B` | string | - | Import live Burp/Caido proxy history from this loopback bridge URL into the database (alias: --caido-bridge-url) |
 | `--exclude-search` | - | stringArray | - | Skip records matching this term (repeatable) |
-| `--format` | - | string | - | **(overrides the global `--format`)** Also write a report after import: html, report, pdf (headless Chrome), markdown (alias: md), sarif (SARIF 2.1.0), csv, junit (failures at/above --fail-on), github (workflow commands; stdout without -o). Mirrors 'vigolium export --format'. |
 | `--from` | - | string | - | Import only records from this time onward (2d, 12h, today, YYYY-MM-DD, RFC3339) |
 | `--glob-db` | - | string | - | Glob of local files to import alongside any positional paths (use one format per run), e.g. --glob-db 'prefix-*.sqlite' or '*.jsonl' |
 | `--host` | - | string | - | Import only records for this host (supports * wildcards, e.g. '*.example.com') |
@@ -1251,7 +1250,6 @@ Execute JavaScript with the full vigolium.* API
 |------|-------|------|---------|-------------|
 | `--code` | - | string | - | Inline JavaScript code to execute |
 | `--code-file` | - | string | - | Path to JavaScript/TypeScript file to execute |
-| `--format` | - | string | `json` | **(overrides the global `--format`)** Output format without -j: json (the raw JSON value) or text (strings unquoted); -j wraps the value in the envelope |
 | `--target` | - | string | - | Set TARGET variable in JS scope (URL) |
 | `--timeout` | - | duration | `30s` | Execution timeout |
 

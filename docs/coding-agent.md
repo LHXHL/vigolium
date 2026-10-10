@@ -390,6 +390,12 @@ no v1 emulation mode.
 | read commands' raw objects/arrays, row arrays named `findings`/`records`/… | the envelope, rows in `items` (tables below) |
 | `db stats` / `db compact` `items` was an object | `items: [obj]` |
 | no `ok`/`kind` | `ok` on every document, `kind` (`read`, `mutation`, `scan`) |
+| `command` was typed by hand: `db list -j` said `traffic`, `db ls --list-tables -j` carried flags, `traffic --group-by` too | the cobra path of the command that ran (`db list`, `traffic`); bare `scope`, `extensions` and `log` name the subcommand they are shorthand for (`scope view`, `extensions ls`, `log ls`) |
+| `log <uuid> -j`: the text transcript | an envelope of log lines (below); `--follow -j` is a usage error |
+| `export -j` / `db export -j`: `-j` ignored, the export stream on stdout | a receipt envelope (below); `-j` needs `-o` (exit 2 otherwise) |
+| `ext example`, `ext preset`, `ext eval`, `db seed -j`: text; `ext types -j`: the d.ts on stdout | envelopes (below) |
+| `import --format`, `js --format`: local flags shadowing the global `--format` | the global `--format`, same spelling and values |
+| `agent -j` with no list flag: help text on stdout | a usage error (exit 2) |
 
 ### Commands that moved onto the envelope
 
@@ -415,6 +421,11 @@ row name, or flattens a single object back to the top level, for one release.
 | `kit js-beautify`, `kit jwt-crack` | read | `[result]` | — | `.` |
 | `kit tmp-clean` | mutation | `[result]` | — | `.` |
 | `js` | read | `[{value}]`, the return value as JSON | — | — (was the raw value; still is without `-j`) |
+| `extensions eval <code>` | read | `[{value}]`, as `js` (with `--record-uuid` it prints the `extensions run` document) | — | — |
+| `extensions example` | read | `[{key, lang, type, title, filename, save_as, code}]` (no `code` under `--list`) | `filter`, `lang`, `list_only` | `examples` |
+| `extensions types` | read | `[{bytes, content}]`, or `[{path, bytes}]` with `-o` | — | `.` |
+| `log <uuid>` | read | the `--tail`/`--full` window of lines `{text, time?, level?, phase?}` (`time`/`level`/`phase` for lines read back from the database); an agentic session's transcript lines verbatim in `text` | `uuid`, `session_kind`, `status`, `effective_status`, `stale`, `last_write_at`, `liveness_sources`, `source` (`file`, `transcript`, `database`), `path`, `tail`, `truncated` | — |
+| `export`, `db export` | read | the files written `[{format, path, detail?}]` (absolute paths) | `counts` (`export`: by type plus `total`; `db export`: `records`, or per type for `fs`/`bundle`) | — |
 | `project list`, `storage ls` | read | projects / objects | `prefix` (storage) | — (was a bare array) |
 | `storage presign` | read | `[{url, key, method, expiry_seconds}]` | — | `.` |
 | `traffic --glob-db … --burp` | read | `[aggregate]` | `pattern`, `files`, `files_read`, `unreadable`, `duration_ms` | `result` |
@@ -451,6 +462,8 @@ with `aborted: true`.
 | `init` | `[{kind, path}]` written | not already initialized (or `--force`) | `already_initialized` on a noop |
 | `skills install` | `[{name, path, installed, status, reason?, previous_version?, backup?, pruned?}]`; `status` is the state found before the run (`missing`, `current`, `stale`, `modified`) | any bundle written | `installed`, `skipped`, `dir` |
 | `agent triage <id>` | `[{finding_id, verdict, reasoning, notes?, old_severity, new_severity, old_status, new_status, written, agentic_scan_uuid}]` | the verdict was written (not `--no-write`, not `inconclusive`) | `agentic_scan_uuid`, `session_dir`; `dry_run: true` and `items: [{finding_id, prompt}]` under `--dry-run` |
+| `extensions preset` | `[{name, path, status, error?}]`, `status` one of `installed`, `skipped` (already present), `failed`, and for `vigolium.d.ts` `updated` or `current` | a preset was installed or `vigolium.d.ts` rewritten | `extension_dir`, `extensions_enabled`, `installed`, `skipped`, `failed` |
+| `db seed` | `[{table, inserted}]` (rows this run added; existing rows are skipped) | any row was inserted | `rows_inserted` |
 
 `storage download -j` needs `-o <file>` (exit 2 otherwise: without it the
 object's bytes are stdout) and prints a read receipt `[{key, path, size}]`.
@@ -461,6 +474,19 @@ nothing; pass `--create` to create it.
 that shadowed the global one (so `-j` failed). It is gone: `--json` and `-j`
 are now the global flag on every command. Every one of these documents goes
 through the shared writer, so `--pretty`, `-o` and `--max-output-bytes` apply.
+
+`import` and `js` likewise lost their local `--format`: `import --format html
+-o r.html` and `js --format text` read the global flag, with the same values.
+`export -j` and `db export -j` need `-o`: without it the export is written to
+stdout, where the document goes, so the run is refused (exit 2) before
+anything is read; drop `-j` for the stream itself. `db export -j --watch` is
+refused too (a repeated export has no single receipt).
+
+Every command prints exactly one envelope under `-j`; help, completion, the
+TUIs, the server and the passthrough shims (`ffuf`, `nuclei`, …) have no `-j`
+document.
+`test/e2e/machine_contract_e2e_test.go` runs every command this way, plus once
+with an unknown flag (one `usage_error` document, exit 2).
 
 ## Finding lifecycle
 

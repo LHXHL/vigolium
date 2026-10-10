@@ -337,7 +337,6 @@ const (
 	pendingTypedItems   = "envelope whose items/extras are not mirrored by a typed view yet"
 	pendingAgentRun     = "agent run document (B7, agent_run_document.go): not mirrored yet"
 	pendingStream       = "stream command: its own --format output owns stdout; the -j receipt is not mirrored yet"
-	pendingOffContract  = "-j output is still off-contract (knownNonConforming)"
 	pendingSelfDescribe = "items embed JSON Schema documents; describing the schema of a schema adds nothing"
 )
 
@@ -356,15 +355,10 @@ var schemaPending = map[string]string{
 	"config validate": pendingTypedItems,
 	"db clean":        pendingTypedItems, "db compact": pendingTypedItems, "db list": pendingTypedItems,
 	"db migrate": pendingTypedItems, "db reset": pendingTypedItems, "db stats": pendingTypedItems,
-	"db seed":   pendingOffContract,
-	"db export": pendingStream, "export": pendingStream, "fuzz": pendingStream, "replay": pendingStream,
+	"fuzz": pendingStream, "replay": pendingStream,
 	"storage download": pendingStream,
 	"doctor":           pendingTypedItems,
 	"extensions":       pendingTypedItems, "extensions docs": pendingTypedItems, "extensions ls": pendingTypedItems,
-	"extensions eval": pendingOffContract, "extensions example": pendingOffContract,
-	"extensions preset": pendingOffContract,
-	"extensions types": pendingOffContract, "import": pendingOffContract, "js": pendingOffContract,
-	"log":          pendingOffContract,
 	"finding load": pendingTypedItems, "finding verify": pendingTypedItems,
 	"traffic body": pendingTypedItems, "traffic headers": pendingTypedItems,
 	"ingest": pendingTypedItems, "init": pendingTypedItems,
@@ -389,7 +383,7 @@ var schemaPending = map[string]string{
 
 // schemaPendingCeiling pins the ratchet's size: lower it when a command gets
 // a schema; never raise it.
-const schemaPendingCeiling = 86
+const schemaPendingCeiling = 76
 
 // TestSchemaCoverageRatchet: every runnable non-interactive command either has
 // a registered schema or a reason in schemaPending, never both.

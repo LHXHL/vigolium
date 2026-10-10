@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -58,7 +59,7 @@ referenced by another agent as an authoring template.`,
 		if len(args) > 0 {
 			filter = args[0]
 		}
-		return printExtensionExamples(filter)
+		return printExtensionExamples(cmd, filter)
 	},
 }
 
@@ -74,7 +75,27 @@ func init() {
 		"Restrict to one language: javascript (js), yaml, or json")
 }
 
-func printExtensionExamples(filter string) error {
+// extExampleView is one catalog entry under -j. Code is omitted under --list,
+// which asks for the index only.
+type extExampleView struct {
+	Key      string `json:"key"`
+	Lang     string `json:"lang"`
+	Type     string `json:"type"`
+	Title    string `json:"title"`
+	Filename string `json:"filename"`
+	// SaveAs is the suggested destination ("Save as:" in the text view).
+	SaveAs string `json:"save_as"`
+	Code   string `json:"code,omitempty"`
+}
+
+// extExampleExtras are the top-level keys of `extensions example -j`.
+type extExampleExtras struct {
+	Filter   string `json:"filter,omitempty"`
+	Lang     string `json:"lang,omitempty"`
+	ListOnly bool   `json:"list_only,omitempty"`
+}
+
+func printExtensionExamples(cmd *cobra.Command, filter string) error {
 	catalog := extensionExampleCatalog()
 
 	langFilter := strings.ToLower(strings.TrimSpace(exampleLang))
@@ -100,7 +121,30 @@ func printExtensionExamples(filter string) error {
 	}
 
 	if len(matched) == 0 {
-		return fmt.Errorf("no examples matching %q; try: ext example js, ext example yaml, ext example pre_hook, ext example --list", filter)
+		return codedErrorf(apicontract.CodeNotFound, "no examples matching %q; try: ext example js, ext example yaml, ext example pre_hook, ext example --list", filter)
+	}
+
+	if globalJSON {
+		views := make([]extExampleView, 0, len(matched))
+		for _, ex := range matched {
+			v := extExampleView{Key: ex.Key, Lang: ex.Lang, Type: ex.Type, Title: ex.Title,
+				Filename: ex.Filename, SaveAs: ex.destPath()}
+			if !exampleListOnly {
+				v.Code = strings.TrimRight(ex.Code, "\n")
+			}
+			views = append(views, v)
+		}
+		var opts []envOpt
+		if filter != "" {
+			opts = append(opts, withExtra("filter", filter))
+		}
+		if langFilter != "" {
+			opts = append(opts, withExtra("lang", langFilter))
+		}
+		if exampleListOnly {
+			opts = append(opts, withExtra("list_only", true))
+		}
+		return emitRead(cmd, "examples", views, int64(len(views)), 0, len(views), opts...)
 	}
 
 	if exampleListOnly {

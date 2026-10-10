@@ -27,14 +27,17 @@ var jsOpts struct {
 	codeFile string
 	target   string
 	timeout  time.Duration
-	format   string
 }
 
 var jsCmd = &cobra.Command{
 	Use:   "js",
 	Short: "Execute JavaScript with the full vigolium.* API",
 	Long: `Run JavaScript code with access to the full vigolium.* API surface.
-Reads from stdin by default, or use --code / --code-file for inline / file input.`,
+Reads from stdin by default, or use --code / --code-file for inline / file input.
+
+Without -j the script's return value is printed as JSON; --format text prints a
+string result unquoted (--format is the global flag: json, the default, or
+text). -j wraps the value in the envelope as items:[{"value": …}].`,
 	RunE: runJsCmd,
 }
 
@@ -46,11 +49,15 @@ func init() {
 	flags.StringVar(&jsOpts.codeFile, "code-file", "", "Path to JavaScript/TypeScript file to execute")
 	flags.StringVar(&jsOpts.target, "target", "", "Set TARGET variable in JS scope (URL)")
 	flags.DurationVar(&jsOpts.timeout, "timeout", 30*time.Second, "Execution timeout")
-	flags.StringVar(&jsOpts.format, "format", "json", "Output format without -j: json (the raw JSON value) or text (strings unquoted); -j wraps the value in the envelope")
 }
 
 func runJsCmd(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
+
+	format, err := jsOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
 
 	// Resolve JS source
 	source, err := resolveJsSource()
@@ -83,7 +90,7 @@ func runJsCmd(cmd *cobra.Command, args []string) error {
 	}
 
 	if result.Value != "" {
-		if jsOpts.format == "text" {
+		if format == "text" {
 			// Try to print as raw string (strip surrounding quotes for simple strings)
 			v := result.Value
 			if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
@@ -98,6 +105,22 @@ func runJsCmd(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// jsOutputFormat reads the global --format for `js`: json (the default, also
+// when the flag is not typed — its global default is a scan format) or text. A
+// local --format would shadow the global flag, which the machine contract
+// forbids outside stream commands.
+func jsOutputFormat(cmd *cobra.Command) (string, error) {
+	if !flagChanged(cmd, "format") {
+		return "json", nil
+	}
+	switch f := strings.ToLower(strings.TrimSpace(globalFormat)); f {
+	case "json", "text":
+		return f, nil
+	default:
+		return "", usageErrorf("js supports --format json (default) or text, not %q", strings.TrimSpace(globalFormat))
+	}
 }
 
 // jsEvalItem is the -j result of `vigolium js`: the script's return value as

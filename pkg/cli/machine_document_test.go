@@ -153,7 +153,9 @@ func newImportTestCmd(t *testing.T) *cobra.Command {
 	cmd := &cobra.Command{Use: "import"}
 	cmd.Flags().Bool("upload", false, "")
 	cmd.Flags().String("upload-key", "", "")
-	cmd.Flags().String("format", "", "")
+	// --format is the global flag; runImport reads it through globalFormat.
+	swapGlobal(t, &globalFormat, globalFormat)
+	cmd.Flags().StringVar(&globalFormat, "format", "console", "")
 	cmd.Flags().StringP("output", "o", "", "")
 	cmd.Flags().String("report-title", "", "")
 	cmd.Flags().String("report-target", "", "")

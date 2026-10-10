@@ -91,6 +91,11 @@ Docs: https://docs.vigolium.com`,
 			return printTemplateList(cmd, settings)
 		}
 
+		// Help is text; under -j it would be the one thing on stdout that is
+		// not a document.
+		if globalJSON {
+			return usageErrorf("agent -j needs a subcommand (agent query, agent session, …) or --list-agents / --list-templates")
+		}
 		return cmd.Help()
 	},
 }

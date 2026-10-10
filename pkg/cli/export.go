@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -307,6 +308,9 @@ func runExportCmd(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	if err := validateExportJSON(specs); err != nil {
+		return err
+	}
 
 	ctx := context.Background()
 	run := &exportRun{multi: len(specs) > 1}
@@ -336,13 +340,98 @@ func runExportCmd(cmd *cobra.Command, args []string) error {
 
 	if run.multi {
 		printMultiExportSummary(exportFormatNames(specs), run.items, outputs, run.printProjectScope)
+		if run.itemsSet {
+			run.counts, run.countsSet = countExportItems(run.items), true
+		}
 	}
+	var failErr error
 	if len(failed) > 0 {
 		// Each failure printed its own reason above; this only carries the
 		// non-zero exit and names which formats to look for.
-		return fmt.Errorf("%d of %d formats failed: %s", len(failed), len(specs), strings.Join(failed, ", "))
+		failErr = fmt.Errorf("%d of %d formats failed: %s", len(failed), len(specs), strings.Join(failed, ", "))
+	}
+	if globalJSON {
+		if err := emitExportReceipt(cmd, run, outputs, failErr); err != nil {
+			return err
+		}
+	}
+	return failErr
+}
+
+// validateExportJSON: under -j stdout carries the one result document, so a
+// format that would stream to stdout (jsonl or github without -o) has nowhere
+// to go. Refused before anything is read, like `storage download -j`.
+func validateExportJSON(specs []exportFormatSpec) error {
+	if !globalJSON {
+		return nil
+	}
+	for _, s := range specs {
+		if s.path == "" && s.format != "fs" {
+			return usageErrorf("export -j needs -o <path>: without it the %s export is written to stdout, "+
+				"where the -j document goes (drop -j for the stream itself)", s.format)
+		}
 	}
 	return nil
+}
+
+// exportFileView is one artifact `export -j` / `db export -j` wrote.
+type exportFileView struct {
+	Format string `json:"format"`
+	Path   string `json:"path"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// exportReceiptExtras are the top-level keys of the export receipt.
+type exportReceiptExtras struct {
+	// Counts tallies the exported items by type (http_record, finding, scan,
+	// …) plus total; absent for a format that does not count (fs).
+	Counts map[string]int `json:"counts,omitempty"`
+}
+
+func exportFileViews(outputs []exportedFile) []exportFileView {
+	views := make([]exportFileView, 0, len(outputs))
+	for _, o := range outputs {
+		views = append(views, exportFileView{Format: o.label, Path: receiptPath(o.path), Detail: o.detail})
+	}
+	return views
+}
+
+// receiptPath is a written file's path as a receipt reports it: absolute for a
+// local file, so it does not depend on the caller's working directory; a
+// gs:// URL as given.
+func receiptPath(p string) string {
+	if p == "" || strings.Contains(p, "://") {
+		return p
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+// emitExportReceipt prints `export -j`: the files written as items, the item
+// counts, and the project filter applied. A multi-format run with a failed
+// format still lists what landed, with ok:false and the error.
+func emitExportReceipt(cmd *cobra.Command, run *exportRun, outputs []exportedFile, failErr error) error {
+	views := exportFileViews(outputs)
+	opts := []envOpt{withProjectScope(run.projectUUID)}
+	if run.countsSet {
+		opts = append(opts, withExtra("counts", run.counts.view()))
+	}
+	if failErr != nil {
+		opts = append(opts, withResultFailure(failErr))
+	}
+	return emitRead(cmd, "", views, int64(len(views)), 0, len(views), opts...)
+}
+
+// view renders the tally as {type: n, …, "total": n}.
+func (c exportCounts) view() map[string]int {
+	out := make(map[string]int, len(c.byType)+1)
+	for k, v := range c.byType {
+		out[k] = v
+	}
+	out["total"] = c.total
+	return out
 }
 
 // exportRun carries the state shared by every format in one `vigolium export`
@@ -385,6 +474,10 @@ type exportRun struct {
 	// multi records that more than one format was requested, which switches the
 	// per-format count blocks off in favor of one unified summary at the end.
 	multi bool
+
+	// counts is the last tally a format reported, for the -j receipt.
+	counts    exportCounts
+	countsSet bool
 }
 
 // openDB opens the export database once per run and resolves the project filter
@@ -438,6 +531,7 @@ func (r *exportRun) reportMeta(ctx context.Context, db *database.DB) (target, du
 // where every format renders the same result set and the counts are reported once
 // by printMultiExportSummary instead.
 func (r *exportRun) printStats(format, outputPath string, counts exportCounts) {
+	r.counts, r.countsSet = counts, true
 	if r.multi {
 		return
 	}

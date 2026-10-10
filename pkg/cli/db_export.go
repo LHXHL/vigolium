@@ -145,6 +145,9 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateDBExportJSON(); err != nil {
+		return err
+	}
 
 	db, err := getDB()
 	if err != nil {
@@ -154,7 +157,12 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 	// fs writes a directory tree (filtered by the same flags), not to a single
 	// output file — handle it before opening outputFile so no stray file is made.
 	if exportFormat == "fs" {
-		return runDBExportFS(db, dateFrom, dateTo)
+		stats, err := runDBExportFS(db, dateFrom, dateTo)
+		if err != nil || !globalJSON {
+			return err
+		}
+		return emitDBExportReceipt(cmd, fsExportOutputs(stats),
+			map[string]int{"http_record": stats.Traffic, "finding": stats.Findings})
 	}
 
 	// bundle requires -o and handles its own file I/O — resolved before the
@@ -164,7 +172,11 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		return exportDBBundle(context.Background(), db, projectUUID)
+		stats, err := exportDBBundle(context.Background(), db, projectUUID)
+		if err != nil || !globalJSON {
+			return err
+		}
+		return emitDBExportReceipt(cmd, []exportedFile{{label: "bundle", path: exportOutput}}, stats.counts)
 	}
 
 	ctx := context.Background()
@@ -178,9 +190,16 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 	// every tick for as long as it runs, so there is no single publication point
 	// to rename at. It keeps the open-once-and-append behavior it always had.
 	if exportOutput != "" && !dbExportWatching() {
-		return atomicfile.WriteFile(exportOutput, 0o666, func(w *bufio.Writer) error {
-			return writeDBExport(ctx, db, dateFrom, dateTo, w)
-		})
+		var n int
+		if err := atomicfile.WriteFile(exportOutput, 0o666, func(w *bufio.Writer) error {
+			var werr error
+			n, werr = writeDBExportCounted(ctx, db, dateFrom, dateTo, w)
+			return werr
+		}); err != nil || !globalJSON {
+			return err
+		}
+		return emitDBExportReceipt(cmd, []exportedFile{{label: exportFormat, path: exportOutput}},
+			map[string]int{"records": n})
 	}
 
 	var out io.Writer = os.Stdout
@@ -198,6 +217,34 @@ func runDBExport(cmd *cobra.Command, args []string) error {
 	})
 }
 
+// validateDBExportJSON: under -j stdout carries the one result document, so
+// the export itself needs a file (fs writes a tree, never stdout), and --watch
+// — which rewrites the file on every tick — has no single receipt to print.
+func validateDBExportJSON() error {
+	if !globalJSON {
+		return nil
+	}
+	if exportOutput == "" && exportFormat != "fs" {
+		return usageErrorf("db export -j needs -o <path>: without it the %s export is written to stdout, "+
+			"where the -j document goes (drop -j for the stream itself)", exportFormat)
+	}
+	if dbExportWatching() {
+		return usageErrorf("db export -j cannot be combined with --watch: a repeated export has no single receipt")
+	}
+	return nil
+}
+
+// emitDBExportReceipt prints `db export -j`: the files written and what they
+// hold.
+func emitDBExportReceipt(cmd *cobra.Command, outputs []exportedFile, counts map[string]int) error {
+	views := exportFileViews(outputs)
+	opts := []envOpt{withExtra("counts", counts)}
+	if pu, err := resolveProjectUUID(); err == nil {
+		opts = append(opts, withProjectScope(pu))
+	}
+	return emitRead(cmd, "", views, int64(len(views)), 0, len(views), opts...)
+}
+
 // dbExportWatching reports whether --watch asked for a repeating read. An
 // unparseable interval is not watching: runWithWatch rejects it as a usage
 // error, and treating it as watching here would quietly skip atomic staging on
@@ -211,37 +258,45 @@ func dbExportWatching() bool {
 // is the whole body of a `db export` iteration, extracted so the atomic -o path
 // and the watch loop share it exactly.
 func writeDBExport(ctx context.Context, db *database.DB, dateFrom, dateTo *time.Time, out io.Writer) error {
+	_, err := writeDBExportCounted(ctx, db, dateFrom, dateTo, out)
+	return err
+}
+
+// writeDBExportCounted is writeDBExport reporting how many records the query
+// selected, for the -j receipt.
+func writeDBExportCounted(ctx context.Context, db *database.DB, dateFrom, dateTo *time.Time, out io.Writer) (int, error) {
 	filters, err := dbExportFilters(dateFrom, dateTo)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	qb := database.NewQueryBuilder(db, filters)
 	records, err := qb.Execute(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to query database: %w", err)
+		return 0, fmt.Errorf("failed to query database: %w", err)
 	}
 
 	if exportRecordUUID != "" && len(records) == 0 {
-		return fmt.Errorf("record UUID %s not found", exportRecordUUID)
+		return 0, fmt.Errorf("record UUID %s not found", exportRecordUUID)
 	}
 
 	switch exportFormat {
 	case "jsonl":
-		return exportJSONL(ctx, db, records, out)
+		err = exportJSONL(ctx, db, records, out)
 	case "json":
-		return exportJSON(records, out)
+		err = exportJSON(records, out)
 	case "raw":
-		return exportRaw(records, out)
+		err = exportRaw(records, out)
 	case "csv":
-		return exportCSV(records, out)
+		err = exportCSV(records, out)
 	case "markdown":
-		return exportMarkdown(records, out)
+		err = exportMarkdown(records, out)
 	case "markdown-table":
-		return exportMarkdownTable(records, out)
+		err = exportMarkdownTable(records, out)
 	default:
-		return usageErrorf("unsupported export format: %s", exportFormat)
+		return 0, usageErrorf("unsupported export format: %s", exportFormat)
 	}
+	return len(records), err
 }
 
 // runDBExportFS writes the filtered records + findings to a flat
@@ -249,20 +304,20 @@ func writeDBExport(ctx context.Context, db *database.DB, dateFrom, dateTo *time.
 // host/method/status/path/scan/severity/date/search/limit filters as the other
 // db export formats, scoped to the active project; the base defaults to
 // "vigolium" in the cwd when no -o is given.
-func runDBExportFS(db *database.DB, dateFrom, dateTo *time.Time) error {
+func runDBExportFS(db *database.DB, dateFrom, dateTo *time.Time) (fsExportStats, error) {
 	// Same builder as every other format. This branch used to keep its own copy,
 	// which is how it came to bind --search to FuzzyTerm while the others used
 	// SearchTerm, and to ignore --uuid entirely.
 	filters, err := dbExportFilters(dateFrom, dateTo)
 	if err != nil {
-		return err
+		return fsExportStats{}, err
 	}
 	stats, err := writeFSExport(context.Background(), db, filters, exportOutput, fsExportOptions{omitResponse: exportRequestOnly})
 	if err != nil {
-		return err
+		return fsExportStats{}, err
 	}
 	fsPrintSummary(stats)
-	return nil
+	return stats, nil
 }
 
 func exportJSONL(ctx context.Context, db *database.DB, records []*database.HTTPRecord, out io.Writer) error {
@@ -472,15 +527,15 @@ type dbBundleStats struct {
 // gzip/tar lifetime and the Close-error rule all live in publishTarGz, shared
 // with `export --format bundle`; the summary prints only after the archive has
 // actually been renamed into place.
-func exportDBBundle(ctx context.Context, db *database.DB, projectUUID string) error {
+func exportDBBundle(ctx context.Context, db *database.DB, projectUUID string) (dbBundleStats, error) {
 	stats, err := publishTarGz(exportOutput, func(tw *tar.Writer) (dbBundleStats, error) {
 		return writeDBBundleMembers(ctx, db, projectUUID, tw)
 	})
 	if err != nil {
-		return err
+		return dbBundleStats{}, err
 	}
 	printDBBundleSummary(projectUUID, stats)
-	return nil
+	return stats, nil
 }
 
 // writeDBBundleMembers writes every archive member into tw.

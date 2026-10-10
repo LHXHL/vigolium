@@ -13,20 +13,20 @@ import (
 
 func TestExtensionsTypes_StdoutAndOutputPaths(t *testing.T) {
 	out := captureStdout(t, func() {
-		require.NoError(t, runExtensionsTypes(""))
+		require.NoError(t, runExtensionsTypes(extensionsTypesCmd, ""))
 	})
 	assert.Equal(t, jsext.TypeDefinitions(), out)
 
 	// -o <dir> writes <dir>/vigolium.d.ts.
 	dir := t.TempDir()
-	require.NoError(t, runExtensionsTypes(dir))
+	require.NoError(t, runExtensionsTypes(extensionsTypesCmd, dir))
 	data, err := os.ReadFile(filepath.Join(dir, jsext.TypeDefinitionsFileName))
 	require.NoError(t, err)
 	assert.Equal(t, jsext.TypeDefinitions(), string(data))
 
 	// -o <file> writes exactly that file.
 	file := filepath.Join(t.TempDir(), "api.d.ts")
-	require.NoError(t, runExtensionsTypes(file))
+	require.NoError(t, runExtensionsTypes(extensionsTypesCmd, file))
 	data, err = os.ReadFile(file)
 	require.NoError(t, err)
 	assert.Equal(t, jsext.TypeDefinitions(), string(data))
@@ -40,7 +40,7 @@ func TestExtensionsPreset_WritesTypeDefinitions(t *testing.T) {
 	t.Cleanup(func() { globalConfig = prevConfig })
 
 	captureStdout(t, func() {
-		require.NoError(t, installPresets(""))
+		require.NoError(t, installPresets(extensionsPresetCmd, ""))
 	})
 
 	extDir := filepath.Join(home, ".vigolium", "extensions")
@@ -50,7 +50,7 @@ func TestExtensionsPreset_WritesTypeDefinitions(t *testing.T) {
 
 	// A filter matching no preset is an error, not a silent exit 0.
 	captureStdout(t, func() {
-		assert.Error(t, installPresets("no-such-preset-xyz"))
+		assert.Error(t, installPresets(extensionsPresetCmd, "no-such-preset-xyz"))
 	})
 }
 
@@ -87,13 +87,13 @@ func TestExtensionsDocsJSON(t *testing.T) {
 func TestExtensionsDocsAndExampleReturnErrors(t *testing.T) {
 	captureStdout(t, func() {
 		assert.Error(t, printExtensionDocs("zzz-no-such-function"))
-		assert.Error(t, printExtensionExamples("zzz-no-such-example"))
+		assert.Error(t, printExtensionExamples(extensionsExampleCmd, "zzz-no-such-example"))
 	})
 
 	prev := exampleLang
 	exampleLang = "ruby"
 	t.Cleanup(func() { exampleLang = prev })
 	captureStdout(t, func() {
-		assert.Error(t, printExtensionExamples(""))
+		assert.Error(t, printExtensionExamples(extensionsExampleCmd, ""))
 	})
 }

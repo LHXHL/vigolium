@@ -154,6 +154,9 @@ Common workflows:
 Run 'vigolium <command> --help' for command-specific flags and examples, or 'vigolium --full-example' for a curated tour.`,
 	SilenceUsage: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Every -j result document names this command (machine_commands.go).
+		setRunningCommand(cmd)
+
 		// Initialize logger for all commands
 		zapLogger := initLogger(globalVerbose, globalSilent, globalDebug, globalDumpTraffic, globalLogFile)
 		_ = zapLogger // logger is set globally via zap.ReplaceGlobals

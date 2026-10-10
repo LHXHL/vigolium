@@ -259,6 +259,9 @@ vigolium log <uuid> --full --strip-ansi | grep -i sqli
 
 # Force follow
 vigolium log <uuid> -f
+
+# One JSON document: the --tail window as items {text, time?, level?, phase?} (--follow has no -j form)
+vigolium log <uuid> --tail 100 -j
 ```
 
 ---
@@ -498,6 +501,8 @@ Export database records in various formats.
 | `--offset` | — | int | `0` | Records to skip |
 | `--uuid` | — | string | — | Export exactly one record by UUID. Works on every format including `fs`, resolved in SQL before paging |
 | `--request-only` | — | bool | `false` | Export only HTTP requests, omitting responses (raw format only) |
+
+Under `-j`, `db export` needs `-o` (exit 2 otherwise: the export would share stdout with the document) and prints a receipt: `items` = the files written `[{format, path, detail?}]`, `counts.records`.
 
 ### Notes
 
@@ -1254,6 +1259,7 @@ Top-level export command. Exports database tables and module registry as JSONL, 
 
 ```bash
 vigolium export --format jsonl -o full-export.jsonl
+vigolium export -o full-export.jsonl -j     # receipt: files written + counts (-j needs -o)
 vigolium export --format jsonl --only findings
 vigolium export --format jsonl --only findings,http
 vigolium export --format html -o report.html

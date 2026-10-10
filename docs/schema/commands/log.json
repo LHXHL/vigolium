@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cli.logLineView": {
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "time": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "text"
+      ]
+    },
+    "contract.GlobSkipped": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "file",
+        "error"
+      ]
+    },
+    "contract.GlobSources": {
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        },
+        "loaded": {
+          "type": "integer"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/contract.GlobSkipped"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parse_errors": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pattern",
+        "matched",
+        "loaded",
+        "skipped",
+        "parse_errors"
+      ]
+    },
+    "contract.OutputBudget": {
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "returned": {
+          "type": "integer"
+        },
+        "omitted": {
+          "type": "integer"
+        },
+        "next_offset": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_bytes",
+        "returned",
+        "omitted",
+        "next_offset"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "command": {
+      "type": "string",
+      "const": "log"
+    },
+    "kind": {
+      "type": "string",
+      "const": "read"
+    },
+    "ok": {
+      "type": "boolean",
+      "const": true
+    },
+    "project_uuid": {
+      "type": "string"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/cli.logLineView"
+      },
+      "type": "array"
+    },
+    "query": {
+      "type": "string"
+    },
+    "query_argv": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "generated_at_ms": {
+      "type": "integer"
+    },
+    "project_source": {
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "active_file",
+        "default"
+      ]
+    },
+    "project_scoped": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "glob_sources": {
+      "$ref": "#/$defs/contract.GlobSources"
+    },
+    "output_budget": {
+      "$ref": "#/$defs/contract.OutputBudget"
+    },
+    "uuid": {
+      "type": "string"
+    },
+    "session_kind": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "effective_status": {
+      "type": "string"
+    },
+    "stale": {
+      "type": "boolean"
+    },
+    "last_write_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "liveness_sources": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "tail": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "total",
+    "offset",
+    "limit",
+    "items",
+    "project_source",
+    "uuid",
+    "session_kind",
+    "status",
+    "effective_status",
+    "stale",
+    "last_write_at",
+    "liveness_sources",
+    "source",
+    "tail",
+    "truncated",
+    "kind"
+  ],
+  "title": "vigolium log -j",
+  "description": "`log \u003cuuid\u003e -j`: the session log's lines (the --tail/--full window) with its identity and liveness."
+}

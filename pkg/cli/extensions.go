@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -126,7 +127,15 @@ var extensionsLsCmd = &cobra.Command{
 // runExtensionsLs backs both `extensions [filter]` and `extensions ls [filter]`.
 // One handler rather than two identical closures, so the -j branch cannot be
 // added to one spelling and forgotten on the other.
-func runExtensionsLs(_ *cobra.Command, args []string) error {
+func runExtensionsLs(cmd *cobra.Command, args []string) error {
+	// Bare `extensions` is the documented shorthand for `extensions ls`.
+	// (Looked up rather than named: naming extensionsLsCmd here would make its
+	// initializer cyclic.)
+	if cmd != nil && cmd.HasSubCommands() {
+		if sub, _, err := cmd.Find([]string{"ls"}); err == nil && sub != cmd {
+			delegateCommand(sub)
+		}
+	}
 	filter := ""
 	if len(args) > 0 {
 		filter = args[0]
@@ -169,7 +178,7 @@ var extensionsPresetCmd = &cobra.Command{
 		if len(args) > 0 {
 			filter = args[0]
 		}
-		return installPresets(filter)
+		return installPresets(cmd, filter)
 	},
 }
 
@@ -190,7 +199,7 @@ var extensionsTypesCmd = &cobra.Command{
 		"vigolium extensions types -o ~/.vigolium/extensions/",
 	),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runExtensionsTypes(extTypesOutput)
+		return runExtensionsTypes(cmd, extTypesOutput)
 	},
 }
 
@@ -712,12 +721,25 @@ func emitExtensionDocsJSON(filter string) error {
 	return writeAgentJSON(env)
 }
 
+// extTypesView is `extensions types -j`: the declarations written to Path, or
+// (without -o) carried inline as Content, since the d.ts and a -j document
+// cannot share stdout.
+type extTypesView struct {
+	// Path is the file written; empty when the declarations are inline.
+	Path    string `json:"path,omitempty"`
+	Bytes   int    `json:"bytes"`
+	Content string `json:"content,omitempty"`
+}
+
 // runExtensionsTypes prints the embedded vigolium.d.ts, or writes it to dest
 // (a file, or a directory that receives vigolium.d.ts).
-func runExtensionsTypes(dest string) error {
+func runExtensionsTypes(cmd *cobra.Command, dest string) error {
 	src := jsext.TypeDefinitions()
 	dest = strings.TrimSpace(dest)
 	if dest == "" || dest == "-" {
+		if globalJSON {
+			return emitObject(cmd, ".", extTypesView{Bytes: len(src), Content: src})
+		}
 		_, err := fmt.Fprint(os.Stdout, src)
 		return err
 	}
@@ -730,8 +752,7 @@ func runExtensionsTypes(dest string) error {
 	}
 	if globalJSON {
 		// A receipt for the file written, as items:[{path, bytes}].
-		return writeAgentJSON(newAgentEnvelope("extensions types", ".",
-			map[string]any{"path": config.ContractPath(path), "bytes": len(src)}, 1, 0, 1))
+		return emitObject(cmd, ".", extTypesView{Path: config.ContractPath(path), Bytes: len(src)})
 	}
 	fmt.Fprintf(os.Stderr, "%s Wrote %s\n", terminal.SuccessSymbol(), path)
 	return nil
@@ -868,7 +889,27 @@ func printModuleTemplates() {
 // extensions preset
 // ──────────────────────────────────────────────────────────────
 
-func installPresets(filter string) error {
+// extPresetView is one file `extensions preset -j` considered.
+type extPresetView struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Status is installed, skipped (already present, left alone), updated
+	// (vigolium.d.ts rewritten with new content), current (vigolium.d.ts
+	// already matched) or failed.
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// extPresetExtras are the top-level keys of `extensions preset -j`.
+type extPresetExtras struct {
+	ExtensionDir      string `json:"extension_dir"`
+	ExtensionsEnabled bool   `json:"extensions_enabled"`
+	Installed         int    `json:"installed"`
+	Skipped           int    `json:"skipped"`
+	Failed            int    `json:"failed"`
+}
+
+func installPresets(cmd *cobra.Command, filter string) error {
 	settings, err := clicommon.LoadSettings(globalConfig)
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
@@ -888,9 +929,17 @@ func installPresets(filter string) error {
 		return fmt.Errorf("failed to read embedded presets: %w", err)
 	}
 
+	// Progress is human text: stdout normally, stderr under -j, where stdout
+	// carries the one result document.
+	progress := os.Stdout
+	if globalJSON {
+		progress = os.Stderr
+	}
+
 	filterLower := strings.ToLower(filter)
 	var installed, skipped int
 	var failed []string
+	views := []extPresetView{}
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -906,42 +955,80 @@ func installPresets(filter string) error {
 		}
 
 		destPath := filepath.Join(targetDir, name)
+		view := extPresetView{Name: name, Path: config.ContractPath(destPath)}
 
 		if _, err := os.Stat(destPath); err == nil {
-			fmt.Printf("  %s %s %s\n", terminal.WarningSymbol(), name, terminal.Gray("(already exists, skipped)"))
+			fmt.Fprintf(progress, "  %s %s %s\n", terminal.WarningSymbol(), name, terminal.Gray("(already exists, skipped)"))
 			skipped++
+			view.Status = "skipped"
+			views = append(views, view)
 			continue
 		}
 
 		data, err := public.StaticFS.ReadFile("presets/extensions/" + name)
+		if err == nil {
+			err = os.WriteFile(destPath, data, 0644)
+		}
 		if err != nil {
-			fmt.Printf("  %s Failed to read %s: %v\n", terminal.ErrorSymbol(), name, err)
+			fmt.Fprintf(progress, "  %s Failed to install %s: %v\n", terminal.ErrorSymbol(), name, err)
 			failed = append(failed, name)
+			view.Status, view.Error = "failed", err.Error()
+			views = append(views, view)
 			continue
 		}
 
-		if err := os.WriteFile(destPath, data, 0644); err != nil {
-			fmt.Printf("  %s Failed to write %s: %v\n", terminal.ErrorSymbol(), name, err)
-			failed = append(failed, name)
-			continue
-		}
-
-		fmt.Printf("  %s %s\n", terminal.SuccessSymbol(), name)
+		fmt.Fprintf(progress, "  %s %s\n", terminal.SuccessSymbol(), name)
 		installed++
+		view.Status = "installed"
+		views = append(views, view)
 	}
 
 	if installed == 0 && skipped == 0 && len(failed) == 0 && filter != "" {
-		return fmt.Errorf("no presets matching %q", filter)
+		return codedErrorf(apicontract.CodeNotFound, "no presets matching %q", filter)
 	}
 
 	// The type declarations are generated from this binary, so they are always
 	// (re)written: a stale copy would advertise APIs the runtime lacks.
 	typesPath := filepath.Join(targetDir, jsext.TypeDefinitionsFileName)
-	if err := os.WriteFile(typesPath, []byte(jsext.TypeDefinitions()), 0644); err != nil {
-		fmt.Printf("  %s Failed to write %s: %v\n", terminal.ErrorSymbol(), jsext.TypeDefinitionsFileName, err)
+	typesSrc := []byte(jsext.TypeDefinitions())
+	typesView := extPresetView{Name: jsext.TypeDefinitionsFileName, Path: config.ContractPath(typesPath), Status: "updated"}
+	if prev, readErr := os.ReadFile(typesPath); readErr == nil && bytes.Equal(prev, typesSrc) {
+		typesView.Status = "current"
+	} else if err := os.WriteFile(typesPath, typesSrc, 0644); err != nil {
+		fmt.Fprintf(progress, "  %s Failed to write %s: %v\n", terminal.ErrorSymbol(), jsext.TypeDefinitionsFileName, err)
 		failed = append(failed, jsext.TypeDefinitionsFileName)
-	} else {
-		fmt.Printf("  %s %s %s\n", terminal.SuccessSymbol(), jsext.TypeDefinitionsFileName, terminal.Gray("(API type declarations)"))
+		typesView.Status, typesView.Error = "failed", err.Error()
+	}
+	if typesView.Status != "failed" {
+		fmt.Fprintf(progress, "  %s %s %s\n", terminal.SuccessSymbol(), jsext.TypeDefinitionsFileName, terminal.Gray("(API type declarations)"))
+	}
+	views = append(views, typesView)
+
+	var failErr error
+	if len(failed) > 0 {
+		failErr = fmt.Errorf("failed to install %d file(s) into %s: %s", len(failed), targetDir, strings.Join(failed, ", "))
+	}
+
+	if globalJSON {
+		var opts []envOpt
+		if failErr != nil {
+			opts = append(opts, withResultFailure(failErr))
+		}
+		if err := emitMutation(cmd, "", mutationResult{
+			Changed: installed > 0 || typesView.Status == "updated",
+			Action:  "install",
+			Items:   views,
+			Extra: map[string]any{
+				"extension_dir":      config.ContractPath(targetDir),
+				"extensions_enabled": settings.DynamicAssessment.Extensions.Enabled,
+				"installed":          installed,
+				"skipped":            skipped,
+				"failed":             len(failed),
+			},
+		}, opts...); err != nil {
+			return err
+		}
+		return failErr
 	}
 
 	fmt.Println()
@@ -960,8 +1047,5 @@ func installPresets(filter string) error {
 	}
 	fmt.Println()
 
-	if len(failed) > 0 {
-		return fmt.Errorf("failed to install %d file(s) into %s: %s", len(failed), targetDir, strings.Join(failed, ", "))
-	}
-	return nil
+	return failErr
 }

@@ -120,9 +120,8 @@ func TestExtRun_PassiveOnRecord(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("eval exit = %d\n%s\n%s", code, out, errOut)
 	}
-	// The document is ext run's; its command names the eval spelling once
-	// the writer stamps the running command (then eval must delegate to run).
-	if doc := decodeOne(t, out); (doc["command"] != "extensions run" && doc["command"] != "extensions eval") ||
+	// The document is ext run's, and names ext run: eval delegates to it.
+	if doc := decodeOne(t, out); doc["command"] != "extensions run" ||
 		doc["module_id"] != "ext-admin-title" || len(items(t, doc)) != 1 {
 		t.Errorf("eval --record-uuid document = %v", doc)
 	}

@@ -3,8 +3,11 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"fmt"
+	"io"
 	"math/rand"
+	"os"
 	"strings"
 	"time"
 
@@ -45,7 +48,13 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("database already contains seed data (%d seed scans found). Use --force to re-insert (duplicates will be skipped)", existingCount)
 	}
 
-	fmt.Printf("%s Seeding database with sample data...\n\n", terminal.InfoSymbol())
+	// Progress is human text: stdout normally, stderr under -j, where stdout
+	// carries the one result document.
+	tally := &seedTally{progress: os.Stdout}
+	if globalJSON {
+		tally.progress = os.Stderr
+	}
+	fmt.Fprintf(tally.progress, "%s Seeding database with sample data...\n\n", terminal.InfoSymbol())
 
 	projectUUID, err := resolveProjectUUID()
 	if err != nil {
@@ -55,41 +64,53 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 	// Use ON CONFLICT DO NOTHING so re-running is idempotent
 	// --- Users ---
 	users := seedUsers()
+	usersInserted := 0
 	for _, u := range users {
-		if _, err := db.NewInsert().Model(u).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+		res, err := db.NewInsert().Model(u).On("CONFLICT DO NOTHING").Exec(ctx)
+		if err != nil {
 			return fmt.Errorf("failed to insert user %s: %w", u.UUID, err)
 		}
+		usersInserted += rowsAffected(res)
 	}
-	fmt.Printf("  %s Inserted %d users\n", terminal.SuccessSymbol(), len(users))
+	tally.add("users", "users", usersInserted)
 
 	// --- Projects ---
 	projects := seedProjects(users)
+	projectsInserted := 0
 	for _, p := range projects {
-		if _, err := db.NewInsert().Model(p).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+		res, err := db.NewInsert().Model(p).On("CONFLICT DO NOTHING").Exec(ctx)
+		if err != nil {
 			return fmt.Errorf("failed to insert project %s: %w", p.UUID, err)
 		}
+		projectsInserted += rowsAffected(res)
 	}
-	fmt.Printf("  %s Inserted %d projects\n", terminal.SuccessSymbol(), len(projects))
+	tally.add("projects", "projects", projectsInserted)
 
 	// --- Scans ---
 	scans := seedScans(rng)
+	scansInserted := 0
 	for _, s := range scans {
 		s.ProjectUUID = projectUUID
-		if _, err := db.NewInsert().Model(s).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+		res, err := db.NewInsert().Model(s).On("CONFLICT DO NOTHING").Exec(ctx)
+		if err != nil {
 			return fmt.Errorf("failed to insert scan %s: %w", s.UUID, err)
 		}
+		scansInserted += rowsAffected(res)
 	}
-	fmt.Printf("  %s Inserted %d scans\n", terminal.SuccessSymbol(), len(scans))
+	tally.add("scans", "scans", scansInserted)
 
 	// --- HTTP Records ---
 	records := seedHTTPRecords(rng, scans)
+	recordsInserted := 0
 	for _, r := range records {
 		r.ProjectUUID = projectUUID
-		if _, err := db.NewInsert().Model(r).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+		res, err := db.NewInsert().Model(r).On("CONFLICT DO NOTHING").Exec(ctx)
+		if err != nil {
 			return fmt.Errorf("failed to insert record %s: %w", r.UUID, err)
 		}
+		recordsInserted += rowsAffected(res)
 	}
-	fmt.Printf("  %s Inserted %d HTTP records\n", terminal.SuccessSymbol(), len(records))
+	tally.add("http_records", "HTTP records", recordsInserted)
 
 	// --- Findings (check by finding_hash to avoid duplicates on re-seed) ---
 	findings := seedFindings(rng, records)
@@ -106,7 +127,7 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 		}
 		findingsInserted++
 	}
-	fmt.Printf("  %s Inserted %d findings\n", terminal.SuccessSymbol(), findingsInserted)
+	tally.add("findings", "findings", findingsInserted)
 
 	// --- Finding Records (junction table: finding ↔ HTTP record) ---
 	findingRecordsInserted := 0
@@ -121,16 +142,17 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 			f.ID = fid
 		}
 		for _, recUUID := range f.HTTPRecordUUIDs {
-			if _, err := db.NewRaw(
+			res, err := db.NewRaw(
 				"INSERT INTO finding_records (finding_id, record_uuid) VALUES (?, ?) ON CONFLICT DO NOTHING",
 				f.ID, recUUID,
-			).Exec(ctx); err != nil {
+			).Exec(ctx)
+			if err != nil {
 				continue // skip on error (e.g. FK violation)
 			}
-			findingRecordsInserted++
+			findingRecordsInserted += rowsAffected(res)
 		}
 	}
-	fmt.Printf("  %s Inserted %d finding_records\n", terminal.SuccessSymbol(), findingRecordsInserted)
+	tally.add("finding_records", "finding_records", findingRecordsInserted)
 
 	// --- Scopes (check by name to avoid duplicates on re-seed) ---
 	scopes := seedScopes()
@@ -146,7 +168,7 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 		}
 		scopesInserted++
 	}
-	fmt.Printf("  %s Inserted %d scope rules\n", terminal.SuccessSymbol(), scopesInserted)
+	tally.add("scopes", "scope rules", scopesInserted)
 
 	// --- OAST Interactions (check by unique_id to avoid duplicates) ---
 	interactions := seedOASTInteractions(scans)
@@ -182,19 +204,20 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 		}
 		oastInserted++
 	}
-	fmt.Printf("  %s Inserted %d OAST interactions\n", terminal.SuccessSymbol(), oastInserted)
+	tally.add("oast_interactions", "OAST interactions", oastInserted)
 
 	// --- Scan Logs ---
 	scanLogs := seedScanLogs(scans)
 	logsInserted := 0
 	for _, sl := range scanLogs {
 		sl.ProjectUUID = projectUUID
-		if _, err := db.NewInsert().Model(sl).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+		res, err := db.NewInsert().Model(sl).On("CONFLICT DO NOTHING").Exec(ctx)
+		if err != nil {
 			return fmt.Errorf("failed to insert scan log: %w", err)
 		}
-		logsInserted++
+		logsInserted += rowsAffected(res)
 	}
-	fmt.Printf("  %s Inserted %d scan logs\n", terminal.SuccessSymbol(), logsInserted)
+	tally.add("scan_logs", "scan logs", logsInserted)
 
 	// --- Agent Runs ---
 	agenticScans := seedAgenticScans(scans)
@@ -210,7 +233,7 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 		}
 		agenticScansInserted++
 	}
-	fmt.Printf("  %s Inserted %d agent runs\n", terminal.SuccessSymbol(), agenticScansInserted)
+	tally.add("agentic_scans", "agent runs", agenticScansInserted)
 
 	// --- Session Hostnames ---
 	sessions := seedAuthenticationHostnames(scans)
@@ -226,10 +249,53 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 		}
 		sessionsInserted++
 	}
-	fmt.Printf("  %s Inserted %d session hostnames\n", terminal.SuccessSymbol(), sessionsInserted)
+	tally.add("authentication_hostnames", "session hostnames", sessionsInserted)
 
+	if globalJSON {
+		return emitMutation(cmd, "", mutationResult{
+			Changed: tally.total > 0,
+			Action:  "seed",
+			Items:   tally.rows,
+			Extra:   map[string]any{"rows_inserted": tally.total},
+			Query:   []string{"db", "stats"},
+		}, withProjectScope(projectUUID))
+	}
 	fmt.Printf("\n%s Seed complete! Use 'vigolium db stats' or 'vigolium traffic' to inspect.\n", terminal.SuccessSymbol())
 	return nil
+}
+
+// seedTableView is one table `db seed -j` wrote to.
+type seedTableView struct {
+	Table string `json:"table"`
+	// Inserted counts the rows this run added; a row already present (a
+	// re-seed under --force) is skipped and not counted.
+	Inserted int `json:"inserted"`
+}
+
+// seedTally collects the per-table counts and prints the progress lines.
+type seedTally struct {
+	progress io.Writer
+	rows     []seedTableView
+	total    int
+}
+
+func (t *seedTally) add(table, label string, n int) {
+	t.rows = append(t.rows, seedTableView{Table: table, Inserted: n})
+	t.total += n
+	fmt.Fprintf(t.progress, "  %s Inserted %d %s\n", terminal.SuccessSymbol(), n, label)
+}
+
+// rowsAffected reads an INSERT … ON CONFLICT DO NOTHING result: 0 when the row
+// already existed. A driver that cannot say counts the row as written.
+func rowsAffected(res sql.Result) int {
+	if res == nil {
+		return 0
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 1
+	}
+	return int(n)
 }
 
 // ---------------------------------------------------------------------------

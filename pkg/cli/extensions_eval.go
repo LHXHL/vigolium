@@ -50,6 +50,9 @@ func runExtensionsEval(cmd *cobra.Command, args []string) error {
 			return usageErrorf("--record-uuid runs the extension named with --ext against a stored record; " +
 				"it does not take code (an argument, --ext-file or --stdin)")
 		}
+		// The output is ext run's, so the document names ext run (and its
+		// schema applies), whichever spelling ran it.
+		delegateCommand(extensionsRunCmd)
 		return runExtensionOnRecord(cmd, "")
 	}
 
@@ -83,6 +86,10 @@ func runExtensionsEval(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("eval error: %w", result.Error)
 	}
 
+	if globalJSON {
+		// The same document as `js -j`: items:[{"value": …}].
+		return emitJSEvalResult(cmd, result.Value)
+	}
 	if result.Value != "" {
 		fmt.Println(result.Value)
 	}

@@ -85,7 +85,7 @@ var machineKinds = map[string]machineKind{
 	"extensions example": kindRead,
 	"extensions lint":    kindRead,
 	"extensions ls":      kindRead,
-	"extensions preset":  kindRead,
+	"extensions preset":  kindMutation,
 	"extensions run":     kindRead,
 	"extensions test":    kindRead,
 	"extensions types":   kindRead,

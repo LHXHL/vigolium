@@ -477,6 +477,7 @@ func runLogShow(cmd *cobra.Command, args []string) error {
 	// TUI picker when --tui is set). Passing a UUID falls through to the
 	// streaming path below.
 	if len(args) == 0 {
+		delegateCommand(logLsCmd)
 		return runLogLs(cmd, args)
 	}
 
@@ -485,6 +486,9 @@ func runLogShow(cmd *cobra.Command, args []string) error {
 		return usageErrorf("uuid argument is required")
 	}
 
+	if globalJSON {
+		return emitLogJSON(cmd, uuid)
+	}
 	return showLogForUUID(uuid, cmd.Flags().Changed("follow"))
 }
 

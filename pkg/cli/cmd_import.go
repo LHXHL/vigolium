@@ -86,7 +86,8 @@ func init() {
 	importCmd.Flags().Bool("upload", false, "Upload the local import source to cloud storage after import")
 	importCmd.Flags().String("upload-key", "", "Explicit storage key for --upload (default: imports/<basename>-<ts>.<ext>)")
 	importCmd.Flags().StringVar(&globalGlobDB, "glob-db", "", "Glob of local files to import alongside any positional paths (use one format per run), e.g. --glob-db 'prefix-*.sqlite' or '*.jsonl'")
-	importCmd.Flags().String("format", "", "Also write a report after import: "+output.FormatsHelp(output.SurfaceImport)+". Mirrors 'vigolium export --format'.")
+	// --format is the global flag (a local one would shadow it): here it names
+	// the report to write after the import — see importReportFormat.
 	importCmd.Flags().StringP("output", "o", "", "Report output path or gs://<project>/<key> URL (required when --format is set; supports {ts})")
 	// Report customization + finding filters — mirror `vigolium export` so a
 	// single import step can emit a fully-branded, filtered report.
@@ -171,7 +172,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 
 	// Validate report flags up front so a typo fails before the import work,
 	// not after it has already mutated the database.
-	reportFormat, _ := cmd.Flags().GetString("format")
+	reportFormat := importReportFormat(cmd)
 	reportOutput, _ := cmd.Flags().GetString("output")
 	if reportFormat != "" {
 		if bridgeURL != "" {
@@ -395,6 +396,17 @@ func runImport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// importReportFormat is the report --format names: the global flag, read
+// only when typed — its default ("console") is a scan output format and means
+// "no report" here. A local --format would shadow the global one, which the
+// machine contract forbids outside stream commands.
+func importReportFormat(cmd *cobra.Command) string {
+	if !flagChanged(cmd, "format") {
+		return ""
+	}
+	return strings.TrimSpace(globalFormat)
 }
 
 // importChanged reports whether an import wrote anything: a parsed source that

@@ -29,32 +29,15 @@ var interactiveAllowed = map[string]string{
 }
 
 // knownNonConforming is the ratchet: commands whose -j output does not yet match
-// their declared kind, with what they do today. It may only shrink — B4/B5/B6/B7
-// migrate these and delete the entry; B8 empties it. Adding an entry means a
-// command regressed (or a new one shipped off-contract), which is what
-// knownNonConformingCeiling stops.
-var knownNonConforming = map[string]string{
-	// Reads still RAW or NONE (the group that next changes them).
-	"extensions eval":    "text",
-	"extensions example": "text",
-	"extensions lint":    "text report",
-	"extensions preset":  "text",
-	"extensions types":   "d.ts on stdout under -j without -o",
-	"import":             "-j is the mutation envelope; local --format (report format) shadows the global --format",
-	"js":                 "-j is the envelope; local --format (json|text) shadows the global --format",
-	"log":                "`log <uuid>` prints a text transcript",
+// their declared kind, with what they do today. B8 emptied it, and it stays
+// empty: a command that regresses (or a new one that ships off-contract) would
+// have to be added here, which knownNonConformingCeiling forbids. Fix the
+// command instead; test/e2e/machine_contract_e2e_test.go checks the real
+// output of every leaf.
+var knownNonConforming = map[string]string{}
 
-	// Mutations without the spine.
-	"db seed": "text (dev-only seeder)",
-
-	// Streams that ignore -j.
-	"db export": "own --format stream; ignores -j",
-	"export":    "own --format stream; ignores -j",
-}
-
-// knownNonConformingCeiling pins the ratchet's size. Lower it when an entry is
-// removed; never raise it.
-const knownNonConformingCeiling = 11
+// knownNonConformingCeiling pins the ratchet's size; it never rises.
+const knownNonConformingCeiling = 0
 
 // shadowCheckedFlags are the local flag names that must not shadow a persistent
 // one: a local --json silently replaces the global -j on that command.

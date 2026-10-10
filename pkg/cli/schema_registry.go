@@ -295,4 +295,76 @@ func init() {
 		registerCommandSchema(contract.Command{Name: name, Item: moduleToggleView{}, Extras: moduleToggleExtras{},
 			Description: "Every module the search matched, each saying whether this run flipped it."})
 	}
+
+	// The last off-contract commands (B8).
+	registerCommandSchema(contract.Command{Name: "db seed", Item: seedTableView{}, Extras: seedExtras{},
+		Description: "Sample rows written per table; a row already present is skipped and not counted."})
+	registerCommandSchema(contract.Command{Name: "extensions example", Item: extExampleView{}, Extras: extExampleExtras{},
+		Description: "Copy-pasteable example extensions; code is omitted under --list."})
+	registerCommandSchema(contract.Command{Name: "extensions preset", Item: extPresetView{}, Extras: extPresetExtras{},
+		Description: "Every preset file considered (installed, skipped, failed) plus vigolium.d.ts (updated or current)."})
+	registerCommandSchema(contract.Command{Name: "extensions types", Item: extTypesView{}, ItemsKind: contract.ItemsObject,
+		Description: "vigolium.d.ts: the file written with -o, or the declarations inline as content."})
+	registerCommandSchema(contract.Command{Name: "import", Extras: importExtras{},
+		Description: "items is always []; the import counters stay at the top level (a parse, a SQLite merge, or a live bridge import)."})
+	registerCommandSchema(contract.Command{Name: "js", Item: jsEvalItem{}, ItemsKind: contract.ItemsObject,
+		Description: "The script's return value as JSON (null for undefined)."})
+	registerCommandSchema(contract.Command{Name: "extensions eval", Item: jsEvalItem{}, ItemsKind: contract.ItemsObject,
+		Description: "The code's return value as JSON (null for undefined), as `js -j`. With --record-uuid the document is `extensions run`'s."})
+	registerCommandSchema(contract.Command{Name: "log", Item: logLineView{}, Extras: logShowExtras{},
+		Description: "`log <uuid> -j`: the session log's lines (the --tail/--full window) with its identity and liveness."})
+	for _, name := range []string{"export", "db export"} {
+		registerCommandSchema(contract.Command{Name: name, Item: exportFileView{}, Extras: exportReceiptExtras{},
+			Description: "A receipt: the files written (-j needs -o; the export itself never shares stdout with the document) and their counts."})
+	}
+}
+
+// seedExtras are the top-level keys of `db seed -j`.
+type seedExtras struct {
+	RowsInserted int `json:"rows_inserted"`
+}
+
+// importExtras mirrors the top-level keys `import -j` keeps (importResultJSON,
+// mergeResultJSON, burpImportResultJSON). Which set appears depends on the
+// source, so every key is optional.
+type importExtras struct {
+	// A parsed source (JSONL, audit directory, HAR, …).
+	AgenticScanUUID         string         `json:"agentic_scan_uuid,omitempty"`
+	RecordsImported         int            `json:"records_imported,omitempty"`
+	RecordsSkippedDuplicate int            `json:"records_skipped_duplicate,omitempty"`
+	FindingsTotal           int            `json:"findings_total,omitempty"`
+	FindingsSaved           int            `json:"findings_saved,omitempty"`
+	FindingsSkipped         int            `json:"findings_skipped,omitempty"`
+	FindingsFailed          int            `json:"findings_failed,omitempty"`
+	Severity                map[string]int `json:"severity,omitempty"`
+	ParseErrors             int            `json:"parse_errors,omitempty"`
+	SessionDir              string         `json:"session_dir,omitempty"`
+	StorageURL              string         `json:"storage_url,omitempty"`
+
+	// A SQLite merge.
+	MergedFrom           string `json:"merged_from,omitempty"`
+	RecordsMerged        int    `json:"records_merged,omitempty"`
+	FindingsMerged       int    `json:"findings_merged,omitempty"`
+	FindingsDeduped      int    `json:"findings_deduped,omitempty"`
+	ScansMerged          int    `json:"scans_merged,omitempty"`
+	AgenticScansMerged   int    `json:"agentic_scans_merged,omitempty"`
+	ProjectsMerged       int    `json:"projects_merged,omitempty"`
+	FindingRecordsMerged int    `json:"finding_records_merged,omitempty"`
+	OASTMerged           int    `json:"oast_merged,omitempty"`
+
+	// Artifacts requested alongside the import.
+	ReportPath string   `json:"report_path,omitempty"`
+	UploadedTo []string `json:"uploaded_to,omitempty"`
+
+	// A live Burp/Caido bridge import (burpbridge.ImportResult).
+	BridgeURL string   `json:"bridge_url,omitempty"`
+	Source    string   `json:"source,omitempty"`
+	Matched   int64    `json:"matched,omitempty"`
+	Selected  int      `json:"selected,omitempty"`
+	Inserted  int      `json:"inserted,omitempty"`
+	Updated   int      `json:"updated,omitempty"`
+	Unchanged int      `json:"unchanged,omitempty"`
+	Skipped   int      `json:"skipped,omitempty"`
+	Oversized int      `json:"oversized,omitempty"`
+	Errors    []string `json:"errors,omitempty"`
 }

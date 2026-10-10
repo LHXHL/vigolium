@@ -1,15 +1,51 @@
 [
   {
+    "name": "db export",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "A receipt: the files written (-j needs -o; the export itself never shares stdout with the document) and their counts."
+  },
+  {
+    "name": "db seed",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Sample rows written per table; a row already present is skipped and not counted."
+  },
+  {
     "name": "endpoints",
     "kind": "command",
     "envelope_kind": "read",
     "description": "Endpoints (origin + path template) aggregated from stored traffic."
   },
   {
+    "name": "export",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "A receipt: the files written (-j needs -o; the export itself never shares stdout with the document) and their counts."
+  },
+  {
+    "name": "extensions eval",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "The code's return value as JSON (null for undefined), as `js -j`. With --record-uuid the document is `extensions run`'s."
+  },
+  {
+    "name": "extensions example",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Copy-pasteable example extensions; code is omitted under --list."
+  },
+  {
     "name": "extensions lint",
     "kind": "command",
     "envelope_kind": "read",
     "description": "One item per linted file with its issues (severity, line, col, message, rule); summary counts them. ok is false exactly when there are errors (exit 1, lint_failed)."
+  },
+  {
+    "name": "extensions preset",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "Every preset file considered (installed, skipped, failed) plus vigolium.d.ts (updated or current)."
   },
   {
     "name": "extensions run",
@@ -24,6 +60,12 @@
     "description": "One item per fixture case (or per extension that ran none: skipped with a reason, or failed to load); passed/failed/skipped count them. ok is false when any case failed (exit 1)."
   },
   {
+    "name": "extensions types",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "vigolium.d.ts: the file written with -o, or the declarations inline as content."
+  },
+  {
     "name": "finding",
     "kind": "command",
     "envelope_kind": "read",
@@ -34,6 +76,24 @@
     "kind": "command",
     "envelope_kind": "mutation",
     "description": "Findings whose status changed; unchanged and not_found list the rest."
+  },
+  {
+    "name": "import",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "items is always []; the import counters stay at the top level (a parse, a SQLite merge, or a live bridge import)."
+  },
+  {
+    "name": "js",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "The script's return value as JSON (null for undefined)."
+  },
+  {
+    "name": "log",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "`log \u003cuuid\u003e -j`: the session log's lines (the --tail/--full window) with its identity and liveness."
   },
   {
     "name": "log ls",
