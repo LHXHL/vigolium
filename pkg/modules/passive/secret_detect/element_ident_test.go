@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
 
 func TestIsElementIdentifierMatch(t *testing.T) {
@@ -81,7 +82,7 @@ func TestModule_DropsWeakPasswordFieldNames(t *testing.T) {
 		`<span id="password2req"></span>` +
 		`<script>document.getElementById("password2val");getElementsByName("password3");` +
 		`n.state={password1:""};var x=a.password1;createElement(d,{name:"password2"});</script></form>`
-	ctx := makeHTTPCtx("text/html", form)
+	ctx := modtest.HTTPCtx("/test", "text/html", form)
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	assert.Empty(t, findings, "weak-password field/state references must be dropped, got %v", findingValues(findings))
@@ -89,7 +90,7 @@ func TestModule_DropsWeakPasswordFieldNames(t *testing.T) {
 	// A weak password as an actual quoted VALUE (not an element id) still surfaces —
 	// this is the hardcoded-credential leak the rule exists to catch.
 	leak := `{"email":"admin@example.com","password":"password123"}`
-	ctx = makeHTTPCtx("application/json", leak)
+	ctx = modtest.HTTPCtx("/test", "application/json", leak)
 	findings, err = m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings, "a weak password used as a credential value should still be reported")

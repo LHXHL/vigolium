@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
 
@@ -422,13 +423,13 @@ func TestModule_ValueShapeGuardDropsGenericMarkup(t *testing.T) {
 	m := New()
 
 	markup := `{"username":"admin","password":"</b>{tok}</b>"} more text here`
-	ctx := makeHTTPCtx("text/html", markup)
+	ctx := modtest.HTTPCtx("/test", "text/html", markup)
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	assert.Empty(t, findings, "code/markup-shaped generic capture must be dropped, got %v", findingValues(findings))
 
 	clean := `username: admin password: Sk9fLp2Qw7Zx4Rt8Yv3Bn6Mc1Ha5Ke more`
-	ctx = makeHTTPCtx("text/html", clean)
+	ctx = modtest.HTTPCtx("/test", "text/html", clean)
 	findings, err = m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings, "a clean opaque token from the same generic rule should still be reported")
@@ -446,7 +447,7 @@ func TestModule_ValueShapeGuardDropsAuraPropertyPath(t *testing.T) {
 
 	aura := `{"exprType":"PROPERTY","target":"c:DLG_Access_ChangePassword","path":"v.userRecordStr"},` +
 		`pOLD_PASSWORD_ELEM:"currentpassword",pQUESTION_ELEM:"question"`
-	ctx := makeHTTPCtx("text/javascript", aura)
+	ctx := modtest.HTTPCtx("/test", "text/javascript", aura)
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	assert.Empty(t, findings, "Aura property path and field-name keyword must be dropped, got %v", findingValues(findings))
@@ -462,7 +463,7 @@ func TestModule_ValueShapeGuardDropsComponentLabelSlug(t *testing.T) {
 	m := New()
 
 	bundle := `qs("acme-login",{labelUsername:[1,"label-username"],labelPassword:[1,"label-password"],labelSubmit:[1,"label-submit"]});`
-	ctx := makeHTTPCtx("text/javascript", bundle)
+	ctx := modtest.HTTPCtx("/test", "text/javascript", bundle)
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 	assert.Empty(t, findings, "component-label identifier slug must be dropped, got %v", findingValues(findings))

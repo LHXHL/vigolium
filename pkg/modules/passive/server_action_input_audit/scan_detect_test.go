@@ -1,13 +1,12 @@
 package server_action_input_audit
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 )
 
@@ -17,18 +16,6 @@ func TestNew(t *testing.T) {
 	require.NotNil(t, m)
 	assert.Equal(t, ModuleID, m.ID())
 	assert.Equal(t, ModuleName, m.Name())
-}
-
-// makeHTTPCtx builds a request/response pair with the given path, content type, and body.
-func makeHTTPCtx(path, contentType, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", path))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n%s", contentType, body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
 }
 
 // TestScanPerRequest_MissingValidation drives a Server Action that reads FormData and
@@ -41,7 +28,7 @@ async function createUser(formData) {
   const name = formData.get('name');
   await prisma.user.create({ data: { name } });
 }`
-	ctx := makeHTTPCtx("/app/actions.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/actions.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -63,7 +50,7 @@ async function createUser(formData) {
   const data = z.object({ name: z.string() }).parse({ name: formData.get('name') });
   await prisma.user.create({ data });
 }`
-	ctx := makeHTTPCtx("/app/actions.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/actions.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
@@ -76,7 +63,7 @@ func TestScanPerRequest_NoServerAction(t *testing.T) {
 	t.Parallel()
 	m := New()
 	body := `function greet(name) { return "hello " + name; }`
-	ctx := makeHTTPCtx("/app/util.js", "application/javascript", body)
+	ctx := modtest.HTTPCtx("/app/util.js", "application/javascript", body)
 
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)

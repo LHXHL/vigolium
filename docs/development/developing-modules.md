@@ -281,6 +281,13 @@ Helpers: `modtest.Requester(t)`, `modtest.Request(t, url)`,
 `modtest.RequestMethod(t, method, url, body)`, `modtest.Response(rr, ct, body)`
 (attach a synthetic baseline), and `modtest.InsertionPoint(t, rr, name)`.
 
+Passive modules read an already-captured exchange, so their tests need no
+server: `modtest.HTTPCtx(path, contentType, body)` (GET answered by a 200 with
+that Content-Type), `modtest.HTTPCtxMethod(method, path, contentType, body)`,
+`modtest.HTTPCtxHeaders(path, rawHeaders, body)` and
+`modtest.RawCtx(rawReq, rawResp)` build one against `https://example.com`.
+Use them instead of a private `makeHTTPCtx`.
+
 Run it:
 
 ```bash

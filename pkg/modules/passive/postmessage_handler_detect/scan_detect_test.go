@@ -1,13 +1,12 @@
 package postmessage_handler_detect
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -21,23 +20,11 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, severity.Info, m.Severity())
 }
 
-// makeHTTPCtx builds a request/response pair with the given path, content type, and body.
-func makeHTTPCtx(path, contentType, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", path))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n%s", contentType, body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
-
 // scan is a helper that runs the module against a JS body and returns findings.
 func scan(t *testing.T, path, body string) []*severityFinding {
 	t.Helper()
 	m := New()
-	ctx := makeHTTPCtx(path, "application/javascript", body)
+	ctx := modtest.HTTPCtx(path, "application/javascript", body)
 	results, err := m.ScanPerRequest(ctx, &modkit.ScanContext{})
 	require.NoError(t, err)
 	out := make([]*severityFinding, 0, len(results))

@@ -1,13 +1,13 @@
 package wp_fingerprint
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 )
 
 func TestNew(t *testing.T) {
@@ -17,24 +17,13 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, ModuleName, m.Name())
 }
 
-func makeHTTPCtx(path, contentType, body string) *httpmsg.HttpRequestResponse {
-	rawReq := []byte(fmt.Sprintf("GET %s HTTP/1.1\r\nHost: example.com\r\n\r\n", path))
-	req := httpmsg.NewHttpRequestWithService(
-		httpmsg.NewServiceSecure("example.com", 443, true),
-		rawReq,
-	)
-	rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n%s", contentType, body)
-	resp := httpmsg.NewHttpResponse([]byte(rawResp))
-	return httpmsg.NewHttpRequestResponse(req, resp)
-}
-
 func TestScanPerRequest_WPContent(t *testing.T) {
 	m := New()
 	body := `<html><head></head><body>
 		<link rel="stylesheet" href="/wp-content/themes/flavor/style.css?ver=1.2.3" />
 		<script src="/wp-content/plugins/contact-form-7/assets/js/index.js?ver=5.9.5"></script>
 	</body></html>`
-	ctx := makeHTTPCtx("/", "text/html", body)
+	ctx := modtest.HTTPCtx("/", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -62,7 +51,7 @@ func TestScanPerRequest_GeneratorMeta(t *testing.T) {
 	body := `<html><head>
 		<meta name="generator" content="WordPress 6.4.2" />
 	</head><body></body></html>`
-	ctx := makeHTTPCtx("/", "text/html", body)
+	ctx := modtest.HTTPCtx("/", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -81,7 +70,7 @@ func TestScanPerRequest_RSSFeed(t *testing.T) {
 		<generator>https://wordpress.org/?v=6.3.1</generator>
 		<link>https://example.com/wp-content/feed/</link>
 	</channel></rss>`
-	ctx := makeHTTPCtx("/feed/", "application/rss+xml", body)
+	ctx := modtest.HTTPCtx("/feed/", "application/rss+xml", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -93,7 +82,7 @@ func TestScanPerRequest_RSSFeed(t *testing.T) {
 func TestScanPerRequest_NoMatch(t *testing.T) {
 	m := New()
 	body := `<html><head></head><body><p>Hello world</p></body></html>`
-	ctx := makeHTTPCtx("/", "text/html", body)
+	ctx := modtest.HTTPCtx("/", "text/html", body)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)
@@ -103,7 +92,7 @@ func TestScanPerRequest_NoMatch(t *testing.T) {
 
 func TestScanPerRequest_NonHTML(t *testing.T) {
 	m := New()
-	ctx := makeHTTPCtx("/api/data", "application/json", `{"wp-content": true}`)
+	ctx := modtest.HTTPCtx("/api/data", "application/json", `{"wp-content": true}`)
 	scanCtx := &modkit.ScanContext{}
 
 	results, err := m.ScanPerRequest(ctx, scanCtx)

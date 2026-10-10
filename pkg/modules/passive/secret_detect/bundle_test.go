@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vigolium/vigolium/pkg/dedup"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
@@ -59,7 +60,7 @@ func TestModule_DetectsSecretsInJSBundle(t *testing.T) {
 	body := bigMinifiedJS(300, secrets)
 	require.Greater(t, len(body), 250*1024, "bundle should be large")
 
-	ctx := makeHTTPCtx("application/javascript", body)
+	ctx := modtest.HTTPCtx("/test", "application/javascript", body)
 	require.True(t, m.CanProcess(ctx))
 
 	findings, err := m.ScanPerRequest(ctx, nil)
@@ -82,7 +83,7 @@ func TestModule_DetectsSecretsInJSBundle(t *testing.T) {
 func TestModule_EvidenceIsWindowed(t *testing.T) {
 	m := New()
 	body := bigMinifiedJS(300, []string{bundleSecrets["stripe"]})
-	ctx := makeHTTPCtx("application/javascript", body)
+	ctx := modtest.HTTPCtx("/test", "application/javascript", body)
 
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
@@ -106,7 +107,7 @@ func TestModule_DedupAcrossPasses(t *testing.T) {
 	sc := &modkit.ScanContext{DedupManager: mgr}
 
 	body := `const k = "` + bundleSecrets["stripe"] + `";`
-	ctx := makeHTTPCtx("application/javascript", body)
+	ctx := modtest.HTTPCtx("/test", "application/javascript", body)
 
 	first, err := m.ScanPerRequest(ctx, sc)
 	require.NoError(t, err)
@@ -124,7 +125,7 @@ func TestModule_DedupAcrossPasses(t *testing.T) {
 func TestModule_DedupIsScanScoped(t *testing.T) {
 	m := New()
 	body := `const k = "` + bundleSecrets["stripe"] + `";`
-	ctx := makeHTTPCtx("application/javascript", body)
+	ctx := modtest.HTTPCtx("/test", "application/javascript", body)
 
 	mgr1 := dedup.NewManager()
 	first, err := m.ScanPerRequest(ctx, &modkit.ScanContext{DedupManager: mgr1})
@@ -144,7 +145,7 @@ func TestModule_DedupIsScanScoped(t *testing.T) {
 func TestModule_PlaceholderSuppressed(t *testing.T) {
 	m := New()
 	body := `aws_access_key_id = "AKIAIOSFODNN7EXAMPLE"; // sample only`
-	ctx := makeHTTPCtx("application/javascript", body)
+	ctx := modtest.HTTPCtx("/test", "application/javascript", body)
 
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
@@ -178,7 +179,7 @@ func TestModule_SeverityTierSplit(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m := New()
 			body := `var token = "` + c.secret + `";`
-			ctx := makeHTTPCtx("application/javascript", body)
+			ctx := modtest.HTTPCtx("/test", "application/javascript", body)
 
 			findings, err := m.ScanPerRequest(ctx, nil)
 			require.NoError(t, err)
@@ -221,7 +222,7 @@ func TestModule_CleanBundleNoFlood(t *testing.T) {
 		fmt.Fprintf(&b, `"%d":"%08x%08x",`, i, i*2654435761, i*40503)
 	}
 	b.WriteString(`};`)
-	ctx := makeHTTPCtx("application/javascript", b.String())
+	ctx := modtest.HTTPCtx("/test", "application/javascript", b.String())
 
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
@@ -239,7 +240,7 @@ func TestModule_RealMinifiedJQueryNoFlood(t *testing.T) {
 	require.Greater(t, len(body), 50*1024, "expected a large minified fixture")
 
 	m := New()
-	ctx := makeHTTPCtx("application/javascript", string(body))
+	ctx := modtest.HTTPCtx("/test", "application/javascript", string(body))
 	require.True(t, m.CanProcess(ctx))
 
 	findings, err := m.ScanPerRequest(ctx, nil)
@@ -259,7 +260,7 @@ func TestModule_SecretInRealMinifiedJQuery(t *testing.T) {
 	injected := string(body) + `;window.__stripe="` + secret + `";`
 
 	m := New()
-	ctx := makeHTTPCtx("application/javascript", injected)
+	ctx := modtest.HTTPCtx("/test", "application/javascript", injected)
 	findings, err := m.ScanPerRequest(ctx, nil)
 	require.NoError(t, err)
 
