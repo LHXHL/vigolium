@@ -94,6 +94,11 @@ type Session struct {
 	Login   *LoginFlow        `yaml:"login,omitempty" json:"login,omitempty"`
 	// LoginRequest is a raw HTTP request string for the login flow.
 	LoginRequest string `yaml:"login_request,omitempty" json:"login_request,omitempty"`
+	// Check says how to tell whether the session is still logged in
+	// (loggedin.go). Optional; scanning_strategy.session supplies defaults.
+	Check *SessionCheck `yaml:"check,omitempty" json:"check,omitempty"`
+	// Reauth says what a scan does once Check finds the session logged out.
+	Reauth *SessionReauth `yaml:"reauth,omitempty" json:"reauth,omitempty"`
 
 	// hydrated indicates whether the login flow has been executed.
 	hydrated bool
@@ -135,6 +140,12 @@ func (s *Session) Validate() error {
 	if hasLogin {
 		if err := s.Login.Validate(s.Name); err != nil {
 			return err
+		}
+	}
+	// check and reauth: the same rules auth lint reports, first error wins.
+	for _, is := range append(lintCheck(s.Check, "check"), lintReauth(s, "reauth")...) {
+		if is.Severity == "error" {
+			return fmt.Errorf("session %q: %s: %s", s.Name, is.Field, is.Message)
 		}
 	}
 	return nil
@@ -383,6 +394,8 @@ func lintSession(s *Session, prefix string) []LintIssue {
 	if hasLogin {
 		issues = append(issues, lintLoginFlow(s.Login, joinField(prefix, "login"))...)
 	}
+	issues = append(issues, lintCheck(s.Check, joinField(prefix, "check"))...)
+	issues = append(issues, lintReauth(s, joinField(prefix, "reauth"))...)
 
 	return issues
 }

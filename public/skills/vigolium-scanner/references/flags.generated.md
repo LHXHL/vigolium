@@ -27,6 +27,7 @@ run `vigolium <command> -h`.
 - [vigolium arjun](#vigolium-arjun)
 - [vigolium audit](#vigolium-audit)
 - [vigolium auth](#vigolium-auth)
+- [vigolium auth check](#vigolium-auth-check)
 - [vigolium auth lint](#vigolium-auth-lint)
 - [vigolium auth list](#vigolium-auth-list)
 - [vigolium auth load](#vigolium-auth-load)
@@ -486,6 +487,19 @@ Run a unified security audit (alias for `vigolium agent audit`)
 Authentication management utilities
 
 _No command-specific flags._
+
+## vigolium auth check
+
+Usage: `vigolium auth check <session-file|session-name> [--url <protected-url>]`
+
+Check that a session is really logged in on a protected URL
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--method` | - | string | - | HTTP method for the check request (default: check.method, then GET) |
+| `--session` | - | string | - | Check only this session from a multi-session file |
+| `--timeout` | - | duration | `30s` | Timeout for each login and check request |
+| `--url` | - | string | - | Protected URL to check (default: the session's check.url, then scanning_strategy.session.validate_url) |
 
 ## vigolium auth lint
 

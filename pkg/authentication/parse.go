@@ -302,7 +302,7 @@ func detectForm(top *yaml.Node, text string, asJSON bool) (SessionForm, error) {
 	if match("sessions") {
 		return FormBundle, nil
 	}
-	for _, k := range []string{"name", "role", "headers", "login", "login_request"} {
+	for _, k := range []string{"name", "role", "headers", "login", "login_request", "check", "reauth"} {
 		if match(k) {
 			return FormSingle, nil
 		}
@@ -506,7 +506,8 @@ func nodeKindName(n *yaml.Node) string {
 }
 
 func isZeroSession(s *Session) bool {
-	return s.Name == "" && s.Role == "" && len(s.Headers) == 0 && s.Login == nil && s.LoginRequest == ""
+	return s.Name == "" && s.Role == "" && len(s.Headers) == 0 && s.Login == nil && s.LoginRequest == "" &&
+		s.Check == nil && s.Reauth == nil
 }
 
 func labelOf(name string) string {

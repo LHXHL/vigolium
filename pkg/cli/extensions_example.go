@@ -729,13 +729,13 @@ sessions:
     # Replay primary requests with compare sessions for IDOR/BOLA
     compare_enabled: true
 
-    # Reserved for future runtime reauthentication; currently not enforced
+    # Default check.interval for sessions (proactive logged-in probe, e.g. "2m")
     reauth_interval: ""
 
-    # Reserved for future reactive reauthentication; currently not enforced
+    # Default check.logged_out.status for sessions (e.g. [401, 440])
     reauth_on_status: []
 
-    # Reserved for future post-login validation; currently not enforced
+    # Default check.url for sessions; 'vigolium auth check' probes it
     validate_url: ""`,
 		},
 	}

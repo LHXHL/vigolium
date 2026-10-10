@@ -84,6 +84,22 @@ sessions:
 | `login.expect` | object | Response validation: `status` ([]int) and/or `body_contains` (string) |
 | `login.steps` | []object | Multi-step login flow. When set, parent URL/Method/Body/Extract are ignored |
 | `login_request` | string | Raw HTTP request string for the login flow (alternative to structured login). Logs in at scan start; the token is auto-discovered from the response (JSON token field, cookies, auth headers) |
+| `check.url` | string | Protected URL that tells logged-in from anonymous. A `/path` resolves against the target origin. Required unless `logged_out` has `status` or `redirect_regex` |
+| `check.method` | string | Method for the check request (default `GET`) |
+| `check.logged_in` | object | ALL must hold on a logged-in response: `status` ([]int), `body_contains`, `body_regex`, `header_regex` (matched against `Name: value`) |
+| `check.logged_out` | object | ANY marks a response logged out: `status` ([]int), `redirect_regex` (matched against `Location`), `body_regex` |
+| `check.sample_every` | int | Evaluate `logged_out.body_regex` on 1 in N scan responses (default 50) |
+| `check.interval` | duration | Proactive logged-in probe at most this often (`2m`; 0 = only reactive) |
+| `reauth.enabled` | bool | Re-login when the check says logged out (default true when `check` is set) |
+| `reauth.max_attempts` / `reauth.backoff` | int / duration | Consecutive failed re-logins before giving up (default 3); first wait, doubling (default `10s`) |
+| `reauth.on_failure` | string | `continue` (default: keep scanning unauthenticated, phase partial) or `abort` |
+| `reauth.pause_traffic` | bool | Hold the session's requests while re-logging in (default true) |
+
+`scanning_strategy.session.validate_url`, `reauth_on_status` and
+`reauth_interval` fill `check.url`, `check.logged_out.status` and
+`check.interval` for sessions that leave them unset. Today `check` drives
+`auth check`; in-scan sampling and re-login with `check`/`reauth` are not
+enforced yet (a scan logs in once).
 
 ## Extract Rule Fields
 
@@ -118,6 +134,10 @@ cat login-req.txt | vigolium auth load --name admin --host example.com
 
 # Skip the login check
 vigolium auth load sessions.json --no-validate
+
+# Prove a session is really logged in on a protected page (exit 0 only if so)
+vigolium auth check auth-config.yaml --url https://example.com/account
+vigolium auth check admin --url https://example.com/api/me -j   # stored session
 
 # Validate one or more session configs before use
 vigolium auth lint auth-config.yaml admin.yaml
@@ -169,6 +189,31 @@ when any file has an error; warnings alone exit 0. `-j` items are
 `{file, field, line, column, severity, message}`, with `files`, `errors` and
 `warnings` counts; on failure the document carries `ok: false` and
 `error.code: "lint_failed"`.
+
+### `auth check`
+
+`auth check <session-file|stored-session-name> [--url URL] [--session NAME]`
+logs each session in exactly as a scan does, then requests the URL twice
+through the scan's HTTP stack (no redirects followed): with the session's
+credentials and without. The URL is `--url`, else `check.url`, else
+`scanning_strategy.session.validate_url`. The session's `check.logged_in` /
+`check.logged_out` rules apply first, then heuristics (status pair, redirect to
+a login URL, password input, body similarity).
+
+| Verdict | Meaning |
+|---------|---------|
+| `authenticated` | Credentials reached what the anonymous request did not |
+| `login_wall` | Redirected to a login URL / password form / `logged_out` redirect or body |
+| `unauthorized` | 401/403 with credentials, a `logged_out` status, or `logged_in` failed |
+| `indistinguishable` | Same response with and without credentials: pick a protected URL or set `check.logged_in` |
+| `error` | Login failed or a request did not complete |
+
+Exit 0 only when every session is `authenticated`; otherwise exit 1 with
+`login_failed` (a login failed) or `not_authenticated`. `-j` items: `session`,
+`url`, `method`, `verdict`, `authenticated`, `reason`, `signals`,
+`similarity`, `auth_response`/`anon_response` (`status`, `length`,
+`location`, `error`), `login`. Stored sessions have no `check` columns: pass
+`--url`.
 
 ### `auth totp`
 
@@ -395,9 +440,10 @@ frontend JavaScript.
 
 ### Current Limitations
 
-- Login flows hydrate once when a native scan starts. The configured
-  `reauth_interval`, `reauth_on_status`, and `validate_url` fields are reserved
-  but are not currently enforced.
+- Login flows hydrate once when a native scan starts. The session
+  `check`/`reauth` blocks and the `scanning_strategy.session` defaults
+  (`validate_url`, `reauth_on_status`, `reauth_interval`) are validated and
+  used by `auth check`, but a scan does not yet re-login with them.
 - Multi-step requests cannot define arbitrary per-step headers. Provider
   endpoints requiring Basic auth, `Origin`, or SDK-specific headers may need an
   authorized server-side test endpoint or a pre-acquired static token. Do not

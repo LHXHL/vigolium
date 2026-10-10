@@ -224,9 +224,9 @@ scanning_strategy:
     session_dir: ~/.vigolium/sessions/
     use_in_discovery: true       # apply session headers during discovery/spidering
     compare_enabled: true        # cross-session IDOR/BOLA replay in dynamic-assessment
-    reauth_interval: ""          # reserved; currently not enforced
-    reauth_on_status: []         # reserved; currently not enforced
-    validate_url: ""             # reserved; currently not enforced
+    reauth_interval: ""          # default check.interval for sessions (e.g. "2m")
+    reauth_on_status: []         # default check.logged_out.status (e.g. [401, 440])
+    validate_url: ""             # default check.url; `auth check` probes it without --url
 
   http:
     user_agent: preset           # preset | random | literal value; blank behaves like random

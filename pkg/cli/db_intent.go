@@ -73,10 +73,11 @@ var dbIntents = map[string]string{
 	"server ca uninstall": dbIntentNone,
 
 	// Auth.
-	"auth lint": dbIntentNone,
-	"auth list": "read",
-	"auth load": "write",
-	"auth totp": dbIntentNone,
+	"auth check": "read",
+	"auth lint":  dbIntentNone,
+	"auth list":  "read",
+	"auth load":  "write",
+	"auth totp":  dbIntentNone,
 
 	// Config files, not the store.
 	"config clean": dbIntentNone,
@@ -115,6 +116,7 @@ var dbIntents = map[string]string{
 	"finding":         "read",
 	"finding load":    "write",
 	"finding mark":    "write",
+	"finding verify":  "write",
 	"traffic":         "read",
 	"endpoints":       "read",
 	"params":          "read",

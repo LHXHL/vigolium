@@ -89,6 +89,10 @@ const (
 	CodeWaitTimeout ErrorCode = "wait_timeout"
 	// CodeLoginFailed: an authentication flow did not produce a session.
 	CodeLoginFailed ErrorCode = "login_failed"
+	// CodeNotAuthenticated: a session's credentials did not get it past the
+	// login check on a protected URL (`auth check`: login wall, refused, or a
+	// response no different from the anonymous one).
+	CodeNotAuthenticated ErrorCode = "not_authenticated"
 	// CodeProxyAuthRequired: the ingest proxy refused a request without its
 	// token.
 	CodeProxyAuthRequired ErrorCode = "proxy_auth_required"
@@ -148,7 +152,7 @@ var knownErrorCodes = []ErrorCode{
 	CodeExportFailed, CodePDFFailed, CodeIngestIncomplete, CodeOutputTooLarge,
 	CodeUnsupportedInputMode, CodeInputUnparsed,
 	CodeNoTargetsInScope, CodeNoTargetsReachable, CodeScanAbandoned, CodeWaitTimeout,
-	CodeLoginFailed, CodeProxyAuthRequired,
+	CodeLoginFailed, CodeNotAuthenticated, CodeProxyAuthRequired,
 	CodeTimedOut, CodeBudgetExhausted, CodePartial,
 	CodeProviderMissing, CodePreflightFailed, CodeNotReady, CodeLintFailed,
 	CodeExtensionLoadFailed,

@@ -1536,6 +1536,7 @@ Manage authentication configurations and utilities.
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
+| `auth check` | — | Check a session is really logged in on a protected URL (verdict; exit 0 only when authenticated) |
 | `auth lint` | — | Validate auth config files for errors and warnings |
 | `auth list` | `ls` | List authentication configs |
 | `auth load` | — | Load auth configs from a file or stdin into the database |
@@ -1546,6 +1547,7 @@ Manage authentication configurations and utilities.
 ```bash
 vigolium auth list
 vigolium auth lint auth-config.yaml
+vigolium auth check auth-config.yaml --url https://example.com/account
 vigolium auth load auth-config.yaml
 vigolium auth totp --secret JBSWY3DPEHPK3PXP
 ```

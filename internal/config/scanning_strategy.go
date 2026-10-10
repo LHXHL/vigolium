@@ -3,11 +3,14 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/vigolium/vigolium/pkg/authentication"
 	"github.com/vigolium/vigolium/pkg/portsweep"
 )
 
@@ -77,15 +80,72 @@ type SessionStrategyConfig struct {
 	// cross-session IDOR/BOLA replay during the audit phase. Default: true.
 	CompareEnabled bool `yaml:"compare_enabled"`
 
-	// ReauthInterval is reserved for future runtime reauthentication.
-	// Native scans currently hydrate login flows once during initialization.
+	// The three fields below are config-wide defaults for a session's `check`
+	// block (pkg/authentication/loggedin.go): each fills the matching value a
+	// session leaves unset, and a session's own value always wins. See
+	// SessionDefaults.
+
+	// ReauthInterval fills check.interval: the most often the active logged-in
+	// probe runs proactively ("2m"; empty = only when traffic looks logged out).
 	ReauthInterval string `yaml:"reauth_interval"`
 
-	// ReauthOnStatus is reserved for future reactive reauthentication.
+	// ReauthOnStatus fills check.logged_out.status: response statuses that mark
+	// the session as logged out (e.g. [401, 419, 440]).
 	ReauthOnStatus []int `yaml:"reauth_on_status"`
 
-	// ValidateURL is reserved for future post-login credential validation.
+	// ValidateURL fills check.url: the protected URL whose response tells a
+	// logged-in session from an anonymous one (`vigolium auth check` probes it
+	// when --url is not given). A path resolves against the target origin.
 	ValidateURL string `yaml:"validate_url"`
+}
+
+// SessionDefaults returns the check-block defaults these settings supply, for
+// authentication.Session.ApplyDefaults.
+func (c *SessionStrategyConfig) SessionDefaults() (authentication.SessionDefaults, error) {
+	if err := c.Validate(); err != nil {
+		return authentication.SessionDefaults{}, err
+	}
+	d := authentication.SessionDefaults{
+		ValidateURL:    strings.TrimSpace(c.ValidateURL),
+		ReauthOnStatus: append([]int(nil), c.ReauthOnStatus...),
+	}
+	if v := strings.TrimSpace(c.ReauthInterval); v != "" {
+		iv, _ := time.ParseDuration(v) // validated above
+		d.ReauthInterval = iv
+	}
+	return d, nil
+}
+
+// Validate checks the session defaults: reauth_interval a non-negative
+// duration, reauth_on_status real status codes, validate_url an http(s) URL or
+// a path.
+func (c *SessionStrategyConfig) Validate() error {
+	if v := strings.TrimSpace(c.ReauthInterval); v != "" {
+		iv, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("scanning_strategy.session.reauth_interval: invalid duration %q (want e.g. \"2m\")", v)
+		}
+		if iv < 0 {
+			return fmt.Errorf("scanning_strategy.session.reauth_interval: must not be negative, got %q", v)
+		}
+	}
+	for _, code := range c.ReauthOnStatus {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("scanning_strategy.session.reauth_on_status: invalid HTTP status code %d", code)
+		}
+	}
+	if v := strings.TrimSpace(c.ValidateURL); v != "" {
+		u, err := url.Parse(v)
+		switch {
+		case err != nil:
+			return fmt.Errorf("scanning_strategy.session.validate_url: %w", err)
+		case u.IsAbs() && (u.Scheme != "http" && u.Scheme != "https" || u.Host == ""):
+			return fmt.Errorf("scanning_strategy.session.validate_url: want an http(s) URL or a path starting with \"/\", got %q", v)
+		case !u.IsAbs() && !strings.HasPrefix(v, "/"):
+			return fmt.Errorf("scanning_strategy.session.validate_url: want an http(s) URL or a path starting with \"/\", got %q", v)
+		}
+	}
+	return nil
 }
 
 // DefaultSessionStrategyConfig returns sensible defaults for session behavior.
@@ -185,6 +245,9 @@ func DefaultScanningStrategyConfig() *ScanningStrategyConfig {
 // Validate checks that DefaultStrategy refers to a known strategy name.
 func (c *ScanningStrategyConfig) Validate() error {
 	if err := c.HTTP.HostErrors.Validate(); err != nil {
+		return err
+	}
+	if err := c.Session.Validate(); err != nil {
 		return err
 	}
 	if c.DefaultStrategy == "" {

@@ -400,7 +400,20 @@ SessionConfig
 │   │       ├── body        # (string) Supports {name} variables
 │   │       ├── expect      # (object) status[] and/or body_contains
 │   │       └── extract[]   # (array; required on the final step)
-│   └── login_request       # (string) Raw HTTP request for login (alternative to login)
+│   ├── login_request       # (string) Raw HTTP request for login (alternative to login)
+│   ├── check               # (object) How to tell the session is still logged in
+│   │   ├── url             # (string) Protected URL probe; a path resolves against the target origin
+│   │   ├── method          # (string) Probe method; default GET
+│   │   ├── logged_in       # (object) ALL must hold: status[], body_contains, body_regex, header_regex
+│   │   ├── logged_out      # (object) ANY marks logged out: status[], redirect_regex (Location), body_regex
+│   │   ├── sample_every    # (int) Evaluate logged_out.body_regex on 1 in N scan responses; default 50
+│   │   └── interval        # (duration) Proactive probe at most this often; 0 = only reactive
+│   └── reauth              # (object) What a scan does once check finds the session logged out
+│       ├── enabled         # (bool) Default true when check is present
+│       ├── max_attempts    # (int) Consecutive failed re-logins before giving up; default 3
+│       ├── backoff         # (duration) Wait after a failure, doubling each time; default 10s
+│       ├── on_failure      # (string) "continue" (default: unauthenticated, phase partial) or "abort"
+│       └── pause_traffic   # (bool) Hold this session's requests while re-logging in; default true
 ```
 
 Only one of `headers`, `login`, or `login_request` can be set per session.
@@ -413,6 +426,95 @@ known auth response headers are copied). A response with none of those fails the
 login. The URL comes from the request line, or from `Host` with `https` (or `http`
 when the port is 80); write an absolute request line such as
 `POST http://localhost:3000/login HTTP/1.1` for a cleartext target on another port.
+
+## Logged-in Check
+
+A session's optional `check` block says what "logged in" looks like on the
+target, and `reauth` says what to do once it is not:
+
+```yaml
+sessions:
+  - name: admin
+    role: primary
+    login: { ... }
+    check:
+      url: /api/me                 # a path resolves against the target origin
+      method: GET
+      logged_in:                   # ALL listed conditions must hold
+        status: [200]
+        body_contains: '"email"'
+        header_regex: '(?i)^content-type: application/json'
+      logged_out:                  # ANY match means logged out
+        status: [401, 419, 440]
+        redirect_regex: '(?i)/(login|signin|sso)\b'
+        body_regex: '(?i)(session (has )?expired|please (log|sign) in)'
+      sample_every: 50
+      interval: 2m
+    reauth:
+      enabled: true
+      max_attempts: 3
+      backoff: 10s
+      on_failure: continue         # or abort
+      pause_traffic: true
+```
+
+Durations are Go durations (`90s`, `2m`, `1h30m`); a bare number is seconds.
+`header_regex` is matched against each response header written as
+`Name: value`. `scanning_strategy.session.validate_url`, `reauth_on_status` and
+`reauth_interval` fill `check.url`, `check.logged_out.status` and
+`check.interval` for every session that leaves them unset (see
+[Session Strategy Configuration](#session-strategy-configuration)).
+
+Validation (`auth lint`, and every loader before a session is used):
+
+- `check.url` must be an `http(s)` URL or a path starting with `/`. It is
+  required unless `logged_out` has a `status` or `redirect_regex`.
+- Every regex must compile; status codes must be 100-599.
+- `sample_every`, `interval`, `max_attempts` and `backoff` must not be
+  negative; `on_failure` is `continue` or `abort`.
+- Warnings: an empty `logged_in`/`logged_out` block, `logged_in` with no
+  `check.url` to evaluate it on, `reauth` with no `check`, and `reauth` on a
+  static-header session (nothing to re-run).
+
+The `check` block is used today by `vigolium auth check`. In-scan sampling and
+re-login using `check`/`reauth` are not enforced yet: a native scan still logs
+in once at start.
+
+### `vigolium auth check`
+
+```bash
+vigolium auth check sessions.yaml --url https://app.example.com/account
+vigolium auth check admin --url https://app.example.com/api/me -j   # a stored session
+vigolium auth check sessions.yaml --session admin                    # uses check.url
+```
+
+The argument is a session file (any form `--auth-file` accepts, including a
+bare name in `session_dir`) or the name of a session stored with `auth load` in
+the current project. It logs each session in exactly as a scan does (the scan's
+login transport: `--proxy`, the scan's TLS stance, `--timeout`), then requests
+the URL twice through the scan's HTTP stack, with and without the session's
+credentials, without following redirects. The URL is `--url`, else
+`check.url`, else `validate_url`; a path resolves against the login URL's
+origin.
+
+| Verdict | Meaning |
+|---------|---------|
+| `authenticated` | The session reached what the anonymous request did not (status pair, the anonymous request redirected to a login page or shown a password form, different content), or `check.logged_in` held with credentials and failed without them. |
+| `login_wall` | The authenticated request was redirected to a login URL, got a password form, or matched `check.logged_out` by redirect or body. |
+| `unauthorized` | 401/403 with credentials, a `check.logged_out` status, or `check.logged_in` failed. |
+| `indistinguishable` | Same status and the same body (volatile tokens such as nonces and timestamps ignored) with and without credentials, or `check.logged_in` also held anonymously. Use a page only a logged-in user sees, or configure `check.logged_in`. |
+| `error` | The login failed (see `login`) or a request did not complete. |
+
+Exits 0 only when every checked session is `authenticated`. Otherwise exit 1
+with error code `login_failed` (a login did not work) or `not_authenticated`
+(any other verdict). `-j` prints a read document; each item has `session`,
+`url`, `method`, `verdict`, `authenticated`, `reason`, `signals` (`name`,
+`side`, `detail`), `similarity`, `auth_response` and `anon_response`
+(`status`, `length`, `location`, `error`), and `login` (the `auth load` login
+result). A failing run's document carries `ok: false` and the coded `error`.
+
+The database has no columns for `check`/`reauth`, so a stored session is
+checked with `--url` (or `validate_url`) and the heuristics only.
 
 ## Environment Variables
 
@@ -524,6 +626,8 @@ target is crawled unauthenticated unless `spidering.require_auth` /
 | Symptom | Meaning and next step |
 |---------|-----------------------|
 | `auth lint` succeeds but scan hydration fails | Lint validates structure without contacting the login services. Check the failing step's status, response shape, and extraction path. |
+| `auth check` says `indistinguishable` | The URL answers the same with and without credentials: it is public, or the server ignores the credentials. Pick a page only a logged-in user sees, or add `check.logged_in` describing it. |
+| `auth check` says `login_wall` but `auth load` passed | The login returned a credential, but the app does not accept it on that URL (wrong cookie scope, an extra CSRF/header requirement, or a token for another audience). |
 | `auth load` reports `unverified` | The login ran but had no `expect` block, and the response could not confirm it (for example the password form came back). Add `expect.status` / `expect.body_contains` so a wrong password fails. |
 | `cookie "token" not found in login response` | The response did not include a matching `Set-Cookie` header. If it returned JSON, use `source: json`; if browser JavaScript creates the cookie, build the `Cookie` header with `apply_as`. |
 | A later request still contains `{name}` | The earlier rule did not use `apply_as: "var:name"`, or its extraction path did not match. Variable names are case-sensitive. |
@@ -564,10 +668,11 @@ cause. See [Scan completeness](../api-references/scan.md#scan-completeness).
 
 ## Current Authentication Limitations
 
-- Login flows are hydrated once during scan initialization. The configured
-  `reauth_interval`, `reauth_on_status`, and `validate_url` fields are reserved
-  but are not currently enforced during native scans. Ensure a token's lifetime
-  covers the scan or divide a long scan into shorter runs.
+- Login flows are hydrated once during scan initialization. The session
+  `check`/`reauth` blocks (and their `scanning_strategy.session` defaults) are
+  validated and drive `vigolium auth check`, but a native scan does not yet
+  sample traffic or re-login with them. Ensure a token's lifetime covers the
+  scan or divide a long scan into shorter runs.
 - Pass multi-step configurations directly with `--auth-file`. `vigolium auth
   load` currently validates and persists only single-step login fields, so a
   stored multi-step flow will not round-trip correctly.
@@ -600,13 +705,16 @@ scanning_strategy:
     # Default: true
     compare_enabled: true
 
-    # Reserved for future runtime reauthentication; currently not enforced.
+    # Defaults for every session's `check` block: each fills the value a
+    # session leaves unset (a session's own value always wins).
+    # check.interval: proactive logged-in probe at most this often ("2m").
     reauth_interval: ""
 
-    # Reserved for future runtime reauthentication; currently not enforced.
+    # check.logged_out.status: statuses that mean "logged out" (e.g. [401, 440]).
     reauth_on_status: []
 
-    # Reserved for future post-login validation; currently not enforced.
+    # check.url: the protected URL `vigolium auth check` probes when --url is
+    # not given. A path resolves against the target origin.
     validate_url: ""
 ```
 
@@ -617,9 +725,12 @@ scanning_strategy:
 | `session_dir` | string | `~/.vigolium/sessions/` | Directory for session file lookup. `--auth-file myapp` (bare name) resolves to `<session_dir>/myapp.yaml` (tries `.yaml`, `.yml`, `.json` in order). Supports `~` expansion. |
 | `use_in_discovery` | bool | `true` | When `true`, the primary session's headers are injected into the requester used for discovery and spidering. When `false`, those phases run unauthenticated — useful for mapping the public attack surface first, then scanning authenticated. |
 | `compare_enabled` | bool | `true` | When `true`, compare sessions are created and the `authz-compare` module is activated for IDOR/BOLA testing. When `false`, compare sessions are ignored even if defined — handy when you only need authenticated scanning without authorization comparison. |
-| `reauth_interval` | duration | `""` | Reserved; currently not enforced during native scans. |
-| `reauth_on_status` | []int | `[]` | Reserved; currently not enforced during native scans. |
-| `validate_url` | string | `""` | Reserved; currently not enforced during native scans. |
+| `reauth_interval` | duration | `""` | Default `check.interval` for sessions that do not set one. Must parse as a Go duration. |
+| `reauth_on_status` | []int | `[]` | Default `check.logged_out.status` for sessions that do not set one. |
+| `validate_url` | string | `""` | Default `check.url`: an `http(s)` URL or a `/path`. `vigolium auth check` uses it when `--url` is not given. |
+
+These three are defaults for the [logged-in check](#logged-in-check). In-scan
+sampling and re-login are not enforced yet.
 
 ### Session Directory Resolution
 

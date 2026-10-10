@@ -52,10 +52,11 @@ var machineKinds = map[string]machineKind{
 	"agent triage":  kindMutation,
 
 	// Auth.
-	"auth lint": kindRead,
-	"auth list": kindRead,
-	"auth load": kindMutation,
-	"auth totp": kindRead,
+	"auth check": kindRead,
+	"auth lint":  kindRead,
+	"auth list":  kindRead,
+	"auth load":  kindMutation,
+	"auth totp":  kindRead,
 
 	// Config.
 	"config clean":    kindMutation,
@@ -90,6 +91,7 @@ var machineKinds = map[string]machineKind{
 	"finding":         kindRead,
 	"finding load":    kindMutation,
 	"finding mark":    kindMutation,
+	"finding verify":  kindMutation,
 	"traffic":         kindRead,
 	"endpoints":       kindRead,
 	"params":          kindRead,

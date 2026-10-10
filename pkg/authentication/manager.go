@@ -309,3 +309,10 @@ func isJSON(path string, content string) bool {
 	trimmed := strings.TrimSpace(content)
 	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
 }
+
+// ResolveSessionPath resolves an --auth-file value the way LoadFromAuthFiles
+// does: a path is used as is, a bare name is looked up in sessionDir (default
+// ~/.vigolium/sessions/) with .yaml, .yml and .json tried in order.
+func ResolveSessionPath(path, sessionDir string) string {
+	return resolveSessionPath(path, sessionDir)
+}

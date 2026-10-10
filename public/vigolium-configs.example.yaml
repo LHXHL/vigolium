@@ -228,14 +228,16 @@ scanning_strategy:
     # Default: true
     compare_enabled: true
 
-    # Reserved for future runtime reauthentication. Native scans currently
-    # hydrate login flows once during initialization and do not enforce this.
+    # Defaults for each session's `check` block (a session's own value wins).
+    # check.interval: proactive logged-in probe at most this often (e.g. "2m").
     reauth_interval: ""
 
-    # Reserved for future reactive reauthentication; currently not enforced.
+    # check.logged_out.status: statuses that mean "logged out" (e.g. [401, 440]).
     reauth_on_status: []
 
-    # Reserved for future post-login validation; currently not enforced.
+    # check.url: protected URL `vigolium auth check` probes when --url is not
+    # given; a path resolves against the target origin. In-scan re-login with
+    # these is not enforced yet (scans log in once).
     validate_url: ""
 
   # --------------------------------------------------------------------------
