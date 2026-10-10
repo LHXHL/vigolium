@@ -145,7 +145,10 @@ func validateGlobalFormats() error {
 // the scan phases, which only run under the Runner. On the direct path the flag
 // parsed and then described nothing.
 func needsRunnerScan() bool {
+	// The direct path runs built-in modules only; --ext/--ext-dir extensions
+	// load (and a broken --ext fails the scan) on the runner path.
 	return hasPhaseFlags() ||
+		len(globalExtScripts) > 0 || globalExtDir != "" ||
 		globalStateless ||
 		scanOpts.Output != "" ||
 		len(globalSkipPhases) > 0 ||

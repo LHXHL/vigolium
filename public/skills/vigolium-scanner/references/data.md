@@ -1333,7 +1333,7 @@ Manage JavaScript extensions for custom scanning logic.
 | `ext docs [function]` | `doc`, `api` | Show API reference |
 | `ext eval [code]` | `run`, `exec` | Evaluate JavaScript code with vigolium.* APIs available |
 | `ext example [filter]` | `examples`, `templates`, `tpl` | Print self-contained example extensions in every supported format - the authoring template |
-| `ext lint [file]` | — | Validate extension files for syntax errors and unknown API calls |
+| `ext lint [file]` | — | Validate extension files: syntax, unknown APIs, metadata, missing handlers, load-time effects, YAML schema |
 | `ext ls [filter]` | `list` | List loaded extensions |
 | `ext preset [name]` | `presets`, `init` | Install example presets |
 
@@ -1381,6 +1381,10 @@ Writing against the API those examples use: [extensions.md](extensions.md).
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--stdin` | bool | `false` | Read extension source from stdin |
+| `--stdin-kind` | string | sniffed | Language of `--stdin` source: `js`, `ts` or `yaml` (default: a top-level `id:`/`type:` YAML map without `module.exports` is yaml) |
+| `--strict` | bool | `false` | Treat warnings as errors |
+
+Exits 1 with `error.code: "lint_failed"` when any file has an error. With `-j`: one document, `items` = files (`{path, kind, issues: [{severity, line, col, message, rule}]}`), `summary` = `{files, errors, warnings}`, `ok: false` exactly when there are errors. Rule ids and the load-time semantics are in [extensions.md](extensions.md#lint-and-what-happens-when-an-extension-does-not-load).
 
 ### ext eval flags
 

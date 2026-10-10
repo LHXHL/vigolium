@@ -90,7 +90,7 @@ const (
 	// ErrorKind (exception|timeout|panic|load), Message, Count (F6).
 	TypeModuleError = "module.error"
 	// TypeExtensionFailed reports an extension that failed to load or run:
-	// ModuleID, Message (F3/F6).
+	// ModuleID (when its metadata loaded), Path, Stage, Explicit, Message.
 	TypeExtensionFailed = "extension.failed"
 )
 
@@ -220,6 +220,14 @@ type Event struct {
 	// extensions that failed to load (scan.finished).
 	ModuleErrors     map[string]int64 `json:"module_errors,omitempty"`
 	ExtensionsFailed []string         `json:"extensions_failed,omitempty"`
+	// Extension load failures (extension.failed): Path is the extension file,
+	// Stage the load step that failed (read, transpile, compile, metadata,
+	// schema, unknown_type, module), and Explicit whether it was named with
+	// --ext / custom_dir — an explicit failure aborts the scan before any
+	// traffic unless --ext-allow-failures is set.
+	Path     string `json:"path,omitempty"`
+	Stage    string `json:"stage,omitempty"`
+	Explicit *bool  `json:"explicit,omitempty"`
 	// ErrorKind classifies a module.error: exception, timeout, panic or load.
 	ErrorKind string `json:"error_kind,omitempty"`
 	// Count is how many occurrences one rate-limited line stands for.

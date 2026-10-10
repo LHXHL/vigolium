@@ -285,6 +285,8 @@ func init() {
 		Description: "The project deleted, with what it held."})
 	registerCommandSchema(contract.Command{Name: "oast ingest", Item: oast.IngestedFinding{}, Extras: oastIngestExtras{},
 		Description: "Findings saved from logged OAST callbacks; the counters say how the callbacks were attributed."})
+	registerCommandSchema(contract.Command{Name: "extensions lint", Item: extLintFile{}, Extras: extLintExtras{},
+		Description: "One item per linted file with its issues (severity, line, col, message, rule); summary counts them. ok is false exactly when there are errors (exit 1, lint_failed)."})
 	for _, name := range []string{"module enable", "module disable"} {
 		registerCommandSchema(contract.Command{Name: name, Item: moduleToggleView{}, Extras: moduleToggleExtras{},
 			Description: "Every module the search matched, each saying whether this run flipped it."})

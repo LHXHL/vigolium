@@ -1,6 +1,8 @@
 package jsext
 
 import (
+	"fmt"
+
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/modules"
@@ -17,6 +19,7 @@ type Engine struct {
 	passiveModules []modules.PassiveModule
 	preHooks       []PreHookExecutor
 	postHooks      []PostHookExecutor
+	failures       []LoadFailure
 }
 
 // NewEngine creates a new JS extension engine and loads all configured scripts.
@@ -26,10 +29,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 		return &Engine{}, nil
 	}
 
-	scripts, err := LoadScripts(cfg)
-	if err != nil {
-		return nil, err
-	}
+	scripts, failures := LoadScriptsReport(cfg)
 
 	// Build base APIOptions from config + engine options
 	opts := APIOptions{
@@ -52,6 +52,15 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 		cfg:        cfg,
 		httpClient: httpClient,
 		scripts:    scripts,
+		failures:   failures,
+	}
+	// moduleFailed records a module or hook constructor failure for a script
+	// whose metadata did load.
+	moduleFailed := func(script *LoadedScript, err error) {
+		e.failures = append(e.failures, LoadFailure{
+			Path: script.Path, ID: "ext-" + script.Metadata.ID,
+			Stage: LoadStageModule, Err: err, Explicit: script.Explicit,
+		})
 	}
 
 	for _, script := range scripts {
@@ -65,6 +74,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 			if err != nil {
 				zap.L().Warn("Failed to load active JS module",
 					zap.String("script", script.Path), zap.Error(err))
+				moduleFailed(script, err)
 				continue
 			}
 			e.activeModules = append(e.activeModules, mod)
@@ -77,6 +87,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 			if err != nil {
 				zap.L().Warn("Failed to load passive JS module",
 					zap.String("script", script.Path), zap.Error(err))
+				moduleFailed(script, err)
 				continue
 			}
 			e.passiveModules = append(e.passiveModules, mod)
@@ -89,6 +100,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 			if err != nil {
 				zap.L().Warn("Failed to load pre-hook",
 					zap.String("script", script.Path), zap.Error(err))
+				moduleFailed(script, err)
 				continue
 			}
 			e.preHooks = append(e.preHooks, hook)
@@ -101,6 +113,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 			if err != nil {
 				zap.L().Warn("Failed to load post-hook",
 					zap.String("script", script.Path), zap.Error(err))
+				moduleFailed(script, err)
 				continue
 			}
 			e.postHooks = append(e.postHooks, hook)
@@ -112,13 +125,27 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 			zap.L().Warn("Unknown script type",
 				zap.String("type", string(script.Metadata.Type)),
 				zap.String("path", script.Path))
+			e.failures = append(e.failures, LoadFailure{
+				Path: script.Path, ID: "ext-" + script.Metadata.ID, Stage: LoadStageUnknownType,
+				Err:      fmt.Errorf("unknown extension type %q (must be active, passive, pre_hook or post_hook)", script.Metadata.Type),
+				Explicit: script.Explicit,
+			})
 		}
 	}
 
 	// Load YAML extensions from the same config
-	yamlDefs, yamlErr := yamlext.LoadFromConfig(cfg)
-	if yamlErr != nil {
-		zap.L().Warn("Error loading YAML extensions", zap.Error(yamlErr))
+	yamlDefs, yamlFailures := yamlext.LoadFromConfigReport(cfg)
+	for _, f := range yamlFailures {
+		e.failures = append(e.failures, LoadFailure{
+			Path: f.Path, Stage: LoadStage(f.Stage), Err: f.Err, Explicit: f.Explicit,
+		})
+	}
+	// yamlFailed records a module constructor failure for a YAML extension.
+	yamlFailed := func(def *yamlext.ExtensionDef, err error) {
+		e.failures = append(e.failures, LoadFailure{
+			Path: def.SourcePath(), ID: "ext-" + def.ID,
+			Stage: LoadStageModule, Err: err, Explicit: def.Explicit(),
+		})
 	}
 	for _, def := range yamlDefs {
 		// JS escape hatch: if script field is set, wrap as JS and route through JS pipeline
@@ -132,6 +159,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 				if modErr != nil {
 					zap.L().Warn("Failed to load YAML+JS active module",
 						zap.String("id", def.ID), zap.Error(modErr))
+					yamlFailed(def, modErr)
 					continue
 				}
 				e.activeModules = append(e.activeModules, mod)
@@ -140,6 +168,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 				if modErr != nil {
 					zap.L().Warn("Failed to load YAML+JS passive module",
 						zap.String("id", def.ID), zap.Error(modErr))
+					yamlFailed(def, modErr)
 					continue
 				}
 				e.passiveModules = append(e.passiveModules, mod)
@@ -148,6 +177,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 				if hookErr != nil {
 					zap.L().Warn("Failed to load YAML+JS pre-hook",
 						zap.String("id", def.ID), zap.Error(hookErr))
+					yamlFailed(def, hookErr)
 					continue
 				}
 				e.preHooks = append(e.preHooks, hook)
@@ -156,6 +186,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 				if hookErr != nil {
 					zap.L().Warn("Failed to load YAML+JS post-hook",
 						zap.String("id", def.ID), zap.Error(hookErr))
+					yamlFailed(def, hookErr)
 					continue
 				}
 				e.postHooks = append(e.postHooks, hook)
@@ -169,6 +200,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 			if modErr != nil {
 				zap.L().Warn("Failed to load YAML active module",
 					zap.String("id", def.ID), zap.Error(modErr))
+				yamlFailed(def, modErr)
 				continue
 			}
 			e.activeModules = append(e.activeModules, mod)
@@ -181,6 +213,7 @@ func NewEngine(cfg *config.ExtensionsConfig, httpClient *http.Requester, engineO
 			if modErr != nil {
 				zap.L().Warn("Failed to load YAML passive module",
 					zap.String("id", def.ID), zap.Error(modErr))
+				yamlFailed(def, modErr)
 				continue
 			}
 			e.passiveModules = append(e.passiveModules, mod)
@@ -251,8 +284,9 @@ func buildYAMLJSScript(def *yamlext.ExtensionDef) *LoadedScript {
 	source += "};\n"
 
 	return &LoadedScript{
-		Path:   def.SourcePath(),
-		Source: source,
+		Path:     def.SourcePath(),
+		Source:   source,
+		Explicit: def.Explicit(),
 		Metadata: ScriptMetadata{
 			ID:                   def.ID,
 			Name:                 def.Name,
@@ -262,6 +296,7 @@ func buildYAMLJSScript(def *yamlext.ExtensionDef) *LoadedScript {
 			ScanTypes:            def.ScanTypes,
 			Scope:                def.Scope,
 			Tags:                 def.Tags,
+			Confidence:           def.Confidence,
 			ConfirmationCriteria: def.ConfirmationCriteria,
 		},
 	}
@@ -288,6 +323,25 @@ func jsStringLiteral(s string) string {
 	}
 	result += "\""
 	return result
+}
+
+// Failures lists every extension that did not load: unreadable, failed to
+// transpile or compile, threw at top level, had unusable metadata or schema, an
+// unknown type, or a module/hook that could not be built. Each is also logged.
+func (e *Engine) Failures() []LoadFailure {
+	return e.failures
+}
+
+// ExplicitFailures is the subset of Failures the user named directly (--ext,
+// extensions.custom_dir), which a scan treats as fatal.
+func (e *Engine) ExplicitFailures() []LoadFailure {
+	var out []LoadFailure
+	for _, f := range e.failures {
+		if f.Explicit {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // Scripts returns all loaded scripts.

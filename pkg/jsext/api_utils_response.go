@@ -13,6 +13,7 @@ func responseUtilsFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsUtils, Name: "diffResponses",
+			Effect:   EffectPure,
 			Category: "Utils", Signature: ".diffResponses(a: object, b: object)", Returns: "object | null",
 			Description: "Compare two HTTP response objects and return a detailed diff.", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -147,6 +148,7 @@ func responseUtilsFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsUtils, Name: "cssSelect",
+			Effect:   EffectPure,
 			Category: "Utils", Signature: ".cssSelect(html: string, selector: string)", Returns: "object[]",
 			Description: "Extract elements from HTML using a CSS selector.", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {

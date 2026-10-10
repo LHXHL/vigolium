@@ -241,7 +241,7 @@ module.exports = {
 
 ### Pre-Hook (JS)
 
-Pre-hooks run before each request is sent to a module. Return the modified request, a headers-only patch, or `null` to skip the request entirely.
+Pre-hooks run before each request is sent to a module. `execute(request)` receives `{raw, method, url, headers}` (there is no `path` field; parse it from `url`). Return the modified request, a headers-only patch, or `null` to skip the request entirely.
 
 ```javascript
 // File: ~/.vigolium/extensions/add_auth_header.js
@@ -285,7 +285,8 @@ module.exports = {
   type: "pre_hook",
 
   execute: function(request) {
-    var path = request.path || "";
+    var parsed = vigolium.parse.url(request.url || "");
+    var path = (parsed && parsed.path) || "";
     var skip = [".css", ".js", ".png", ".jpg", ".gif", ".svg", ".ico",
                 ".woff", ".woff2", ".ttf", ".map"];
     for (var i = 0; i < skip.length; i++) {
@@ -1047,6 +1048,47 @@ dynamic-assessment:
       - ./my_extension.vgm.yaml
 ```
 
+### Lint before you scan
+
+`vigolium ext lint` loads each file the way a scan does — the top-level code runs in
+the loader's own VM — and reports what would go wrong:
+
+```bash
+vigolium ext lint my_scanner.js            # exit 1 (error.code lint_failed) on errors
+vigolium ext lint ~/.vigolium/extensions/  # every .js/.ts/.vgm.yaml in the directory
+vigolium ext lint my_scanner.js --strict   # warnings fail too
+vigolium ext lint ./exts -j                # one JSON document (see below)
+cat check.vgm.yaml | vigolium ext lint --stdin   # sniffed as YAML; force with --stdin-kind js|ts|yaml
+```
+
+What lint checks, with the rule id each issue carries:
+
+| Rule | Severity | Meaning |
+|---|---|---|
+| `syntax`, `transpile` | error | The JavaScript does not parse, or the TypeScript does not transpile |
+| `metadata` | error | Top-level code threw, or `module.exports` lacks a `type` |
+| `no-exports` | error | The file exports nothing. A plain script meant for `vigolium js` can opt out with a `// vigolium:script` line |
+| `missing-handler` | error | A declared `scanTypes` entry (default `per_request`) or hook type has no matching function (`scanPerInsertionPoint`, `scanPerRequest`, `scanPerHost`, `execute`). The scan would load the extension and never call it |
+| `invalid-type`, `bad-confidence` | error | Unknown `type` or `confidence` value |
+| `top-level-effect` | warning | Top-level code calls an effectful API (`vigolium.http.*`, `utils.exec`, `utils.writeFile`, `db.*`, `agent.*`, …). At load time such calls are stubbed and return an empty value; at scan time they run for real in every VM. Move them into a handler |
+| `unknown-api`, `unknown-oast-class` | warning / error | A `vigolium.*` name, or a `vigolium.oast.url` class, that does not exist |
+| `missing-severity`, `bad-severity`, `bad-scan-type`, `bad-scope` | warning | Metadata values outside the known set |
+| `yaml-parse`, `yaml-schema`, `yaml-unknown-key` | error | YAML that does not parse or does not match the schema. Unknown keys name the closest real key: `unknown key "matchers_condtion" (did you mean "matchers_condition"?)` |
+| `payloads-unused` | warning | A YAML extension has `payloads` but `scan_types` lacks `per_insertion_point`, the only scan type that sends them |
+
+Pure APIs (`vigolium.parse.*`, `utils` encoding/hashing/regex helpers, `log.*`, `payloads()`, `config.*`) run for real at load time, so `var u = vigolium.parse.url("…")` at the top of a file is fine. Every namespace exists at load time, so feature detection such as `if (vigolium.db)` is always true there; check inside a handler instead.
+
+With `-j` the result is one document: `items` holds one entry per file
+(`{path, kind: js|ts|yaml, issues: [{severity, line, col, message, rule}]}`),
+`summary` holds `{files, errors, warnings}`, and `ok` is `false` exactly when there are errors.
+
+### When an extension fails to load
+
+- **Named with `--ext` (or listed in `custom_dir`)**: the scan stops before it sends any request, exits `2` with `error.code` `extension_load_failed`, and names the file and the stage that failed (`read`, `transpile`, `compile`, `metadata`, `schema`, `unknown_type`, `module`). Pass `--ext-allow-failures` (or set `allow_load_failures: true`) to scan without it.
+- **Found in the extension directory**: the scan continues without it.
+- Either way each failure prints a warning on stderr, emits an `extension.failed` event (`module_id`, `path`, `stage`, `explicit`, `message`) on `--events`, and is listed in `scan.finished.extensions_failed` and on the scan row.
+- **YAML unknown keys** are a warning at load time in this release. Set `yaml_strict: true` to make them a load failure (an explicit file then stops the scan); the default becomes `true` in the next minor release. `ext lint` always reports them as errors.
+
 ### Verify your extension loads
 
 Before running a scan, check your extension is discovered and parsed correctly:
@@ -1129,6 +1171,15 @@ dynamic-assessment:
 
     # Restrict file I/O to this directory (readFile, writeFile, glob)
     sandbox_dir: /tmp/vigolium-sandbox
+
+    # Make an unknown key in a .vgm.yaml file a load failure instead of a
+    # warning. Default: false (becomes true in the next minor release)
+    yaml_strict: false
+
+    # Keep scanning when an extension named with --ext / custom_dir fails to
+    # load (same as --ext-allow-failures). Default: false — the scan stops
+    # before any traffic with exit 2, extension_load_failed
+    allow_load_failures: false
 ```
 
 ---

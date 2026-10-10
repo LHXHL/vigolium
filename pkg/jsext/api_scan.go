@@ -23,6 +23,7 @@ func scanFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsScan, Name: "listModules",
+			Effect:   EffectPure,
 			Category: CatScan, Signature: ".listModules()", Returns: "[{id, name, type, severity, description}]",
 			Description: "List all registered scanner modules (active + passive).", Example: exScanListModules,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -66,6 +67,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "listModuleTags",
+			Effect:   EffectPure,
 			Category: CatScan, Signature: ".listModuleTags()", Returns: "string[]",
 			Description: "Returns all unique tags across all registered modules.", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -93,6 +95,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "listModulesByTag",
+			Effect:   EffectPure,
 			Category: CatScan, Signature: ".listModulesByTag(tag: string)", Returns: "[{id, name, type, severity, description, tags}]",
 			Description: "Returns all modules that have the given tag (case-insensitive).", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -155,6 +158,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "isInScope",
+			Effect:   EffectPure,
 			Category: CatScan, Signature: ".isInScope(host: string, path: string)", Returns: "bool",
 			Description: "Check if a host+path combination is within the current scan scope.", Example: exScanIsInScope,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -170,6 +174,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "getScope",
+			Effect:   EffectPure,
 			Category: CatScan, Signature: ".getScope()", Returns: "{host, path, status_code, ...}",
 			Description: "Get the current scope configuration. Each key has {include, exclude} arrays.", Example: exScanGetScope,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -183,6 +188,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "setScope",
+			Effect:   EffectPure,
 			Category: CatScan, Signature: ".setScope(scopeObj: object)", Returns: "bool",
 			Description: "Update the scope configuration for this VM instance.", Example: exScanSetScope,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -201,6 +207,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "createFinding",
+			Effect:   EffectScan,
 			Category: CatScan, Signature: ".createFinding({url, matched, name, description, severity, request, response, additional_evidence})", Returns: "bool",
 			Description: "Emit a finding from a hook or module. Severity: critical, high, medium, low, info.", Example: exScanCreateFinding,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -265,6 +272,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "getCurrentScan",
+			Effect:   EffectPure,
 			Category: CatScan, Signature: ".getCurrentScan()", Returns: "{uuid}",
 			Description: "Get information about the current scan session.", Example: exScanGetCurrentScan,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -277,6 +285,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "startNewScan",
+			Effect:   EffectScan,
 			Category: CatScan, Signature: ".startNewScan({targets: string[], modules?: string[], name?: string})", Returns: "{scan_uuid, queued, errors}",
 			Description: "Queue targets for scanning and create a new scan record. Modules default to [\"all\"], name defaults to \"extension-scan\".", Example: exScanStartNewScan,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -368,6 +377,7 @@ func scanFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsScan, Name: "scanRecords",
+			Effect:   EffectScan,
 			Category: CatScan, Signature: ".scanRecords({uuids: string[], modules?: string[], tags?: string[], name?: string})", Returns: "{scan_uuid, record_count, errors}",
 			Description: "Queue a scan for existing database records by their UUIDs.", Example: "",
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {

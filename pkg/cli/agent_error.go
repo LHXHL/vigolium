@@ -126,6 +126,17 @@ func codedErrorf(code apicontract.ErrorCode, format string, args ...any) error {
 func classifyErrorCode(err error, exitCode int) apicontract.ErrorCode {
 	switch exitCode {
 	case ExitUsageError:
+		// A usage error built around a coded error names its own condition and
+		// keeps that code (an extension named with --ext that failed to load:
+		// exit 2, extension_load_failed). Any other code is outranked by the
+		// usage status, which is the contract there.
+		var usage usageError
+		if errors.As(err, &usage) {
+			var coded codedError
+			if errors.As(usage.Err, &coded) {
+				return coded.Code()
+			}
+		}
 		return errCodeUsage
 	case ExitFailOnGate:
 		return errCodeGateTripped

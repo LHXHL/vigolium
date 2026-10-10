@@ -710,10 +710,19 @@ dynamic-assessment:
     variables: {}               # key-value pairs passed to scripts
     allow_exec: false           # enable exec() and setEnv() in scripts
     sandbox_dir: ""             # base path for file ops (empty = cwd)
+    yaml_strict: false          # unknown .vgm.yaml key = load failure, not a warning (default true next minor)
+    allow_load_failures: false  # keep scanning when an --ext/custom_dir file fails to load (--ext-allow-failures)
     limits:
       timeout: 30s
       max_memory_mb: 128
 ```
+
+An extension named with `--ext` or listed in `custom_dir` that fails to load
+stops the scan before any request (exit 2, `error.code`
+`extension_load_failed`) unless `allow_load_failures` is set; one found in
+`extension_dir` is skipped with a warning. Every failure is reported as an
+`extension.failed` event and in `scan.finished.extensions_failed`. See
+[writing extensions](customization/writing-extensions.md#when-an-extension-fails-to-load).
 
 **Hardening advisories (`hygiene_modules`).** Fourteen modules report a *missing
 best-practice control* rather than an exploitable condition — absent security

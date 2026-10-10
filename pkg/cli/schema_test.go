@@ -362,7 +362,7 @@ var schemaPending = map[string]string{
 	"doctor":           pendingTypedItems,
 	"extensions":       pendingTypedItems, "extensions docs": pendingTypedItems, "extensions ls": pendingTypedItems,
 	"extensions eval": pendingOffContract, "extensions example": pendingOffContract,
-	"extensions lint": pendingOffContract, "extensions preset": pendingOffContract,
+	"extensions preset": pendingOffContract,
 	"extensions types": pendingOffContract, "import": pendingOffContract, "js": pendingOffContract,
 	"log":          pendingOffContract,
 	"finding load": pendingTypedItems, "finding verify": pendingTypedItems,
@@ -389,7 +389,7 @@ var schemaPending = map[string]string{
 
 // schemaPendingCeiling pins the ratchet's size: lower it when a command gets
 // a schema; never raise it.
-const schemaPendingCeiling = 87
+const schemaPendingCeiling = 86
 
 // TestSchemaCoverageRatchet: every runnable non-interactive command either has
 // a registered schema or a reason in schemaPending, never both.

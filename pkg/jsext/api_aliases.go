@@ -11,6 +11,27 @@ type (
 	HandlerFactory = api.HandlerFactory
 	APIOptions     = api.APIOptions
 	APIFunction    = api.APIFunction
+	Effect         = api.Effect
+	EffectCall     = api.EffectCall
+	APIMode        = api.Mode
+)
+
+// Effect classes and API modes, re-exported from pkg/jsext/api.
+const (
+	EffectUnset   = api.EffectUnset
+	EffectPure    = api.EffectPure
+	EffectNetwork = api.EffectNetwork
+	EffectFS      = api.EffectFS
+	EffectExec    = api.EffectExec
+	EffectDBRead  = api.EffectDBRead
+	EffectDBWrite = api.EffectDBWrite
+	EffectLLM     = api.EffectLLM
+	EffectOAST    = api.EffectOAST
+	EffectScan    = api.EffectScan
+	EffectSleep   = api.EffectSleep
+
+	ModeRuntime = api.ModeRuntime
+	ModeLoad    = api.ModeLoad
 )
 
 // Namespace constants, re-exported from pkg/jsext/api.

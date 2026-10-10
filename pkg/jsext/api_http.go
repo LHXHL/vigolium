@@ -18,6 +18,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "get",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".get(url: string, opts?: {headers})",
 			Returns:     "{status, headers, body, raw}",
@@ -33,6 +34,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "post",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".post(url: string, body: string, opts?: {headers})",
 			Returns:     "{status, headers, body, raw}",
@@ -49,6 +51,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "request",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".request({method, url, headers, body})",
 			Returns:     "{status, headers, body, raw}",
@@ -90,6 +93,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "send",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".send(rawRequest: string)",
 			Returns:     "{status, headers, body, raw}",
@@ -105,6 +109,7 @@ func httpCoreFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "buildRequest",
+			Effect:      EffectPure,
 			Category:    CatHTTP,
 			Signature:   ".buildRequest(rawRequest: string, overrides: {method?, path?, headers?, body?, query?})",
 			Returns:     "string",

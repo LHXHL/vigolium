@@ -6,6 +6,12 @@
     "description": "Endpoints (origin + path template) aggregated from stored traffic."
   },
   {
+    "name": "extensions lint",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One item per linted file with its issues (severity, line, col, message, rule); summary counts them. ok is false exactly when there are errors (exit 1, lint_failed)."
+  },
+  {
     "name": "finding",
     "kind": "command",
     "envelope_kind": "read",
@@ -216,7 +222,7 @@
   {
     "name": "extension.failed",
     "kind": "event",
-    "description": "An extension failed to load or run."
+    "description": "An extension failed to load: stage is the load step that failed; explicit says it was named with --ext (the scan then stops, exit 2 extension_load_failed, unless --ext-allow-failures)."
   },
   {
     "name": "error",

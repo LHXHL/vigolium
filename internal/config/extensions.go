@@ -15,6 +15,15 @@ type ExtensionsConfig struct {
 	Limits       ScriptLimits      `yaml:"limits"`
 	AllowExec    bool              `yaml:"allow_exec"`  // enables exec() and setEnv(); default false
 	SandboxDir   string            `yaml:"sandbox_dir"` // base path for file ops; empty = cwd
+
+	// YAMLStrict makes an unknown key in a .vgm.yaml extension a load failure
+	// (an explicit one aborts the scan) instead of a warning. Default false
+	// for this release; the default flips to true in the next minor.
+	YAMLStrict bool `yaml:"yaml_strict"`
+	// AllowLoadFailures lets a scan continue when an extension named with
+	// --ext or custom_dir fails to load (--ext-allow-failures). By default
+	// such a failure aborts the scan before any traffic.
+	AllowLoadFailures bool `yaml:"allow_load_failures"`
 }
 
 // ExecTimeout returns the max seconds for exec(), default 30, cap 120.

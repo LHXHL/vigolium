@@ -28,6 +28,7 @@ func httpHelperFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "csrf",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".csrf(url: string, opts?: {session?, field_names?, source?})",
 			Returns:     "{token, field_name, source} | null",
@@ -252,6 +253,7 @@ func httpHelperFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "followAuth",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".followAuth(opts: {type, token_url, client_id?, client_secret?, username?, password?, scope?, code?, redirect_uri?})",
 			Returns:     "HttpSession",
@@ -427,6 +429,7 @@ func httpHelperFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "retry",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".retry(request: string | FullRequestOptions, opts?: {max_retries?, backoff_ms?, retry_on?, until?})",
 			Returns:     "{status, headers, body, raw} | null",

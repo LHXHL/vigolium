@@ -37,4 +37,11 @@ type APIOptions struct {
 
 	// OASTService enables vigolium.oast.* API (nil = disabled)
 	OASTService *oast.Service
+
+	// Mode selects runtime wiring (the default) or load/lint wiring, where
+	// every non-pure handler is a recording stub. See Mode.
+	Mode Mode
+	// OnLoadEffect receives each stubbed effectful call in ModeLoad. Nil
+	// discards them.
+	OnLoadEffect func(EffectCall)
 }

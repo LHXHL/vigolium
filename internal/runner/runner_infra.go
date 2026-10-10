@@ -154,6 +154,11 @@ func (r *Runner) buildInfrastructure(ctx context.Context, plan NativeScanPlan) (
 		jsEngine, err := jsext.NewEngine(&r.settings.DynamicAssessment.Extensions, httpRequester, jsEngineOpts)
 		if err != nil {
 			zap.L().Warn("Failed to initialize JS extensions", zap.Error(err))
+		} else if loadErr := r.reportExtensionFailures(jsEngine); loadErr != nil {
+			// An extension named with --ext did not load: stop here, before the
+			// session login below sends the first request.
+			infra.Close()
+			return nil, loadErr
 		} else {
 			// Create hook chain if hooks are defined
 			preHooks := jsEngine.PreHooks()

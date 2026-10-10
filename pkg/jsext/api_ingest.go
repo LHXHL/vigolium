@@ -23,6 +23,7 @@ func ingestFuncDefs() []JSFuncDef {
 	return []JSFuncDef{
 		{
 			Namespace: NsIngest, Name: "url",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".url(url: string)", Returns: "IngestResult",
 			Description: "Ingest a single URL into the database. Fetches response if HTTP client is available.", Example: exIngestURL,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -59,6 +60,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "urls",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".urls(content: string)", Returns: "IngestBatchResult",
 			Description: "Ingest newline-separated URLs into the database.", Example: exIngestURLs,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -105,6 +107,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "curl",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".curl(command: string)", Returns: "IngestResult",
 			Description: "Parse a curl command and ingest into the database.", Example: exIngestCurl,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -141,6 +144,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "raw",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".raw(rawRequest: string, rawResponse?: string)", Returns: "IngestResult",
 			Description: "Ingest a raw HTTP request (and optional response) into the database.", Example: exIngestRaw,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -189,6 +193,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "openapi",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".openapi(spec: string, opts?: {base_url?: string})", Returns: "IngestBatchResult",
 			Description: "Parse an OpenAPI/Swagger spec and ingest all operations.", Example: exIngestOpenAPI,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {
@@ -243,6 +248,7 @@ func ingestFuncDefs() []JSFuncDef {
 		},
 		{
 			Namespace: NsIngest, Name: "postman",
+			Effect:   EffectDBWrite,
 			Category: CatIngest, Signature: ".postman(collection: string)", Returns: "IngestBatchResult",
 			Description: "Parse a Postman collection and ingest all requests.", Example: exIngestPostman,
 			MakeHandler: func(vm *sobek.Runtime, opts APIOptions) func(sobek.FunctionCall) sobek.Value {

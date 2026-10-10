@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/internal/runner"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/jsext"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -37,6 +40,20 @@ func applyGlobalExtFlagsToSettings(settings *config.Settings) {
 		settings.DynamicAssessment.Extensions.Enabled = true
 		settings.DynamicAssessment.Extensions.ExtensionDir = globalExtDir
 	}
+	if globalExtAllowFailures {
+		settings.DynamicAssessment.Extensions.AllowLoadFailures = true
+	}
+}
+
+// extensionLoadExitError maps the runner's *ExtensionLoadError — an extension
+// named with --ext failed to load, so the scan stopped before any traffic — to
+// exit 2 with error.code extension_load_failed. Other errors pass through.
+func extensionLoadExitError(err error) error {
+	var loadErr *runner.ExtensionLoadError
+	if !errors.As(err, &loadErr) {
+		return err
+	}
+	return clicommon.AsUsageError(clicommon.NewCodedError(apicontract.CodeExtensionLoadFailed, err))
 }
 
 // mergeAgentExtensionDir layers an agent-generated extension directory onto an
@@ -60,6 +77,7 @@ func mergeAgentExtensionDir(cfg *config.ExtensionsConfig, agentDir string) {
 		cfg.ExtensionDir = agentDir
 		return
 	}
+	appended := false
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -69,6 +87,14 @@ func mergeAgentExtensionDir(cfg *config.ExtensionsConfig, agentDir string) {
 			continue
 		}
 		cfg.CustomDir = append(cfg.CustomDir, filepath.Join(agentDir, name))
+		appended = true
+	}
+	// A custom_dir entry that fails to load stops the scan. Agent-generated
+	// files are best-effort, as they are when agentDir is the extension dir
+	// above, so one broken script must not stop the swarm's scan; the failure
+	// is still reported (extension.failed, scan.finished.extensions_failed).
+	if appended {
+		cfg.AllowLoadFailures = true
 	}
 }
 

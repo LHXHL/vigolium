@@ -72,6 +72,7 @@ var eventFields = map[string]contract.EventFields{
 	},
 	TypeScanPlan: {
 		Description: "The resolved scan plan, second on every stream (the same object `scan --dry-run` prints).",
+		Required:    []string{"plan"},
 	},
 	TypeScanSetup: {
 		Description: "A first-run install step (templates, browser): component, state started|finished|failed.",
@@ -111,8 +112,9 @@ var eventFields = map[string]contract.EventFields{
 		Optional:    []string{"module_id", "phase", "url", "error_kind", "message", "count"},
 	},
 	TypeExtensionFailed: {
-		Description: "An extension failed to load or run.",
-		Optional:    []string{"module_id", "message"},
+		Description: "An extension failed to load: stage is the load step that failed; explicit says it was named with --ext (the scan then stops, exit 2 extension_load_failed, unless --ext-allow-failures).",
+		Required:    []string{"path", "stage", "explicit", "message"},
+		Optional:    []string{"module_id"},
 	},
 }
 

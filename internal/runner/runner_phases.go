@@ -144,6 +144,7 @@ func (r *Runner) RunNativeScan() (err error) {
 	// scan-creation sites and only the runner knows the settings the matcher will
 	// actually be built from.
 	r.persistScopeOriginMode(ctx, infra.scanUUID)
+	r.persistExtensionFailures(ctx, infra)
 	// The resolved plan: scan.plan on the event stream (right after the CLI's
 	// scan.started, before any phase or the preflight sends a request) and
 	// scans.plan on the row. After the infrastructure, so the loaded

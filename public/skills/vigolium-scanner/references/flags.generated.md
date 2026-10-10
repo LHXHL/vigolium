@@ -159,6 +159,7 @@ and wins for that command — read it instead of the row here.
 | `--debug` | - | bool | `false` | Enable debug-level logging (includes outgoing HTTP request lines) |
 | `--dump-traffic` | - | bool | `false` | Print every HTTP request/response pair to stderr (Burp-style, bypasses logger) |
 | `--ext` | - | stringArray | - | Load JavaScript extension script (repeatable) |
+| `--ext-allow-failures` | - | bool | `false` | Scan even when an extension named with --ext fails to load (default: abort before any traffic, exit 2 extension_load_failed) |
 | `--ext-dir` | - | string | - | Override extension scripts directory |
 | `--force` | - | bool | `false` | Skip confirmation prompts |
 | `--format` | - | string | `console` | Output format (comma-separated for multiple): console, jsonl, html, report, pdf (headless Chrome), markdown (alias: md), sarif (SARIF 2.1.0), csv, junit (failures at/above --fail-on), github (workflow commands; stdout without -o), sqlite (alias: sqlite3, db; needs -S), fs (alias: file-system; flat traffic/finding tree) |
@@ -886,6 +887,8 @@ Validate extension files for syntax errors and unknown API calls
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--stdin` | - | bool | `false` | Read extension source from stdin |
+| `--stdin-kind` | - | string | - | Language of --stdin source: js, ts or yaml (default: sniffed — a top-level id:/type: YAML map without module.exports is yaml) |
+| `--strict` | - | bool | `false` | Treat warnings as errors (exit 1 on any issue) |
 
 ## vigolium extensions ls
 

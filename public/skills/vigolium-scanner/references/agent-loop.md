@@ -356,6 +356,7 @@ What each type is for:
 | `host.dead` | Every re-probe failed (`host_errors.max_trips`); nothing more is sent to `host` this scan. |
 | `finding.new` | Metadata only. Evidence lives in `db_path`; query it with `finding -j --with-records` afterwards. |
 | `oast.unavailable` | OAST registration with the interactsh server failed or did not finish within 3s of `dynamic-assessment` starting. `message` names the server and cause (`oast.pro: dial timeout`). Blind/out-of-band checks did not run; the phase carries the `oast_unavailable` reason and the scan is `partial`. |
+| `extension.failed` | An extension failed to load: `module_id` (when its metadata loaded), `path`, `stage` (`read`/`transpile`/`compile`/`metadata`/`schema`/`unknown_type`/`module`), `explicit` (named with `--ext`: the scan then stops, exit 2 `extension_load_failed`, unless `--ext-allow-failures`), `message`. Run failures arrive with `module.error`. |
 | `error` | A phase failed and the scan **carried on** — non-fatal by construction. A failure that ends the run rides on `scan.finished{status:"failed"}` instead, so this is never a reason to abandon a run that is still producing findings. |
 | `phase.finished` | `status` plus `reasons`/`limits` (below) for that phase. |
 | `scan.interrupting` | **Nonterminal.** A shutdown began (SIGINT/SIGTERM). The terminal event still follows — do not treat this as the end of the stream. |
@@ -374,7 +375,6 @@ them while they are missing.
 |---|---|---|
 | `scan.setup` | A first-run install step: `component`, `state` (`started`/`finished`/`failed`), `bytes`, `duration_ms`. | v0.7 |
 | `module.error` | Module failures, rate-limited: `module_id`, `phase`, `url`, `error_kind` (`exception`/`timeout`/`panic`/`load`), `message`, `count`. | v0.7 |
-| `extension.failed` | An extension failed to load or run: `module_id`, `message`. | v0.6 |
 
 | Field | On | Means | Emitted from |
 |---|---|---|---|
@@ -382,7 +382,7 @@ them while they are missing.
 | `requests_in_scope` | `phase.progress`, `phase.finished` | The in-scope share of `requests_sent` (the browser crawl also counts third-party requests). Only on `spidering` and `targeted-respider`. | next release |
 | `records_basis` | `scan.finished` | Absent: `records_written` counts records stamped with this scan. `time_window`: records created since the scan started (approximate on a shared DB). | v0.6 |
 | `exports` | `scan.finished` | `[{format, path}]` for every file the scan wrote. | v0.6 |
-| `module_errors` / `extensions_failed` | `scan.finished` | Error count per module id; extensions that failed to load. | v0.7 |
+| `module_errors` | `scan.finished` | Error count per module id. | v0.7 |
 
 ### Terminal `status` values
 

@@ -113,12 +113,18 @@ func TestLoadExtension_FileNotFound(t *testing.T) {
 }
 
 func TestLoadFromDir(t *testing.T) {
-	defs, err := loadFromDir(testdataDir())
+	defs, failures, err := loadFromDir(testdataDir(), false)
 	require.NoError(t, err)
 	// Should load all valid .vgm.yaml files, skip invalid ones (with warnings)
 	// We have: active_scanner, passive_scanner, pre_hook, post_hook, skip_extensions_hook, drop_hook = 6 valid
-	// Plus 2 invalid files that get skipped
+	// Plus 2 invalid files that get skipped, and are reported as directory
+	// (not explicit) failures.
 	assert.GreaterOrEqual(t, len(defs), 6)
+	assert.GreaterOrEqual(t, len(failures), 2)
+	for _, f := range failures {
+		assert.False(t, f.Explicit, "%s", f.Path)
+		assert.NotEmpty(t, f.Stage, "%s", f.Path)
+	}
 
 	// Verify we have at least one of each type
 	types := map[string]bool{}

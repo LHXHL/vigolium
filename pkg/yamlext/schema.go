@@ -37,10 +37,15 @@ type ExtensionDef struct {
 	Script string `yaml:"script"`
 
 	sourcePath string // set during loading, not from YAML
+	explicit   bool   // named via --ext / custom_dir rather than found in the extension dir
 }
 
 // SourcePath returns the file path the extension was loaded from.
 func (d *ExtensionDef) SourcePath() string { return d.sourcePath }
+
+// Explicit reports whether the extension was named directly (--ext,
+// extensions.custom_dir) rather than found in the extension directory.
+func (d *ExtensionDef) Explicit() bool { return d.explicit }
 
 // MatcherDef defines a single match condition.
 type MatcherDef struct {

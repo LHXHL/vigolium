@@ -94,6 +94,7 @@ func httpCacheFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "cache",
+			Effect:      EffectPure,
 			Category:    CatHTTP,
 			Signature:   ".cache(opts?: {ttl_ms?, max_entries?})",
 			Returns:     "void",
@@ -125,6 +126,7 @@ func httpCacheFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "clearCache",
+			Effect:      EffectPure,
 			Category:    CatHTTP,
 			Signature:   ".clearCache()",
 			Returns:     "void",
@@ -140,6 +142,7 @@ func httpCacheFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "cachedGet",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".cachedGet(url: string, opts?: {headers})",
 			Returns:     "HttpResponse",
@@ -181,6 +184,7 @@ func httpCacheFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "cachedRequest",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".cachedRequest(opts: {method?, url, headers?, body?})",
 			Returns:     "HttpResponse",

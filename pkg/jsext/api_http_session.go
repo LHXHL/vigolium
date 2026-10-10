@@ -347,6 +347,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "session",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".session(opts?: {headers, cookies})",
 			Returns:     "HttpSession",
@@ -386,6 +387,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "login",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".login(opts: {url, method?, body?, content_type?, headers?, extract?})",
 			Returns:     "HttpSession",
@@ -528,6 +530,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "batch",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".batch(requests: FullRequestOptions[], opts?: {concurrency})",
 			Returns:     "HttpResponse[]",
@@ -642,6 +645,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "replay",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".replay(rawRequest: string, variations: object[])",
 			Returns:     "HttpResponse[]",
@@ -691,6 +695,7 @@ func httpSessionFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsHTTP,
 			Name:        "sequence",
+			Effect:      EffectNetwork,
 			Category:    CatHTTP,
 			Signature:   ".sequence(steps: SequenceStep[])",
 			Returns:     "{responses, variables, success}",
@@ -1152,6 +1157,7 @@ func tokenUtilsFuncDefs() []JSFuncDef {
 		{
 			Namespace:   NsUtils,
 			Name:        "extractToken",
+			Effect:      EffectPure,
 			Category:    "Utils",
 			Signature:   ".extractToken(response: HttpResponse, rules: ExtractRule[])",
 			Returns:     "Record<string, string>",

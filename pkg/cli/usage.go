@@ -111,7 +111,7 @@ type flagGroup struct {
 var globalFlagGroups = []flagGroup{
 	{"Output", []string{"verbose", "silent", "debug", "dump-traffic", "log-file", "json", "pretty", "format", "ci-output-format", "color", "no-color", "width"}},
 	{"Network", []string{"proxy"}},
-	{"Extensions", []string{"ext", "ext-dir"}},
+	{"Extensions", []string{"ext", "ext-dir", "ext-allow-failures"}},
 	{"Project", []string{"project-uuid", "project-name"}},
 	{"Info", []string{"list-modules", "list-input-mode", "full-example"}},
 	{"Configuration", []string{"config", "db", "read-only", "force", "scan-uuid", "mem-limit", "skip-dependency-check", "soft-fail"}},

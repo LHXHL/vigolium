@@ -98,8 +98,9 @@ var (
 	globalFullExample bool
 
 	// On-demand extension loading
-	globalExtScripts []string // --ext
-	globalExtDir     string   // --ext-dir
+	globalExtScripts       []string // --ext
+	globalExtDir           string   // --ext-dir
+	globalExtAllowFailures bool     // --ext-allow-failures
 
 	// Stateless mode
 	globalStateless   bool
@@ -362,6 +363,7 @@ func init() {
 	pf.BoolVar(&globalFullExample, "full-example", false, "Show full example commands organized by section")
 	pf.StringArrayVar(&globalExtScripts, "ext", nil, "Load JavaScript extension script (repeatable)")
 	pf.StringVar(&globalExtDir, "ext-dir", "", "Override extension scripts directory")
+	pf.BoolVar(&globalExtAllowFailures, "ext-allow-failures", false, "Scan even when an extension named with --ext fails to load (default: abort before any traffic, exit 2 extension_load_failed)")
 	pf.StringVar(&globalProjectUUID, "project-uuid", "", "Project UUID to scope all operations to (defaults to the default project). Also honors $VIGOLIUM_PROJECT_UUID")
 	pf.StringVar(&globalProjectName, "project-name", "", "Project name to scope all operations to (must match exactly one project). Also honors $VIGOLIUM_PROJECT_NAME")
 }

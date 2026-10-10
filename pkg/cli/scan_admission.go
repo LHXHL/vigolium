@@ -125,7 +125,7 @@ func codedScanError(err error) error {
 	if errors.As(err, &unreachable) {
 		return noTargetsReachableError(unreachable.Unreachable, unreachable.Hint)
 	}
-	return err
+	return extensionLoadExitError(err)
 }
 
 // printTargetAdmission writes the banner's scope line under the Targets line:
