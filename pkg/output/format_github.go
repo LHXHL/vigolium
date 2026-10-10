@@ -32,7 +32,7 @@ const githubStepSummaryLimit = 1<<20 - 64<<10
 // runner reads workflow commands from; any other path writes a file. When
 // GITHUB_STEP_SUMMARY is set, the Markdown report is appended to it as well.
 func GenerateGitHubAnnotations(items []any, outputPath string, meta HTMLReportMeta) error {
-	findings := collectReportFindings(items)
+	findings := collectFindingViews(items)
 	render := func(w io.Writer) error { return writeGitHubAnnotations(w, findings) }
 	if outputPath == "" {
 		bw := bufio.NewWriter(reportStdout)
@@ -53,7 +53,7 @@ func GenerateGitHubAnnotations(items []any, outputPath string, meta HTMLReportMe
 	return nil
 }
 
-func writeGitHubAnnotations(w io.Writer, findings []ReportFinding) error {
+func writeGitHubAnnotations(w io.Writer, findings []FindingView) error {
 	live := findings[:0:0]
 	for _, f := range findings {
 		if !isDismissedStatus(f.Status) {
@@ -87,7 +87,7 @@ func githubLevel(sev string) string {
 	}
 }
 
-func githubAnnotation(f ReportFinding) string {
+func githubAnnotation(f FindingView) string {
 	var props []string
 	if f.SourceFile != "" {
 		file, line, col := splitSourceRef(strings.TrimSpace(f.SourceFile))
@@ -101,11 +101,13 @@ func githubAnnotation(f ReportFinding) string {
 			}
 		}
 	}
-	title := fmt.Sprintf("[%s] %s", f.Severity, f.ModuleName)
+	title := fmt.Sprintf("[%s] %s", f.Severity, f.Name())
 	props = append(props, "title="+githubEscapeProperty(title))
 
+	// The message names the finding by the finding view's keys, so each handle
+	// is what `vigolium finding` takes (--id, a finding_hash prefix).
 	var msg strings.Builder
-	msg.WriteString(f.ModuleName)
+	msg.WriteString(f.Name())
 	if f.URL != "" {
 		msg.WriteString(" at ")
 		msg.WriteString(f.URL)
@@ -115,10 +117,10 @@ func githubAnnotation(f ReportFinding) string {
 		ids = append(ids, "finding_hash "+shortHash(f.FindingHash))
 	}
 	if f.ID > 0 {
-		ids = append(ids, "id "+strconv.Itoa(f.ID))
+		ids = append(ids, "id "+strconv.FormatInt(f.ID, 10))
 	}
 	if f.ModuleID != "" {
-		ids = append(ids, "module "+f.ModuleID)
+		ids = append(ids, "module_id "+f.ModuleID)
 	}
 	if len(ids) > 0 {
 		msg.WriteString(" (" + strings.Join(ids, ", ") + ")")

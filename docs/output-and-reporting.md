@@ -158,10 +158,11 @@ gh api /repos/{owner}/{repo}/code-scanning/sarifs \
 ### CSV, JUnit and GitHub annotations (CI)
 
 `--format csv` writes one row per finding with the columns `id`,
-`finding_hash`, `severity`, `confidence`, `module_id`, `title`, `url`,
-`matched_at`, `host`, `method`, `scan_uuid`, `record_uuids`, `status`,
-`cwe_id`, `found_at` and `created_at` (multi-valued cells are joined with
-`; `). Cells are quoted by a standard CSV writer, and a cell that starts with
+`finding_hash`, `severity`, `confidence`, `module_id`, `module_name`, `short`,
+`url`, `hostname`, `matched_at`, `scan_uuid`, `http_record_uuids`, `status`,
+`cwe_id`, `source_file`, `repo_name` and `found_at` (multi-valued cells are
+joined with `; `). Every column is a key of the finding view `vigolium finding
+-j` prints and holds the same value, so a column means the same thing in both. Cells are quoted by a standard CSV writer, and a cell that starts with
 `=`, `+`, `-`, `@`, TAB or CR gets a leading `'` so a spreadsheet shows it as
 text instead of evaluating it. `db export --format csv` (HTTP records) uses the
 same writer.
@@ -172,7 +173,9 @@ same writer.
 always use `low`). Findings below the threshold are listed in the testcase's
 `system-out`, and a testcase whose findings are all `false_positive` or
 `accepted_risk` is `<skipped>`. Every failure names its `finding_hash`, so CI
-history tracks a finding across runs.
+history tracks a finding across runs; its body lists the finding as
+`key: value` lines under the same finding view keys (`id`, `finding_hash`,
+`module_id`, `scan_uuid`, `http_record_uuids`, ...).
 
 `--format github` prints one GitHub Actions workflow command per finding:
 `::error` for critical/high, `::warning` for medium/low, `::notice` for

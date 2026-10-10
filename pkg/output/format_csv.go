@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/csv"
 	"io"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -56,26 +55,26 @@ func SanitizeCSVField(field string) string {
 	return field
 }
 
-// FindingCSVColumns is the header of the findings CSV, in column order. The
-// names are the finding view's JSON keys, so a column means the same thing here
-// as in `vigolium finding -j`.
+// FindingCSVColumns is the header of the findings CSV, in column order. Every
+// column is a key of the finding view `vigolium finding -j` prints and carries
+// the same value, so a column means the same thing here as there.
 var FindingCSVColumns = []string{
-	"id", "finding_hash", "severity", "confidence", "module_id", "title",
-	"url", "matched_at", "host", "method", "scan_uuid", "record_uuids",
-	"status", "cwe_id", "found_at", "created_at",
+	"id", "finding_hash", "severity", "confidence", "module_id", "module_name",
+	"short", "url", "hostname", "matched_at", "scan_uuid", "http_record_uuids",
+	"status", "cwe_id", "source_file", "repo_name", "found_at",
 }
 
 // GenerateCSVReport writes the findings of an export item set as CSV, one row
-// per finding in item order. Multi-valued cells (matched_at, record_uuids) are
-// joined with "; ".
+// per finding in item order. Multi-valued cells (matched_at,
+// http_record_uuids) are joined with "; ".
 func GenerateCSVReport(items []any, outputPath string, meta HTMLReportMeta) error {
-	findings := collectReportFindings(items)
+	findings := collectFindingViews(items)
 	return writeReportFile(outputPath, func(w io.Writer) error {
 		return writeFindingsCSV(w, findings)
 	})
 }
 
-func writeFindingsCSV(w io.Writer, findings []ReportFinding) error {
+func writeFindingsCSV(w io.Writer, findings []FindingView) error {
 	cw := NewSafeCSVWriter(w)
 	if err := cw.Write(FindingCSVColumns); err != nil {
 		return err
@@ -83,7 +82,7 @@ func writeFindingsCSV(w io.Writer, findings []ReportFinding) error {
 	for _, f := range findings {
 		id := ""
 		if f.ID > 0 {
-			id = strconv.Itoa(f.ID)
+			id = strconv.FormatInt(f.ID, 10)
 		}
 		row := []string{
 			id,
@@ -92,51 +91,23 @@ func writeFindingsCSV(w io.Writer, findings []ReportFinding) error {
 			f.Confidence,
 			f.ModuleID,
 			f.ModuleName,
+			f.Short,
 			f.URL,
+			f.Hostname,
 			strings.Join(f.MatchedAt, "; "),
-			findingHost(f),
-			requestMethod(f.Request),
 			f.ScanUUID,
-			strings.Join(f.RecordUUIDs, "; "),
+			strings.Join(f.HTTPRecordUUIDs, "; "),
 			f.Status,
-			f.CWE,
+			f.CWEID,
+			f.SourceFile,
+			f.RepoName,
 			f.FoundAt,
-			f.CreatedAt,
 		}
 		if err := cw.Write(row); err != nil {
 			return err
 		}
 	}
 	return cw.Flush()
-}
-
-// findingHost is the finding's host for grouping and display: the stored
-// hostname, else the URL's host, else the source file's repository for code
-// findings.
-func findingHost(f ReportFinding) string {
-	if f.Hostname != "" {
-		return f.Hostname
-	}
-	if u, err := url.Parse(f.URL); err == nil && u.Hostname() != "" {
-		return u.Hostname()
-	}
-	return f.RepoName
-}
-
-// requestMethod reads the HTTP method off a raw request's first line, or ""
-// when the finding carries no request.
-func requestMethod(raw string) string {
-	line, _, _ := strings.Cut(strings.TrimLeft(raw, "\r\n "), "\n")
-	method, _, ok := strings.Cut(strings.TrimSpace(line), " ")
-	if !ok || method == "" {
-		return ""
-	}
-	for _, r := range method {
-		if (r < 'A' || r > 'Z') && r != '-' {
-			return ""
-		}
-	}
-	return method
 }
 
 // writeReportFile stages a report through atomicfile so a failed render never

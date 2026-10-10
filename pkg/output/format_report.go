@@ -301,28 +301,6 @@ func parseFinding(data json.RawMessage, md goldmark.Markdown) ReportFinding {
 	}
 }
 
-// collectReportFindings decodes the finding envelopes of an export item set in
-// item order, without the HTML description rendering buildReportData does.
-// Used by the tabular renderers (csv, junit, github).
-func collectReportFindings(items []any) []ReportFinding {
-	var out []ReportFinding
-	for _, item := range items {
-		raw, err := json.Marshal(item)
-		if err != nil {
-			continue
-		}
-		var envelope struct {
-			Type string          `json:"type"`
-			Data json.RawMessage `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Type != "finding" {
-			continue
-		}
-		out = append(out, parseFinding(envelope.Data, nil))
-	}
-	return out
-}
-
 // truncateStr caps s at maxLen bytes plus a "..." marker, never splitting a
 // UTF-8 sequence (a split rune would make SARIF/JSON output invalid).
 func truncateStr(s string, maxLen int) string {

@@ -82,7 +82,7 @@ type junitSkipped struct {
 // failure carries its finding_hash, so a CI history tracks the same finding
 // across runs; ordering is deterministic.
 func GenerateJUnitReport(items []any, outputPath string, meta HTMLReportMeta) error {
-	doc := buildJUnitReport(collectReportFindings(items), meta)
+	doc := buildJUnitReport(collectFindingViews(items), meta)
 	return writeReportFile(outputPath, func(w io.Writer) error {
 		return writeJUnitXML(w, doc)
 	})
@@ -109,7 +109,7 @@ func junitThreshold(failOn string) (string, severity.Severity) {
 	return name, severity.ToSeverity(name)
 }
 
-func buildJUnitReport(findings []ReportFinding, meta HTMLReportMeta) junitTestSuites {
+func buildJUnitReport(findings []FindingView, meta HTMLReportMeta) junitTestSuites {
 	thresholdName, threshold := junitThreshold(meta.FailOn)
 	title := meta.Title
 	if title == "" {
@@ -117,13 +117,13 @@ func buildJUnitReport(findings []ReportFinding, meta HTMLReportMeta) junitTestSu
 	}
 
 	type caseKey struct{ module, host string }
-	byCase := map[caseKey][]ReportFinding{}
+	byCase := map[caseKey][]FindingView{}
 	for _, f := range findings {
 		module := f.ModuleID
 		if module == "" {
 			module = "unknown-module"
 		}
-		host := findingHost(f)
+		host := f.GroupHost()
 		if host == "" {
 			host = "(no host)"
 		}
@@ -167,7 +167,7 @@ func buildJUnitReport(findings []ReportFinding, meta HTMLReportMeta) junitTestSu
 	return doc
 }
 
-func buildJUnitCase(module, host string, findings []ReportFinding, threshold severity.Severity) junitTestCase {
+func buildJUnitCase(module, host string, findings []FindingView, threshold severity.Severity) junitTestCase {
 	// Most severe first, then by hash, so the order is stable across runs.
 	sort.SliceStable(findings, func(i, j int) bool {
 		si, sj := severity.ToSeverity(findings[i].Severity), severity.ToSeverity(findings[j].Severity)
@@ -203,12 +203,12 @@ func buildJUnitCase(module, host string, findings []ReportFinding, threshold sev
 	return tc
 }
 
-// junitFindingLine is the one-line identity of a finding: severity, title,
+// junitFindingLine is the one-line identity of a finding: severity, name,
 // location and the finding_hash prefix that names it across databases.
-func junitFindingLine(f ReportFinding) string {
+func junitFindingLine(f FindingView) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[%s] %s", f.Severity, f.ModuleName)
-	if loc := findingLocation(f); loc != "" {
+	fmt.Fprintf(&b, "[%s] %s", f.Severity, f.Name())
+	if loc := f.Location(); loc != "" {
 		b.WriteString(" at ")
 		b.WriteString(loc)
 	}
@@ -218,7 +218,9 @@ func junitFindingLine(f ReportFinding) string {
 	return b.String()
 }
 
-func junitFailureBody(f ReportFinding) string {
+// junitFailureBody lists the finding's identity as key: value lines, keyed by
+// the finding view's JSON keys (`vigolium finding -j`).
+func junitFailureBody(f FindingView) string {
 	var lines []string
 	add := func(k, v string) {
 		if v != "" {
@@ -226,28 +228,21 @@ func junitFailureBody(f ReportFinding) string {
 		}
 	}
 	if f.ID > 0 {
-		add("finding_id", strconv.Itoa(f.ID))
+		add("id", strconv.FormatInt(f.ID, 10))
 	}
 	add("finding_hash", f.FindingHash)
 	add("severity", f.Severity)
 	add("confidence", f.Confidence)
 	add("module_id", f.ModuleID)
 	add("url", f.URL)
+	add("hostname", f.Hostname)
 	add("source_file", f.SourceFile)
 	add("matched_at", strings.Join(f.MatchedAt, ", "))
 	add("scan_uuid", f.ScanUUID)
-	add("record_uuids", strings.Join(f.RecordUUIDs, ", "))
+	add("http_record_uuids", strings.Join(f.HTTPRecordUUIDs, ", "))
 	add("status", f.Status)
-	add("cwe_id", f.CWE)
+	add("cwe_id", f.CWEID)
 	return strings.Join(lines, "\n")
-}
-
-// findingLocation is where a finding points: its URL, else its source file.
-func findingLocation(f ReportFinding) string {
-	if f.URL != "" {
-		return f.URL
-	}
-	return f.SourceFile
 }
 
 // shortHash is the 12-character finding_hash prefix — the shortest prefix

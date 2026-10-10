@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -223,4 +224,56 @@ func TestDirectScanRowsPerInputAndPinned(t *testing.T) {
 	assert.Equal(t, 1, n)
 	pinned.close()
 	sess.close()
+}
+
+// Regression: the direct path's request budget used to be wired only inside
+// setupScanHTTPStack's error branch, so `scan-url --max-requests 3` ran
+// unbudgeted. A direct run sends at most 3 requests, and its row (and result)
+// is partial with stop reason request_budget.
+func TestDirectScanMaxRequestsBudget(t *testing.T) {
+	directRowFixture(t)
+	savedMax, savedHost := scanOpts.MaxRequests, scanOpts.MaxRequestsPerHost
+	t.Cleanup(func() { scanOpts.MaxRequests, scanOpts.MaxRequestsPerHost = savedMax, savedHost })
+	scanOpts.MaxRequests, scanOpts.MaxRequestsPerHost = 3, 0
+	// Request-hungry active modules: together they want far more than 3.
+	globalModules = []string{"backup-file-discovery", "http-method-tampering", "crlf-injection", "common-directory-listing"}
+
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body>hello</body></html>"))
+	}))
+	t.Cleanup(srv.Close)
+
+	in := directInput(t, srv.URL+"/index.php?q=1")
+	sess := newDirectScanSession(database.ScanNameScanURL, []scanInput{in})
+	t.Cleanup(sess.close)
+	require.NotNil(t, sess.budget, "--max-requests builds the invocation budget")
+
+	result, err := executeDirectScan(context.Background(), sess, in.rr, in.target, in.method)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.LessOrEqual(t, hits.Load(), int64(3), "the budget caps what reaches the target")
+	assert.True(t, sess.budget.Exhausted(), "the modules wanted more than the budget")
+
+	row := scanRow(t, result.ScanUUID)
+	assert.Equal(t, database.CompletenessPartial, row.Completeness)
+	assert.Equal(t, database.ReasonRequestBudget, row.StopReason)
+
+	// The -j scan document reads the row back and says the same.
+	builder := newScanDocBuilder("scan-url")
+	builder.AddDirect(result, nil)
+	doc, err := encodeAgentJSON(builder.envelope())
+	require.NoError(t, err)
+	var decoded struct {
+		Completeness string   `json:"completeness"`
+		StopReason   string   `json:"stop_reason"`
+		Reasons      []string `json:"reasons"`
+	}
+	require.NoError(t, json.Unmarshal(doc, &decoded))
+	assert.Equal(t, database.CompletenessPartial, decoded.Completeness)
+	assert.Equal(t, database.ReasonRequestBudget, decoded.StopReason)
+	assert.Contains(t, decoded.Reasons, database.ReasonRequestBudget)
 }

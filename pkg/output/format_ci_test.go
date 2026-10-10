@@ -18,7 +18,10 @@ import (
 
 // ciFixtureItems is the seeded finding set behind the csv/junit/github goldens:
 // two modules, one with two hosts, a below-threshold info finding, a dismissed
-// finding, a code finding with a source line, and hostile cell content.
+// finding, a code finding with a source line, and hostile cell content. Most
+// rows are stored-finding JSON (database.Finding, what export emits); finding
+// 13 is a rendered finding view (`short`, not `module_short`), and both read
+// the same.
 func ciFixtureItems() []any {
 	finding := func(fields map[string]any) any {
 		return map[string]any{"type": "finding", "data": fields}
@@ -37,11 +40,11 @@ func ciFixtureItems() []any {
 		}),
 		finding(map[string]any{
 			"id": 13, "module_id": "sqli-error", "module_name": "SQL Injection (error-based)",
-			"module_short": "Error-based SQL injection", "severity": "critical", "confidence": "certain",
+			"short": "Error-based SQL injection", "severity": "critical", "confidence": "certain",
 			"url": "https://api.example/v1/users", "hostname": "api.example",
 			"request":      "POST /v1/users HTTP/1.1\nHost: api.example\n\n",
 			"finding_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "scan_uuid": "scan-1",
-			"status": "confirmed", "found_at": "2026-10-10T00:00:02Z",
+			"status": "confirmed", "found_at": "2026-10-10T00:00:02.123456789Z",
 		}),
 		finding(map[string]any{
 			"id": 14, "module_id": "tech-detect", "module_name": "Technology =HYPERLINK(\"x\")",
@@ -95,13 +98,16 @@ func TestGenerateCSVReportGolden(t *testing.T) {
 		t.Fatalf("no column %s", name)
 		return -1
 	}
-	assert.Equal(t, "rec-1; rec-2", rows[1][col("record_uuids")])
-	assert.Equal(t, "GET", rows[1][col("method")])
-	assert.Equal(t, "shop.example", rows[1][col("host")])
+	assert.Equal(t, "rec-1; rec-2", rows[1][col("http_record_uuids")])
+	assert.Equal(t, "shop.example", rows[1][col("hostname")])
 	assert.Equal(t, "scan-1", rows[1][col("scan_uuid")])
+	assert.Equal(t, "Error-based SQL injection", rows[1][col("short")], "module_short of a stored row")
+	assert.Equal(t, "Error-based SQL injection", rows[2][col("short")], "short of a finding view")
+	assert.Equal(t, "2026-10-10T00:00:02Z", rows[2][col("found_at")], "found_at in the finding view's RFC 3339 form")
 	assert.Equal(t, "'+cmd|' /C calc'!A0; @SUM(1,1)", rows[3][col("matched_at")],
 		"a formula-leading cell is neutralized; only the leading character matters")
-	assert.Equal(t, "shop-api", rows[5][col("host")], "code findings fall back to the repository")
+	assert.Equal(t, "shop-api", rows[5][col("repo_name")])
+	assert.Equal(t, "/src/shop-api/app/config.py:42", rows[5][col("source_file")])
 }
 
 func TestSanitizeCSVField(t *testing.T) {
@@ -149,7 +155,7 @@ func TestGenerateJUnitReportGolden(t *testing.T) {
 }
 
 func TestJUnitThresholdDefaultsAndSkips(t *testing.T) {
-	findings := collectReportFindings(ciFixtureItems())
+	findings := collectFindingViews(ciFixtureItems())
 	doc := buildJUnitReport(findings, HTMLReportMeta{})
 	assert.Equal(t, 3, doc.Failures, "default threshold is low: info does not fail")
 	assert.Equal(t, DefaultJUnitFailOn, doc.Suites[0].Properties[0].Value)
@@ -157,7 +163,7 @@ func TestJUnitThresholdDefaultsAndSkips(t *testing.T) {
 	doc = buildJUnitReport(findings, HTMLReportMeta{FailOn: "critical"})
 	assert.Equal(t, 1, doc.Failures)
 
-	dismissed := []ReportFinding{{ModuleID: "m", Hostname: "h", Severity: "high", Status: "accepted_risk"}}
+	dismissed := []FindingView{{ModuleID: "m", Hostname: "h", Severity: "high", Status: "accepted_risk"}}
 	doc = buildJUnitReport(dismissed, HTMLReportMeta{})
 	require.Len(t, doc.Suites, 1)
 	assert.NotNil(t, doc.Suites[0].Cases[0].Skipped)

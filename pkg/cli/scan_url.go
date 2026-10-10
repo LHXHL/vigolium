@@ -513,15 +513,16 @@ func setupScanHTTPStack(budget *egress.Budget) (*http.Requester, *services.Servi
 		DisablePreArm: opts.NoWafPacing,
 	})
 	svc.HostLimiter = hostLimiter
-
-	httpRequester, err := http.NewRequester(opts, svc)
-	if err != nil {
 	// The request budget rides on the gate, as on the Runner path. A refused
 	// request fails fast; this path does not cancel the run, it lets the
 	// remaining module requests be refused and reports the row partial
-	// (runner.ApplyRequestBudget).
+	// (runner.ApplyRequestBudget). Set before NewRequester, which binds the
+	// gate it finds on svc.
 	svc.Egress = egress.New(egress.Config{Rate: svc.RateLimiter, Hosts: hostLimiter, Breaker: svc.HostErrors}).
 		WithBudget(budget)
+
+	httpRequester, err := http.NewRequester(opts, svc)
+	if err != nil {
 		dedupMgr.Close()
 		_ = hostLimiter.Close()
 		return nil, nil, nil, fmt.Errorf("failed to create HTTP requester: %w", err)
@@ -1159,10 +1160,10 @@ func runRunnerScan(sess *directScanSession, rr *httpmsg.HttpRequestResponse, tar
 		settings.Database.SQLite.Path = globalDB
 	}
 	applyGlobalExtFlagsToSettings(settings)
+	applyRequestBudgetConfig(settings, opts)
 
 	// Validate database config
 	if err := settings.Database.Validate(); err != nil {
-	applyRequestBudgetConfig(settings, opts)
 		return fmt.Errorf("invalid database configuration: %w", err)
 	}
 	if err := settings.DynamicAssessment.Extensions.Validate(); err != nil {
