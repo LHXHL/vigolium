@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/vigolium/vigolium/pkg/proxytarget"
 	"github.com/vigolium/vigolium/pkg/types"
 )
 
@@ -18,9 +19,9 @@ func TestLoginTransport_FollowsTheProxyFlag(t *testing.T) {
 	opts := types.DefaultOptions()
 	opts.ProxyURL = "http://127.0.0.1:8080"
 
-	tr, ok := LoginTransport(opts).(*http.Transport)
+	tr, ok := proxytarget.Base(LoginTransport(opts))
 	if !ok {
-		t.Fatalf("LoginTransport returned %T, want *http.Transport", LoginTransport(opts))
+		t.Fatalf("LoginTransport returned %T, want an *http.Transport underneath", LoginTransport(opts))
 	}
 	if tr.Proxy == nil {
 		t.Fatal("no proxy configured from --proxy")
@@ -44,7 +45,7 @@ func TestLoginTransport_FollowsTheProxyFlag(t *testing.T) {
 func TestLoginTransport_ProxiesLocalhostToo(t *testing.T) {
 	opts := types.DefaultOptions()
 	opts.ProxyURL = "http://127.0.0.1:8080"
-	tr := LoginTransport(opts).(*http.Transport)
+	tr := loginBase(t, opts)
 
 	req, err := http.NewRequest(http.MethodPost, "http://localhost:3000/rest/user/login", nil)
 	if err != nil {
@@ -62,7 +63,7 @@ func TestLoginTransport_ProxiesLocalhostToo(t *testing.T) {
 // Target traffic accepts self-signed and expired certs, and a target that
 // presents one on /admin presents it on /login too.
 func TestLoginTransport_AcceptsTargetCerts(t *testing.T) {
-	tr := LoginTransport(nil).(*http.Transport)
+	tr := loginBase(t, nil)
 	if tr.TLSClientConfig == nil || !tr.TLSClientConfig.InsecureSkipVerify {
 		t.Error("login TLS must match target-traffic policy (InsecureSkipVerify)")
 	}
@@ -82,7 +83,7 @@ func TestLoginTransport_AcceptsTargetCerts(t *testing.T) {
 func TestLoginTransport_HonoursSNI(t *testing.T) {
 	opts := types.DefaultOptions()
 	opts.SNI = "internal.target.test"
-	tr := LoginTransport(opts).(*http.Transport)
+	tr := loginBase(t, opts)
 	if tr.TLSClientConfig.ServerName != "internal.target.test" {
 		t.Errorf("ServerName = %q, want the --sni override", tr.TLSClientConfig.ServerName)
 	}
@@ -93,7 +94,7 @@ func TestLoginTransport_HonoursSNI(t *testing.T) {
 func TestLoginTransport_InvalidProxyIsIgnored(t *testing.T) {
 	opts := types.DefaultOptions()
 	opts.ProxyURL = "ht tp://nope"
-	tr := LoginTransport(opts).(*http.Transport)
+	tr := loginBase(t, opts)
 	if tr.Proxy != nil {
 		t.Error("an unparseable proxy must not be installed")
 	}
@@ -116,6 +117,17 @@ func TestLoginTransport_RoundTrips(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("status = %d, want 204", resp.StatusCode)
 	}
+}
+
+// loginBase returns the *http.Transport LoginTransport builds, looking through
+// the proxytarget wrapper a proxied transport carries.
+func loginBase(t *testing.T, opts *types.Options) *http.Transport {
+	t.Helper()
+	tr, ok := proxytarget.Base(LoginTransport(opts))
+	if !ok {
+		t.Fatalf("LoginTransport returned %T, want an *http.Transport underneath", LoginTransport(opts))
+	}
+	return tr
 }
 
 // proxyEnvSet reports whether the environment carries a proxy, so the

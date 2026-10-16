@@ -340,8 +340,11 @@ func (p *proxyHandler) serveDecrypted(tlsConn *tls.Conn, hostPort string) {
 		req.URL.Scheme = "https"
 		req.URL.Host = req.Host
 		if req.URL.Host == "" {
+			// An HTTP/1.0 client may send no Host. Use the CONNECT authority,
+			// which keeps a non-default port (the upstream names its origin by
+			// it); only https's own :443 is implied and dropped.
 			req.URL.Host = hostPort
-			req.Host = host
+			req.Host = strings.TrimSuffix(hostPort, ":443")
 		}
 		req.RequestURI = "" // must be empty on a client request
 		req.Header.Del("Proxy-Connection")

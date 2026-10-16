@@ -115,9 +115,10 @@ func TestRawRequestTarget_WritesLiteralRequestLine(t *testing.T) {
 		t.Errorf("request line = %q, want %q", fl, wantLine)
 	}
 	// Connection went to the listener (real host), and the Host header is the
-	// real host with its port stripped by the requester — NOT the target host.
-	if h := headerValue(got, "Host"); !strings.HasPrefix(h, "127.0.0.1") {
-		t.Errorf("Host header = %q, want it to name the connection host 127.0.0.1", h)
+	// request's own — the real host with its non-default port, NOT the target
+	// host. A Host without the port names a different origin (RFC 9110 §7.2).
+	if h := headerValue(got, "Host"); h != addr {
+		t.Errorf("Host header = %q, want the connection authority %q", h, addr)
 	}
 }
 

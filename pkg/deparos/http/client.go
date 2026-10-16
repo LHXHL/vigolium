@@ -8,6 +8,7 @@ import (
 
 	"github.com/vigolium/vigolium/pkg/deparos/responsechain"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/proxytarget"
 )
 
 // Client wraps nethttp.Client with middleware chain support.
@@ -77,8 +78,15 @@ func NewClient(config *ClientConfig) *Client {
 	// Create base transport
 	transport := config.PoolConfig.NewTransport()
 
-	// Apply middleware chain (reverse order so they execute in config order)
+	// A proxied transport is wrapped so a request carrying its own Host header
+	// (-H "Host: …", a vhost probe) still reaches an HTTP proxy addressed to the
+	// URL's host:port rather than the Host header's (see pkg/proxytarget).
 	var rt nethttp.RoundTripper = transport
+	if transport.Proxy != nil {
+		rt = proxytarget.Wrap(transport)
+	}
+
+	// Apply middleware chain (reverse order so they execute in config order)
 	for i := len(config.Middleware) - 1; i >= 0; i-- {
 		rt = config.Middleware[i](rt)
 	}

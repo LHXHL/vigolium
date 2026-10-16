@@ -45,7 +45,7 @@ func LoginTransport(opts *types.Options) http.RoundTripper {
 	}
 	t := &http.Transport{TLSClientConfig: targetTLSConfig(sni)}
 	applyExplicitProxy(t, cliProxy, "login")
-	return t
+	return targetRoundTripper(t)
 }
 
 // GatedLoginTransport is LoginTransport admitted through the scan's egress gate

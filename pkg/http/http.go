@@ -28,6 +28,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/deparos/waf"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
+	"github.com/vigolium/vigolium/pkg/proxytarget"
 	"github.com/vigolium/vigolium/pkg/types"
 	"go.uber.org/zap"
 	"golang.org/x/net/publicsuffix"
@@ -556,6 +557,21 @@ func applyExplicitProxy(t *http.Transport, cliProxy, client string) {
 	t.Proxy = http.ProxyURL(parsed)
 }
 
+// targetRoundTripper returns the RoundTripper a target-facing client sends
+// through: t itself when it connects directly, else t wrapped in
+// proxytarget.Transport. A scan request whose Host header differs from its URL
+// (a Host-header-injection probe, a record whose Host lacks the port) would
+// otherwise reach an HTTP proxy addressed to the Host header's authority, and
+// the proxy would forward it there instead of to the target. A direct
+// transport stays a bare *http.Transport, so retryablehttp's inspection of it
+// (keep-alive detection) is unchanged.
+func targetRoundTripper(t *http.Transport) http.RoundTripper {
+	if t == nil || t.Proxy == nil {
+		return t
+	}
+	return proxytarget.Wrap(t)
+}
+
 // getProxyURL returns proxy URL from CLI flag or environment variable.
 // CLI flag takes precedence over environment variables.
 // Uses explicit proxy URL (not ProxyFromEnvironment) to ensure localhost is proxied.
@@ -739,7 +755,7 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	// Single shared transport — connection pooling is a transport-level concern.
 	// Redirect policy is a client-level concern configured via CheckRedirect.
 	// Sharing the transport means connections are reused across both client variants.
-	sharedTransport := makeTransport()
+	sharedTransport := targetRoundTripper(makeTransport())
 
 	// One gate for every clone of this requester (see Services.EgressGate), and
 	// the attempt counter, both needed by the redirect policy below.
@@ -765,8 +781,9 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 	// retryablehttp's HTTP/2 fallback client is built from its own defaults and
 	// ignored --proxy; both retry clients share one replacement that does not.
 	h2Fallback := newHTTP2FallbackTransport(poolStats.countDials(dialer.Dial), tlsConfig, options.ProxyURL, respHeaderTimeout)
-	pinHTTP2Fallback(client, h2Fallback)
-	pinHTTP2Fallback(clientNoRedir, h2Fallback)
+	h2FallbackRT := targetRoundTripper(h2Fallback)
+	pinHTTP2Fallback(client, h2FallbackRT)
+	pinHTTP2Fallback(clientNoRedir, h2FallbackRT)
 
 	// Raw HTTP clients. rawhttp.DefaultOptions is a shared package-level
 	// *Options; copy it by value so per-requester tuning stays local. The old
@@ -1174,9 +1191,8 @@ func (r *Requester) CloseIdleConnections() {
 		if c == nil || c.HTTPClient == nil {
 			continue
 		}
-		if t, ok := c.HTTPClient.Transport.(*http.Transport); ok && t != nil {
-			t.CloseIdleConnections()
-		}
+		// http.Client forwards to its transport, bare or proxytarget-wrapped.
+		c.HTTPClient.CloseIdleConnections()
 	}
 }
 
@@ -1557,13 +1573,6 @@ func (r *Requester) doRequest(ctx context.Context, input *httpmsg.HttpRequestRes
 	// override (http.user_agent) wins over the built-in Chrome string.
 	if existing := req.Header["User-Agent"]; len(existing) == 0 || existing[0] == "" {
 		req.Header.Set("User-Agent", httpmsg.DefaultUserAgent())
-	}
-
-	// Normalize host header (remove port)
-	if host := req.Header.Get("Host"); host != "" {
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			req.Header.Set("Host", h)
-		}
 	}
 
 	// Apply a browser-harvested session for this request's host (cookies + an
