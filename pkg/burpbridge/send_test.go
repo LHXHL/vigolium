@@ -228,3 +228,26 @@ func TestHealthParsesInScopeOnly(t *testing.T) {
 		t.Fatalf("health = %+v", info)
 	}
 }
+
+// buildTargetURL shares replay.Authority with the native send path, so both
+// senders name the same destination: default ports dropped, others kept, and
+// an IPv6 host bracketed.
+func TestBuildTargetURL(t *testing.T) {
+	cases := []struct {
+		scheme, host string
+		port         int
+		want         string
+	}{
+		{"https", "acme.test", 443, "https://acme.test"},
+		{"http", "acme.test", 80, "http://acme.test"},
+		{"", "acme.test", 0, "http://acme.test"},
+		{"http", "127.0.0.1", 13313, "http://127.0.0.1:13313"},
+		{"https", "::1", 8443, "https://[::1]:8443"},
+		{"http", "::1", 80, "http://[::1]"},
+	}
+	for _, tc := range cases {
+		if got := buildTargetURL(tc.scheme, tc.host, tc.port); got != tc.want {
+			t.Errorf("buildTargetURL(%q, %q, %d) = %q, want %q", tc.scheme, tc.host, tc.port, got, tc.want)
+		}
+	}
+}

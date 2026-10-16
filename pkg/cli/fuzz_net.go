@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/vigolium/vigolium/pkg/fuzz"
 	"github.com/vigolium/vigolium/pkg/input/formats/curl"
+	"github.com/vigolium/vigolium/pkg/proxytarget"
 )
 
 // Curl-compatible network options. These are spelled with curl's long names so
@@ -286,11 +287,11 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 	client := newReplayClient(nil, resolveFuzzTimeout())
 	client.Jar = cookies
 
-	transport, ok := client.Transport.(*gohttp.Transport)
+	base, ok := proxytarget.Base(client.Transport)
 	if !ok {
 		return client, nil
 	}
-	transport = transport.Clone()
+	transport := base.Clone()
 
 	tlsCfg := transport.TLSClientConfig
 	if tlsCfg == nil {
@@ -367,7 +368,9 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 		transport.MaxIdleConnsPerHost = fuzzConcurrency
 		transport.MaxIdleConns = fuzzConcurrency * 2
 	}
-	client.Transport = transport
+	// Re-wrapped so a fuzzed or retargeted Host header still reaches an HTTP
+	// proxy addressed to the destination's host:port (see pkg/proxytarget).
+	client.Transport = proxytarget.Wrap(transport)
 
 	if fuzzMaxRedirs > 0 {
 		limit := fuzzMaxRedirs

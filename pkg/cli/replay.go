@@ -435,9 +435,7 @@ func newReplayClient(pj *jar.PersistentJar, timeout time.Duration) *http.Client 
 	client := replay.NewDefaultClient(jarForClient, timeout)
 	if globalProxy != "" {
 		if px, perr := url.Parse(globalProxy); perr == nil {
-			if t, ok := client.Transport.(*http.Transport); ok {
-				t.Proxy = http.ProxyURL(px)
-			}
+			replay.SetProxy(client, px)
 		}
 	}
 	return client
@@ -744,7 +742,9 @@ func sourceFromRawRequest(rawReq, rawResp []byte, urlStr string) (*replaySource,
 // applyTargetOverride rewrites src's destination. The baseline request
 // bytes (Host header, path) are left verbatim; only the socket we aim
 // at changes — that's how an operator confirms a finding against a
-// different env without re-deriving the request.
+// different env without re-deriving the request. replay.SendRaw sends that
+// Host header as written and, through an HTTP proxy, still names the new
+// destination's host:port in the request target.
 func applyTargetOverride(src *replaySource, target string) error {
 	u, err := url.Parse(target)
 	if err != nil || u == nil || u.Hostname() == "" {

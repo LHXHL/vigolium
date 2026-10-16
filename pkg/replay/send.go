@@ -9,10 +9,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	gohttp "net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/proxytarget"
 )
 
 const (
@@ -31,7 +36,10 @@ const (
 // NewDefaultClient returns an *http.Client suitable for replay traffic.
 // TLS verification is off because targets are often localhost or
 // self-signed staging. Proxy is read from HTTP_PROXY / HTTPS_PROXY so an
-// operator can pipe through Burp. Pass jar=nil for stateless replays.
+// operator can pipe through Burp; SetProxy replaces it. The transport is a
+// proxytarget.Transport, so a request whose Host header differs from its
+// destination still reaches an HTTP proxy addressed to the destination's
+// host:port. Pass jar=nil for stateless replays.
 func NewDefaultClient(jar gohttp.CookieJar, timeout time.Duration) *gohttp.Client {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -39,11 +47,30 @@ func NewDefaultClient(jar gohttp.CookieJar, timeout time.Duration) *gohttp.Clien
 	return &gohttp.Client{
 		Timeout: timeout,
 		Jar:     jar,
-		Transport: &gohttp.Transport{
+		Transport: proxytarget.Wrap(&gohttp.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // intentional for replay
 			Proxy:           proxyFromEnv,
-		},
+		}),
 	}
+}
+
+// SetProxy routes client's traffic through proxyURL, or connects directly when
+// proxyURL is nil. It reports false, changing nothing, when client's transport
+// is neither an *http.Transport nor a proxytarget.Transport.
+func SetProxy(client *gohttp.Client, proxyURL *url.URL) bool {
+	if client == nil {
+		return false
+	}
+	t, ok := proxytarget.Base(client.Transport)
+	if !ok {
+		return false
+	}
+	if proxyURL == nil {
+		t.Proxy = nil
+	} else {
+		t.Proxy = gohttp.ProxyURL(proxyURL)
+	}
+	return true
 }
 
 // proxyFromEnv mirrors the precedence vigolium's own Requester uses:
@@ -61,16 +88,42 @@ func proxyFromEnv(req *gohttp.Request) (*url.URL, error) {
 }
 
 // isDefaultPort reports whether port is the well-known default for scheme and
-// can therefore be omitted from the Host header.
+// can therefore be omitted from an authority.
 func isDefaultPort(scheme string, port int) bool {
 	return (scheme == "http" && port == 80) || (scheme == "https" && port == 443)
 }
 
-// sendRawHTTP parses raw request bytes, rewrites the URL with the
-// supplied scheme/hostname/port, and sends via client. A *Summary is
-// returned even on transport error so callers always get a structured
-// response. noRedirects clones the client to avoid mutating shared
-// redirect policy across calls.
+// Authority returns the URL authority for a destination: host:port, with the
+// port omitted when it is zero or the scheme's default (80 for http, 443 for
+// https; an empty scheme means http). An IPv6 literal is bracketed whether or
+// not a port follows, and hostname may arrive bracketed already.
+func Authority(scheme, hostname string, port int) string {
+	if scheme == "" {
+		scheme = "http"
+	}
+	host := strings.TrimSuffix(strings.TrimPrefix(hostname, "["), "]")
+	if port > 0 && !isDefaultPort(strings.ToLower(scheme), port) {
+		return net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+// sendRawHTTP parses raw request bytes, points the request at the supplied
+// scheme/hostname/port, and sends via client. A *Summary is returned even on
+// transport error so callers always get a structured response. noRedirects
+// clones the client to avoid mutating shared redirect policy across calls.
+//
+// The destination (the connection, and the absolute-form target an HTTP proxy
+// receives) is always scheme://Authority(scheme, hostname, port). The Host
+// header is the raw request's own, sent as written, so a fuzzed or mutated
+// Host and a request replayed against another environment keep the Host the
+// caller wrote — the same bytes the Burp-bridge Sender sends. A raw request
+// with no Host header gets the destination's authority. Through an HTTP proxy
+// a Host that differs from the destination relies on the client's transport
+// being a proxytarget.Transport (NewDefaultClient's is).
 func sendRawHTTP(ctx context.Context, client *gohttp.Client, raw []byte, scheme, hostname string, port int, noRedirects bool, excerptCap int) *Summary {
 	if excerptCap <= 0 {
 		excerptCap = DefaultExcerptCap
@@ -90,10 +143,6 @@ func sendRawHTTP(ctx context.Context, client *gohttp.Client, raw []byte, scheme,
 	if scheme == "" {
 		scheme = "http"
 	}
-	host := hostname
-	if port > 0 && !isDefaultPort(scheme, port) {
-		host = fmt.Sprintf("%s:%d", hostname, port)
-	}
 	// RawPath must be carried over, not just Path. Path is the *decoded*
 	// target, so rebuilding the URL without RawPath re-encodes it from
 	// scratch and silently normalizes percent-escapes on the wire —
@@ -105,13 +154,14 @@ func sendRawHTTP(ctx context.Context, client *gohttp.Client, raw []byte, scheme,
 	// ForceQuery keeps a bare trailing "?" from being dropped.
 	req.URL = &url.URL{
 		Scheme:     scheme,
-		Host:       host,
+		Host:       Authority(scheme, hostname, port),
 		Path:       req.URL.Path,
 		RawPath:    req.URL.RawPath,
 		RawQuery:   req.URL.RawQuery,
 		ForceQuery: req.URL.ForceQuery,
 	}
-	req.Host = hostname
+	// req.Host already holds the raw Host header (ReadRequest moves it there);
+	// when it is empty net/http sends req.URL.Host, the destination authority.
 	req.RequestURI = ""
 
 	if req.Header.Get("User-Agent") == "" {

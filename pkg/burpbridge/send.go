@@ -356,19 +356,14 @@ func buildSendArgs(rawURL, ref string, rawRequest []byte, mode HTTPMode, timeout
 	return args, nil
 }
 
+// buildTargetURL is the destination URL Burp sends to: the same authority the
+// native replay path dials (replay.Authority), so both senders agree on the
+// port and on bracketing an IPv6 host.
 func buildTargetURL(scheme, host string, port int) string {
 	if scheme == "" {
 		scheme = "http"
 	}
-	authority := host
-	if port > 0 && !isDefaultPort(scheme, port) {
-		authority = host + ":" + strconv.Itoa(port)
-	}
-	return (&url.URL{Scheme: scheme, Host: authority}).String()
-}
-
-func isDefaultPort(scheme string, port int) bool {
-	return (scheme == "http" && port == 80) || (scheme == "https" && port == 443)
+	return (&url.URL{Scheme: scheme, Host: replay.Authority(scheme, host, port)}).String()
 }
 
 // statusError maps a non-2xx bridge status to a typed error, reusing the
