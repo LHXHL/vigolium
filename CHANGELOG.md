@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Through an `http://` proxy (`--proxy`, `VIGOLIUM_PROXY`, `HTTP_PROXY`), `replay` and `fuzz` sent a target on a non-default port to the proxy as `GET http://host/…`, so the proxy forwarded it to port 80; the request line now names `host:port`. SOCKS proxies were unaffected.
+- Through an `http://` proxy, a scan, discovery or login request whose `Host` header differed from its URL (Host-header injection probes, a captured `Host` without the port, `-H "Host: …"`) was forwarded to the `Host` header's host instead of the target.
+- Raw request-target probes (routing SSRF) stripped the port from the `Host` header.
+- The ingest proxy dropped a non-default port from the `Host` it sent upstream for an intercepted HTTPS request that carried none.
+
+### Changed
+
+- `replay` and `fuzz` send the request's own `Host` header instead of replacing it with the target hostname, as `--send-via-burp` already did: a fuzzed `Host` reaches the target and `replay --target` keeps the original `Host`. A request without one gets the target's `host:port`.
+
 ## [v0.5.3] - 2026-10-10
 
 ### Added

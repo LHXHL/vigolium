@@ -39,6 +39,7 @@ Makefile             Build & test workflows (always build via make — see build
 | `pkg/modules/` | Module interfaces, the **Registry**, and all active/passive scanner modules. `modkit/` = shared base types; `infra/` = block detection & request filtering; `modtest/` = unit-test helper |
 | `pkg/httpmsg/` | HTTP request/response model, insertion points, parsing/serialization |
 | `pkg/http/` | HTTP requester with a middleware pipeline |
+| `pkg/proxytarget/` | Transport wrapper every proxied target client uses, so a request whose `Host` differs from its URL still reaches an HTTP proxy addressed to the URL's host:port; `proxytest/` is a recording forward proxy for tests |
 | `pkg/dedup/` | Disk-backed dedup sets and per-scan dedup manager |
 | `pkg/input/` | Input source adapters (OpenAPI, Swagger, WSDL/SOAP, Postman, Burp, cURL, Nuclei, HAR) |
 | `pkg/work/` | Work-item types flowing through the executor |

@@ -81,13 +81,25 @@ no-op.
 ## Channel 1 — route vigolium's traffic through Burp
 
 `--proxy` is a **global** flag, so it works on every command that sends
-requests. `HTTP_PROXY`/`HTTPS_PROXY` are honored too.
+requests. Without it, `VIGOLIUM_PROXY` is used, then `HTTP_PROXY`/`HTTPS_PROXY`.
+Both `http://` (Burp's listener) and `socks5://` proxy URLs work.
 
 ```bash
 vigolium scan -t https://acme.test --proxy http://127.0.0.1:8080
 vigolium replay -u <uuid> --proxy http://127.0.0.1:8080
 vigolium fuzz -u <uuid> --class sqli -a --proxy http://127.0.0.1:8080 -c 3
+vigolium fuzz 'http://127.0.0.1:3000/FUZZ' -w words.txt --proxy http://127.0.0.1:8080
 ```
+
+Through an `http://` proxy, a plain-HTTP request names its destination in the
+request line (`GET http://127.0.0.1:3000/x HTTP/1.1`), and that line always
+carries the target's real host and non-default port. The `Host` header is sent
+as the request has it, so a Host-header probe, a fuzzed `Host`, or
+`replay --target` against another environment still reaches the target you
+aimed at. Burp forwards that `Host` unchanged; a strict RFC 9112 proxy replaces
+it with the request-line authority, so Host-header tests need Burp, SOCKS, or
+no proxy. `https://` targets are tunnelled with `CONNECT host:port` and are
+unaffected.
 
 Keep `-c/--concurrency` low through an intercepting proxy — Burp is the
 bottleneck, not the target.
