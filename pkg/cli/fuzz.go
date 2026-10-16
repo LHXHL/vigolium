@@ -389,8 +389,8 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 			terminal.InfoSymbol(), fuzzSessionID, jarLoaded)
 	}
 
-	fmt.Fprintf(os.Stderr, "%s fuzzing %s://%s (%d position(s), %s, %d sends, pace: %s)\n",
-		terminal.InfoSymbol(), src.Scheme, src.Hostname, len(positions), mode, len(cases), currentFuzzPace())
+	fmt.Fprintf(os.Stderr, "%s fuzzing %s (%d position(s), %s, %d sends, pace: %s)\n",
+		terminal.InfoSymbol(), fuzzTargetLabel(src), len(positions), mode, len(cases), currentFuzzPace())
 
 	// OnResult is called serially by the engine, so no extra locking is needed
 	// to accumulate the ranked top anomalies for the -j summary.
@@ -558,6 +558,18 @@ func loadFuzzPayloadSets(positions []fuzz.Position) (shared []string, sets [][]s
 		sets[idx] = fuzz.ExpandSuffixes(list, fuzzSuffixes)
 	}
 	return fuzz.ExpandSuffixes(shared, fuzzSuffixes), sets, nil
+}
+
+// fuzzTargetLabel names a fuzz run's destination for the stderr line and the
+// -j summary: scheme://host[:port], the port dropped only when it is the
+// scheme's default, so a target on 127.0.0.1:13313 is not reported as
+// 127.0.0.1.
+func fuzzTargetLabel(src *replaySource) string {
+	scheme := src.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + replay.Authority(scheme, src.Hostname, src.Port)
 }
 
 // fuzzPace is the effective pacing of a fuzz run, as reported on the
@@ -1124,7 +1136,7 @@ func emitFuzzJSONSummary(cmd *cobra.Command, src *replaySource, args []string, p
 		top = top[:fuzzTopResultsEmit]
 	}
 	env, err := envelopeFromStruct(cmd, fuzzJSONSummary{
-		Target:          fmt.Sprintf("%s://%s", src.Scheme, src.Hostname),
+		Target:          fuzzTargetLabel(src),
 		Positions:       positions,
 		Payloads:        payloadCount,
 		Sent:            report.Sent,

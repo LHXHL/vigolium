@@ -54,3 +54,23 @@ func TestReplayAndFuzzClientsKeepPortThroughProxy(t *testing.T) {
 		}
 	}
 }
+
+// The run's stderr line and -j summary name the destination with its
+// non-default port; a default port stays implicit.
+func TestFuzzTargetLabel(t *testing.T) {
+	cases := []struct {
+		src  replaySource
+		want string
+	}{
+		{replaySource{Scheme: "http", Hostname: "127.0.0.1", Port: 13313}, "http://127.0.0.1:13313"},
+		{replaySource{Scheme: "https", Hostname: "acme.test", Port: 443}, "https://acme.test"},
+		{replaySource{Scheme: "http", Hostname: "acme.test", Port: 80}, "http://acme.test"},
+		{replaySource{Hostname: "acme.test"}, "http://acme.test"},
+		{replaySource{Scheme: "https", Hostname: "::1", Port: 8443}, "https://[::1]:8443"},
+	}
+	for _, tc := range cases {
+		if got := fuzzTargetLabel(&tc.src); got != tc.want {
+			t.Errorf("fuzzTargetLabel(%+v) = %q, want %q", tc.src, got, tc.want)
+		}
+	}
+}

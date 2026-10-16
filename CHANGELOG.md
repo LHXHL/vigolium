@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - Through an `http://` proxy (`--proxy`, `VIGOLIUM_PROXY`, `HTTP_PROXY`), `replay` and `fuzz` sent a target on a non-default port to the proxy as `GET http://host/…`, so the proxy forwarded it to port 80; the request line now names `host:port`. SOCKS proxies were unaffected.
 - Through an `http://` proxy, a scan, discovery or login request whose `Host` header differed from its URL (Host-header injection probes, a captured `Host` without the port, `-H "Host: …"`) was forwarded to the `Host` header's host instead of the target.
 - Raw request-target probes (routing SSRF) stripped the port from the `Host` header.
+- `fuzz` named a target on a non-default port without the port on its `fuzzing …` line and in the `-j` summary's `target`.
 - The ingest proxy dropped a non-default port from the `Host` it sent upstream for an intercepted HTTPS request that carried none.
 
 ### Changed
