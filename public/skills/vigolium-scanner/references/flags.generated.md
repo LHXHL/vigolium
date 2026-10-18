@@ -1226,7 +1226,7 @@ Ingest HTTP requests into database (locally or via server)
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
 | `--scan-on-receive` | - | bool | `false` | Continuously scan new HTTP records as they arrive in the database |
-| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
+| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
 | `--server` | `-s` | string | - | Server URL for remote ingestion (omit for local mode) |
 | `--spec-default` | - | string | `1` | Fallback value for required OpenAPI parameters that lack examples |
 | `--spec-header` | - | stringArray | - | Add HTTP header to OpenAPI-generated requests (repeatable; commas are literal) |
@@ -1766,7 +1766,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--retries` | - | int | `1` | Number of retry attempts for failed requests |
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
 | `--scanning-profile` | - | string | - | Scanning profile name or YAML file path |
-| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
+| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
 | `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--skip-format-validation` | - | bool | `false` | Skip validation of input file format |
 | `--skip-heuristics` | - | bool | `false` | Disable pre-scan heuristics (equivalent to --heuristics-check=none) |
@@ -1875,7 +1875,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--retries` | - | int | `1` | Number of retry attempts for failed requests |
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
 | `--scanning-profile` | - | string | - | Scanning profile name or YAML file path |
-| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
+| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
 | `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--skip-format-validation` | - | bool | `false` | Skip validation of input file format |
 | `--skip-heuristics` | - | bool | `false` | Disable pre-scan heuristics (equivalent to --heuristics-check=none) |
@@ -1997,7 +1997,7 @@ Scan a raw HTTP request for vulnerabilities
 | `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
-| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
+| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
 | `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--spider` | - | bool | `false` | Run browser-based spidering before scanning |
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
@@ -2056,7 +2056,7 @@ Scan a single URL for vulnerabilities
 | `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
-| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans) |
+| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
 | `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--spider` | - | bool | `false` | Run browser-based spidering before scanning |
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
