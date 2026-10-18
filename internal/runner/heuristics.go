@@ -278,7 +278,12 @@ func fetchRoot(ctx context.Context, requester *http.Requester, rootURL string) (
 	if err != nil {
 		return nil, "", err
 	}
-	respChain, _, err := requester.ExecuteContext(ctx, rr, http.Options{DisableCompression: true})
+	// NoRedirects: see preflight.go. Both paths into classifyRootResponse must
+	// reach the same verdict, or `--skip preflight` changes which phases run.
+	respChain, _, err := requester.ExecuteContext(ctx, rr, http.Options{
+		DisableCompression: true,
+		NoRedirects:        true,
+	})
 	if err != nil {
 		return nil, http.ClassifyTransportError(err), err
 	}
@@ -299,13 +304,14 @@ func classifyRootResponse(requester *http.Requester, rootURL, level string, full
 
 	result.StatusCode = httpmsg.GetStatusCode(fullResp)
 
-	// A 3xx surfacing here means a redirect was not followed (e.g. a cross-host
-	// redirect under FollowHostRedirects, or one past the redirect cap). The body
-	// of such a response is usually empty or a tiny stub, which the body-only
-	// classification below would mistake for a "blank/empty root page" and skip
-	// spidering — even though the redirect points at a live app (a classic
-	// off-host SSO/login redirect). A redirect inherently points at content worth
-	// crawling, so never skip on it.
+	// The root probe never follows (see fetchRoot and preflight.go), so a 3xx here
+	// is the target's OWN answer rather than a hop that got away — the normal case
+	// for any redirecting root, not an edge one. The body of such a response is
+	// usually empty or a tiny stub, which the body-only classification below would
+	// mistake for a "blank/empty root page" and skip spidering — even though the
+	// redirect points at a live app (a classic off-host SSO/login redirect). A
+	// redirect inherently points at content worth crawling, so never skip on it;
+	// the spider follows the hop itself, under the scan's own redirect mode.
 	if result.StatusCode >= 300 && result.StatusCode < 400 {
 		result.ContentType = "redirect"
 		result.SkipSpidering = false
@@ -491,7 +497,11 @@ func confirmBlank(requester *http.Requester, rootURL string) bool {
 		if err != nil {
 			continue
 		}
+		// Closed inside the loop, not deferred: the pooled buffers must go back
+		// each iteration, and every path below leaves the loop body. The bytes
+		// are a copy, so they outlive the chain.
 		fullResp := respChain.FullResponseBytes()
+		respChain.Close()
 		if len(fullResp) == 0 {
 			continue
 		}

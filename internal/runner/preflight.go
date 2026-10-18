@@ -28,10 +28,29 @@ import (
 // It is sent through the scan's shared requester on the egress gate's priority
 // lane, so it is paced, proxied and counted like every other target request.
 //
+// # It does not follow redirects, and that is the whole of the question it asks
+//
+// A 3xx IS an HTTP answer, so a target that sends one has answered. Following
+// meant the verdict belonged to wherever the chain ENDED: a target answering a
+// 301 that pointed at a dead host was reported as unreachable itself, and a
+// scan whose every target did that aborted with no_targets_reachable before a
+// phase ran. It also made liveness depend on --redirect-mode, a recording
+// policy rather than a reachability one. Not following makes the four modes
+// agree and costs one request instead of one per hop.
+//
+// Repairing it after the fact, the way executor_fetch.go re-points a relocated
+// response, is not available here: ExecuteContext returns no chain at all when
+// a hop fails (nil, 0, err), so the target's own 3xx is gone by the time the
+// class is assigned. (The failing hop's URL does survive, inside the
+// *url.Error — executor_fetch.go's own error path still attributes it to the
+// seed, which is the same defect one layer down and not fixed here.)
+//
 // The answer is kept: the heuristics phase probes each target's root page, and
 // when the target IS its root it classifies the bytes preflight already holds
 // instead of sending the same GET again (see preflightFor). With heuristics on
-// (the default) the check therefore costs nothing extra for root targets.
+// (the default) the check therefore costs nothing extra for root targets — and
+// those bytes are now the target's own response, including a 3xx. fetchRoot
+// does the same, or --skip preflight would change which phases run.
 
 // preflightProbe is one target's preflight answer: the full response when it
 // answered, else the transport error class and detail.
@@ -119,7 +138,10 @@ func fetchPreflight(ctx context.Context, requester *http.Requester, target strin
 		p.class, p.detail = http.TransportErrOther, "invalid target: "+err.Error()
 		return p
 	}
-	chain, _, err := requester.ExecuteContext(ctx, rr, http.Options{DisableCompression: true})
+	chain, _, err := requester.ExecuteContext(ctx, rr, http.Options{
+		DisableCompression: true,
+		NoRedirects:        true,
+	})
 	if err != nil {
 		p.class, p.detail = http.ClassifyTransportError(err), err.Error()
 		return p
