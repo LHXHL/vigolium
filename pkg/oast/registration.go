@@ -105,7 +105,7 @@ func New(cfg *config.OASTConfig, emitResult func(*output.ResultEvent), repo *dat
 
 	serverURL := cfg.ServerURL
 	if serverURL == "" {
-		serverURL = "oast.pro"
+		serverURL = config.DefaultOASTServer
 	}
 
 	pollInterval := time.Duration(cfg.PollInterval) * time.Second
@@ -120,6 +120,7 @@ func New(cfg *config.OASTConfig, emitResult func(*output.ResultEvent), repo *dat
 	s := &Service{
 		ready:              make(chan struct{}),
 		serverURL:          serverURL,
+		fallbackToDefault:  cfg.FallbackToDefault,
 		emitResult:         emitResult,
 		resolveRequestUUID: resolveRequestUUID,
 		repo:               repo,
@@ -140,8 +141,16 @@ func New(cfg *config.OASTConfig, emitResult func(*output.ResultEvent), repo *dat
 // register performs the interactsh registration and publishes the client, or
 // records why it failed. It always closes s.ready.
 func (s *Service) register(token string, newClient func(*interactshclient.Options) (*interactshclient.Client, error), timeout time.Duration) {
-	// One attempt, bounded: retries belong to the next scan, not to this one's
-	// setup. KillIdleConn so an abandoned attempt leaves no pooled socket.
+	// `timeout` bounds the WHOLE registration, fallback included - the caller
+	// waits that long and no longer, so a second attempt has to come out of the
+	// same budget rather than doubling it. In the slowest failure mode (a host
+	// that drops packets) the first attempt spends it all and there is nothing
+	// left to retry with, which is correct: the caller has already given up.
+	deadline := time.Now().Add(timeout)
+
+	// One attempt per server, bounded: retries belong to the next scan, not to
+	// this one's setup. KillIdleConn so an abandoned attempt leaves no pooled
+	// socket.
 	httpOpts := retryablehttp.DefaultOptionsSpraying
 	httpOpts.Timeout = timeout
 	httpOpts.RetryMax = 0
@@ -149,21 +158,13 @@ func (s *Service) register(token string, newClient func(*interactshclient.Option
 	httpOpts.KillIdleConn = true
 	httpClient := retryablehttp.NewClient(httpOpts)
 
-	opts := &interactshclient.Options{
-		ServerURL:  s.serverURL,
-		Token:      token,
-		HTTPClient: httpClient,
-		// interactsh retries a failed https registration over cleartext http
-		// by default, which sends the registration (correlation id, secret
-		// key, token) in the clear to whatever answered on port 80. Only an
-		// operator who wrote http:// asked for cleartext.
-		DisableHTTPFallback: !explicitCleartextServer(s.serverURL),
-	}
+	opts := registrationOptions(s.serverURL, token, httpClient)
 
 	client, err := newClient(opts)
 	if err != nil {
-		s.fail(&UnavailableError{Server: s.serverURL, Reason: briefRegistrationError(err), Err: err})
-		return
+		if client = s.registerOnFallback(opts, newClient, err, deadline); client == nil {
+			return // registerOnFallback recorded the reason and closed ready
+		}
 	}
 
 	// The registration client is also the polling client. Give polls their own
@@ -182,14 +183,14 @@ func (s *Service) register(token string, newClient func(*interactshclient.Option
 		s.lifeMu.Unlock()
 		// Closed while registering: nobody will poll, so deregister right away.
 		closeClient(client)
-		s.regErr.Store(&UnavailableError{Server: s.serverURL, Reason: "closed before registration finished", Err: ErrClosed})
+		s.regErr.Store(&UnavailableError{Server: s.ServerURL(), Reason: "closed before registration finished", Err: ErrClosed})
 		close(s.ready)
 		return
 	}
 	if err := client.StartPolling(s.pollInterval, s.handleInteraction); err != nil {
 		s.lifeMu.Unlock()
 		closeClient(client)
-		s.fail(&UnavailableError{Server: s.serverURL, Reason: "could not start polling: " + err.Error(), Err: err})
+		s.fail(&UnavailableError{Server: s.ServerURL(), Reason: "could not start polling: " + err.Error(), Err: err})
 		return
 	}
 	s.client.Store(client)
@@ -197,9 +198,87 @@ func (s *Service) register(token string, newClient func(*interactshclient.Option
 	close(s.ready)
 
 	zap.L().Info("OAST: registered, polling started",
-		zap.String("server", s.serverURL),
+		zap.String("server", s.ServerURL()),
 		zap.Duration("interval", s.pollInterval),
 		zap.Duration("grace_period", s.gracePeriod))
+}
+
+// registrationOptions is the one place a registration's client options are
+// built, so the cleartext rule below holds for the fallback attempt by
+// construction rather than by a second evaluation of it.
+//
+// interactsh retries a failed https registration over cleartext http by
+// default, which sends the registration (correlation id, secret key, token) in
+// the clear to whatever answered on port 80. Only an operator who wrote
+// http:// asked for cleartext.
+func registrationOptions(server, token string, httpClient *retryablehttp.Client) *interactshclient.Options {
+	return &interactshclient.Options{
+		ServerURL:           server,
+		Token:               token,
+		HTTPClient:          httpClient,
+		DisableHTTPFallback: !explicitCleartextServer(server),
+	}
+}
+
+// registerOnFallback is the second and last registration attempt, against
+// config.DefaultOASTServer, after the configured server did not answer. It
+// returns nil when the caller must stop, having recorded the reason and closed
+// ready; the error it records names BOTH servers, so the notice cannot read as
+// though only one thing was tried.
+//
+// A dial, not unconditional, because a callback carries whatever the payload
+// pulled out of the target: on an engagement whose authorization names the
+// collector, a public server is egress nobody approved. The token does not
+// travel either — it authenticates the operator to the server they named. See
+// config.OASTConfig.FallbackToDefault for the operator-facing account.
+func (s *Service) registerOnFallback(
+	opts *interactshclient.Options,
+	newClient func(*interactshclient.Options) (*interactshclient.Client, error),
+	cause error,
+	deadline time.Time,
+) *interactshclient.Client {
+	first := &UnavailableError{Server: s.serverURL, Reason: briefRegistrationError(cause), Err: cause}
+	// A budget the first attempt already spent is the common case for a host
+	// that drops packets, and the caller has stopped waiting by then. Closed is
+	// the same answer for a different reason: nobody is left to poll.
+	remaining := time.Until(deadline)
+	if !s.fallbackToDefault || s.serverURL == config.DefaultOASTServer ||
+		remaining <= 0 || s.isClosed() {
+		s.fail(first)
+		return nil
+	}
+
+	zap.L().Warn("OAST: configured server did not answer, falling back to the default",
+		zap.String("configured", s.serverURL),
+		zap.String("fallback", config.DefaultOASTServer),
+		zap.String("reason", first.Reason),
+		zap.Duration("budget_left", remaining),
+		zap.Bool("token_carried", false))
+
+	// The remaining budget, not a fresh one: `timeout` bounds the whole
+	// registration. Both clients, since either may serve the attempt.
+	if hc := opts.HTTPClient; hc != nil {
+		if hc.HTTPClient != nil {
+			hc.HTTPClient.Timeout = remaining
+		}
+		if hc.HTTPClient2 != nil {
+			hc.HTTPClient2.Timeout = remaining
+		}
+	}
+
+	client, err := newClient(registrationOptions(config.DefaultOASTServer, "", opts.HTTPClient))
+	if err != nil {
+		s.fail(&UnavailableError{
+			Server: s.serverURL,
+			Reason: fmt.Sprintf("%s; fallback %s: %s",
+				first.Reason, config.DefaultOASTServer, briefRegistrationError(err)),
+			Err: err,
+		})
+		return nil
+	}
+
+	s.onFallback.Store(true)
+	return client
 }
 
 // fail records a registration failure and closes ready. The operator-facing
@@ -231,7 +310,7 @@ func (s *Service) WaitReady(ctx context.Context, maxWait time.Duration) error {
 	}
 	if s.ready == nil {
 		// Zero-value Service (tests): never registered.
-		return &UnavailableError{Server: s.serverURL, Reason: "not registered", Err: ErrNotReady}
+		return &UnavailableError{Server: s.ServerURL(), Reason: "not registered", Err: ErrNotReady}
 	}
 
 	select {
@@ -246,9 +325,9 @@ func (s *Service) WaitReady(ctx context.Context, maxWait time.Duration) error {
 	case <-s.ready:
 		return s.readyErr()
 	case <-timer.C:
-		return &UnavailableError{Server: s.serverURL, Reason: fmt.Sprintf("registration did not finish within %s", maxWait), Err: ErrNotReady}
+		return &UnavailableError{Server: s.ServerURL(), Reason: fmt.Sprintf("registration did not finish within %s", maxWait), Err: ErrNotReady}
 	case <-ctx.Done():
-		return &UnavailableError{Server: s.serverURL, Reason: "wait cancelled: " + ctx.Err().Error(), Err: ctx.Err()}
+		return &UnavailableError{Server: s.ServerURL(), Reason: "wait cancelled: " + ctx.Err().Error(), Err: ctx.Err()}
 	}
 }
 
@@ -257,7 +336,7 @@ func (s *Service) readyErr() error {
 		return uerr
 	}
 	if s.client.Load() == nil {
-		return &UnavailableError{Server: s.serverURL, Reason: "closed", Err: ErrClosed}
+		return &UnavailableError{Server: s.ServerURL(), Reason: "closed", Err: ErrClosed}
 	}
 	return nil
 }

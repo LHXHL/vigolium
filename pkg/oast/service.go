@@ -14,6 +14,7 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	interactshclient "github.com/projectdiscovery/interactsh/pkg/client"
 	"github.com/projectdiscovery/interactsh/pkg/server"
+	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/oast/oastclass"
@@ -95,10 +96,15 @@ type Service struct {
 	projectUUID        string
 	pollInterval       time.Duration
 	gracePeriod        time.Duration
-	serverURL          string // interactsh server hostname (e.g. "oast.pro")
+	serverURL          string // interactsh server hostname the config named (e.g. "oast.pro")
 	fixedURL           string // when set, skip interactsh and use this URL directly
 	blindXSSSrc        string // JS script src for blind XSS payloads
 	enabledBlindXSS    bool   // whether blind XSS probing is active
+	fallbackToDefault  bool   // re-register against config.DefaultOASTServer when serverURL does not answer
+	// onFallback reports that registration reached config.DefaultOASTServer
+	// instead of serverURL. Atomic because register() writes it from its own
+	// goroutine while ServerURL() reads it from the scan's.
+	onFallback atomic.Bool
 
 	// template is the parsed fixedURL when it carries {nonce} (see fixed.go);
 	// nil for interactsh mode and for a fixed URL without the placeholder.
@@ -138,7 +144,10 @@ func explicitCleartextServer(serverURL string) bool {
 	return len(serverURL) >= len("http://") && strings.EqualFold(serverURL[:len("http://")], "http://")
 }
 
-// ServerURL returns the interactsh server hostname (e.g. "oast.pro").
+// ServerURL returns the interactsh server hostname (e.g. "oast.pro") that this
+// service is actually registered with — the fallback's when one was taken, so a
+// caller reporting where callbacks land names the host that will see them
+// rather than the one the config asked for.
 func (s *Service) ServerURL() string {
 	if s == nil {
 		return ""
@@ -146,7 +155,18 @@ func (s *Service) ServerURL() string {
 	if s.fixedURL != "" {
 		return s.fixedURL
 	}
+	if s.onFallback.Load() {
+		return config.DefaultOASTServer
+	}
 	return s.serverURL
+}
+
+// isClosed reports whether Close has run. Cheap enough to check before
+// spending a second registration attempt nobody is left to poll.
+func (s *Service) isClosed() bool {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	return s.closed
 }
 
 // trackerCache lazily initializes the bounded payload tracker so a zero-value

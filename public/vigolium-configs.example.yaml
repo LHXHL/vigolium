@@ -567,6 +567,18 @@ oast:
   # Default: "" (no auth)
   token: ${VIGOLIUM_OAST_TOKEN:-}
 
+  # Re-register against the default "oast.pro" when server_url does not answer.
+  # A misspelled, retired or unreachable server_url otherwise costs the scan
+  # every blind/out-of-band check while it still reports "completed" with an
+  # empty findings list - which reads exactly like a clean target. The token is
+  # NOT carried to the fallback: it belongs to the server you named.
+  # Set false where a callback may not reach a third party. An out-of-band
+  # callback carries whatever the payload pulled out of the target (an internal
+  # hostname, a header, a token), so on an engagement whose authorization names
+  # the collector, falling back to a public server is unapproved egress.
+  # Default: true
+  fallback_to_default: true
+
   # Seconds between polling the interactsh server for new interactions.
   # Lower values detect callbacks faster but generate more traffic.
   # Default: 5

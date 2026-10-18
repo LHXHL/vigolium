@@ -10,6 +10,7 @@ import (
 	interactshoptions "github.com/projectdiscovery/interactsh/pkg/options"
 	"github.com/projectdiscovery/interactsh/pkg/server"
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"gopkg.in/yaml.v3"
 )
@@ -66,7 +67,7 @@ func init() {
 	kitOASTCmd.PersistentFlags().StringVar(&kitOASTSession, "session", kitOASTDefaultSession, "Session file path (holds the interactsh keys/correlation id)")
 
 	nf := kitOASTNewCmd.Flags()
-	nf.StringVar(&kitOASTServer, "server", "oast.pro", "interactsh server URL")
+	nf.StringVar(&kitOASTServer, "server", config.DefaultOASTServer, "interactsh server URL")
 	nf.StringVar(&kitOASTToken, "token", "", "interactsh auth token (for a self-hosted server)")
 	nf.IntVarP(&kitOASTCount, "count", "n", 1, "Number of callback URLs to mint")
 

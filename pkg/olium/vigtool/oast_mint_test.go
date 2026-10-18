@@ -59,7 +59,10 @@ func TestOASTMintReportsUnavailableServer(t *testing.T) {
 	_ = ln.Close() // nothing listens: registration is refused at once
 
 	cfgPath := filepath.Join(t.TempDir(), "vigolium-configs.yaml")
-	cfg := "oast:\n  enabled: true\n  server_url: http://" + addr + "\n"
+	// fallback_to_default off: this test is ABOUT the unavailable path, and the
+	// default would re-register against the public oast.pro - making the case
+	// untestable and the suite reach a third party to prove it.
+	cfg := "oast:\n  enabled: true\n  fallback_to_default: false\n  server_url: http://" + addr + "\n"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

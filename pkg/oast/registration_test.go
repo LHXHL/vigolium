@@ -313,3 +313,166 @@ func TestBriefRegistrationError(t *testing.T) {
 		}
 	}
 }
+
+// registrationAttempt records one call into the interactsh constructor: which
+// server it was pointed at and whether a token rode along.
+type registrationAttempt struct {
+	server string
+	token  string
+}
+
+// recordingFactory stubs the constructor, recording every attempt and handing
+// its outcome to respond (1-based attempt number). It is what tells "the
+// fallback was tried, against the right server, without the operator's token"
+// apart from "nothing was tried twice". The returned accessor snapshots under
+// the same lock the register goroutine appends under.
+func recordingFactory(
+	t *testing.T,
+	respond func(n int, o *interactshclient.Options) (*interactshclient.Client, error),
+) func() []registrationAttempt {
+	t.Helper()
+	var mu sync.Mutex
+	attempts := make([]registrationAttempt, 0, 2)
+	withClientFactory(t, func(o *interactshclient.Options) (*interactshclient.Client, error) {
+		mu.Lock()
+		attempts = append(attempts, registrationAttempt{server: o.ServerURL, token: o.Token})
+		n := len(attempts)
+		mu.Unlock()
+		return respond(n, o)
+	})
+	return func() []registrationAttempt {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]registrationAttempt(nil), attempts...)
+	}
+}
+
+// alwaysFail is the respond hook for the three tests that only care about which
+// servers were reached.
+func alwaysFail(boom error) func(int, *interactshclient.Options) (*interactshclient.Client, error) {
+	return func(int, *interactshclient.Options) (*interactshclient.Client, error) { return nil, boom }
+}
+
+// A server_url that does not answer costs the scan every blind check while it
+// still reports completed, so one public server answering instead is the
+// better failure. The operator's token stays with the server they named.
+func TestRegister_FallsBackToDefaultServer(t *testing.T) {
+	srv, _ := fakeInteractshServer(t)
+
+	attempts := recordingFactory(t, func(n int, o *interactshclient.Options) (*interactshclient.Client, error) {
+		if n == 1 {
+			return nil, errors.New("no such host")
+		}
+		// The second attempt is the one under test; it is served locally so the
+		// suite never reaches the real default server.
+		local := *o
+		local.ServerURL = srv.URL
+		return interactshclient.New(&local)
+	})
+
+	svc, _ := New(&config.OASTConfig{
+		Enabled:           true,
+		ServerURL:         "oast.dead.invalid",
+		Token:             "operator-secret",
+		FallbackToDefault: true,
+	}, nil, nil, "", "", nil)
+	t.Cleanup(svc.Close)
+
+	if err := svc.WaitReady(context.Background(), 5*time.Second); err != nil {
+		t.Fatalf("WaitReady = %v, want a service registered on the fallback", err)
+	}
+	got := attempts()
+	if len(got) != 2 {
+		t.Fatalf("attempts = %+v, want the configured server then the default", got)
+	}
+	if got[0].server != "oast.dead.invalid" || got[0].token != "operator-secret" {
+		t.Errorf("first attempt = %+v, want the configured server with its token", got[0])
+	}
+	if got[1].server != config.DefaultOASTServer {
+		t.Errorf("fallback attempt hit %q, want %q", got[1].server, config.DefaultOASTServer)
+	}
+	if got[1].token != "" {
+		t.Errorf("fallback carried token %q; it belongs to the server the operator named", got[1].token)
+	}
+	if svc.ServerURL() != config.DefaultOASTServer {
+		t.Errorf("ServerURL() = %q, want the server callbacks actually land on (%q)",
+			svc.ServerURL(), config.DefaultOASTServer)
+	}
+}
+
+// An engagement whose authorization names the collector must not have its
+// callbacks rerouted to a public server: fallback_to_default false means the
+// failure stands, and nothing is sent anywhere else.
+func TestRegister_FallbackDisabledKeepsTheFailure(t *testing.T) {
+	boom := errors.New("no such host")
+	attempts := recordingFactory(t, alwaysFail(boom))
+
+	svc, _ := New(&config.OASTConfig{
+		Enabled:           true,
+		ServerURL:         "oast.dead.invalid",
+		Token:             "operator-secret",
+		FallbackToDefault: false,
+	}, nil, nil, "", "", nil)
+	t.Cleanup(svc.Close)
+
+	var uerr *UnavailableError
+	if err := svc.WaitReady(context.Background(), 5*time.Second); !errors.As(err, &uerr) {
+		t.Fatalf("WaitReady = %v, want an UnavailableError", err)
+	}
+	if len(attempts()) != 1 {
+		t.Fatalf("attempts = %+v, want exactly one (no fallback)", attempts())
+	}
+	if uerr.Server != "oast.dead.invalid" {
+		t.Errorf("error names %q, want the configured server", uerr.Server)
+	}
+	if strings.Contains(uerr.Error(), config.DefaultOASTServer) {
+		t.Errorf("error %q names the default server, which was never contacted", uerr.Error())
+	}
+	if svc.ServerURL() != "oast.dead.invalid" {
+		t.Errorf("ServerURL() = %q, want the configured server", svc.ServerURL())
+	}
+}
+
+// Both dead: the notice must not read as though only one thing was tried.
+func TestRegister_FallbackFailureNamesBothServers(t *testing.T) {
+	attempts := recordingFactory(t, alwaysFail(errors.New("no such host")))
+
+	svc, _ := New(&config.OASTConfig{
+		Enabled:           true,
+		ServerURL:         "oast.dead.invalid",
+		FallbackToDefault: true,
+	}, nil, nil, "", "", nil)
+	t.Cleanup(svc.Close)
+
+	var uerr *UnavailableError
+	if err := svc.WaitReady(context.Background(), 5*time.Second); !errors.As(err, &uerr) {
+		t.Fatalf("WaitReady = %v, want an UnavailableError", err)
+	}
+	if len(attempts()) != 2 {
+		t.Fatalf("attempts = %+v, want both servers tried", attempts())
+	}
+	msg := uerr.Error()
+	if !strings.Contains(msg, "oast.dead.invalid") || !strings.Contains(msg, config.DefaultOASTServer) {
+		t.Errorf("message %q must name both servers", msg)
+	}
+}
+
+// Already on the default: there is nothing to fall back TO, so the retry is
+// not spent.
+func TestRegister_NoFallbackWhenAlreadyOnDefault(t *testing.T) {
+	attempts := recordingFactory(t, alwaysFail(errors.New("no such host")))
+
+	svc, _ := New(&config.OASTConfig{
+		Enabled:           true,
+		ServerURL:         config.DefaultOASTServer,
+		FallbackToDefault: true,
+	}, nil, nil, "", "", nil)
+	t.Cleanup(svc.Close)
+
+	if err := svc.WaitReady(context.Background(), 5*time.Second); err == nil {
+		t.Fatal("WaitReady = nil after a failed registration")
+	}
+	if len(attempts()) != 1 {
+		t.Fatalf("attempts = %+v, want exactly one", attempts())
+	}
+}

@@ -105,7 +105,11 @@ func TestDirectScanOASTUnavailableMarksPartial(t *testing.T) {
 	directRowFixture(t)
 	swapGlobal(t, &scanOpts.OastURL, "")
 	iact := failingInteractsh(t)
-	writeOASTConfig(t, "oast:\n  enabled: true\n  server_url: "+iact.URL+"\n")
+	// fallback_to_default off: the case under test is a run that reports
+	// oast_unavailable, which the default would turn into a successful
+	// registration against the public oast.pro - and a suite reaching a third
+	// party to prove a local failure.
+	writeOASTConfig(t, "oast:\n  enabled: true\n  fallback_to_default: false\n  server_url: "+iact.URL+"\n")
 
 	srv := bareServer(t)
 	in := directInput(t, srv.URL+"/")
