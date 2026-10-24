@@ -16,6 +16,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/core/services"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/deparos/discovery"
+	"github.com/vigolium/vigolium/pkg/deparos/waf"
 	"github.com/vigolium/vigolium/pkg/input/source"
 	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/output"
@@ -36,8 +37,21 @@ func discoveryEgress(infra *phaseInfra, rateLimit int) func(nethttp.RoundTripper
 	}
 	gate := svc.EgressGate().WithRate(buildScanRateLimiter(rateLimit))
 	return func(next nethttp.RoundTripper) nethttp.RoundTripper {
-		return gate.RoundTripper(next, egress.LaneNormal)
+		// The feedback variant: discovery reports every response to the host
+		// limiter as the scan Requester does, so a throttling or WAF-blocking
+		// host backs off and a host pre-armed by preflight can recover.
+		return gate.FeedbackRoundTripper(next, egress.LaneNormal, wafBlockClassifier{})
 	}
+}
+
+// wafBlockClassifier is the scan Requester's WAF block classification
+// (deparos/waf), shaped for egress.FeedbackRoundTripper.
+type wafBlockClassifier struct{}
+
+func (wafBlockClassifier) IsBlockStatus(status int) bool { return waf.IsBlockStatusCode(status) }
+
+func (wafBlockClassifier) IsBlock(status int, header nethttp.Header, body []byte) bool {
+	return waf.ClassifyParts(status, header, body) != nil
 }
 
 func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error {
@@ -162,17 +176,21 @@ func (r *Runner) runDiscoveryPhase(ctx context.Context, infra *phaseInfra) error
 	r.printPhaseStart("Discovery", "ingest inputs and discover directories, files, and hidden endpoints via Deparos content discovery")
 
 	// Only the dials discovery actually applies (config.phasePaceSupport): the
-	// engine's thread count and, when one is explicitly configured, its request
-	// rate (one bucket for the whole phase). Its host slots are the scan's own
+	// engine's thread count, its brute-force (wordlist/FUZZ) worker count per
+	// target, its wire protocol policy and, when one is explicitly configured,
+	// its request rate (one bucket for the whole phase). Its host slots are the scan's own
 	// (the shared host limiter, through the egress gate), so no discovery-specific
 	// max-per-host is printed; the concurrency printed is the section's.
 	rateDetail := "unlimited"
 	if rate := r.discoveryRateLimit(); rate > 0 {
 		rateDetail = fmt.Sprintf("%d/s", rate)
 	}
-	speedDetail := fmt.Sprintf("Speed: threads=%s, rate-limit=%s",
+	bruteForce, protocol := r.discoveryWirePace(r.discoveryConcurrency())
+	speedDetail := fmt.Sprintf("Speed: threads=%s, brute-force=%s, rate-limit=%s, protocol=%s",
 		terminal.HiBlue(fmt.Sprintf("%d", r.discoveryConcurrency())),
-		terminal.HiBlue(rateDetail))
+		terminal.HiBlue(fmt.Sprintf("%d", bruteForce)),
+		terminal.HiBlue(rateDetail),
+		terminal.HiBlue(protocol))
 	// The option is what buildDeparosConfig hands the phase, so it is what gets
 	// reported.
 	if budget := PhaseSpeedDetail(r.settings, "discovery", r.options.DiscoverMaxDuration); budget != "" {

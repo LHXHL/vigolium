@@ -82,6 +82,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/passive/password_autocomplete_detect"
 	"github.com/vigolium/vigolium/pkg/modules/passive/payment_integration_audit"
 	"github.com/vigolium/vigolium/pkg/modules/passive/permissions_policy_detect"
+	"github.com/vigolium/vigolium/pkg/modules/passive/php2shell_version"
 	"github.com/vigolium/vigolium/pkg/modules/passive/php_generic_fingerprint"
 	"github.com/vigolium/vigolium/pkg/modules/passive/postmessage_handler_detect"
 	"github.com/vigolium/vigolium/pkg/modules/passive/powerpages_fingerprint"
@@ -228,6 +229,7 @@ func registerPassiveModules(r *Registry) {
 	r.RegisterPassive(symfony_fingerprint.New())
 	// PHP (generic) - Passive
 	r.RegisterPassive(php_generic_fingerprint.New())
+	r.RegisterPassive(php2shell_version.New())
 	// ASP.NET Security - Passive
 	r.RegisterPassive(aspnet_fingerprint.New())
 	r.RegisterPassive(aspnet_viewstate_detect.New())

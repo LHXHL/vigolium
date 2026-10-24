@@ -1045,6 +1045,20 @@ discovery:
     # Default: true
     disable_secret_scan: true
 
+    # Wire protocol for discovery traffic, pinned per origin: auto (HTTP/3 when
+    # a direct QUIC handshake proves it, else HTTP/2 when TLS ALPN selects it,
+    # else HTTP/1.1), http1, http2, or http3. HTTP/3 is never used through a
+    # proxy. The module scanner always uses HTTP/1.1.
+    # Default: auto
+    protocol: auto
+
+    # Workers per target for wordlist and FUZZ-template requests. The rest of
+    # discovery (spider, observed-word variants, JS) keeps the phase
+    # concurrency. 0 = scanning_pace.max_per_host (or the phase concurrency
+    # when -c is given explicitly).
+    # Default: 0
+    brute_force_concurrency: 0
+
   # Embedded JavaScript intelligence and source-aware replay.
   jstangle:
     # Store typed facts and analyze scripts. Default: true.

@@ -46,6 +46,8 @@ run `vigolium <command> -h`.
 - [vigolium db reset](#vigolium-db-reset)
 - [vigolium db seed](#vigolium-db-seed)
 - [vigolium db stats](#vigolium-db-stats)
+- [vigolium dig](#vigolium-dig)
+- [vigolium dns](#vigolium-dns)
 - [vigolium doctor](#vigolium-doctor)
 - [vigolium endpoints](#vigolium-endpoints)
 - [vigolium export](#vigolium-export)
@@ -64,8 +66,11 @@ run `vigolium <command> -h`.
 - [vigolium finding load](#vigolium-finding-load)
 - [vigolium finding mark](#vigolium-finding-mark)
 - [vigolium finding verify](#vigolium-finding-verify)
+- [vigolium fingerprint](#vigolium-fingerprint)
 - [vigolium fuzz](#vigolium-fuzz)
 - [vigolium gau](#vigolium-gau)
+- [vigolium host](#vigolium-host)
+- [vigolium hosts](#vigolium-hosts)
 - [vigolium import](#vigolium-import)
 - [vigolium ingest](#vigolium-ingest)
 - [vigolium init](#vigolium-init)
@@ -113,8 +118,10 @@ run `vigolium <command> -h`.
 - [vigolium schema command](#vigolium-schema-command)
 - [vigolium schema error](#vigolium-schema-error)
 - [vigolium schema event](#vigolium-schema-event)
+- [vigolium schema flags](#vigolium-schema-flags)
 - [vigolium schema list](#vigolium-schema-list)
 - [vigolium schema plan](#vigolium-schema-plan)
+- [vigolium schema storage](#vigolium-schema-storage)
 - [vigolium scope](#vigolium-scope)
 - [vigolium scope set](#vigolium-scope-set)
 - [vigolium scope view](#vigolium-scope-view)
@@ -181,6 +188,7 @@ and wins for that command — read it instead of the row here.
 | `--silent` | - | bool | `false` | Suppress all output except findings |
 | `--skip-dependency-check` | - | bool | `false` | Skip the first-run dependency check and stamp ~/.vigolium/initialized (the check only prints a notice; chromium and nuclei templates are fetched by the phase that needs them) |
 | `--soft-fail` | - | bool | `false` | Always exit 0, even when a command fails (error is still printed to stderr; keeps wrapping scripts/CI from being interrupted) |
+| `--usage` | - | bool | `false` | Print this command's flags, one line each, and exit (-j: the 'schema flags' document) |
 | `--verbose` | `-v` | bool | `false` | Enable verbose logging output |
 | `--width` | - | int | `70` | Maximum column width for table output |
 
@@ -276,7 +284,7 @@ Agentic scan: autonomous AI-driven vulnerability scanning
 | `--prompt` | - | string | - | Free-text task guidance for the agent (same as the positional [prompt]; use --plan-file for a whole plan with seed HTTP requests) |
 | `--prompt-file` | - | string | - | Read task guidance from a file (same channel as --prompt — its contents flow through credential extraction, so role-tagged accounts become primary/compare sessions). Convenient for long/complex prompts; mutually exclusive with --prompt, the positional [prompt], and --plan-file |
 | `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
-| `--record-uuid` | - | string | - | Use an HTTP record from the database as the seed input (looked up by UUID) |
+| `--record-uuid` | - | string | - | Use an HTTP record from the database as the seed input (UUID or unique 8+ char prefix) |
 | `--resume` | - | string | - | Resume a previous durable-autopilot run by its agentic-scan UUID: reuses its session dir, project, target, and durable scratchpad/candidates; skips pre-scan and audit re-prep (requires agent.olium.autopilot_mode != legacy) |
 | `--session-dir` | - | string | - | Explicit session directory for this run's debug artifacts (transcript.jsonl, runtime.log, scratchpad, tool-results). Default: <agent.sessions_dir>/<run-uuid>. Pin it to know exactly where to look when debugging (e.g. alongside -S/--stateless scans). |
 | `--show-prompt` | - | bool | `false` | Print rendered prompt to stderr before executing |
@@ -425,7 +433,7 @@ Agentic scan: AI-guided targeted vulnerability swarm
 | `--prompt` | - | string | - | Free-text task guidance for the agent (same as the positional [prompt]; use --plan-file for a whole plan with seed HTTP requests) |
 | `--prompt-file` | - | string | - | Read task guidance from a file (same channel as --prompt). Convenient for long/complex prompts; mutually exclusive with --prompt, the positional [prompt], and --plan-file |
 | `--provider` | - | string | - | Olium provider override: openai-codex-oauth \| openai-api-key \| openai-responses \| anthropic-api-key \| anthropic-oauth \| anthropic-cli \| anthropic-claude-sdk-bridge \| anthropic-vertex \| google-vertex \| openai-compatible \| anthropic-compatible (default: agent.olium.provider; auto-detected when unset) |
-| `--record-uuid` | - | stringSlice | - | HTTP record UUID from database (repeatable, or comma-separated) |
+| `--record-uuid` | - | stringSlice | - | HTTP record UUID or unique 8+ char prefix from the database (repeatable, or comma-separated) |
 | `--records-from` | - | string | - | Filter ingested HTTP records by spec (e.g. "host=example.com,status=200,method=GET,path=/api,since=2026-04-01") |
 | `--show-prompt` | - | bool | `false` | Print rendered prompts to stderr before executing |
 | `--skill` | - | stringSlice | - | Force-load these skills by name into triage, bypassing planner selection (repeatable or comma-separated) |
@@ -692,7 +700,7 @@ Export database records
 | `--severity` | - | string | - | Filter findings by severity level |
 | `--status` | - | intSlice | - | Filter records by HTTP status code (can be specified multiple times) |
 | `--to` | - | string | - | Export records at or before this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339; a bare date covers the whole day (alias: --until) |
-| `--uuid` | - | string | - | Export exactly one record by its UUID. Honored by every --format (including fs) and resolved before pagination, so a record outside the --limit window is still found |
+| `--uuid` | - | string | - | Export exactly one record by its UUID (or unique 8+ char prefix). Honored by every --format (including fs) and resolved before pagination, so a record outside the --limit window is still found |
 
 ## vigolium db list
 
@@ -735,7 +743,7 @@ List database records (default: http_records)
 | `--to` | - | string | - | Show records at or before this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339; a bare date covers the whole day (alias: --until) |
 | `--tree` | - | bool | `false` | Display results in hierarchical tree format |
 | `--url` | - | stringArray | - | Select records whose URL matches EXACTLY (repeatable; OR-ed). Compared against the stored URL with no normalization — use --path or --search for substring matching |
-| `--uuid` | - | stringSlice | - | Select exact stored record(s) by UUID (repeatable/comma-separated). Applied before pagination |
+| `--uuid` | - | stringSlice | - | Select exact stored record(s) by UUID or unique 8+ char prefix (repeatable/comma-separated). Applied before pagination |
 
 ## vigolium db migrate
 
@@ -765,6 +773,37 @@ Show database statistics
 | `--host` | - | string | - | Show statistics for a specific hostname |
 | `--scan-uuid` | - | string | - | **(overrides the global `--scan-uuid`)** Show statistics for a specific scan UUID |
 
+## vigolium dig
+
+Usage: `vigolium dig [vigolium globals] [--] [dig flags]`
+
+Resolve names using dig's argv (routed to `vigolium dns`, which stores the answers)
+
+**Compatibility shim.** This command parses another tool's argv itself rather than through cobra, so it accepts that tool's flags, not the ones listed here. It is a subset: run it with `-h` for what is actually translated.
+
+_No command-specific flags._
+
+## vigolium dns
+
+Usage: `vigolium dns [name|url ...]`
+
+Resolve names (A, AAAA, CNAME, MX, NS, TXT, SOA, CAA) and store the answers
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
+| `--concurrency` | `-c` | int | `10` | Names resolved in parallel |
+| `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
+| `--ignore-scope` | - | bool | `false` | Resolve names outside the configured host scope |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
+| `--no-header` | - | bool | `false` | With --format tsv, omit the header line |
+| `--no-store` | - | bool | `false` | Print the answers without storing them |
+| `--resolver` | - | stringArray | - | Resolver host[:port] to ask (repeatable; default the system resolver) |
+| `--target` | `-t` | stringArray | - | Name or URL to resolve (repeatable) |
+| `--target-file` | `-T` | stringArray | - | File of names or URLs, one per line (repeatable) |
+| `--timeout` | - | duration | `5s` | Per-query timeout |
+| `--type` | - | stringSlice | - | Record types (comma-separated): a, aaaa, cname, mx, ns, txt, soa, caa (default all) |
+
 ## vigolium doctor
 
 Check system readiness and diagnose configuration issues
@@ -786,13 +825,17 @@ List endpoints (origin + path template) aggregated from stored traffic
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--collapse` | - | int | `0` | Merge N or more sibling literal segments sharing the same child templates into {var} (0 = off; >= 2) |
+| `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
+| `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
 | `--from` | - | string | - | Only records sent at or after this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339 (alias: --since) |
 | `--glob-db` | - | string | - | Read across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S |
 | `--glob-strict` | - | bool | `false` | Fail the read on the first --glob-db source that cannot be imported, instead of skipping it with a warning |
 | `--host` | - | string | - | Filter by hostname pattern (wildcard supported) |
 | `--limit` | `-n` | int | `100` | Maximum endpoints to list (0 = all); the aggregate always covers every matched record |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--method` | - | stringSlice | - | Filter by HTTP method (repeatable) |
 | `--min-records` | - | int64 | `0` | Only endpoints seen in at least this many records |
+| `--no-header` | - | bool | `false` | With --format tsv, omit the header line |
 | `--offset` | - | int | `0` | Number of endpoints to skip (for pagination) |
 | `--output` | `-o` | string | - | With --json: write the result document to this file and print a receipt instead; '-' forces stdout |
 | `--path` | - | string | - | Filter by URL path pattern (wildcard supported) |
@@ -1000,6 +1043,7 @@ Browse vulnerability findings with fuzzy search and filtering
 | `--min-severity` | - | string | - | Filter by minimum severity (e.g. high → high+critical); ignored when --severity is set |
 | `--module-type` | - | string | - | Filter by module type (active, passive, nuclei, agent, source-tools, oast, extension) |
 | `--new-since` | - | string | - | Only findings new since a scan (UUID, 8+ char prefix, latest, previous: first observed by a later scan and not by it) or a time (2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339: stored after it). Leaves out false_positive/accepted_risk unless --include-dismissed or --verdict |
+| `--no-header` | - | bool | `false` | With --format tsv, omit the header line |
 | `--no-tui` | - | bool | `false` | Force TUI off (escape hatch if TUI ever becomes default) |
 | `--offset` | - | int | `0` | Number of findings to skip (for pagination) |
 | `--output` | `-o` | string | - | With --json: write the result document to this file and print a receipt instead; '-' forces stdout |
@@ -1067,6 +1111,110 @@ Re-run a finding's module against its target and record whether it reproduces
 | `--stateless` | `-S` | bool | `false` | Use the standalone .sqlite named by --db with project scoping off |
 | `--timeout` | - | duration | `2m0s` | Time limit for verifying one finding (one request is capped at 15s) |
 
+## vigolium fingerprint
+
+Usage: `vigolium fingerprint [url ...]`
+
+Fingerprint origins with a bounded set of reads and store the result as host facts
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--advanced-options` | `-a` | stringToString | - | Module-specific options as key=value (e.g. -a xss.dom=true) |
+| `--allow-risky-payloads` | - | bool | `false` | Allow risk:high payloads and modules below --intensity deep (OR-per-row and stacked time-blind SQLi, so MSSQL time-blind; state-changing probes). Always on at deep. Overrides config dynamic-assessment.allow_risky_payloads |
+| `--auth` | - | stringArray | - | Inline session in 'name:Header:value' format. Repeatable; commas are literal (header values may contain commas). |
+| `--auth-file` | - | stringArray | - | Path to auth file (YAML/JSON, single session or sessions: bundle), or bare name resolved against scanning_strategy.session.session_dir. Repeatable; commas are literal. |
+| `--browser-engine` | `-E` | string | `chromium` | Browser engine: 'chromium', 'ungoogled', or 'fingerprint' |
+| `--browser-insecure` | - | bool | `false` | Spider with every browser security exception on: no sandbox, TLS errors ignored, mixed content allowed, same-origin policy off. For local test apps only |
+| `--browsers` | `-b` | int | `1` | Browser instances to launch for spidering (clamped to 1; for parallel crawling set spidering.tabs in the config, which runs N tabs of the one browser) |
+| `--compact` | - | bool | `false` | With --json, emit metadata only (omit request/response bodies). --markdown already compacts response bodies by default; use --full-body to render them whole |
+| `--concurrency` | `-c` | int|phase=int | `25` | Number of concurrent scan workers. Accepts a phase qualifier, repeatable: --concurrency discovery=10 |
+| `--db-isolate` | - | bool | `false` | Scan into a private temporary database, then merge results into --db (or the default DB) at the end — lets many parallel scans share one --db without write contention (SQLite only; ignored under --stateless, which keeps nothing to merge; combine with -P -T to fan out targets and export one unified output from the merged DB) |
+| `--depth` | - | string | - | Reads per origin: light, standard or full (default standard, light past 50 targets) |
+| `--discover` | - | bool | `false` | Enable content discovery phase before scanning |
+| `--discover-max-time` | - | duration | `1h0m0s` | Max time for content discovery per target |
+| `--discovery-extensions` | - | stringSlice | - | Extensions discovery also tries on every wordlist name, e.g. php,bak (ffuf's -e; leading dots optional). Swept directly, without the confirm-before-fuzzing gate that otherwise guards server-side extensions. Overrides discovery.extensions.custom_list |
+| `--discovery-max-depth` | - | int | `0` | Maximum directory recursion depth for discovery (ffuf's -recursion-depth); 0 turns recursion off. Overrides discovery.recursion.max_depth (default 5) |
+| `--discovery-wordlist` | - | stringArray | - | Custom wordlist file seeding the discovery phase's /FUZZ brute-force (enables fuzzing on the fly). Repeatable: the files are streamed in order and each word is tried once. A missing file is a usage error. Formerly --fuzz-wordlist; distinct from 'vigolium fuzz -w'. |
+| `--events` | - | string | - | Emit a machine-readable event stream to stdout while the scan runs: 'ndjson' (one JSON object per line, flushed per event). The human console stays on stderr, so a driver reads the stream with 2>/dev/null. Events: scan.started, phase.started/progress/finished, waf.block, waf.pacing, finding.new, error, scan.finished. |
+| `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
+| `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
+| `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
+| `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
+| `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
+| `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
+| `--headed` | - | bool | `false` | Show the browser window during spidering (sugar for --headless=false; wins when both are set) |
+| `--header` | `-H` | stringArray | - | Add custom HTTP header (repeatable, e.g. -H 'Auth: Bearer token'). Commas are literal — repeat -H for multiple headers. |
+| `--headless` | - | bool | `true` | Run browser in headless mode |
+| `--heuristics-check` | - | string | - | Pre-scan heuristics level: none, basic, advanced (default: basic) |
+| `--include-response` | - | bool | `false` | Include full HTTP response body in output |
+| `--input` | `-i` | string | `-` | Input file path or spec (use - for stdin) |
+| `--input-mode` | `-I` | string | `urls` | Input format: urls, nuclei, openapi, wsdl, postman, curl, burpraw, burpxml, burpscope, har, deparos (aliases accepted, see --list-input-mode) |
+| `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
+| `--intensity` | - | string | - | Scan intensity preset: quick, balanced, or deep (maps to scanning profile + strategy) |
+| `--keep-db-on-error` | - | bool | `false` | On a failed -S/--stateless scan, move the throwaway working database to ~/.vigolium/recovered instead of deleting it, so the partial results survive the failure (requires -S) |
+| `--known-issue-scan-exclude-tags` | - | stringSlice | - | Nuclei template tags to exclude (comma-separated) |
+| `--known-issue-scan-severities` | - | stringSlice | - | Filter Nuclei templates by severity (critical,high,medium,low,info) |
+| `--known-issue-scan-tags` | - | stringSlice | - | Nuclei template tags to include (comma-separated) |
+| `--known-issue-scan-templates` | - | stringArray | - | Run only these Nuclei templates (nuclei's -t for a file): a template file, or a path relative to the templates directory such as http/cves/2021/CVE-2021-44228.yaml. Repeatable; combined with --known-issue-scan-templates-dir, the named directories run too. |
+| `--known-issue-scan-templates-dir` | - | stringArray | - | Custom Nuclei templates directory (alias: --templates-dir). Pin it to avoid the one-time clone into ~/nuclei-templates. Repeatable: the first replaces known_issue_scan.templates_dir, and every named directory is loaded. |
+| `--limit` | `-n` | int | `200` | With -j: the most findings the scan document embeds in items, highest severity first (0 = no cap); total, counts_by_severity and query cover the rest |
+| `--max-body-bytes` | - | int | `4096` | Cap each HTTP request/response embedded in a Markdown report at this many bytes (UTF-8 safe, with a note naming the command that prints it whole); 0 or negative = no cap |
+| `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
+| `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
+| `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
+| `--max-requests` | - | int | `0` | Stop the scan after N requests to the targets (0 = unlimited). Exact for gated traffic; the browser crawl is held to it within 500ms; nuclei is not counted (see request_cap_enforcement on scan.started). A scan it stops is partial with stop_reason request_budget. Config: scanning_pace.max_requests |
+| `--max-requests-per-host` | - | int | `0` | Send at most N requests to any one target host (0 = unlimited); further requests to that host fail fast and the phase records the host_request_budget limit. Config: scanning_pace.max_requests_per_host |
+| `--module-tag` | - | stringSlice | - | Filter modules by tag (OR condition, e.g. --module-tag spring --module-tag injection) |
+| `--modules` | `-m` | stringSlice | - | Scan modules to enable (default "all", supports fuzzy match on ID/name, e.g. -m xss -m sqli) |
+| `--no-carry-browser-session` | - | bool | `false` | Do not carry the spidering browser's cleared session (cookies + UA) into discovery/scanning (on by default when --spider runs; scoped to the same host, respects -H) |
+| `--no-cdp` | - | bool | `false` | Disable Chrome DevTools Protocol event listener detection |
+| `--no-clustering` | - | bool | `false` | Disable deduplication of identical concurrent HTTP requests |
+| `--no-discovery-fuzz` | - | bool | `false` | Disable discovery's /FUZZ brute-force (alias --no-fuzz). Overrides every reason it would auto-enable — --intensity deep, a discovery-only run such as 'vigolium run discover', and the low-yield auto-enable. Link extraction, JS parsing, response-word harvesting and the short dir/file wordlists still run. |
+| `--no-forms` | - | bool | `false` | Disable form filling and submission during spidering (sets spidering.interaction edit_fields and submit_forms off; an explicit interaction key wins) |
+| `--no-param-dedup` | - | bool | `false` | Keep testing a parameter with every module of a vuln class after one already reported it (default: one finding per param and class, e.g. sqli-time-blind skips a param sqli-error-based confirmed). For audit runs |
+| `--no-prefix-breaker` | - | bool | `false` | Disable per-prefix circuit breaker that stops discovery from recursing into trap directories |
+| `--no-tech-filter` | - | bool | `false` | Disable the tech-stack allowlist (run every module regardless of detected stack). Auto-enabled by --intensity=deep. |
+| `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
+| `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
+| `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
+| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
+| `--output` | `-o` | string | - | Write findings to specified output file |
+| `--parallel` | `-P` | int | `1` | Scan up to N targets concurrently as isolated child processes (requires -S -T --split-by-host, OR --db-isolate -T which merges into --db and exports one unified output; each target keeps its own --concurrency, so real in-flight requests ≈ N × --concurrency) |
+| `--param-mining` | - | bool | `false` | Mine hidden parameters (Arjun-style) on this scan's dynamic endpoints before the assessment, so injection modules test them too. Default: on at --intensity deep, off below; --param-mining=false turns it off at deep. Budget: dynamic-assessment.param_mining in config |
+| `--pdf-timeout` | - | duration | `0s` | Bound the headless-Chrome PDF render (0 = $VIGOLIUM_PDF_TIMEOUT, else 1m30s) |
+| `--port-sweep-ports` | - | string | - | Override the alternate HTTP(S) ports swept on CLI target hosts (comma-separated; sweep runs at --intensity deep or --follow-subdomains) |
+| `--print-finding` | - | bool | `false` | After the scan, print each finding to stdout as Markdown (description + matched evidence + request/response), like 'vigolium finding --markdown'. Pairs well with -S and --silent for a quick scan. |
+| `--print-traffic` | - | bool | `false` | After the scan, print the run's raw HTTP request/response pairs to stdout, like 'vigolium traffic --raw'. Pairs well with -S and --silent. |
+| `--print-traffic-tree` | - | bool | `false` | After the scan, print the run's HTTP traffic to stdout as a host/path hierarchy tree, like 'vigolium traffic --tree'. Pairs well with -S and --silent. |
+| `--probe` | - | bool | `false` | Enable the host-sweep phase: one request per target, passive tech fingerprinting + surface scoring, no content discovery or fuzzing (same as 'vigolium run probe') |
+| `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
+| `--record-redirect-chain` | - | bool | `false` | Store a followed redirect's hops as their own http_records rows, chained by parent_uuid, instead of keeping only the final response. Canonical hops (scheme upgrade, trailing slash, www.) collapse into their destination row, and a chain stores at most 4 rows, keeping the first and the last. Read by the probe phase; on by default under 'run probe'. |
+| `--redirect-mode` | - | string | - | Which redirects to follow: off \| same-host \| same-apex \| any (default any; 'run probe' defaults to same-apex). 'same-apex' follows within the registrable domain, so www.example.com -> example.com follows but example.com -> tracker.example.net does not. Every mode also stops at a login/SSO wall, whatever its host, and records the 3xx instead. |
+| `--report-url` | - | string | - | URL for the "Raw Report URL" button in HTML reports (overrides VIGOLIUM_REPORT_SHARED_URL) |
+| `--require-auth` | - | bool | `false` | Fail a target's spidering instead of crawling anonymously when configured authentication (session cookies/auth headers) cannot be applied to the browser (sets spidering.require_auth) |
+| `--required-only` | - | bool | `false` | Parse only required fields from input format (ignore optional) |
+| `--resume` | - | bool | `false` | Resume a prior -S -T --split-by-host -P run from its progress manifest (<output>.progress.json): skip targets that already completed cleanly and scan only the remainder. Run bare ('vigolium scan --resume', no other flags) to auto-discover the *.progress.json in the current directory and relaunch the saved run from it (pass -o <prefix> to disambiguate when several exist) |
+| `--retries` | - | int | `1` | Number of retry attempts for failed requests |
+| `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
+| `--scanning-profile` | - | string | - | Scanning profile name or YAML file path |
+| `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip-format-validation` | - | bool | `false` | Skip validation of input file format |
+| `--skip-heuristics` | - | bool | `false` | Disable pre-scan heuristics (equivalent to --heuristics-check=none) |
+| `--spider` | - | bool | `false` | Enable browser-based spidering phase before scanning |
+| `--spider-max-time` | - | duration | `30m0s` | Max time for spidering per target |
+| `--split-by-host` | - | bool | `false` | In stateless multi-target mode (-S -T file), write a separate per-host output file (base-<host>.<ext>) instead of one unified file |
+| `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
+| `--stats` | - | bool | `false` | Show live progress stats during scanning |
+| `--strategy` | - | string | - | Scanning strategy preset (lite, balanced, deep) |
+| `--stream` | - | bool | `false` | Process targets as a stream without buffering or deduplication |
+| `--target` | `-t` | stringArray | - | Target URL to scan (repeatable). Commas are literal so a URL query like ?ids=1,2,3 stays one target — repeat -t for multiple targets. |
+| `--target-file` | `-T` | stringArray | - | File containing target URLs (one per line; repeatable for multiple files). Commas in the path are literal. |
+| `--timeout` | - | duration | `15s` | HTTP request timeout (e.g. 30s, 1m, 2h) |
+| `--tls-probe` | - | bool | `false` | Probe each HTTPS target's TLS: negotiated version/cipher plus the leaf certificate (subject, SANs, issuer, validity, fingerprints). Stored per host:port; read it with 'vigolium hosts -j' or as 'tls' on 'traffic -j' rows. Read by the probe phase (the fingerprint phase always probes HTTPS) |
+| `--upload-results` | - | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
+
 ## vigolium fuzz
 
 Usage: `vigolium fuzz [url]`
@@ -1085,6 +1233,7 @@ Inject payloads into a request and report per-payload response anomalies
 | `--cacert` | - | string | - | CA bundle used to verify the target (implies --verify-tls) |
 | `--cert` | - | string | - | Client certificate file (PEM), curl's -E |
 | `--class` | - | stringSlice | - | Built-in payload class to inject: cmdi,crlf,lfi,open_redirect,path_traversal,sqli,ssrf,ssti,xss,xxe (comma-list) |
+| `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
 | `--compressed` | - | bool | `false` | Request a compressed response (already transparent) — accepted for curl compatibility |
 | `--concurrency` | `-c` | int | `10` | Concurrent requests |
 | `--connect-timeout` | - | duration | `0s` | TCP/TLS connect timeout (e.g. 5s) |
@@ -1105,6 +1254,7 @@ Inject payloads into a request and report per-payload response anomalies
 | `--exclude-time-z` | - | stringSlice | - | Exclude response times by standard deviations above the baseline mean (needs --baseline-samples > 1); e.g. 4 or '>3' |
 | `--exclude-words` | - | stringSlice | - | Exclude response word counts: N, N-M, >N, <N, !N |
 | `--fail-on-match` | - | bool | `false` | Exit non-zero (3) if any result matches (for agent/CI gating) |
+| `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
 | `--form` | - | stringArray | - | multipart/form-data field 'name=value', 'name=@file' or 'name=<file' (repeatable) |
 | `--form-string` | - | stringArray | - | multipart field whose value is never interpreted (repeatable) |
 | `--fuzz` | - | string | - | What to fuzz: method\|path\|params\|param-name\|new-param[:query\|body\|json]\|body\|headers\|cookies\|all (default: all insertion points; param-name renames a parameter, new-param adds one, body replaces the body) |
@@ -1113,11 +1263,13 @@ Inject payloads into a request and report per-payload response anomalies
 | `--head` | - | bool | `false` | Use HEAD, curl's -I |
 | `--header` | `-H` | stringArray | - | Request header 'Name: value', added or replaced on the source request (repeatable) |
 | `--http-mode` | - | string | - | With --send-via-burp: wire protocol — auto\|http1\|http2\|http2_ignore_alpn (default auto; use http1 for request smuggling/desync) |
-| `--http-version` | - | string | - | Force a wire protocol: 1.1 or 2 (curl's --http1.1 / --http2) |
+| `--http-version` | - | string | - | Wire protocol: auto (default: HTTP/3, then HTTP/2, then HTTP/1.1), 1.1, 2, 3, or 3-only |
 | `--http1.1` | - | bool | `false` | Force HTTP/1.1 |
-| `--http2` | - | bool | `false` | Force HTTP/2 |
+| `--http2` | - | bool | `false` | Stay on TCP and use HTTP/2 where the target negotiates it (no HTTP/3) |
+| `--http3` | - | bool | `false` | Prefer HTTP/3, falling back to HTTP/2 or HTTP/1.1 (the default; curl's --http3) |
+| `--http3-only` | - | bool | `false` | Require HTTP/3 and fail when the target does not speak it (curl's --http3-only) |
 | `--ignore-scope` | - | bool | `false` | Fuzz a host outside the project's configured scope |
-| `--input` | `-i` | string | - | Raw input: curl, raw HTTP, Burp XML, base64, URL, or '-' for stdin |
+| `--input` | `-i` | string | - | Raw input: curl, raw HTTP, Burp XML, base64 or URL text, a path to a file holding one, or '-' for stdin |
 | `--input-file` | - | string | - | Read --input value from a file |
 | `--insecure` | - | bool | `false` | Skip TLS verification (already the default; accepted for curl compatibility) |
 | `--key` | - | string | - | Client certificate private key file (PEM) |
@@ -1133,6 +1285,7 @@ Inject payloads into a request and report per-payload response anomalies
 | `--match-time-z` | - | stringSlice | - | Match response times by standard deviations above the baseline mean (needs --baseline-samples > 1); e.g. 4 or '>3' |
 | `--match-words` | - | stringSlice | - | Match response word counts: N, N-M, >N, <N, !N |
 | `--matches-to-organizer` | - | bool | `false` | Push each matched result's request to Burp's Organizer (Burp re-issues it) for manual triage; requires --burp-bridge-url |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--max-redirs` | - | int | `0` | Maximum redirects to follow (0 = Go's default of 10) |
 | `--max-time` | - | duration | `0s` | Total per-request budget; alias for --timeout, curl's -m |
 | `--mode` | - | string | `sniper` | With several markers (FUZZ, FUZZ2, ...): sniper (one at a time) \| batteringram (same payload everywhere) \| pitchfork (lists in lockstep) \| clusterbomb (every combination) |
@@ -1144,7 +1297,7 @@ Inject payloads into a request and report per-payload response anomalies
 | `--payload` | `-p` | stringArray | - | Inline payload literal (repeatable) |
 | `--point` | - | stringArray | - | Explicit insertion point 'TYPE:name' e.g. URL_PARAM:id (repeatable) |
 | `--rate-limit` | `-r` | float64 | `0` | Max requests/second across all workers, counting baseline and calibration sends (0 = unlimited; fractions allowed, e.g. 0.5). Not taken from scanning config |
-| `--record-uuid` | `-u` | string | - | Use a stored HTTP record (by UUID) as the request to fuzz |
+| `--record-uuid` | `-u` | string | - | Use a stored HTTP record (UUID or unique 8+ char prefix) as the request to fuzz |
 | `--referer` | - | string | - | Referer header, curl's -e |
 | `--request` | `-X` | string | - | HTTP method override (default: the source request's, or GET) |
 | `--resolve` | - | stringArray | - | Pin a host to an address, curl's --resolve host:port:addr (repeatable) |
@@ -1157,7 +1310,7 @@ Inject payloads into a request and report per-payload response anomalies
 | `--user` | - | string | - | Basic auth 'user:password', curl's -u |
 | `--user-agent` | - | string | - | User-Agent header, curl's -A |
 | `--verify-tls` | - | bool | `false` | Verify TLS certificates — the inverse of --insecure, and NOT the default |
-| `--wordlist` | `-w` | stringArray | - | Payload wordlist: a builtin name or file path (repeatable) |
+| `--wordlist` | `-w` | stringArray | - | Payload wordlist: a file path or a builtin name (dir-long, dir-short, file-long, file-short, fuzz, params; 'builtin' = fuzz) (repeatable) |
 
 ## vigolium gau
 
@@ -1168,6 +1321,38 @@ Harvest archived URLs using gau's argv (routed to `vigolium run external-harvest
 **Compatibility shim.** This command parses another tool's argv itself rather than through cobra, so it accepts that tool's flags, not the ones listed here. It is a subset: run it with `-h` for what is actually translated.
 
 _No command-specific flags._
+
+## vigolium host
+
+Usage: `vigolium host [vigolium globals] [--] [host flags]`
+
+Resolve names using host's argv (routed to `vigolium dns`, which stores the answers)
+
+**Compatibility shim.** This command parses another tool's argv itself rather than through cobra, so it accepts that tool's flags, not the ones listed here. It is a subset: run it with `-h` for what is actually translated.
+
+_No command-specific flags._
+
+## vigolium hosts
+
+Usage: `vigolium hosts [host-pattern]`
+
+Read stored host facts: DNS, TLS certificate, fingerprint and not-found baseline
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
+| `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
+| `--has` | - | string | - | Only hosts carrying this fact: dns, fingerprint, not-found, tls |
+| `--history` | - | bool | `false` | Every observation, not just the latest per host:port |
+| `--host` | - | string | - | Only this hostname, or a pattern with * wildcards (same as the positional) |
+| `--limit` | `-n` | int | `100` | Maximum hosts to list (0 = all) |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
+| `--no-header` | - | bool | `false` | With --format tsv, omit the header line |
+| `--offset` | - | int | `0` | Hosts to skip (pagination) |
+| `--sans` | - | bool | `false` | Print the distinct DNS names in the matched certificates' SANs, one per line, and nothing else |
+| `--scan-uuid` | - | string | - | **(overrides the global `--scan-uuid`)** Only observations recorded by this run |
+| `--soft-404` | - | bool | `false` | Only origins that answer 2xx/3xx to a path that does not exist |
+| `--stateless` | `-S` | bool | `false` | Read from --db (a standalone .sqlite) with project scoping off; never writes to your project DB |
 
 ## vigolium import
 
@@ -1216,6 +1401,7 @@ Ingest HTTP requests into database (locally or via server)
 | `--input` | `-i` | string | `-` | Input file path or spec (use - for stdin) |
 | `--input-mode` | `-I` | string | `urls` | Input format: urls, nuclei, openapi, wsdl, postman, curl, burpraw, burpxml, burpscope, har, deparos (aliases accepted, see --list-input-mode) |
 | `--input-read-timeout` | - | duration | `3m0s` | Deadline for reading input from stdin; 0 disables it |
+| `--keep-blocked` | - | bool | `false` | Store a fetched response the block detector classifies as a WAF/bot-wall page (remark blocked:<reason>) instead of dropping the record |
 | `--max-findings-per-module` | - | int | `10` | Stop reporting after N findings per module (0 = unlimited) |
 | `--max-host-error` | - | int | `30` | Skip host after reaching this many consecutive errors |
 | `--max-per-host` | - | int|phase=int | `40` | Maximum concurrent requests allowed per host. Accepts a phase qualifier, repeatable: --max-per-host spidering=4 |
@@ -1422,6 +1608,9 @@ List native scan and agentic scan sessions
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
+| `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--no-tui` | - | bool | `false` | Force TUI off (escape hatch if TUI ever becomes default) |
 | `--reap` | - | bool | `false` | Finalize abandoned running scan rows as failed (stop_reason abandoned) and prune expired status.json files; writes the store |
 | `--tui` | - | bool | `false` | Open interactive TUI (arrow keys to navigate, enter to view details, c to copy id) |
@@ -1541,15 +1730,19 @@ List parameters per endpoint with value-type histograms, from stored traffic
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
 | `--endpoint` | - | string | - | Only this endpoint: an id from 'vigolium endpoints' or a path template (/users/{int}) |
+| `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
 | `--from` | - | string | - | Only records sent at or after this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339 (alias: --since) |
 | `--glob-db` | - | string | - | Read across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S |
 | `--glob-strict` | - | bool | `false` | Fail the read on the first --glob-db source that cannot be imported, instead of skipping it with a warning |
 | `--host` | - | string | - | Filter by hostname pattern (wildcard supported) |
 | `--limit` | `-n` | int | `100` | Maximum parameters to list (0 = all); the aggregate always covers every matched record |
 | `--location` | - | stringSlice | - | Only these locations (comma-separated): query, body, json, xml, cookie, multipart, header, path, other |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--method` | - | stringSlice | - | Filter by HTTP method (repeatable) |
 | `--min-occurrences` | - | int64 | `0` | Only parameters seen at least this many times |
+| `--no-header` | - | bool | `false` | With --format tsv, omit the header line |
 | `--offset` | - | int | `0` | Number of parameters to skip (for pagination) |
 | `--output` | `-o` | string | - | With --json: write the result document to this file and print a receipt instead; '-' forces stdout |
 | `--path` | - | string | - | Filter by URL path pattern (wildcard supported) |
@@ -1634,10 +1827,12 @@ Re-send a stored or supplied HTTP request and diff baseline vs replay
 | `--auth-session` | - | string | - | Auth session name to merge headers from (from 'vigolium auth list') |
 | `--body` | - | string | - | Bulk: filter records whose request/response body contains this text |
 | `--burp-bridge-url` | `-B` | string | - | Loopback Burp/Caido bridge URL used by --save-to-burp / --send-via-burp / --to-repeater / --to-organizer (alias: --caido-bridge-url) |
+| `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
 | `--concurrency` | `-c` | int | `10` | Bulk: concurrent replays; keep low to avoid overwhelming an intercepting proxy like Burp |
 | `--exclude-body` | - | string | - | Bulk: drop records whose request/response body contains the term (inverse of --body) |
 | `--exclude-header-search` | - | string | - | Bulk: drop records whose HTTP header names/values contain the term (inverse of --header-search) |
 | `--exclude-search` | - | stringArray | - | Bulk: drop records where the term appears in the URL, path, or raw request/response (repeatable; dropped if ANY term matches — inverse of --search) |
+| `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
 | `--finding-id` | - | int64 | `0` | Finding ID — replay the finding's linked record (or its stored evidence) |
 | `--from` | - | string | - | Bulk: only records at or after this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339 (alias: --since) |
 | `--header` | `-H` | stringArray | - | Extra request header 'Name: value' (repeatable, overrides baseline) |
@@ -1646,9 +1841,10 @@ Re-send a stored or supplied HTTP request and diff baseline vs replay
 | `--host` | - | string | - | Bulk: filter records by hostname pattern (wildcard supported) |
 | `--http-mode` | - | string | - | With --send-via-burp: wire protocol — auto\|http1\|http2\|http2_ignore_alpn (default auto; use http1 for request smuggling/desync) |
 | `--in-replace` | - | bool | `false` | When the source is a stored record, update its stored response with the replay |
-| `--input` | `-i` | string | - | Raw input: curl, raw HTTP, Burp XML, base64, URL, or '-' for stdin |
+| `--input` | `-i` | string | - | Raw input: curl, raw HTTP, Burp XML, base64 or URL text, a path to a file holding one, or '-' for stdin |
 | `--input-file` | - | string | - | Read --input value from a file |
 | `--limit` | `-n` | int | `100` | Bulk: max records to replay (use --all to lift the cap) |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--method` | - | stringSlice | - | Bulk: filter records by HTTP method (repeatable) |
 | `--no-cookies` | - | bool | `false` | Don't carry cookies (overrides --session-id) |
 | `--no-redirects` | - | bool | `false` | Don't follow 30x redirects |
@@ -1658,7 +1854,7 @@ Re-send a stored or supplied HTTP request and diff baseline vs replay
 | `--path` | - | string | - | Bulk: filter records by URL path pattern |
 | `--raw-request` | - | string | - | Full raw HTTP request override — send these exact bytes instead of the resolved baseline |
 | `--raw-request-file` | - | string | - | Read --raw-request from a file |
-| `--record-uuid` | `-u` | string | - | Stored HTTP record UUID to use as baseline |
+| `--record-uuid` | `-u` | string | - | Stored HTTP record UUID (or unique 8+ char prefix) to use as baseline |
 | `--repeater-tab` | - | string | - | Repeater tab name for --to-repeater (default: vigolium) |
 | `--save-to-burp` | - | bool | `false` | Add each replayed request and its fresh response to Burp's Target Site map |
 | `--search` | - | stringArray | - | Bulk: search across URL, path, and the raw request/response (headers + body); repeatable, AND-combined |
@@ -1708,6 +1904,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
 | `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
+| `--fingerprint-depth` | - | string | - | With the fingerprint phase: reads per origin, light\|standard\|full (default standard, light past 50 targets; 'vigolium fingerprint --depth') |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
 | `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--headed` | - | bool | `false` | Show the browser window during spidering (sugar for --headless=false; wins when both are set) |
@@ -1746,7 +1943,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
 | `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
-| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
+| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |
 | `--parallel` | `-P` | int | `1` | Scan up to N targets concurrently as isolated child processes (requires -S -T --split-by-host, OR --db-isolate -T which merges into --db and exports one unified output; each target keeps its own --concurrency, so real in-flight requests ≈ N × --concurrency) |
 | `--param-mining` | - | bool | `false` | Mine hidden parameters (Arjun-style) on this scan's dynamic endpoints before the assessment, so injection modules test them too. Default: on at --intensity deep, off below; --param-mining=false turns it off at deep. Budget: dynamic-assessment.param_mining in config |
@@ -1767,7 +1964,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
 | `--scanning-profile` | - | string | - | Scanning profile name or YAML file path |
 | `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
-| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--skip-format-validation` | - | bool | `false` | Skip validation of input file format |
 | `--skip-heuristics` | - | bool | `false` | Disable pre-scan heuristics (equivalent to --heuristics-check=none) |
 | `--spec-default` | - | string | `1` | Fallback value for required OpenAPI parameters that lack examples |
@@ -1784,7 +1981,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--target` | `-t` | stringArray | - | Target URL to scan (repeatable). Commas are literal so a URL query like ?ids=1,2,3 stays one target — repeat -t for multiple targets. |
 | `--target-file` | `-T` | stringArray | - | File containing target URLs (one per line; repeatable for multiple files). Commas in the path are literal. |
 | `--timeout` | - | duration | `15s` | HTTP request timeout (e.g. 30s, 1m, 2h) |
-| `--tls-probe` | - | bool | `false` | Probe each HTTPS target's TLS: negotiated version/cipher plus the leaf certificate (subject, SANs, issuer, validity, fingerprints), reported inline in --json output and not stored. Read by the probe phase. |
+| `--tls-probe` | - | bool | `false` | Probe each HTTPS target's TLS: negotiated version/cipher plus the leaf certificate (subject, SANs, issuer, validity, fingerprints). Stored per host:port; read it with 'vigolium hosts -j' or as 'tls' on 'traffic -j' rows. Read by the probe phase (the fingerprint phase always probes HTTPS) |
 | `--upload-results` | - | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
 
 ## vigolium scan
@@ -1815,6 +2012,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
 | `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
+| `--fingerprint-depth` | - | string | - | With the fingerprint phase: reads per origin, light\|standard\|full (default standard, light past 50 targets; 'vigolium fingerprint --depth') |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
 | `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
 | `--headed` | - | bool | `false` | Show the browser window during spidering (sugar for --headless=false; wins when both are set) |
@@ -1854,7 +2052,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
 | `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
-| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
+| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |
 | `--parallel` | `-P` | int | `1` | Scan up to N targets concurrently as isolated child processes (requires -S -T --split-by-host, OR --db-isolate -T which merges into --db and exports one unified output; each target keeps its own --concurrency, so real in-flight requests ≈ N × --concurrency) |
 | `--param-mining` | - | bool | `false` | Mine hidden parameters (Arjun-style) on this scan's dynamic endpoints before the assessment, so injection modules test them too. Default: on at --intensity deep, off below; --param-mining=false turns it off at deep. Budget: dynamic-assessment.param_mining in config |
@@ -1876,7 +2074,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
 | `--scanning-profile` | - | string | - | Scanning profile name or YAML file path |
 | `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
-| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--skip-format-validation` | - | bool | `false` | Skip validation of input file format |
 | `--skip-heuristics` | - | bool | `false` | Disable pre-scan heuristics (equivalent to --heuristics-check=none) |
 | `--spec-default` | - | string | `1` | Fallback value for required OpenAPI parameters that lack examples |
@@ -1893,7 +2091,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--target` | `-t` | stringArray | - | Target URL to scan (repeatable). Commas are literal so a URL query like ?ids=1,2,3 stays one target — repeat -t for multiple targets. |
 | `--target-file` | `-T` | stringArray | - | File containing target URLs (one per line; repeatable for multiple files). Commas in the path are literal. |
 | `--timeout` | - | duration | `15s` | HTTP request timeout (e.g. 30s, 1m, 2h) |
-| `--tls-probe` | - | bool | `false` | Probe each HTTPS target's TLS: negotiated version/cipher plus the leaf certificate (subject, SANs, issuer, validity, fingerprints), reported inline in --json output and not stored. Read by the probe phase. |
+| `--tls-probe` | - | bool | `false` | Probe each HTTPS target's TLS: negotiated version/cipher plus the leaf certificate (subject, SANs, issuer, validity, fingerprints). Stored per host:port; read it with 'vigolium hosts -j' or as 'tls' on 'traffic -j' rows. Read by the probe phase (the fingerprint phase always probes HTTPS) |
 | `--upload-results` | - | bool | `false` | Upload scan results to cloud storage after completion (requires storage config) |
 
 ## vigolium scan diff
@@ -1998,7 +2196,7 @@ Scan a raw HTTP request for vulnerabilities
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
 | `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
-| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--spider` | - | bool | `false` | Run browser-based spidering before scanning |
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
 | `--target` | `-t` | string | - | Override target URL (scheme://host) |
@@ -2057,7 +2255,7 @@ Scan a single URL for vulnerabilities
 | `--rate-limit` | `-r` | int|phase=int | `100` | Global requests/second cap, applied to native scanning AND known-issue-scan. Applies at its documented default even when unset; pass 0 for no cap. Accepts a phase qualifier, repeatable: --rate-limit known-issue-scan=20 |
 | `--scanning-max-duration` | - | duration | `0s` | Maximum total scan duration (overrides config, e.g. 1h, 30m) |
 | `--scope-origin` | - | string | - | Host scope strictness: all, relaxed, balanced, strict (default balanced; balanced admits any host sharing the target's eTLD+1, including subdomains already in the database from earlier scans). Bounds which STORED records a phase works, and is not consulted when a response redirects: a followed hop can reach a host no mode here admits — use --redirect-mode to bound that |
-| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
+| `--skip` | - | stringSlice | - | Skip these phases (repeatable: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, harvest-probe, targeted-respider, param-mining, preflight; aliases accepted, see 'vigolium run --help') |
 | `--spider` | - | bool | `false` | Run browser-based spidering before scanning |
 | `--stateless` | `-S` | bool | `false` | Use a temporary database that is discarded after the scan (pass --output/--format to persist results) |
 | `--target` | `-t` | stringArray | - | Target URL to scan (repeatable; alternative to the positional URL argument). Commas are literal. |
@@ -2097,6 +2295,14 @@ Print the schema of one --events line type, or of any line
 
 _No command-specific flags._
 
+## vigolium schema flags
+
+Usage: `vigolium schema flags <command>`
+
+List one command's flags, one entry per flag (the --usage view as data)
+
+_No command-specific flags._
+
 ## vigolium schema list
 
 Aliases: `ls`
@@ -2108,6 +2314,14 @@ _No command-specific flags._
 ## vigolium schema plan
 
 Print the scan plan schema (scan --dry-run, the scan.plan event)
+
+_No command-specific flags._
+
+## vigolium schema storage
+
+Usage: `vigolium schema storage [table]`
+
+Describe the database: tables, columns, and the -j field each column surfaces as
 
 _No command-specific flags._
 
@@ -2350,6 +2564,7 @@ Browse or replay HTTP traffic (alias: db ls --table http_records)
 | `--exclude-body` | - | string | - | Exclude records whose request/response body contains the term (inverse of --body; bodies only, not headers) |
 | `--exclude-columns` | - | stringSlice | - | Columns to hide (comma-separated) |
 | `--exclude-header` | - | string | - | Exclude records whose HTTP header block contains the term (inverse of --header; headers only, not bodies) |
+| `--exclude-not-found` | - | bool | `false` | Drop records that are their origin's not-found page: a 404/410, or a response matching the not-found baseline 'vigolium fingerprint' stored (applied to the returned page) |
 | `--exclude-search` | - | stringArray | - | Exclude records where the term appears in the URL, path, or raw request/response (repeatable; dropped if ANY term matches — the inverse of --search) |
 | `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--from` | - | string | - | Show records at or after this time — 2d, 12h, 30m, today, yesterday, 2026-08-05, "2026-08-05 14:30", or RFC3339 (alias: --since) |
@@ -2365,6 +2580,7 @@ Browse or replay HTTP traffic (alias: db ls --table http_records)
 | `--markdown` | - | bool | `false` | Render the matched records as Markdown (request/response in fenced http blocks) to stdout; response bodies are compacted to a preview by default (use --full-body for whole bodies) |
 | `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
 | `--method` | - | stringSlice | - | Filter by HTTP method (repeatable, e.g. --method GET --method POST) |
+| `--no-header` | - | bool | `false` | With --format tsv, omit the header line |
 | `--no-tui` | - | bool | `false` | Force TUI off (escape hatch if TUI ever becomes default) |
 | `--offset` | - | int | `0` | Number of records to skip (for pagination) |
 | `--output` | `-o` | string | - | With --json: write the result document to this file and print a receipt instead; '-' forces stdout |
@@ -2385,10 +2601,12 @@ Browse or replay HTTP traffic (alias: db ls --table http_records)
 | `--tree` | - | bool | `false` | Display as host/path hierarchy tree |
 | `--tui` | - | bool | `false` | Open interactive TUI (arrow keys to navigate, enter to view details, c to copy id) |
 | `--url` | - | stringArray | - | Select records whose URL matches EXACTLY (repeatable; OR-ed). Compared against the stored URL with no normalization — use --path or --search for substring matching |
-| `--uuid` | - | stringSlice | - | Select exact stored record(s) by UUID (repeatable/comma-separated). Applied before pagination, so a match is never missed because it fell outside -n |
+| `--uuid` | - | stringSlice | - | Select exact stored record(s) by UUID or unique 8+ char prefix (repeatable/comma-separated). Applied before pagination, so a match is never missed because it fell outside -n |
 | `--with-browser` | - | bool | `false` | Replay each URL through a real browser routed via --proxy (--replay), so Burp captures browser-driven traffic |
 
 ## vigolium traffic body
+
+Usage: `vigolium traffic body [uuid]`
 
 Extract one stored request or response body
 
@@ -2400,9 +2618,11 @@ Extract one stored request or response body
 | `--request` | - | bool | `false` | Read the request side |
 | `--response` | - | bool | `false` | Read the response side (default) |
 | `--stateless` | `-S` | bool | `false` | Read from --db (a standalone .sqlite) with project scoping off; never writes to your project DB |
-| `--uuid` | - | string | - | UUID of the stored record to read (required) |
+| `--uuid` | - | string | - | UUID (or unique prefix, 8+ chars) of the stored record to read; the positional argument is the same |
 
 ## vigolium traffic headers
+
+Usage: `vigolium traffic headers [uuid]`
 
 Read one stored message's headers without its body
 
@@ -2413,7 +2633,7 @@ Read one stored message's headers without its body
 | `--request` | - | bool | `false` | Read the request side |
 | `--response` | - | bool | `false` | Read the response side (default) |
 | `--stateless` | `-S` | bool | `false` | Read from --db (a standalone .sqlite) with project scoping off; never writes to your project DB |
-| `--uuid` | - | string | - | UUID of the stored record to read (required) |
+| `--uuid` | - | string | - | UUID (or unique prefix, 8+ chars) of the stored record to read; the positional argument is the same |
 
 ## vigolium update
 

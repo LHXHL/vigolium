@@ -55,7 +55,7 @@ func TestBrowserProbeReportsDialog(t *testing.T) {
 			FinalURL: cfg.URL,
 			Title:    "Example",
 			Dialogs: []spitolas.DialogEvent{
-				{Type: "alert", Message: "vig-x-12345", URL: cfg.URL, At: time.Now(), Answered: "accepted"},
+				{Type: "alert", Message: "vigolium-x-12345", URL: cfg.URL, At: time.Now(), Answered: "accepted"},
 			},
 		}, nil
 	}
@@ -73,7 +73,7 @@ func TestBrowserProbeReportsDialog(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected IsError; content=%s", res.Content)
 	}
-	if !strings.Contains(res.Content, "vig-x-12345") {
+	if !strings.Contains(res.Content, "vigolium-x-12345") {
 		t.Errorf("content missing dialog message: %s", res.Content)
 	}
 	if got, _ := res.Details["dialog_fired"].(bool); !got {

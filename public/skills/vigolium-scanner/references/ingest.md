@@ -49,7 +49,7 @@ single process against a single database handle:
 vigolium ingest -i a.har -i b.har -i c.yaml
 
 # Or point at a directory (non-recursive, sorted, so re-runs are reproducible).
-vigolium ingest --dir ./captures --dir-glob '*.har' -I har
+vigolium ingest --dir ./captures --dir-glob '*.har' -I har     # one file or many
 ```
 
 A failing source does not discard its siblings — one bad HAR in fifty must not
@@ -230,12 +230,13 @@ After ingesting, records are queryable with `vigolium traffic` (filter by
 
 ## `ingest -j` output
 
-The standard envelope, with an empty `items` (`[]` — the payload is the sibling
-fields, not a row array):
+The standard envelope. `items` lists the records the run left in the store (up
+to 50; `items_truncated` says more exist), each `{uuid, uuid_short, method, url,
+status_code}`, so what landed can be read back by UUID:
 
 ```jsonc
 {
-  "schema_version": 1, "command": "ingest", "items": [], "total": 30,
+  "schema_version": 1, "command": "ingest", "items": [{"uuid": "…", "uuid_short": "3f2a9c1e", "method": "GET", "url": "…", "status_code": 200}], "total": 30,
   "records_ingested": 30,         // rows the database now HOLDS
   "records_failed": 0,            // read, but not stored — see below
   "records_skipped": 0,           // dropped on purpose (static asset, out of scope)
@@ -250,8 +251,19 @@ fields, not a row array):
 `select count(*) from http_records` after the run equals it.
 
 **`records_failed > 0` exits `1`** with `error.code: "ingest_incomplete"` — a
-record was read and could not be stored, either because the write was refused
-or because there was no response to store. `records_skipped` is NOT a failure:
+record was read and could not be stored. Why is in `failure_reasons` (counts) and
+`failures` (the first 20, each `{url, reason, detail}`), and the error message
+names the dominant reason and its fix:
+
+| Reason | Meaning | Fix |
+|---|---|---|
+| `blocked` | the answer was a WAF / bot-wall page | `--keep-blocked` stores it, remark `blocked:<reason>`; or `--disable-fetch-response` |
+| `fetch_error` | DNS, connect, TLS or timeout | `--disable-fetch-response` stores the request without fetching |
+| `quarantined` | the host was quarantined as unresponsive | as above |
+| `budget` | `--max-requests[-per-host]` refused the send | raise the budget |
+| `store_error` | the database refused the write | check the store (`vigolium db stats`) |
+| `out_of_scope` | out of scope with `scope.applied_on_ingest` set | widen the scope |
+ `records_skipped` is NOT a failure:
 those records were dropped by the static-asset carve-out or by
 `scope.applied_on_ingest`, which is the configuration doing its job.
 

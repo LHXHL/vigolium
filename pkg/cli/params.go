@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
+	"github.com/vigolium/vigolium/pkg/contract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
@@ -58,6 +59,16 @@ func init() {
 	f.StringSliceVar(&paramsTypes, "type", nil, "Only parameters whose dominant value type is one of these (comma-separated, e.g. integer,uuid,sequential_id)")
 	f.Int64Var(&paramsMinOccurrences, "min-occurrences", 0, "Only parameters seen at least this many times")
 	f.BoolVar(&paramsShowValues, "show-values", false, "Print sample values unredacted (cookies, headers and secret-looking names are redacted by default)")
+	registerRowShapingFlags(f)
+	registerTSVFlags(f)
+}
+
+// paramsShaping is params' --fields vocabulary; --compact drops the sample
+// values and the per-type histogram.
+var paramsShaping = rowShaping{
+	supported:   contract.JSONFieldNames(database.ParamView{}),
+	compactDrop: []string{"samples", "types"},
+	defaultTSV:  []string{"endpoint_id", "location", "name", "occurrences", "dominant_type", "template"},
 }
 
 func validateParamsFlags() error {
@@ -89,6 +100,10 @@ func runParams(cmd *cobra.Command, args []string) error {
 	if err := validateParamsFlags(); err != nil {
 		return err
 	}
+	format, err := paramsShaping.prepare(cmd)
+	if err != nil {
+		return err
+	}
 	filters, err := paramsFlags.filters(inventoryPositional(args))
 	if err != nil {
 		return err
@@ -100,11 +115,11 @@ func runParams(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	return runWithWatch(func() error {
-		return renderParams(context.Background(), cmd, db, filters)
+		return renderParams(context.Background(), cmd, db, filters, format)
 	})
 }
 
-func renderParams(ctx context.Context, cmd *cobra.Command, db *database.DB, filters database.QueryFilters) error {
+func renderParams(ctx context.Context, cmd *cobra.Command, db *database.DB, filters database.QueryFilters, format string) error {
 	res, err := database.NewQueryBuilder(db, filters).Params(ctx, database.ParamOptions{
 		Endpoint:       strings.TrimSpace(paramsEndpoint),
 		Locations:      paramsLocations,
@@ -140,9 +155,16 @@ func renderParams(ctx context.Context, cmd *cobra.Command, db *database.DB, filt
 				"--path", templatePathGlob(p.Template, false), "--json"))
 		}
 		opts = append(opts, provenance...)
-		return emitRead(cmd, "", res.Params, res.Total, paramsFlags.offset, paramsFlags.limit, opts...)
+		items, err := paramsShaping.apply(res.Params)
+		if err != nil {
+			return err
+		}
+		return emitRead(cmd, "", items, res.Total, paramsFlags.offset, paramsFlags.limit, opts...)
 	}
 
+	if format == "tsv" {
+		return paramsShaping.emitTSV(res.Params)
+	}
 	printParamsTable(res, paramsFlags.offset)
 	return nil
 }

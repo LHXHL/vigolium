@@ -50,6 +50,9 @@ const (
 const (
 	// CodeRecordNotFound: no record carries the given UUID.
 	CodeRecordNotFound ErrorCode = "record_not_found"
+	// CodeAmbiguousID: a UUID prefix matches more than one record; the message
+	// names the candidates.
+	CodeAmbiguousID ErrorCode = "ambiguous_id"
 	// CodeBodyUnavailable: the record exists, but the requested side was never
 	// captured. Distinct from a captured empty body, which succeeds.
 	CodeBodyUnavailable ErrorCode = "body_unavailable"
@@ -163,7 +166,7 @@ var knownErrorCodes = []ErrorCode{
 	CodeFailed, CodeUsageError, CodeGateTripped, CodeConfigInvalid, CodeNotFound,
 	CodeSourceMissing, CodeSourceUnreadable, CodeSourceIncompatible,
 	CodeDatabaseLocked, CodeSchemaTooNew, CodeSchemaOutdated,
-	CodeRecordNotFound, CodeBodyUnavailable, CodeBodyDecodeFailed, CodeBodyIncomplete,
+	CodeRecordNotFound, CodeAmbiguousID, CodeBodyUnavailable, CodeBodyDecodeFailed, CodeBodyIncomplete,
 	CodeExportFailed, CodePDFFailed, CodeIngestIncomplete, CodeOutputTooLarge,
 	CodeUnsupportedInputMode, CodeInputUnparsed,
 	CodeNoTargetsInScope, CodeNoTargetsReachable, CodeScanAbandoned, CodeWaitTimeout,

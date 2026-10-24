@@ -50,7 +50,7 @@ cat req.txt | vigolium fuzz --target http://acme.test  # stdin (scheme-less raw 
     (`?id=1` → `?PAYLOAD=1`); positions are `PARAM_NAME_URL` / `PARAM_NAME_BODY`.
   - `--fuzz new-param[:query|body|json]` (alias `param-add`) **adds** a
     parameter named by each payload, carrying a fixed canary value
-    (`?id=1` → `?id=1&PAYLOAD=vglm7c4n4ry`). This is parameter discovery: pair
+    (`?id=1` → `?id=1&PAYLOAD=vigolium7c4n4ry`). This is parameter discovery: pair
     it with `-w params` and `--anomaly`. The location is inferred from the
     request (JSON body → `json`, form body → `body`, otherwise `query`) unless
     given; positions read `NEW_PARAM_QUERY` / `_BODY` / `_JSON`, and a body
@@ -73,7 +73,7 @@ cat req.txt | vigolium fuzz --target http://acme.test  # stdin (scheme-less raw 
 
 ## Pace
 
-`-c/--concurrency` (default 10) bounds parallel sends, `--delay <ms>` waits
+`-c/--concurrency` (default 10; 50 on HTTP/2 or HTTP/3, see [Protocol](#protocol)) bounds parallel sends, `--delay <ms>` waits
 before each send per worker, and `-r/--rate-limit <req/s>` caps the whole run
 across every worker (fractions allowed, `0` = unlimited). The rate limit counts
 **every** send — baseline samples and calibration probes as well as payloads —
@@ -83,8 +83,41 @@ scan pace config never apply to it. The effective pace is printed on the
 `--dry-run` report:
 
 ```json
-"pace": {"rate_limit": 20, "concurrency": 10, "delay_ms": 0}
+"pace": {"rate_limit": 20, "concurrency": 10, "delay_ms": 0, "protocol": "h2"}
 ```
+
+### Protocol
+
+By default a run picks the fastest protocol the target supports and keeps it
+for the baseline, calibration and every case. It tries HTTP/3 first, which
+needs a direct QUIC handshake and is never used through `--proxy`. Next is
+HTTP/2, used when TLS ALPN selects it. Otherwise the run uses HTTP/1.1. The
+choice is made with handshakes only, before the baseline is sent. When the
+target is pinned to HTTP/2 or HTTP/3 and `-c` is not given, the run uses **50**
+workers instead of 10, because they share one or two connections rather than
+holding one each.
+
+A job stays on HTTP/1.1 when its meaning only exists there, and `pace` gets a
+`protocol_note` saying why. That happens when:
+
+- a position rewrites the Host header;
+- a position lands in a header name or the HTTP version;
+- a payload contains CR, LF or NUL;
+- the request carries `Upgrade`, `Transfer-Encoding`, a `TE` other than `trailers`,
+  or a `Connection` header naming other headers.
+
+`Connection: keep-alive`/`close` from a captured request does not count.
+
+```bash
+--http1.1        # HTTP/1.1 only (the old default)
+--http2          # TCP only; HTTP/2 where the target negotiates it
+--http3          # prefer HTTP/3 (same as the default)
+--http3-only     # require HTTP/3; fail if the target does not speak it
+--http-version auto|1.1|2|3|3-only
+```
+
+`--send-via-burp` sends through Burp's engine, so these flags don't apply and
+Burp's `--http-mode` decides the protocol.
 
 Classes come from the shared `pkg/payloads` catalog (the same set behind the JS
 `vigolium.payloads()` API); aliases like `traversal`, `rce`, `redirect` resolve.

@@ -12,6 +12,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/modules/modkit"
 	"github.com/vigolium/vigolium/pkg/output"
+	"github.com/vigolium/vigolium/pkg/work"
 )
 
 // HookRunner transforms requests before scanning and filters results after scanning.
@@ -43,13 +44,36 @@ type ExecutorConfig struct {
 	// exclusion the spidering phase already maintains) and the executor has no
 	// business owning scan-wide state, while re-deriving it later from stored
 	// records would mean re-parsing every 3xx in the corpus.
-	OnAuthWall    func(target, wall string)
-	Services      *services.Services
-	HTTPRequester *http.Requester
-	Repository    *database.Repository    // Optional: database storage
-	RecordWriter  *database.RecordWriter  // Optional: batched record writer (preferred over Repository.SaveRecord)
-	FindingWriter *database.FindingWriter // Optional: batched finding writer (preferred over Repository.SaveFinding)
-	ScanUUID      string
+	OnAuthWall func(target, wall string)
+	// KeepBlocked stores a response the block detector classified as a WAF or
+	// bot-wall page instead of dropping the item, with the remark
+	// "blocked:<reason>" on the record. Off for scans, where a block page is not
+	// the application's answer; an ingest asks for it with --keep-blocked.
+	KeepBlocked bool
+	// NoRedirects stops the baseline fetch at the first response: a 3xx is
+	// stored as the answer. The fingerprint phase sets it — a 301 from
+	// /robots.txt to /login is itself the signal.
+	NoRedirects bool
+	// FetchStaticFiles keeps the pre-fetch scope check to its host and path
+	// rules, without the static-file carve-out: the fingerprint phase asks for
+	// a favicon on purpose.
+	FetchStaticFiles bool
+	// OnResponse is called with each item and the request/response pair its
+	// baseline fetch produced, before any module runs. The response buffer is
+	// pooled and reclaimed when the item completes, so a callback that keeps
+	// anything must copy it.
+	OnResponse func(item *work.WorkItem, rr *httpmsg.HttpRequestResponse)
+	// OnRecordStored is called once per input item whose primary record is in
+	// the store when the executor is done with it — newly written, or a dedup
+	// hit on an existing row — with that record's UUID. Lets a caller report
+	// WHICH records an ingest produced, not only how many.
+	OnRecordStored func(uuid string, rr *httpmsg.HttpRequestResponse)
+	Services       *services.Services
+	HTTPRequester  *http.Requester
+	Repository     *database.Repository    // Optional: database storage
+	RecordWriter   *database.RecordWriter  // Optional: batched record writer (preferred over Repository.SaveRecord)
+	FindingWriter  *database.FindingWriter // Optional: batched finding writer (preferred over Repository.SaveFinding)
+	ScanUUID       string
 	// ProjectUUID owns every record and finding this executor writes. An empty
 	// value is silently coerced to the DEFAULT project by the repository (see
 	// database.defaultProjectUUID), so a config carrying a Repository/

@@ -108,7 +108,7 @@ func (m *Module) ScanPerHost(
 // authenticated session cookie is present on the observed request), the check
 // fails closed so a cookie is never mistaken for a default credential.
 func (m *Module) checkLoginStatus(ctx *httpmsg.HttpRequestResponse, client *http.Requester, baseURL string) *output.ResultEvent {
-	if loginStatusSucceeds(ctx, client, "vgo"+modkit.FreshCanary(), "vgo"+modkit.FreshCanary()) {
+	if loginStatusSucceeds(ctx, client, modkit.FreshCanary(), modkit.FreshCanary()) {
 		return nil
 	}
 	for _, c := range creds {
@@ -137,7 +137,7 @@ func loginStatusSucceeds(ctx *httpmsg.HttpRequestResponse, client *http.Requeste
 // re-confirms the winner.
 func (m *Module) checkGranite(ctx *httpmsg.HttpRequestResponse, client *http.Requester, baseURL string) *output.ResultEvent {
 	// Negative control — a random credential must NOT authenticate.
-	if graniteLoginSucceeds(ctx, client, baseURL, "vgo"+modkit.FreshCanary(), "vgo"+modkit.FreshCanary()) {
+	if graniteLoginSucceeds(ctx, client, baseURL, modkit.FreshCanary(), modkit.FreshCanary()) {
 		return nil
 	}
 	for _, c := range creds {
@@ -180,7 +180,7 @@ func graniteLoginSucceeds(ctx *httpmsg.HttpRequestResponse, client *http.Request
 // control must return the 401 challenge (an unauthenticated 200 console is an
 // exposure the console module reports, not a default-credential finding).
 func (m *Module) checkFelix(ctx *httpmsg.HttpRequestResponse, client *http.Requester, baseURL string) *output.ResultEvent {
-	if felixLoginSucceeds(ctx, client, "vgo"+modkit.FreshCanary(), "vgo"+modkit.FreshCanary()) {
+	if felixLoginSucceeds(ctx, client, modkit.FreshCanary(), modkit.FreshCanary()) {
 		return nil
 	}
 	for _, c := range creds {

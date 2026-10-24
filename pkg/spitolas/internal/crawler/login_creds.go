@@ -29,8 +29,8 @@ const loginCredSettleTimeout = 4 * time.Second
 // or clears the password field regardless), so the real spray is abandoned to
 // avoid a false "logged in".
 const (
-	negativeControlUser = "vgn0-nologin-8f3a2b"
-	negativeControlPass = "vgn0-9c1d4e-rejectme"
+	negativeControlUser = "vigolium-nologin-8f3a2b"
+	negativeControlPass = "vigolium-9c1d4e-rejectme"
 )
 
 // commonLoginMinimalCreds is the smallest documented default set, tried at

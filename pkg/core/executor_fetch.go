@@ -105,6 +105,16 @@ type baselineFetch struct {
 	// RecordRedirectChain is on and the request was redirected. Each is a
 	// complete request/response pair ready to be written as its own record.
 	hops []*httpmsg.HttpRequestResponse
+	// blockedRemark is set when the response is a block page kept under
+	// ExecutorConfig.KeepBlocked: the remark its stored record carries.
+	blockedRemark string
+	// drop and dropErr say why a failed fetch produced nothing (a Drop*
+	// reason); empty for a cancelled phase, which says nothing about the item.
+	// Returned rather than recorded here because a caller may retry — the
+	// static-metadata probe falls back from HEAD to a ranged GET — and only the
+	// attempt it settles on is the item's outcome.
+	drop    string
+	dropErr error
 }
 
 func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestResponse) (baselineFetch, bool) {
@@ -127,6 +137,7 @@ func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestRe
 		// It costs nothing where this matters: a host sweep sends one request
 		// per target, so there are no duplicates for the cache to collapse.
 		NoClustering: e.cfg.RecordRedirectChain,
+		NoRedirects:  e.cfg.NoRedirects,
 	}
 	respChain, elapsed, err := e.httpClient.WithContext(ctx).Execute(req, opts)
 	if err != nil {
@@ -144,22 +155,31 @@ func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestRe
 		switch {
 		case errors.Is(err, hosterrors.ErrUnresponsiveHost):
 			e.quarantine.add(httpmsg.HostPortKey(req))
+			return baselineFetch{drop: DropQuarantined, dropErr: err}, false
 		case errors.Is(err, egress.ErrBudgetExhausted):
+			return baselineFetch{drop: DropBudget, dropErr: err}, false
 		case ctx.Err() == nil:
 			e.recordBaselineFailure(req.Target(), err)
+			return baselineFetch{drop: DropFetchError, dropErr: err}, false
 		}
 		return baselineFetch{}, false
 	}
 
+	var blockedRemark string
 	if blockErr := infra.GetBlockDetectionValidator().Validate(respChain); blockErr != nil {
-		respChain.Close()
-		zap.L().Debug("Block detected, skipping item",
-			zap.String("url", req.Target()),
-			zap.Error(blockErr))
 		if e.statsTracker != nil {
 			e.statsTracker.IncrementBlocked()
 		}
-		return baselineFetch{}, false
+		if !e.cfg.KeepBlocked {
+			respChain.Close()
+			zap.L().Debug("Block detected, skipping item",
+				zap.String("url", req.Target()),
+				zap.Error(blockErr))
+			return baselineFetch{drop: DropBlocked, dropErr: blockErr}, false
+		}
+		// Kept: the page is stored as what the target answered, marked so a
+		// later read does not mistake it for the application.
+		blockedRemark = "blocked:" + blockErr.Error()
 	}
 
 	// Compose headers+body directly into one pooled buffer. Using
@@ -178,7 +198,7 @@ func (e *Executor) fetchBaseline(ctx context.Context, req *httpmsg.HttpRequestRe
 	// Every other construction site rebuilds a response from stored bytes and
 	// correctly leaves the duration at zero ("not measured").
 	httpResp := httpmsg.NewHttpResponseWithDuration(rawResponseCopy, elapsed)
-	out := baselineFetch{req: req.WithResponse(httpResp), resp: httpResp, pooledBuf: rawResponseCopy}
+	out := baselineFetch{req: req.WithResponse(httpResp), resp: httpResp, pooledBuf: rawResponseCopy, blockedRemark: blockedRemark}
 
 	// Redirect handling, in the only window where the chain is still intact and
 	// the final response has already been copied out of it. Order matters twice

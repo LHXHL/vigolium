@@ -12,6 +12,12 @@
     "description": "Sample rows written per table; a row already present is skipped and not counted."
   },
   {
+    "name": "dns",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One answer per name: every record type asked for, each record with its TTL, and how many answers were stored."
+  },
+  {
     "name": "endpoints",
     "kind": "command",
     "envelope_kind": "read",
@@ -78,10 +84,34 @@
     "description": "Findings whose status changed; unchanged and not_found list the rest."
   },
   {
+    "name": "fingerprint",
+    "kind": "command",
+    "envelope_kind": "scan",
+    "description": "The scan document of a fingerprint run whose items are the origins it fingerprinted (the `hosts` view)."
+  },
+  {
+    "name": "fuzz",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "The run summary: items are the top-ranked matched results (total is every match); --fields projects them."
+  },
+  {
+    "name": "hosts",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "Stored host facts per host:port: DNS, TLS certificate, fingerprint report and not-found baseline, with the survey facts lifted to the top."
+  },
+  {
     "name": "import",
     "kind": "command",
     "envelope_kind": "mutation",
     "description": "items is always []; the import counters stay at the top level (a parse, a SQLite merge, or a live bridge import)."
+  },
+  {
+    "name": "ingest",
+    "kind": "command",
+    "envelope_kind": "mutation",
+    "description": "The records the ingest left in the store (capped; items_truncated says more exist), with why any were not stored."
   },
   {
     "name": "js",
@@ -144,6 +174,12 @@
     "description": "The project activated (or created with --create)."
   },
   {
+    "name": "replay",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One row per replayed record: the baseline, the replay and their diff. A single source is one item; a bulk run counts failed rows."
+  },
+  {
     "name": "run",
     "kind": "command",
     "envelope_kind": "scan",
@@ -186,10 +222,34 @@
     "description": "The scan document: one document per invocation, items are finding views."
   },
   {
+    "name": "schema flags",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One command's flags (for_command): name, shorthand, type, default, description, inherited."
+  },
+  {
+    "name": "schema storage",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "The database's tables with columns, row counts, purpose, and the -j field a column surfaces as."
+  },
+  {
     "name": "traffic",
     "kind": "command",
     "envelope_kind": "read",
     "description": "Stored HTTP records; --curl rows render each request as a curl command."
+  },
+  {
+    "name": "traffic body",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "A receipt for one extracted body: size, sha256, completeness and where it was written."
+  },
+  {
+    "name": "traffic headers",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One stored message's headers as an ordered array (repeated headers kept)."
   },
   {
     "name": "scan.started",

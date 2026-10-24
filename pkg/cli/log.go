@@ -19,6 +19,7 @@ import (
 	"github.com/vigolium/vigolium/internal/runner"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/cli/tui"
+	"github.com/vigolium/vigolium/pkg/contract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/scanevents"
 	"github.com/vigolium/vigolium/pkg/terminal"
@@ -91,6 +92,14 @@ func init() {
 	tui.AddFlags(logCmd, &logLsTUI, &logLsNoTUI)
 	tui.AddFlags(logLsCmd, &logLsTUI, &logLsNoTUI)
 	logLsCmd.Flags().BoolVar(&logLsReap, "reap", false, "Finalize abandoned running scan rows as failed (stop_reason abandoned) and prune expired status.json files; writes the store")
+	registerRowShapingFlags(logLsCmd.Flags())
+}
+
+// logLsShaping is log ls' --fields vocabulary; --compact drops the liveness
+// detail and the log path.
+var logLsShaping = rowShaping{
+	supported:   contract.JSONFieldNames(logRowView{}),
+	compactDrop: []string{"liveness_sources", "log_path", "log_size", "has_log"},
 }
 
 // logLsExtras are the top-level keys `log ls -j --reap` adds.
@@ -179,6 +188,9 @@ func formatLivenessTime(t time.Time) *string {
 func runLogLs(cmd *cobra.Command, args []string) error {
 	defer syncLogger()
 	defer closeDatabaseOnExit()
+	if err := logLsShaping.validate(); err != nil {
+		return err
+	}
 
 	settings, err := clicommon.LoadSettings(globalConfig)
 	if err != nil {
@@ -265,7 +277,11 @@ func runLogLs(cmd *cobra.Command, args []string) error {
 		// This used to emit a BARE ARRAY, the one -j surface that broke the
 		// "parse .items" rule the envelope exists to establish. A contract with a
 		// documented hole is one every consumer special-cases forever.
-		env := newMachineEnvelope(cmd, kindRead, "rows", out, int64(len(out)), 0, len(out))
+		items, err := logLsShaping.apply(out)
+		if err != nil {
+			return err
+		}
+		env := newMachineEnvelope(cmd, kindRead, "rows", items, int64(len(out)), 0, len(out))
 		env.DBPath = resolvedReadDBPath()
 		if extras != nil {
 			if extras.Reaped == nil {

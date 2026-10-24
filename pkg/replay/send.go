@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/core/network"
 	"github.com/vigolium/vigolium/pkg/proxytarget"
 )
 
@@ -48,7 +49,7 @@ func NewDefaultClient(jar gohttp.CookieJar, timeout time.Duration) *gohttp.Clien
 		Timeout: timeout,
 		Jar:     jar,
 		Transport: proxytarget.Wrap(&gohttp.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // intentional for replay
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ClientSessionCache: network.TLSSessionCache()}, //nolint:gosec // intentional for replay
 			Proxy:           proxyFromEnv,
 		}),
 	}

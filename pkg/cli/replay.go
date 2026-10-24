@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +14,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/agent/agenttypes"
 	"github.com/vigolium/vigolium/pkg/agent/input"
+	"github.com/vigolium/vigolium/pkg/apicontract"
 	"github.com/vigolium/vigolium/pkg/burpbridge"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
 	"github.com/vigolium/vigolium/pkg/database"
@@ -149,9 +150,9 @@ func init() {
 	f := replayCmd.Flags()
 
 	// Source flags — exactly one of these resolves the baseline.
-	f.StringVarP(&replayRecordUUID, "record-uuid", "u", "", "Stored HTTP record UUID to use as baseline")
+	f.StringVarP(&replayRecordUUID, "record-uuid", "u", "", "Stored HTTP record UUID (or unique 8+ char prefix) to use as baseline")
 	f.Int64Var(&replayFindingID, "finding-id", 0, "Finding ID — replay the finding's linked record (or its stored evidence)")
-	f.StringVarP(&replayInput, "input", "i", "", "Raw input: curl, raw HTTP, Burp XML, base64, URL, or '-' for stdin")
+	f.StringVarP(&replayInput, "input", "i", "", "Raw input: curl, raw HTTP, Burp XML, base64 or URL text, a path to a file holding one, or '-' for stdin")
 	f.StringVar(&replayInputFile, "input-file", "", "Read --input value from a file")
 
 	// Raw request override — send exact bytes verbatim (for payload/insertion-point
@@ -176,6 +177,7 @@ func init() {
 	// Result handling.
 	f.BoolVar(&replayInReplace, "in-replace", false,
 		"When the source is a stored record, update its stored response with the replay")
+	registerRowShapingFlags(f)
 	f.StringVarP(&replayOutputPath, "output", "o", "", "Write the JSONL result stream (one object per record) to this file; stdout keeps the human summary, or the -j envelope")
 	registerBridgeURLFlag(replayCmd, &replayBurpBridgeURL,
 		"Loopback Burp/Caido bridge URL used by --save-to-burp / --send-via-burp / --to-repeater / --to-organizer")
@@ -243,6 +245,9 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		bulkFuzzy = strings.TrimSpace(args[0])
 	}
 	if err := validateReplayFlags(); err != nil {
+		return err
+	}
+	if err := replayShaping.validate(); err != nil {
 		return err
 	}
 	// Decided before anything is sent: a contradictory output request is a
@@ -588,6 +593,16 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 	case replayInput != "" || replayInputFile != "":
 		return sourceFromInput(ctx, repo, replayInput, replayInputFile)
 
+	case replayRawRequest != "" || replayRawRequestFile != "":
+		// The raw request is the whole request already, so with nothing else
+		// named it is the source too: the baseline is those bytes re-sent, and
+		// -t supplies the scheme and port a raw request cannot carry.
+		raw, err := loadReplayRawOverride()
+		if err != nil {
+			return nil, err
+		}
+		return sourceFromInputString(ctx, repo, string(raw), replayRawRequestFile)
+
 	default:
 		data, ok, err := readStdinIfPiped()
 		if err != nil {
@@ -596,20 +611,14 @@ func resolveReplaySource(ctx context.Context) (*replaySource, error) {
 		if ok {
 			return sourceFromInputString(ctx, repo, data, "")
 		}
-		return nil, usageErrorf("no source specified: pass one of --record-uuid, --finding-id, --input, or pipe a request on stdin")
+		return nil, usageErrorf("no source specified: pass one of --record-uuid, --finding-id, --input/--input-file, --raw-request/--raw-request-file, or pipe a request on stdin")
 	}
 }
 
-func sourceFromRecord(ctx context.Context, repo *database.Repository, uuid string) (*replaySource, error) {
-	rec, err := repo.GetRecordByUUID(ctx, uuid)
-	if errors.Is(err, sql.ErrNoRows) || rec == nil {
-		return nil, fmt.Errorf("no record with uuid %q", uuid)
-	}
+func sourceFromRecord(ctx context.Context, repo *database.Repository, ref string) (*replaySource, error) {
+	rec, _, err := loadRecordRef(ctx, repo, ref)
 	if err != nil {
-		return nil, fmt.Errorf("load record %q: %w", uuid, err)
-	}
-	if pid, _ := effectiveProjectUUID(); pid != "" && rec.ProjectUUID != pid {
-		return nil, fmt.Errorf("record %q does not belong to the current project", uuid)
+		return nil, err
 	}
 	return sourceFromDBRecord(rec), nil
 }
@@ -668,10 +677,39 @@ func sourceFromInput(ctx context.Context, repo *database.Repository, inline, fil
 			return nil, fmt.Errorf("read stdin: %w", err)
 		}
 		data = string(b)
+	case inlineNamesFile(inline):
+		// -i takes the request itself, but `-i req.txt` is what every other
+		// command's -i means. A value that parses as no request format and names
+		// a regular file can only have meant the file, so read it rather than
+		// fail on the file name.
+		b, err := os.ReadFile(inline)
+		if err != nil {
+			return nil, fmt.Errorf("read -i %q: %w", inline, err)
+		}
+		if !globalSilent {
+			fmt.Fprintf(os.Stderr, "%s -i %s read as a file path; --input-file is the explicit form\n",
+				terminal.InfoSymbol(), inline)
+		}
+		data, file = string(b), inline
 	default:
 		data = inline
 	}
 	return sourceFromInputString(ctx, repo, data, file)
+}
+
+// inlineNamesFile reports whether an -i value is a file path rather than a
+// request: it matches no request format, and a regular file by that name
+// exists. Text that does parse as a request is never re-read as a path.
+func inlineNamesFile(inline string) bool {
+	v := strings.TrimSpace(inline)
+	if v == "" || strings.ContainsAny(v, "\r\n") {
+		return false
+	}
+	if input.DetectInputType(v) != agenttypes.InputTypeUnknown {
+		return false
+	}
+	info, err := os.Stat(v)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // sourceFromInputString delegates to the agent input normalizer so a
@@ -682,6 +720,10 @@ func sourceFromInputString(ctx context.Context, repo *database.Repository, data,
 		return nil, fmt.Errorf("input is empty")
 	}
 	records, err := input.NormalizeInput(ctx, data, "", repo)
+	if errors.Is(err, input.ErrUnknownInputFormat) {
+		return nil, codedErrorf(apicontract.CodeInputUnparsed,
+			"%v.\n\nPass the request text to -i, a file path to --input-file, or pipe it on stdin", err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("normalize input: %w", err)
 	}

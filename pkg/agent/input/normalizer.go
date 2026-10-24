@@ -3,6 +3,7 @@ package input
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,6 +20,11 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 // base64Pattern matches strings that look like base64-encoded data:
 // long enough, only valid base64 chars, optional padding.
 var base64Pattern = regexp.MustCompile(`^[A-Za-z0-9+/\s]+=*\s*$`)
+
+// ErrUnknownInputFormat is returned when input matches none of the supported
+// shapes. It names no flag: each command that accepts raw input words its own
+// remedy (replay and fuzz point at -i and --input-file, for instance).
+var ErrUnknownInputFormat = errors.New("unable to detect input format (supported: URL, curl, raw HTTP, Burp XML, base64, record UUID)")
 
 // DetectInputType determines the input format from the raw string content.
 // File-shaped inputs (curl command, Burp XML, raw HTTP request) are classified
@@ -85,7 +91,7 @@ func NormalizeInput(ctx context.Context, input string, inputType agenttypes.Inpu
 	case agenttypes.InputTypeRecordUUID:
 		return normalizeRecordUUID(ctx, input, repo)
 	default:
-		return nil, fmt.Errorf("unable to detect input format; specify --input-type or use a supported format (URL, curl, raw HTTP, Burp XML, base64, record UUID)")
+		return nil, ErrUnknownInputFormat
 	}
 }
 

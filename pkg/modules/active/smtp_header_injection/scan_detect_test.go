@@ -66,7 +66,7 @@ func TestPlantsBccGraftForEmailParam(t *testing.T) {
 	var sawRecipient, sawBcc bool
 	for _, p := range oast.recorded {
 		require.Contains(t, p, host, "every planted payload must embed the collaborator host")
-		if p == "vgn-poc@"+host {
+		if p == "vigolium-poc@"+host {
 			sawRecipient = true
 		}
 		if strings.Contains(strings.ToLower(p), "bcc:") {

@@ -24,16 +24,16 @@ type cacheProbe struct {
 }
 
 var probes = []cacheProbe{
-	{"X-Forwarded-Host", "X-Forwarded-Host controls a cached URL authority", true, func(canary string) string { return "vgn-" + canary + ".invalid" }},
-	{"X-Host", "X-Host controls a cached URL authority", true, func(canary string) string { return "vgn-" + canary + ".invalid" }},
-	{"X-Forwarded-Server", "X-Forwarded-Server controls a cached URL authority", true, func(canary string) string { return "vgn-" + canary + ".invalid" }},
-	{"X-Original-Host", "X-Original-Host controls a cached URL authority", true, func(canary string) string { return "vgn-" + canary + ".invalid" }},
-	{"X-Forwarded-Scheme", "X-Forwarded-Scheme changes cached URL generation", false, func(canary string) string { return "vgnscheme-" + canary }},
-	{"X-Forwarded-Prefix", "X-Forwarded-Prefix is reflected into cached asset/link URLs", false, func(canary string) string { return "/vgn-" + canary }},
+	{"X-Forwarded-Host", "X-Forwarded-Host controls a cached URL authority", true, func(canary string) string { return "vigolium-" + canary + ".invalid" }},
+	{"X-Host", "X-Host controls a cached URL authority", true, func(canary string) string { return "vigolium-" + canary + ".invalid" }},
+	{"X-Forwarded-Server", "X-Forwarded-Server controls a cached URL authority", true, func(canary string) string { return "vigolium-" + canary + ".invalid" }},
+	{"X-Original-Host", "X-Original-Host controls a cached URL authority", true, func(canary string) string { return "vigolium-" + canary + ".invalid" }},
+	{"X-Forwarded-Scheme", "X-Forwarded-Scheme changes cached URL generation", false, func(canary string) string { return "vigoliumscheme-" + canary }},
+	{"X-Forwarded-Prefix", "X-Forwarded-Prefix is reflected into cached asset/link URLs", false, func(canary string) string { return "/vigolium-" + canary }},
 	{"X-Original-URL", "X-Original-URL affects cached content", false, func(canary string) string { return "/vigolium-cache-" + canary }},
 	{"X-Rewrite-URL", "X-Rewrite-URL affects cached content", false, func(canary string) string { return "/vigolium-cache-" + canary }},
 	{"X-Forwarded-Port", "X-Forwarded-Port changes cached URL authority", false, func(string) string { return freshPort() }},
-	{"Accept-Language", "Accept-Language affects cached content without a matching Vary key", false, func(canary string) string { return "vgn-lang-" + canary }},
+	{"Accept-Language", "Accept-Language affects cached content without a matching Vary key", false, func(canary string) string { return "vigolium-lang-" + canary }},
 }
 
 var victimCredentialHeaders = []string{

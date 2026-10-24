@@ -68,7 +68,7 @@ func (m *YAMLActiveModule) ScanPerInsertionPoint(
 			}
 		}
 
-		// Render payload (e.g. "VGNM{{rand(8)}}")
+		// Render payload (e.g. "VIGOLIUM{{rand(8)}}")
 		payload := Render(payloadTmpl, baseCtx)
 		baseCtx.Payload = payload
 

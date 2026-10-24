@@ -17,8 +17,8 @@ func TestNewPayloadCanaryUnique(t *testing.T) {
 	if a.Canary == b.Canary {
 		t.Fatalf("two payloads share canary %q", a.Canary)
 	}
-	if !strings.HasPrefix(a.Canary, "vig-x-") {
-		t.Fatalf("canary %q missing vig-x- prefix", a.Canary)
+	if !strings.HasPrefix(a.Canary, "vigolium-x-") {
+		t.Fatalf("canary %q missing vigolium-x- prefix", a.Canary)
 	}
 }
 

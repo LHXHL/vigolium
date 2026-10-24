@@ -191,6 +191,7 @@ func init() {
 		"With --send-via-burp: wire protocol — auto|http1|http2|http2_ignore_alpn (default auto)")
 
 	registerAgentJSONFlags(f)
+	registerTSVFlags(f)
 	registerJSONOutputFlag(findingCmd)
 	registerAgentRecordFlags(f)
 	tui.AddFlags(findingCmd, &findingTUIFlag, &findingNoTUIFlag)
@@ -236,6 +237,9 @@ func findingGlobSkipSet(filters database.QueryFilters) globDBSkipSet {
 	}
 }
 
+// defaultFindingTSVColumns is `finding --format tsv` without --fields.
+var defaultFindingTSVColumns = []string{"id", "severity", "confidence", "module_id", "url"}
+
 func runFinding(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 
@@ -246,6 +250,10 @@ func runFinding(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if err := validateJSONOutputFlag(cmd); err != nil {
+		return err
+	}
+	readFormat, err := requestedReadFormat(cmd)
+	if err != nil {
 		return err
 	}
 	if err := validateFindingCurlFlags(cmd); err != nil {
@@ -339,6 +347,15 @@ func runFinding(cmd *cobra.Command, args []string) error {
 
 		if globalJSON {
 			return displayFindingsJSON(ctx, cmd, db, findings, total, filters.ProjectUUID)
+		}
+		if readFormat == "tsv" {
+			columns := tsvColumns(defaultFindingTSVColumns)
+			opts := agentViewOptions{fields: columns, noBodies: true}
+			rows := make([]map[string]any, 0, len(findings))
+			for _, f := range findings {
+				rows = append(rows, compactFindingView(f, nil, opts))
+			}
+			return writeTSV(os.Stdout, columns, rows)
 		}
 
 		// Echo the active filter conditions (severity, search, host, …) so it's

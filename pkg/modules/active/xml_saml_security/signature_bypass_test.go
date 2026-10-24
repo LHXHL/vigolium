@@ -50,7 +50,7 @@ func TestSignatureBypass_DetectsStripping(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		xml := samlDecode(r.URL.Query().Get("SAMLResponse"))
-		if strings.Contains(xml, "vig-bogus") { // wrong identity/issuer → reject
+		if strings.Contains(xml, "vigolium-bogus") { // wrong identity/issuer → reject
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte("access denied"))
 			return
@@ -77,7 +77,7 @@ func TestSignatureBypass_SecureSP(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		xml := samlDecode(r.URL.Query().Get("SAMLResponse"))
-		if !strings.Contains(xml, "Signature") || strings.Contains(xml, "vig-bogus") {
+		if !strings.Contains(xml, "Signature") || strings.Contains(xml, "vigolium-bogus") {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte("access denied"))
 			return
@@ -127,7 +127,7 @@ func TestSignatureBypass_AuthnRequestSkipped(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		xml := samlDecode(r.URL.Query().Get("SAMLRequest"))
-		if strings.Contains(xml, "vig-bogus") { // unknown SP Issuer → error
+		if strings.Contains(xml, "vigolium-bogus") { // unknown SP Issuer → error
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte("unknown service provider"))
 			return
@@ -157,7 +157,7 @@ func TestSignatureBypass_BogusServerErrorNotRejection(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		xml := samlDecode(r.URL.Query().Get("SAMLResponse"))
-		if strings.Contains(xml, "vig-bogus") { // garbage identity → server crash
+		if strings.Contains(xml, "vigolium-bogus") { // garbage identity → server crash
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte("java.lang.NullPointerException"))
 			return

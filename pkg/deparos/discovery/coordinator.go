@@ -30,6 +30,9 @@ import (
 //     more urgent task is queued (see coordinator_expander.go)
 //   - WorkItems are sent to workChan (buffered channel)
 //   - N workers pull from workChan and execute HTTP requests concurrently
+//   - Brute-force WorkItems (wordlist and FUZZ-template tasks) go to their own
+//     bruteChan and worker pool when SetBruteForceWorkers sized one, so
+//     wordlist fuzzing can run wider than the rest of discovery
 //   - Inline tasks (JS replay, form submission, case-sense detection) run on a
 //     small dedicated inline worker pool, never on the expander goroutine
 //
@@ -44,6 +47,12 @@ type PayloadCoordinator struct {
 
 	// Work channel - all workers pull from this
 	workChan chan *WorkItem
+
+	// bruteChan and bruteWorkers are the brute-force lane (see
+	// SetBruteForceWorkers); bruteChan is nil when brute-force items share
+	// workChan.
+	bruteChan    chan *WorkItem
+	bruteWorkers int
 
 	// Inline task channel - the inline worker pool pulls from this
 	inlineChan chan Task
@@ -90,7 +99,12 @@ func (c *PayloadCoordinator) Run(ctx context.Context) error {
 	// Start workers
 	for i := 0; i < c.workerCount; i++ {
 		c.wg.Go(func() {
-			c.runWorker(ctx)
+			c.runWorker(ctx, c.workChan)
+		})
+	}
+	for i := 0; i < c.bruteWorkers; i++ {
+		c.wg.Go(func() {
+			c.runWorker(ctx, c.bruteChan)
 		})
 	}
 
@@ -110,8 +124,11 @@ func (c *PayloadCoordinator) Run(ctx context.Context) error {
 	close(c.inlineChan)
 	c.inlineWG.Wait()
 
-	// Close workChan to signal workers to exit
+	// Close the work channels to signal workers to exit
 	close(c.workChan)
+	if c.bruteChan != nil {
+		close(c.bruteChan)
+	}
 
 	// Wait for workers to finish processing remaining items
 	c.wg.Wait()
@@ -167,14 +184,45 @@ func (c *PayloadCoordinator) sendWorkItem(
 		Callbacks: c.callbacks,
 	}
 
+	ch := c.workChan
+	if c.bruteChan != nil && isBruteForceTask(task) {
+		ch = c.bruteChan
+	}
 	select {
-	case c.workChan <- item:
+	case ch <- item:
 	case <-ctx.Done():
 	}
 }
 
-// runWorker pulls WorkItems from channel and executes them.
-func (c *PayloadCoordinator) runWorker(ctx context.Context) {
+// SetBruteForceWorkers gives brute-force WorkItems (isBruteForceTask) their own
+// pool of n workers; n <= 0 keeps them on the shared workers. Call before Run.
+//
+// The lane is what lets wordlist fuzzing run wider than the rest of discovery
+// without the spider, observed-word variants and validation probes speeding
+// up with it: those keep the coordinator's workerCount.
+func (c *PayloadCoordinator) SetBruteForceWorkers(n int) {
+	if n <= 0 {
+		c.bruteChan, c.bruteWorkers = nil, 0
+		return
+	}
+	c.bruteWorkers = n
+	c.bruteChan = make(chan *WorkItem, n*2)
+}
+
+// isBruteForceTask reports the tasks that guess paths from a wordlist: the
+// built-in file/directory lists (with or without extensions) and a FUZZ-marker
+// template. Observed-word, extension-variant and numeric tasks derive from what
+// the target already showed and stay on the shared workers.
+func isBruteForceTask(task Task) bool {
+	switch task.(type) {
+	case *WordlistTask, *FuzzTask:
+		return true
+	}
+	return false
+}
+
+// runWorker pulls WorkItems from ch and executes them.
+func (c *PayloadCoordinator) runWorker(ctx context.Context, ch <-chan *WorkItem) {
 	c.metrics.ActiveWorkers.Add(1)
 	defer c.metrics.ActiveWorkers.Add(-1)
 
@@ -182,7 +230,7 @@ func (c *PayloadCoordinator) runWorker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case item, ok := <-c.workChan:
+		case item, ok := <-ch:
 			if !ok {
 				return
 			}
@@ -1245,7 +1293,7 @@ func redirectPreservesPath(originalURL, redirectTargetURL string) bool {
 // including suspended ones (ExpansionsInFlight), so quiescence isn't declared
 // while a JS replay is mid-flight or a preempted wordlist still has items left.
 func (c *PayloadCoordinator) IsIdle() bool {
-	return len(c.workChan) == 0 &&
+	return len(c.workChan) == 0 && len(c.bruteChan) == 0 &&
 		c.metrics.InFlightItems.Load() == 0 &&
 		c.metrics.InlineInFlight.Load() == 0 &&
 		c.metrics.ExpansionsInFlight.Load() == 0

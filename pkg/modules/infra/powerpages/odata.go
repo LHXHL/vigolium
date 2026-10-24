@@ -9,7 +9,7 @@ import (
 
 // bogusEntitySet is an entity-set name that cannot exist on any Dataverse
 // instance, used as the negative control / API-presence probe.
-const bogusEntitySet = "vgolm_nonexistent_probe_sets"
+const bogusEntitySet = "vigolium_nonexistent_probe_sets"
 
 // ODataList is the shape of a successful Dataverse Web API collection read.
 type ODataList struct {

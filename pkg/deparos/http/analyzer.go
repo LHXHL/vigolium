@@ -41,10 +41,18 @@ func NewAnalyzerWithComparator(comparator FingerprintComparator) *Analyzer {
 // Analyze determines if a resource exists based on HTTP response.
 // Returns true if resource exists, false if not found (404 or soft-404).
 //
-// Fingerprint check is performed FIRST for ALL status codes to detect soft-404s.
+// Hard negatives are decided by status before the fingerprint check: their
+// verdict does not depend on it, and running it anyway was the expensive part
+// of most discovery responses. The soft-404 sample parses the HTML and hashes
+// the full body, and an unmatched 400/414/421/431 also sent the comparator's
+// 4-probe wildcard validation (its own early exit covers 404 only) before the
+// status discarded the result. Every other status gets the fingerprint check,
+// which catches soft-404s regardless of status code.
 func (a *Analyzer) Analyze(ctx context.Context, req *nethttp.Request, rc *responsechain.ResponseChain) (bool, error) {
-	// STEP 1: Check fingerprint FIRST for ALL status codes
-	// This catches soft-404s regardless of status code
+	if isHardNotFound(rc.Response().StatusCode) {
+		return false, nil
+	}
+
 	if a.comparator != nil {
 		result, err := a.comparator.Compare(ctx, req, rc)
 		if err == nil && result == fingerprint.FalsePositive {
@@ -52,24 +60,23 @@ func (a *Analyzer) Analyze(ctx context.Context, req *nethttp.Request, rc *respon
 		}
 	}
 
-	// STEP 2: HTTP 404 is always not found
-	if rc.Response().StatusCode == 404 {
-		return false, nil
-	}
-
-	// STEP 3: Request-shape rejections are not discovered resources. A 400 (e.g.
-	// the Jetty/nginx "Ambiguous URI empty segment" page a stray // triggers), 414
-	// (URI too long), 421 (misdirected request) or 431 (request headers too large)
-	// means the origin refused to route the request by its shape — not that a file
-	// exists there. These pages commonly echo the requested URI into the body, so
-	// every probed variant would otherwise land as a distinct "discovered" record.
-	// (405 Method Not Allowed is deliberately NOT gated: it means the path exists
-	// but rejects the method, which is a real discovery signal.)
-	switch rc.Response().StatusCode {
-	case 400, 414, 421, 431:
-		return false, nil
-	}
-
-	// STEP 4: Everything else = resource exists
+	// Everything else = resource exists
 	return true, nil
+}
+
+// isHardNotFound reports the statuses that never mean a resource exists. 404,
+// and the request-shape rejections: a 400 (e.g. the Jetty/nginx "Ambiguous URI
+// empty segment" page a stray // triggers), 414 (URI too long), 421
+// (misdirected request) or 431 (request headers too large) means the origin
+// refused to route the request by its shape - not that a file exists there.
+// These pages commonly echo the requested URI into the body, so every probed
+// variant would otherwise land as a distinct "discovered" record. (405 Method
+// Not Allowed is deliberately NOT here: it means the path exists but rejects
+// the method, which is a real discovery signal.)
+func isHardNotFound(status int) bool {
+	switch status {
+	case 404, 400, 414, 421, 431:
+		return true
+	}
+	return false
 }

@@ -1,0 +1,410 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cli.browserReplaySummary": {
+      "properties": {
+        "requested_url": {
+          "type": "string"
+        },
+        "final_url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "dialogs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "original_method": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "requested_url"
+      ]
+    },
+    "cli.replayOutput": {
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "record_uuid": {
+          "type": "string"
+        },
+        "finding_id": {
+          "type": "integer"
+        },
+        "input_type": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "cookies_preloaded": {
+          "type": "integer"
+        },
+        "jar_path": {
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/replay.Result"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "browser": {
+          "$ref": "#/$defs/cli.browserReplaySummary"
+        },
+        "saved_to_burp": {
+          "type": "boolean"
+        },
+        "sent_via_burp": {
+          "type": "boolean"
+        },
+        "staged_to_repeater": {
+          "type": "boolean"
+        },
+        "saved_to_organizer": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "source",
+        "target",
+        "result"
+      ]
+    },
+    "contract.GlobSkipped": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "file",
+        "error"
+      ]
+    },
+    "contract.GlobSources": {
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        },
+        "loaded": {
+          "type": "integer"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/contract.GlobSkipped"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parse_errors": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pattern",
+        "matched",
+        "loaded",
+        "skipped",
+        "parse_errors"
+      ]
+    },
+    "contract.OutputBudget": {
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "returned": {
+          "type": "integer"
+        },
+        "omitted": {
+          "type": "integer"
+        },
+        "next_offset": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_bytes",
+        "returned",
+        "omitted",
+        "next_offset"
+      ]
+    },
+    "http.Header": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "type": "object"
+    },
+    "replay.Diff": {
+      "properties": {
+        "status_changed": {
+          "type": "boolean"
+        },
+        "length_delta": {
+          "type": "integer"
+        },
+        "content_changed": {
+          "type": "boolean"
+        },
+        "reflects_payload": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "baseline_status": {
+          "type": "integer"
+        },
+        "baseline_length": {
+          "type": "integer"
+        },
+        "baseline_content_hash": {
+          "type": "string"
+        },
+        "interpretation": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "status_changed",
+        "length_delta",
+        "content_changed",
+        "baseline_status",
+        "baseline_length"
+      ]
+    },
+    "replay.Result": {
+      "properties": {
+        "mutated_request": {
+          "type": "string"
+        },
+        "mutated_request_truncated": {
+          "type": "boolean"
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/replay.Summary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replay": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/replay.Summary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diff": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/replay.Diff"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "additional_payload_groups": {
+          "type": "integer"
+        },
+        "unmatched_mutations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "mutated_request",
+        "baseline",
+        "replay",
+        "diff"
+      ]
+    },
+    "replay.Summary": {
+      "properties": {
+        "status": {
+          "type": "integer"
+        },
+        "response_length": {
+          "type": "integer"
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "response_time_ms": {
+          "type": "integer"
+        },
+        "headers": {
+          "$ref": "#/$defs/http.Header"
+        },
+        "excerpt": {
+          "type": "string"
+        },
+        "excerpt_truncated": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "status",
+        "response_length",
+        "response_time_ms"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "command": {
+      "type": "string",
+      "const": "replay"
+    },
+    "kind": {
+      "type": "string",
+      "const": "read"
+    },
+    "ok": {
+      "type": "boolean",
+      "const": true
+    },
+    "project_uuid": {
+      "type": "string"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/cli.replayOutput"
+      },
+      "type": "array"
+    },
+    "query": {
+      "type": "string"
+    },
+    "query_argv": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "generated_at_ms": {
+      "type": "integer"
+    },
+    "project_source": {
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "active_file",
+        "default"
+      ]
+    },
+    "project_scoped": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "glob_sources": {
+      "$ref": "#/$defs/contract.GlobSources"
+    },
+    "output_budget": {
+      "$ref": "#/$defs/contract.OutputBudget"
+    },
+    "failed": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "total",
+    "offset",
+    "limit",
+    "items",
+    "project_source",
+    "kind"
+  ],
+  "title": "vigolium replay -j",
+  "description": "One row per replayed record: the baseline, the replay and their diff. A single source is one item; a bulk run counts failed rows."
+}

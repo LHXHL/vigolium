@@ -4,6 +4,9 @@ import (
 	"context"
 	"net/http"
 	"testing"
+
+	"github.com/vigolium/vigolium/pkg/deparos/fingerprint"
+	"github.com/vigolium/vigolium/pkg/deparos/responsechain"
 )
 
 // TestAnalyze_RequestShapeRejectionsNotFound verifies the status gate: request
@@ -40,6 +43,48 @@ func TestAnalyze_RequestShapeRejectionsNotFound(t *testing.T) {
 		}
 		if found != tc.want {
 			t.Errorf("status %d: got found=%v, want %v", tc.status, found, tc.want)
+		}
+	}
+}
+
+// countingComparator records how often the analyzer consulted it.
+type countingComparator struct{ calls int }
+
+func (c *countingComparator) Compare(context.Context, *http.Request, *responsechain.ResponseChain) (fingerprint.MatchResult, error) {
+	c.calls++
+	return fingerprint.TruePositive, nil
+}
+
+// Hard negatives are decided by status alone: the comparator (an HTML parse,
+// a full-body hash, and for an unmatched 400 a 4-probe wildcard validation)
+// must not run for a verdict it cannot change.
+func TestAnalyze_HardNegativesSkipComparator(t *testing.T) {
+	ctx := context.Background()
+	req, _ := http.NewRequest("GET", "https://example.com/x", nil)
+	for _, tc := range []struct {
+		status    int
+		wantFound bool
+		wantCalls int
+	}{
+		{404, false, 0},
+		{400, false, 0},
+		{414, false, 0},
+		{421, false, 0},
+		{431, false, 0},
+		{200, true, 1},
+		{403, true, 1},
+		{405, true, 1},
+	} {
+		cmp := &countingComparator{}
+		rc := createTestResponseChainFromParts(tc.status, nil, "body")
+		found, err := NewAnalyzerWithComparator(cmp).Analyze(ctx, req, rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("status %d: %v", tc.status, err)
+		}
+		if found != tc.wantFound || cmp.calls != tc.wantCalls {
+			t.Errorf("status %d: found=%v comparator calls=%d, want found=%v calls=%d",
+				tc.status, found, cmp.calls, tc.wantFound, tc.wantCalls)
 		}
 	}
 }

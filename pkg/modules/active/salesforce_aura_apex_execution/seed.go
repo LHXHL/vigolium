@@ -23,6 +23,6 @@ var benignProbe = apexProbe{namespace: "Wave", classname: "Templates", method: "
 // are checked — one before and one after the benign rounds — so a transient fluke
 // can't pass both.
 var (
-	bogusProbePre  = apexProbe{namespace: "Vgolm", classname: "NoSuchController", method: "vgolmNoSuchMethod"}
-	bogusProbePost = apexProbe{namespace: "Vgolm2", classname: "AbsentApexClass", method: "vgolmAbsentMethod"}
+	bogusProbePre  = apexProbe{namespace: "Vigolium", classname: "NoSuchController", method: "vigoliumNoSuchMethod"}
+	bogusProbePost = apexProbe{namespace: "Vigolium2", classname: "AbsentApexClass", method: "vigoliumAbsentMethod"}
 )

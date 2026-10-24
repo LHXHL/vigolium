@@ -4,7 +4,7 @@ import "github.com/vigolium/vigolium/pkg/types/severity"
 
 // bogusObject is an object API name that cannot exist, used as the catch-all
 // negative control (getItems for it must not return records).
-const bogusObject = "Vgolm_Nonexistent_Probe__c"
+const bogusObject = "Vigolium_Nonexistent_Probe__c"
 
 // maxObjects bounds the getItems fan-out per host (standard set + harvested
 // custom objects), so a community with hundreds of custom objects doesn't cause

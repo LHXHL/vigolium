@@ -158,7 +158,7 @@ func TestEscapesPrefix(t *testing.T) {
 		wantNorm   string
 	}{
 		{"literal-dotdot-escapes", "/api/items/", "http://h/api/items/../vgl", true, "/api/vgl"},
-		{"already-normalized-escape", "/api/items/", "http://h/api/vgl-cspt-x", true, "/api/vgl-cspt-x"},
+		{"already-normalized-escape", "/api/items/", "http://h/api/vigolium-cspt-x", true, "/api/vigolium-cspt-x"},
 		{"encoded-dotdot-stays-data", "/api/items/", "http://h/api/items/%2e%2e%2fvgl", false, "/api/items/%2e%2e%2fvgl"},
 		{"benign-under-prefix", "/api/items/", "http://h/api/items/abc", false, "/api/items/abc"},
 		{"exact-prefix", "/api/items/", "http://h/api/items", false, "/api/items"},

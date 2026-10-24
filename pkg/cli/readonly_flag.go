@@ -38,7 +38,7 @@ var globalReadOnly bool
 var readOnlyCapableCommands = []string{
 	"finding", "traffic", "traffic body", "traffic headers", "endpoints", "params",
 	"db list", "db stats", "db export",
-	"log", "log ls", "export", "replay", "fuzz", "scan diff",
+	"log", "log ls", "export", "replay", "fuzz", "scan diff", "schema storage", "hosts",
 }
 
 // registerReadOnlyFlag adds the persistent --read-only flag to the root command.

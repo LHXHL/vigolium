@@ -162,7 +162,7 @@ func init() {
 	f.StringVarP(&autopilotTarget, "target", "t", "", "Target URL (derived from --input if not set)")
 	f.StringVar(&autopilotInput, "input", "", "Raw input (curl command, raw HTTP, Burp XML, URL). Reads from stdin if piped")
 	f.BoolVar(&globalDBIsolate, "db-isolate", false, dbIsolateAgentFlagUsage)
-	f.StringVar(&autopilotRecordUUID, "record-uuid", "", "Use an HTTP record from the database as the seed input (looked up by UUID)")
+	f.StringVar(&autopilotRecordUUID, "record-uuid", "", "Use an HTTP record from the database as the seed input (UUID or unique 8+ char prefix)")
 	registerBridgeURLFlag(agentAutopilotCmd, &autopilotBurpBridgeURL, "Pull live Burp/Caido proxy history into the project DB before the run (e.g. http://127.0.0.1:9009), so the pre-scan and operator can mine it alongside prior traffic. Also honors $VIGOLIUM_BURP_BRIDGE_URL")
 	f.StringVar(&autopilotPriorContext, "prior-context", "auto", "Front-load a bounded summary of the traffic + findings already in the project DB so the operator mines them instead of starting from scratch: auto (default; the bounded table when prior data exists), summary (one-line pointer), off")
 	f.StringVar(&autopilotOliumProvider, "provider", "", oliumProviderFlagUsage)
@@ -473,7 +473,17 @@ func runAgentAutopilot(cmd *cobra.Command, args []string) (err error) {
 		if autopilotInput != "" || autopilotTarget != "" {
 			return usageErrorf("--record-uuid cannot be combined with --input or --target")
 		}
-		autopilotInput = strings.TrimSpace(autopilotRecordUUID)
+		// A unique prefix resolves to the full UUID here: the input normalizer
+		// only recognises a complete one.
+		pid, err := effectiveProjectUUID()
+		if err != nil {
+			return err
+		}
+		full, err := resolveRecordRefs(cmd.Context(), repo, []string{autopilotRecordUUID}, pid)
+		if err != nil {
+			return err
+		}
+		autopilotInput = full[0]
 	}
 
 	// Resolve input and target (repo plumbed through so record-UUID lookups work)

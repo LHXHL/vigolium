@@ -27,17 +27,17 @@ type ppProbe struct {
 
 var ppProbes = []ppProbe{
 	{
-		Suffix: "__proto__[vgm_pp_test]=polluted",
+		Suffix: "__proto__[vigolium_pp_test]=polluted",
 		Source: "query string (__proto__)",
 		Desc:   "__proto__ bracket notation via query string",
 	},
 	{
-		Suffix: "__proto__.vgm_pp_test=polluted",
+		Suffix: "__proto__.vigolium_pp_test=polluted",
 		Source: "query string (__proto__ dot)",
 		Desc:   "__proto__ dot notation via query string",
 	},
 	{
-		Suffix: "constructor[prototype][vgm_pp_test]=polluted",
+		Suffix: "constructor[prototype][vigolium_pp_test]=polluted",
 		Source: "query string (constructor.prototype)",
 		Desc:   "constructor.prototype via query string",
 	},

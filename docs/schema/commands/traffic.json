@@ -180,6 +180,15 @@
         },
         "response": {
           "$ref": "#/$defs/cli.bodyViewSchema"
+        },
+        "uuid_short": {
+          "type": "string"
+        },
+        "response_headers": {
+          "type": "string"
+        },
+        "matches_not_found": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
@@ -516,6 +525,9 @@
     },
     "redacted": {
       "type": "boolean"
+    },
+    "not_found_excluded": {
+      "type": "integer"
     }
   },
   "additionalProperties": false,

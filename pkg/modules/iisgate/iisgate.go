@@ -77,7 +77,7 @@ func LooksLikeIIS(ctx *httpmsg.HttpRequestResponse, scanCtx *modkit.ScanContext,
 	if ctx != nil && ctx.Response() != nil && RespLooksIIS(ctx.Response()) {
 		return true
 	}
-	return scanCtx != nil && scanCtx.TechStack != nil && scanCtx.TechStack.HasAny(host, []string{"iis", "aspnet"})
+	return scanCtx.HasAnyTech(host, []string{"iis", "aspnet"})
 }
 
 // IsIIS is the full gate for the heavier IIS modules: passive detection
@@ -122,7 +122,7 @@ func probeIIS(ctx *httpmsg.HttpRequestResponse, client *http.Requester) bool {
 	}
 	token := "(S(" + strings.ToLower(modkit.FreshCanary()) + "))"
 	tok := fetch(ctx, client, "/"+token+"/")
-	rnd := fetch(ctx, client, "/"+modkit.FreshCanary()+"-vgo404/")
+	rnd := fetch(ctx, client, "/"+modkit.FreshCanary()+"-vigolium404/")
 	return decideIIS(base, tok, rnd)
 }
 

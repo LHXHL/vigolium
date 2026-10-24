@@ -31,8 +31,8 @@ import (
 // of ESI 1.0 and every mainstream processor (Varnish, Fastly, Akamai, Squid)
 // removes it, while the handling of unknown esi:* elements varies.
 const (
-	esiElement     = `<esi:comment text="vgo"/>`
-	controlElement = `<vgx:comment text="vgo"/>`
+	esiElement     = `<esi:comment text="vigolium"/>`
+	controlElement = `<vgx:comment text="vigolium"/>`
 
 	// injectionType labels the OAST include leg; the URL is minted with
 	// oastclass.ESI so the include fetch is rated as ESI injection.

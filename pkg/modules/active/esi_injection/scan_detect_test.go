@@ -107,7 +107,7 @@ func TestESIProcessor_Detected(t *testing.T) {
 	f := res[0]
 	assert.Equal(t, "q", f.FuzzingParameter)
 	assert.Contains(t, f.Request, "esi")
-	assert.Contains(t, f.Response, "search: vgo")
+	assert.Contains(t, f.Response, "search: vigolium")
 	assert.NotEmpty(t, f.AdditionalEvidence)
 	assert.Equal(t, int64(2), atomic.LoadInt64(&hits), "probe + control")
 	assert.Empty(t, oast.payloads(), "a confirmed in-band finding needs no include leg")

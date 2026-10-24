@@ -106,7 +106,7 @@ func (m *Module) ScanPerHost(
 	// it doesn't implement; matching it means "not found", same as -32601.
 	var unknownCode int
 	{
-		controlMethod := "vig-nonexistent-" + utils.RandomString(12)
+		controlMethod := "vigolium-nonexistent-" + utils.RandomString(12)
 		body, _, err := client.PostRaw(mcpinfra.MarshalRequest(4999, controlMethod, map[string]any{}))
 		if err != nil || body == "" {
 			return nil, nil

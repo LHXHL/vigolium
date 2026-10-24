@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cli.fuzzPace": {
+      "properties": {
+        "rate_limit": {
+          "type": "number"
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "delay_ms": {
+          "type": "integer"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "protocol_note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "rate_limit",
+        "concurrency",
+        "delay_ms"
+      ]
+    },
+    "contract.GlobSkipped": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "file",
+        "error"
+      ]
+    },
+    "contract.GlobSources": {
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        },
+        "loaded": {
+          "type": "integer"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/contract.GlobSkipped"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parse_errors": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pattern",
+        "matched",
+        "loaded",
+        "skipped",
+        "parse_errors"
+      ]
+    },
+    "contract.OutputBudget": {
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "returned": {
+          "type": "integer"
+        },
+        "omitted": {
+          "type": "integer"
+        },
+        "next_offset": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_bytes",
+        "returned",
+        "omitted",
+        "next_offset"
+      ]
+    },
+    "fuzz.AnomalyReason": {
+      "properties": {
+        "signal": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "signal",
+        "weight"
+      ]
+    },
+    "fuzz.Baseline": {
+      "properties": {
+        "status": {
+          "type": "integer"
+        },
+        "length": {
+          "type": "integer"
+        },
+        "words": {
+          "type": "integer"
+        },
+        "lines": {
+          "type": "integer"
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "time_ms": {
+          "type": "integer"
+        },
+        "time_stddev_ms": {
+          "type": "number"
+        },
+        "samples": {
+          "type": "integer"
+        },
+        "time_samples": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "status",
+        "length",
+        "words",
+        "lines",
+        "time_ms"
+      ]
+    },
+    "fuzz.Result": {
+      "properties": {
+        "position": {
+          "type": "string"
+        },
+        "position_type": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "length": {
+          "type": "integer"
+        },
+        "words": {
+          "type": "integer"
+        },
+        "lines": {
+          "type": "integer"
+        },
+        "time_ms": {
+          "type": "integer"
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "reflected": {
+          "type": "boolean"
+        },
+        "reflected_raw": {
+          "type": "boolean"
+        },
+        "reflected_in": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status_changed": {
+          "type": "boolean"
+        },
+        "length_delta": {
+          "type": "integer"
+        },
+        "time_z": {
+          "type": "number"
+        },
+        "anomaly_score": {
+          "type": "integer"
+        },
+        "anomaly_reasons": {
+          "items": {
+            "$ref": "#/$defs/fuzz.AnomalyReason"
+          },
+          "type": "array"
+        },
+        "matched": {
+          "type": "boolean"
+        },
+        "calibrated": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "position",
+        "position_type",
+        "payload",
+        "status",
+        "length",
+        "words",
+        "lines",
+        "time_ms",
+        "reflected",
+        "status_changed",
+        "length_delta",
+        "matched"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "command": {
+      "type": "string",
+      "const": "fuzz"
+    },
+    "kind": {
+      "type": "string",
+      "const": "read"
+    },
+    "ok": {
+      "type": "boolean",
+      "const": true
+    },
+    "project_uuid": {
+      "type": "string"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/fuzz.Result"
+      },
+      "type": "array"
+    },
+    "query": {
+      "type": "string"
+    },
+    "query_argv": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "generated_at_ms": {
+      "type": "integer"
+    },
+    "project_source": {
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "active_file",
+        "default"
+      ]
+    },
+    "project_scoped": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "glob_sources": {
+      "$ref": "#/$defs/contract.GlobSources"
+    },
+    "output_budget": {
+      "$ref": "#/$defs/contract.OutputBudget"
+    },
+    "target": {
+      "type": "string"
+    },
+    "positions": {
+      "type": "integer"
+    },
+    "payloads": {
+      "type": "integer"
+    },
+    "sent": {
+      "type": "integer"
+    },
+    "matched": {
+      "type": "integer"
+    },
+    "calibrated": {
+      "type": "integer"
+    },
+    "errors": {
+      "type": "integer"
+    },
+    "baseline": {
+      "$ref": "#/$defs/fuzz.Baseline"
+    },
+    "anomalies": {
+      "items": {
+        "$ref": "#/$defs/fuzz.Result"
+      },
+      "type": "array"
+    },
+    "anomalies_elided": {
+      "type": "integer"
+    },
+    "sent_via_burp": {
+      "type": "boolean"
+    },
+    "organizer_pushed": {
+      "type": "integer"
+    },
+    "pace": {
+      "$ref": "#/$defs/cli.fuzzPace"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "total",
+    "offset",
+    "limit",
+    "items",
+    "project_source",
+    "target",
+    "positions",
+    "payloads",
+    "sent",
+    "matched",
+    "calibrated",
+    "errors",
+    "baseline",
+    "pace",
+    "kind"
+  ],
+  "title": "vigolium fuzz -j",
+  "description": "The run summary: items are the top-ranked matched results (total is every match); --fields projects them."
+}

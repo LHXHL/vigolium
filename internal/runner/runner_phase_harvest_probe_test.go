@@ -286,10 +286,10 @@ func TestClassifyHarvestResponse(t *testing.T) {
 		return httpmsg.NewHttpResponse([]byte(raw + "\r\n" + body))
 	}
 	shell := strings.Repeat("s", 1000)
-	catchAll := newNotFoundPrint(resp(200, "text/html", "", shell), "/vgl-0123456789abcdef")
-	realNotFound := newNotFoundPrint(resp(404, "text/html", "", "nope"), "/vgl-0123456789abcdef")
-	loginWall := newNotFoundPrint(resp(302, "", "/login?next=/vgl-0123456789abcdef", ""), "/vgl-0123456789abcdef")
-	forbidden := newNotFoundPrint(resp(403, "text/html", "", shell), "/vgl-0123456789abcdef")
+	catchAll := newNotFoundPrint(resp(200, "text/html", "", shell), "/vigolium-0123456789abcdef")
+	realNotFound := newNotFoundPrint(resp(404, "text/html", "", "nope"), "/vigolium-0123456789abcdef")
+	loginWall := newNotFoundPrint(resp(302, "", "/login?next=/vigolium-0123456789abcdef", ""), "/vigolium-0123456789abcdef")
+	forbidden := newNotFoundPrint(resp(403, "text/html", "", shell), "/vigolium-0123456789abcdef")
 
 	cases := []struct {
 		name string

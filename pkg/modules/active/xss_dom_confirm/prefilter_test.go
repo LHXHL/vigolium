@@ -3,7 +3,7 @@ package xss_dom_confirm
 import "testing"
 
 func TestPrefilterReflectionInBody(t *testing.T) {
-	canary := "vig-x-deadbeefcafe"
+	canary := "vigolium-x-deadbeefcafe"
 	body := `<html><body><div>reflected: ` + canary + `</div></body></html>`
 	pass, reason := passesPrefilter(body, canary)
 	if !pass {
@@ -21,7 +21,7 @@ func TestPrefilterDomSourceSink(t *testing.T) {
   document.getElementById('out').innerHTML = x;
 </script>
 </body></html>`
-	pass, reason := passesPrefilter(body, "vig-x-not-present")
+	pass, reason := passesPrefilter(body, "vigolium-x-not-present")
 	if !pass {
 		t.Fatalf("expected source-sink coupling to pass")
 	}
@@ -32,7 +32,7 @@ func TestPrefilterDomSourceSink(t *testing.T) {
 
 func TestPrefilterRejectsCleanResponse(t *testing.T) {
 	body := `<html><body><h1>nothing fishy here</h1></body></html>`
-	pass, _ := passesPrefilter(body, "vig-x-not-present")
+	pass, _ := passesPrefilter(body, "vigolium-x-not-present")
 	if pass {
 		t.Fatalf("expected clean response to fail pre-filter")
 	}
@@ -47,7 +47,7 @@ func TestPrefilterRejectsSourceWithoutSink(t *testing.T) {
   console.log("logging", x);
 </script>
 </body></html>`
-	pass, _ := passesPrefilter(body, "vig-x-not-present")
+	pass, _ := passesPrefilter(body, "vigolium-x-not-present")
 	if pass {
 		t.Fatalf("source without sink should not pass")
 	}
@@ -60,7 +60,7 @@ func TestPrefilterRequiresSameScriptBlock(t *testing.T) {
 <p>some content</p>
 <script>document.write("static");</script>
 </body></html>`
-	pass, _ := passesPrefilter(body, "vig-x-not-present")
+	pass, _ := passesPrefilter(body, "vigolium-x-not-present")
 	if pass {
 		t.Fatalf("source and sink in different blocks should not pass")
 	}

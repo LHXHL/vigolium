@@ -186,7 +186,7 @@ func (m *Module) confirmHostReflection(
 	probe infra.HostHeaderVariant,
 ) (bool, error) {
 	return modkit.ConfirmReflection(2, func(canary string) (bool, error) {
-		canaryHost := canary + ".vgn-hhi.example"
+		canaryHost := canary + ".vigolium-hhi.example"
 		// Probes with a structured value (e.g. Forwarded: host=<h>) keep their
 		// shape with the fresh canary in place of the sentinel host.
 		value := probe.Value(canaryHost)

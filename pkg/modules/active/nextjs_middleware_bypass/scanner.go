@@ -282,7 +282,7 @@ func (m *Module) bypassDistinctFromCatchAll(
 
 	// Control 1: a random nonexistent path via the clean original request
 	// template (keeps the method and auth headers the protected request carried).
-	if raw, err := httpmsg.SetPath(ctx.Request().Raw(), "/"+modkit.FreshCanary()+"-vgo404"); err == nil {
+	if raw, err := httpmsg.SetPath(ctx.Request().Raw(), "/"+modkit.FreshCanary()+"-vigolium404"); err == nil {
 		if status, body, _, ok := m.freshProbe(ctx, httpClient, raw); ok && status == 200 && shellMatch(body) {
 			return false // matches the catch-all shell → not a bypass
 		}

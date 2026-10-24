@@ -7,6 +7,9 @@ import (
 	nethttp "net/http"
 	"net/url"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/bulkhttp"
+	"github.com/vigolium/vigolium/pkg/core/network"
 )
 
 // PoolConfig defines connection pool configuration for the HTTP client.
@@ -53,6 +56,24 @@ type PoolConfig struct {
 	// ProxyURL is the HTTP proxy URL to route all requests through.
 	// Empty string means no proxy.
 	ProxyURL string
+
+	// Protocol is the wire protocol policy (see bulkhttp.ParseMode). "" or
+	// "http1" keeps the plain HTTP/1.1 transport; anything else wraps it in a
+	// bulkhttp.Transport that pins each origin to HTTP/3, HTTP/2 or HTTP/1.1.
+	Protocol string
+}
+
+// multiplexMode is the bulkhttp mode Protocol asks for, and false when the
+// plain HTTP/1.1 transport is wanted.
+func (c *PoolConfig) multiplexMode() (bulkhttp.Mode, bool) {
+	if c.Protocol == "" {
+		return "", false
+	}
+	mode, err := bulkhttp.ParseMode(c.Protocol)
+	if err != nil || mode == bulkhttp.ModeHTTP1 {
+		return "", false
+	}
+	return mode, true
 }
 
 // DefaultPoolConfig returns the default connection pool configuration.
@@ -87,6 +108,9 @@ func (c *PoolConfig) NewTransport() *nethttp.Transport {
 		// TLS configuration
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: c.DisableTLSVerification,
+			// Shared with the scan transport: a refilled pool connection
+			// resumes instead of paying a full handshake.
+			ClientSessionCache: network.TLSSessionCache(),
 		},
 		TLSHandshakeTimeout: c.TLSHandshakeTimeout,
 

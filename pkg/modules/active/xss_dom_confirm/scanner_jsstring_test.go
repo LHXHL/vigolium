@@ -14,7 +14,7 @@ import (
 )
 
 // jsOpChainRe matches an operator-chaining breakout (decoded) carrying the canary.
-var jsOpChainRe = regexp.MustCompile("[\\^-]alert\\(`(vig-x-[0-9a-f]+)`\\)[\\^-]")
+var jsOpChainRe = regexp.MustCompile("[\\^-]alert\\(`(vigolium-x-[0-9a-f]+)`\\)[\\^-]")
 
 // jsContextProbe models a browser on a page that reflects into a JS *expression*:
 // it fires the alert only when navigated with an operator-chaining payload and

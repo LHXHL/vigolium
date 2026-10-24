@@ -882,8 +882,10 @@ func HasBody(request []byte) (bool, error) {
 //
 // Algorithm:
 //  1. Extract headers
-//  2. Build new request with headers + new body
-//  3. Update Content-Length header
+//  2. Set Content-Length for the new body (when there is a body or the
+//     request already carried the header)
+//  3. Build the request once: the body is copied a single time, which
+//     matters for multi-MiB bodies
 //
 // Parameters:
 //   - request: HTTP request bytes
@@ -908,11 +910,17 @@ func SetBody(request []byte, body []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// Build request with new body
-	rebuilt := BuildHttpMessage(headers, body)
+	if headers == nil {
+		return UpdateContentLength(BuildHttpMessage(headers, body))
+	}
 
-	// Update Content-Length
-	return UpdateContentLength(rebuilt)
+	// Same Content-Length rule as UpdateContentLength, applied before the
+	// build so the body is not copied a second time.
+	if len(body) > 0 || Header(headers, "Content-Length") != "" {
+		headers = removeHeaderFromList(headers, "Content-Length")
+		headers = append(headers, "Content-Length: "+intToString(len(body)))
+	}
+	return BuildHttpMessage(headers, body), nil
 }
 
 // SetBodyString replaces the body with a string value.

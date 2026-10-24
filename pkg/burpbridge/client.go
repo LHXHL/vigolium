@@ -245,8 +245,25 @@ func New(rawURL string) (*Client, error) {
 	}
 	return &Client{
 		baseURL: baseURL,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http:    &http.Client{Timeout: 30 * time.Second, Transport: bridgeTransport},
 	}, nil
+}
+
+// bridgeIdleConns is how many idle connections to the bridge are kept. Every
+// bridge call goes to one host, and `fuzz --send-via-burp -c N` sends N at
+// once; http.DefaultTransport keeps 2, so at -c 10 eight of every ten calls
+// dialed a fresh connection and the rest were closed on return.
+const bridgeIdleConns = 64
+
+// bridgeTransport is shared by every Client: they all talk to the same
+// listener, so one pool serves them.
+var bridgeTransport = newBridgeTransport()
+
+func newBridgeTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = bridgeIdleConns
+	t.MaxIdleConnsPerHost = bridgeIdleConns
+	return t
 }
 
 func URLFromEnvironment() string {

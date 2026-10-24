@@ -2,11 +2,17 @@ package database
 
 import (
 	"context"
+
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/vigolium/vigolium/pkg/agent/recon"
+	"maps"
 	"slices"
+	"strings"
 	"time"
+
+	"github.com/uptrace/bun"
 )
 
 // hostObservationBatchSize bounds one insert transaction. A sweep can observe
@@ -28,6 +34,13 @@ type HostObservationInput struct {
 	Port     int
 	HostFacts
 
+	// The record types `vigolium dns` resolves beyond addresses and CNAME.
+	MX, NS, TXT, SOA, CAA []string
+
+	// Fingerprint and NotFound are the fingerprint phase's conclusions.
+	Fingerprint *recon.TechStackReport
+	NotFound    *NotFoundBaseline
+
 	// Complete reports that the lookup ran to an answer. A cut-short prefetch
 	// records incomplete observations rather than none, so a later reader can
 	// tell "no AAAA record" from "we never got there".
@@ -38,7 +51,8 @@ type HostObservationInput struct {
 // with no answer AND no completeness claim states nothing that the absence of a
 // row does not already state.
 func (o HostObservationInput) Empty() bool {
-	return o.HostFacts.Empty() && !o.Complete
+	return o.HostFacts.Empty() && !o.Complete && len(o.MX)+len(o.NS)+len(o.TXT)+len(o.SOA)+len(o.CAA) == 0 &&
+		o.Fingerprint == nil && o.NotFound == nil
 }
 
 // SaveHostObservations persists a run's host observations in bounded batches.
@@ -46,7 +60,9 @@ func (o HostObservationInput) Empty() bool {
 // ON CONFLICT (scan_uuid, hostname, port) updates rather than inserting: within
 // ONE run an endpoint has one observation, so a second write for it is a
 // refinement (the TLS handshake finishing after the DNS answer, say) and not a
-// second event. ACROSS runs the conflict cannot fire, which is the point -
+// second event. A refinement only adds: each fact column keeps its stored value
+// when the new write leaves it empty, so the fingerprint phase writing its
+// report after the DNS/TLS prefetch does not erase the prefetch's answers. ACROSS runs the conflict cannot fire, which is the point -
 // re-probing a host next month adds that month's observation and leaves this
 // one intact.
 func (r *Repository) SaveHostObservations(ctx context.Context, projectUUID, scanUUID string, obs []HostObservationInput) error {
@@ -74,7 +90,14 @@ func (r *Repository) SaveHostObservations(ctx context.Context, projectUUID, scan
 			DNSA:        o.A,
 			DNSAAAA:     o.AAAA,
 			DNSCNAME:    o.CNAME,
+			DNSMX:       o.MX,
+			DNSNS:       o.NS,
+			DNSTXT:      o.TXT,
+			DNSSOA:      o.SOA,
+			DNSCAA:      o.CAA,
 			TLS:         o.TLS,
+			Fingerprint: o.Fingerprint,
+			NotFound:    o.NotFound,
 			Complete:    o.Complete,
 		})
 	}
@@ -86,10 +109,17 @@ func (r *Repository) SaveHostObservations(ctx context.Context, projectUUID, scan
 		if _, err := r.db.NewInsert().Model(&chunk).
 			On("CONFLICT (scan_uuid, hostname, port) DO UPDATE").
 			Set("observed_at = EXCLUDED.observed_at").
-			Set("dns_a = EXCLUDED.dns_a").
-			Set("dns_aaaa = EXCLUDED.dns_aaaa").
-			Set("dns_cname = EXCLUDED.dns_cname").
-			Set("tls = EXCLUDED.tls").
+			Set("dns_a = COALESCE(EXCLUDED.dns_a, ho.dns_a)").
+			Set("dns_aaaa = COALESCE(EXCLUDED.dns_aaaa, ho.dns_aaaa)").
+			Set("dns_cname = COALESCE(EXCLUDED.dns_cname, ho.dns_cname)").
+			Set("dns_mx = COALESCE(EXCLUDED.dns_mx, ho.dns_mx)").
+			Set("dns_ns = COALESCE(EXCLUDED.dns_ns, ho.dns_ns)").
+			Set("dns_txt = COALESCE(EXCLUDED.dns_txt, ho.dns_txt)").
+			Set("dns_soa = COALESCE(EXCLUDED.dns_soa, ho.dns_soa)").
+			Set("dns_caa = COALESCE(EXCLUDED.dns_caa, ho.dns_caa)").
+			Set("tls = COALESCE(EXCLUDED.tls, ho.tls)").
+			Set("fingerprint = COALESCE(EXCLUDED.fingerprint, ho.fingerprint)").
+			Set("not_found = COALESCE(EXCLUDED.not_found, ho.not_found)").
 			Set("complete = EXCLUDED.complete").
 			Exec(ctx); err != nil {
 			return fmt.Errorf("save host observations: %w", err)
@@ -140,7 +170,10 @@ func (r *Repository) LookupHostObservation(ctx context.Context, projectUUID, sca
 		return HostFacts{}, nil
 	}
 	row := new(HostObservation)
-	q := r.db.NewSelect().Model(row).
+	// Only the columns HostFacts carries: the fingerprint report and the
+	// not-found baseline are the bulk of a row, and this runs per endpoint
+	// emitted.
+	q := r.db.NewSelect().Model(row).Column("dns_a", "dns_aaaa", "dns_cname", "tls").
 		Where("project_uuid = ?", defaultProjectUUID(projectUUID)).
 		Where("hostname = ?", dnsKey(hostname)).
 		Where("port = ?", port)
@@ -168,4 +201,137 @@ func (r *Repository) LookupHostObservation(ctx context.Context, projectUUID, sca
 // bun jsonb fields, so this is a field copy rather than a decode.
 func (o *HostObservation) Facts() HostFacts {
 	return HostFacts{A: o.DNSA, AAAA: o.DNSAAAA, CNAME: o.DNSCNAME, TLS: o.TLS}
+}
+
+// HostObservationQuery selects host observations for `vigolium hosts`.
+type HostObservationQuery struct {
+	// ProjectUUID scopes the read; "" reads every project (an unscoped -S read).
+	ProjectUUID string
+	// ScanUUID limits the read to one run's observations.
+	ScanUUID string
+	// HostPattern is a hostname, or a pattern with * wildcards.
+	HostPattern string
+	// History returns every observation; otherwise the latest per endpoint.
+	History bool
+	// Has keeps rows carrying a fact: "tls", "fingerprint", "not-found" or "dns".
+	Has string
+	// SoftNotFound keeps origins that answer 2xx/3xx to a missing path.
+	SoftNotFound bool
+	Limit        int
+	Offset       int
+}
+
+// hostObservationHas maps a Has value to its predicate.
+var hostObservationHas = map[string]string{
+	"tls":         "ho.tls IS NOT NULL",
+	"fingerprint": "ho.fingerprint IS NOT NULL",
+	"not-found":   "ho.not_found IS NOT NULL",
+	"dns": "(ho.dns_a IS NOT NULL OR ho.dns_aaaa IS NOT NULL OR ho.dns_cname IS NOT NULL OR ho.dns_mx IS NOT NULL " +
+		"OR ho.dns_ns IS NOT NULL OR ho.dns_txt IS NOT NULL OR ho.dns_soa IS NOT NULL OR ho.dns_caa IS NOT NULL)",
+}
+
+// HostObservationHasValues are the accepted HostObservationQuery.Has values.
+func HostObservationHasValues() []string {
+	return slices.Sorted(maps.Keys(hostObservationHas))
+}
+
+func (r *Repository) hostObservationQuery(q HostObservationQuery) (*bun.SelectQuery, error) {
+	sel := r.db.NewSelect().Model((*HostObservation)(nil))
+	if q.ProjectUUID != "" {
+		sel = sel.Where("ho.project_uuid = ?", q.ProjectUUID)
+	}
+	if q.ScanUUID != "" {
+		sel = sel.Where("ho.scan_uuid = ?", q.ScanUUID)
+	}
+	if p := strings.TrimSpace(q.HostPattern); p != "" {
+		if strings.Contains(p, "*") {
+			sel = sel.Where(WithLikeEscape("ho.hostname LIKE ?"), LikeGlob(strings.ToLower(p)))
+		} else {
+			sel = sel.Where("ho.hostname = ?", dnsKey(p))
+		}
+	}
+	if q.Has != "" {
+		pred, ok := hostObservationHas[q.Has]
+		if !ok {
+			return nil, fmt.Errorf("unknown fact %q (want one of %s)", q.Has, strings.Join(HostObservationHasValues(), ", "))
+		}
+		sel = sel.Where(pred)
+	}
+	if q.SoftNotFound {
+		if r.db.Driver() == driverPostgres {
+			sel = sel.Where("(ho.not_found->>'soft_not_found')::boolean IS TRUE")
+		} else {
+			sel = sel.Where("json_extract(ho.not_found, '$.soft_not_found') = 1")
+		}
+	}
+	if !q.History {
+		// The latest observation per endpoint: the highest id is the most
+		// recently recorded, which is well-defined even when two runs stamp
+		// the same timestamp.
+		latest := r.db.NewSelect().Model((*HostObservation)(nil)).ColumnExpr("MAX(ho.id)").Group("ho.hostname", "ho.port")
+		if q.ProjectUUID != "" {
+			latest = latest.Where("ho.project_uuid = ?", q.ProjectUUID)
+		}
+		if p := strings.TrimSpace(q.HostPattern); p != "" {
+			// The same host filter as the outer query, so one host's lookup does
+			// not group the whole project's history.
+			if strings.Contains(p, "*") {
+				latest = latest.Where(WithLikeEscape("ho.hostname LIKE ?"), LikeGlob(strings.ToLower(p)))
+			} else {
+				latest = latest.Where("ho.hostname = ?", dnsKey(p))
+			}
+		}
+		if q.ScanUUID != "" {
+			latest = latest.Where("ho.scan_uuid = ?", q.ScanUUID)
+		}
+		sel = sel.Where("ho.id IN (?)", latest)
+	}
+	return sel, nil
+}
+
+// ListHostObservationsWithCount returns the observations q selects, hostname then
+// port order (newest first within an endpoint under History), and the unpaged
+// total.
+func (r *Repository) ListHostObservationsWithCount(ctx context.Context, q HostObservationQuery) ([]*HostObservation, int, error) {
+	if r == nil || r.db == nil || !r.HasHostObservations(ctx) {
+		return nil, 0, nil
+	}
+	sel, err := r.hostObservationQuery(q)
+	if err != nil {
+		return nil, 0, err
+	}
+	var rows []*HostObservation
+	sel = sel.Order("ho.hostname ASC", "ho.port ASC", "ho.id DESC")
+	if q.Limit > 0 {
+		sel = sel.Limit(q.Limit)
+	}
+	if q.Offset > 0 {
+		sel = sel.Offset(q.Offset)
+	}
+	total, err := sel.ScanAndCount(ctx, &rows)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, 0, fmt.Errorf("list host observations: %w", err)
+	}
+	return rows, total, nil
+}
+
+// LookupNotFoundBaseline returns the most recently recorded not-found baseline
+// for an origin, nil when none is stored.
+func (r *Repository) LookupNotFoundBaseline(ctx context.Context, projectUUID, hostname string, port int) (*NotFoundBaseline, error) {
+	if r == nil || r.db == nil || hostname == "" {
+		return nil, nil
+	}
+	row := new(HostObservation)
+	q := r.db.NewSelect().Model(row).Column("not_found").
+		Where("hostname = ?", dnsKey(hostname)).Where("port = ?", port).Where("not_found IS NOT NULL")
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
+	if err := q.Order("id DESC").Limit(1).Scan(ctx); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("lookup not-found baseline: %w", err)
+	}
+	return row.NotFound, nil
 }

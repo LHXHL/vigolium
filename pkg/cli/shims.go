@@ -141,6 +141,24 @@ var shimSpecs = []shimSpec{
 		rules:     func() map[string]shimRule { return arjunRules(&arjunState{}) },
 		translate: translateArjun,
 	},
+	{
+		name:      "dig",
+		short:     "Resolve names using dig's argv (routed to `vigolium dns`, which stores the answers)",
+		example:   "vigolium dig +short MX example.com @1.1.1.1",
+		native:    "dns",
+		longDash:  "-",
+		rules:     digRules,
+		translate: translateDig,
+	},
+	{
+		name:      "host",
+		short:     "Resolve names using host's argv (routed to `vigolium dns`, which stores the answers)",
+		example:   "vigolium host -t mx example.com",
+		native:    "dns",
+		longDash:  "-",
+		rules:     hostRules,
+		translate: translateHost,
+	},
 }
 
 func init() {

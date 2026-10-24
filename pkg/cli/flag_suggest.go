@@ -59,25 +59,27 @@ func flagErrorFunc(cmd *cobra.Command, err error) error {
 // or fewer must match within one edit — a genuine typo (--modul for --module,
 // --hosts for --host) still lands, while --url→--all does not.
 func closestFlagName(cmd *cobra.Command, typed string) string {
-	bestName := ""
-	bestDist := -1
+	var names []string
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if f.Hidden {
-			return
-		}
-		d := textutil.Levenshtein(typed, f.Name)
-		// Ties go to the first name in pflag's (lexical) visit order rather than
-		// to whichever happened to be registered last, so the hint is stable
-		// across builds.
-		if bestDist == -1 || d < bestDist {
-			bestName, bestDist = f.Name, d
+		if !f.Hidden {
+			names = append(names, f.Name)
 		}
 	})
-	if bestDist == -1 {
-		return ""
+	return closestName(typed, names)
+}
+
+// closestName is the candidate nearest typed within suggestionBudget, "" when
+// none is. Ties go to the first candidate, so the hint is stable across builds
+// (pflag visits flags in lexical order).
+func closestName(typed string, candidates []string) string {
+	best, bestDist := "", -1
+	for _, c := range candidates {
+		if d := textutil.Levenshtein(typed, c); bestDist == -1 || d < bestDist {
+			best, bestDist = c, d
+		}
 	}
-	if bestDist <= suggestionBudget(typed) {
-		return bestName
+	if bestDist >= 0 && bestDist <= suggestionBudget(typed) {
+		return best
 	}
 	return ""
 }

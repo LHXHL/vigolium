@@ -197,7 +197,7 @@ func (m *Module) testEmailEnumeration(
 	sourceURL string,
 ) *output.ResultEvent {
 	targetURL := fmt.Sprintf("%s/accounts:signInWithPassword?key=%s", identityToolkitBase, apiKey)
-	reqBody := `{"email":"vgm-test-nonexistent@example.com","password":"vgm-test-pwd-12345","returnSecureToken":true}`
+	reqBody := `{"email":"vigolium-test-nonexistent@example.com","password":"vigolium-test-pwd-12345","returnSecureToken":true}`
 
 	rawReq := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: identitytoolkit.googleapis.com\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
 		targetURL, len(reqBody), reqBody)
@@ -255,7 +255,7 @@ func (m *Module) testProviderDiscovery(
 	sourceURL string,
 ) *output.ResultEvent {
 	targetURL := fmt.Sprintf("%s/accounts:createAuthUri?key=%s", identityToolkitBase, apiKey)
-	reqBody := `{"identifier":"vgm-test@example.com","continueUri":"https://example.com"}`
+	reqBody := `{"identifier":"vigolium-test@example.com","continueUri":"https://example.com"}`
 
 	rawReq := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: identitytoolkit.googleapis.com\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
 		targetURL, len(reqBody), reqBody)

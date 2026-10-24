@@ -99,7 +99,7 @@ func (m *Module) ScanPerRequest(
 // empty/whitespace body, the empty-200 signal is meaningless and wp-cron must
 // not be reported. Fails OPEN on an inconclusive transient error.
 func (m *Module) wpCronEmptyIsSpecific(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester) bool {
-	randomPath := "/vgm-wpcron-" + utils.RandomString(8) + ".php"
+	randomPath := "/vigolium-wpcron-" + utils.RandomString(8) + ".php"
 	raw, err := httpmsg.SetMethod(ctx.Request().Raw(), "GET")
 	if err != nil {
 		return true
@@ -126,7 +126,7 @@ func (m *Module) wpCronEmptyIsSpecific(ctx *httpmsg.HttpRequestResponse, httpCli
 }
 
 func (m *Module) fingerprint404(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester) *notFoundFingerprint {
-	randomPath := "/vgm-wp-404-" + utils.RandomString(8)
+	randomPath := "/vigolium-wp-404-" + utils.RandomString(8)
 	modifiedRaw, err := httpmsg.SetMethod(ctx.Request().Raw(), "GET")
 	if err != nil {
 		return nil

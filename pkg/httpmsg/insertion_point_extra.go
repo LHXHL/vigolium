@@ -38,7 +38,7 @@ const (
 // DefaultNewParamValue is the canary value a NewParamInsertionPoint gives the
 // parameter it adds when NewParamSpec.Value is empty. Distinctive enough to
 // spot when reflected, plain enough to pass type checks on a string field.
-const DefaultNewParamValue = "vglm7c4n4ry"
+const DefaultNewParamValue = "vigolium7c4n4ry"
 
 // NewParamSpec configures the synthetic new-parameter insertion point.
 type NewParamSpec struct {

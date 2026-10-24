@@ -289,6 +289,15 @@
         },
         "response": {
           "$ref": "#/$defs/cli.bodyViewSchema"
+        },
+        "uuid_short": {
+          "type": "string"
+        },
+        "response_headers": {
+          "type": "string"
+        },
+        "matches_not_found": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
@@ -311,6 +320,7 @@
         "code": {
           "type": "string",
           "enum": [
+            "ambiguous_id",
             "body_decode_failed",
             "body_incomplete",
             "body_unavailable",

@@ -250,6 +250,18 @@ type EngineConfig struct {
 	JSTangleConcurrency     int                 `yaml:"jstangle_concurrency" json:"jstangle_concurrency"` // Deprecated: alias of jstangle.worker_count, used only when that is 0; see Config.JSTangleWorkerCount
 	PrefixBreaker           PrefixBreakerConfig `json:"prefix_breaker"`                                   // Per-prefix circuit breaker for soft-404 / trap directories
 
+	// BruteForceThreads is the worker count for wordlist and FUZZ-template
+	// requests, the brute-force half of discovery. Everything else (spider,
+	// observed-word and extension variants, JS fetches, validation probes)
+	// keeps DiscoveryThreads. 0 = DiscoveryThreads (one shared pace).
+	BruteForceThreads int `json:"brute_force_threads" validate:"min=0,max=1024"`
+	// Protocol is the wire protocol policy for the engine's requests:
+	// "auto" (HTTP/3, then HTTP/2, then HTTP/1.1, pinned per origin), "http1",
+	// "http2" or "http3"; "" = http1, the engine's historical behavior. One
+	// protocol per origin for the whole engine, learner included, so soft-404
+	// fingerprints are compared against responses of the same protocol.
+	Protocol string `json:"protocol"`
+
 	// RequestFilter is consulted before every request leaves the engine's HTTP
 	// client: returning false refuses it with deparos/http.ErrRequestFiltered
 	// instead of sending it. The engine also derives the spider's scope exclusion

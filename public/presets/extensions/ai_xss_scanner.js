@@ -40,7 +40,7 @@ module.exports = {
     if (!payloads || payloads.length === 0) return null;
 
     // Capture a baseline response for comparison (clean canary, not XSS)
-    var baselineReq = insertion.buildRequest("VGNM_BASELINE_" + vigolium.utils.randomString(6));
+    var baselineReq = insertion.buildRequest("VIGOLIUM_BASELINE_" + vigolium.utils.randomString(6));
     var baselineResp = vigolium.http.send(baselineReq);
 
     var findings = [];

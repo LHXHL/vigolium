@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/source"
@@ -39,6 +40,71 @@ type ingestOutcome struct {
 
 	// Formats names the input formats this outcome covers, in first-seen order.
 	Formats []string
+
+	// Reasons counts why records were not stored, by core.Drop* reason, and
+	// Failures holds the first few of them. Failed alone could not say whether
+	// the host was dead, every answer was a WAF page, or the budget ran out.
+	Reasons  map[string]int64
+	Failures []core.DropSample
+
+	// Records are the records this run left in the store (capped at
+	// maxIngestedRecords; RecordsTruncated says more exist).
+	Records          []ingestedRecord
+	RecordsTruncated bool
+}
+
+// maxIngestedRecords bounds the records an ingest -j lists. The counts carry
+// the size; the list exists so a caller can read back what landed by UUID.
+const maxIngestedRecords = 50
+
+// ingestedRecord is one stored record, as `ingest -j` lists it.
+type ingestedRecord struct {
+	UUID       string `json:"uuid"`
+	UUIDShort  string `json:"uuid_short"`
+	Method     string `json:"method"`
+	URL        string `json:"url"`
+	StatusCode int    `json:"status_code"`
+}
+
+func newIngestedRecord(uuid string, rr *httpmsg.HttpRequestResponse) ingestedRecord {
+	rec := ingestedRecord{UUID: uuid, UUIDShort: uuidShort(uuid), URL: rr.Target()}
+	if rr.Request() != nil {
+		rec.Method = rr.Request().Method()
+	}
+	if rr.Response() != nil {
+		rec.StatusCode = rr.Response().StatusCode()
+	}
+	return rec
+}
+
+// noteRecord adds one stored record to the list, within the cap.
+func (o *ingestOutcome) noteRecord(rec ingestedRecord) {
+	if len(o.Records) >= maxIngestedRecords {
+		o.RecordsTruncated = true
+		return
+	}
+	o.Records = append(o.Records, rec)
+}
+
+// noteReason counts one unstored record under reason, keeping a sample.
+func (o *ingestOutcome) noteReason(reason string, sample core.DropSample) {
+	if o.Reasons == nil {
+		o.Reasons = map[string]int64{}
+	}
+	o.Reasons[reason]++
+	o.addFailures(sample)
+}
+
+// addFailures appends samples within core.MaxDropSamples, the executor's own
+// cap, so a batch reports as many examples as one run.
+func (o *ingestOutcome) addFailures(samples ...core.DropSample) {
+	room := core.MaxDropSamples - len(o.Failures)
+	if room > len(samples) {
+		room = len(samples)
+	}
+	if room > 0 {
+		o.Failures = append(o.Failures, samples[:room]...)
+	}
 }
 
 // add folds another source's outcome into this one.
@@ -50,6 +116,19 @@ func (o *ingestOutcome) add(other ingestOutcome) {
 	o.Errors += other.Errors
 	for _, f := range other.Formats {
 		o.noteFormat(f)
+	}
+	for k, v := range other.Reasons {
+		if o.Reasons == nil {
+			o.Reasons = map[string]int64{}
+		}
+		o.Reasons[k] += v
+	}
+	o.addFailures(other.Failures...)
+	for _, r := range other.Records {
+		o.noteRecord(r)
+	}
+	if other.RecordsTruncated {
+		o.RecordsTruncated = true
 	}
 }
 
@@ -99,13 +178,30 @@ func (s *ingestSaver) save(ctx context.Context, rr *httpmsg.HttpRequestResponse)
 		return
 	}
 
-	if _, err := s.repo.SaveRecord(ctx, rr, database.RecordSourceIngestCLI, s.projectUUID); err != nil {
+	uuid, err := s.repo.SaveRecord(ctx, rr, database.RecordSourceIngestCLI, s.projectUUID)
+	if err != nil {
 		zap.L().Warn("ingest: failed to store record",
 			zap.String("url", rr.Target()), zap.Error(err))
-		s.count(func(o *ingestOutcome) { o.Failed++ })
+		s.count(func(o *ingestOutcome) {
+			o.Failed++
+			o.noteReason(core.DropStoreError, core.DropSample{URL: rr.Target(), Reason: core.DropStoreError, Detail: err.Error()})
+		})
 		return
 	}
 	s.count(func(o *ingestOutcome) { o.Stored++ })
+	s.noteStored(uuid, rr)
+}
+
+// noteStored lists one stored record — saved here or fetched and written by the
+// executor — building its entry only while the list has room.
+func (s *ingestSaver) noteStored(uuid string, rr *httpmsg.HttpRequestResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.outcome.Records) >= maxIngestedRecords {
+		s.outcome.RecordsTruncated = true
+		return
+	}
+	s.outcome.Records = append(s.outcome.Records, newIngestedRecord(uuid, rr))
 }
 
 func (s *ingestSaver) count(fn func(*ingestOutcome)) {

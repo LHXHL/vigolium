@@ -20,6 +20,7 @@ func (e *Executor) persistAndCheckScope(ctx context.Context, item *work.WorkItem
 			e.scopeRejected.Add(1)
 		}
 		if !inScope && e.cfg.ScopeOnIngest {
+			e.noteDrop(req.Target(), DropOutOfScope, nil)
 			return false
 		}
 
@@ -86,14 +87,19 @@ func (e *Executor) saveToDatabase(ctx context.Context, item *work.WorkItem, req 
 		// from a chain that legitimately ended at a redirect whose destination
 		// never answered.
 		ChainTruncated: req.Response() != nil && httpmsg.IsRedirectStatus(req.Response().StatusCode()),
+		Remarks:        item.Remarks,
 	})
 	if err != nil {
 		e.storeFailed.Add(1)
+		e.noteDrop(req.Target(), DropStoreError, err)
 		zap.L().Debug("Failed to save record to database", zap.Error(err))
 		return
 	}
 	e.stored.Add(1)
 	e.caches.requestUUIDs.Store(req.Request().ID(), recordUUID)
+	if e.cfg.OnRecordStored != nil {
+		e.cfg.OnRecordStored(recordUUID, req)
+	}
 }
 
 // saveRedirectHops persists each intermediate redirect response as its own

@@ -1,6 +1,6 @@
 # Scanner Modules Reference
 
-Vigolium ships with **331 scanner modules** — 213 active and 118 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
+Vigolium ships with **334 scanner modules** — 215 active and 119 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
 
 ## Severity Scale
 
@@ -279,6 +279,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `php-framework-debug` | PHP Framework Debug Exposure | Detects exposed debug endpoints for Yii, CodeIgniter, CakePHP, and other PHP frameworks | Medium | Firm | `php`, `misconfiguration`, `info-disclosure`, `light` |
 | `php-path-info-misconfig` | PHP PATH_INFO Misconfiguration | Detects cgi.fix_pathinfo routing ambiguity allowing script path manipulation | Medium | Firm | `php`, `misconfiguration`, `light` |
 | `php-source-disclosure` | PHP Source Disclosure | Detects PHP source code disclosure via .phps handlers, misconfigured extensions, and static file serving | High | Firm | `php`, `info-disclosure`, `file-exposure`, `light` |
+| `php2shell` | php2shell Multipart Parser Crash | Flags PHP hosts whose multipart parser crashes on deeply nested array keys (php2shell, CVE-2026-109618 / CVE-2026-109619); up to ~29 MiB of upload per tested path | Suspect | Tentative | `php`, `cve`, `rce`, `dos`, `intrusive` |
 
 #### Rails (Ruby)
 
@@ -297,6 +298,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `express-debug-probe` | Express Debug Probe | Triggers error responses in Express/NestJS apps to detect stack trace and debug info leakage | Low | Firm | `express`, `misconfiguration`, `info-disclosure`, `moderate` |
 | `express-directory-listing` | Express Directory Listing | Detects directory listing exposure via serve-index or similar middleware | Low | Firm | `express`, `info-disclosure`, `misconfiguration`, `light` |
 | `express-trust-proxy-misconfig` | Express Trust Proxy Misconfiguration | Detects Express trust proxy misconfiguration via X-Forwarded-* header manipulation | Medium | Firm | `express`, `misconfiguration`, `moderate` |
+| `node-brotli-decoder-exposure` | Node.js Brotli Request Decoding Exposure | Detects Express/NestJS apps that decode Brotli request bodies, the attack surface of CVE-2026-111497 (node2shell candidate); never sends the crash trigger | Info | Firm | `express`, `nestjs`, `nodejs`, `cve`, `light` |
 
 #### ASP.NET / IIS
 
@@ -454,6 +456,7 @@ Passive modules analyze existing request/response pairs without sending new traf
 | `firebase-fingerprint` | Firebase Fingerprint | Identifies Firebase usage and detects leaked Firebase secrets in responses | Info | Certain | `firebase`, `cloud`, `fingerprint`, `light` |
 | `flask-fingerprint` | Flask Fingerprint | Identifies Flask/Werkzeug installations from response headers, cookies, and body patterns | Info | Certain | `flask`, `python`, `fingerprint`, `light` |
 | `laravel-fingerprint` | Laravel Fingerprint | Identifies Laravel installations from response headers, cookies, and body patterns | Info | Certain | `laravel`, `php`, `fingerprint`, `light` |
+| `php2shell-version` | php2shell Unpatched PHP Version | Flags responses advertising a PHP release that predates the php2shell fix (CVE-2026-109618 / CVE-2026-109619) | Info | Tentative | `php`, `cve`, `outdated-component`, `light` |
 | `rails-fingerprint` | Rails Fingerprint | Identifies Ruby on Rails installations from response headers, cookies, and body patterns | Info | Certain | `rails`, `ruby`, `fingerprint`, `light` |
 | `spring-fingerprint` | Spring Fingerprint | Identifies Spring Boot/Spring MVC applications from response headers, cookies, error pages, and body patterns | Info | Certain | `spring`, `java`, `fingerprint`, `light` |
 | `drupal-fingerprint` | Drupal Fingerprint | Identifies Drupal installations and detects core version, major generation (7/8/9/10/11), and contributed modules | Info | Certain | `drupal`, `cms`, `fingerprint`, `light` |

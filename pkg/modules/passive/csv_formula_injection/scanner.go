@@ -41,9 +41,9 @@ const cellPreviewRunes = 120
 
 var (
 	// scanCanaryRe matches the canary tokens vigolium's active modules plant
-	// (modkit.FreshCanary "vgo"+10 hex, xss_stored "vig-sx-"+12 hex), so a
+	// (modkit.FreshCanary "vigolium"+10 hex, xss_stored "vigolium-sx-"+12 hex), so a
 	// stored probe value surfacing unescaped in an export is attributable.
-	scanCanaryRe = regexp.MustCompile(`vgo[0-9a-f]{10}|vig-sx-[0-9a-f]{12}`)
+	scanCanaryRe = regexp.MustCompile(`vigolium[0-9a-f]{10}|vigolium-sx-[0-9a-f]{12}`)
 	// functionCallRe matches a formula body that opens with a function call
 	// (no space before the parenthesis, so prose like "- see (note)" passes).
 	functionCallRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*\(`)

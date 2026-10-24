@@ -511,6 +511,7 @@ var defaultPhaseRunners = map[NativePhase]phaseRunner{
 	PhaseHarvestProbe:    {tag: "harvest-probe", label: "harvest-probe", run: (*Runner).runHarvestProbePhase},
 	PhaseSpidering:       {tag: "spider", label: "spidering", run: (*Runner).runSpideringPhase},
 	PhaseProbe:           {tag: "probe", label: "probe", run: (*Runner).runProbePhase},
+	PhaseFingerprint:     {tag: "fingerprint", label: "fingerprint", run: (*Runner).runFingerprintPhase},
 	PhaseDiscovery: {tag: "discovery", label: "discovery", run: (*Runner).runDiscoveryPhase,
 		after: func(r *Runner, ctx context.Context) {
 			if r.repository != nil {

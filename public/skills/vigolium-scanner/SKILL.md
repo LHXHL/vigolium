@@ -120,6 +120,8 @@ gone. Event table: **`references/agent-loop.md`**.
 | Look, don't touch | `vigolium scan -t https://target.example --passive-only` |
 | Phases, aliases, strategies | `vigolium strategy -j` |
 | Sweep a host list, httpx-style | `vigolium run probe -T hosts.txt --format jsonl --no-response` |
+| What an origin runs (stack, favicon, well-known, CORS, soft-404) | `vigolium fingerprint -T hosts.txt -j --compact` |
+| DNS records, stored | `vigolium dns -T hosts.txt -j` |
 
 **Read**
 
@@ -130,7 +132,11 @@ gone. Event table: **`references/agent-loop.md`**.
 | Endpoint inventory | `vigolium endpoints -j --host api.example.com` |
 | Parameters, IDOR candidates | `vigolium params -j --type integer,uuid` |
 | Stored traffic, cheap | `vigolium traffic -j --compact --host target.example` |
+| Stored traffic, cheapest | `vigolium traffic --format tsv --fields uuid_short,status,length,url` |
 | One record by identity | `vigolium traffic -j --uuid <uuid>` |
+| One body or header block | `vigolium traffic body <uuid> -o body.json` / `vigolium traffic headers <uuid> -j` |
+| Host facts: DNS, TLS cert, fingerprint | `vigolium hosts -j --compact` (`--sans` for cert names) |
+| The database's tables and columns | `vigolium schema storage http_records` |
 
 **Confirm and record**
 
@@ -175,6 +181,11 @@ the shim prints the native command it runs, `--dry-run` prints it without
 running, and an unmappable argument is a hard error naming the native command.
 Mapping table: **`references/scanning.md`**.
 
+The same holds for the curl/dig/openssl work around a host: `vigolium dig +short MX
+example.com` and `vigolium host example.com` route to `vigolium dns` (answers stored); `fingerprint` replaces `curl -I`, favicon
+hashing, OPTIONS and Host-header curls; the TLS certificate is in `hosts -j`
+(`--fields tls`); "is this page the soft-404?" is `traffic --fields matches_not_found`.
+
 ## Token discipline
 
 Survey cheap, drill narrow, count instead of listing:
@@ -184,6 +195,11 @@ vigolium finding -j --min-severity high --compact --fields id,severity,module_id
 vigolium finding -j --id 42 --with-records
 vigolium traffic -j --group-by status_code --host target.example
 ```
+
+`--format tsv` (traffic, finding, endpoints, params, hosts, dns) prints one line per
+row and nothing else. `--fields` accepts aliases (`status`, `length`, `title`, `id`)
+on every view and emits the names you passed. `vigolium fuzz --usage` (any command)
+lists its flags one per line instead of the full `--help`.
 
 Bodies under `-j` are preview-capped, findings carry a ±240-char
 `response_evidence`, `--max-output-bytes N` caps the document and `-o <file>`
@@ -199,6 +215,9 @@ keeps it out of context. Shaping flags and traps: **`references/agent-loop.md`**
 - `replay -u`, `fuzz -u` and `traffic --replay` send traffic; `traffic --uuid` reads ([reads vs sends](references/invariants.md#reads-versus-sends)).
 - A `query` hint is always read-only and safe to run ([reads vs sends](references/invariants.md#reads-versus-sends)).
 - `finding --id` is the integer id; a UUID belongs to `traffic --uuid` or `--scan-uuid` ([identifiers](references/invariants.md#reads-versus-sends)).
+- Every record UUID flag takes a unique 8+ character prefix (`uuid_short`); an ambiguous one fails `ambiguous_id` naming the candidates.
+- `replay -i`/`fuzz -i` take request text or a path to a file holding it.
+- `fingerprint` sends only reads (GET, OPTIONS, one GraphQL introspection); it never follows redirects.
 - Opening a DB writes to it; pass `--read-only` for evidence ([read-only](references/invariants.md#opening-a-database-writes-to-it)).
 - `--fail-on` writes output first, skips dismissed findings, and is per child under `-P` ([gates](references/invariants.md#gates)).
 - Agent commands need a provider (`provider_missing`); whitebox is `--source` on agents, not `scan` ([agents](references/invariants.md#burp-server-and-agents)).

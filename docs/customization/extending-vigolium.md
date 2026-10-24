@@ -61,7 +61,7 @@ module.exports = {
   scanTypes: ["per_insertion_point"],
 
   scanPerInsertionPoint: function(ctx, insertion) {
-    var canary = "VGNM" + vigolium.utils.randomString(8);
+    var canary = "VIGOLIUM" + vigolium.utils.randomString(8);
     var resp = vigolium.http.send(insertion.buildRequest(canary));
 
     if (resp && resp.body.indexOf(canary) !== -1) {
@@ -176,7 +176,7 @@ type: pre_hook
 
 add_headers:
   Authorization: "Bearer ${AUTH_TOKEN}"
-  X-Request-ID: "vgm-{{random}}"
+  X-Request-ID: "vigolium-{{random}}"
 
 skip_when:
   url_contains: ["/health", "/metrics"]

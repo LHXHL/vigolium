@@ -68,7 +68,7 @@ func init() {
 	dbExportCmd.Flags().IntVar(&exportLimit, "limit", 0, "Maximum number of records to export, 0 for unlimited")
 	dbExportCmd.Flags().IntVar(&exportOffset, "offset", 0, "Number of records to skip before exporting")
 	dbExportCmd.Flags().StringVar(&exportRecordUUID, "uuid", "",
-		"Export exactly one record by its UUID. Honored by every --format (including fs) and resolved before pagination, so a record outside the --limit window is still found")
+		"Export exactly one record by its UUID (or unique 8+ char prefix). Honored by every --format (including fs) and resolved before pagination, so a record outside the --limit window is still found")
 
 	dbExportCmd.Flags().BoolVar(&exportRequestOnly, "request-only", false, "Export only HTTP requests, omitting responses (raw format only)")
 	dbExportCmd.Flags().StringVar(&exportReportURL, "report-url", "",
@@ -101,7 +101,7 @@ func validateDBExportFlags() (dateFrom, dateTo *time.Time, err error) {
 // dbExportFilters builds the record selection shared by every export format.
 // runDBExport and runDBExportFS had byte-identical copies of this, which is how
 // --uuid came to be honored by one and ignored by the other.
-func dbExportFilters(dateFrom, dateTo *time.Time) (database.QueryFilters, error) {
+func dbExportFilters(db *database.DB, dateFrom, dateTo *time.Time) (database.QueryFilters, error) {
 	projectUUID, err := resolveProjectUUID()
 	if err != nil {
 		return database.QueryFilters{}, err
@@ -128,7 +128,11 @@ func dbExportFilters(dateFrom, dateTo *time.Time) (database.QueryFilters, error)
 	// the UUID reported an existing record as "not found" whenever it fell
 	// outside --limit/--offset.
 	if exportRecordUUID != "" {
-		filters.RecordUUIDs = []string{exportRecordUUID}
+		resolved, err := resolveRecordRefs(context.Background(), database.NewRepository(db), []string{exportRecordUUID}, projectUUID)
+		if err != nil {
+			return database.QueryFilters{}, err
+		}
+		filters.RecordUUIDs = resolved
 	}
 	return filters, nil
 }
@@ -265,7 +269,7 @@ func writeDBExport(ctx context.Context, db *database.DB, dateFrom, dateTo *time.
 // writeDBExportCounted is writeDBExport reporting how many records the query
 // selected, for the -j receipt.
 func writeDBExportCounted(ctx context.Context, db *database.DB, dateFrom, dateTo *time.Time, out io.Writer) (int, error) {
-	filters, err := dbExportFilters(dateFrom, dateTo)
+	filters, err := dbExportFilters(db, dateFrom, dateTo)
 	if err != nil {
 		return 0, err
 	}
@@ -308,7 +312,7 @@ func runDBExportFS(db *database.DB, dateFrom, dateTo *time.Time) (fsExportStats,
 	// Same builder as every other format. This branch used to keep its own copy,
 	// which is how it came to bind --search to FuzzyTerm while the others used
 	// SearchTerm, and to ignore --uuid entirely.
-	filters, err := dbExportFilters(dateFrom, dateTo)
+	filters, err := dbExportFilters(db, dateFrom, dateTo)
 	if err != nil {
 		return fsExportStats{}, err
 	}

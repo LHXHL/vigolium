@@ -72,6 +72,15 @@ type DeparosDiscoveryConfig struct {
 	Concurrency int           // Worker threads (from -t flag), split across concurrent targets; default: 25
 	MaxDuration time.Duration // default: 1h
 
+	// BruteForceConcurrency is each target's worker count for wordlist and
+	// FUZZ-template requests (deparos EngineConfig.BruteForceThreads). It is
+	// per target, not split: concurrent targets are different hosts, each with
+	// its own host slots. 0 = the target's Concurrency share.
+	BruteForceConcurrency int
+	// Protocol is the engines' wire protocol policy (deparos
+	// EngineConfig.Protocol): auto, http1, http2, http3; "" = http1.
+	Protocol string
+
 	// RateLimit caps each discovery engine's outgoing requests per second.
 	// 0 = unpaced (the historical behaviour; Concurrency is then the only
 	// throttle). Set it only from an EXPLICIT operator setting — see
@@ -798,6 +807,8 @@ func (d *DeparosDiscoverySource) buildDeparosConfig(target string) *deparosconfi
 	cfg := deparosconfig.NewDefaultConfig()
 	cfg.Target.StartURL = target
 	cfg.Engine.DiscoveryThreads = d.cfg.Concurrency
+	cfg.Engine.BruteForceThreads = d.cfg.BruteForceConcurrency
+	cfg.Engine.Protocol = d.cfg.Protocol
 	// Passed straight through, including 0: the engine reads 0 as "unpaced", and
 	// turning it into a default here would throttle every scan that never asked.
 	cfg.Engine.RequestsPerSecond = d.cfg.RateLimit

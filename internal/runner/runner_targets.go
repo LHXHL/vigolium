@@ -11,6 +11,7 @@ import (
 
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/internal/resources/wordlists"
+	"github.com/vigolium/vigolium/pkg/bulkhttp"
 	"github.com/vigolium/vigolium/pkg/database"
 	deparosconfig "github.com/vigolium/vigolium/pkg/deparos/config"
 	"github.com/vigolium/vigolium/pkg/harvester"
@@ -588,6 +589,48 @@ func (r *Runner) phaseConcurrency(phase string) int {
 	return concurrency
 }
 
+// discoveryBruteForceConcurrency is the default per-target worker count for
+// discovery's wordlist and FUZZ-template requests: the scan's per-host slot
+// cap, so wordlist fuzzing runs as wide as the scan already allows one host to
+// be hit (the gate's host slots bound it either way), and never below the
+// phase concurrency. An explicit -c is the operator choosing a pace, so it
+// sets this too.
+func (r *Runner) discoveryBruteForceConcurrency(concurrency int) int {
+	if r.options.ConcurrencyExplicitlySet {
+		return concurrency
+	}
+	perHost := 0
+	if r.options.MaxPerHostExplicitlySet {
+		perHost = r.options.MaxPerHost
+	} else if r.settings != nil {
+		perHost = r.settings.ScanningPace.MaxPerHost
+	}
+	if perHost <= 0 {
+		perHost = types.DefaultMaxPerHost
+	}
+	return min(max(concurrency, perHost), deparosconfig.MaxBruteForceThreads)
+}
+
+// discoveryWirePace is discovery's brute-force worker count per target and its
+// wire protocol mode: discovery.engine.brute_force_concurrency and .protocol
+// when set, else discoveryBruteForceConcurrency and auto (HTTP/3, then
+// HTTP/2, then HTTP/1.1, pinned per origin). One answer for the engine config
+// and the phase's Speed line; the protocol comes back canonical.
+func (r *Runner) discoveryWirePace(concurrency int) (bruteForce int, protocol string) {
+	bruteForce, mode := r.discoveryBruteForceConcurrency(concurrency), bulkhttp.ModeAuto
+	if r.settings != nil {
+		eng := r.settings.Discovery.Engine
+		if eng.BruteForceConcurrency > 0 {
+			bruteForce = eng.BruteForceConcurrency
+		}
+		// Validated at load, so a parse error only means "keep auto".
+		if m, err := bulkhttp.ParseMode(eng.Protocol); err == nil {
+			mode = m
+		}
+	}
+	return bruteForce, string(mode)
+}
+
 // discoveryConcurrency is the engine thread count the Discovery phase will run
 // with. Shared by buildDeparosConfig and the phase's own "Speed:" line.
 func (r *Runner) discoveryConcurrency() int { return r.phaseConcurrency("discovery") }
@@ -634,6 +677,7 @@ func (r *Runner) buildDeparosConfig(additionalTargets []string, wls resolvedDisc
 		ConfirmViaFingerprint: true,
 		ConfirmViaProbe:       false,
 	}
+	cfg.BruteForceConcurrency, cfg.Protocol = r.discoveryWirePace(discoveryConcurrency)
 
 	// Apply YAML settings if available
 	if r.settings != nil {

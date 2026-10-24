@@ -478,7 +478,7 @@ func (m *Module) testForwardedFor(
 // (confirmed, err); callers require a complete confirmation.
 func (m *Module) confirmForwardedHostReflection(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester) (bool, error) {
 	return modkit.ConfirmReflection(2, func(canary string) (bool, error) {
-		host := "vgo" + canary + ".example"
+		host := canary + ".example"
 		raw, ok := rootGetRaw(ctx, "X-Forwarded-Host", host)
 		if !ok {
 			return false, fmt.Errorf("build X-Forwarded-Host confirmation request")

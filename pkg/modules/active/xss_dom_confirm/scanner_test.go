@@ -9,7 +9,7 @@ import (
 )
 
 func TestMatchCanary(t *testing.T) {
-	canary := "vig-x-abcdef"
+	canary := "vigolium-x-abcdef"
 	dialogs := []spitolas.DialogEvent{
 		{Type: "alert", Message: "unrelated"},
 		{Type: "confirm", Message: "wrapping " + canary + " inside"},
@@ -22,7 +22,7 @@ func TestMatchCanary(t *testing.T) {
 		t.Fatalf("matched wrong dialog: %+v", hit)
 	}
 
-	if matchCanary(dialogs, "vig-x-not-here") != nil {
+	if matchCanary(dialogs, "vigolium-x-not-here") != nil {
 		t.Fatalf("expected no match for absent canary")
 	}
 }
@@ -48,14 +48,14 @@ func TestNavigableURLAppendsHashFragment(t *testing.T) {
 		t.Fatalf("q insertion point not found; got %d points", len(points))
 	}
 
-	fuzzedRaw := qPoint.BuildRequest([]byte(`"'><svg/onload=alert("vig-x-test")>//`))
+	fuzzedRaw := qPoint.BuildRequest([]byte(`"'><svg/onload=alert("vigolium-x-test")>//`))
 	fuzzedReq, err := httpmsg.ParseRawRequest(string(fuzzedRaw))
 	if err != nil {
 		t.Fatalf("ParseRawRequest: %v", err)
 	}
 	fuzzedReq = fuzzedReq.WithService(rr.Service())
 
-	url, err := navigableURL(fuzzedReq, `<svg/onload=alert("vig-x-test")>`)
+	url, err := navigableURL(fuzzedReq, `<svg/onload=alert("vigolium-x-test")>`)
 	if err != nil {
 		t.Fatalf("navigableURL: %v", err)
 	}

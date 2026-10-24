@@ -7,9 +7,9 @@ module.exports = {
   scanTypes: ["per_insertion_point"],
 
   scanPerInsertionPoint: function(ctx, insertion) {
-    var resp = vigolium.http.send(insertion.buildRequest("VGNMPROBE"));
-    if (resp && resp.body.indexOf("VGNMPROBE") !== -1) {
-      return [{ name: "Reflected probe in " + insertion.name, url: ctx.request.url, matched: "VGNMPROBE" }];
+    var resp = vigolium.http.send(insertion.buildRequest("VIGOLIUMPROBE"));
+    if (resp && resp.body.indexOf("VIGOLIUMPROBE") !== -1) {
+      return [{ name: "Reflected probe in " + insertion.name, url: ctx.request.url, matched: "VIGOLIUMPROBE" }];
     }
     return null;
   }

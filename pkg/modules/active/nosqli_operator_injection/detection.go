@@ -93,7 +93,7 @@ const (
 	// benignProbeSuffix is an operator-free, quote-free token appended to the base
 	// value to form the benign control: it exercises the insertion point exactly
 	// like the payloads but carries no NoSQL syntax.
-	benignProbeSuffix = "vglmctl"
+	benignProbeSuffix = "vigoliumctl"
 
 	// booleanInertMax is the similarity at or above which a benign control response
 	// is considered indistinguishable from the baseline. For path-segment / header

@@ -87,7 +87,7 @@ func (m *Module) ScanPerRequest(
 }
 
 func (m *Module) fingerprint404(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester) *notFoundFingerprint {
-	randomPath := "/vgm-fb-404-" + utils.RandomString(8)
+	randomPath := "/vigolium-fb-404-" + utils.RandomString(8)
 	modifiedRaw, err := httpmsg.SetMethod(ctx.Request().Raw(), "GET")
 	if err != nil {
 		return nil

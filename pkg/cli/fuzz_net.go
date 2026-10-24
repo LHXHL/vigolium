@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/vigolium/vigolium/pkg/bulkhttp"
 	"github.com/vigolium/vigolium/pkg/fuzz"
 	"github.com/vigolium/vigolium/pkg/input/formats/curl"
 	"github.com/vigolium/vigolium/pkg/proxytarget"
@@ -77,7 +78,7 @@ func registerFuzzNetFlags(f *pflag.FlagSet) {
 	f.IntVar(&fuzzMaxRedirs, "max-redirs", 0, "Maximum redirects to follow (0 = Go's default of 10)")
 	f.DurationVar(&fuzzConnectTimeout, "connect-timeout", 0, "TCP/TLS connect timeout (e.g. 5s)")
 	f.DurationVar(&fuzzMaxTime, "max-time", 0, "Total per-request budget; alias for --timeout, curl's -m")
-	f.StringVar(&fuzzHTTPVersion, "http-version", "", "Force a wire protocol: 1.1 or 2 (curl's --http1.1 / --http2)")
+	f.StringVar(&fuzzHTTPVersion, "http-version", "", "Wire protocol: auto (default: HTTP/3, then HTTP/2, then HTTP/1.1), 1.1, 2, 3, or 3-only")
 	f.StringArrayVar(&fuzzResolve, "resolve", nil, "Pin a host to an address, curl's --resolve host:port:addr (repeatable)")
 	f.StringVar(&fuzzClientCert, "cert", "", "Client certificate file (PEM), curl's -E")
 	f.StringVar(&fuzzClientKey, "key", "", "Client certificate private key file (PEM)")
@@ -103,12 +104,16 @@ func registerFuzzNetFlags(f *pflag.FlagSet) {
 	// curl spells the HTTP version as two boolean flags; accept those too so a
 	// transliterated command doesn't need editing.
 	f.BoolVar(&fuzzHTTP11, "http1.1", false, "Force HTTP/1.1")
-	f.BoolVar(&fuzzHTTP2, "http2", false, "Force HTTP/2")
+	f.BoolVar(&fuzzHTTP2, "http2", false, "Stay on TCP and use HTTP/2 where the target negotiates it (no HTTP/3)")
+	f.BoolVar(&fuzzHTTP3, "http3", false, "Prefer HTTP/3, falling back to HTTP/2 or HTTP/1.1 (the default; curl's --http3)")
+	f.BoolVar(&fuzzHTTP3Only, "http3-only", false, "Require HTTP/3 and fail when the target does not speak it (curl's --http3-only)")
 }
 
 var (
-	fuzzHTTP11 bool
-	fuzzHTTP2  bool
+	fuzzHTTP11    bool
+	fuzzHTTP2     bool
+	fuzzHTTP3     bool
+	fuzzHTTP3Only bool
 )
 
 // buildFuzzOverrides folds every request-shaping flag into one Overrides.
@@ -255,41 +260,66 @@ func resolveFuzzTimeout() time.Duration {
 	}
 }
 
-// fuzzHTTPVersionSetting folds curl's --http1.1/--http2 booleans and the
-// explicit --http-version into one value.
-func fuzzHTTPVersionSetting() (string, error) {
-	if fuzzHTTP11 && fuzzHTTP2 {
-		return "", usageErrorf("--http1.1 and --http2 are mutually exclusive")
+// fuzzHTTPVersionSetting folds curl's --http1.1/--http2/--http3/--http3-only
+// booleans and the explicit --http-version into one protocol mode. With none
+// of them the mode is auto: HTTP/3 where the target proves it, else HTTP/2
+// where ALPN selects it, else HTTP/1.1.
+func fuzzHTTPVersionSetting() (bulkhttp.Mode, error) {
+	var set []string
+	for _, b := range []struct {
+		on   bool
+		name string
+	}{{fuzzHTTP11, "--http1.1"}, {fuzzHTTP2, "--http2"}, {fuzzHTTP3, "--http3"}, {fuzzHTTP3Only, "--http3-only"}} {
+		if b.on {
+			set = append(set, b.name)
+		}
+	}
+	if len(set) > 1 {
+		return "", usageErrorf("%s are mutually exclusive", strings.Join(set, " and "))
 	}
 	switch {
 	case fuzzHTTP11:
-		return "1.1", nil
+		return bulkhttp.ModeHTTP1, nil
 	case fuzzHTTP2:
-		return "2", nil
+		return bulkhttp.ModeHTTP2, nil
+	case fuzzHTTP3:
+		return bulkhttp.ModeAuto, nil
+	case fuzzHTTP3Only:
+		return bulkhttp.ModeHTTP3, nil
 	}
-	switch v := strings.TrimSpace(fuzzHTTPVersion); v {
-	case "", "1.1", "2":
-		return v, nil
-	case "1", "http1.1":
-		return "1.1", nil
-	case "http2", "2.0":
-		return "2", nil
-	default:
-		return "", usageErrorf("--http-version %q: want 1.1 or 2", v)
+	v := strings.ToLower(strings.TrimSpace(fuzzHTTPVersion))
+	switch v {
+	case "3-only", "http3-only", "h3-only":
+		return bulkhttp.ModeHTTP3, nil
+	case "3", "http3", "h3":
+		// curl's --http-version 3 prefers HTTP/3 and still falls back.
+		return bulkhttp.ModeAuto, nil
+	case "2.0":
+		return bulkhttp.ModeHTTP2, nil
 	}
+	mode, err := bulkhttp.ParseMode(v)
+	if err != nil {
+		return "", usageErrorf("--http-version %q: want auto, 1.1, 2, 3 or 3-only", fuzzHTTPVersion)
+	}
+	return mode, nil
 }
 
 // buildFuzzClient constructs the HTTP client for a fuzz run from the
 // curl-compatible transport flags, starting from replay's client (which
 // carries the --proxy routing and the permissive TLS default) and layering the
 // explicit options on top.
-func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
+//
+// mode is the run's protocol policy. Under bulkhttp.ModeHTTP1 the client is a
+// plain HTTP/1.1 transport, as fuzz has always used; otherwise the HTTP/1.1
+// transport becomes the template of a bulkhttp.Transport (returned too, for
+// Prepare and Close), which pins the target to HTTP/3, HTTP/2 or HTTP/1.1.
+func buildFuzzClient(cookies gohttp.CookieJar, mode bulkhttp.Mode) (*gohttp.Client, *bulkhttp.Transport, error) {
 	client := newReplayClient(nil, resolveFuzzTimeout())
 	client.Jar = cookies
 
 	base, ok := proxytarget.Base(client.Transport)
 	if !ok {
-		return client, nil
+		return client, nil, nil
 	}
 	transport := base.Clone()
 
@@ -305,12 +335,12 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 	if fuzzCACert != "" {
 		pem, err := os.ReadFile(fuzzCACert)
 		if err != nil {
-			return nil, fmt.Errorf("read --cacert %q: %w", fuzzCACert, err)
+			return nil, nil, fmt.Errorf("read --cacert %q: %w", fuzzCACert, err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
 			//vigolium:not-usage decided from file contents, after I/O
-			return nil, fmt.Errorf("--cacert %q: no certificates found", fuzzCACert)
+			return nil, nil, fmt.Errorf("--cacert %q: no certificates found", fuzzCACert)
 		}
 		tlsCfg.RootCAs = pool
 	}
@@ -323,27 +353,19 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 		}
 		cert, err := tls.LoadX509KeyPair(fuzzClientCert, keyFile)
 		if err != nil {
-			return nil, fmt.Errorf("load --cert/--key: %w", err)
+			return nil, nil, fmt.Errorf("load --cert/--key: %w", err)
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
 	} else if fuzzClientKey != "" {
-		return nil, usageErrorf("--key requires --cert")
+		return nil, nil, usageErrorf("--key requires --cert")
 	}
 	transport.TLSClientConfig = tlsCfg
 
-	version, err := fuzzHTTPVersionSetting()
-	if err != nil {
-		return nil, err
-	}
-	switch version {
-	case "1.1":
-		// An empty non-nil TLSNextProto map is Go's documented way to disable
-		// the automatic HTTP/2 upgrade.
-		transport.ForceAttemptHTTP2 = false
-		transport.TLSNextProto = map[string]func(string, *tls.Conn) gohttp.RoundTripper{}
-	case "2":
-		transport.ForceAttemptHTTP2 = true
-	}
+	// HTTP/1.1 here: an empty non-nil TLSNextProto map is Go's documented way
+	// to disable the automatic HTTP/2 upgrade. bulkhttp derives its HTTP/2 and
+	// HTTP/3 transports from this one when the mode allows them.
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = map[string]func(string, *tls.Conn) gohttp.RoundTripper{}
 
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	if fuzzConnectTimeout > 0 {
@@ -351,7 +373,7 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 	}
 	overrides, err := parseResolveOverrides(fuzzResolve)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if target, ok := overrides[strings.ToLower(addr)]; ok {
@@ -369,8 +391,20 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 		transport.MaxIdleConns = fuzzConcurrency * 2
 	}
 	// Re-wrapped so a fuzzed or retargeted Host header still reaches an HTTP
-	// proxy addressed to the destination's host:port (see pkg/proxytarget).
-	client.Transport = proxytarget.Wrap(transport)
+	// proxy addressed to the destination's host:port (see pkg/proxytarget);
+	// bulkhttp applies the same wrapper to its own TCP transports.
+	var bulk *bulkhttp.Transport
+	if mode == bulkhttp.ModeHTTP1 {
+		client.Transport = proxytarget.Wrap(transport)
+	} else {
+		bulk = bulkhttp.New(bulkhttp.Config{
+			Base: transport,
+			Mode: mode,
+			// --resolve pins the HTTP/3 dial too, not just TCP.
+			ResolveAddr: func(hostPort string) string { return overrides[strings.ToLower(hostPort)] },
+		})
+		client.Transport = bulk
+	}
 
 	if fuzzMaxRedirs > 0 {
 		limit := fuzzMaxRedirs
@@ -381,7 +415,7 @@ func buildFuzzClient(cookies gohttp.CookieJar) (*gohttp.Client, error) {
 			return nil
 		}
 	}
-	return client, nil
+	return client, bulk, nil
 }
 
 // parseResolveOverrides turns curl's "host:port:addr" entries into an

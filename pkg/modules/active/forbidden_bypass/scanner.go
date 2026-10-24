@@ -803,7 +803,7 @@ func confirmDistinctFromCatchAll(
 	bypassStatus int,
 	bypassBody string,
 ) bool {
-	controlRaw, err := httpmsg.SetPath(baseRaw, "/"+modkit.FreshCanary()+"-vgo404")
+	controlRaw, err := httpmsg.SetPath(baseRaw, "/"+modkit.FreshCanary()+"-vigolium404")
 	if err != nil {
 		return true // inconclusive — don't suppress
 	}

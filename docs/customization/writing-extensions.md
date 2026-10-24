@@ -121,7 +121,7 @@ module.exports = {
 
   scanPerInsertionPoint: function(ctx, insertion) {
     // Generate a unique canary
-    var canary = "VGNM" + vigolium.utils.randomString(8);
+    var canary = "VIGOLIUM" + vigolium.utils.randomString(8);
 
     // Build and send a request with the canary injected
     var req = insertion.buildRequest(canary);

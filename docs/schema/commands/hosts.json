@@ -1,0 +1,828 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cli.hostView": {
+      "properties": {
+        "hostname": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "scan_uuid": {
+          "type": "string"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "a": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "aaaa": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cname": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mx": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "txt": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "soa": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "caa": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "technology": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "favicon_mmh3": {
+          "type": "integer"
+        },
+        "soft_not_found": {
+          "type": "boolean"
+        },
+        "tls_version": {
+          "type": "string"
+        },
+        "cert_not_after": {
+          "type": "string"
+        },
+        "sans": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tls": {
+          "$ref": "#/$defs/tlsprobe.Info"
+        },
+        "fingerprint": {
+          "$ref": "#/$defs/recon.TechStackReport"
+        },
+        "not_found": {
+          "$ref": "#/$defs/database.NotFoundBaseline"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "hostname",
+        "port",
+        "observed_at",
+        "complete"
+      ]
+    },
+    "contract.GlobSkipped": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "file",
+        "error"
+      ]
+    },
+    "contract.GlobSources": {
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "matched": {
+          "type": "integer"
+        },
+        "loaded": {
+          "type": "integer"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/contract.GlobSkipped"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parse_errors": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "pattern",
+        "matched",
+        "loaded",
+        "skipped",
+        "parse_errors"
+      ]
+    },
+    "contract.OutputBudget": {
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "returned": {
+          "type": "integer"
+        },
+        "omitted": {
+          "type": "integer"
+        },
+        "next_offset": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_bytes",
+        "returned",
+        "omitted",
+        "next_offset"
+      ]
+    },
+    "database.NotFoundBaseline": {
+      "properties": {
+        "paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "integer"
+        },
+        "length": {
+          "type": "integer"
+        },
+        "words": {
+          "type": "integer"
+        },
+        "lines": {
+          "type": "integer"
+        },
+        "content_type": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        },
+        "soft_not_found": {
+          "type": "boolean"
+        },
+        "signature": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "paths",
+        "status",
+        "length",
+        "words",
+        "lines",
+        "soft_not_found"
+      ]
+    },
+    "recon.APISpecDetection": {
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "reachable": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url",
+        "kind",
+        "status_code",
+        "reachable"
+      ]
+    },
+    "recon.CORSDetection": {
+      "properties": {
+        "tested_origin": {
+          "type": "string"
+        },
+        "allow_origin": {
+          "type": "string"
+        },
+        "allow_credentials": {
+          "type": "string"
+        },
+        "allow_methods": {
+          "type": "string"
+        },
+        "reflective": {
+          "type": "boolean"
+        },
+        "permissive": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "tested_origin"
+      ]
+    },
+    "recon.FaviconInfo": {
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "mmh3": {
+          "type": "integer"
+        },
+        "md5": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url",
+        "mmh3",
+        "md5",
+        "sha256",
+        "size"
+      ]
+    },
+    "recon.JSFrameworkSignal": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name"
+      ]
+    },
+    "recon.LoginCandidate": {
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "username_name": {
+          "type": "string"
+        },
+        "password_name": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url"
+      ]
+    },
+    "recon.SecurityHeadersAudit": {
+      "properties": {
+        "present": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "missing": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "recon.SensitivePathEntry": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "status_code",
+        "reason"
+      ]
+    },
+    "recon.StackDetection": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "confidence": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "category",
+        "confidence"
+      ]
+    },
+    "recon.TechStackReport": {
+      "properties": {
+        "hostname": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": "string"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "stacks": {
+          "items": {
+            "$ref": "#/$defs/recon.StackDetection"
+          },
+          "type": "array"
+        },
+        "api_specs": {
+          "items": {
+            "$ref": "#/$defs/recon.APISpecDetection"
+          },
+          "type": "array"
+        },
+        "well_known": {
+          "items": {
+            "$ref": "#/$defs/recon.WellKnownEntry"
+          },
+          "type": "array"
+        },
+        "security_headers": {
+          "$ref": "#/$defs/recon.SecurityHeadersAudit"
+        },
+        "cors": {
+          "$ref": "#/$defs/recon.CORSDetection"
+        },
+        "allowed_methods": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "sensitive_paths": {
+          "items": {
+            "$ref": "#/$defs/recon.SensitivePathEntry"
+          },
+          "type": "array"
+        },
+        "js_signals": {
+          "items": {
+            "$ref": "#/$defs/recon.JSFrameworkSignal"
+          },
+          "type": "array"
+        },
+        "favicon_hash": {
+          "type": "string"
+        },
+        "favicon": {
+          "$ref": "#/$defs/recon.FaviconInfo"
+        },
+        "base_status": {
+          "type": "integer"
+        },
+        "base_location": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        },
+        "powered_by": {
+          "type": "string"
+        },
+        "http_version": {
+          "type": "string"
+        },
+        "alt_svc": {
+          "type": "string"
+        },
+        "source_maps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "depth": {
+          "type": "string"
+        },
+        "vhost_findings": {
+          "items": {
+            "$ref": "#/$defs/recon.VHostFinding"
+          },
+          "type": "array"
+        },
+        "method_matrix": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "login_candidates": {
+          "items": {
+            "$ref": "#/$defs/recon.LoginCandidate"
+          },
+          "type": "array"
+        },
+        "probe_count": {
+          "type": "integer"
+        },
+        "probe_errors": {
+          "type": "integer"
+        },
+        "duration": {
+          "type": "integer"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "hostname",
+        "base_url",
+        "generated_at",
+        "security_headers",
+        "probe_count",
+        "duration"
+      ]
+    },
+    "recon.VHostFinding": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "body_delta": {
+          "type": "integer"
+        },
+        "baseline_code": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "status_code",
+        "body_delta",
+        "baseline_code"
+      ]
+    },
+    "recon.WellKnownEntry": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "snippet": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "status_code"
+      ]
+    },
+    "tlsprobe.Fingerprints": {
+      "properties": {
+        "md5": {
+          "type": "string"
+        },
+        "sha1": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "tlsprobe.Info": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "probe_status": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "tls_version": {
+          "type": "string"
+        },
+        "cipher": {
+          "type": "string"
+        },
+        "not_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "not_after": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "subject_dn": {
+          "type": "string"
+        },
+        "subject_cn": {
+          "type": "string"
+        },
+        "subject_org": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subject_an": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "serial": {
+          "type": "string"
+        },
+        "issuer_dn": {
+          "type": "string"
+        },
+        "issuer_cn": {
+          "type": "string"
+        },
+        "issuer_org": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "fingerprint_hash": {
+          "$ref": "#/$defs/tlsprobe.Fingerprints"
+        },
+        "tls_connection": {
+          "type": "string"
+        },
+        "sni": {
+          "type": "string"
+        },
+        "self_signed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "port",
+        "probe_status"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "command": {
+      "type": "string",
+      "const": "hosts"
+    },
+    "kind": {
+      "type": "string",
+      "const": "read"
+    },
+    "ok": {
+      "type": "boolean",
+      "const": true
+    },
+    "project_uuid": {
+      "type": "string"
+    },
+    "db_path": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/cli.hostView"
+      },
+      "type": "array"
+    },
+    "query": {
+      "type": "string"
+    },
+    "query_argv": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "generated_at_ms": {
+      "type": "integer"
+    },
+    "project_source": {
+      "type": "string",
+      "enum": [
+        "flag",
+        "env",
+        "active_file",
+        "default"
+      ]
+    },
+    "project_scoped": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "glob_sources": {
+      "$ref": "#/$defs/contract.GlobSources"
+    },
+    "output_budget": {
+      "$ref": "#/$defs/contract.OutputBudget"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "total",
+    "offset",
+    "limit",
+    "items",
+    "project_source",
+    "kind"
+  ],
+  "title": "vigolium hosts -j",
+  "description": "Stored host facts per host:port: DNS, TLS certificate, fingerprint report and not-found baseline, with the survey facts lifted to the top."
+}

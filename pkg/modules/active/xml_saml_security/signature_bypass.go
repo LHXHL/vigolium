@@ -259,7 +259,7 @@ func stripSAMLSignature(xml string) (string, bool) {
 // producing a structurally valid but wrong-identity/issuer (and already unsigned)
 // assertion that any content-validating SP must reject.
 func makeBogusAssertion(xml string) string {
-	tok := "vig-bogus-" + utils.RandomString(8)
+	tok := "vigolium-bogus-" + utils.RandomString(8)
 	out := issuerRe.ReplaceAllString(xml, "${1}"+tok+"${4}")
 	out = nameIDRe.ReplaceAllString(out, "${1}"+tok+"${4}")
 	return out

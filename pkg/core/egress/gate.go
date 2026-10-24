@@ -33,8 +33,10 @@
 package egress
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -455,10 +457,37 @@ func (g *Gate) RoundTripper(next http.RoundTripper, lane Lane) http.RoundTripper
 	return &roundTripper{g: g, next: next, lane: lane}
 }
 
+// BlockClassifier reports whether a response is a WAF/CDN block page. It is
+// only consulted for a block-candidate status, with at most blockPeekBytes of
+// the body; the body the caller reads is unchanged.
+type BlockClassifier interface {
+	IsBlockStatus(status int) bool
+	IsBlock(status int, header http.Header, body []byte) bool
+}
+
+// blockPeekBytes bounds how much of a block-candidate response body is read
+// ahead for classification. Block pages are small; the rest still streams.
+const blockPeekBytes = 64 << 10
+
+// FeedbackRoundTripper is RoundTripper that also reports every response to the
+// host limiter's adaptive control (HostRateLimiter.Feedback) the way the scan
+// Requester does: a 429/5xx, a transport error or a classified WAF block backs
+// the host off, a healthy completion counts toward its recovery. Without it a
+// sender on this wrapper never backed off a throttling host and never let a
+// host another phase had pre-armed recover. blocks may be nil (status-only).
+func (g *Gate) FeedbackRoundTripper(next http.RoundTripper, lane Lane, blocks BlockClassifier) http.RoundTripper {
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	return &roundTripper{g: g, next: next, lane: lane, feedback: true, blocks: blocks}
+}
+
 type roundTripper struct {
-	g    *Gate
-	next http.RoundTripper
-	lane Lane
+	g        *Gate
+	next     http.RoundTripper
+	lane     Lane
+	feedback bool
+	blocks   BlockClassifier
 }
 
 func (t *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -468,7 +497,70 @@ func (t *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	resp, err := t.next.RoundTrip(req)
 	release(Outcome{Err: err})
+	if t.feedback {
+		t.report(req, resp, err)
+	}
 	return resp, err
+}
+
+// hostLimiter is the gate's per-host limiter, nil on a nil gate or one
+// configured without host slots.
+func (g *Gate) hostLimiter() *ratelimit.HostRateLimiter {
+	if g == nil {
+		return nil
+	}
+	return g.cfg.Hosts
+}
+
+// report feeds one round trip's outcome to the host limiter. A cancelled
+// request says nothing about the host (the run stopped, or a deadline of our
+// own expired), so it is not reported.
+func (t *roundTripper) report(req *http.Request, resp *http.Response, err error) {
+	hosts := t.g.hostLimiter()
+	if hosts == nil || req.Context().Err() != nil {
+		return
+	}
+	// The limiter's key is the bare hostname (what Acquire's parseTarget
+	// yields from HostPort), so take it straight from the URL.
+	host := req.URL.Hostname()
+	if host == "" {
+		return
+	}
+	if err != nil {
+		hosts.Feedback(host, 0, err, false)
+		return
+	}
+	if resp == nil {
+		return
+	}
+	hosts.Feedback(host, resp.StatusCode, nil, t.isBlock(resp))
+}
+
+// isBlock classifies a block-candidate response, reading ahead at most
+// blockPeekBytes and splicing them back so the caller sees the whole body.
+func (t *roundTripper) isBlock(resp *http.Response) bool {
+	if t.blocks == nil || !t.blocks.IsBlockStatus(resp.StatusCode) {
+		return false
+	}
+	var body []byte
+	if resp.Body != nil && resp.Body != http.NoBody {
+		size := int64(blockPeekBytes)
+		if resp.ContentLength >= 0 && resp.ContentLength < size {
+			size = resp.ContentLength
+		}
+		buf := bytes.NewBuffer(make([]byte, 0, size))
+		_, _ = buf.ReadFrom(io.LimitReader(resp.Body, blockPeekBytes))
+		peek := buf.Bytes()
+		body = peek
+		resp.Body = &peekedBody{Reader: io.MultiReader(bytes.NewReader(peek), resp.Body), Closer: resp.Body}
+	}
+	return t.blocks.IsBlock(resp.StatusCode, resp.Header, body)
+}
+
+// peekedBody is a response body whose first bytes were read ahead.
+type peekedBody struct {
+	io.Reader
+	io.Closer
 }
 
 // CloseIdleConnections forwards to next, so a client whose Transport is this

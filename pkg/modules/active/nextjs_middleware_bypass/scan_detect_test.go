@@ -94,7 +94,7 @@ func TestScanPerRequest_NoFalsePositive_CatchAllShell(t *testing.T) {
 // WAF-flake variant of the catch-all FP — the exact class that produced the
 // off-by-slash false positive on a WAF/CDN-fronted host. The app is the same
 // wildcard catch-all as above (every unmatched route → one 200 shell), but the
-// primary single-probe catch-all control (/<canary>-vgo404) is throttled to a
+// primary single-probe catch-all control (/<canary>-vigolium404) is throttled to a
 // 503. The OLD guard fails OPEN on that non-200 control and reports the shell as a
 // Critical bypass; the hardened guard also samples the site root "/" and a random
 // web-root directory independently, so the throttled probe cannot hide the shell.
@@ -106,7 +106,7 @@ func TestScanPerRequest_NoFalsePositive_CatchAllShell_ThrottledProbe(t *testing.
 			// Clean protected path stays forbidden.
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`<html><body>Forbidden<script src="/_next/x.js"></script></body></html>`))
-		case strings.Contains(r.URL.Path, "-vgo404"):
+		case strings.Contains(r.URL.Path, "-vigolium404"):
 			// The lone original-template catch-all control is WAF-throttled to a
 			// non-200, disabling the old single-probe guard (fail-open).
 			w.WriteHeader(http.StatusServiceUnavailable)

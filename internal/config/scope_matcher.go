@@ -432,6 +432,14 @@ func (m *ScopeMatcher) InScopeRequest(host, path, reqContentType, reqRaw string)
 	return true
 }
 
+// InScopeTarget is InScopeRequest without the static-file carve-out: the host
+// and path rules only. For a caller that asks for a static asset on purpose
+// (the fingerprint phase's favicon), where the carve-out's "never worth a
+// request" does not hold.
+func (m *ScopeMatcher) InScopeTarget(host, path string) bool {
+	return m.hostInScope(host) && matchGlob(path, m.cfg.Path)
+}
+
 // IsPassAll returns true if all rules are at their default pass-all state.
 // Returns false when static file filtering is active (extensions exist),
 // when body size limits are configured, or when origin mode filtering is active.

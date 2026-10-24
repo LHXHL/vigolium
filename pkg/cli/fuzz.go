@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/vigolium/vigolium/internal/config"
 	"github.com/vigolium/vigolium/pkg/burpbridge"
+	"github.com/vigolium/vigolium/pkg/contract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/fuzz"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
@@ -119,7 +120,7 @@ POSITIONS (what to fuzz):
 
 PAYLOADS (combine freely):
   --class <name,..>              built-in class: ` + strings.Join(fuzz.PayloadClasses(), ", ") + `
-  -w/--wordlist <file|builtin>   builtins: ` + strings.Join(fuzz.BuiltinNames(), ", ") + `
+  -w/--wordlist <file|NAME>      NAME is a builtin: ` + strings.Join(fuzz.BuiltinNames(), ", ") + ` ('builtin' = fuzz)
   -p/--payload <literal>         inline payload (repeatable)
   --suffix .php,.bak             also send each payload with each suffix appended (ffuf -e)
 
@@ -172,9 +173,9 @@ func init() {
 	f := fuzzCmd.Flags()
 
 	// Source.
-	f.StringVarP(&fuzzInput, "input", "i", "", "Raw input: curl, raw HTTP, Burp XML, base64, URL, or '-' for stdin")
+	f.StringVarP(&fuzzInput, "input", "i", "", "Raw input: curl, raw HTTP, Burp XML, base64 or URL text, a path to a file holding one, or '-' for stdin")
 	f.StringVar(&fuzzInputFile, "input-file", "", "Read --input value from a file")
-	f.StringVarP(&fuzzRecordUUID, "record-uuid", "u", "", "Use a stored HTTP record (by UUID) as the request to fuzz")
+	f.StringVarP(&fuzzRecordUUID, "record-uuid", "u", "", "Use a stored HTTP record (UUID or unique 8+ char prefix) as the request to fuzz")
 	f.StringVarP(&fuzzTargetURL, "target", "t", "", "Override scheme/host/port the request is sent to (e.g. https://staging.acme.test)")
 
 	// Curl-style builder — applied to whatever source resolved the request.
@@ -190,7 +191,8 @@ func init() {
 
 	// Payloads.
 	f.StringSliceVar(&fuzzClasses, "class", nil, "Built-in payload class to inject: "+strings.Join(fuzz.PayloadClasses(), ",")+" (comma-list)")
-	f.StringArrayVarP(&fuzzWordlists, "wordlist", "w", nil, "Payload wordlist: a builtin name or file path (repeatable)")
+	registerRowShapingFlags(f)
+	f.StringArrayVarP(&fuzzWordlists, "wordlist", "w", nil, "Payload wordlist: a file path or a builtin name ("+strings.Join(fuzz.BuiltinNames(), ", ")+"; 'builtin' = fuzz) (repeatable)")
 	f.StringArrayVarP(&fuzzPayloads, "payload", "p", nil, "Inline payload literal (repeatable)")
 	f.StringSliceVar(&fuzzSuffixes, "suffix", nil, "Also send each payload with each of these suffixes appended, literally (comma-list, e.g. .php,.bak — ffuf's -e)")
 
@@ -252,6 +254,9 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	if err := validateFuzzNetFlags(); err != nil {
+		return err
+	}
+	if err := fuzzShaping.validate(); err != nil {
 		return err
 	}
 	if fuzzRateLimit < 0 {
@@ -380,17 +385,24 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer saveJar()
-	client, err := buildFuzzClient(cookies)
+	client, bulk, wire, err := resolveFuzzProtocol(cmd, src, positions, cases, bridge != nil && bridge.sendViaBurp, cookies)
 	if err != nil {
 		return err
 	}
+	if bulk != nil {
+		defer bulk.Close()
+	}
+	if wire.note != "" {
+		fmt.Fprintf(os.Stderr, "%s %s\n", terminal.InfoSymbol(), wire.note)
+	}
+	pace := currentFuzzPace(wire)
 	if jarLoaded > 0 {
 		fmt.Fprintf(os.Stderr, "%s session %s: preloaded %d cookie(s)\n",
 			terminal.InfoSymbol(), fuzzSessionID, jarLoaded)
 	}
 
 	fmt.Fprintf(os.Stderr, "%s fuzzing %s (%d position(s), %s, %d sends, pace: %s)\n",
-		terminal.InfoSymbol(), fuzzTargetLabel(src), len(positions), mode, len(cases), currentFuzzPace())
+		terminal.InfoSymbol(), fuzzTargetLabel(src), len(positions), mode, len(cases), pace)
 
 	// OnResult is called serially by the engine, so no extra locking is needed
 	// to accumulate the ranked top anomalies for the -j summary.
@@ -413,7 +425,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		// ignored here — and so the curl TLS/redirect/resolve options apply.
 		Client:      client,
 		NoRedirects: fuzzNoRedirects,
-		Concurrency: fuzzConcurrency,
+		Concurrency: pace.Concurrency,
 		DelayMs:     fuzzDelayMs,
 		RateLimit:   fuzzRateLimit,
 		OnResult: func(r fuzz.Result) {
@@ -478,7 +490,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	}
 
 	if plan.envelope && report != nil {
-		if err := emitFuzzJSONSummary(cmd, src, args, len(positions), len(payloads), report, topResults, bridge != nil && bridge.sendViaBurp, organizerPushed); err != nil {
+		if err := emitFuzzJSONSummary(cmd, src, args, len(positions), len(payloads), report, topResults, bridge != nil && bridge.sendViaBurp, organizerPushed, pace); err != nil {
 			return err
 		}
 	} else if report != nil {
@@ -579,14 +591,28 @@ type fuzzPace struct {
 	RateLimit   float64 `json:"rate_limit"` // requests/second across all workers; 0 = unlimited
 	Concurrency int     `json:"concurrency"`
 	DelayMs     int     `json:"delay_ms"`
+	// Protocol is the wire protocol the run is pinned to (http/1.1, h2, h3);
+	// omitted before it is resolved (--dry-run) and under --send-via-burp.
+	Protocol string `json:"protocol,omitempty"`
+	// ProtocolNote says why a run that could have multiplexed is on HTTP/1.1.
+	ProtocolNote string `json:"protocol_note,omitempty"`
 }
 
-func currentFuzzPace() fuzzPace {
+func currentFuzzPace(wire fuzzWire) fuzzPace {
 	c := fuzzConcurrency
+	if wire.concurrency > 0 {
+		c = wire.concurrency
+	}
 	if c <= 0 {
 		c = 10 // fuzz.Run's default
 	}
-	return fuzzPace{RateLimit: fuzzRateLimit, Concurrency: c, DelayMs: fuzzDelayMs}
+	return fuzzPace{
+		RateLimit:    fuzzRateLimit,
+		Concurrency:  c,
+		DelayMs:      fuzzDelayMs,
+		Protocol:     string(wire.proto),
+		ProtocolNote: wire.note,
+	}
 }
 
 // String renders the pace for the human stderr line.
@@ -598,6 +624,9 @@ func (p fuzzPace) String() string {
 	s := fmt.Sprintf("%s, %d worker(s)", rate, p.Concurrency)
 	if p.DelayMs > 0 {
 		s += fmt.Sprintf(", %dms delay", p.DelayMs)
+	}
+	if p.Protocol != "" {
+		s += ", " + p.Protocol
 	}
 	return s
 }
@@ -733,7 +762,7 @@ func emitFuzzDryRun(cmd *cobra.Command, src *replaySource, positions []fuzz.Posi
 		Mode:    fuzzMode,
 		Sends:   len(cases),
 		Request: string(src.BaselineRequest),
-		Pace:    currentFuzzPace(),
+		Pace:    currentFuzzPace(fuzzWire{}),
 		Payloads: fuzzDryRunPayloads{
 			Count:  len(payloads),
 			Sample: payloads[:min(len(payloads), fuzzDryRunSample)],
@@ -1113,45 +1142,55 @@ const (
 // agent needn't parse the JSONL stream. envelopeFromStruct moves top_results
 // to `items` and keeps every other key at the top level; the ready
 // confirmation command rides in the envelope's own query/query_argv.
+//
+// fuzzExtras holds every key but top_results, so the registered schema's extras
+// and this document are one type.
 type fuzzJSONSummary struct {
-	Target          string        `json:"target"`
-	Positions       int           `json:"positions"`
-	Payloads        int           `json:"payloads"`
-	Sent            int           `json:"sent"`
-	Matched         int           `json:"matched"`
-	Calibrated      int           `json:"calibrated"`
-	Errors          int           `json:"errors"`
-	Baseline        fuzz.Baseline `json:"baseline"`
-	TopResults      []fuzz.Result `json:"top_results"`
-	Anomalies       []fuzz.Result `json:"anomalies,omitempty"`
-	AnomaliesElided int           `json:"anomalies_elided,omitempty"`
-	SentViaBurp     bool          `json:"sent_via_burp,omitempty"`
-	OrganizerPushed int           `json:"organizer_pushed,omitempty"`
-	Pace            fuzzPace      `json:"pace"`
+	fuzzExtras
+	TopResults []fuzz.Result `json:"top_results"`
 }
 
-func emitFuzzJSONSummary(cmd *cobra.Command, src *replaySource, args []string, positions, payloadCount int, report *fuzz.Report, top []fuzz.Result, sentViaBurp bool, organizerPushed int) error {
+// fuzzShaping is fuzz -j's --fields vocabulary (one result's keys); --compact
+// drops each result's anomaly explanation, and emitFuzzJSONSummary also drops
+// the top-level anomalies list and the baseline's raw timing samples.
+var fuzzShaping = rowShaping{
+	supported:   contract.JSONFieldNames(fuzz.Result{}),
+	compactDrop: []string{"anomaly_reasons"},
+}
+
+func emitFuzzJSONSummary(cmd *cobra.Command, src *replaySource, args []string, positions, payloadCount int, report *fuzz.Report, top []fuzz.Result, sentViaBurp bool, organizerPushed int, pace fuzzPace) error {
 	sort.SliceStable(top, func(i, j int) bool { return fuzzResultRank(top[i]) > fuzzResultRank(top[j]) })
 	if len(top) > fuzzTopResultsEmit {
 		top = top[:fuzzTopResultsEmit]
 	}
-	env, err := envelopeFromStruct(cmd, fuzzJSONSummary{
-		Target:          fuzzTargetLabel(src),
-		Positions:       positions,
-		Payloads:        payloadCount,
-		Sent:            report.Sent,
-		Matched:         report.Matched,
-		Calibrated:      report.Calibrated,
-		Errors:          report.Errors,
-		Baseline:        report.Baseline,
-		TopResults:      top,
-		Anomalies:       report.Anomalies,
-		AnomaliesElided: report.AnomaliesElided,
-		SentViaBurp:     sentViaBurp,
-		OrganizerPushed: organizerPushed,
-		Pace:            currentFuzzPace(),
-	}, "top_results")
+	summary := fuzzJSONSummary{
+		fuzzExtras: fuzzExtras{
+			Target:          fuzzTargetLabel(src),
+			Positions:       positions,
+			Payloads:        payloadCount,
+			Sent:            report.Sent,
+			Matched:         report.Matched,
+			Calibrated:      report.Calibrated,
+			Errors:          report.Errors,
+			Baseline:        report.Baseline,
+			Anomalies:       report.Anomalies,
+			AnomaliesElided: report.AnomaliesElided,
+			SentViaBurp:     sentViaBurp,
+			OrganizerPushed: organizerPushed,
+			Pace:            pace,
+		},
+		TopResults: top,
+	}
+	if jsonCompact {
+		// The ranked items already carry the anomalies worth reading.
+		summary.Anomalies = nil
+		summary.Baseline.TimeSamples = nil
+	}
+	env, err := envelopeFromStruct(cmd, summary, "top_results")
 	if err != nil {
+		return err
+	}
+	if env.Items, err = fuzzShaping.apply(env.Items); err != nil {
 		return err
 	}
 	// items holds the top results, but total is the whole matched count: the

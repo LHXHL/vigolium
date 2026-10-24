@@ -134,6 +134,10 @@ Shows it: `vigolium scan -t https://target.example --fail-on high; echo $?`
   `fuzz` take `--ignore-scope` to opt out for one run.
 - `scan-request` without a scheme probes the target (connect + TLS) instead of
   assuming `https://`; `--no-scheme-probe` keeps the old default.
+- `-T` and `-i` accept process substitution and pipes (`-T <(printf 'https://a\n')`):
+  a non-regular file is read once into a scratch copy before anything opens it.
+- `-i` on `replay`/`fuzz` is the request text; a value that parses as no request
+  and names a file is read as that file (`--input-file` is the explicit form).
 
 Shows it: `vigolium scan -t https://target.example --dry-run -j | jq .plan.targets`
 
@@ -161,6 +165,11 @@ Shows it: `vigolium scan -t https://target.example -m xss --module-tag spring --
 
 - `traffic --uuid` / `db ls --uuid` select exact records before pagination.
   `replay -u` and `fuzz -u` take the same UUID but **send traffic**.
+- Every record-UUID flag and argument takes a full UUID or a unique prefix of at
+  least 8 characters (`uuid_short`). An exact id wins; a prefix resolves inside
+  the current project only; several matches fail `ambiguous_id` listing up to 5.
+- `vigolium hosts`, `schema storage` and `schema flags` only read. `vigolium dns`
+  and `vigolium fingerprint` send (DNS to the resolver; reads to the origin).
 - A UUID as the positional term of `traffic` searches text, not identity.
   `--url` is exact equality; the positional term is a substring search.
 - The `query` / `query_argv` hint in a `-j` envelope is always a read-only

@@ -530,6 +530,10 @@ func targetTLSConfig(sni string) *tls.Config {
 		InsecureSkipVerify: true,
 		Renegotiation:      tls.RenegotiateOnceAsClient,
 		MinVersion:         tls.VersionTLS10,
+		// Resume sessions across the scan's connections (pool refills,
+		// proxied CONNECT tunnels, the login transport) instead of paying a
+		// full handshake for each.
+		ClientSessionCache: network.TLSSessionCache(),
 	}
 	if sni != "" {
 		cfg.ServerName = sni
@@ -710,7 +714,7 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 			// Wrapped so every real connection establishment is tallied — httptrace
 			// cannot see them reliably (see poolStats.connDialed).
 			DialContext:            poolStats.countDials(dialer.Dial),
-			DialTLSContext:         poolStats.countDials(dialer.DialTLS),
+			DialTLSContext:         poolStats.countDials(network.DialTLSResumable(dialer)),
 			TLSClientConfig:        tlsConfig,
 			DisableKeepAlives:      sweep,
 			MaxIdleConns:           maxIdleConns,
@@ -1370,10 +1374,29 @@ func scanRetryOptions() retryablehttp.Options {
 // failed attempt return its own error rather than retryablehttp's "giving up
 // after 1 attempts" wrapper, which with retries off described nothing and hid
 // the *url.Error from the retry decision.
+//
+// It also decides KillIdleConn from the transport underneath. retryablehttp
+// derives that switch only when the client's Transport is a bare
+// *http.Transport; behind proxytarget.Wrap (every --proxy scan) it kept
+// DefaultOptionsSpraying's true and dropped the whole idle pool every 100
+// requests, so a proxied scan re-dialed and re-handshook continuously.
 func newScanRetryClient(hc *http.Client, opts retryablehttp.Options) *retryablehttp.Client {
+	opts.KillIdleConn = killIdleConns(hc.Transport)
 	c := retryablehttp.NewWithHTTPClient(hc, opts)
 	c.ErrorHandler = retryablehttp.PassthroughErrorHandler
 	return c
+}
+
+// killIdleConns is retryablehttp's own KillIdleConn rule (a transport that never
+// pools gains nothing from keeping idle connections), applied through the
+// proxytarget wrapper it cannot see past. An unrecognised RoundTripper keeps its
+// pool: periodically closing a pool that is reused is the costly mistake.
+func killIdleConns(rt http.RoundTripper) bool {
+	t, ok := proxytarget.Base(rt)
+	if !ok {
+		return false
+	}
+	return t.DisableKeepAlives || t.MaxConnsPerHost < 0
 }
 
 // gateRedirects wraps a redirect policy so every hop it follows takes a rate

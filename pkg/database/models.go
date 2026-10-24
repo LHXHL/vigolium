@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
+	"github.com/vigolium/vigolium/pkg/agent/recon"
 	"github.com/vigolium/vigolium/pkg/tlsprobe"
 )
 
@@ -428,9 +429,24 @@ type HostObservation struct {
 	DNSAAAA  []string `bun:"dns_aaaa,type:jsonb,nullzero" json:"dns_aaaa,omitempty"`
 	DNSCNAME []string `bun:"dns_cname,type:jsonb,nullzero" json:"dns_cname,omitempty"`
 
+	// The DNS record types beyond addresses and the CNAME chain, resolved by
+	// `vigolium dns`. Stored on the host's port-0 row: they describe the name,
+	// not an endpoint.
+	DNSMX  []string `bun:"dns_mx,type:jsonb,nullzero" json:"dns_mx,omitempty"`
+	DNSNS  []string `bun:"dns_ns,type:jsonb,nullzero" json:"dns_ns,omitempty"`
+	DNSTXT []string `bun:"dns_txt,type:jsonb,nullzero" json:"dns_txt,omitempty"`
+	DNSSOA []string `bun:"dns_soa,type:jsonb,nullzero" json:"dns_soa,omitempty"`
+	DNSCAA []string `bun:"dns_caa,type:jsonb,nullzero" json:"dns_caa,omitempty"`
+
 	// TLS is the handshake and leaf certificate, absent when the endpoint was not
 	// handshaked (no --tls-probe, or a plaintext endpoint).
 	TLS *tlsprobe.Info `bun:"tls,type:jsonb,nullzero" json:"tls,omitempty"`
+
+	// Fingerprint is what the fingerprint phase concluded about the origin, and
+	// NotFound its answer to a path no application serves. Absent when the
+	// phase did not run against it.
+	Fingerprint *recon.TechStackReport `bun:"fingerprint,type:jsonb,nullzero" json:"fingerprint,omitempty"`
+	NotFound    *NotFoundBaseline      `bun:"not_found,type:jsonb,nullzero" json:"not_found,omitempty"`
 
 	// Complete reports that the lookup actually ran to an answer. False marks an
 	// observation the run never finished - a cancelled or budget-limited

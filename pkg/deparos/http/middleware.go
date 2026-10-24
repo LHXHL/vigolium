@@ -7,6 +7,8 @@ import (
 	"math"
 	nethttp "net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,6 +119,20 @@ type RetryConfig struct {
 	// RetryableStatusCodes are HTTP status codes that should trigger retry.
 	// Default: 429 (Too Many Requests), 503 (Service Unavailable)
 	RetryableStatusCodes []int
+
+	// MinStatusBackoff is the shortest wait before retrying a retryable
+	// STATUS that carried no Retry-After. Re-asking a host that just answered
+	// "too many requests" 100ms later is the request it refused; the
+	// exponential backoff still applies above this floor.
+	// Default: 1 second
+	MinStatusBackoff time.Duration
+
+	// MaxRetryAfter caps how long a server's Retry-After is honored. A longer
+	// Retry-After is not retried at all: the response is returned as it came,
+	// rather than parking a discovery worker for minutes (the host limiter's
+	// back-off is what slows the rest of the run down).
+	// Default: 30 seconds
+	MaxRetryAfter time.Duration
 }
 
 // DefaultRetryConfig returns default retry configuration.
@@ -127,6 +143,8 @@ func DefaultRetryConfig() *RetryConfig {
 		MaxBackoff:           5 * time.Second,
 		BackoffMultiplier:    2.0,
 		RetryableStatusCodes: []int{429, 503},
+		MinStatusBackoff:     time.Second,
+		MaxRetryAfter:        30 * time.Second,
 	}
 }
 
@@ -230,13 +248,22 @@ func (r *retryRoundTripper) RoundTrip(req *nethttp.Request) (*nethttp.Response, 
 			shouldRetry = true
 		}
 
-		// Retry on retryable status codes
+		// Retry on retryable status codes, waiting as long as the server
+		// asked (within MaxRetryAfter) and never less than MinStatusBackoff.
+		var statusWait time.Duration
 		if resp != nil {
 			for _, code := range r.config.RetryableStatusCodes {
 				if resp.StatusCode == code {
 					shouldRetry = true
 					break
 				}
+			}
+			if shouldRetry {
+				wait, ok := r.statusRetryWait(resp)
+				if !ok {
+					shouldRetry = false
+				}
+				statusWait = wait
 			}
 		}
 
@@ -265,7 +292,7 @@ func (r *retryRoundTripper) RoundTrip(req *nethttp.Request) (*nethttp.Response, 
 		}
 
 		// Calculate backoff with exponential increase
-		backoff := r.calculateBackoff(attempt)
+		backoff := max(r.calculateBackoff(attempt), statusWait)
 
 		// Wait before retry (respect context cancellation)
 		select {
@@ -291,6 +318,42 @@ func (r *retryRoundTripper) calculateBackoff(attempt int) time.Duration {
 	}
 
 	return duration
+}
+
+// statusRetryWait is the minimum wait before retrying resp's retryable status:
+// its Retry-After when present, else MinStatusBackoff. ok is false when the
+// server asked for longer than MaxRetryAfter, which is not retried.
+func (r *retryRoundTripper) statusRetryWait(resp *nethttp.Response) (wait time.Duration, ok bool) {
+	if after, found := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()); found {
+		if r.config.MaxRetryAfter > 0 && after > r.config.MaxRetryAfter {
+			return 0, false
+		}
+		return after, true
+	}
+	return r.config.MinStatusBackoff, true
+}
+
+// parseRetryAfter reads a Retry-After value (RFC 9110 §10.2.3): delay-seconds
+// or an HTTP-date. A date in the past is a zero wait; an unparseable value is
+// treated as absent.
+func parseRetryAfter(v string, now time.Time) (time.Duration, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		if secs > int64(24*time.Hour/time.Second) {
+			secs = int64(24 * time.Hour / time.Second)
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if at, err := nethttp.ParseTime(v); err == nil {
+		return max(at.Sub(now), 0), true
+	}
+	return 0, false
 }
 
 // RateLimitConfig configures rate limiting behavior using token bucket algorithm.

@@ -6,6 +6,7 @@ import (
 	nethttp "net/http"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/bulkhttp"
 	"github.com/vigolium/vigolium/pkg/deparos/responsechain"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/proxytarget"
@@ -23,6 +24,9 @@ type Client struct {
 	// it would depend on every middleware in the chain forwarding the call.
 	// nil when the client was built around a caller-supplied round tripper.
 	ownedTransport *nethttp.Transport
+	// bulk is the multiplexing transport built over ownedTransport's settings
+	// when PoolConfig.Protocol asks for one; nil on plain HTTP/1.1.
+	bulk *bulkhttp.Transport
 }
 
 // Middleware represents an HTTP middleware function.
@@ -85,6 +89,14 @@ func NewClient(config *ClientConfig) *Client {
 	if transport.Proxy != nil {
 		rt = proxytarget.Wrap(transport)
 	}
+	// A multiplexing protocol policy replaces it: bulkhttp clones transport as
+	// the template of its HTTP/1.1, HTTP/2 and HTTP/3 transports and applies
+	// the same proxy-target fix to its TCP side.
+	var bulk *bulkhttp.Transport
+	if mode, ok := config.PoolConfig.multiplexMode(); ok {
+		bulk = bulkhttp.New(bulkhttp.Config{Base: transport, Mode: mode})
+		rt = bulk
+	}
 
 	// Apply middleware chain (reverse order so they execute in config order)
 	for i := len(config.Middleware) - 1; i >= 0; i-- {
@@ -113,6 +125,7 @@ func NewClient(config *ClientConfig) *Client {
 		client:         client,
 		middleware:     config.Middleware,
 		ownedTransport: transport,
+		bulk:           bulk,
 	}
 }
 
@@ -133,10 +146,18 @@ func NewClient(config *ClientConfig) *Client {
 // exists for callers holding the bare client from HTTPClient(), not for this
 // one, which knows exactly which transport it built.)
 func (c *Client) CloseIdleConnections() {
-	if c == nil || c.ownedTransport == nil {
+	if c == nil {
 		return
 	}
-	c.ownedTransport.CloseIdleConnections()
+	if c.bulk != nil {
+		// Also closes the HTTP/3 connections with nothing in flight; the
+		// template transport itself never carries a request.
+		c.bulk.CloseIdleConnections()
+		return
+	}
+	if c.ownedTransport != nil {
+		c.ownedTransport.CloseIdleConnections()
+	}
 }
 
 // HTTPClient returns the underlying *nethttp.Client.

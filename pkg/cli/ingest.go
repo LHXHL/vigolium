@@ -28,6 +28,9 @@ import (
 )
 
 var ingestOpts = ingestor.DefaultOptions()
+
+// ingestKeepBlocked backs --keep-blocked (core.ExecutorConfig.KeepBlocked).
+var ingestKeepBlocked bool
 var ingestScanUUID string
 
 var ingestCmd = &cobra.Command{
@@ -55,6 +58,7 @@ func init() {
 	registerScanOnReceiveFlags(flags, "Continuously scan new HTTP records as they arrive in the database")
 	flags.BoolVar(&globalFullNativeScanOnReceive, "full-native-scan-on-receive", false, "Run the full native scan pipeline (discovery + spidering + dynamic-assessment) continuously on received records, instead of dynamic-assessment only")
 	flags.BoolVar(&globalDisableFetchResponse, "disable-fetch-response", false, "Store requests without fetching responses during ingestion")
+	flags.BoolVar(&ingestKeepBlocked, "keep-blocked", false, "Store a fetched response the block detector classifies as a WAF/bot-wall page (remark blocked:<reason>) instead of dropping the record")
 	flags.StringVar(&globalScopeOrigin, "scope-origin", "", scopeOriginFlagUsage)
 
 	registerInputSourceFlags(flags)
@@ -111,13 +115,17 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 	hasInputFile := ingestOpts.Input != "" && ingestOpts.Input != "-"
 	hasTargetFiles := len(globalTargetFiles) > 0
 	hasStdin := fileutil.HasStdin()
-	if !hasTargets && !hasInputFile && !hasTargetFiles && !hasStdin {
-		fmt.Fprintf(os.Stderr, "%s Tip: use %s, %s, %s, or pipe data via stdin\n",
+	// --dir is input in its own right: the directory expands into sources below,
+	// after this check, so it must count here or `ingest --dir X` never runs.
+	hasDir := strings.TrimSpace(ingestDir) != ""
+	if !hasTargets && !hasInputFile && !hasTargetFiles && !hasDir && !hasStdin {
+		fmt.Fprintf(os.Stderr, "%s Tip: use %s, %s, %s, %s, or pipe data via stdin\n",
 			terminal.InfoSymbol(),
 			terminal.Cyan("-t <url>"),
 			terminal.Cyan("-T <file>"),
-			terminal.Cyan("-i <file>"))
-		return fmt.Errorf("no input provided")
+			terminal.Cyan("-i <file>"),
+			terminal.Cyan("--dir <dir>"))
+		return usageErrorf("no input provided: pass -t, -T, -i or --dir, or pipe data on stdin")
 	}
 
 	// Decide whether stdin is really this command's input, by the same rule the
@@ -164,12 +172,14 @@ func runIngestCmd(cmd *cobra.Command, args []string) error {
 	// that one bad HAR in fifty does not cost the other forty-nine — but the
 	// command still exits non-zero and names how many failed.
 	//
-	// A single source keeps ingestOpts.Input exactly as resolved above, which
-	// may be "-" or "" for stdin; ingestInputSources drops both, so an empty
-	// list is a stdin run, not an empty batch.
-	if len(sources) <= 1 {
+	// Only an EMPTY list means stdin: ingestInputSources drops "-" and "", so a
+	// stdin run resolves to no sources and keeps ingestOpts.Input as resolved
+	// above. A single source is used as is — it may be the one file a --dir
+	// matched, which ingestOpts.Input never held.
+	switch {
+	case len(sources) == 0:
 		sources = []string{ingestOpts.Input}
-	} else {
+	case len(sources) > 1:
 		announceIngestBatch(sources)
 	}
 
@@ -212,7 +222,11 @@ func reportIngest(out ingestOutcome, remote bool, failedSources, totalSources in
 		// items is [] rather than nil: the envelope's contract is that `items`
 		// is the canonical collection, and a JSON null breaks every consumer
 		// that iterates or measures it.
-		env := newAgentEnvelope("ingest", "", []any{}, out.Stored, 0, 0).
+		items := make([]any, 0, len(out.Records))
+		for _, r := range out.Records {
+			items = append(items, r)
+		}
+		env := newAgentEnvelope("ingest", "", items, out.Stored, 0, 0).
 			asMutation(out.Stored > 0, "ingest", false)
 		env.DBPath = resolvedReadDBPath()
 		env.With("records_ingested", out.Stored).
@@ -221,8 +235,12 @@ func reportIngest(out ingestOutcome, remote bool, failedSources, totalSources in
 			With("duration_ms", elapsed.Milliseconds()).
 			With("input_format", strings.Join(out.Formats, ",")).
 			With("record_source", database.RecordSourceIngestCLI).
-			// The obvious next step after an ingest is to look at what landed.
-			WithQuery(ingestFollowUpQuery()...)
+			With("items_truncated", out.RecordsTruncated)
+		if len(out.Reasons) > 0 {
+			env.With("failure_reasons", out.Reasons).With("failures", out.Failures)
+		}
+		// The obvious next step after an ingest is to look at what landed.
+		env.WithQuery(ingestFollowUpQuery()...)
 		if err := writeAgentJSON(env); err != nil {
 			return err
 		}
@@ -232,13 +250,39 @@ func reportIngest(out ingestOutcome, remote bool, failedSources, totalSources in
 
 	if out.Failed > 0 {
 		return codedErrorf(errCodeIngestIncomplete,
-			"stored %d of %d record(s); %d could not be stored (no response to store, or the write was refused) — run with --debug for the per-record reason",
-			out.Stored, out.Stored+out.Failed, out.Failed)
+			"stored %d of %d record(s); %d could not be stored%s",
+			out.Stored, out.Stored+out.Failed, out.Failed, ingestFailureHint(out.Reasons))
 	}
 	if failedSources > 0 {
 		return fmt.Errorf("%d of %d ingest source(s) failed", failedSources, totalSources)
 	}
 	return nil
+}
+
+// ingestFailureHint names why records were not stored, most common reason
+// first, and the flag that fixes the dominant one. The per-record list is in
+// -j's `failures`.
+func ingestFailureHint(reasons map[string]int64) string {
+	if len(reasons) == 0 {
+		return " (no response to store, or the write was refused)"
+	}
+	keys := core.SortedDropReasons(reasons)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s %d", k, reasons[k]))
+	}
+	hint := " — " + strings.Join(parts, ", ")
+	switch keys[0] {
+	case core.DropBlocked:
+		hint += ". The answers were WAF/bot-wall pages: --keep-blocked stores them marked, --disable-fetch-response stores the requests without fetching"
+	case core.DropFetchError, core.DropQuarantined:
+		hint += ". The hosts did not answer: --disable-fetch-response stores the requests without fetching"
+	case core.DropBudget:
+		hint += ". The request budget ran out: raise --max-requests / --max-requests-per-host"
+	case core.DropOutOfScope:
+		hint += ". The answers were out of scope and scope.applied_on_ingest is set"
+	}
+	return hint + " (per-record reasons: -j, `failures`)"
 }
 
 // ingestSummaryLine renders the human completion line. A run that stored
@@ -562,6 +606,8 @@ func runLocalIngest(cmd *cobra.Command, _ []string) (ingestOutcome, error) {
 		ScanUUID:          ingestScanUUID,
 		ProjectUUID:       ingestProjectUUID,
 		StaticFileMatcher: staticMatcher, // always filter static files
+		KeepBlocked:       ingestKeepBlocked,
+		OnRecordStored:    saver.noteStored,
 	}
 
 	if settings.Scope.AppliedOnIngest {
@@ -604,11 +650,16 @@ func executorIngestOutcome(executor *core.Executor) ingestOutcome {
 	stored := executor.Stored()
 	storeFailed := executor.StoreFailed()
 	unreached := nonNegative(executor.Processed() - executor.Responded())
-	return ingestOutcome{
+	out := ingestOutcome{
 		Stored:  stored,
 		Failed:  storeFailed + unreached,
 		Skipped: nonNegative(executor.Responded() - stored - storeFailed),
 	}
+	if reasons := executor.DropReasons(); len(reasons) > 0 {
+		out.Reasons = reasons
+		out.Failures = executor.DropSamples()
+	}
+	return out
 }
 
 func nonNegative(n int64) int64 {

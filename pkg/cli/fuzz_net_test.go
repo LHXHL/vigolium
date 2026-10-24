@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/vigolium/vigolium/pkg/bulkhttp"
 	"github.com/vigolium/vigolium/pkg/proxytarget/proxytest"
 	"github.com/vigolium/vigolium/pkg/replay"
 )
@@ -30,9 +31,13 @@ func TestReplayAndFuzzClientsKeepPortThroughProxy(t *testing.T) {
 	globalProxy = proxy.URL.String()
 	t.Cleanup(func() { globalProxy = prev })
 
-	fuzzClient, err := buildFuzzClient(nil)
+	// Auto mode: the multiplexing transport must keep the proxy routing too.
+	fuzzClient, bulk, err := buildFuzzClient(nil, bulkhttp.ModeAuto)
 	if err != nil {
 		t.Fatalf("buildFuzzClient: %v", err)
+	}
+	if bulk != nil {
+		defer bulk.Close()
 	}
 	clients := map[string]*http.Client{
 		"replay": newReplayClient(nil, 0),

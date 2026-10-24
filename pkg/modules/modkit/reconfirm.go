@@ -800,7 +800,7 @@ func ConfirmReflectionWithValue(rounds int, genValue func() string, probe Reflec
 // FreshCanary returns a short random alphanumeric token (alpha-leading, safe to
 // embed in URLs, headers, and HTML) for reflection probes.
 func FreshCanary() string {
-	return "vgo" + utils.RandomOf(10, utils.HEX_CHARSET)
+	return "vigolium" + utils.RandomOf(10, utils.HEX_CHARSET)
 }
 
 // FreshMultExpr returns a fresh random multiplication expression ("A*B") and its

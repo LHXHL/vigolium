@@ -17,6 +17,7 @@ const (
 	PhaseHarvestProbe      NativePhase = "harvest-probe"
 	PhaseSpidering         NativePhase = "spidering"
 	PhaseProbe             NativePhase = "probe"
+	PhaseFingerprint       NativePhase = "fingerprint"
 	PhaseDiscovery         NativePhase = "discovery"
 	PhaseTargetedReSpider  NativePhase = "targeted-respider"
 	PhaseSeed              NativePhase = "seed"
@@ -63,6 +64,7 @@ func (p nativePhaseSpelling) onlyAccepted() bool { return !p.Internal }
 var nativePhaseVocabulary = []nativePhaseSpelling{
 	{Canonical: "ingestion", Aliases: []string{"ingest", "ingesting"}, Skippable: true},
 	{Canonical: "probe", Aliases: []string{"probing", "httpx", "alive", "sweep"}, Skippable: true},
+	{Canonical: "fingerprint", Aliases: []string{"fp", "tech", "recon"}, Skippable: true},
 	{Canonical: "discovery", Aliases: []string{"discover", "discovering", "deparos"}, Skippable: true},
 	{Canonical: "external-harvest", Aliases: []string{"harvest", "harvesting", "external-harvester", "external_harvester"}, Skippable: true},
 	{Canonical: "spidering", Aliases: []string{"spider", "spitolas", "crawl", "crawling", "crawler"}, Skippable: true},
@@ -241,6 +243,10 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 		// records (and its followed-redirect targets) already in the corpus.
 		// Opt-in — a normal scan's discovery phase already fetches every target.
 		{Phase: PhaseProbe, Enabled: opts.ProbeEnabled},
+		// Per-origin fingerprint: well-known paths, favicon, CORS, OPTIONS,
+		// vhost variants and a not-found baseline, stored as host facts. Opt-in,
+		// like probe, and after it so it sees the probe's resolved schemes.
+		{Phase: PhaseFingerprint, Enabled: opts.FingerprintEnabled},
 		{Phase: PhaseDiscovery, Enabled: !opts.SkipIngestion},
 		// Re-spider rich/SPA routes that discovery surfaced after the one-shot
 		// browser crawl. Rides along only when browsers are allowed (spidering
@@ -446,6 +452,7 @@ func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled b
 		opts.SpideringEnabled = allowed["spidering"]
 		opts.KnownIssueScanEnabled = allowed["known-issue-scan"]
 		opts.ProbeEnabled = allowed["probe"]
+		opts.FingerprintEnabled = allowed["fingerprint"]
 		// "probe" is its own ingestion: it reads the CLI target list directly and
 		// writes a record per target. Without this arm, --only probe would also
 		// enable the discovery/ingestion phase (SkipIngestion is false unless BOTH
@@ -493,6 +500,8 @@ func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled b
 				opts.SpideringEnabled = false
 			case "probe":
 				opts.ProbeEnabled = false
+			case "fingerprint":
+				opts.FingerprintEnabled = false
 			case "known-issue-scan":
 				opts.KnownIssueScanEnabled = false
 			case "dynamic-assessment":

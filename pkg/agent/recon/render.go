@@ -134,8 +134,13 @@ func Render(r *TechStackReport) string {
 		sb.WriteByte('\n')
 	}
 
-	if r.FaviconHash != "" {
-		fmt.Fprintf(&sb, "**Favicon MD5:** `%s` (cross-reference with public favicon-hash databases for fingerprinting)\n\n", r.FaviconHash)
+	switch {
+	case r.Favicon != nil:
+		fmt.Fprintf(&sb, "**Favicon:** mmh3 `%d` (Shodan `%s`, FOFA `%s`), MD5 `%s` (Censys)\n\n",
+			r.Favicon.MMH3, r.Favicon.ShodanQuery(), r.Favicon.FOFAQuery(), r.Favicon.MD5)
+	case r.FaviconHash != "":
+		// Run's MD5 alone: Censys indexes it; Shodan and FOFA key on mmh3.
+		fmt.Fprintf(&sb, "**Favicon MD5:** `%s` (Censys favicon md5_hash)\n\n", r.FaviconHash)
 	}
 
 	if len(r.VHostFindings) > 0 {

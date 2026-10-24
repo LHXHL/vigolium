@@ -149,7 +149,7 @@ func init() {
 	f.StringVarP(&swarmTarget, "target", "t", "", "Target URL (required when --source is used)")
 	f.StringVar(&swarmInput, "input", "", "Raw input (curl command, raw HTTP, Burp XML, URL). Reads from stdin if piped")
 	f.BoolVar(&globalDBIsolate, "db-isolate", false, dbIsolateAgentFlagUsage)
-	f.StringSliceVar(&swarmRecordUUIDs, "record-uuid", nil, "HTTP record UUID from database (repeatable, or comma-separated)")
+	f.StringSliceVar(&swarmRecordUUIDs, "record-uuid", nil, "HTTP record UUID or unique 8+ char prefix from the database (repeatable, or comma-separated)")
 	f.BoolVar(&swarmAllRecords, "all-records", false, "Use every HTTP record in the active project as input")
 	f.StringVar(&swarmRecordsFrom, "records-from", "", "Filter ingested HTTP records by spec (e.g. \"host=example.com,status=200,method=GET,path=/api,since=2026-04-01\")")
 	f.StringVar(&swarmSource, "source", "", "Path to application source code for route discovery")
@@ -946,11 +946,20 @@ func buildSwarmInputs(ctx context.Context, repo *database.Repository, projectUUI
 	// Plan-file request blocks: each is an independent raw HTTP seed.
 	inputs = append(inputs, swarmPlanInputs...)
 
+	var refs []string
 	for _, uuid := range swarmRecordUUIDs {
-		uuid = strings.TrimSpace(uuid)
-		if uuid != "" {
-			inputs = append(inputs, uuid)
+		if uuid = strings.TrimSpace(uuid); uuid != "" {
+			refs = append(refs, uuid)
 		}
+	}
+	if len(refs) > 0 {
+		// Unique prefixes resolve to full UUIDs: the input normalizer only
+		// recognises a complete one.
+		full, err := resolveRecordRefs(ctx, repo, refs, projectUUID)
+		if err != nil {
+			return nil, err
+		}
+		inputs = append(inputs, full...)
 	}
 
 	if swarmAllRecords {

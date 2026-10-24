@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"os"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/bulkhttp"
 )
 
 // Common validation errors.
@@ -190,11 +192,22 @@ func (e *ExtensionConfig) Validate() error {
 	return nil
 }
 
+// MaxBruteForceThreads bounds EngineConfig.BruteForceThreads: past this the
+// engine's per-response work, not the transport, is the limit.
+const MaxBruteForceThreads = 1024
+
 // Validate validates engine configuration.
 func (e *EngineConfig) Validate() error {
 	// Discovery threads: 1-255 (uint8 max)
 	if e.DiscoveryThreads < 1 || e.DiscoveryThreads > 255 {
 		return fmt.Errorf("%w: discovery threads must be 1-255, got %d", ErrInvalidThreads, e.DiscoveryThreads)
+	}
+
+	if e.BruteForceThreads < 0 || e.BruteForceThreads > MaxBruteForceThreads {
+		return fmt.Errorf("%w: brute-force threads must be 0-%d, got %d", ErrInvalidThreads, MaxBruteForceThreads, e.BruteForceThreads)
+	}
+	if _, err := bulkhttp.ParseMode(e.Protocol); err != nil {
+		return fmt.Errorf("engine protocol: %w", err)
 	}
 
 	// Timeout: 1s-300s (reasonable range)

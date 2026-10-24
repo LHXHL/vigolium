@@ -54,6 +54,8 @@ type RecordLineage struct {
 	// exchange". That is what lets a scan-scoped export and records_written count
 	// what a run produced instead of the whole project.
 	ScanUUID string
+	// Remarks are appended to a NEW row's remarks; a dedup hit keeps its own.
+	Remarks []string
 }
 
 // applyTo stamps the lineage onto a record.
@@ -78,6 +80,11 @@ func (l RecordLineage) applyTo(rec *HTTPRecord) {
 	// config) may already have set it, and an empty lineage says nothing.
 	if l.ScanUUID != "" {
 		rec.ScanUUID = l.ScanUUID
+	}
+	for _, r := range l.Remarks {
+		if !slices.Contains(rec.Remarks, r) {
+			rec.Remarks = append(rec.Remarks, r)
+		}
 	}
 }
 
@@ -572,10 +579,10 @@ func (r *Repository) GetRecordByUUID(ctx context.Context, uuid string) (*HTTPRec
 	return record, nil
 }
 
-// minRecordUUIDPrefix is the shortest prefix GetRecordByUUIDOrPrefix will
+// MinRecordUUIDPrefix is the shortest prefix GetRecordByUUIDOrPrefix will
 // expand. Eight hex characters is 4 billion values - unique in any real
 // project - and short enough for a model to copy without mangling it.
-const minRecordUUIDPrefix = 8
+const MinRecordUUIDPrefix = 8
 
 // GetRecordByUUIDOrPrefix retrieves a record by full UUID, falling back to
 // expanding an unambiguous prefix. Returns sql.ErrNoRows when nothing
@@ -591,7 +598,7 @@ const minRecordUUIDPrefix = 8
 // the prefix scan only runs once that has missed.
 func (r *Repository) GetRecordByUUIDOrPrefix(ctx context.Context, idOrPrefix string) (*HTTPRecord, error) {
 	rec, err := r.GetRecordByUUID(ctx, idOrPrefix)
-	if err == nil || !errors.Is(err, sql.ErrNoRows) || len(idOrPrefix) < minRecordUUIDPrefix {
+	if err == nil || !errors.Is(err, sql.ErrNoRows) || len(idOrPrefix) < MinRecordUUIDPrefix {
 		return rec, err
 	}
 	full, resolveErr := r.ResolveRecordUUID(ctx, idOrPrefix)
@@ -615,33 +622,57 @@ func (r *Repository) GetRecordByUUIDOrPrefix(ctx context.Context, idOrPrefix str
 // or _ is just a prefix here, which matters when the input is a string a
 // model may have mangled.
 func (r *Repository) ResolveRecordUUID(ctx context.Context, prefix string) (string, error) {
+	full, candidates, err := r.ResolveRecordUUIDInProject(ctx, prefix, "")
+	if err != nil || len(candidates) == 0 {
+		return full, err
+	}
+	uuids := make([]string, len(candidates))
+	for i, c := range candidates {
+		uuids[i] = c.UUID
+	}
+	return "", fmt.Errorf("uuid prefix %q matches %d records (%s) - use more characters",
+		prefix, len(uuids), strings.Join(uuids, ", "))
+}
+
+// RecordRefCandidate is one record a UUID prefix matched, as an ambiguity
+// names it.
+type RecordRefCandidate struct {
+	UUID   string `json:"uuid"`
+	Method string `json:"method"`
+	URL    string `json:"url"`
+}
+
+// ResolveRecordUUIDInProject is ResolveRecordUUID limited to one project
+// (projectUUID empty means every project, the unscoped -S read). It returns the
+// full UUID of the one match, sql.ErrNoRows for none, and the candidates
+// (at most 5) when the prefix is ambiguous. Scoping the scan is what keeps an
+// ambiguity from naming another project's records — the same reason a scoped
+// read reports another project's UUID as not found.
+func (r *Repository) ResolveRecordUUIDInProject(ctx context.Context, prefix, projectUUID string) (string, []RecordRefCandidate, error) {
 	const maxCandidates = 5
 	upper, ok := prefixUpperBound(prefix)
 	if !ok {
-		return "", sql.ErrNoRows
+		return "", nil, sql.ErrNoRows
 	}
-	var uuids []string
-	err := r.db.NewSelect().
+	var rows []RecordRefCandidate
+	q := r.db.NewSelect().
 		Model((*HTTPRecord)(nil)).
-		Column("uuid").
-		Where("uuid >= ? AND uuid < ?", prefix, upper).
-		Limit(maxCandidates+1).
-		Scan(ctx, &uuids)
-	if err != nil {
-		return "", err
+		Column("uuid", "method", "url").
+		Where("uuid >= ? AND uuid < ?", prefix, upper)
+	if projectUUID != "" {
+		q = q.Where("project_uuid = ?", projectUUID)
+	}
+	if err := q.OrderExpr("uuid").Limit(maxCandidates).Scan(ctx, &rows); err != nil {
+		return "", nil, err
 	}
 	switch {
-	case len(uuids) == 0:
-		return "", sql.ErrNoRows
-	case len(uuids) == 1:
-		return uuids[0], nil
+	case len(rows) == 0:
+		return "", nil, sql.ErrNoRows
+	case len(rows) == 1, rows[0].UUID == prefix:
+		// An exact id sorts first among the ids it prefixes, and wins.
+		return rows[0].UUID, nil, nil
 	}
-	shown := uuids
-	if len(shown) > maxCandidates {
-		shown = shown[:maxCandidates]
-	}
-	return "", fmt.Errorf("uuid prefix %q matches %d records (%s) - use more characters",
-		prefix, len(uuids), strings.Join(shown, ", "))
+	return "", rows, nil
 }
 
 // prefixUpperBound returns the exclusive upper bound of the range of strings

@@ -17,9 +17,9 @@ import (
 // catch-all/wildcard response before real fuzzing. Fixed (not random) so a run
 // is reproducible; chosen to be things no real route or file would match.
 var calibrationProbes = []string{
-	"vglm-calibrate-9x1q7",
-	"vglm-calibrate-zzq4t",
-	"vglm-calibrate-0k8wm",
+	"vigolium-calibrate-9x1q7",
+	"vigolium-calibrate-zzq4t",
+	"vigolium-calibrate-0k8wm",
 }
 
 // Run executes the job: send the baseline, optionally calibrate, then fan out

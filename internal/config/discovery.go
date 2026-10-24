@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/bulkhttp"
 	deparosconfig "github.com/vigolium/vigolium/pkg/deparos/config"
 )
 
@@ -351,6 +352,16 @@ type DiscoveryEngineConfig struct {
 	ObservedMaxItems        int                          `yaml:"observed_max_items"`
 	DisableSecretScan       bool                         `yaml:"disable_secret_scan"`
 	PrefixBreaker           DiscoveryPrefixBreakerConfig `yaml:"prefix_breaker"`
+	// Protocol is the wire protocol for discovery traffic: "auto" (default:
+	// HTTP/3 where the origin proves it, else HTTP/2 where ALPN selects it,
+	// else HTTP/1.1, pinned per origin), "http1", "http2" or "http3".
+	Protocol string `yaml:"protocol"`
+	// BruteForceConcurrency is each target's worker count for wordlist and
+	// FUZZ-template requests; the rest of discovery (spider, observed-word
+	// variants, JS) keeps the phase concurrency. 0 = default: the per-host
+	// slot cap (scanning_pace.max_per_host), or the phase concurrency when
+	// -c was given explicitly.
+	BruteForceConcurrency int `yaml:"brute_force_concurrency"`
 }
 
 // DiscoveryPrefixBreakerConfig tunes the per-prefix circuit breaker that stops
@@ -457,6 +468,13 @@ func (c *DiscoveryConfig) Validate() error {
 		if d < 1*time.Second || d > 300*time.Second {
 			return fmt.Errorf("discovery.engine.timeout must be 1s-300s, got %v", d)
 		}
+	}
+
+	if _, err := bulkhttp.ParseMode(c.Engine.Protocol); err != nil {
+		return fmt.Errorf("discovery.engine.protocol: %w", err)
+	}
+	if n := c.Engine.BruteForceConcurrency; n < 0 || n > deparosconfig.MaxBruteForceThreads {
+		return fmt.Errorf("discovery.engine.brute_force_concurrency must be 0-%d, got %d", deparosconfig.MaxBruteForceThreads, n)
 	}
 
 	switch c.Engine.CaseSensitivity {

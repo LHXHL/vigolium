@@ -254,7 +254,7 @@ func TestScanPerInsertionPoint_ControlIsSent(t *testing.T) {
 // byte.
 func TestSSIEchoValue(t *testing.T) {
 	t.Parallel()
-	const l, r = "vgoaaaaaaaaaa", "vgobbbbbbbbbb"
+	const l, r = "vigoliumaaaaaaaaaa", "vigoliumbbbbbbbbbb"
 
 	tests := []struct {
 		name, middle, want string
@@ -290,7 +290,7 @@ func TestSSIEchoValue(t *testing.T) {
 // real evaluation — the scan must not stop at the first.
 func TestSSIEchoValue_LaterOccurrence(t *testing.T) {
 	t.Parallel()
-	const l, r = "vgoaaaaaaaaaa", "vgobbbbbbbbbb"
+	const l, r = "vigoliumaaaaaaaaaa", "vigoliumbbbbbbbbbb"
 	got, ok := ssiEchoValue(l+ssiEchoDirective+r+" ... "+l+testDateGMT+r, l, r)
 	require.True(t, ok)
 	assert.Equal(t, testDateGMT, got)
@@ -302,7 +302,7 @@ func TestSSIEchoValue_LaterOccurrence(t *testing.T) {
 // ~900 KB body).
 func TestSSIEchoValue_TruncatedTagsAreBounded(t *testing.T) {
 	t.Parallel()
-	const l, r = "vgoaaaaaaaaaa", "vgobbbbbbbbbb"
+	const l, r = "vigoliumaaaaaaaaaa", "vigoliumbbbbbbbbbb"
 	var b strings.Builder
 	for range 50000 {
 		b.WriteString(l + "truncated ")

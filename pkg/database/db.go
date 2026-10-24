@@ -912,7 +912,10 @@ func (db *DB) renderDDL(tmpl string) string {
 //	   extensions_failed; new tables finding_observations (backfilled once from
 //	   each finding's (scan_uuid, found_at)), finding_status_events and
 //	   oast_payloads; schema_meta.observation_history_since.
-const currentSchemaVersion = 3
+//	4  Host facts, additive (min reader stays 1): host_observations dns_mx,
+//	   dns_ns, dns_txt, dns_soa, dns_caa (`vigolium dns`), fingerprint and
+//	   not_found (the fingerprint phase).
+const currentSchemaVersion = 4
 
 // legacyBackfillsVersion is the version that gated the pre-versioning backfills
 // and index reshaping in CreateSchema. A store at or past it has had them.

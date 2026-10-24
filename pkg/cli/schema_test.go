@@ -355,13 +355,11 @@ var schemaPending = map[string]string{
 	"config validate": pendingTypedItems,
 	"db clean":        pendingTypedItems, "db compact": pendingTypedItems, "db list": pendingTypedItems,
 	"db migrate": pendingTypedItems, "db reset": pendingTypedItems, "db stats": pendingTypedItems,
-	"fuzz": pendingStream, "replay": pendingStream,
 	"storage download": pendingStream,
 	"doctor":           pendingTypedItems,
 	"extensions":       pendingTypedItems, "extensions docs": pendingTypedItems, "extensions ls": pendingTypedItems,
 	"finding load": pendingTypedItems, "finding verify": pendingTypedItems,
-	"traffic body": pendingTypedItems, "traffic headers": pendingTypedItems,
-	"ingest": pendingTypedItems, "init": pendingTypedItems,
+	"init":        pendingTypedItems,
 	"kit harvest": pendingTypedItems, "kit js-beautify": pendingTypedItems, "kit jwt-crack": pendingTypedItems,
 	"kit oast new": pendingTypedItems, "kit oast poll": pendingTypedItems, "kit param-mine": pendingTypedItems,
 	"kit payload": pendingTypedItems, "kit secret-scan": pendingTypedItems, "kit tmp-clean": pendingTypedItems,
@@ -383,7 +381,7 @@ var schemaPending = map[string]string{
 
 // schemaPendingCeiling pins the ratchet's size: lower it when a command gets
 // a schema; never raise it.
-const schemaPendingCeiling = 76
+const schemaPendingCeiling = 71
 
 // TestSchemaCoverageRatchet: every runnable non-interactive command either has
 // a registered schema or a reason in schemaPending, never both.

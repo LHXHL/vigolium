@@ -176,9 +176,26 @@ the storage column is `hostname`. Go by the error's list, not by the schema.
 ### Worth knowing
 
 - **An unknown `--fields` name is a usage error** (exit 2) listing the valid
-  set for that view, so a typo fails loudly instead of returning rows with the
-  key quietly missing. `--fields` composes with `--with-records`; shape the
-  nested records with `--record-fields` / `--record-limit`.
+  set for that view and the nearest match, so a typo fails loudly instead of
+  returning rows with the key quietly missing. `--fields` composes with
+  `--with-records`; shape the nested records with `--record-fields` / `--record-limit`.
+- **`--fields` takes one vocabulary everywhere.** `status`, `code`, `length`,
+  `size`, `words`, `time`, `content_type`, `title`, `id` and `headers` resolve on
+  every view that carries the concept (`traffic`, `fuzz`, `replay`, `endpoints`,
+  `hosts`, …) and come back under the name you passed, so a parser keyed on its
+  own names never misses. A view's real key wins over an alias (`endpoints
+  --fields status` is its histogram; `status_code` there is `top_status`).
+- **`--fields` and `--compact` are on every `-j` list command**: traffic, finding,
+  db ls, endpoints, params, log ls, fuzz, replay, hosts, dns, and the scan
+  document. `vigolium schema command <name>` has every document's shape.
+- **`--format tsv` is cheaper than `-j`** for a survey: one line per row, columns
+  from `--fields`, nothing else on stdout. Use it instead of dropping to sqlite3;
+  `vigolium schema storage [table]` maps the store when SQL is the only way.
+- **Short ids.** Every record UUID flag takes a unique 8+ character prefix;
+  `--fields uuid_short` prints it and `--format tsv` shows it by default.
+- **`--usage` on any command** (`vigolium fuzz --usage`) prints its flags one per line (local
+  flags described, globals named) — a fraction of `--help`; `--usage -j` is the
+  `schema flags` document.
 - **A gzip body over 1 MiB comes back as a prefix** flagged `decoder_capped:
   true`, with `body_size`/`body_sha256` describing the whole body. Do not
   conclude a string is absent; pull it whole with `traffic body --uuid <uuid>
@@ -237,8 +254,18 @@ jq -r 'select(.type=="http_record") | .data | select(.surface_score >= 30) | .ur
 vigolium scan -T worth-scanning.txt --fail-on high
 ```
 
-Caveat: `a`/`aaaa`/`cname`/`tls` are **output-only** — re-reading the database
-later shows `ip` alone. Keep the JSONL, or re-probe.
+`a`/`aaaa`/`cname`/`tls` are stored per host:port, not per record: `traffic -j`
+merges them back onto each row, and `vigolium hosts -j` reads them on their own.
+
+For the survivors, `vigolium fingerprint` answers "what is this origin" in a
+bounded number of reads — stack, title, favicon hash, well-known paths, CORS,
+OPTIONS, Host-header variants and the not-found baseline — stored for the next
+session to read with `vigolium hosts`:
+
+```bash
+vigolium fingerprint -T worth-scanning.txt -j --compact
+vigolium hosts --format tsv --fields hostname,port,title,technology,soft_not_found
+```
 
 ## Step 1.75 — Plan before you scan
 

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -167,24 +166,12 @@ func runExtensionOnRecord(cmd *cobra.Command, arg string) error {
 	defer closeDatabaseOnExit()
 	repo := database.NewRepository(db)
 
-	notFound := func() error {
-		return codedErrorf(apicontract.CodeRecordNotFound,
-			"no stored record has uuid %q.\n\nList what is there with: vigolium traffic --compact --fields uuid,url -j", uuid)
+	rec, _, err := loadRecordRef(context.Background(), repo, uuid)
+	if isRecordNotFound(err) {
+		return clicommon.AsUsageError(err)
 	}
-	rec, err := repo.GetRecordByUUIDOrPrefix(context.Background(), uuid)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return clicommon.AsUsageError(notFound())
-		}
-		return fmt.Errorf("read record %q: %w", uuid, err)
-	}
-	// Out of project reads the same as missing (see loadExtractTarget).
-	projectUUID, err := effectiveProjectUUID()
 	if err != nil {
 		return err
-	}
-	if projectUUID != "" && rec.ProjectUUID != projectUUID {
-		return clicommon.AsUsageError(notFound())
 	}
 	rr, err := database.RecordToHttpRequestResponse(rec)
 	if err != nil {

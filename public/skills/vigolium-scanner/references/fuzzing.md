@@ -53,7 +53,7 @@ top of whatever it resolves to.
 
 ```bash
 vigolium fuzz 'https://acme.test/item?id=FUZZ'          # positional URL
-vigolium fuzz -i req.txt                                 # curl / raw HTTP / Burp XML / base64 / URL
+vigolium fuzz -i req.txt                                 # curl / raw HTTP / Burp XML / base64 / URL — text, or a path to a file holding it
 vigolium fuzz --input-file ./req.txt                     # same, read from a file
 vigolium fuzz -u <record-uuid>                           # a stored HTTP record
 cat req.txt | vigolium fuzz --target https://acme.test   # stdin (scheme-less raw → needs --target)
@@ -167,13 +167,22 @@ suffixes are treated as part of the path. Unbound lists stay in the shared pool
 (single-marker runs are unaffected), and inline `-p` payloads are **always**
 shared: there's no sensible place to hang a keyword off a literal.
 
+## Shaping `-j`
+
+`fuzz -j` items are the top-ranked matched results. `--fields` projects them
+(aliases work: `--fields payload,status_code,length` comes back under those
+names), and `--compact` drops each result's `anomaly_reasons`, the top-level
+`anomalies` list and the baseline's raw timing samples. `vigolium schema command
+fuzz` is the shape.
+
 ## Payloads
 
 Combine freely; duplicates are dropped in first-seen order.
 
 ```bash
 --class sqli,xss                # built-in vulnerability classes
--w/--wordlist <builtin|path>    # repeatable
+-w/--wordlist <file|NAME>       # repeatable; NAME: dir-short, dir-long, file-short, file-long, fuzz, params
+                                # ('builtin'/'default' = fuzz; 'builtin:<name>' wins over a file of that name)
 -p/--payload '<literal>'        # inline, repeatable
 --suffix .php,.bak              # also each payload + each suffix, appended literally (ffuf -e)
 ```

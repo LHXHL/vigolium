@@ -125,6 +125,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/nextjs_version_audit"
 	"github.com/vigolium/vigolium/pkg/modules/active/nginx_off_by_slash"
 	"github.com/vigolium/vigolium/pkg/modules/active/nginx_path_escape"
+	"github.com/vigolium/vigolium/pkg/modules/active/node_brotli_decoder_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/nosqli_error_based"
 	"github.com/vigolium/vigolium/pkg/modules/active/nosqli_operator_injection"
 	"github.com/vigolium/vigolium/pkg/modules/active/oast_probe"
@@ -136,6 +137,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/path_normalization"
 	"github.com/vigolium/vigolium/pkg/modules/active/path_relative_stylesheet"
 	"github.com/vigolium/vigolium/pkg/modules/active/pdf_generation_injection"
+	"github.com/vigolium/vigolium/pkg/modules/active/php2shell"
 	"github.com/vigolium/vigolium/pkg/modules/active/php_composer_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/php_debug_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/php_framework_debug"
@@ -378,6 +380,7 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(php_debug_exposure.New())
 	r.RegisterActive(php_source_disclosure.New())
 	r.RegisterActive(php_composer_exposure.New())
+	r.RegisterActive(php2shell.New())
 	r.RegisterActive(php_framework_debug.New())
 	r.RegisterActive(php_path_info_misconfig.New())
 	// Active modules - PHP Framework Security
@@ -433,6 +436,7 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(express_debug_probe.New())
 	r.RegisterActive(express_trust_proxy_misconfig.New())
 	r.RegisterActive(express_directory_listing.New())
+	r.RegisterActive(node_brotli_decoder_exposure.New())
 	// Active modules - Common Directory Listing
 	r.RegisterActive(common_directory_listing.New())
 	// Active modules - Rails Security

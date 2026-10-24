@@ -43,8 +43,8 @@ var privilegeProbes = []struct {
 // echoes this arbitrary unknown key back, it blindly reflects whatever it receives
 // and any privilege-key "echo" is meaningless — so we suppress findings entirely.
 const (
-	canaryKey   = "vgl_ma_canary_field"
-	canaryValue = "vgl_ma_canary_value"
+	canaryKey   = "vigolium_ma_canary_field"
+	canaryValue = "vigolium_ma_canary_value"
 )
 
 // Module implements the Mass Assignment active scanner.

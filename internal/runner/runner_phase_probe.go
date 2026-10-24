@@ -143,7 +143,7 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	// DNS and TLS for :80 and then send the request to :443.
 	sweepTargets, unreachable := applyResolvedSchemes(r.options.Targets,
 		r.resolveProbeSchemes(ctx, pace.Concurrency))
-	r.prefetchProbeTargets(ctx, pace.Concurrency, infra.scanUUID, sweepTargets)
+	r.prefetchProbeTargets(ctx, pace.Concurrency, infra.scanUUID, sweepTargets, r.options.TLSProbe)
 
 	// A dedicated writer so the phase's rows are flushed and counted on its own
 	// boundary, mirroring the discovery phase. Closed before the processed-count
@@ -425,12 +425,14 @@ type sweepEndpoint struct {
 // (ProbeStatus false) rather than dropped — "this host does not speak TLS" is an
 // answer a sweep wants. Honours ctx so a cancelled scan stops prefetching
 // instead of walking the whole list.
-func (r *Runner) prefetchProbeTargets(ctx context.Context, requestConcurrency int, scanUUID string, sweepTargets []string) {
+//
+// tlsProbe is the probe phase's --tls-probe; the fingerprint phase always
+// handshakes, since the certificate is part of what it reports.
+func (r *Runner) prefetchProbeTargets(ctx context.Context, requestConcurrency int, scanUUID string, sweepTargets []string, tlsProbe bool) {
 	targets := distinctSweepEndpoints(sweepTargets)
 	if len(targets) == 0 {
 		return
 	}
-	tlsProbe := r.options.TLSProbe
 
 	start := time.Now()
 	var resolved, tlsOK, attempted atomic.Int64

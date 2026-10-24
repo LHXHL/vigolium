@@ -21,6 +21,8 @@ var interactiveAllowed = map[string]string{
 	"olium":            "TUI",
 	"server":           "long-running service",
 	"arjun":            "passthrough shim",
+	"dig":              "passthrough shim",
+	"host":             "passthrough shim",
 	"ffuf":             "passthrough shim",
 	"gau":              "passthrough shim",
 	"katana":           "passthrough shim",

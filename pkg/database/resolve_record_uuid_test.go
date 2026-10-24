@@ -109,3 +109,46 @@ func TestGetRecordByUUIDOrPrefix(t *testing.T) {
 		t.Errorf("short input: got %v, want sql.ErrNoRows", err)
 	}
 }
+
+// TestResolveRecordUUIDInProject: a prefix resolves within one project only, so
+// an ambiguity never names another project's record and another project's
+// unique match reads as no match.
+func TestResolveRecordUUIDInProject(t *testing.T) {
+	db := newTestDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	saved := []*HTTPRecord{
+		{UUID: "aaaa1111-0000-0000-0000-000000000001", URL: "https://p.test/1", Method: "GET", ProjectUUID: "proj-a"},
+		{UUID: "aaaa1111-0000-0000-0000-000000000002", URL: "https://p.test/2", Method: "POST", ProjectUUID: "proj-a"},
+		{UUID: "aaaa2222-0000-0000-0000-000000000003", URL: "https://p.test/3", Method: "GET", ProjectUUID: "proj-a"},
+		{UUID: "aaaa2222-0000-0000-0000-000000000004", URL: "https://q.test/4", Method: "GET", ProjectUUID: "proj-b"},
+		{UUID: "bbbb3333-0000-0000-0000-000000000005", URL: "https://q.test/5", Method: "GET", ProjectUUID: "proj-b"},
+	}
+	if _, err := repo.SaveRecordsBatch(ctx, saved); err != nil {
+		t.Fatalf("SaveRecordsBatch: %v", err)
+	}
+
+	got, cands, err := repo.ResolveRecordUUIDInProject(ctx, "aaaa2222", "proj-a")
+	if err != nil || len(cands) != 0 || got != saved[2].UUID {
+		t.Fatalf("scoped unique prefix: got %q %v %v, want %q", got, cands, err, saved[2].UUID)
+	}
+
+	_, cands, err = repo.ResolveRecordUUIDInProject(ctx, "aaaa1111", "proj-a")
+	if err != nil || len(cands) != 2 {
+		t.Fatalf("ambiguous prefix: want 2 candidates, got %v %v", cands, err)
+	}
+	if cands[0].Method == "" || cands[0].URL == "" {
+		t.Errorf("candidates carry method and url: %+v", cands[0])
+	}
+
+	if _, _, err := repo.ResolveRecordUUIDInProject(ctx, "bbbb3333", "proj-a"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("another project's record must read as no match, got %v", err)
+	}
+
+	// Unscoped (-S) sees every project.
+	_, cands, err = repo.ResolveRecordUUIDInProject(ctx, "aaaa2222", "")
+	if err != nil || len(cands) != 2 {
+		t.Fatalf("unscoped: want 2 candidates across projects, got %v %v", cands, err)
+	}
+}

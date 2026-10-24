@@ -22,7 +22,7 @@ func NewPayload() (*Payload, error) {
 	if _, err := rand.Read(buf); err != nil {
 		return nil, err
 	}
-	canary := "vig-x-" + hex.EncodeToString(buf)
+	canary := "vigolium-x-" + hex.EncodeToString(buf)
 	body := fmt.Sprintf(`"'><svg/onload=alert(%q)>//`, canary)
 	hash := fmt.Sprintf(`<svg/onload=alert(%q)>`, canary)
 	return &Payload{Canary: canary, Body: body, Hash: hash}, nil

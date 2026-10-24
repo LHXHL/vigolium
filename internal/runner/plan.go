@@ -396,7 +396,7 @@ func planPhaseBudget(settings *config.Settings, opts *types.Options, phase Nativ
 			b.Source = scanplan.SourceFlag
 		}
 		return b
-	case PhaseDynamicAssessment, PhaseProbe:
+	case PhaseDynamicAssessment, PhaseProbe, PhaseFingerprint:
 		return phaseWideBudget(pace.ResolvePhase(string(phase)), scanplan.SemanticsPhase)
 	case PhaseKnownIssueScan:
 		return phaseWideBudget(pace.ResolvePhase(string(phase)), scanplan.SemanticsPerLeg)

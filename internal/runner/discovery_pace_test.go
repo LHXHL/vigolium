@@ -119,3 +119,42 @@ func TestDiscoveryConcurrency(t *testing.T) {
 		t.Errorf("no settings: got %d, want 25", got)
 	}
 }
+
+// TestDiscoveryWirePace pins discovery's brute-force width and protocol: by
+// default wordlist fuzzing runs as wide as the per-host slot cap over the best
+// protocol, an explicit -c sets the pace for it too, and the discovery.engine
+// keys override both.
+func TestDiscoveryWirePace(t *testing.T) {
+	withEngine := func(protocol string, brute int) *config.Settings {
+		s := paceSettings(nil)
+		s.Discovery.Engine.Protocol = protocol
+		s.Discovery.Engine.BruteForceConcurrency = brute
+		return s
+	}
+	tests := []struct {
+		name        string
+		opts        *types.Options
+		settings    *config.Settings
+		concurrency int
+		wantBrute   int
+		wantProto   string
+	}{
+		{"defaults: per-host cap, auto", &types.Options{}, paceSettings(nil), 25, types.DefaultMaxPerHost, "auto"},
+		{"no settings", &types.Options{}, nil, 25, types.DefaultMaxPerHost, "auto"},
+		{"never below the phase concurrency", &types.Options{}, paceSettings(nil), 60, 60, "auto"},
+		{"scanning_pace.max_per_host", &types.Options{}, paceSettings(func(p *config.ScanningPaceConfig) { p.MaxPerHost = 10 }), 25, 25, "auto"},
+		{"typed --max-per-host", &types.Options{MaxPerHost: 100, MaxPerHostExplicitlySet: true}, paceSettings(nil), 25, 100, "auto"},
+		{"explicit -c is the pace", &types.Options{Concurrency: 5, ConcurrencyExplicitlySet: true}, paceSettings(nil), 5, 5, "auto"},
+		{"engine keys override", &types.Options{}, withEngine("HTTP1", 200), 25, 200, "http1"},
+		{"protocol alias is canonicalized", &types.Options{}, withEngine("h2", 0), 25, types.DefaultMaxPerHost, "http2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Runner{options: tc.opts, settings: tc.settings}
+			brute, proto := r.discoveryWirePace(tc.concurrency)
+			if brute != tc.wantBrute || proto != tc.wantProto {
+				t.Errorf("discoveryWirePace = %d, %q; want %d, %q", brute, proto, tc.wantBrute, tc.wantProto)
+			}
+		})
+	}
+}

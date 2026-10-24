@@ -35,6 +35,8 @@ directly with `vigolium run <phase>` (see [run](#run)) — e.g. `run spidering` 
 - [scan-url](#scan-url)
 - [scan-request](#scan-request)
 - [run](#run)
+- [fingerprint](#fingerprint)
+- [dns](#dns)
 - [Strategy and Phase Interaction](#strategy-and-phase-interaction)
 - [Replacing standalone recon tools](#replacing-standalone-recon-tools)
 
@@ -220,7 +222,8 @@ is rate-limited, metered, or behind a WAF you do not want to trip.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--probe` | bool | `false` | Enable the host-sweep phase (same as `vigolium run probe`) |
-| `--tls-probe` | bool | `false` | Handshake each HTTPS target; report negotiated version/cipher and the leaf certificate inline in the `--format jsonl` record. Not stored |
+| `--tls-probe` | bool | `false` | Handshake each HTTPS target; record negotiated version/cipher and the leaf certificate per host:port (read back with `vigolium hosts -j`, and as `tls` on `traffic -j` rows) |
+| `--depth` | string | auto | `fingerprint` only: `light` (~9 reads/origin), `standard` (~60), `full` (adds sensitive paths, OPTIONS on answered paths, source maps). Default standard, light past 50 targets |
 | `--redirect-mode` | string | `any` | `off` \| `same-host` \| `same-apex` \| `any`. `same-apex` follows within the registrable domain (`www.example.com` → `example.com` yes, `example.com` → `tracker.example.net` no). Applies to **every** phase, not just probe |
 | `--record-redirect-chain` | bool | `false` | Each followed hop becomes its own `http_records` row, chained by `parent_uuid`. Read by the probe phase |
 | `--no-response` | bool | `false` | Drop raw request/response bytes from output, keep every derived field (alias of `--omit-response`) |
@@ -535,6 +538,59 @@ vigolium run dynamic-assessment -t https://example.com
 ```
 
 ---
+
+## fingerprint
+
+**Usage:** `vigolium fingerprint [url ...] [flags]` (same as `vigolium run fingerprint`)
+
+Per origin, a bounded set of reads whose conclusions are stored as host facts:
+the base page (title, `Server`, `X-Powered-By`, HTTP version, `Alt-Svc`, security
+headers, JS framework signals, login forms, stack rules), the favicon the page
+links (mmh3 + MD5 + SHA-256), well-known paths, API-definition paths, GraphQL
+introspection, OPTIONS, a CORS preflight from a foreign Origin, Host-header
+variants, three random paths for the **not-found baseline**, and — at `--depth
+full` — sensitive-file paths, OPTIONS on every path that answered, and source maps.
+
+- Every request goes through the scan engine: scope, `--rate-limit`,
+  `--max-per-host`, `--max-requests[-per-host]`, WAF pacing; each is stored as an
+  `http_record` with `source fingerprint`.
+- Only reads (GET, OPTIONS, one introspection POST). Redirects are not followed —
+  a 301 from `/robots.txt` to `/login` is the answer. A WAF block page is kept
+  (remark `blocked:<reason>`): which edge answers is part of the fingerprint.
+- The TLS handshake always runs for HTTPS origins.
+- A path counts as reachable only when it does not look like the origin's
+  not-found answer, so a host that serves 200 for everything does not "have"
+  `/actuator` and `/wp-login.php`.
+
+`-j` is the scan document with the fingerprinted origins as `items` (the `hosts`
+view: `title`, `server`, `status_code`, `technology`, `favicon_mmh3`,
+`soft_not_found`, `tls_version`, `sans`, plus the full `fingerprint`, `not_found`
+and `tls` documents, which `--compact` drops).
+
+```bash
+vigolium fingerprint https://app.example -j
+vigolium fingerprint -T hosts.txt --depth light -j --compact
+vigolium hosts --soft-404 -j --fields hostname,port,not_found
+```
+
+The stored baseline then answers "is this record the not-found page?" for any
+later record from that origin: `vigolium traffic -j --fields url,matches_not_found`,
+or drop them with `--exclude-not-found`.
+
+## dns
+
+**Usage:** `vigolium dns [name|url ...] [flags]`
+
+Resolves A, AAAA, CNAME, MX, NS, TXT, SOA and CAA (`--type` to narrow) against
+the system resolver or `--resolver host[:port]`, and stores the answers on the
+host's port-0 row (`vigolium hosts --has dns`). The A/AAAA/CNAME also appear on
+`traffic -j` rows for that host. Names outside the configured host scope are
+refused unless `--ignore-scope`; `--no-store` prints without storing.
+
+```bash
+vigolium dns example.com api.example.com -j
+vigolium dns -T hosts.txt --type mx,txt --format tsv     # name, type, ttl, value per record
+```
 
 ## Strategy and Phase Interaction
 
@@ -917,7 +973,7 @@ against that output reads these unmodified.
 |---|---|
 | `--format jsonl` | JSONL on stdout (human progress stays on stderr) |
 | `--no-response` | Drop raw request/response bytes; keep every derived field (alias of `--omit-response`) |
-| `--tls-probe` | Handshake each HTTPS target; report version/cipher + leaf certificate |
+| `--tls-probe` | Handshake each HTTPS target; record version/cipher + leaf certificate per host:port |
 | `--redirect-mode` | `off` \| `same-host` \| `same-apex` \| `any` — probe defaults to `same-apex` |
 | `--record-redirect-chain` | Each followed hop becomes its own record, chained by `parent_uuid` (on by default here) |
 | `-c/--concurrency` | Request workers; DNS prefetch runs at `min(c*4, 128)` |
@@ -945,18 +1001,56 @@ posture — dynamic vs edge-cached, permissive CORS, leaked internals, API
 markers). `technology` carries the host's detected stack, written once every
 fingerprint module has settled.
 
-**Not stored, only reported.** `a`/`aaaa`/`cname`/`tls` are output-only: the
-schema keeps a single `ip` column, because a sweep writes several records per
-host and storing the full answer per row would be many copies of one identical,
-TTL-stale blob. Reading the same database back later shows `ip` alone — re-run
-the probe if you need the rest. `surface_score`, `technology`, `response_time_ms`
-and `parent_uuid` ARE stored.
+**Stored per host, not per record.** `a`/`aaaa`/`cname`/`tls` describe the host,
+so they are kept once per host:port and run (`host_observations`), not copied onto
+every record; the record keeps a single `ip` column. `traffic -j` merges them back
+onto each row, and `vigolium hosts -j` reads them without a record (`--sans` prints
+the certificate names, a ready `-T` list). `surface_score`, `technology`,
+`response_time_ms` and `parent_uuid` are record columns.
 
 Rank a finished sweep:
 
 ```bash
 vigolium traffic --source probe --sort surface_score -n 50
 vigolium traffic --source probe -j --fields url,status_code,surface_score,ip
+```
+
+### curl -I / favicon hashing / OPTIONS / Host-header curls -> `fingerprint`
+
+The per-host curl work — headers, the favicon hash, `robots.txt` and
+`.well-known/*`, OPTIONS, a foreign-Origin preflight, Host-header variants, "does
+this host answer 200 for everything?" — is one command whose requests are scoped,
+paced and stored, and whose conclusions are re-readable:
+
+```bash
+vigolium fingerprint -T hosts.txt -j --compact
+vigolium hosts --format tsv --fields hostname,port,title,server,favicon_mmh3,soft_not_found
+```
+
+`favicon_mmh3` is the Shodan `http.favicon.hash` / FOFA `icon_hash` key; the MD5
+(Censys) is in `fingerprint.favicon.md5`. See [fingerprint](#fingerprint).
+
+### dig / host / nslookup -> `dns`
+
+The dig and host shims accept their usual argv and route to `vigolium dns`, which
+stores every answer for `vigolium hosts` to read back:
+
+```bash
+vigolium dig +short MX example.com @1.1.1.1      # → vigolium dns example.com --type mx --resolver 1.1.1.1
+vigolium dns -T hosts.txt --type a,cname,txt -j
+```
+
+Resolution only: `dig AXFR` and reverse lookups are refused.
+
+### openssl s_client -> `hosts`
+
+The negotiated version, cipher and leaf certificate (subject, SANs, issuer,
+validity, fingerprints) are stored by `fingerprint` (always) and `run probe
+--tls-probe`:
+
+```bash
+vigolium hosts '*.example.com' -j --fields hostname,port,tls_version,cert_not_after,sans
+vigolium hosts --has tls --sans > more-hosts.txt
 ```
 
 ### subfinder / amass -> not covered

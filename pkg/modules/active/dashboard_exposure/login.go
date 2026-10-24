@@ -52,7 +52,7 @@ func (m *Module) tryDefaultLogin(
 	if !step() {
 		return nil
 	}
-	bogusUser := "vig-" + utils.RandomString(8)
+	bogusUser := "vigolium-" + utils.RandomString(8)
 	bogusPass := utils.RandomString(16)
 	if neg := m.attemptLogin(client, rawHTTP, svc, prefix, lp, lp.Paths[0], bogusUser, bogusPass); neg != nil &&
 		lp.Success.Match(neg.status, neg.get, neg.body, neg.bodyLower) {

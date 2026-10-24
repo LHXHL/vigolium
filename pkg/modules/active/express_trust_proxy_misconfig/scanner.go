@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	injectedHost = "vgn-trust-test.example"
+	injectedHost = "vigolium-trust-test.example"
 	injectedIP   = "127.0.0.1"
 	injectedPort = "1337"
 )
@@ -393,7 +393,7 @@ func fetchHeadStatusLoc(ctx *httpmsg.HttpRequestResponse, httpClient *http.Reque
 // suppresses a real finding.
 func (m *Module) confirmHostReflection(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester) bool {
 	confirmed, err := modkit.ConfirmReflection(2, func(canary string) (bool, error) {
-		host := canary + ".vgn-trust.example"
+		host := canary + ".vigolium-trust.example"
 		raw, herr := httpmsg.AddOrReplaceHeader(ctx.Request().Raw(), "X-Forwarded-Host", host)
 		if herr != nil {
 			return false, herr

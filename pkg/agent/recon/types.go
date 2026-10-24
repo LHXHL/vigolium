@@ -90,6 +90,23 @@ type TechStackReport struct {
 	// FaviconHash is the MD5 of /favicon.ico. Useful for the planner to
 	// correlate with known signatures (Shodan/favicon hash databases).
 	FaviconHash string `json:"favicon_hash,omitempty"`
+	// Favicon is the icon hashed for search-engine pivots (mmh3 for Shodan and
+	// FOFA, MD5 for Censys). Set by Analyze; FaviconHash carries its MD5.
+	Favicon *FaviconInfo `json:"favicon,omitempty"`
+
+	// Base-response facts, from data already on the wire.
+	BaseStatus   int    `json:"base_status,omitempty"`
+	BaseLocation string `json:"base_location,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Server       string `json:"server,omitempty"`
+	PoweredBy    string `json:"powered_by,omitempty"`
+	HTTPVersion  string `json:"http_version,omitempty"`
+	AltSvc       string `json:"alt_svc,omitempty"`
+
+	// SourceMaps are the source maps that answered with a map document.
+	SourceMaps []string `json:"source_maps,omitempty"`
+	// Depth is the plan depth an Analyze pass ran at ("" for Run).
+	Depth string `json:"depth,omitempty"`
 
 	// VHostFindings records anomalies observed when probing alternate
 	// Host headers (localhost, admin.<host>, target IP). Differences in

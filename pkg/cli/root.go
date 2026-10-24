@@ -292,6 +292,13 @@ Run 'vigolium <command> --help' for command-specific flags and examples, or 'vig
 		// VIGOLIUM_DISABLE_UPDATE_CHECK and stays silent under --json/CI/non-TTY.
 		maybeCheckForUpdate(cmd)
 
+		// After the update check, which may re-exec this process: a pipe drained
+		// into a spool file before the re-exec would be empty for the new image.
+		// See input_spool.go.
+		if err := spoolNonRegularInputs(cmd); err != nil {
+			return err
+		}
+
 		// Handle -M/--list-modules shortcut
 		if globalListModules {
 			if err := listModulesShortcut(); err != nil {
@@ -361,6 +368,7 @@ func init() {
 	pf.BoolVar(&globalNoColor, "no-color", false, "Disable ANSI color in all output (same as --color=never; also honored via the NO_COLOR env var)")
 	registerOutputHygieneFlags(pf)
 	pf.BoolVar(&globalFullExample, "full-example", false, "Show full example commands organized by section")
+	pf.BoolVar(&globalUsage, "usage", false, "Print this command's flags, one line each, and exit (-j: the 'schema flags' document)")
 	pf.StringArrayVar(&globalExtScripts, "ext", nil, "Load JavaScript extension script (repeatable)")
 	pf.StringVar(&globalExtDir, "ext-dir", "", "Override extension scripts directory")
 	pf.BoolVar(&globalExtAllowFailures, "ext-allow-failures", false, "Scan even when an extension named with --ext fails to load (default: abort before any traffic, exit 2 extension_load_failed)")
@@ -438,6 +446,12 @@ func Execute() {
 	// cleanup rather than only scans.
 	if err := scratch.Acquire(); err != nil {
 		zap.L().Warn("Failed to create scratch directory; temporary files will fall back to the system temp dir", zap.Error(err))
+	}
+
+	// --usage is answered before cobra parses anything (usage_compact.go).
+	if runUsageIfRequested(rootCmd, os.Args[1:]) {
+		releaseScratch()
+		os.Exit(0)
 	}
 
 	// ExecuteC (not Execute) so we get the command that actually ran back —

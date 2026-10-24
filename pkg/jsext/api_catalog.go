@@ -50,7 +50,7 @@ const exSHA256 = `var hash = vigolium.utils.sha256("hello")`
 const exMD5 = `var hash = vigolium.utils.md5("hello")`
 
 // ─── vigolium.utils / Strings ────────────────────────────────────────────────
-const exRandomString = `var canary = "VGNM" + vigolium.utils.randomString(8)`
+const exRandomString = `var canary = "VIGOLIUM" + vigolium.utils.randomString(8)`
 
 // ─── vigolium.utils / System ─────────────────────────────────────────────────
 const exSleep = `vigolium.utils.sleep(500) // wait 500ms`

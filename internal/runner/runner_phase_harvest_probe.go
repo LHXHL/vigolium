@@ -401,7 +401,7 @@ func harvestRequestTarget(rr *httpmsg.HttpRequestResponse) string {
 func randomHarvestPath() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
-	return "vgl-" + hex.EncodeToString(b[:])
+	return "vigolium-" + hex.EncodeToString(b[:])
 }
 
 // notFoundPrint is an origin's answer to a path that does not exist — the

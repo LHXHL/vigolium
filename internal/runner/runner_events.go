@@ -125,6 +125,7 @@ var executorProgressUnit = map[NativePhase]string{
 	PhaseDynamicAssessment: progressUnitRecords,
 	PhaseSeed:              progressUnitRecords,
 	PhaseProbe:             progressUnitTargets,
+	PhaseFingerprint:       progressUnitRecords,
 }
 
 // phaseCounter is one additional request counter a phase contributes, with the

@@ -488,7 +488,7 @@ func (m *Module) confirmRedirectReflection(
 	payloadValue string,
 ) bool {
 	confirmed, err := modkit.ConfirmReflection(2, func(canary string) (bool, error) {
-		freshHost := "vgo" + canary + ".example.com"
+		freshHost := canary + ".example.com"
 		value := strings.ReplaceAll(payloadValue, "evil.example.com", freshHost)
 		params, e := httpmsg.GetURLParametersMap(rawReq)
 		if e != nil {

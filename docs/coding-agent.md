@@ -569,6 +569,29 @@ is piped through `base64 --decode` (`stdin_base64` in `-j`), and
 `--redact-auth` masks Authorization/Cookie/API-key values. `traffic --curl`
 renders at most 20 commands without `-a`.
 
+### Terse rows and one field vocabulary
+
+`--format tsv` on `traffic`, `finding`, `endpoints`, `params`, `hosts` and `dns`
+prints a header line and one line per row — nothing else on stdout. Columns are
+the `--fields` names. Tabs, newlines and backslashes in a value are escaped.
+
+`--fields` accepts every key a view can carry plus shared aliases (`status`,
+`code`, `length`, `size`, `words`, `time`, `content_type`, `title`, `id`,
+`headers`), and the projected row uses the names passed. A view's own key wins
+over an alias. `--compact` and `--fields` are on every `-j` list command.
+
+Record references take a unique 8+ character UUID prefix anywhere a UUID is
+accepted (`traffic body <prefix>`, `--uuid`, `replay -u`, `fuzz -u`, `db export
+--uuid`); an ambiguous prefix fails with `error.code: ambiguous_id` naming the
+candidates, scoped to the current project.
+
+## Host facts
+
+`vigolium hosts` reads what runs stored about hosts rather than requests — DNS
+(`vigolium dns`), the TLS certificate (`fingerprint`, `run probe --tls-probe`),
+the fingerprint report and the not-found baseline. `vigolium schema storage`
+describes the database's tables and which `-j` field each column surfaces as.
+
 ## Endpoint and parameter inventory
 
 ```bash

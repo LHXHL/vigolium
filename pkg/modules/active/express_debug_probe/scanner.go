@@ -137,7 +137,7 @@ func probeRandomEndpoint(
 	httpClient *http.Requester,
 	target, host, notFoundHash string,
 ) *output.ResultEvent {
-	probePath := "/vgn-express-debug-test"
+	probePath := "/vigolium-express-debug-test"
 
 	probeRaw, err := httpmsg.SetPath(ctx.Request().Raw(), probePath)
 	if err != nil {

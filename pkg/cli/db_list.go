@@ -113,7 +113,7 @@ func registerListFlags(cmd *cobra.Command) {
 
 	// Filter flags
 	cmd.Flags().StringSliceVar(&listUUIDs, "uuid", nil,
-		"Select exact stored record(s) by UUID (repeatable/comma-separated). Applied before pagination")
+		"Select exact stored record(s) by UUID or unique 8+ char prefix (repeatable/comma-separated). Applied before pagination")
 	cmd.Flags().StringArrayVar(&listURLs, "url", nil,
 		"Select records whose URL matches EXACTLY (repeatable; OR-ed). Compared against the stored URL with no normalization — use --path or --search for substring matching")
 	cmd.Flags().StringVar(&listHost, "host", "", "Filter records by hostname pattern (wildcard supported)")
@@ -291,10 +291,15 @@ func runListHTTPRecords(ctx context.Context, cmd *cobra.Command, db *database.DB
 	if err != nil {
 		return err
 	}
+	// --uuid takes unique prefixes, resolved to exact identity before the query.
+	recordUUIDs, err := resolveRecordRefs(ctx, database.NewRepository(db), listUUIDs, projectUUID)
+	if err != nil {
+		return err
+	}
 
 	filters := database.QueryFilters{
 		ProjectUUID:     projectUUID,
-		RecordUUIDs:     listUUIDs,
+		RecordUUIDs:     recordUUIDs,
 		URLsExact:       listURLs,
 		HostPattern:     listHost,
 		ScanUUID:        listScanUUID,
@@ -727,7 +732,7 @@ func displayJSON(ctx context.Context, cmd *cobra.Command, db *database.DB, recor
 	// appeared only when THIS process happened to have probed the host and not
 	// yet evicted it - so reading a database back showed nothing, and reading a
 	// large sweep back showed facts for its last hosts only.
-	opts := agentViewOptionsFromFlags().withHostFacts(ctx, db, projectUUID, "")
+	opts := agentViewOptionsFromFlags().withHostFacts(ctx, db, projectUUID, "").withNotFound(ctx, db, projectUUID)
 	env := newMachineEnvelope(cmd, kindRead, "records",
 		recordViews(records, opts), total, offset, limit)
 	env.WithProjectScope(projectUUID)

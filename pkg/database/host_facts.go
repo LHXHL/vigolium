@@ -98,6 +98,9 @@ type StoredHostFacts struct {
 	// emitted - the same order as the URL-dedup set the export already keeps, so
 	// it adds no new class of growth.
 	memo map[hostEndpoint]endpointFacts
+	// names memoizes the per-name DNS (port-0) lookup, which every port of a
+	// host would otherwise repeat.
+	names map[string]HostFacts
 
 	// stored and missing partition what the lookups found, for reporting.
 	// HostFacts.Empty() collapses three different states - never probed, probed
@@ -117,6 +120,7 @@ func NewStoredHostFacts(ctx context.Context, repo *Repository, projectUUID, scan
 		projectUUID: projectUUID,
 		scanUUID:    scanUUID,
 		memo:        make(map[hostEndpoint]endpointFacts),
+		names:       make(map[string]HostFacts),
 	}
 	s.available = repo.HasHostObservations(ctx)
 	return s
@@ -157,6 +161,16 @@ func (s *StoredHostFacts) resolve(hostname string, port int) endpointFacts {
 			s.available = false
 		} else {
 			facts = stored
+		}
+		// DNS answers `vigolium dns` stored describe the name, on its port-0
+		// row; an endpoint row without its own DNS takes them from there.
+		if s.available && port != 0 && len(facts.A)+len(facts.AAAA)+len(facts.CNAME) == 0 {
+			name, seen := s.names[key.host]
+			if !seen {
+				name, _ = s.repo.LookupHostObservation(s.ctx, s.projectUUID, "", key.host, 0)
+				s.names[key.host] = name
+			}
+			facts.A, facts.AAAA, facts.CNAME = name.A, name.AAAA, name.CNAME
 		}
 	}
 	// Not stored: the process may still have it in cache - an endpoint observed

@@ -30,7 +30,7 @@ type confirmResult struct {
 //
 //  1. CONTROL: a benign source value must land UNDER the intended prefix (and
 //     never escape) — proves the source reaches the path and the page is stable.
-//  2. PAYLOAD round 1: `../vgl-cspt-<canary1>` must escape the prefix, with the
+//  2. PAYLOAD round 1: `../vigolium-cspt-<canary1>` must escape the prefix, with the
 //     canary present in the normalized path.
 //  3. PAYLOAD round 2: a DIFFERENT canary must escape the same way.
 //
@@ -45,7 +45,7 @@ func (m *Module) confirmCandidate(ctx context.Context, base string, cand Candida
 	}
 
 	// 1. Control.
-	controlTok := "vglcsptc" + randToken()
+	controlTok := "vigoliumcsptc" + randToken()
 	controlReqs := m.navigate(ctx, base, cand.SourceParam, controlTok, cookies)
 	controlUnder, controlEscaped := false, false
 	var controlURL, controlMethod string
@@ -97,7 +97,7 @@ type roundResult struct {
 // escapeRound navigates one `../<canary>` payload and returns the captured
 // request that escaped the prefix carrying that canary, or nil.
 func (m *Module) escapeRound(ctx context.Context, base string, cand Candidate, cookies []*http.Cookie, prefix string) *roundResult {
-	canary := "vgl-cspt-" + randToken()
+	canary := "vigolium-cspt-" + randToken()
 	value := "../" + canary
 	for _, r := range m.navigate(ctx, base, cand.SourceParam, value, cookies) {
 		esc, norm := escapesPrefix(prefix, r.URL)

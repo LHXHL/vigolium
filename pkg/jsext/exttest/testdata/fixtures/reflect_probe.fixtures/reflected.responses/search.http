@@ -1,7 +1,7 @@
-// match: VGNMPROBE
+// match: VIGOLIUMPROBE
 GET /search
 
 HTTP/1.1 200 OK
 Content-Type: text/html
 
-<p>You searched for VGNMPROBE</p>
+<p>You searched for VIGOLIUMPROBE</p>

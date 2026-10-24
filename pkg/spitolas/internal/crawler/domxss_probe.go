@@ -344,7 +344,7 @@ func (c *Crawler) confirmDOMXSS(ctx context.Context, page *browser.Page, cand re
 		return nil
 	}
 
-	prop := fmt.Sprintf("__vgnxss%d", seq)
+	prop := fmt.Sprintf("__vigoliumxss%d", seq)
 	payload := fmt.Sprintf("<img src=x onerror=window.%s=1>", prop)
 	probeURL, ok := buildDOMXssProbeURL(cand, payload)
 	if !ok {
@@ -373,7 +373,7 @@ func (c *Crawler) confirmDOMXSS(ctx context.Context, page *browser.Page, cand re
 // reflection gate for a param slot whose crawled value did not already reflect — a
 // non-reflecting slot never reaches the execution-canary navigation.
 func (c *Crawler) paramReflectsMarker(ctx context.Context, page *browser.Page, cand reflectedCandidate, seq int) bool {
-	marker := fmt.Sprintf("vgnrefl%d7k", seq)
+	marker := fmt.Sprintf("vigoliumrefl%d7k", seq)
 	probeURL, ok := buildDOMXssProbeURL(cand, marker)
 	if !ok {
 		return false
@@ -402,9 +402,9 @@ func buildDOMXssProbeURL(cand reflectedCandidate, payload string) (string, bool)
 	enc := pctEncodeComponent(payload)
 	if !cand.inFrag {
 		q := u.Query()
-		q.Set(cand.param, "VGNPLACEHOLDER")
+		q.Set(cand.param, "VIGOLIUMPLACEHOLDER")
 		u.RawQuery = q.Encode()
-		return strings.Replace(u.String(), "VGNPLACEHOLDER", enc, 1), true
+		return strings.Replace(u.String(), "VIGOLIUMPLACEHOLDER", enc, 1), true
 	}
 	frag := u.Fragment
 	qi := strings.IndexByte(frag, '?')

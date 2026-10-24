@@ -159,7 +159,7 @@ func ConfirmAEM(ctx *httpmsg.HttpRequestResponse, client *http.Requester, sc *mo
 	}
 	host := hostOf(ctx)
 
-	if sc != nil && sc.TechStack != nil && sc.TechStack.HasAny(host, techTags) {
+	if sc.HasAnyTech(host, techTags) {
 		return true
 	}
 

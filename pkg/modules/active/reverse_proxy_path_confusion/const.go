@@ -76,4 +76,4 @@ var confusionShells = []confusionShell{
 // decoyTarget is a path the backend will not recognize. The same confusion shell
 // wrapped around it must NOT produce the endpoint fingerprint — that proves the
 // fingerprint came from the real target path, not from the shell prefix.
-const decoyTarget = "/vgolium-confusion-probe-404"
+const decoyTarget = "/vigolium-confusion-probe-404"

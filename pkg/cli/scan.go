@@ -47,6 +47,7 @@ func init() {
 	registerModuleSelectionFlags(flags)
 	registerScanPipelineFlags(flags)
 	registerSpecFlags(flags)
+	flags.StringVar(&scanOpts.FingerprintDepth, "fingerprint-depth", "", "With the fingerprint phase: reads per origin, light|standard|full (default standard, light past 50 targets; 'vigolium fingerprint --depth')")
 	registerNativeScanFlags(flags, true)
 	addFlagAliases(scanCmd, nativeScanFlagAliases)
 }

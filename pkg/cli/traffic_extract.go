@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -54,14 +52,16 @@ const (
 )
 
 var trafficBodyCmd = &cobra.Command{
-	Use:   "body",
+	Use:   "body [uuid]",
 	Short: "Extract one stored request or response body",
 	Long: "Write the body of a single stored HTTP message to stdout or to a file.\n\n" +
-		"Selects exactly one record by --uuid and one side (--response, the default, or --request). " +
+		"Selects exactly one record — by positional UUID or --uuid, either one a full UUID or a unique prefix of at least 8 characters — " +
+		"and one side (--response, the default, or --request). " +
 		"Never re-sends the exchange — use `vigolium replay` for that; pass --read-only to open the source without modifying it.",
-	Args: cobra.NoArgs,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runTrafficBody,
-	Example: `  # Save a response body to a file
+	Example: `  # Save a response body to a file (a uuid_short prefix works too)
+  vigolium traffic body <record-id> -o response.json
   vigolium traffic body --uuid <record-id> -o response.json
   # The request side instead
   vigolium traffic body --uuid <record-id> --request -o request.txt
@@ -74,14 +74,16 @@ var trafficBodyCmd = &cobra.Command{
 }
 
 var trafficHeadersCmd = &cobra.Command{
-	Use:   "headers",
+	Use:   "headers [uuid]",
 	Short: "Read one stored message's headers without its body",
 	Long: "Print the header block of a single stored HTTP message.\n\n" +
 		"Under --json the headers are an ordered array of {name, value} entries, so repeated headers " +
-		"(Set-Cookie above all) survive — a map would silently keep only the last one.",
-	Args: cobra.NoArgs,
+		"(Set-Cookie above all) survive — a map would silently keep only the last one. " +
+		"The record is named by positional UUID or --uuid (a unique prefix of at least 8 characters works).",
+	Args: cobra.MaximumNArgs(1),
 	RunE: runTrafficHeaders,
 	Example: `  # Response headers as an ordered array
+  vigolium traffic headers <record-id> --json
   vigolium traffic headers --uuid <record-id> --json
   # Request headers
   vigolium traffic headers --uuid <record-id> --request --json
@@ -94,7 +96,7 @@ func init() {
 
 	for _, cmd := range []*cobra.Command{trafficBodyCmd, trafficHeadersCmd} {
 		f := cmd.Flags()
-		f.StringVar(&extractUUID, "uuid", "", "UUID of the stored record to read (required)")
+		f.StringVar(&extractUUID, "uuid", "", "UUID (or unique prefix, 8+ chars) of the stored record to read; the positional argument is the same")
 		f.BoolVar(&extractRequestSide, "request", false, "Read the request side")
 		f.Bool("response", false, "Read the response side (default)")
 		f.StringVarP(&extractOutput, "output", "o", "", "Write to this file instead of stdout; '-' forces stdout")
@@ -149,6 +151,21 @@ type extractedMessage struct {
 	ProjectScope string
 }
 
+// takePositionalUUID folds `traffic body <uuid>` into --uuid. Both naming the
+// same record is fine; naming two different ones is a usage error rather than
+// a silent pick.
+func takePositionalUUID(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	pos := strings.TrimSpace(args[0])
+	if flag := strings.TrimSpace(extractUUID); flag != "" && flag != pos {
+		return usageErrorf("the positional UUID %q and --uuid %q name different records; pass one", pos, flag)
+	}
+	extractUUID = pos
+	return nil
+}
+
 // loadExtractTarget resolves --uuid to one record and isolates the selected
 // side, distinguishing "no such record" from "that side was never captured".
 // Collapsing those two into an empty result is what made a mistyped UUID look
@@ -161,8 +178,8 @@ type extractedMessage struct {
 func loadExtractTarget(ctx context.Context) (*extractedMessage, error) {
 	uuid := strings.TrimSpace(extractUUID)
 	if uuid == "" {
-		return nil, usageErrorf("--uuid is required: name exactly one stored record to read.\n\n" +
-			"Find one with: vigolium traffic --compact --fields uuid,url -j")
+		return nil, usageErrorf("name exactly one stored record to read: `traffic body <uuid>` or --uuid <uuid> (a unique 8+ character prefix works).\n\n" +
+			"Find one with: vigolium traffic --compact --fields uuid_short,url -j")
 	}
 
 	// The body/header columns are the entire point of this command, so nothing is
@@ -172,30 +189,15 @@ func loadExtractTarget(ctx context.Context) (*extractedMessage, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	notFound := func() error {
-		return codedErrorf(apicontract.CodeRecordNotFound,
-			"no stored record has uuid %q.\n\nList what is there with: vigolium traffic --compact --fields uuid,url -j", uuid)
-	}
-
-	record, err := database.NewRepository(db).GetRecordByUUID(ctx, uuid)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, notFound()
-		}
-		return nil, fmt.Errorf("read record %q: %w", uuid, err)
-	}
-
-	// Out-of-scope reads report the SAME error as a missing row, deliberately:
-	// "that record belongs to another project" confirms the UUID exists, which is
-	// exactly what a scoped reader must not learn. Same decision, same shape, as
-	// replay's record and finding lookups.
-	projectUUID, err := effectiveProjectUUID()
+	// Resolved within the project the read is scoped to: a prefix never matches
+	// (or names, in an ambiguity) another project's record, and another
+	// project's record reads the same as a missing one — "it belongs elsewhere"
+	// would confirm it exists. GetRecordByUUID alone is a bare primary-key read.
+	record, scope, err := loadRecordRef(ctx, database.NewRepository(db), uuid)
 	if err != nil {
 		return nil, err
 	}
-	if projectUUID != "" && record.ProjectUUID != projectUUID {
-		return nil, notFound()
-	}
+	uuid = record.UUID
 
 	side := selectedSide()
 	raw := record.RawRequest
@@ -216,7 +218,7 @@ func loadExtractTarget(ctx context.Context) (*extractedMessage, error) {
 		Side:         side,
 		Headers:      headers,
 		Body:         body,
-		ProjectScope: projectUUID,
+		ProjectScope: scope,
 	}, nil
 }
 
@@ -230,6 +232,9 @@ func runTrafficBody(cmd *cobra.Command, args []string) error {
 			extractRepresentation, reprDecoded, reprStored)
 	}
 
+	if err := takePositionalUUID(args); err != nil {
+		return err
+	}
 	msg, err := loadExtractTarget(context.Background())
 	if err != nil {
 		return err
@@ -366,6 +371,9 @@ func newExtractEnvelope(cmd *cobra.Command, msg *extractedMessage, receipt map[s
 func runTrafficHeaders(cmd *cobra.Command, args []string) error {
 	defer closeDatabaseOnExit()
 
+	if err := takePositionalUUID(args); err != nil {
+		return err
+	}
 	msg, err := loadExtractTarget(context.Background())
 	if err != nil {
 		return err

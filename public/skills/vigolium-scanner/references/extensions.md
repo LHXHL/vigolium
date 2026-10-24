@@ -168,7 +168,7 @@ my-extensions/
   probe.fixtures/
     reflected.http           # // insertion: URL_PARAM:q
     reflected.responses/     # canned answers to the extension's own requests
-      search.http            # // match: VGNM, then "GET /search", a blank line, the response
+      search.http            # // match: VIGOLIUM, then "GET /search", a blank line, the response
 ```
 
 ```http

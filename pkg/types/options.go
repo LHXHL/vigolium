@@ -284,10 +284,19 @@ type Options struct {
 	ProbeEnabled bool
 
 	// TLSProbe makes the probe phase complete a TLS handshake per HTTPS target
-	// and report the negotiated version/cipher and the leaf certificate inline in
-	// the JSON output. Not persisted — a certificate belongs to the host, not to
-	// any one record (see pkg/tlsprobe).
+	// and record the negotiated version/cipher and the leaf certificate as a host
+	// observation (host_observations.tls), not on a record — a certificate
+	// belongs to the host, not to any one request (see pkg/tlsprobe).
 	TLSProbe bool
+
+	// FingerprintEnabled runs the fingerprint phase: per origin, a bounded set
+	// of reads (well-known paths, favicon, CORS preflight, OPTIONS, vhost
+	// variants, a not-found baseline) whose conclusions are stored as host facts.
+	// `vigolium fingerprint` (equivalently `run fingerprint`).
+	FingerprintEnabled bool
+	// FingerprintDepth is light, standard or full (recon.Depth); empty picks
+	// standard for a short target list and light for a long one.
+	FingerprintDepth string
 
 	// Browser-based spidering options
 	SpideringEnabled       bool

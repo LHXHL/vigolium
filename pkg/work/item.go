@@ -34,6 +34,12 @@ type WorkItem struct {
 	// cannot tell which of its 5,000 lines produced the row.
 	Target string
 
+	// Remarks are stamped on the record the executor stores for this item, on
+	// a new row only (a dedup hit keeps its own). The executor appends them
+	// itself — a block page kept under KeepBlocked carries "blocked:<reason>" so
+	// a later read can tell it from the application's own answer.
+	Remarks []string
+
 	onComplete func()
 }
 

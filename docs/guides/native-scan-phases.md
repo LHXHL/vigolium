@@ -15,12 +15,13 @@ truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 4. **Harvest probe** (`harvest-probe`) - check the harvested URLs against the live target so later phases scan only the ones that still answer (see [External Harvest](#external-harvest)). Runs only when external-harvest ran AND a later enabled phase reaches the target anyway; `vigolium run external-harvest` alone never schedules it
 5. **Spidering** (`spidering`) - browser-based crawling to discover dynamic content
 6. **Probe** (`probe`) - one request per target, passive modules only, no content discovery (an httpx-style host sweep). Opt-in: runs only with `--only probe` / `vigolium run probe`
-7. **Discovery / Ingestion** (`discovery`) - parse inputs and perform content discovery
-8. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl, including client routes found only in the JavaScript (`spidering.route_seeds`). Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
-9. **Seed** (`seed`) - when discovery/ingestion is skipped (for example `--only dynamic-assessment`), store the CLI targets as records so the assessment phases have something to scan. Not run under scan-on-receive
-10. **Param mining** (`param-mining`) - discover hidden parameters (Arjun-style) on this scan's dynamic endpoints and store each one as a record, so the assessment tests it too (see [Param Mining](#param-mining)). On at `--intensity deep` or with `--param-mining`; never without dynamic assessment
-11. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
-12. **Known Issue Scan** (`known-issue-scan`) - run Nuclei plus native in-process secret detection
+7. **Fingerprint** (`fingerprint`) - per origin, a bounded set of reads (well-known paths, favicon, CORS preflight, OPTIONS, Host-header variants, a not-found baseline) whose conclusions are stored as host facts (see [Fingerprint](#fingerprint)). Opt-in: `vigolium fingerprint` / `vigolium run fingerprint` / `--only fingerprint`
+8. **Discovery / Ingestion** (`discovery`) - parse inputs and perform content discovery
+9. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl, including client routes found only in the JavaScript (`spidering.route_seeds`). Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
+10. **Seed** (`seed`) - when discovery/ingestion is skipped (for example `--only dynamic-assessment`), store the CLI targets as records so the assessment phases have something to scan. Not run under scan-on-receive
+11. **Param mining** (`param-mining`) - discover hidden parameters (Arjun-style) on this scan's dynamic endpoints and store each one as a record, so the assessment tests it too (see [Param Mining](#param-mining)). On at `--intensity deep` or with `--param-mining`; never without dynamic assessment
+12. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
+13. **Known Issue Scan** (`known-issue-scan`) - run Nuclei plus native in-process secret detection
 
 Every step above is a name in the phase vocabulary, so each `phase.started` /
 `phase.finished` id can be looked up in `vigolium strategy -j` (`phases[]`).
@@ -91,6 +92,38 @@ vigolium run discovery -t https://example.com \
   --discover-max-time 30m \
   -c 100 \
   --rate-limit 200
+```
+
+#### Wire protocol and brute-force width
+
+Discovery traffic is multiplexed where the origin allows it. Each origin is
+pinned to one protocol before its first request: HTTP/3 when a direct QUIC
+handshake proves it (never through `--proxy`), else HTTP/2 when TLS ALPN selects
+it, else HTTP/1.1. Every discovery request to that origin then uses the same
+protocol, including the soft-404 learner, so fingerprints are always compared
+against responses of the same protocol. An origin whose HTTP/3 connections stop
+working moves to TCP for the rest of the run and logs a warning. The module
+scanner is unaffected and always sends HTTP/1.1.
+
+Only the wordlist brute-force runs wider. Built-in file and directory lists and
+the `/FUZZ` template get their own pool of `brute_force_concurrency` workers per
+target. That defaults to the per-host slot cap (`scanning_pace.max_per_host`,
+40), or to `-c` when `-c` is given explicitly. The spider, observed-word and
+extension variants, JS fetches and validation probes keep the phase
+concurrency. Every request still passes the scan's egress gate: host slots, rate
+limit and dead-host breaker. Discovery responses also feed the per-host limiter,
+so a host answering 429 or WAF block pages slows discovery down too. The
+Discovery phase header prints the resolved values:
+
+```
+◆ Speed: threads=25, brute-force=40, rate-limit=unlimited, protocol=auto
+```
+
+```yaml
+discovery:
+  engine:
+    protocol: auto              # auto | http1 | http2 | http3
+    brute_force_concurrency: 0  # 0 = scanning_pace.max_per_host (or -c when given)
 ```
 
 ### Spidering
@@ -226,6 +259,34 @@ dynamic-assessment:
     concurrency: 0        # endpoints at once; 0 = min(-c, 10)
 ```
 
+### Fingerprint
+
+```bash
+vigolium fingerprint -T hosts.txt -j --compact          # same as: vigolium run fingerprint -T hosts.txt
+vigolium fingerprint https://app.example --depth full
+```
+
+Per origin it sends a planned set of reads — the base page, the icon it links,
+well-known and API-definition paths, a GraphQL introspection query, OPTIONS, a
+CORS preflight from a foreign Origin, Host-header variants, and three random paths
+— through the scan executor, so scope admission, `--rate-limit`, `--max-per-host`,
+`--max-requests[-per-host]` and WAF pacing all apply, and every request is stored
+as an `http_record` (`source fingerprint`). Redirects are not followed and only
+reads are sent. HTTPS origins always get the TLS handshake.
+
+The conclusions are stored once per origin and run in `host_observations`: the
+report (stack, title, server, HTTP version, security headers, CORS verdict,
+allowed methods, well-known and API-definition hits, login forms, favicon mmh3/MD5)
+and the **not-found baseline** (status, size, title and a response signature for a
+path no application serves). Read them with `vigolium hosts`; compare any later
+record against the baseline with `vigolium traffic --fields url,matches_not_found`
+or `--exclude-not-found`.
+
+`--depth light` is about nine reads per origin, `standard` about sixty, `full` adds
+sensitive-file paths, OPTIONS on every path that answered and source maps. The
+default is standard for up to 50 targets and light beyond. A path counts as found
+only when it does not look like the origin's not-found answer.
+
 ### DynamicAssessment
 
 Runs active and passive vulnerability scanning modules. This is the core scanning phase. CLI aliases: `audit`, `dast`, `assessment`.
@@ -271,6 +332,7 @@ Every phase answers to several spellings. They work identically with `--only`, `
 |-------|--------------|
 | `ingestion` | `ingest`, `ingesting` |
 | `probe` | `probing`, `httpx`, `alive`, `sweep` |
+| `fingerprint` | `fp`, `tech`, `recon` |
 | `discovery` | `discover`, `discovering`, `deparos` |
 | `external-harvest` | `harvest`, `harvesting`, `external-harvester`, `external_harvester` |
 | `spidering` | `spider`, `spitolas`, `crawl`, `crawling`, `crawler` |

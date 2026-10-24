@@ -55,6 +55,36 @@ func TestLoadPayloads(t *testing.T) {
 	}
 }
 
+// TestLoadPayloadsBuiltinAliases: the words a reader of `-w <file|NAME>` types
+// for "the default list" resolve to it, and builtin:<name> is the explicit form.
+func TestLoadPayloadsBuiltinAliases(t *testing.T) {
+	want, err := LoadPayloads([]string{"fuzz"}, nil, nil)
+	if err != nil {
+		t.Fatalf("fuzz: %v", err)
+	}
+	for _, ref := range []string{"builtin", "default", "builtin:fuzz"} {
+		got, err := LoadPayloads([]string{ref}, nil, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", ref, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %d payloads, want the fuzz list's %d", ref, len(got), len(want))
+		}
+	}
+	params, err := LoadPayloads([]string{"builtin:params"}, nil, nil)
+	if err != nil || len(params) == 0 {
+		t.Fatalf("builtin:params: %d payloads, err=%v", len(params), err)
+	}
+	_, err = LoadPayloads([]string{"builtin:nope"}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "dir-short") {
+		t.Fatalf("builtin:nope must fail naming the builtins, got %v", err)
+	}
+	_, err = LoadPayloads([]string{"/no/such/list"}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "builtin/default") {
+		t.Fatalf("a missing file must name the builtin aliases, got %v", err)
+	}
+}
+
 func TestNormalizeRawRequest(t *testing.T) {
 	// Header-only request with the terminator stripped (stdin reader case).
 	got := NormalizeRawRequest([]byte("GET /?q=1 HTTP/1.1\r\nHost: acme.test"))
@@ -183,7 +213,7 @@ func TestRunEndToEnd(t *testing.T) {
 		case q == "boom":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = fmt.Fprint(w, "SQL syntax error near 'boom' — a distinctive body that differs in size")
-		case strings.Contains(q, "vglm-calibrate"):
+		case strings.Contains(q, "vigolium-calibrate"):
 			// Wildcard/catch-all: identical for every improbable value.
 			_, _ = fmt.Fprint(w, "CATCHALL")
 		default:

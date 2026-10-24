@@ -404,6 +404,13 @@ func NewEngineWithContext(parentCtx context.Context, cfg *config.Config, st stor
 	if cfg.Engine.ProxyURL != "" {
 		poolConfig.ProxyURL = cfg.Engine.ProxyURL
 	}
+	poolConfig.Protocol = cfg.Engine.Protocol
+	// Keep a pooled connection for every worker that can be in flight at once
+	// (both lanes): with the default of 10, an HTTP/1.1 origin closed every
+	// connection past the tenth on return and re-dialed it for the next request.
+	poolConfig.MaxIdleConnsPerHost = max(poolConfig.MaxIdleConnsPerHost,
+		cfg.Engine.DiscoveryThreads+cfg.Engine.BruteForceThreads)
+	poolConfig.MaxIdleConns = max(poolConfig.MaxIdleConns, 2*poolConfig.MaxIdleConnsPerHost)
 
 	httpClient := pkghttp.NewClient(&pkghttp.ClientConfig{
 		PoolConfig:          poolConfig,
@@ -667,6 +674,7 @@ func NewEngineWithContext(parentCtx context.Context, cfg *config.Config, st stor
 
 	// Initialize coordinator with callbacks (after scanners are set)
 	engine.coordinator = NewPayloadCoordinator(taskQueue, cfg.Engine.DiscoveryThreads, engine.newCallbacks())
+	engine.coordinator.SetBruteForceWorkers(cfg.Engine.BruteForceThreads)
 
 	// Initialize factory (stateless - reused for all task creation)
 	engine.factory = NewFactory(cfg)

@@ -40,6 +40,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/vigolium/vigolium/pkg/core/network"
 )
 
 // Default sweep parameters. These are the single source of truth for the
@@ -145,7 +147,7 @@ func Sweep(ctx context.Context, host string, opts Options) Result {
 	var transport http.RoundTripper = &http.Transport{
 		Proxy:               proxyFunc(opts.ProxyURL),
 		DialContext:         dialer.DialContext,
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // sweep confirmation only; we never trust these endpoints
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true, ClientSessionCache: network.TLSSessionCache()}, //nolint:gosec // sweep confirmation only; we never trust these endpoints
 		TLSHandshakeTimeout: opts.HTTPTimeout,
 		DisableKeepAlives:   true,
 	}

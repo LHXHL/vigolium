@@ -122,9 +122,9 @@ type payloadMaker struct {
 // survives to the mail header depends on the insertion-point context (URL vs body).
 func payloadMakers(base string) []payloadMaker {
 	return []payloadMaker{
-		{injectionType: "smtp email-sending capability", prefix: "vgn-poc@"},
-		{injectionType: "smtp-header-injection bcc graft", prefix: base + "%0d%0aBcc:%20vgn-poc@"},
-		{injectionType: "smtp-header-injection bcc graft", prefix: base + "\r\nBcc: vgn-poc@"},
+		{injectionType: "smtp email-sending capability", prefix: "vigolium-poc@"},
+		{injectionType: "smtp-header-injection bcc graft", prefix: base + "%0d%0aBcc:%20vigolium-poc@"},
+		{injectionType: "smtp-header-injection bcc graft", prefix: base + "\r\nBcc: vigolium-poc@"},
 	}
 }
 
@@ -134,7 +134,7 @@ func baseEmail(value string) string {
 	if authzutil.EmailPattern.MatchString(strings.TrimSpace(value)) {
 		return strings.TrimSpace(value)
 	}
-	return "vgn-base@example.com"
+	return "vigolium-base@example.com"
 }
 
 // isEmailParam reports whether an insertion point looks like an email recipient

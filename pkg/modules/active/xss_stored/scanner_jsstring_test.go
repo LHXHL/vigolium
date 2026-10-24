@@ -15,7 +15,7 @@ import (
 )
 
 // storedOpChainRe matches an operator-chaining breakout carrying the stored canary.
-var storedOpChainRe = regexp.MustCompile("[\\^-]alert\\(`(vig-sx-[0-9a-f]+)`\\)[\\^-]")
+var storedOpChainRe = regexp.MustCompile("[\\^-]alert\\(`(vigolium-sx-[0-9a-f]+)`\\)[\\^-]")
 
 // jsExecProbe models a real browser on a page that renders the stored value into
 // a JS *expression*: it GETs the page and fires the alert ONLY when the rendered

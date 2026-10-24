@@ -15,8 +15,8 @@ func findParam(cands []reflectedCandidate, name string) (reflectedCandidate, boo
 }
 
 func TestParamsFromURL_FragmentReflected(t *testing.T) {
-	url := "http://localhost:3000/#/search?q=vgnReflectMarker7391"
-	dom := `<div id="searchValue">vgnReflectMarker7391</div>`
+	url := "http://localhost:3000/#/search?q=vigoliumReflectMarker7391"
+	dom := `<div id="searchValue">vigoliumReflectMarker7391</div>`
 	c, ok := findParam(paramsFromURL(url, dom), "q")
 	if !ok || !c.inFrag || !c.valueReflected {
 		t.Fatalf("want reflected fragment param q, got %+v ok=%v", c, ok)
@@ -56,7 +56,7 @@ func TestCollectReflectedCandidates_ReflectedFirst(t *testing.T) {
 
 func TestBuildDOMXssProbeURL_Fragment(t *testing.T) {
 	cand := reflectedCandidate{rawURL: "http://localhost:3000/#/search?q=old", param: "q", inFrag: true}
-	got, ok := buildDOMXssProbeURL(cand, "<img src=x onerror=window.__vgnxss0=1>")
+	got, ok := buildDOMXssProbeURL(cand, "<img src=x onerror=window.__vigoliumxss0=1>")
 	if !ok {
 		t.Fatal("build failed")
 	}

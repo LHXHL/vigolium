@@ -2,7 +2,10 @@ package cli
 
 import (
 	"github.com/vigolium/vigolium/pkg/contract"
+	"github.com/vigolium/vigolium/pkg/core"
 	"github.com/vigolium/vigolium/pkg/database"
+	"github.com/vigolium/vigolium/pkg/dnsresolve"
+	"github.com/vigolium/vigolium/pkg/fuzz"
 	"github.com/vigolium/vigolium/pkg/oast"
 	"github.com/vigolium/vigolium/pkg/scanplan"
 )
@@ -92,6 +95,12 @@ type recordViewSchema struct {
 	BodyCompaction *database.BodyCompaction `json:"body_compaction,omitempty"`
 	Request        *bodyViewSchema          `json:"request,omitempty"`
 	Response       *bodyViewSchema          `json:"response,omitempty"`
+	// UUIDShort and ResponseHeaders appear only when --fields names them.
+	UUIDShort       string `json:"uuid_short,omitempty"`
+	ResponseHeaders string `json:"response_headers,omitempty"`
+	// MatchesNotFound appears when --fields names it and the record's origin
+	// has a not-found baseline (or the record is a 404/410).
+	MatchesNotFound *bool `json:"matches_not_found,omitempty"`
 }
 
 // bodyViewSchema mirrors bodyView: one request or response, headers verbatim
@@ -136,6 +145,8 @@ type curlExtras struct {
 type trafficExtras struct {
 	provenanceExtras
 	curlExtras
+	// NotFoundExcluded counts records --exclude-not-found removed from the page.
+	NotFoundExcluded *int `json:"not_found_excluded,omitempty"`
 }
 
 type findingExtras struct {
@@ -311,10 +322,108 @@ func init() {
 		Description: "The code's return value as JSON (null for undefined), as `js -j`. With --record-uuid the document is `extensions run`'s."})
 	registerCommandSchema(contract.Command{Name: "log", Item: logLineView{}, Extras: logShowExtras{},
 		Description: "`log <uuid> -j`: the session log's lines (the --tail/--full window) with its identity and liveness."})
+	registerCommandSchema(contract.Command{Name: "fingerprint", Item: hostView{}, Extras: scanDocExtras{},
+		Description: "The scan document of a fingerprint run whose items are the origins it fingerprinted (the `hosts` view)."})
+	registerCommandSchema(contract.Command{Name: "dns", Item: dnsresolve.Answer{}, Extras: dnsExtras{},
+		Description: "One answer per name: every record type asked for, each record with its TTL, and how many answers were stored."})
+	registerCommandSchema(contract.Command{Name: "hosts", Item: hostView{},
+		Description: "Stored host facts per host:port: DNS, TLS certificate, fingerprint report and not-found baseline, with the survey facts lifted to the top."})
+	registerCommandSchema(contract.Command{Name: "schema flags", Item: flagUsageView{}, Extras: schemaFlagsExtras{},
+		Description: "One command's flags (for_command): name, shorthand, type, default, description, inherited."})
+	registerCommandSchema(contract.Command{Name: "schema storage", Item: storageTable{},
+		Description: "The database's tables with columns, row counts, purpose, and the -j field a column surfaces as."})
+	registerCommandSchema(contract.Command{Name: "fuzz", Item: fuzz.Result{}, Extras: fuzzExtras{},
+		Description: "The run summary: items are the top-ranked matched results (total is every match); --fields projects them."})
+	registerCommandSchema(contract.Command{Name: "replay", Item: replayOutput{}, Extras: replayExtras{},
+		Description: "One row per replayed record: the baseline, the replay and their diff. A single source is one item; a bulk run counts failed rows."})
+	registerCommandSchema(contract.Command{Name: "ingest", Item: ingestedRecord{}, Extras: ingestExtras{},
+		Description: "The records the ingest left in the store (capped; items_truncated says more exist), with why any were not stored."})
+	registerCommandSchema(contract.Command{Name: "traffic body", Item: trafficBodyReceipt{}, ItemsKind: contract.ItemsObject,
+		Description: "A receipt for one extracted body: size, sha256, completeness and where it was written."})
+	registerCommandSchema(contract.Command{Name: "traffic headers", Item: trafficHeadersReceipt{}, ItemsKind: contract.ItemsObject,
+		Description: "One stored message's headers as an ordered array (repeated headers kept)."})
 	for _, name := range []string{"export", "db export"} {
 		registerCommandSchema(contract.Command{Name: name, Item: exportFileView{}, Extras: exportReceiptExtras{},
 			Description: "A receipt: the files written (-j needs -o; the export itself never shares stdout with the document) and their counts."})
 	}
+}
+
+// dnsExtras are `dns -j`'s top-level keys.
+type dnsExtras struct {
+	Stored int `json:"stored"`
+}
+
+// schemaFlagsExtras are `schema flags -j`'s top-level keys.
+type schemaFlagsExtras struct {
+	ForCommand string `json:"for_command"`
+}
+
+// fuzzExtras are fuzz -j's top-level keys: fuzzJSONSummary (which embeds this
+// type) without the top_results it moves to items.
+type fuzzExtras struct {
+	Target          string        `json:"target"`
+	Positions       int           `json:"positions"`
+	Payloads        int           `json:"payloads"`
+	Sent            int           `json:"sent"`
+	Matched         int           `json:"matched"`
+	Calibrated      int           `json:"calibrated"`
+	Errors          int           `json:"errors"`
+	Baseline        fuzz.Baseline `json:"baseline"`
+	Anomalies       []fuzz.Result `json:"anomalies,omitempty"`
+	AnomaliesElided int           `json:"anomalies_elided,omitempty"`
+	SentViaBurp     bool          `json:"sent_via_burp,omitempty"`
+	OrganizerPushed int           `json:"organizer_pushed,omitempty"`
+	Pace            fuzzPace      `json:"pace"`
+}
+
+// replayExtras are replay -j's top-level keys (bulk runs count failures).
+type replayExtras struct {
+	Failed int `json:"failed,omitempty"`
+}
+
+// ingestExtras are ingest -j's top-level keys.
+//
+// A local ingest reports what landed (records_*); a remote one (-s/--server)
+// reports what it submitted (records_submitted, errors). Every key is optional
+// because each mode carries only its own.
+type ingestExtras struct {
+	RecordsIngested  int64             `json:"records_ingested,omitempty"`
+	RecordsFailed    int64             `json:"records_failed,omitempty"`
+	RecordsSkipped   int64             `json:"records_skipped,omitempty"`
+	RecordsSubmitted int64             `json:"records_submitted,omitempty"`
+	Errors           int64             `json:"errors,omitempty"`
+	DurationMS       int64             `json:"duration_ms,omitempty"`
+	InputFormat      string            `json:"input_format,omitempty"`
+	RecordSource     string            `json:"record_source,omitempty"`
+	ItemsTruncated   bool              `json:"items_truncated,omitempty"`
+	FailureReasons   map[string]int64  `json:"failure_reasons,omitempty"`
+	Failures         []core.DropSample `json:"failures,omitempty"`
+}
+
+// trafficBodyReceipt mirrors `traffic body -j`.
+type trafficBodyReceipt struct {
+	UUID            string   `json:"uuid"`
+	URL             string   `json:"url"`
+	Side            string   `json:"side"`
+	Representation  string   `json:"representation"`
+	Bytes           int      `json:"bytes"`
+	SHA256          string   `json:"sha256"`
+	Complete        bool     `json:"complete"`
+	Transformations []string `json:"transformations"`
+	Empty           bool     `json:"empty"`
+	Output          string   `json:"output,omitempty"`
+}
+
+// trafficHeadersReceipt mirrors `traffic headers -j`.
+type trafficHeadersReceipt struct {
+	UUID      string        `json:"uuid"`
+	URL       string        `json:"url"`
+	Side      string        `json:"side"`
+	Headers   []headerEntry `json:"headers"`
+	Count     int           `json:"count"`
+	StartLine string        `json:"start_line,omitempty"`
+	Name      string        `json:"name,omitempty"`
+	Present   *bool         `json:"present,omitempty"`
 }
 
 // seedExtras are the top-level keys of `db seed -j`.

@@ -390,6 +390,15 @@ func (sc *ScanContext) HasTech(host, tag string) bool {
 	return sc.TechStack.Has(host, tag)
 }
 
+// HasAnyTech reports whether any of tags was detected for host. Fail-closed
+// like HasTech.
+func (sc *ScanContext) HasAnyTech(host string, tags []string) bool {
+	if sc == nil || sc.TechStack == nil {
+		return false
+	}
+	return sc.TechStack.HasAny(host, tags)
+}
+
 // MarkWAF records the WAF/CDN type observed fronting host. No-op when the
 // registry is unset (e.g. tests with a bare ScanContext).
 func (sc *ScanContext) MarkWAF(host, wafType string) {

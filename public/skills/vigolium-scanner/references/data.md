@@ -28,6 +28,7 @@ Complete reference for `init`, `import`, `log`, `doctor`, `db`, `finding`, `traf
 - [traffic --curl / finding --curl](#traffic---curl--finding---curl)
 - [endpoints](#endpoints)
 - [params](#params)
+- [hosts](#hosts)
 - [export (top-level)](#export)
 - [module](#module)
 - [extensions](#extensions)
@@ -990,12 +991,14 @@ Default columns: HOST, METHOD, PATH, STATUS, CONTENT_TYPE, SIZE, WORDS, TIME, TI
 
 ### Extracting one message: `traffic body` / `traffic headers`
 
-Both take exactly one `--uuid` and one side — `--response` (the default) or
-`--request` — and always open the source read-only. Neither re-sends anything;
-that is `vigolium replay`.
+Both take exactly one record — positionally or with `--uuid`, a full UUID or a
+unique 8+ character prefix (`uuid_short`) — and one side: `--response` (the
+default) or `--request`. They always open the source read-only. Neither re-sends
+anything; that is `vigolium replay`.
 
 ```bash
 # Save a response body to a file (atomic write, exact bytes)
+vigolium traffic body <id> -o response.json
 vigolium traffic body --uuid <id> -o response.json
 # Pipe it instead
 vigolium traffic body --uuid <id> | jq .
@@ -1022,6 +1025,7 @@ Each state has its own `error.code`:
 | Condition | `error.code` |
 |---|---|
 | No record with that UUID | `record_not_found` |
+| A prefix matches several records (they are listed) | `ambiguous_id` |
 | Record exists, that side was never captured | `body_unavailable` |
 | Announced encoding could not be undone | `body_decode_failed` |
 | Only a prefix is available | `body_incomplete` |
@@ -1029,6 +1033,39 @@ Each state has its own `error.code`:
 A body that was captured and is genuinely zero-length **succeeds**, with
 `empty: true` in the receipt — that is not the same as never having been
 captured.
+
+### Terse rows: `--format tsv`
+
+One header line, then one line per record, nothing else on stdout. Columns are
+`--fields` names (aliases included); the default is
+`uuid_short,status_code,method,response_content_length,url`. Tabs, newlines and
+backslashes in a value are escaped, so every row is one line with one cell per
+column. `--no-header` drops the header. `-j` and `--format tsv` are exclusive.
+
+```bash
+vigolium traffic --host api.example.com --format tsv
+vigolium traffic --format tsv --fields uuid_short,status,length,title,url --no-header
+```
+
+`finding`, `endpoints`, `params`, `hosts` and `dns` take `--format tsv` too.
+
+### Field names and aliases
+
+`--fields` accepts every key a row can carry, plus the shared aliases, and the
+row comes back with the names you passed: `status`/`code` → `status_code`,
+`length`/`size`/`body_size` → `response_content_length`, `words`, `time`,
+`content_type`, `title`, `id` → `uuid`, `headers` → `response_headers`. An unknown
+name fails before any query and suggests the nearest one. Three keys appear only
+when named:
+
+| Key | Value |
+|---|---|
+| `uuid_short` | The 8-character prefix every record flag accepts |
+| `response_headers` | The response's header block, without its body |
+| `matches_not_found` | Whether the response is its origin's not-found page: a 404/410, or a match against the baseline `vigolium fingerprint` stored. Absent when the origin has no baseline |
+
+`--exclude-not-found` drops those records from the returned page and reports
+how many under `not_found_excluded`.
 
 ### Saving a `-j` result: `-o/--output`
 
@@ -1232,6 +1269,36 @@ vigolium params --location query,json --min-occurrences 3
 - Filters: everything `endpoints` takes, plus `--endpoint <id|template>`,
   `--location <list>`, `--type <value types>` (dominant type; an unknown name is
   a usage error listing the set) and `--min-occurrences N`.
+
+## hosts
+
+**Usage:** `vigolium hosts [host-pattern] [flags]`
+
+Reads stored host facts, one row per host:port (the latest observation; `--history`
+for every run's): DNS answers (`vigolium dns`, the probe phase — port 0 for a
+DNS-only row), the TLS handshake and certificate (`fingerprint`, `run probe
+--tls-probe`), the fingerprint report and the not-found baseline. Never sends a
+request.
+
+| Flag | Effect |
+|---|---|
+| `--host <pattern>` | Hostname or `*` wildcard (same as the positional) |
+| `--scan-uuid <uuid>` | Only one run's observations |
+| `--has dns\|tls\|fingerprint\|not-found` | Only hosts carrying that fact |
+| `--soft-404` | Only origins answering 2xx/3xx to a missing path |
+| `--sans` | Distinct certificate DNS names, one per line (wildcards dropped) |
+| `--fields`, `--compact`, `--format tsv`, `-n`, `--offset` | Shaping and paging |
+
+Rows lift the survey facts to the top — `title`, `server`, `status_code`,
+`technology`, `favicon_mmh3`, `soft_not_found`, `tls_version`, `cert_not_after`,
+`sans` — beside `a`/`aaaa`/`cname`/`mx`/`ns`/`txt`/`soa`/`caa` and the nested
+`tls`, `fingerprint` and `not_found` documents (`--compact` drops the nested ones).
+
+```bash
+vigolium hosts -j --compact
+vigolium hosts '*.example.com' --format tsv --fields hostname,port,title,favicon_mmh3
+vigolium hosts --has tls --sans
+```
 
 ## export
 

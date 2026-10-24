@@ -113,7 +113,7 @@ var globalFlagGroups = []flagGroup{
 	{"Network", []string{"proxy"}},
 	{"Extensions", []string{"ext", "ext-dir", "ext-allow-failures"}},
 	{"Project", []string{"project-uuid", "project-name"}},
-	{"Info", []string{"list-modules", "list-input-mode", "full-example"}},
+	{"Info", []string{"list-modules", "list-input-mode", "full-example", "usage"}},
 	{"Configuration", []string{"config", "db", "read-only", "force", "scan-uuid", "mem-limit", "skip-dependency-check", "soft-fail"}},
 }
 
@@ -222,7 +222,7 @@ var scanFlagGroups = []flagGroup{
 	{"Scanning", []string{"only", "skip", "dry-run", "strategy", "scanning-profile", "intensity", "scope-origin", "ignore-scope", "scanning-max-duration", "heuristics-check", "skip-heuristics", "oast-url"}},
 	{"Discovery", []string{"discover", "discover-max-time", "discovery-wordlist", "discovery-extensions", "discovery-max-depth", "no-discovery-fuzz", "no-prefix-breaker", "follow-subdomains", "port-sweep-ports", "param-mining"}},
 	{"Spidering", []string{"spider", "spider-max-time", "browser-engine", "browsers", "headless", "headed", "no-cdp", "no-forms", "browser-insecure", "require-auth", "no-carry-browser-session"}},
-	{"Probe (host sweep)", []string{"probe", "tls-probe", "redirect-mode", "record-redirect-chain"}},
+	{"Probe (host sweep)", []string{"probe", "tls-probe", "redirect-mode", "record-redirect-chain", "depth", "fingerprint-depth"}},
 	{"Harvest", []string{"external-harvest"}},
 	{"KnownIssueScan", []string{"known-issue-scan", "known-issue-scan-tags", "known-issue-scan-exclude-tags", "known-issue-scan-severities", "known-issue-scan-templates-dir", "known-issue-scan-templates"}},
 	{"Request", []string{"method", "body", "header", "advanced-options", "retries", "stream"}},
@@ -327,10 +327,10 @@ var agentSessionFlagGroups = []flagGroup{
 var listQueryFlagGroups = []flagGroup{
 	{"Filter", []string{"uuid", "url", "host", "method", "status", "path", "source", "scan-uuid", "module-type", "finding-source", "record-kind", "severity", "min-severity", "confidence", "agentic-scan", "id", "min-risk", "min-surface", "remark"}},
 	{"Lifecycle", []string{"verdict", "new-since", "include-dismissed"}},
-	{"Search", []string{"search", "header", "body", "exclude-search", "exclude-header", "exclude-body"}},
+	{"Search", []string{"search", "header", "body", "exclude-search", "exclude-header", "exclude-body", "exclude-not-found"}},
 	{"Date Range", []string{"from", "to"}},
 	{"Display", []string{"tree", "raw", "burp", "markdown", "group-by", "group-limit", "columns", "exclude-columns", "tui", "no-tui"}},
-	{"Output", []string{"fields", "compact", "full-body", "max-output-bytes", "output", "with-records", "record-fields", "record-limit"}},
+	{"Output", []string{"fields", "compact", "full-body", "max-output-bytes", "output", "with-records", "record-fields", "record-limit", "no-header"}},
 	{"Pagination & Sort", []string{"limit", "offset", "sort", "asc", "pick", "all"}},
 	{"Data Source", []string{"stateless", "glob-db", "glob-strict", "table", "list-tables", "list-columns"}},
 	{"Replay", []string{"replay", "concurrency", "with-browser", "burp-bridge-url", "save-to-vigolium-db", "save-to-burp", "in-replace", "timeout"}},
@@ -345,7 +345,7 @@ var inventoryFlagGroups = []flagGroup{
 	{"Date Range", []string{"from", "to"}},
 	{"Aggregate", []string{"min-records", "min-occurrences", "collapse", "show-values"}},
 	{"Pagination & Sort", []string{"limit", "offset", "sort"}},
-	{"Output", []string{"output"}},
+	{"Output", []string{"output", "fields", "compact", "max-output-bytes", "no-header"}},
 	{"Data Source", []string{"stateless", "glob-db", "glob-strict"}},
 }
 
@@ -368,13 +368,13 @@ var fuzzFlagGroups = []flagGroup{
 		"exclude-regex", "exclude-time", "exclude-time-z", "exclude-header", "exclude-mode"}},
 	{"Network", []string{
 		"insecure", "verify-tls", "cacert", "cert", "key", "location", "max-redirs",
-		"connect-timeout", "max-time", "compressed", "http-version", "http1.1", "http2",
+		"connect-timeout", "max-time", "compressed", "http-version", "http1.1", "http2", "http3", "http3-only",
 		"resolve", "path-as-is"}},
 	{"Session & Auth", []string{"auth-session", "session-id", "no-cookies"}},
 	{"Speed & Behaviour", []string{
 		"no-calibrate", "concurrency", "rate-limit", "delay", "timeout", "no-redirects",
 		"dry-run", "ignore-scope"}},
-	{"Output", []string{"output", "all-results", "fail-on-match"}},
+	{"Output", []string{"output", "all-results", "fail-on-match", "fields", "compact", "max-output-bytes"}},
 	{"Burp Bridge", []string{"send-via-burp", "burp-bridge-url", "http-mode", "send-timeout", "matches-to-organizer"}},
 }
 
@@ -383,7 +383,7 @@ var replayFlagGroups = []flagGroup{
 	{"Input & Selection", []string{"input", "input-file", "raw-request", "raw-request-file", "record-uuid", "finding-id", "target"}},
 	{"Bulk Filter", []string{"host", "method", "status", "path", "source", "search", "header-search", "body", "exclude-search", "exclude-header-search", "exclude-body", "from", "to", "sort", "asc", "offset", "limit", "all"}},
 	{"Request Options", []string{"header", "auth-session", "session-id", "no-cookies", "no-redirects", "timeout", "concurrency", "with-browser"}},
-	{"Output", []string{"output", "in-replace", "stateless"}},
+	{"Output", []string{"output", "in-replace", "stateless", "fields", "compact", "max-output-bytes"}},
 	{"Burp Bridge", []string{"burp-bridge-url", "save-to-burp", "send-via-burp", "http-mode", "send-timeout", "to-repeater", "repeater-tab", "to-organizer", "notes", "highlight"}},
 }
 
@@ -392,7 +392,7 @@ var ingestFlagGroups = []flagGroup{
 	{"Target & Input", []string{"target", "target-file", "input", "input-mode", "input-read-timeout"}},
 	{"Spec Options", []string{"spec-url", "spec-header", "spec-var", "spec-default"}},
 	{"Module Selection", []string{"modules", "module-tag", "no-tech-filter"}},
-	{"Ingestion", []string{"server", "scan-on-receive", "full-native-scan-on-receive", "disable-fetch-response", "scope-origin", "intensity", "dir", "dir-glob"}},
+	{"Ingestion", []string{"server", "scan-on-receive", "full-native-scan-on-receive", "disable-fetch-response", "keep-blocked", "scope-origin", "intensity", "dir", "dir-glob"}},
 	{"Speed Control", []string{"timeout", "concurrency", "rate-limit", "max-per-host", "max-host-error", "max-findings-per-module", "no-clustering", "no-waf-pacing"}},
 }
 
@@ -441,6 +441,7 @@ var importFlagGroups = []flagGroup{
 var commandFlagGroups = map[*cobra.Command][]flagGroup{
 	scanCmd:        scanFlagGroups,
 	runCmd:         scanFlagGroups,
+	fingerprintCmd: scanFlagGroups,
 	scanURLCmd:     scanFlagGroups,
 	scanRequestCmd: scanFlagGroups,
 

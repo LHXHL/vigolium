@@ -66,6 +66,15 @@ func registerAgentJSONFlags(flags *pflag.FlagSet) {
 	registerOutputBudgetFlag(flags)
 }
 
+// registerRowShapingFlags adds --fields, --compact and --max-output-bytes to a
+// list command whose rows are structs (rowShaping). --full-body is left off:
+// those rows carry no stored bodies for it to expand.
+func registerRowShapingFlags(flags *pflag.FlagSet) {
+	flags.StringSliceVar(&jsonFields, "fields", nil, "Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop")
+	flags.BoolVar(&jsonCompact, "compact", false, "With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata")
+	registerOutputBudgetFlag(flags)
+}
+
 // registerAgentRecordFlags adds the nested-record controls. Only `finding` embeds
 // records, so only it registers these.
 func registerAgentRecordFlags(flags *pflag.FlagSet) {
@@ -90,6 +99,10 @@ type agentViewOptions struct {
 	// 8192-entry eviction quietly deciding which records got facts. Every method
 	// is nil-safe, so consumers never branch on it.
 	hostFacts *database.StoredHostFacts
+
+	// notFound answers matches_not_found from the origin's stored not-found
+	// baseline; nil when the view did not ask for it.
+	notFound *notFoundMatcher
 }
 
 // withHostFacts returns a copy of opts that serves host facts from a run's
@@ -100,6 +113,15 @@ func (o agentViewOptions) withHostFacts(ctx context.Context, db *database.DB, pr
 		return o
 	}
 	o.hostFacts = database.NewStoredHostFacts(ctx, database.NewRepository(db), projectUUID, scanUUID)
+	return o
+}
+
+// withNotFound returns a copy of opts that answers matches_not_found, when the
+// projection asks for it; otherwise opts unchanged, so no baseline is read.
+func (o agentViewOptions) withNotFound(ctx context.Context, db *database.DB, projectUUID string) agentViewOptions {
+	if wantsField(o.fields, "matches_not_found") {
+		o.notFound = newNotFoundMatcher(ctx, db, projectUUID)
+	}
 	return o
 }
 
@@ -576,6 +598,10 @@ var (
 		"response_words", "source", "scan_uuid", "response_title", "ip",
 		"risk_score", "surface_score", "is_authenticated", "technology", "remarks",
 		"body_compaction", "request", "response",
+		// Emitted only when --fields names them: uuid_short is the resolvable
+		// 8-character prefix (record_ref.go), response_headers the response's
+		// header block without its body.
+		"uuid_short", "response_headers", "matches_not_found",
 	}, database.HostFactsFieldNames...)
 	findingViewFields = []string{
 		"id", "finding_hash", "severity", "confidence", "module_id", "module_name", "module_type",
@@ -596,21 +622,36 @@ var (
 // field and a genuinely null value one indistinguishable outcome: the caller got
 // exit 0 and a row with the key simply missing, and concluded the data was not
 // there. Failing loudly is the only way that distinction reaches a machine.
+//
+// A name is supported when the view carries it, or when it is another spelling
+// of a concept the view carries (field_vocab.go): `--fields status,length` works
+// on `traffic` as it does on `fuzz`.
 func validateFieldSelection(fields, supported []string) error {
 	if len(fields) == 0 {
 		return nil
 	}
-	var unknown []string
+	has := func(k string) bool { return slices.Contains(supported, k) }
+	var unknown, hints []string
 	for _, f := range fields {
-		if !slices.Contains(supported, f) {
+		if _, ok := resolveFieldName(f, has); !ok {
 			unknown = append(unknown, f)
+			if near := closestName(f, supported); near != "" {
+				hints = append(hints, f+" → "+near)
+			}
 		}
 	}
 	if len(unknown) == 0 {
 		return nil
 	}
-	return usageErrorf("unknown --fields name(s): %s\n\nsupported fields: %s",
-		strings.Join(unknown, ", "), strings.Join(supported, ", "))
+	msg := fmt.Sprintf("unknown --fields name(s): %s", strings.Join(unknown, ", "))
+	if len(hints) > 0 {
+		msg += "\n\ndid you mean: " + strings.Join(hints, ", ")
+	}
+	msg += "\n\nsupported fields: " + strings.Join(supported, ", ")
+	if aliases := fieldAliasesFor(supported); len(aliases) > 0 {
+		msg += "\n\nalso accepted (emitted under the name you pass): " + strings.Join(aliases, ", ")
+	}
+	return usageErrorf("%s", msg)
 }
 
 // projectFields restricts m to the given top-level keys (when non-empty).
@@ -622,9 +663,11 @@ func projectFields(m map[string]any, fields []string, always ...string) map[stri
 		return m
 	}
 	out := make(map[string]any, len(fields)+len(always))
+	has := func(k string) bool { _, ok := m[k]; return ok }
 	for _, k := range fields {
-		if v, ok := m[k]; ok {
-			out[k] = v
+		// Emitted under the name asked for, whichever spelling the view uses.
+		if key, ok := resolveFieldName(k, has); ok {
+			out[k] = m[key]
 		}
 	}
 	// A field allowlist expresses "narrow the columns", not "undo the other flag
@@ -697,6 +740,20 @@ func compactRecordView(rec *database.HTTPRecord, opts agentViewOptions) map[stri
 	// request/response below knows it holds a head, and what the whole was.
 	if rec.BodyCompaction != nil {
 		m["body_compaction"] = rec.BodyCompaction
+	}
+
+	// Opt-in keys: computed only when asked for, so a default row pays nothing.
+	if wantsField(opts.fields, "uuid_short") {
+		m["uuid_short"] = uuidShort(rec.UUID)
+	}
+	if wantsField(opts.fields, "matches_not_found") {
+		if v, known := opts.notFound.Matches(rec); known {
+			m["matches_not_found"] = v
+		}
+	}
+	if wantsField(opts.fields, "response_headers") && rec.HasResponse && len(rec.RawResponse) > 0 {
+		headers, _ := splitHeadersBody(rec.RawResponse)
+		m["response_headers"] = headers
 	}
 
 	if !opts.noBodies {

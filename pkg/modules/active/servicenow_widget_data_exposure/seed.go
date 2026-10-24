@@ -4,7 +4,7 @@ import "github.com/vigolium/vigolium/pkg/types/severity"
 
 // bogusTable is a table name that cannot exist, used as the catch-all negative
 // control (a Simple List read of it must not return records).
-const bogusTable = "vgolm_nonexistent_probe"
+const bogusTable = "vigolium_nonexistent_probe"
 
 // snTable is a ServiceNow table probed for public-widget exposure. field is the
 // display column requested (f=); sev reflects the sensitivity of the leak.

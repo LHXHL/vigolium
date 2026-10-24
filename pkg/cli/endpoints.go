@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vigolium/vigolium/pkg/cli/internal/clicommon"
+	"github.com/vigolium/vigolium/pkg/contract"
 	"github.com/vigolium/vigolium/pkg/database"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
@@ -55,6 +56,17 @@ func init() {
 	f.Int64Var(&endpointsMinRecords, "min-records", 0, "Only endpoints seen in at least this many records")
 	f.StringVar(&endpointsSort, "sort", "records", "Sort by: "+strings.Join(database.EndpointSorts, ", "))
 	f.IntVar(&endpointsCollapse, "collapse", 0, "Merge N or more sibling literal segments sharing the same child templates into {var} (0 = off; >= 2)")
+	registerRowShapingFlags(f)
+	registerTSVFlags(f)
+}
+
+// endpointsShaping is endpoints' --fields vocabulary and the keys --compact
+// drops: the per-endpoint lists, which dominate a row's size.
+var endpointsShaping = rowShaping{
+	supported: contract.JSONFieldNames(database.EndpointView{}),
+	compactDrop: []string{"sample_paths", "params", "request_content_types", "response_content_types",
+		"js_outcomes", "findings_by_severity"},
+	defaultTSV: []string{"id", "records", "top_status", "methods", "origin", "template"},
 }
 
 func validateEndpointsFlags() error {
@@ -81,6 +93,10 @@ func runEndpoints(cmd *cobra.Command, args []string) error {
 	if err := validateEndpointsFlags(); err != nil {
 		return err
 	}
+	format, err := endpointsShaping.prepare(cmd)
+	if err != nil {
+		return err
+	}
 	filters, err := endpointsFlags.filters(inventoryPositional(args))
 	if err != nil {
 		return err
@@ -90,13 +106,13 @@ func runEndpoints(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	return runWithWatch(func() error {
-		return renderEndpoints(context.Background(), cmd, db, filters)
+		return renderEndpoints(context.Background(), cmd, db, filters, format)
 	})
 }
 
 // renderEndpoints runs the aggregate and writes it (envelope under -j, a table
 // otherwise).
-func renderEndpoints(ctx context.Context, cmd *cobra.Command, db *database.DB, filters database.QueryFilters) error {
+func renderEndpoints(ctx context.Context, cmd *cobra.Command, db *database.DB, filters database.QueryFilters, format string) error {
 	res, err := database.NewQueryBuilder(db, filters).Endpoints(ctx, database.EndpointOptions{
 		MinRecords: endpointsMinRecords,
 		Sort:       endpointsSort,
@@ -131,7 +147,15 @@ func renderEndpoints(ctx context.Context, cmd *cobra.Command, db *database.DB, f
 			opts = append(opts, withQuery(endpointFollowUp(res.Endpoints[0])...))
 		}
 		opts = append(opts, provenance...)
-		return emitRead(cmd, "", res.Endpoints, res.Total, endpointsFlags.offset, endpointsFlags.limit, opts...)
+		items, err := endpointsShaping.apply(res.Endpoints)
+		if err != nil {
+			return err
+		}
+		return emitRead(cmd, "", items, res.Total, endpointsFlags.offset, endpointsFlags.limit, opts...)
+	}
+
+	if format == "tsv" {
+		return endpointsShaping.emitTSV(res.Endpoints)
 	}
 
 	printEndpointsTable(res, endpointsFlags.offset)

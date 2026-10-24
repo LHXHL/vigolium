@@ -18,6 +18,7 @@ func fastRetryConfig(maxAttempts int) *RetryConfig {
 	cfg.MaxAttempts = maxAttempts
 	cfg.InitialBackoff = time.Millisecond
 	cfg.MaxBackoff = 2 * time.Millisecond
+	cfg.MinStatusBackoff = time.Millisecond
 	return cfg
 }
 

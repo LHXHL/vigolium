@@ -86,6 +86,12 @@ type Executor struct {
 	stored      atomic.Int64
 	storeFailed atomic.Int64
 
+	// drops says WHY an item stored nothing: one counter per DropReason plus the
+	// first few examples. Without it an ingest that stored 0 of 40 could only
+	// say "no response to store" whether the host was dead, every answer was a
+	// WAF page, or the budget ran out — and each of those has a different fix.
+	drops dropLedger
+
 	// responded counts input items for which an HTTP response was actually
 	// received - one per item, not per redirect hop or retry.
 	//

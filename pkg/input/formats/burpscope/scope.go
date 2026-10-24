@@ -92,9 +92,14 @@ func Sniff(data []byte) bool {
 }
 
 // SniffFile reports whether the file at path is a Burp scope export.
+//
+// Only a regular file is sniffed. Reading a pipe to sniff it consumes the
+// content the caller's own read was going to get, and on macOS stat reports a
+// FIFO's buffered byte count as its size, so the size checks below do not keep
+// a pipe out on their own.
 func SniffFile(path string) bool {
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > maxFileBytes {
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > maxFileBytes {
 		return false
 	}
 	data, err := os.ReadFile(path)

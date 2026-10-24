@@ -25,7 +25,7 @@ import (
 // sessionMarkerHeader lets a session-aware test server tell the compare session
 // apart from the primary one — mirroring how real compare requesters carry
 // per-session auth headers.
-const sessionMarkerHeader = "X-Vgn-Session"
+const sessionMarkerHeader = "X-Vigolium-Session"
 
 // requesterWithMarker builds a requester that stamps the session marker header on
 // every request it sends.

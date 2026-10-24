@@ -1,6 +1,9 @@
 package modkit
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func sig(status int, body string) ResponseSignature {
 	return NewResponseSignature(status, body, "")
@@ -93,8 +96,8 @@ func TestConfirmNotSoft404RedirectToAuth(t *testing.T) {
 
 func TestFreshCanaryShape(t *testing.T) {
 	c := FreshCanary()
-	if len(c) < 6 || c[:3] != "vgo" {
-		t.Errorf("FreshCanary() = %q, want vgo-prefixed token", c)
+	if !strings.HasPrefix(c, "vigolium") {
+		t.Errorf("FreshCanary() = %q, want vigolium-prefixed token", c)
 	}
 	if c == FreshCanary() {
 		t.Error("FreshCanary() should produce distinct values")

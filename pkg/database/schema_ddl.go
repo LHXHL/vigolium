@@ -521,7 +521,14 @@ var schemaTables = []string{
 		dns_a {{JSON}},
 		dns_aaaa {{JSON}},
 		dns_cname {{JSON}},
+		dns_mx {{JSON}},
+		dns_ns {{JSON}},
+		dns_txt {{JSON}},
+		dns_soa {{JSON}},
+		dns_caa {{JSON}},
 		tls {{JSON}},
+		fingerprint {{JSON}},
+		not_found {{JSON}},
 		complete {{BOOL}} NOT NULL DEFAULT {{FALSE}},
 		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(scan_uuid, hostname, port)
@@ -884,6 +891,17 @@ var columnMigrations = []columnMigration{
 	{"scans", "module_errors", "{{JSON}}"},
 	{"scans", "extensions_failed", "{{JSON}}"},
 	{"schema_meta", "observation_history_since", "{{TIMESTAMP}}"},
+	// Schema v4: host facts beyond A/AAAA/CNAME and TLS — the other DNS record
+	// types `vigolium dns` resolves, and what the fingerprint phase concluded
+	// about an origin plus its not-found baseline. Nullable with no default:
+	// NULL means "not observed", which is what every older row honestly holds.
+	{"host_observations", "dns_mx", "{{JSON}}"},
+	{"host_observations", "dns_ns", "{{JSON}}"},
+	{"host_observations", "dns_txt", "{{JSON}}"},
+	{"host_observations", "dns_soa", "{{JSON}}"},
+	{"host_observations", "dns_caa", "{{JSON}}"},
+	{"host_observations", "fingerprint", "{{JSON}}"},
+	{"host_observations", "not_found", "{{JSON}}"},
 }
 
 func init() {

@@ -89,7 +89,39 @@ func LoadPayloads(wordlistRefs, classes, inline []string) ([]string, error) {
 	return out, nil
 }
 
+// defaultBuiltinWordlist is the list `-w builtin` and `-w default` name: the
+// general fuzz list. Both words are what a reader of the help placeholder
+// reaches for, and refusing them sent callers hunting for a file named
+// "builtin".
+const defaultBuiltinWordlist = "fuzz"
+
+// resolveBuiltinName maps a wordlist reference to a builtin list name, or ""
+// when it names none. `builtin:<name>` is the explicit form, and wins over a
+// file of the same name.
+func resolveBuiltinName(ref string) string {
+	if name, ok := strings.CutPrefix(ref, "builtin:"); ok {
+		if _, known := builtinWordlists[name]; known {
+			return name
+		}
+		return ""
+	}
+	switch ref {
+	case "builtin", "default":
+		return defaultBuiltinWordlist
+	}
+	if _, ok := builtinWordlists[ref]; ok {
+		return ref
+	}
+	return ""
+}
+
 func loadWordlist(ref string) ([]string, error) {
+	if strings.HasPrefix(ref, "builtin:") && resolveBuiltinName(ref) == "" {
+		return nil, fmt.Errorf("unknown builtin wordlist %q; builtins: %s (or a file path)", ref, strings.Join(BuiltinNames(), ", "))
+	}
+	if name := resolveBuiltinName(ref); name != "" {
+		ref = name
+	}
 	if name, ok := builtinWordlists[ref]; ok {
 		data, err := wordlists.WordlistsFS.ReadFile(name)
 		if err != nil {
@@ -99,7 +131,8 @@ func loadWordlist(ref string) ([]string, error) {
 	}
 	data, err := os.ReadFile(ref)
 	if err != nil {
-		return nil, fmt.Errorf("read wordlist %q (not a builtin %v, and not a readable file): %w", ref, BuiltinNames(), err)
+		return nil, fmt.Errorf("read wordlist %q: not a builtin (%s, or builtin/default for %q) and not a readable file: %w",
+			ref, strings.Join(BuiltinNames(), ", "), defaultBuiltinWordlist, err)
 	}
 	return scanLines(data), nil
 }

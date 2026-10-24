@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/vigolium/vigolium/pkg/agent/recon"
 	"slices"
 	"strings"
 	"time"
@@ -72,7 +73,25 @@ func validateScanDocumentFlags() error {
 	if scanDocLimit < 0 {
 		return usageErrorf("--limit must be >= 0 (0 = no cap), got %d", scanDocLimit)
 	}
+	if d := strings.TrimSpace(scanOpts.FingerprintDepth); d != "" {
+		if _, ok := recon.ParseDepth(d); !ok {
+			return usageErrorf("fingerprint depth %q: want light, standard or full", d)
+		}
+	}
+	if scanDocListsHosts() {
+		return hostsShaping.validate()
+	}
 	return validateAgentViewFlags(agentViewOptionsFromFlags(), findingViewFields)
+}
+
+// scanDocListsHosts reports whether this run's document lists host facts
+// rather than findings: a fingerprint-only run (`vigolium fingerprint`, `run
+// fingerprint`, `scan --only fingerprint`), whose output IS the origins it
+// fingerprinted. Decided from the phase selection, not the command name, so
+// every entry point to the same run gets the same document and vocabulary.
+func scanDocListsHosts() bool {
+	only := runner.OnlyPhaseSet(globalOnly)
+	return len(only) == 1 && only[string(runner.PhaseFingerprint)]
 }
 
 // scanDocError is one entry of the document's errors[].
@@ -204,7 +223,11 @@ func docReadContext() (context.Context, context.CancelFunc) {
 // by scan_uuid, which every finding of the run carries.
 func (b *scanDocBuilder) fillFromStore(ctx context.Context, repo *database.Repository, s *scanDocScan, projectScope string) *database.Scan {
 	filters := database.QueryFilters{ProjectUUID: projectScope, ScanUUID: s.scanUUID, SortBy: "severity", Limit: b.limit}
-	if findings, total, err := repo.ListFindings(ctx, filters); err == nil {
+	if scanDocListsHosts() {
+		// The fingerprint document's items are the origins it fingerprinted,
+		// the host facts `vigolium hosts` reads; findings are still counted.
+		b.fillHostItems(ctx, repo, s, projectScope)
+	} else if findings, total, err := repo.ListFindings(ctx, filters); err == nil {
 		if !b.view.noBodies {
 			hydrateFindingEvidence(ctx, repo, findings)
 		}
@@ -241,6 +264,27 @@ func (b *scanDocBuilder) fillFromStore(ctx context.Context, repo *database.Repos
 	s.durationMS = row.DurationMs
 	s.plan = storedScanPlan(row)
 	return row
+}
+
+// fillHostItems sets s's items to the host facts the scan stored.
+func (b *scanDocBuilder) fillHostItems(ctx context.Context, repo *database.Repository, s *scanDocScan, projectScope string) {
+	rows, total, err := repo.ListHostObservationsWithCount(ctx, database.HostObservationQuery{
+		ProjectUUID: projectScope, ScanUUID: s.scanUUID, Has: "fingerprint", Limit: b.limit})
+	if err != nil {
+		s.errors = append(s.errors, scanDocError{Code: apicontract.CodeFailed, Message: "read host facts: " + err.Error()})
+		return
+	}
+	views := make([]hostView, 0, len(rows))
+	for _, r := range rows {
+		views = append(views, newHostView(r))
+	}
+	items, err := hostsShaping.applyRows(views)
+	if err != nil {
+		s.errors = append(s.errors, scanDocError{Code: apicontract.CodeFailed, Message: "render host facts: " + err.Error()})
+		return
+	}
+	s.items = items
+	s.total = int64(total)
 }
 
 // hydrateFindingEvidence loads the evidence columns the list query leaves out

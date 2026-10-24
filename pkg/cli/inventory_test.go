@@ -81,7 +81,7 @@ func TestEndpointsJSONEnvelope(t *testing.T) {
 	endpointsFlags.limit = 100
 
 	out := captureStdout(t, func() {
-		require.NoError(t, renderEndpoints(context.Background(), endpointsCmd, db, database.QueryFilters{ProjectUUID: "p1"}))
+		require.NoError(t, renderEndpoints(context.Background(), endpointsCmd, db, database.QueryFilters{ProjectUUID: "p1"}, "console"))
 	})
 	env := decodeEnvelope(t, out)
 	contracttest.Validate(t, "endpoints", []byte(out))
@@ -106,7 +106,7 @@ func TestEndpointsScanProvenanceWarning(t *testing.T) {
 	withJSON(t)
 
 	out := captureStdout(t, func() {
-		require.NoError(t, renderEndpoints(ctx, endpointsCmd, db, database.QueryFilters{ProjectUUID: "p1", ScanUUID: "old-scan"}))
+		require.NoError(t, renderEndpoints(ctx, endpointsCmd, db, database.QueryFilters{ProjectUUID: "p1", ScanUUID: "old-scan"}, "console"))
 	})
 	require.Equal(t, provenanceScanNotStamped, decodeEnvelope(t, out).Provenance)
 	contracttest.Validate(t, "endpoints", []byte(out))
@@ -133,7 +133,7 @@ func TestParamsJSONRedactsByDefault(t *testing.T) {
 	paramsShowValues = false
 
 	out := captureStdout(t, func() {
-		require.NoError(t, renderParams(context.Background(), paramsCmd, db, database.QueryFilters{ProjectUUID: "p1"}))
+		require.NoError(t, renderParams(context.Background(), paramsCmd, db, database.QueryFilters{ProjectUUID: "p1"}, "console"))
 	})
 	require.NotContains(t, out, "hunter2")
 	env := decodeEnvelope(t, out)

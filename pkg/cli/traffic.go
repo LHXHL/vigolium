@@ -162,7 +162,7 @@ func init() {
 	// Shared filter flags on PersistentFlags (apply to both the listing and --replay)
 	pf := trafficCmd.PersistentFlags()
 	pf.StringSliceVar(&trafficUUIDs, "uuid", nil,
-		"Select exact stored record(s) by UUID (repeatable/comma-separated). Applied before pagination, so a match is never missed because it fell outside -n")
+		"Select exact stored record(s) by UUID or unique 8+ char prefix (repeatable/comma-separated). Applied before pagination, so a match is never missed because it fell outside -n")
 	pf.StringArrayVar(&trafficURLs, "url", nil,
 		"Select records whose URL matches EXACTLY (repeatable; OR-ed). Compared against the stored URL with no normalization — use --path or --search for substring matching")
 	pf.StringVar(&trafficHost, "host", "", "Filter by hostname pattern (wildcard supported)")
@@ -202,6 +202,9 @@ func init() {
 	f.BoolVarP(&globalStateless, "stateless", "S", false, "Read from --db (a .jsonl export or standalone .sqlite) with project scoping off; never writes to your project DB")
 	f.StringVar(&globalGlobDB, "glob-db", "", "Read across a glob of result files merged into one temporary DB (e.g. --glob-db 'scans/*.sqlite'); implies -S")
 	f.BoolVar(&globalGlobStrict, "glob-strict", false, "Fail the read on the first --glob-db source that cannot be imported, instead of skipping it with a warning")
+	registerTSVFlags(f)
+	f.BoolVar(&trafficExcludeNotFound, "exclude-not-found", false,
+		"Drop records that are their origin's not-found page: a 404/410, or a response matching the not-found baseline 'vigolium fingerprint' stored (applied to the returned page)")
 	f.StringSliceVar(&trafficColumns, "columns", nil, "Columns to show (comma-separated, e.g. HOST,METHOD,PATH,STATUS)")
 	f.StringSliceVar(&trafficExclude, "exclude-columns", nil, "Columns to hide (comma-separated)")
 	registerAgentJSONFlags(f)
@@ -241,6 +244,11 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	if err := validateJSONOutputFlag(cmd); err != nil {
 		return err
 	}
+	readFormat, err := requestedReadFormat(cmd)
+	if err != nil {
+		return err
+	}
+	trafficTSV = readFormat == "tsv"
 	// Same reason, same place: an unknown --group-by name or a conflicting output
 	// mode is knowable from the flags alone and must not cost a database open.
 	if err := validateTrafficGroupFlags(func(name string) bool { return flagOn(cmd, name) }); err != nil {
@@ -339,6 +347,17 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
+	// --uuid takes unique prefixes. Resolved to full UUIDs here, once, and
+	// written back to the flag so every later filter build (the --replay shim
+	// builds its own) selects by exact identity.
+	if len(trafficUUIDs) > 0 {
+		resolved, err := resolveRecordRefs(context.Background(), database.NewRepository(db), trafficUUIDs, filters.ProjectUUID)
+		if err != nil {
+			return err
+		}
+		trafficUUIDs = resolved
+		filters.RecordUUIDs = resolved
+	}
 	if trafficSaveToVigoliumDB {
 		// --save-to-vigolium-db flips this invocation to write intent
 		// (dbWriteFlags), so the opener has already made the schema ready.
@@ -412,6 +431,10 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to query database: %w", err)
 		}
+		var excluded int
+		if trafficExcludeNotFound {
+			records, excluded = dropNotFoundRecords(newNotFoundMatcher(ctx, db, filters.ProjectUUID), records)
+		}
 		// An empty --scan-uuid read is explained, not left to read as "this scan
 		// stored nothing" (see scanProvenanceWarning).
 		var provenance []envOpt
@@ -431,7 +454,13 @@ func runTraffic(cmd *cobra.Command, args []string) error {
 		}
 
 		if globalJSON {
+			if trafficExcludeNotFound {
+				provenance = append(provenance, withExtra("not_found_excluded", excluded))
+			}
 			return displayJSON(ctx, cmd, db, records, total, trafficOffset, trafficLimit, provenance...)
+		}
+		if trafficTSV {
+			return renderTrafficTSV(ctx, db, filters, records)
 		}
 
 		// Echo the active filter conditions (search, host, method, status, …) so
@@ -562,7 +591,53 @@ func trafficRendersRawBodies() bool {
 	// renders a full raw view.
 	return trafficRaw || trafficBurp || trafficMarkdown || trafficReplay || trafficCurl ||
 		trafficSaveToBurp || trafficSaveToVigoliumDB || globalJSON ||
-		trafficTUI || trafficBurpBridgeURL != "" || trafficColumnsUseRawBodies()
+		trafficTUI || trafficBurpBridgeURL != "" || trafficColumnsUseRawBodies() ||
+		(trafficTSV && trafficTSVNeedsRaw(tsvColumns(defaultTrafficTSVColumns))) || trafficExcludeNotFound
+}
+
+// trafficExcludeNotFound backs --exclude-not-found.
+var trafficExcludeNotFound bool
+
+// dropNotFoundRecords removes records that are their origin's not-found page
+// (see notFoundMatcher) and says how many it removed. Applied to the page the
+// query returned, so a page can come back shorter than -n.
+func dropNotFoundRecords(m *notFoundMatcher, records []*database.HTTPRecord) ([]*database.HTTPRecord, int) {
+	kept := records[:0]
+	for _, r := range records {
+		if match, known := m.Matches(r); known && match {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept, len(records) - len(kept)
+}
+
+// trafficTSV is set when this invocation renders --format tsv.
+var trafficTSV bool
+
+// defaultTrafficTSVColumns is `traffic --format tsv` without --fields: the
+// columns a survey reads, with the short UUID the other commands accept.
+var defaultTrafficTSVColumns = []string{"uuid_short", "status_code", "method", "response_content_length", "url"}
+
+// trafficTSVNeedsRaw reports whether a TSV column is parsed out of the stored
+// request/response rather than read from a column.
+func trafficTSVNeedsRaw(columns []string) bool {
+	return wantsField(columns, "response_headers") || wantsField(columns, "request") || wantsField(columns, "response") ||
+		wantsField(columns, "matches_not_found")
+}
+
+// renderTrafficTSV prints records as TSV through the same view -j uses.
+func renderTrafficTSV(ctx context.Context, db *database.DB, filters database.QueryFilters, records []*database.HTTPRecord) error {
+	columns := tsvColumns(defaultTrafficTSVColumns)
+	opts := agentViewOptions{
+		fields:   columns,
+		noBodies: !wantsField(columns, "request") && !wantsField(columns, "response"),
+	}.withHostFacts(ctx, db, filters.ProjectUUID, filters.ScanUUID).withNotFound(ctx, db, filters.ProjectUUID)
+	rows := make([]map[string]any, 0, len(records))
+	for _, r := range records {
+		rows = append(rows, compactRecordView(r, opts))
+	}
+	return writeTSV(os.Stdout, columns, rows)
 }
 
 // trafficColumnsUseRawBodies reports whether the resolved --columns selection

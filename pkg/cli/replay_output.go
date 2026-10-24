@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/spf13/cobra"
+	"github.com/vigolium/vigolium/pkg/contract"
+	"github.com/vigolium/vigolium/pkg/replay"
 	"github.com/vigolium/vigolium/pkg/terminal"
 )
 
@@ -121,9 +123,76 @@ func emitReplayResult(cmd *cobra.Command, p streamOutputPlan, out *replayOutput)
 		}
 	}
 	if p.envelope {
-		return emitObject(cmd, ".", out)
+		rows, err := shapeReplayRows(cmd, []*replayOutput{out})
+		if err != nil {
+			return err
+		}
+		return emitObject(cmd, ".", rows[0])
 	}
 	return nil
+}
+
+// replayShaping is replay -j's --fields vocabulary (one replay row's keys).
+// --compact is applied to the nested exchange by compactReplayOutput instead,
+// since what makes a replay row large lives below its top level.
+var replayShaping = rowShaping{supported: contract.JSONFieldNames(replayOutput{})}
+
+// shapeReplayRows applies --compact and --fields to replay rows. Only `replay`
+// itself registers those flags; the `traffic --replay` shim reaches the same
+// emitters with traffic's own --fields, which describe traffic rows, so it is
+// passed through untouched.
+func shapeReplayRows(cmd *cobra.Command, outs []*replayOutput) ([]any, error) {
+	if commandPathWithoutRoot(cmd) != "replay" {
+		rows := make([]any, len(outs))
+		for i, o := range outs {
+			rows[i] = o
+		}
+		return rows, nil
+	}
+	if jsonCompact {
+		compacted := make([]*replayOutput, len(outs))
+		for i, o := range outs {
+			compacted[i] = compactReplayOutput(o)
+		}
+		outs = compacted
+	}
+	shaped, err := replayShaping.applyRows(outs)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]any, len(shaped))
+	for i, r := range shaped {
+		rows[i] = r
+	}
+	return rows, nil
+}
+
+// compactReplayOutput is a copy of o with the bulky parts of the exchange
+// removed: response headers and excerpts, and the mutated request preview.
+// Status, length, content hash, timing and the diff stay.
+func compactReplayOutput(o *replayOutput) *replayOutput {
+	if o == nil || o.Result == nil {
+		return o
+	}
+	c := *o
+	r := *o.Result
+	r.MutatedRequest = ""
+	r.MutatedRequestTrunc = false
+	r.Baseline = compactReplaySummary(r.Baseline)
+	r.Replay = compactReplaySummary(r.Replay)
+	c.Result = &r
+	return &c
+}
+
+func compactReplaySummary(s *replay.Summary) *replay.Summary {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	c.Headers = nil
+	c.Excerpt = ""
+	c.Truncated = false
+	return &c
 }
 
 // emitReplayBulkEnvelope writes a bulk run's -j document: every replayed record
@@ -139,5 +208,9 @@ func emitReplayBulkEnvelope(cmd *cobra.Command, outs []*replayOutput) error {
 	if outs == nil {
 		outs = []*replayOutput{}
 	}
-	return emitRead(cmd, "", outs, int64(len(outs)), 0, len(outs), withExtra("failed", failed))
+	items, err := shapeReplayRows(cmd, outs)
+	if err != nil {
+		return err
+	}
+	return emitRead(cmd, "", items, int64(len(outs)), 0, len(outs), withExtra("failed", failed))
 }

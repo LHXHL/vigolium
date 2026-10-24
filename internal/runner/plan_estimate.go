@@ -199,6 +199,12 @@ func estimatePhase(p *scanplan.Plan, ph scanplan.Phase, in planEstimateInput, T 
 	case PhaseProbe:
 		return scanplan.PhaseEstimate{Low: T, High: 2 * T, Basis: "one request per target plus redirects"}, true
 
+	case PhaseFingerprint:
+		depth := fingerprintDepthFor(in.opts, int(T))
+		low, high := fingerprintRequestsPerOrigin(depth)
+		return scanplan.PhaseEstimate{Low: T * low, High: T * high,
+			Basis: fmt.Sprintf("%s depth: %d-%d reads per origin", depth, low, high)}, true
+
 	case PhaseDiscovery:
 		var short, long, fuzz int64
 		if p.Discovery != nil {

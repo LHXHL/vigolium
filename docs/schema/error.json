@@ -6,6 +6,7 @@
         "code": {
           "type": "string",
           "enum": [
+            "ambiguous_id",
             "body_decode_failed",
             "body_incomplete",
             "body_unavailable",

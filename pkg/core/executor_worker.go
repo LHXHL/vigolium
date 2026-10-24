@@ -117,9 +117,14 @@ func (e *Executor) sendItem(ctx context.Context, item *work.WorkItem, itemCh cha
 
 	// Pre-request scope check (host/path only — avoids HTTP call)
 	if e.cfg.ScopeMatcher != nil && item.Request.Service() != nil {
-		if !e.cfg.ScopeMatcher.InScopeRequest(
-			item.Request.Service().Host(),
-			item.Request.Request().Path(), "", "") {
+		host, path := item.Request.Service().Host(), item.Request.Request().Path()
+		var inScope bool
+		if e.cfg.FetchStaticFiles {
+			inScope = e.cfg.ScopeMatcher.InScopeTarget(host, path)
+		} else {
+			inScope = e.cfg.ScopeMatcher.InScopeRequest(host, path, "", "")
+		}
+		if !inScope {
 			e.scopeRejected.Add(1)
 			item.Complete()
 			return true
@@ -289,6 +294,9 @@ func (e *Executor) processItemDetached(t *itemTracker) {
 		fetched, ok = e.fetchBaseline(ctx, req)
 	}
 	if !ok {
+		if fetched.drop != "" {
+			e.noteDrop(req.Target(), fetched.drop, fetched.dropErr)
+		}
 		return
 	}
 	// Counted here rather than when the item completes: this is the exact point
@@ -300,6 +308,9 @@ func (e *Executor) processItemDetached(t *itemTracker) {
 	httpResp := fetched.resp
 	req, t.pooledBuf = fetched.req, fetched.pooledBuf
 	redirectHops := fetched.hops
+	if fetched.blockedRemark != "" {
+		item.Remarks = append(item.Remarks, fetched.blockedRemark)
+	}
 
 	// Learn object-storage-backed hosts from any storage-signalled response so
 	// the static-file carve-out keeps sibling assets on the same host.
@@ -314,6 +325,10 @@ func (e *Executor) processItemDetached(t *itemTracker) {
 			return // storage hint did not pan out; drop without recording
 		}
 		httpResp.TruncateBody(0)
+	}
+
+	if e.cfg.OnResponse != nil {
+		e.cfg.OnResponse(item, req)
 	}
 
 	// Notify traffic callback

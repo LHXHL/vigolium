@@ -117,9 +117,9 @@ func (m *Module) ScanPerRequest(ctx *httpmsg.HttpRequestResponse, httpClient *ht
 }
 
 func (m *Module) proveMarkerPersistence(ctx *httpmsg.HttpRequestResponse, client *http.Requester, originalBody, baselineBody string, variant pollutionVariant) (markerProof, bool) {
-	property := "vgopp_" + strings.ToLower(utils.RandomString(10))
+	property := "vigoliumpp_" + strings.ToLower(utils.RandomString(10))
 	value := "polluted_" + strings.ToLower(utils.RandomString(14))
-	controlProperty := "vgopp_ctl_" + strings.ToLower(utils.RandomString(10))
+	controlProperty := "vigoliumpp_ctl_" + strings.ToLower(utils.RandomString(10))
 	controlValue := "control_" + strings.ToLower(utils.RandomString(14))
 	proof := markerProof{variant: variant, property: property, value: value}
 	if strings.Contains(baselineBody, value) || strings.Contains(baselineBody, controlValue) {
