@@ -229,11 +229,11 @@ Agentic scan modes:
 
 See the [agent mode guide](https://docs.vigolium.com/agentic-scan/agent-mode) for the full guide.
 
-## ⚡ Vigolium Cloud Console
+## ⚡ Enjoying Vigolium? Gimorra Takes It Further — Autonomous Offensive-Security Agent
 
-A cloud-based solution for teams that want the power of Vigolium without managing infrastructure. Console is the **upgraded, fully-featured version of Vigolium**, led by an **advanced autonomous agent** that drives the whole engagement — reasoning about the target, choosing its own attack paths, and confirming what it finds — with hosted scanning and shared results layered on top of the open-source core, so you can focus on fixing vulnerabilities instead of maintaining tooling.
+Want to experience a fully **autonomous offensive-security agent**? Check out **[Gimorra](https://gimorra.vigolium.com/)**, our new agent built on top of the Vigolium core. It drives the whole engagement on its own — reasoning about the target, choosing its own attack paths, and deterministically confirming what it finds — so you can focus on fixing vulnerabilities instead of running tooling.
 
-> Interested? [Get in touch for a demo](https://www.vigolium.com/request-demo).
+> Want to see it in action? [Get in touch for a full demo](https://www.vigolium.com/request-demo).
 
 ## Native Scan Layers
 

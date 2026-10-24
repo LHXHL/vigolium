@@ -194,7 +194,7 @@ function isWebpackChunkCall(path: NodePath<t.CallExpression>): boolean {
 function importThunk(node: t.Node | undefined): boolean {
   if (!node || !(t.isArrowFunctionExpression(node) || t.isFunctionExpression(node)) || node.params.length) return false;
   const expression = returnedExpression(node);
-  return !!expression && t.isCallExpression(expression) && t.isImport(expression.callee);
+  return !!expression && t.isImportExpression(expression);
 }
 
 function staticTruthiness(node: t.Node): boolean | undefined {

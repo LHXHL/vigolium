@@ -32,7 +32,7 @@ export function applyTransform<TOptions>(
   if (transform.visitor) {
     const visitor = transform.visitor(
       options,
-    ) as TraverseOptions<TransformState>;
+    ) as TraverseOptions & Visitor<TransformState>;
     visitor.noScope = !transform.scope;
     traverse(ast, visitor, undefined, state);
   }
@@ -57,7 +57,7 @@ export function applyTransforms(
 
   const traverseOptions = transforms.flatMap((t) => t.visitor?.() ?? []);
   if (traverseOptions.length > 0) {
-    const visitor: TraverseOptions<TransformState> =
+    const visitor: TraverseOptions & Visitor<TransformState> =
       visitors.merge(traverseOptions);
     visitor.noScope = options.noScope || transforms.every((t) => !t.scope);
     traverse(ast, visitor, undefined, state);

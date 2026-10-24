@@ -184,6 +184,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `xml-saml-security` | XML SAML Security | SAML XML security checks (XXE + signature verification) | High | Firm | `injection`, `xxe`, `authentication`, `auth-bypass`, `moderate` |
 | `jwt-vulnerability` | JWT Vulnerability | Detects JWT algorithm confusion and weak signing vulnerabilities | Critical | Certain | `jwt`, `auth-bypass`, `moderate` |
 | `http-request-smuggling` | HTTP Request Smuggling | Detects HTTP request smuggling via CL.TE, TE.CL and CL.0 desync | Suspect | Tentative | `request-smuggling`, `heavy` |
+| `brotli-request-decoding-exposure` | Brotli Request Decoding Exposure | Flags servers that decode Brotli request bodies (app body parser, middleware, or an Envoy/Istio decompressor), the attack surface of CVE-2026-111497; stack-agnostic decode differential on JSON bodies (the answer must track the decoded content over two rounds, not the header), reported as a candidate; never sends the crash trigger | Info | Tentative | `brotli`, `cve`, `light` |
 
 ### API & Endpoint Security
 
@@ -298,7 +299,6 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `express-debug-probe` | Express Debug Probe | Triggers error responses in Express/NestJS apps to detect stack trace and debug info leakage | Low | Firm | `express`, `misconfiguration`, `info-disclosure`, `moderate` |
 | `express-directory-listing` | Express Directory Listing | Detects directory listing exposure via serve-index or similar middleware | Low | Firm | `express`, `info-disclosure`, `misconfiguration`, `light` |
 | `express-trust-proxy-misconfig` | Express Trust Proxy Misconfiguration | Detects Express trust proxy misconfiguration via X-Forwarded-* header manipulation | Medium | Firm | `express`, `misconfiguration`, `moderate` |
-| `node-brotli-decoder-exposure` | Node.js Brotli Request Decoding Exposure | Detects Express/NestJS apps that decode Brotli request bodies, the attack surface of CVE-2026-111497 (node2shell candidate); never sends the crash trigger | Info | Firm | `express`, `nestjs`, `nodejs`, `cve`, `light` |
 
 #### ASP.NET / IIS
 

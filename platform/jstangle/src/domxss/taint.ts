@@ -488,6 +488,10 @@ function classifySink(path: AnyPath): SinkHit | null {
     if (isLocationObject(left)) return { label: 'location', argument: right, path, confidence: 'high', flowType: 'openRedirect' };
   }
 
+  // Babel 8 parses `import(x)` as an ImportExpression, not a CallExpression.
+  if (path.isImportExpression()) {
+    return { label: 'dynamic import', argument: path.get('source') as AnyPath, path, confidence: 'high', flowType: 'scriptUrlInjection' };
+  }
   if (path.isCallExpression()) {
     const callee = path.get('callee') as AnyPath;
     const args = path.get('arguments') as AnyPath[];
@@ -498,9 +502,6 @@ function classifySink(path: AnyPath): SinkHit | null {
       }
       if (callee.node.name === 'fetch' && args[0]) return { label: 'network.fetch', argument: args[0], path, confidence: 'medium', flowType: 'clientRequestInjection' };
     }
-	if (callee.isImport() && args[0]) {
-	  return { label: 'dynamic import', argument: args[0], path, confidence: 'high', flowType: 'scriptUrlInjection' };
-	}
     if (callee.isMemberExpression() || callee.isOptionalMemberExpression()) {
       const property = callee.get('property') as AnyPath;
       const method = property.isIdentifier() ? property.node.name : property.isStringLiteral() ? property.node.value : '';

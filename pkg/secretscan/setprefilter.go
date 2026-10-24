@@ -115,7 +115,12 @@ func (rs *regexSet) retain(data []byte, candidates map[int]struct{}) {
 		for _, idx := range cands {
 			hit[idx] = false
 		}
-		for _, local := range shard.set.FindAll(data, -1) {
+		matches, err := shard.set.FindAllWithError(data, -1)
+		if err != nil {
+			// A failed evaluation is not a miss: keep this shard's candidates.
+			continue
+		}
+		for _, local := range matches {
 			g := shard.ruleIdx[local]
 			if _, isCand := hit[g]; isCand {
 				hit[g] = true

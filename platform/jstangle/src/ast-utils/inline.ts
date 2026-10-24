@@ -135,7 +135,6 @@ export function isPureForInline(node: t.Node): boolean {
     case 'BooleanLiteral':
     case 'NullLiteral':
     case 'BigIntLiteral':
-    case 'DecimalLiteral':
     case 'RegExpLiteral':
     case 'Identifier':
     case 'ThisExpression':
@@ -347,7 +346,7 @@ export function inlineFunctionAliases(binding: Binding): { changes: number } {
       });
       if (!paramUsedInDecodeCall) continue;
 
-      const fnBinding = fn.scope.parent.getBinding(fnName.current!);
+      const fnBinding = fn.scope.parent?.getBinding(fnName.current!);
       if (!fnBinding) continue;
       // Check all further aliases (`function alias2(a, b) { return alias(a - 1, b + 3); }`)
       const fnRefs = fnBinding.referencePaths;

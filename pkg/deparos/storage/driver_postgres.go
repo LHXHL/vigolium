@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
+	"github.com/vigolium/vigolium/pkg/database"
 )
 
 // PostgresDriver implements DatabaseDriver for PostgreSQL
@@ -16,7 +16,7 @@ type PostgresDriver struct{}
 // Open creates a bun database connection for PostgreSQL
 func (d *PostgresDriver) Open(dsn string) (*bun.DB, error) {
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
-	return bun.NewDB(sqldb, pgdialect.New()), nil
+	return bun.NewDB(sqldb, database.NewPGDialect()), nil
 }
 
 // ConfigurePool sets PostgreSQL-specific connection pool settings

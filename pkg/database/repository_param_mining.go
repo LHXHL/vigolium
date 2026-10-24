@@ -51,7 +51,7 @@ func (r *Repository) ParamMiningCandidates(ctx context.Context, scanUUID string,
 	q = applyHostScopeFilter(q, hosts)
 	q = applyProjectFilter(q, scan.ProjectUUID)
 	if limit > 0 {
-		q = q.Limit(limit)
+		q = q.Limit(int64(limit))
 	}
 	if err := q.OrderExpr("risk_score DESC, surface_score DESC, created_at ASC, uuid ASC").Scan(ctx); err != nil {
 		return nil, err

@@ -1,5 +1,6 @@
 import * as t from '@babel/types';
-import { isProvablyString, type Transform } from '../ast-utils';
+import { isProvablyString, type Transform, type TransformState } from '../ast-utils';
+import type { Visitor } from '../ast-utils/babel';
 
 /**
  * Transform String.prototype.concat() calls into binary `+` expressions so the
@@ -28,7 +29,7 @@ export default {
   // p.concat(x)`) can still be resolved. Harmless when merged with a scoped
   // transform; the standalone deobfuscate stage already runs with scope.
   scope: true,
-  visitor() {
+  visitor(): Visitor<TransformState> {
     return {
       CallExpression: {
         exit(path) {

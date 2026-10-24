@@ -33,7 +33,7 @@ export class StructuralIndex {
   readonly objectProperties: Array<NodePath<t.ObjectProperty>> = [];
   readonly assignmentExpressions: Array<NodePath<t.AssignmentExpression>> = [];
   readonly propertyAssignments = new Map<Binding, IndexedPropertyAssignment[]>();
-  readonly xhrOperations = new Map<string, Array<NodePath<t.CallExpression>>>();
+  readonly xhrOperations: Map<string, Array<NodePath<t.CallExpression>>> = new Map();
   readonly stats: StructuralIndexStats = {
     fullTreePasses: 1, calls: 0, functions: 0, propertyAssignments: 0, xhrOperations: 0,
     xhrLifecycleQueries: 0, xhrFallbackTraversals: 0,

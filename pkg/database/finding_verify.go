@@ -108,7 +108,7 @@ func (r *Repository) ReplayBaselineCandidates(ctx context.Context, projectUUID, 
 		Where("method = ?", method).
 		Where("COALESCE(source, '') NOT IN (?)", bun.List(EvidenceRecordSources)).
 		OrderExpr("sent_at DESC").
-		Limit(limit)
+		Limit(int64(limit))
 	if projectUUID != "" {
 		q = q.Where("project_uuid = ?", projectUUID)
 	}

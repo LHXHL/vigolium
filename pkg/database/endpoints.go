@@ -88,7 +88,7 @@ func (qb *QueryBuilder) inventoryPageQuery(afterUUID string, n int) *bun.SelectQ
 	if afterUUID != "" {
 		q = q.Where("r.uuid > ?", afterUUID)
 	}
-	return q.OrderExpr("r.uuid ASC").Limit(n)
+	return q.OrderExpr("r.uuid ASC").Limit(int64(n))
 }
 
 // forEachInventoryRecord streams every record the filters match (Limit,

@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/uptrace/bun/driver/sqliteshim"
+	"github.com/vigolium/vigolium/pkg/database"
 )
 
 // MergeStats tracks merge operation statistics
@@ -44,9 +44,9 @@ func NewDBMerger(dstPath string, batchSize int, verbose bool) (*DBMerger, error)
 		return nil, fmt.Errorf("open destination database: %w", err)
 	}
 
-	db := bun.NewDB(sqldb, sqlitedialect.New())
+	db := bun.NewDB(sqldb, database.NewSQLiteDialect())
 	if verbose {
-		db.AddQueryHook(bundebug{})
+		db = db.WithQueryHook(bundebug{})
 	}
 
 	// Configure connection pool

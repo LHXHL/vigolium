@@ -237,7 +237,7 @@ func TestDirectScanRowsPerInputAndPinned(t *testing.T) {
 	require.NoError(t, err)
 	n, err := db.NewSelect().Model((*database.Scan)(nil)).Where("uuid = ?", globalScanUUID).Count(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, 1, n)
+	assert.Equal(t, int64(1), n)
 	pinned.close()
 	sess.close()
 }

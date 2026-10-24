@@ -159,8 +159,8 @@ func (r *Repository) listAgenticScans(ctx context.Context, projectUUID string, m
 		Where("project_uuid = ?", projectUUID).
 		Where("(parent_run_uuid IS NULL OR parent_run_uuid = '')").
 		OrderExpr("created_at DESC").
-		Limit(limit).
-		Offset(offset)
+		Limit(int64(limit)).
+		Offset(int64(offset))
 
 	if len(exclude) > 0 {
 		q = q.ExcludeColumn(exclude...)
@@ -173,9 +173,9 @@ func (r *Repository) listAgenticScans(ctx context.Context, projectUUID string, m
 		return nil, 0, fmt.Errorf("failed to list agent runs: %w", err)
 	}
 	if countErr != nil {
-		total = len(runs)
+		total = int64(len(runs))
 	}
-	return runs, int64(total), nil
+	return runs, total, nil
 }
 
 // GetChildAgenticScans returns agent runs whose ParentAgenticScanUUID matches the given UUID.

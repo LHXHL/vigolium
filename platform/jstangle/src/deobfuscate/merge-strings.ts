@@ -1,5 +1,6 @@
 import * as m from '@codemod/matchers';
-import type { Transform } from '../ast-utils';
+import type { Transform, TransformState } from '../ast-utils';
+import type { Visitor } from '../ast-utils/babel';
 
 // "a" + "b" -> "ab"
 // (a + "b") + "c" -> a + "bc"
@@ -8,7 +9,7 @@ export default {
   name: 'merge-strings',
   tags: ['safe'],
   minLevel: 'strict',
-  visitor() {
+  visitor(): Visitor<TransformState> {
     const left = m.capture(m.stringLiteral());
     const right = m.capture(m.stringLiteral());
 

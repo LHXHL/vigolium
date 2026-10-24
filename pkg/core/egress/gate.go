@@ -517,7 +517,7 @@ func (g *Gate) hostLimiter() *ratelimit.HostRateLimiter {
 // own expired), so it is not reported.
 func (t *roundTripper) report(req *http.Request, resp *http.Response, err error) {
 	hosts := t.g.hostLimiter()
-	if hosts == nil || req.Context().Err() != nil {
+	if hosts == nil || requestCancelled(req) {
 		return
 	}
 	// The limiter's key is the bare hostname (what Acquire's parseTarget
@@ -534,6 +534,26 @@ func (t *roundTripper) report(req *http.Request, resp *http.Response, err error)
 		return
 	}
 	hosts.Feedback(host, resp.StatusCode, nil, t.isBlock(resp))
+}
+
+// requestCancelled reports whether the caller gave up on req. An http.Client
+// with a Timeout wrapping a RoundTripper it does not know (this one) arms two
+// timers: one closes req.Cancel, the other expires req's context. When the
+// first wins, the inner transport has already failed with "request canceled"
+// while the context still reads live, so both are checked.
+func requestCancelled(req *http.Request) bool {
+	if req.Context().Err() != nil {
+		return true
+	}
+	//nolint:staticcheck // SA1019: http.Client still drives Timeout through Request.Cancel for unknown RoundTrippers
+	if req.Cancel != nil {
+		select {
+		case <-req.Cancel: //nolint:staticcheck // SA1019: see above
+			return true
+		default:
+		}
+	}
+	return false
 }
 
 // isBlock classifies a block-candidate response, reading ahead at most

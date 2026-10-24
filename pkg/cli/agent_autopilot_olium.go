@@ -638,7 +638,7 @@ func samplePrescanRecords(ctx context.Context, repo *database.Repository, scanUU
 		Column("method", "url", "status_code", "path").
 		Where("scan_uuid = ?", scanUUID).
 		Order("status_code DESC", "length(path) ASC").
-		Limit(limit).
+		Limit(int64(limit)).
 		Scan(ctx, &rows)
 	if err != nil || len(rows) == 0 {
 		return ""

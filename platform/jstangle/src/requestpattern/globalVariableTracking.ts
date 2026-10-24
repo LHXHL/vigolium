@@ -79,7 +79,7 @@ const GENERIC_VARIABLE_NAMES = new Set([
  * be inside a nested block while assigning to a variable declared by an
  * outer function, so `path.scope.uid` alone is not a stable binding key.
  */
-function bindingScopeId(path: { scope: { uid: number; getBinding(name: string): { scope: { uid: number } } | undefined } }, name: string): number {
+function bindingScopeId(path: { scope: { uid?: number; getBinding(name: string): { scope: { uid?: number } } | undefined } }, name: string): number | undefined {
     return path.scope.getBinding(name)?.scope.uid ?? path.scope.uid;
 }
 

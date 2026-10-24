@@ -303,16 +303,16 @@ func (r *Repository) ListHostObservationsWithCount(ctx context.Context, q HostOb
 	var rows []*HostObservation
 	sel = sel.Order("ho.hostname ASC", "ho.port ASC", "ho.id DESC")
 	if q.Limit > 0 {
-		sel = sel.Limit(q.Limit)
+		sel = sel.Limit(int64(q.Limit))
 	}
 	if q.Offset > 0 {
-		sel = sel.Offset(q.Offset)
+		sel = sel.Offset(int64(q.Offset))
 	}
 	total, err := sel.ScanAndCount(ctx, &rows)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, 0, fmt.Errorf("list host observations: %w", err)
 	}
-	return rows, total, nil
+	return rows, int(total), nil
 }
 
 // LookupNotFoundBaseline returns the most recently recorded not-found baseline

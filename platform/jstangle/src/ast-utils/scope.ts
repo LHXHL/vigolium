@@ -18,7 +18,7 @@ export function generateUid(scope: Scope, name: string = 'temp'): string {
   );
 
   const program = scope.getProgramParent();
-  program.references[uid] = true;
-  program.uids[uid] = true;
+  program.referencesSet.add(uid);
+  program.uidsSet.add(uid);
   return uid;
 }

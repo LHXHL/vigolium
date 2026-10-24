@@ -61,7 +61,7 @@ func countScanRows(t *testing.T, path string) int {
 	t.Helper()
 	n, err := a3Repo(t, path).DB().NewSelect().Model((*database.Scan)(nil)).Count(context.Background())
 	require.NoError(t, err)
-	return n
+	return int(n)
 }
 
 // TestScanDryRunHasNoSideEffects: a dry run with discovery fuzzing on, the

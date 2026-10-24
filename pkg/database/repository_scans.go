@@ -315,8 +315,8 @@ func (r *Repository) ListScans(ctx context.Context, projectUUID string, limit, o
 	q := r.db.NewSelect().
 		Model(&scans).
 		OrderExpr("created_at DESC").
-		Limit(limit).
-		Offset(offset)
+		Limit(int64(limit)).
+		Offset(int64(offset))
 	if projectUUID != "" {
 		q = q.Where("project_uuid = ?", projectUUID)
 	}
@@ -593,7 +593,7 @@ func (r *Repository) ListScanLogs(ctx context.Context, scanUUID string, level, p
 		q = q.Where("phase = ?", phase)
 	}
 
-	q = q.Limit(limit).Offset(offset)
+	q = q.Limit(int64(limit)).Offset(int64(offset))
 
 	total, err := q.ScanAndCount(ctx)
 	if err != nil {

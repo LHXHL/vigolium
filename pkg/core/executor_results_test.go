@@ -141,7 +141,7 @@ func countRecords(t *testing.T, db *database.DB) int {
 	if err != nil {
 		t.Fatalf("count http_records: %v", err)
 	}
-	return n
+	return int(n)
 }
 
 func loadFindings(t *testing.T, db *database.DB) []*database.Finding {

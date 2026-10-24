@@ -97,14 +97,14 @@ export function extractAssetReferences(
         addResolved(context, path, path.node.right, 'script', false, 'script-src-assignment', 'medium');
       }
     },
+    // Babel 8 parses `import(x)` as an ImportExpression, not a CallExpression.
+    ImportExpression(path) {
+      const first = path.node.source;
+      if (t.isTemplateLiteral(first) && enumerateTemplateImport(context, path, first)) return;
+      addResolved(context, path, first, 'dynamic-import', false, 'dynamic-import', 'high');
+    },
     CallExpression(path) {
       const callee = path.node.callee;
-      if (t.isImport(callee)) {
-        const first = path.node.arguments[0];
-        if (t.isTemplateLiteral(first) && enumerateTemplateImport(context, path, first)) return;
-        addResolved(context, path, first as t.Node, 'dynamic-import', false, 'dynamic-import', 'high');
-        return;
-      }
       const name = t.isIdentifier(callee) ? callee.name : memberPath(callee);
       if (name === 'importScripts' || name.endsWith('.importScripts')) {
         for (const arg of path.node.arguments) {

@@ -2,51 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [v0.5.5] - 2026-10-24
+
+### New Vulnerability Checks
+
+- `php2shell` active module (CVE-2026-109618 / CVE-2026-109619) on PHP-fingerprinted hosts; detection inspired by [assetnote/php2shell-scanner](https://github.com/assetnote/php2shell-scanner).
+- `php2shell-version` passive module flags vulnerable PHP 8.2–8.5 banners.
+- `brotli-request-decoding-exposure` active module flags servers that decode Brotli request bodies (CVE-2026-111497, the http2shell surface). Not just Node: the out-of-bounds write sits in the Brotli decoder itself, so Bun, Envoy/Istio decompressors and anything linking libbrotli are exposed too. Stack-agnostic and never sends the crash trigger. See [patchtheplanet.org/brotli](https://patchtheplanet.org/brotli).
 
 ### Added
 
-- `vigolium fuzz` multiplexes by default: HTTP/3 where a direct QUIC handshake proves it, else HTTP/2 where ALPN selects it, else HTTP/1.1, pinned for the whole run and reported as `pace.protocol`. Multiplexed runs default to 50 workers. New `--http3` / `--http3-only`, and `--http-version auto|1.1|2|3|3-only`. Jobs that only mean something over HTTP/1.1 (Host-header positions, header-name positions, CR/LF/NUL payloads, `Upgrade`/`Transfer-Encoding`/hop-by-hop `Connection`) stay on it, with `pace.protocol_note` saying why.
-- Discovery pins each origin to HTTP/3, HTTP/2 or HTTP/1.1 (`discovery.engine.protocol`, default `auto`) and gives wordlist and `/FUZZ` requests their own worker pool per target (`discovery.engine.brute_force_concurrency`, default the per-host slot cap). The spider, observed-word variants and JS work keep the phase concurrency. The module scanner stays on HTTP/1.1.
-- `php2shell` active module: the Assetnote php2shell probe (CVE-2026-109618 / CVE-2026-109619) on hosts a PHP fingerprint marked — a 42-byte multipart control, then 1/8/20 MiB nested-key probes, reported `suspect` on a memory-exhausted fatal error, an empty 500 or a PHP-FPM worker death. Skips hosts advertising a patched PHP; runs in default scans.
-- `php2shell-version` passive module: an `info` result when X-Powered-By or Server advertises a PHP 8.2–8.5 release below the php2shell fix.
-- `node-brotli-decoder-exposure` active module: an `info` result when an Express/NestJS app decodes `Content-Encoding: br` request bodies (400 for an invalid Brotli body against 415 for `Content-Encoding: x-vigolium`), the attack surface of CVE-2026-111497. Never sends the crash trigger.
-- `vigolium fingerprint` (also `run fingerprint`): per-origin reads — base page, linked favicon, well-known and API-definition paths, GraphQL introspection, OPTIONS, a CORS preflight, Host-header variants, a not-found baseline — sent through the scan executor and stored as host facts. `--depth light|standard|full`; only reads, no redirects followed.
-- Favicons are hashed as mmh3 over Python-wrapped base64 (Shodan `http.favicon.hash`, FOFA `icon_hash`) as well as MD5 and SHA-256.
-- `vigolium hosts` reads stored host facts per host:port: DNS, TLS certificate, fingerprint report, not-found baseline; `--sans` prints certificate names, `--soft-404` finds origins answering 2xx to a missing path.
-- `vigolium dns` resolves A, AAAA, CNAME, MX, NS, TXT, SOA and CAA and stores the answers; `vigolium dig` and `vigolium host` shims route to it.
-- `traffic --fields matches_not_found` and `--exclude-not-found` compare records against their origin's stored not-found baseline.
-- `--format tsv` on `traffic`, `finding`, `endpoints`, `params`, `hosts` and `dns`: one line per row, columns from `--fields`, `--no-header`.
-- `--fields` accepts shared aliases (`status`, `length`, `title`, `id`, `headers`, …) on every view and emits the names passed; unknown names suggest the nearest one. New opt-in traffic fields `uuid_short` and `response_headers`.
-- `--fields`, `--compact` and `--max-output-bytes` on `fuzz`, `replay`, `endpoints`, `params`, `log ls`, `hosts` and `dns`.
-- Schemas for `fuzz`, `replay`, `ingest`, `traffic body`, `traffic headers`, `hosts`, `dns`, `fingerprint`, `schema storage` and `schema flags`.
-- `vigolium schema storage [table]` describes the database's tables, columns, row counts and the `-j` field each column surfaces as.
-- `--usage` on any command prints its flags one per line; `vigolium schema flags <command> -j` is the same list as data.
-- Every record-UUID flag and `traffic body`/`headers` accept a unique 8+ character prefix, resolved within the current project; an ambiguous one fails `ambiguous_id` naming the candidates.
-- `ingest -j` lists the stored records as `items` and reports `failure_reasons`/`failures`; `ingest --keep-blocked` stores WAF block pages marked `blocked:<reason>`.
+- `fuzz` multiplexes over HTTP/3 → HTTP/2 → HTTP/1.1 (`--http-version`, `--http3`, `--http3-only`), reported as `pace.protocol`.
+- Discovery pins each origin's protocol (`discovery.engine.protocol`) with a dedicated brute-force pool (`brute_force_concurrency`).
+- `vigolium fingerprint` stores per-origin host facts (`--depth light|standard|full`).
+- Favicon mmh3 hashes (Shodan/FOFA) alongside MD5 and SHA-256.
+- `vigolium hosts` reads stored host facts; `--sans` and `--soft-404`.
+- `vigolium dns` resolves and stores records; `dig` and `host` shims route to it.
+- `traffic --fields matches_not_found` and `--exclude-not-found`.
+- `--format tsv` on `traffic`, `finding`, `endpoints`, `params`, `hosts`, `dns`.
+- Shared `--fields` aliases with nearest-name suggestions; new `uuid_short` and `response_headers` fields.
+- `--fields`, `--compact`, `--max-output-bytes` on `fuzz`, `replay`, `endpoints`, `params`, `log ls`, `hosts`, `dns`.
+- JSON schemas for `fuzz`, `replay`, `ingest`, `traffic body/headers`, `hosts`, `dns`, `fingerprint`, `schema storage/flags`.
+- `vigolium schema storage [table]` describes tables, columns and row counts.
+- `--usage` on any command and `vigolium schema flags <command> -j`.
+- Record UUID flags accept a unique 8+ char prefix (`ambiguous_id` on collision).
+- `ingest -j` lists stored `items` and failure reasons; `--keep-blocked` stores WAF block pages.
 
 ### Fixed
 
-- Proxied scans no longer close every pooled connection after each 100 requests (retryablehttp could not see the transport behind the proxy-target wrapper).
-- TLS sessions are resumed across connections (scan, discovery, fuzz/replay, port sweep) instead of every new connection paying a full handshake.
-- Discovery feeds every response to the per-host limiter, so a 429, 5xx or WAF block page backs the host off, and a host pre-armed by preflight recovers during discovery.
-- Discovery retries of 429/503 honor `Retry-After` (up to 30s; longer is not retried) and wait at least 1s, instead of re-asking after 100ms.
-- Discovery decides 404/400/414/421/431 by status before soft-404 fingerprinting: no HTML parse for every miss, and no 4-probe wildcard validation for an unmatched 400.
-- `fuzz --send-via-burp` pools its bridge connections (it kept 2, so most concurrent sends re-dialed the bridge).
-- `-T <(…)`, `-i <(…)` and other pipes: a non-regular input file is spooled once, so a target list from process substitution no longer reads as empty (macOS sniffed the pipe dry).
-- `ingest --dir` no longer fails "no input provided", and a `--dir` matching exactly one file ingests it.
-- `replay --raw-request-file` (or `--raw-request`) alone is a source.
-- `replay -i <file>` and `fuzz -i <file>` read the file when the value is a path rather than a request.
-- The unparsed-input error no longer names a `--input-type` flag that does not exist; it is `input_unparsed` and names `--input-file`.
-- `fuzz -w builtin` and `-w default` select the default list; `builtin:<name>` names one explicitly.
-- `ingest` no longer reports WAF-blocked answers as "no response to store"; the error names the dominant reason and its fix.
+- Proxied scans no longer drop pooled connections every 100 requests.
+- TLS sessions resume across connections instead of full handshakes.
+- Discovery backs off on 429/5xx/WAF responses and honors `Retry-After`.
+- Discovery classifies 404/400/414/421/431 by status before soft-404 fingerprinting.
+- `fuzz --send-via-burp` pools bridge connections.
+- Process-substitution and pipe inputs (`-T <(…)`) no longer read as empty.
+- `ingest --dir` works, including a single matching file.
+- `replay --raw-request-file` / `--raw-request` alone is a valid source.
+- `replay -i` and `fuzz -i` read a file path instead of parsing it as a request.
+- Unparsed-input error is `input_unparsed` and names `--input-file`.
+- `fuzz -w builtin|default` selects the default list; `builtin:<name>` picks one.
+- `ingest` reports the dominant WAF-block reason instead of "no response to store".
 
 ### Changed
 
-- Probe markers sent to targets say `vigolium` instead of `vgl`/`vgn`/`vgm`/`vgo`/`vig-` (canaries, control paths, test hosts, header values, fuzz calibration words), so a target's logs and WAF show where the traffic came from. `modkit.FreshCanary` is now `vigolium` + 10 hex. AEM's real `vgnadmin` default account is unchanged.
-- `traffic body` and `traffic headers` take the record positionally as well as with `--uuid`.
-- `--tls-probe` help says what it does: the certificate is stored per host:port, readable with `vigolium hosts`.
-- Schema v4: `host_observations` gains `dns_mx`, `dns_ns`, `dns_txt`, `dns_soa`, `dns_caa`, `fingerprint` and `not_found` (additive; older readers still open the store).
+- Probe markers say `vigolium` instead of `vgl`/`vgn`/`vgm`/`vgo`/`vig-`.
+- `traffic body` and `traffic headers` accept the record positionally.
+- `--tls-probe` help explains certificates are readable via `vigolium hosts`.
+- Schema v4: `host_observations` gains DNS, `fingerprint` and `not_found` columns (additive).
+- Go 1.27.3 and upgraded Go/JS dependencies (Bun v1.3).
 
 ## [v0.5.4] - 2026-10-18
 

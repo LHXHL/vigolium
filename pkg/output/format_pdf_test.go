@@ -95,13 +95,15 @@ func writeFakeChrome(t *testing.T, script string) string {
 // the timeout (with its children, via the process group) and the error says so.
 func TestRunPDFChromeTimeout(t *testing.T) {
 	// The background sleep stands in for a renderer child holding stderr open.
+	// The timeout leaves room for the first exec of a fresh script, which macOS
+	// can hold for several hundred ms while it scans the file.
 	chrome := writeFakeChrome(t, "echo 'starting' >&2\nsleep 30 &\nsleep 30\n")
 	start := time.Now()
-	err := runPDFChrome(context.Background(), chrome, nil, filepath.Join(t.TempDir(), "r.pdf"), 300*time.Millisecond)
+	err := runPDFChrome(context.Background(), chrome, nil, filepath.Join(t.TempDir(), "r.pdf"), 2*time.Second)
 	require.Error(t, err)
-	assert.Less(t, time.Since(start), 5*time.Second, "timeout must kill the process group promptly")
+	assert.Less(t, time.Since(start), 6*time.Second, "timeout must kill the process group promptly")
 	assert.True(t, errors.Is(err, ErrPDFFailed))
-	assert.Contains(t, err.Error(), "did not finish within 300ms")
+	assert.Contains(t, err.Error(), "did not finish within 2s")
 	assert.Contains(t, err.Error(), "starting", "stderr tail carried into the error")
 }
 

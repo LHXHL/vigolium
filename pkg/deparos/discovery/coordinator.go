@@ -255,7 +255,8 @@ func (c *PayloadCoordinator) executeWorkItem(ctx context.Context, item *WorkItem
 	}
 
 	// Send request
-	rc, ok := c.sendDiscoveryRequest(ctx, req, item.URL, cb)
+	_, jsFetch := item.Task.(*JSFetchTask)
+	rc, ok := c.sendDiscoveryRequest(ctx, req, item.URL, jsFetch, cb)
 	if !ok {
 		return
 	}
@@ -1068,17 +1069,31 @@ func (c *PayloadCoordinator) sendTrackedRequest(
 	return rc, nil
 }
 
+// jsFetchDedupKey namespaces JS-fetch requests in the request cache.
+const jsFetchDedupKey = "\x00js-fetch"
+
 // sendDiscoveryRequest sends an HTTP request for discovery tasks with dedup, error tracking, WAF detection, and metrics.
 // Returns (ResponseChain, ok). If ok is false, caller should return early.
 // CRITICAL: Caller MUST call rc.Close() when done with the ResponseChain.
+//
+// A JS fetch dedups in its own namespace: only it runs jstangle on the body, so
+// it must not be dropped because a plain file probe reached the same URL first
+// (seenJSURLs already keeps each bundle to one fetch). It still marks the shared
+// key, so a later plain probe of that URL stays deduped.
 func (c *PayloadCoordinator) sendDiscoveryRequest(
 	ctx context.Context,
 	req *stdhttp.Request,
 	urlStr string,
+	jsFetch bool,
 	cb *Callbacks,
 ) (*responsechain.ResponseChain, bool) {
 	// Dedup - single point of truth for all HTTP requests
-	if cb.RequestCache.IsSeen(req.Method, urlStr, "") {
+	if jsFetch {
+		_ = cb.RequestCache.IsSeen(req.Method, urlStr, "")
+		if cb.RequestCache.IsSeen(req.Method, urlStr, jsFetchDedupKey) {
+			return nil, false
+		}
+	} else if cb.RequestCache.IsSeen(req.Method, urlStr, "") {
 		return nil, false
 	}
 
@@ -1205,7 +1220,7 @@ func (c *PayloadCoordinator) handleRedirect(
 			return
 		}
 
-		targetRc, ok := c.sendDiscoveryRequest(ctx, targetReq, redirectInfo.ResolvedLocation, cb)
+		targetRc, ok := c.sendDiscoveryRequest(ctx, targetReq, redirectInfo.ResolvedLocation, false, cb)
 		if !ok {
 			return
 		}

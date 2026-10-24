@@ -964,7 +964,7 @@ func streamExportData(ctx context.Context, db *database.DB, scope exportScope, o
 			q = q.Where(database.WithLikeEscape("(uuid LIKE ? OR status LIKE ? OR error_message LIKE ?)"), p, p, p)
 		}
 		if topExportLimit > 0 {
-			q = q.Limit(topExportLimit)
+			q = q.Limit(int64(topExportLimit))
 		}
 		if err := q.Scan(ctx); err != nil {
 			return fmt.Errorf("export scans: %w", err)
@@ -1039,7 +1039,7 @@ func streamExportData(ctx context.Context, db *database.DB, scope exportScope, o
 			q = q.Where(database.WithLikeEscape("(protocol LIKE ? OR module_id LIKE ? OR unique_id LIKE ? OR full_id LIKE ? OR target_url LIKE ?)"), p, p, p, p, p)
 		}
 		if topExportLimit > 0 {
-			q = q.Limit(topExportLimit)
+			q = q.Limit(int64(topExportLimit))
 		}
 		if err := q.Scan(ctx); err != nil {
 			return fmt.Errorf("export oast interactions: %w", err)
@@ -1060,7 +1060,7 @@ func streamExportData(ctx context.Context, db *database.DB, scope exportScope, o
 			q = q.Where(database.WithLikeEscape("(name LIKE ? OR host_pattern LIKE ? OR path_pattern LIKE ?)"), p, p, p)
 		}
 		if topExportLimit > 0 {
-			q = q.Limit(topExportLimit)
+			q = q.Limit(int64(topExportLimit))
 		}
 		if err := q.Scan(ctx); err != nil {
 			return fmt.Errorf("export scopes: %w", err)
@@ -1225,7 +1225,7 @@ func streamFindings(ctx context.Context, db *database.DB, projectUUID, scanUUID 
 		q = q.Where("LOWER(severity) IN (?)", bun.List(sevs))
 	}
 	if topExportLimit > 0 {
-		q = q.Limit(topExportLimit)
+		q = q.Limit(int64(topExportLimit))
 	}
 	rows, err := q.Rows(ctx)
 	if err != nil {

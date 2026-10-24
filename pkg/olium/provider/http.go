@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/http2"
-
 	"github.com/vigolium/vigolium/pkg/olium/stream"
 )
 
@@ -32,15 +30,12 @@ func drainAndClose(body io.ReadCloser) {
 
 // newHTTPClient returns an *http.Client whose HTTP/2 transport sends
 // keepalive PING frames on idle connections. Bare http.DefaultTransport
-// gets HTTP/2 auto-upgrade but leaves ReadIdleTimeout=0, so a stale conn
+// gets HTTP/2 auto-upgrade but leaves SendPingTimeout=0, so a stale conn
 // surfaces as `stream error: stream ID N; INTERNAL_ERROR; received from
 // peer` on the next request instead of being detected up front.
 func newHTTPClient() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	if h2, err := http2.ConfigureTransports(t); err == nil && h2 != nil {
-		h2.ReadIdleTimeout = 30 * time.Second
-		h2.PingTimeout = 15 * time.Second
-	}
+	t.HTTP2 = &http.HTTP2Config{SendPingTimeout: 30 * time.Second, PingTimeout: 15 * time.Second}
 	return &http.Client{Transport: t}
 }
 

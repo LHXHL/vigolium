@@ -1,7 +1,8 @@
 import { parse } from '@babel/parser';
 import type { NodePath } from '@babel/traverse';
 import * as t from '@babel/types';
-import type { Transform } from '../ast-utils';
+import type { Transform, TransformState } from '../ast-utils';
+import type { Visitor } from '../ast-utils/babel';
 import { tryEvaluate, tryEvaluateString, type StaticValue } from './evaluate';
 
 /**
@@ -123,7 +124,7 @@ export default {
   tags: ['safe'],
   minLevel: 'strict',
   scope: true,
-  visitor() {
+  visitor(): Visitor<TransformState> {
     return {
       CallExpression: {
         exit(path) {

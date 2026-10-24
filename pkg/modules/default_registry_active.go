@@ -29,6 +29,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/backslash_transformation"
 	"github.com/vigolium/vigolium/pkg/modules/active/backup_file_discovery"
 	"github.com/vigolium/vigolium/pkg/modules/active/bfla_detection"
+	"github.com/vigolium/vigolium/pkg/modules/active/brotli_request_decoding_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/cache_deception"
 	"github.com/vigolium/vigolium/pkg/modules/active/cdn_object_traversal_listing"
 	"github.com/vigolium/vigolium/pkg/modules/active/client_path_traversal_confirm"
@@ -125,7 +126,6 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/nextjs_version_audit"
 	"github.com/vigolium/vigolium/pkg/modules/active/nginx_off_by_slash"
 	"github.com/vigolium/vigolium/pkg/modules/active/nginx_path_escape"
-	"github.com/vigolium/vigolium/pkg/modules/active/node_brotli_decoder_exposure"
 	"github.com/vigolium/vigolium/pkg/modules/active/nosqli_error_based"
 	"github.com/vigolium/vigolium/pkg/modules/active/nosqli_operator_injection"
 	"github.com/vigolium/vigolium/pkg/modules/active/oast_probe"
@@ -436,7 +436,7 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(express_debug_probe.New())
 	r.RegisterActive(express_trust_proxy_misconfig.New())
 	r.RegisterActive(express_directory_listing.New())
-	r.RegisterActive(node_brotli_decoder_exposure.New())
+	r.RegisterActive(brotli_request_decoding_exposure.New())
 	// Active modules - Common Directory Listing
 	r.RegisterActive(common_directory_listing.New())
 	// Active modules - Rails Security

@@ -133,7 +133,7 @@ func (qb *QueryBuilder) GroupRecordsBy(ctx context.Context, field string, limit 
 	qb.applyFilters(q)
 	q = q.GroupExpr(keyExpr, bun.Ident(column)).OrderExpr("count DESC, key ASC")
 	if limit > 0 {
-		q = q.Limit(limit)
+		q = q.Limit(int64(limit))
 	}
 	if err := q.Scan(ctx, &rows); err != nil {
 		return RecordGrouping{}, err

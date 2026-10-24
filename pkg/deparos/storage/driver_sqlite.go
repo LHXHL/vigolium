@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/uptrace/bun/driver/sqliteshim"
+	"github.com/vigolium/vigolium/pkg/database"
 )
 
 // SQLiteDriver implements DatabaseDriver for SQLite
@@ -24,7 +24,7 @@ func (d *SQLiteDriver) Open(dsn string) (*bun.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
 	}
-	return bun.NewDB(sqldb, sqlitedialect.New()), nil
+	return bun.NewDB(sqldb, database.NewSQLiteDialect()), nil
 }
 
 // ConfigurePool sets SQLite-specific connection settings for multi-process concurrent access.

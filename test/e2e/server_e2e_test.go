@@ -131,7 +131,7 @@ func (env *apiTestEnv) countRecords(t *testing.T) int {
 	t.Helper()
 	count, err := env.db.NewSelect().Model((*database.HTTPRecord)(nil)).Count(context.Background())
 	require.NoError(t, err)
-	return count
+	return int(count)
 }
 
 // ============================================================

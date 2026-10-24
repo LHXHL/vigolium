@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect/pgdialect"
-	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/driver/sqliteshim"
 	"github.com/vigolium/vigolium/internal/config"
@@ -123,7 +121,7 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open SQLite: %w", err)
 		}
-		bunDB = bun.NewDB(sqldb, sqlitedialect.New())
+		bunDB = bun.NewDB(sqldb, NewSQLiteDialect())
 		driver = "sqlite"
 
 	case "postgres":
@@ -132,7 +130,7 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open PostgreSQL: %w", err)
 		}
-		bunDB = bun.NewDB(sqldb, pgdialect.New())
+		bunDB = bun.NewDB(sqldb, NewPGDialect())
 		driver = "postgres"
 
 	default:
@@ -157,7 +155,7 @@ func NewDB(cfg *config.DatabaseConfig) (*DB, error) {
 	// write path — which made --debug unusable for diagnosing anything else.
 	// Set VIGOLIUM_SQL_TRACE=1 with --debug when you actually want query tracing.
 	if zap.L().Core().Enabled(zap.DebugLevel) && utils.EnvTruthy(envSQLTrace) {
-		db.AddQueryHook(debugQueryHook{})
+		db.DB = db.WithQueryHook(debugQueryHook{})
 	}
 
 	// Periodically truncate the WAL for file-backed SQLite so it can't grow

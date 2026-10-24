@@ -1,5 +1,5 @@
 import type { ParseResult } from '@babel/parser';
-import type { NodePath } from '@babel/traverse';
+import type { NodePath, Scope } from '@babel/traverse';
 import * as t from '@babel/types';
 import * as m from '@codemod/matchers';
 import type { Transform } from '../ast-utils';
@@ -149,7 +149,7 @@ export function createGenericRequestPattern3Transform(
 
               for (const iteration of effectiveIterations) {
                 const scopeIds: number[] = [];
-                for (let scope = path.scope; scope; scope = scope.parent) scopeIds.push(scope.uid);
+                for (let scope: Scope | undefined = path.scope; scope; scope = scope.parent) if (scope.uid !== undefined) scopeIds.push(scope.uid);
                 const context: ResolutionContext = {
                   scopeId: path.scope.uid,
                   scopeIds,

@@ -229,7 +229,7 @@ func countExtractions(t *testing.T, db *bun.DB) int {
 	if err != nil {
 		t.Fatalf("failed to count: %v", err)
 	}
-	return count
+	return int(count)
 }
 
 // ============ Spider Link Tests ============

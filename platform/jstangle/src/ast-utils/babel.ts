@@ -26,5 +26,6 @@ export const babelGenerate: typeof _generator.default =
     : generatorModule.default?.default ?? generatorModule;
 
 // Re-export types
-export type { Node, NodePath, Scope, Binding, TraverseOptions, Visitor } from '@babel/traverse';
+export type { Node } from '@babel/types';
+export type { NodePath, Scope, Binding, TraverseOptions, Visitor } from '@babel/traverse';
 export type { GeneratorOptions } from '@babel/generator';

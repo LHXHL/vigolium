@@ -78,7 +78,7 @@ func (r *Repository) StreamAnalysisArtifactsByKind(
 			Where("kind = ?", kind).
 			Where("id > ?", cursor).
 			Order("id ASC").
-			Limit(batchSize)
+			Limit(int64(batchSize))
 		if projectUUID != "" {
 			query = query.Where("project_uuid = ?", projectUUID)
 		}

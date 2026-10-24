@@ -346,10 +346,10 @@ func (qb *QueryBuilder) BuildRecordsQuery() *bun.SelectQuery {
 	qb.applySorting(query)
 
 	if qb.filters.Limit > 0 {
-		query = query.Limit(qb.filters.Limit)
+		query = query.Limit(int64(qb.filters.Limit))
 	}
 	if qb.filters.Offset > 0 {
-		query = query.Offset(qb.filters.Offset)
+		query = query.Offset(int64(qb.filters.Offset))
 	}
 
 	return query
@@ -965,10 +965,10 @@ func (fqb *FindingsQueryBuilder) Execute(ctx context.Context) ([]*Finding, error
 	fqb.applyFindingSorting(query)
 
 	if fqb.filters.Limit > 0 {
-		query = query.Limit(fqb.filters.Limit)
+		query = query.Limit(int64(fqb.filters.Limit))
 	}
 	if fqb.filters.Offset > 0 {
-		query = query.Offset(fqb.filters.Offset)
+		query = query.Offset(int64(fqb.filters.Offset))
 	}
 
 	if err := query.Scan(ctx, &findings); err != nil {
@@ -989,10 +989,10 @@ func (fqb *FindingsQueryBuilder) ExecuteWithCount(ctx context.Context) ([]*Findi
 	fqb.applyFindingSorting(query)
 
 	if fqb.filters.Limit > 0 {
-		query = query.Limit(fqb.filters.Limit)
+		query = query.Limit(int64(fqb.filters.Limit))
 	}
 	if fqb.filters.Offset > 0 {
-		query = query.Offset(fqb.filters.Offset)
+		query = query.Offset(int64(fqb.filters.Offset))
 	}
 
 	count, err := query.ScanAndCount(ctx)

@@ -38,7 +38,7 @@ func countRecords(t *testing.T, db *DB) int {
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	return n
+	return int(n)
 }
 
 // TestRecordWriter_DedupAgainstPreexisting verifies the flush-time batched dedup

@@ -157,14 +157,14 @@ func (db *DB) getRecordCounts(ctx context.Context, stats *DatabaseStats, filters
 	if err != nil {
 		return err
 	}
-	stats.Records.HTTPRecords = int64(count)
+	stats.Records.HTTPRecords = count
 
 	// Count records with response
 	count, err = db.scopedRecordsQuery(filters).Where("has_response = ?", true).Count(ctx)
 	if err != nil {
 		return err
 	}
-	stats.Records.WithResponse = int64(count)
+	stats.Records.WithResponse = count
 
 	// Calculate response percentage
 	if stats.Records.HTTPRecords > 0 {
@@ -176,7 +176,7 @@ func (db *DB) getRecordCounts(ctx context.Context, stats *DatabaseStats, filters
 	if err != nil {
 		return err
 	}
-	stats.Records.Findings = int64(count)
+	stats.Records.Findings = count
 
 	return nil
 }
@@ -383,7 +383,7 @@ func (db *DB) GetTopHosts(ctx context.Context, filters QueryFilters, limit int) 
 		ColumnExpr("COUNT(*) AS request_count").
 		Group("scheme", "hostname", "port").
 		OrderExpr("request_count DESC").
-		Limit(limit).
+		Limit(int64(limit)).
 		Scan(ctx, &rows)
 	if err != nil {
 		return nil, err
@@ -454,7 +454,7 @@ func (db *DB) scopedFindingsQuery(filters QueryFilters) *bun.SelectQuery {
 	return query
 }
 
-func (db *DB) countScopedFindings(ctx context.Context, filters QueryFilters) (int, error) {
+func (db *DB) countScopedFindings(ctx context.Context, filters QueryFilters) (int64, error) {
 	return db.scopedFindingsQuery(filters).
 		ColumnExpr("DISTINCT f.id").
 		Count(ctx)

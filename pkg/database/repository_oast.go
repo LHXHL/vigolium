@@ -70,7 +70,7 @@ func (r *Repository) ListOASTInteractions(ctx context.Context, projectUUID, scan
 		q = q.Where(WithLikeEscape("(target_url LIKE ? OR parameter_name LIKE ? OR unique_id LIKE ?)"), like, like, like)
 	}
 
-	q = q.Limit(limit).Offset(offset)
+	q = q.Limit(int64(limit)).Offset(int64(offset))
 
 	total, err := q.ScanAndCount(ctx)
 	if err != nil {

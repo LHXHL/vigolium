@@ -25,6 +25,7 @@ func getPostgresConfig() *storage.StorageConfig {
 
 	cfg := storage.PostgresConfig(host, database, user, password)
 	cfg.Database.Port = port
+	cfg.Database.SSLMode = getEnv("POSTGRES_SSLMODE", "disable") // pgdriver does not fall back from "prefer"
 	return cfg
 }
 

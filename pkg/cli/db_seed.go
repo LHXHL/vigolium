@@ -41,7 +41,7 @@ func runDBSeed(cmd *cobra.Command, args []string) error {
 	rng := rand.New(rand.NewSource(42)) // deterministic for reproducibility
 
 	// Check if seed data already exists
-	var existingCount int
+	var existingCount int64
 	existingCount, err = db.NewSelect().Model((*database.Scan)(nil)).Where("uuid LIKE 'scan-000%'").Count(ctx)
 	if err == nil && existingCount > 0 && !globalForce {
 		return fmt.Errorf("database already contains seed data (%d seed scans found). Use --force to re-insert (duplicates will be skipped)", existingCount)

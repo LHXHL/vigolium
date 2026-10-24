@@ -68,8 +68,6 @@ test('inline variable', () => {
                     "raw": "1",
                     "rawValue": 1,
                   },
-                  "innerComments": [],
-                  "leadingComments": [],
                   "loc": SourceLocation {
                     "end": Position {
                       "column": 9,
@@ -85,7 +83,6 @@ test('inline variable', () => {
                     },
                   },
                   "start": 8,
-                  "trailingComments": [],
                   "type": "NumericLiteral",
                   "value": 1,
                 },
@@ -213,8 +210,6 @@ test('inline variable with assignment', () => {
                     "raw": "1",
                     "rawValue": 1,
                   },
-                  "innerComments": [],
-                  "leadingComments": [],
                   "loc": SourceLocation {
                     "end": Position {
                       "column": 12,
@@ -230,7 +225,6 @@ test('inline variable with assignment', () => {
                     },
                   },
                   "start": 11,
-                  "trailingComments": [],
                   "type": "NumericLiteral",
                   "value": 1,
                 },
@@ -358,8 +352,6 @@ test('inline variable with multiple assignments', () => {
                     "raw": "1",
                     "rawValue": 1,
                   },
-                  "innerComments": [],
-                  "leadingComments": [],
                   "loc": SourceLocation {
                     "end": Position {
                       "column": 12,
@@ -375,7 +367,6 @@ test('inline variable with multiple assignments', () => {
                     },
                   },
                   "start": 11,
-                  "trailingComments": [],
                   "type": "NumericLiteral",
                   "value": 1,
                 },
@@ -446,8 +437,6 @@ test('inline variable with multiple assignments', () => {
                     "raw": "2",
                     "rawValue": 2,
                   },
-                  "innerComments": [],
-                  "leadingComments": [],
                   "loc": SourceLocation {
                     "end": Position {
                       "column": 30,
@@ -463,7 +452,6 @@ test('inline variable with multiple assignments', () => {
                     },
                   },
                   "start": 29,
-                  "trailingComments": [],
                   "type": "NumericLiteral",
                   "value": 2,
                 },
@@ -606,8 +594,6 @@ test('inline variable with assignment in an expression', () => {
                   "raw": "1",
                   "rawValue": 1,
                 },
-                "innerComments": [],
-                "leadingComments": [],
                 "loc": SourceLocation {
                   "end": Position {
                     "column": 16,
@@ -623,7 +609,6 @@ test('inline variable with assignment in an expression', () => {
                   },
                 },
                 "start": 15,
-                "trailingComments": [],
                 "type": "NumericLiteral",
                 "value": 1,
               },
@@ -677,8 +662,6 @@ test('inline variable with assignment in an expression', () => {
                     "raw": "1",
                     "rawValue": 1,
                   },
-                  "innerComments": [],
-                  "leadingComments": [],
                   "loc": SourceLocation {
                     "end": Position {
                       "column": 16,
@@ -694,7 +677,6 @@ test('inline variable with assignment in an expression', () => {
                     },
                   },
                   "start": 15,
-                  "trailingComments": [],
                   "type": "NumericLiteral",
                   "value": 1,
                 },
@@ -931,8 +913,6 @@ test('inline array elements', () => {
                     "raw": ""foo"",
                     "rawValue": "foo",
                   },
-                  "innerComments": [],
-                  "leadingComments": [],
                   "loc": SourceLocation {
                     "end": Position {
                       "column": 18,
@@ -947,7 +927,6 @@ test('inline array elements', () => {
                       "line": 1,
                     },
                   },
-                  "trailingComments": [],
                   "type": "StringLiteral",
                   "value": "foo",
                 },
@@ -1117,8 +1096,6 @@ test('inline object properties', () => {
                     "raw": "0x2f2",
                     "rawValue": 754,
                   },
-                  "innerComments": [],
-                  "leadingComments": [],
                   "loc": SourceLocation {
                     "end": Position {
                       "column": 26,
@@ -1134,7 +1111,6 @@ test('inline object properties', () => {
                     },
                   },
                   "start": 22,
-                  "trailingComments": [],
                   "type": "NumericLiteral",
                   "value": 754,
                 },
@@ -1144,8 +1120,6 @@ test('inline object properties', () => {
                     "raw": "'0x396'",
                     "rawValue": "0x396",
                   },
-                  "innerComments": [],
-                  "leadingComments": [],
                   "loc": SourceLocation {
                     "end": Position {
                       "column": 38,
@@ -1161,7 +1135,6 @@ test('inline object properties', () => {
                     },
                   },
                   "start": 32,
-                  "trailingComments": [],
                   "type": "StringLiteral",
                   "value": "0x396",
                 },
@@ -1510,16 +1483,12 @@ test('inline function', () => {
           Node {
             "end": 63,
             "expression": {
-              "innerComments": [],
-              "leadingComments": [],
               "left": Node {
                 "end": 58,
                 "extra": {
                   "raw": "1",
                   "rawValue": 1,
                 },
-                "innerComments": [],
-                "leadingComments": [],
                 "loc": SourceLocation {
                   "end": Position {
                     "column": 8,
@@ -1535,7 +1504,6 @@ test('inline function', () => {
                   },
                 },
                 "start": 57,
-                "trailingComments": [],
                 "type": "NumericLiteral",
                 "value": 1,
               },
@@ -1560,8 +1528,6 @@ test('inline function', () => {
                   "raw": "2",
                   "rawValue": 2,
                 },
-                "innerComments": [],
-                "leadingComments": [],
                 "loc": SourceLocation {
                   "end": Position {
                     "column": 11,
@@ -1577,11 +1543,9 @@ test('inline function', () => {
                   },
                 },
                 "start": 60,
-                "trailingComments": [],
                 "type": "NumericLiteral",
                 "value": 2,
               },
-              "trailingComments": [],
               "type": "BinaryExpression",
             },
             "loc": SourceLocation {
@@ -1986,9 +1950,6 @@ test('inline function with rest arg', () => {
                 "start": 62,
                 "type": "Identifier",
               },
-              "innerComments": [],
-              "leadingComments": [],
-              "trailingComments": [],
               "type": "CallExpression",
             },
             "loc": SourceLocation {

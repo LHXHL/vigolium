@@ -30,8 +30,8 @@ export default defineConfig({
     tailwindcss(),
     viteSingleFile(),
     renameOutput(
-      resolve(__dirname, "dist/index.html"),
-      resolve(__dirname, "dist/template.html"),
+      resolve(import.meta.dirname, "dist/index.html"),
+      resolve(import.meta.dirname, "dist/template.html"),
     ),
   ],
   build: {

@@ -41,7 +41,7 @@ func (r *Repository) SampleInsertionPoints(ctx context.Context, projectUUID stri
 		q = q.Where("project_uuid = ?", projectUUID)
 	}
 	q = applyHostScopeFilter(q, hosts)
-	if err := q.Limit(limit).Scan(ctx, &rows); err != nil {
+	if err := q.Limit(int64(limit)).Scan(ctx, &rows); err != nil {
 		return InsertionPointSample{}, fmt.Errorf("sample records: %w", err)
 	}
 	var s InsertionPointSample

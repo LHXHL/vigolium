@@ -348,7 +348,7 @@ export function createResolutionContext(
   path?: NodePath,
 ): ResolutionContext | undefined {
   const scopeIds: number[] = [];
-  for (let scope = path?.scope; scope; scope = scope.parent) scopeIds.push(scope.uid);
+  for (let scope = path?.scope; scope; scope = scope.parent) if (scope.uid !== undefined) scopeIds.push(scope.uid);
   if (!currentFunction || !hasFunction(currentFunction)) {
     return path ? { scopeId: path.scope.uid, scopeIds } : undefined;
   }
@@ -419,7 +419,7 @@ export function resolveValue(
 
   // Case 1e: BigInt literal
   if (t.isBigIntLiteral(node)) {
-    return [node.value];
+    return [String(node.value)];
   }
 
   // Case 2: Template literal

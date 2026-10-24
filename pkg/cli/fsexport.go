@@ -225,7 +225,7 @@ func fsExportFindingsPass(
 			"(module_id LIKE ? OR module_name LIKE ? OR description LIKE ? OR url LIKE ? OR hostname LIKE ?)"), p, p, p, p, p)
 	}
 	if filters.Limit > 0 {
-		fq = fq.Limit(filters.Limit)
+		fq = fq.Limit(int64(filters.Limit))
 	}
 	frows, err := fq.Rows(ctx)
 	if err != nil {

@@ -325,7 +325,7 @@ func (s *DBInputSource) fetchNextBatch(ctx context.Context) ([]*HTTPRecord, erro
 	if limit <= 0 {
 		limit = 128
 	}
-	if err := q.OrderExpr("created_at ASC, uuid ASC").Limit(limit).Scan(ctx); err != nil {
+	if err := q.OrderExpr("created_at ASC, uuid ASC").Limit(int64(limit)).Scan(ctx); err != nil {
 		return nil, err
 	}
 	if len(records) == 0 {

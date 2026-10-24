@@ -224,10 +224,10 @@ func (r *Repository) GetNodesPaginated(ctx context.Context, page, limit int, sor
 	err = applyFilters(r.db.NewSelect().Model(&nodes)).
 		ExcludeColumn("resp_body").
 		OrderExpr(fmt.Sprintf("%s %s", sortCol, order)).
-		Offset(offset).Limit(limit).
+		Offset(int64(offset)).Limit(int64(limit)).
 		Scan(ctx)
 
-	return nodes, total, err
+	return nodes, int(total), err
 }
 
 // GetNodesBySessionID returns all nodes for a specific session

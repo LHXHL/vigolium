@@ -298,7 +298,12 @@ func runScanWithDeadline(ctx context.Context, scan func() error, onComplete func
 		onComplete(err)
 		return nil
 	case <-ctx.Done():
-		go func() { <-scanErr; onAbandon() }()
+		go func() {
+			if err := <-scanErr; err != nil {
+				zap.L().Debug("KnownIssueScan: abandoned scan finished", zap.Error(err))
+			}
+			onAbandon()
+		}()
 		return ctx.Err()
 	}
 }

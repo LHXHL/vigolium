@@ -13,7 +13,7 @@ var (
 
 **How it's exploited:** An attacker points url at an internal address such as cloud metadata (AWS 169.254.169.254, GCP metadata.google.internal) or localhost; the server fetches and returns it. This can leak temporary credentials and instance secrets and probe internal services.
 
-**Fix:** Restrict the optimizer to an allowlist of trusted external image domains (images.domains / remotePatterns) and block internal, private, and link-local addresses.`
+**Fix:** Restrict the optimizer to an allowlist of trusted external image domains (images.domains / remotePatterns) and block internal, private, and link-local addresses. Patch Node.js (CVE-2026-111497, fetched Brotli).`
 
 	ModuleConfirmation = "Confirmed when the image optimizer fetches an attacker-controlled or internal URL"
 	ModuleSeverity     = severity.High

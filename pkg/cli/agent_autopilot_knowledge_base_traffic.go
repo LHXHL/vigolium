@@ -266,7 +266,7 @@ func sampleKBTrafficRecords(ctx context.Context, repo *database.Repository, proj
 		Where("source = ?", kbTrafficSource).
 		GroupExpr("method, path").
 		OrderExpr("MAX(status_code) DESC, method ASC").
-		Limit(limit).
+		Limit(int64(limit)).
 		Scan(ctx, &rows)
 	if err != nil || len(rows) == 0 {
 		return ""

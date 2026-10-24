@@ -170,7 +170,7 @@ func TestPg_RecordCRUD(t *testing.T) {
 	count, err := repo.DB().NewSelect().Model((*database.HTTPRecord)(nil)).
 		Where("project_uuid = ?", database.DefaultProjectUUID).Count(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, count)
+	assert.EqualValues(t, 1, count)
 
 	err = repo.DeleteRecord(ctx, uuid)
 	require.NoError(t, err)
@@ -178,7 +178,7 @@ func TestPg_RecordCRUD(t *testing.T) {
 	count, err = repo.DB().NewSelect().Model((*database.HTTPRecord)(nil)).
 		Where("project_uuid = ?", database.DefaultProjectUUID).Count(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 0, count)
+	assert.EqualValues(t, 0, count)
 }
 
 // ============================================================
@@ -273,7 +273,7 @@ func TestPg_MultipleRecords(t *testing.T) {
 	count, err := repo.DB().NewSelect().Model((*database.HTTPRecord)(nil)).
 		Where("project_uuid = ?", database.DefaultProjectUUID).Count(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, count)
+	assert.EqualValues(t, 3, count)
 
 	// Query by hostname
 	qb := database.NewQueryBuilder(repo.DB(), database.QueryFilters{
@@ -433,12 +433,12 @@ func TestPg_ProjectIsolation(t *testing.T) {
 	countA, err := repo.DB().NewSelect().Model((*database.HTTPRecord)(nil)).
 		Where("project_uuid = ?", projectA).Count(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, countA)
+	assert.EqualValues(t, 1, countA)
 
 	countB, err := repo.DB().NewSelect().Model((*database.HTTPRecord)(nil)).
 		Where("project_uuid = ?", projectB).Count(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, countB)
+	assert.EqualValues(t, 1, countB)
 }
 
 // ============================================================
@@ -472,7 +472,7 @@ func TestPg_ConcurrentInserts(t *testing.T) {
 	count, err := repo.DB().NewSelect().Model((*database.HTTPRecord)(nil)).
 		Where("project_uuid = ?", database.DefaultProjectUUID).Count(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, n, count)
+	assert.EqualValues(t, n, count)
 }
 
 // ============================================================
@@ -535,7 +535,7 @@ func TestPg_BatchDeleteRecords(t *testing.T) {
 	count, err := repo.DB().NewSelect().Model((*database.HTTPRecord)(nil)).
 		Where("project_uuid = ?", database.DefaultProjectUUID).Count(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 5, count)
+	assert.EqualValues(t, 5, count)
 
 	db := database.NewDeleteBuilder(repo.DB(), database.QueryFilters{
 		ProjectUUID: database.DefaultProjectUUID,
@@ -548,7 +548,7 @@ func TestPg_BatchDeleteRecords(t *testing.T) {
 	count, err = repo.DB().NewSelect().Model((*database.HTTPRecord)(nil)).
 		Where("project_uuid = ?", database.DefaultProjectUUID).Count(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 0, count)
+	assert.EqualValues(t, 0, count)
 }
 
 // ============================================================

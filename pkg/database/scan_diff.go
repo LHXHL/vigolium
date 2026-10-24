@@ -442,7 +442,7 @@ func (r *Repository) recentFinishedScans(ctx context.Context, projectUUID, conta
 		q = q.Where(WithLikeEscape("LOWER(target) LIKE ?"), LikeContains(contains))
 	}
 	if limit > 0 {
-		q = q.Limit(limit)
+		q = q.Limit(int64(limit))
 	}
 	if err := q.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("list scans: %w", err)

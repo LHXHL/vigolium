@@ -620,11 +620,11 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 
 		// Buffered so Start's goroutine never blocks if the main goroutine
 		// already received an OS signal first.
-		serverDone := make(chan error, 1)
+		serverDone := make(chan struct{}, 1)
 		go func() {
 			if err := apiServer.Start(); err != nil {
 				zap.L().Error("API server error", zap.Error(err))
-				serverDone <- err
+				serverDone <- struct{}{}
 			}
 		}()
 

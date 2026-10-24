@@ -98,6 +98,8 @@ var machineContractRows = map[string]contractRow{
 	"katana":                {skip: interactive, badFlagSkip: interactive},
 	"nuclei":                {skip: interactive, badFlagSkip: interactive},
 	"skills gen-flags":      {skip: interactive, badFlagSkip: interactive},
+	"dig":                   {skip: interactive, badFlagSkip: interactive},
+	"host":                  {skip: interactive, badFlagSkip: interactive},
 
 	// Scans.
 	"scan":         {args: []string{"-t", "{T}/", "--dry-run"}},
@@ -166,8 +168,11 @@ var machineContractRows = map[string]contractRow{
 	"traffic body":    {args: []string{"--uuid", seedRecord}},
 	"traffic headers": {args: []string{"--uuid", seedRecord}},
 	"endpoints":       {},
+	"hosts":           {},
 	"params":          {},
 	"fuzz":            {args: []string{"-i", "{T}/search?q=FUZZ", "-p", "a", "-p", "b"}},
+	"fingerprint":     {args: []string{"-t", "{T}/"}},
+	"dns":             {skip: "needs the network: queries a DNS resolver"},
 	"replay":          {args: []string{"-i", "{T}/search?q=1"}},
 
 	// Input.
@@ -240,6 +245,8 @@ var machineContractRows = map[string]contractRow{
 	"schema error":   {},
 	"schema plan":    {},
 	"schema all":     {},
+	"schema flags":   {args: []string{"scan"}},
+	"schema storage": {},
 
 	"strategy": {},
 	"update":   {skip: "needs the network: checks the release server"},

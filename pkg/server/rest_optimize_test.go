@@ -516,7 +516,7 @@ func countScanRows(t *testing.T, repo *database.Repository, status string) int {
 	if err != nil {
 		t.Fatalf("count scans (%q): %v", status, err)
 	}
-	return n
+	return int(n)
 }
 
 // TestRecordScanConflictPersistsNothing: a project with a scan already running

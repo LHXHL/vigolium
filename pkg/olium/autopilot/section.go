@@ -372,5 +372,5 @@ func (c *SectionController) recordCount() int {
 	if err != nil {
 		return 0
 	}
-	return n
+	return int(n)
 }

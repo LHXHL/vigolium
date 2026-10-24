@@ -488,7 +488,7 @@ func (r *Repository) GetFindingsBySeverity(ctx context.Context, projectUUID, sev
 		Where("severity = ?", sev).
 		Where("(record_kind IS NULL OR record_kind = '' OR record_kind = ?)", RecordKindFinding).
 		Order("found_at DESC").
-		Limit(limit)
+		Limit(int64(limit))
 	if projectUUID != "" {
 		q = q.Where("project_uuid = ?", projectUUID)
 	}

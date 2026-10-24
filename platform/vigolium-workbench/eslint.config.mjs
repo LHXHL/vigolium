@@ -1,16 +1,20 @@
-// Two dependency ceilings are load-bearing here and are not free to bump:
+// TypeScript is installed side by side, per the TS 7.0 release notes
+// ("Running side-by-side with TypeScript 6.0"):
 //
-//   typescript pinned to 6.x — typescript-eslint refuses to load against TS 7
-//     ("typescript-eslint does not support TS 7.0"), and eslint-config-next
-//     requires it, so TS 7 takes the whole lint run down, not just the TS rules.
-//     See typescript-eslint#10940.
-//   eslint pinned to 9.x — eslint-config-next's peer range is a loose >=9.0.0,
-//     but its transitive eslint-plugin-react (7.37.5, latest) caps at ^9.7 and
-//     calls context.getFilename(), removed in ESLint 10.
+//   "typescript": "npm:@typescript/typescript6@…"  — the TS 6 API under the
+//     `typescript` name, because typescript-eslint (pulled in by
+//     eslint-config-next) throws "typescript-eslint does not support TS 7.0" on
+//     load and takes the whole lint run down. See typescript-eslint#10940.
+//   "@typescript/native": "npm:typescript@^7…"     — TS 7, which owns `tsc`.
 //
-// Raising either one re-breaks `bun run lint` outright. Re-check both upstreams
-// before bumping. Last re-verified 2026-09-20 against typescript 7.0.2 and
-// eslint 10.11.0 (with typescript-eslint 8.70.0): both still fail as described.
+// Drop the alias and depend on plain `typescript@^7` once typescript-eslint's
+// peer range admits 7 (it is `>=4.8.4 <6.1.0` as of 8.72.0).
+//
+// ESLint 10 works because eslint-config-next (>=16.4) wraps its bundled plugins
+// in its own fixupPluginRules, which restores the context.getFilename() and
+// similar methods ESLint 10 removed. eslint-plugin-react 7.37.5 still calls
+// them and still caps its peer range at ^9.7, so `bun install` may warn about
+// that peer range. The lint run itself is fine.
 import { defineConfig, globalIgnores } from 'eslint/config';
 import nextVitals from 'eslint-config-next/core-web-vitals';
 import nextTs from 'eslint-config-next/typescript';

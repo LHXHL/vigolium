@@ -220,8 +220,8 @@ func TestCaptureCloseIsBoundedUnderAStalledSaver(t *testing.T) {
 	// Give the producers time to pile up against the full queue.
 	time.Sleep(100 * time.Millisecond)
 
-	closed := make(chan error, 1)
-	go func() { closed <- c.Close() }()
+	closed := make(chan struct{})
+	go func() { _ = c.Close(); close(closed) }()
 
 	// The documented bound: one in-flight batch, then one final drain.
 	bound := writerSaveTimeout + writerDrainTimeout

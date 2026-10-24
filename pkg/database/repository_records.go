@@ -741,7 +741,7 @@ func (r *Repository) GetRecordsByHostname(ctx context.Context, projectUUID, host
 		Model(&records).
 		Where("hostname = ?", hostname).
 		Order("sent_at DESC").
-		Limit(limit)
+		Limit(int64(limit))
 	if projectUUID != "" {
 		q = q.Where("project_uuid = ?", projectUUID)
 	}
@@ -765,7 +765,7 @@ func (r *Repository) GetRecordMetadataByHostname(ctx context.Context, projectUUI
 		ExcludeColumn(recordBodyColumns...).
 		Where("hostname = ?", hostname).
 		Order("sent_at DESC").
-		Limit(limit)
+		Limit(int64(limit))
 	if projectUUID != "" {
 		q = q.Where("project_uuid = ?", projectUUID)
 	}
@@ -784,7 +784,7 @@ func (r *Repository) GetUnprobedRecordsBySource(ctx context.Context, projectUUID
 		Where("hostname = ?", hostname).
 		Where("has_response = ?", false).
 		Order("created_at ASC").
-		Limit(limit)
+		Limit(int64(limit))
 	if projectUUID != "" {
 		q = q.Where("project_uuid = ?", projectUUID)
 	}
@@ -910,7 +910,7 @@ func (r *Repository) GetRelatedRecords(ctx context.Context, uuid string, limit i
 		Where(WithLikeEscape("path LIKE ?"), likePattern).
 		Where("uuid != ?", uuid).
 		Order("created_at DESC").
-		Limit(fetchLimit).
+		Limit(int64(fetchLimit)).
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("GetRelatedRecords: query failed: %w", err)
@@ -1035,7 +1035,7 @@ func (r *Repository) GetRecordsWithResponseBody(ctx context.Context, projectUUID
 	if afterUUID != "" {
 		q = q.Where("uuid > ?", afterUUID)
 	}
-	err := q.OrderExpr("uuid ASC").Limit(limit).Scan(ctx)
+	err := q.OrderExpr("uuid ASC").Limit(int64(limit)).Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query records with response body: %w", err)
 	}
@@ -1072,7 +1072,7 @@ func (r *Repository) WalkJavaScriptRecords(ctx context.Context, projectUUID, hos
 		q = q.Where("project_uuid = ?", projectUUID)
 	}
 	if limit > 0 {
-		q = q.Limit(limit)
+		q = q.Limit(int64(limit))
 	}
 	if err := q.OrderExpr("uuid ASC").Scan(ctx, &rows); err != nil {
 		return fmt.Errorf("failed to query stored JavaScript records: %w", err)
@@ -1134,7 +1134,7 @@ func (r *Repository) GetReSpiderCandidates(ctx context.Context, projectUUID, aft
 		q = q.Where("uuid > ?", afterUUID)
 	}
 	if limit > 0 {
-		q = q.Limit(limit)
+		q = q.Limit(int64(limit))
 	}
 	if err := q.OrderExpr("uuid ASC").Scan(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("failed to query re-spider candidates: %w", err)

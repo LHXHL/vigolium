@@ -57,7 +57,7 @@ App Router, `[[...id]]` optional catch-alls for detail views:
 
 ## Tech Stack
 
-Next.js 16 (App Router, Turbopack dev), React 19, TypeScript 5.9, TailwindCSS 4, React Query 5, ag-grid, Lucide React icons.
+Next.js 16 (App Router, Turbopack dev), React 19, TypeScript 7 (`tsc`; the `typescript` package is aliased to the TS 6 API for typescript-eslint, see `eslint.config.mjs`), TailwindCSS 4, React Query 5, ag-grid, Lucide React icons.
 
 ## Key patterns
 

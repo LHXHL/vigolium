@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/projectdiscovery/retryablehttp-go"
-	"go.uber.org/zap"
-	"golang.org/x/net/http2"
 )
 
 // newHTTP2FallbackTransport builds the transport for retryablehttp's HTTP/2
@@ -48,9 +46,9 @@ func newHTTP2FallbackTransport(
 		MaxResponseHeaderBytes: 48 * 1024,
 	}
 	applyExplicitProxy(t, cliProxy, "scanner-h2-fallback")
-	if err := http2.ConfigureTransport(t); err != nil {
-		zap.L().Debug("HTTP/2 fallback transport left at HTTP/1.1", zap.Error(err))
-	}
+	t.Protocols = new(http.Protocols)
+	t.Protocols.SetHTTP1(true)
+	t.Protocols.SetHTTP2(true)
 	return t
 }
 

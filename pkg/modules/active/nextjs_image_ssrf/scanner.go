@@ -195,7 +195,10 @@ func (m *Module) ScanPerHost(
 				Severity:    ModuleSeverity,
 				Confidence:  severity.Tentative,
 				Tags:        []string{"nextjs", "ssrf", "image-optimizer"},
-				Reference:   []string{"https://www.assetnote.io/resources/research/digging-for-ssrf-in-nextjs-apps"},
+				Reference: []string{
+					"https://www.assetnote.io/resources/research/digging-for-ssrf-in-nextjs-apps",
+					"https://patchtheplanet.org/brotli",
+				},
 			},
 		}}, nil
 	}

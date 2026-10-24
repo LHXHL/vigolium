@@ -327,46 +327,37 @@ func TestFormSubmissions(t *testing.T) {
 		}
 	})
 
-	// === Verify Mixed Form (3 radio x 1 checkbox combo x 2 submit = 6 variants) ===
-	t.Run("MixedFormAllVariants", func(t *testing.T) {
+	// === Verify Mixed Form ===
+	// The form has 3 radio x 1 checkbox combo x 2 submit = 6 variants, but the
+	// engine submits at most maxFormSubmissionsPerStructure (3) per form shape.
+	t.Run("MixedFormVariantsCapped", func(t *testing.T) {
 		requests := server.GetRequestsForPath("/form-result/order")
 
-		// Expected: 3 shipping options × 1 (all checkboxes checked) × 2 submit buttons = 6
-		expectedCount := 6
-		if len(requests) < expectedCount {
-			t.Errorf("Expected at least %d requests for mixed form variants, got %d", expectedCount, len(requests))
-		}
-
-		// Verify all shipping options were used
+		posts := 0
 		shippingOptions := make(map[string]bool)
 		submitOptions := make(map[string]bool)
-
 		for _, req := range requests {
-			if strings.Contains(req.Body, "shipping=standard") {
-				shippingOptions["standard"] = true
+			if req.Method != "POST" {
+				continue
 			}
-			if strings.Contains(req.Body, "shipping=express") {
-				shippingOptions["express"] = true
+			posts++
+			for _, v := range []string{"standard", "express", "overnight"} {
+				if strings.Contains(req.Body, "shipping="+v) {
+					shippingOptions[v] = true
+				}
 			}
-			if strings.Contains(req.Body, "shipping=overnight") {
-				shippingOptions["overnight"] = true
-			}
-			if strings.Contains(req.Body, "submit=place_order") {
-				submitOptions["place_order"] = true
-			}
-			if strings.Contains(req.Body, "submit=save_draft") {
-				submitOptions["save_draft"] = true
+			for _, v := range []string{"place_order", "save_draft"} {
+				if strings.Contains(req.Body, "submit="+v) {
+					submitOptions[v] = true
+				}
 			}
 		}
 
-		if !shippingOptions["standard"] {
-			t.Error("Missing shipping variant: standard")
+		if posts != 3 {
+			t.Errorf("Expected 3 POSTs (per-structure submission cap) for mixed form variants, got %d", posts)
 		}
-		if !shippingOptions["express"] {
-			t.Error("Missing shipping variant: express")
-		}
-		if !shippingOptions["overnight"] {
-			t.Error("Missing shipping variant: overnight")
+		if len(shippingOptions) < 2 {
+			t.Errorf("Expected at least 2 shipping variants, got %v", shippingOptions)
 		}
 		if !submitOptions["place_order"] {
 			t.Error("Missing submit variant: place_order")

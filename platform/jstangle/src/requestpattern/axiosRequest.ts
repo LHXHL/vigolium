@@ -113,14 +113,14 @@ export function collectAxiosInstances(
 
   traverse(ast, {
     noScope: true,
-    VariableDeclarator(path) {
+    VariableDeclarator(path: NodePath<t.VariableDeclarator>) {
       const { id, init } = path.node;
       if (!t.isIdentifier(id) || !init || !t.isCallExpression(init)) return;
       const info = isAxiosCreateCall(init);
       if (!info) return;
       record(id.name, init, info.requireBaseURL);
     },
-    AssignmentExpression(path) {
+    AssignmentExpression(path: NodePath<t.AssignmentExpression>) {
       const { left, right } = path.node;
       if (!t.isIdentifier(left) || !t.isCallExpression(right)) return;
       const info = isAxiosCreateCall(right);

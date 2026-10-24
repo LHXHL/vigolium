@@ -31,6 +31,7 @@ func TestPostgresIntegration(t *testing.T) {
 
 	cfg := PostgresConfig(host, database, user, password)
 	cfg.Database.Port = port
+	cfg.Database.SSLMode = getEnv("POSTGRES_SSLMODE", "disable") // pgdriver does not fall back from "prefer"
 	cfg.TargetURL = "https://example.com"
 
 	// Create sitemap
@@ -106,7 +107,7 @@ func TestPostgresIntegration(t *testing.T) {
 	// Test 6: StreamAllResults
 	t.Run("StreamAllResults", func(t *testing.T) {
 		var count int
-		err := sitemap.StreamAllResults(func(node *TreeNode) error {
+		err := sitemap.StreamAllResults(func(node *DiscoveredNode) error {
 			count++
 			return nil
 		})
@@ -141,6 +142,7 @@ func TestPostgresConnectionPool(t *testing.T) {
 
 	cfg := PostgresConfig(host, database, user, password)
 	cfg.Database.Port = port
+	cfg.Database.SSLMode = getEnv("POSTGRES_SSLMODE", "disable") // pgdriver does not fall back from "prefer"
 	cfg.TargetURL = "https://pooltest.com"
 
 	sitemap, err := NewSiteMap(cfg)
