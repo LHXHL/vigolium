@@ -15,8 +15,9 @@ import (
 //
 //   - truncate      -> modkit.Truncate / TruncateWith / TruncateNoEllipsis / TruncateRunes
 //   - randomString  -> modkit.RandomAlnum (or utils.RandomOf for another alphabet)
+//   - elideBody     -> modkit.ElideRequestBody
 //   - isBlockedResponse / isBlockedOrThrottled -> infra.IsBlockedResponse / infra.IsBlockedOrThrottled
-var sharedHelperRedefinition = regexp.MustCompile(`(?m)^func (truncate|randomString|isBlockedResponse|isBlockedOrThrottled)\(`)
+var sharedHelperRedefinition = regexp.MustCompile(`(?m)^func (truncate|randomString|elideBody|isBlockedResponse|isBlockedOrThrottled)\(`)
 
 // TestNoPrivateCopiesOfSharedHelpers walks every Go file under pkg/modules
 // (tests included) and fails on a private redefinition of a shared helper.

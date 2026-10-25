@@ -4,21 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [v0.5.6] - 2026-10-25
 
+### New Vulnerability Checks
+
+- `node2shell` active module probes the Brotli decoder's version (CVE-2026-111497) with a 22 MiB stream only an unpatched decoder accepts, behind the same cheap decode gate; filed as a Suspect/Tentative lead, never the crash trigger. Probe stream from [assetnote/node2shell-scanner](https://github.com/assetnote/node2shell-scanner).
+
 ### Added
 
 - `vigolium match-not-found` classifies stdin JSON-lines responses against stored not-found baselines.
 - `run probe --favicon` stores each origin's favicon hashes as a host fact; `hosts --has favicon`.
 - `fingerprint` reports unanswered reads in `errors[]` with a `kind`.
 - `--only discovery,spidering,targeted-respider` runs the SPA re-spider without dynamic assessment.
+- `pkg/modules/infra/node2shell` shares the Brotli decode gate, differential and streams between both Brotli modules.
+- `modkit.ElideRequestBody` keeps multi-MiB probe bodies out of stored evidence; the shared-helper contract test now forbids private `elideBody` copies.
+- `pkg/modules/modtest` helpers for content-encoding fixtures and module test servers.
 
 ### Fixed
 
 - `fingerprint` retries a transport-failed read once instead of reporting it as not found.
 - `fingerprint` and `hosts` schemas drop the never-filled `method_matrix`.
+- Scanner transport sets `ExpectContinueTimeout`, so `Expect: 100-continue` senders let an edge refuse a huge body before it is uploaded.
 
 ### Changed
 
 - Schema v5: `host_observations` gains a `favicon` column.
+- `brotli-request-decoding-exposure` reuses the shared gate instead of its own copy (−388 lines).
+- `php2shell` uses `modkit.ElideRequestBody` in place of its private elider.
 
 ## [v0.5.5] - 2026-10-24
 

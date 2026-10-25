@@ -2,55 +2,22 @@ package brotli_request_decoding_exposure
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
-	"github.com/andybalholm/brotli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/vigolium/vigolium/pkg/modules/modkit"
+	node2shellinfra "github.com/vigolium/vigolium/pkg/modules/infra/node2shell"
 	"github.com/vigolium/vigolium/pkg/modules/modtest"
 	"github.com/vigolium/vigolium/pkg/output"
 	"github.com/vigolium/vigolium/pkg/types/severity"
 )
-
-// decode undoes a br/gzip Content-Encoding list, last-applied first. ok is
-// false for any other coding, or bytes that fail to decode.
-func decode(body []byte, encoding string) ([]byte, bool) {
-	if encoding == "" {
-		return body, true
-	}
-	codings := strings.Split(encoding, ",")
-	for i := len(codings) - 1; i >= 0; i-- {
-		var r io.Reader
-		switch strings.TrimSpace(codings[i]) {
-		case "br":
-			r = brotli.NewReader(bytes.NewReader(body))
-		case "gzip":
-			zr, err := gzip.NewReader(bytes.NewReader(body))
-			if err != nil {
-				return nil, false
-			}
-			r = zr
-		default:
-			return nil, false
-		}
-		out, err := io.ReadAll(r)
-		if err != nil {
-			return nil, false
-		}
-		body = out
-	}
-	return body, true
-}
 
 // handleItems is a JSON route handler: malformed JSON is 400, an object
 // without name is 422.
@@ -80,7 +47,7 @@ func nodeApp(supportsBrotli, global bool) http.Handler {
 				http.Error(w, `UnsupportedMediaTypeError: unsupported content encoding "`+enc+`"`, http.StatusUnsupportedMediaType)
 				return
 			}
-			body, ok := decode(raw, enc)
+			body, ok := modtest.DecodeContentEncoding(raw, enc, nil)
 			if !ok {
 				http.Error(w, "Error: Decompression failed", http.StatusBadRequest)
 				return
@@ -119,7 +86,7 @@ func envoyFront(next http.Handler) http.Handler {
 		w.Header().Set("X-Envoy-Upstream-Service-Time", "3")
 		if r.Header.Get("Content-Encoding") == "br" {
 			raw, _ := io.ReadAll(r.Body)
-			body, ok := decode(raw, "br")
+			body, ok := modtest.DecodeContentEncoding(raw, "br", nil)
 			if !ok {
 				http.Error(w, "decompression failed", http.StatusBadRequest)
 				return
@@ -132,21 +99,6 @@ func envoyFront(next http.Handler) http.Handler {
 	})
 }
 
-func serve(t *testing.T, h http.Handler) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func scanCtxFor(srvURL, tag string) *modkit.ScanContext {
-	sc := &modkit.ScanContext{TechStack: modkit.NewTechRegistry()}
-	if tag != "" {
-		sc.MarkTech(strings.TrimPrefix(srvURL, "http://"), tag)
-	}
-	return sc
-}
-
 // The host lane finds an app-wide parser on the unrouted path.
 func TestScanPerHost_AppWideParser(t *testing.T) {
 	t.Parallel()
@@ -154,7 +106,7 @@ func TestScanPerHost_AppWideParser(t *testing.T) {
 	var mu sync.Mutex
 	var decoys []string
 	app := nodeApp(true, true)
-	srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := modtest.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
 		if v := r.Header.Get(decoyHeader); v != "" {
 			mu.Lock()
@@ -165,7 +117,7 @@ func TestScanPerHost_AppWideParser(t *testing.T) {
 	}))
 
 	rr := modtest.Request(t, srv.URL+"/")
-	res, err := New().ScanPerHost(rr, modtest.Requester(t), scanCtxFor(srv.URL, "nestjs"))
+	res, err := New().ScanPerHost(rr, modtest.Requester(t), modtest.ScanCtxWithTech(srv.URL, "nestjs"))
 	require.NoError(t, err)
 	require.Len(t, res, 1)
 
@@ -179,9 +131,9 @@ func TestScanPerHost_AppWideParser(t *testing.T) {
 	assert.Contains(t, r.Request, "Content-Encoding: br")
 	assert.Contains(t, r.AdditionalEvidence[0], "Content-Encoding: "+unknownEncoding)
 	assert.Equal(t, "Node.js app (body parser)", r.Metadata["decoder"])
-	// {}, {, then br {} and br { twice, the unknown-encoding control and the
-	// two header decoys.
-	assert.EqualValues(t, 9, atomic.LoadInt64(&hits))
+	// {}, {, then br {} and br { twice, the unknown-encoding control, the two
+	// header decoys and the refused-stream control.
+	assert.EqualValues(t, 10, atomic.LoadInt64(&hits))
 	// One decoy carries a random value, the other names the encoding.
 	require.Len(t, decoys, 2)
 	assert.Len(t, decoys[0], 12)
@@ -194,8 +146,8 @@ func TestScanPerHost_AppWideParser(t *testing.T) {
 // recorded JSON request finds it.
 func TestScanPerRequest_RouteScopedParser(t *testing.T) {
 	t.Parallel()
-	srv := serve(t, nodeApp(true, false))
-	sc := scanCtxFor(srv.URL, "express")
+	srv := modtest.Serve(t, nodeApp(true, false))
+	sc := modtest.ScanCtxWithTech(srv.URL, "express")
 	client := modtest.Requester(t)
 
 	res, err := New().ScanPerHost(modtest.Request(t, srv.URL+"/"), client, sc)
@@ -217,10 +169,10 @@ func TestScanPerRequest_RouteScopedParser(t *testing.T) {
 // exposure the old Node-only gate missed. No tech tag is needed.
 func TestScanPerRequest_EnvoyInFrontOfPython(t *testing.T) {
 	t.Parallel()
-	srv := serve(t, envoyFront(pythonApp))
+	srv := modtest.Serve(t, envoyFront(pythonApp))
 
 	rr := modtest.RequestJSON(t, srv.URL+"/api/items", `{"name":"a"}`)
-	res, err := New().ScanPerRequest(rr, modtest.Requester(t), scanCtxFor(srv.URL, ""))
+	res, err := New().ScanPerRequest(rr, modtest.Requester(t), modtest.ScanCtxWithTech(srv.URL))
 	require.NoError(t, err)
 	require.Len(t, res, 1)
 	assert.Equal(t, srv.URL+"/api/items", res[0].URL)
@@ -232,14 +184,14 @@ func TestScanPerRequest_EnvoyInFrontOfPython(t *testing.T) {
 // through to a decoder that handles both.
 func TestScanPerRequest_StackedEncodingBypass(t *testing.T) {
 	t.Parallel()
-	srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := modtest.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		enc := r.Header.Get("Content-Encoding")
 		if first, _, _ := strings.Cut(enc, ","); first != "" && first != "gzip" {
 			http.Error(w, "Use gzip or an uncompressed body", http.StatusUnsupportedMediaType)
 			return
 		}
-		body, ok := decode(raw, enc)
+		body, ok := modtest.DecodeContentEncoding(raw, enc, nil)
 		if !ok {
 			http.Error(w, "bad encoding", http.StatusBadRequest)
 			return
@@ -248,10 +200,10 @@ func TestScanPerRequest_StackedEncodingBypass(t *testing.T) {
 	}))
 
 	rr := modtest.RequestJSON(t, srv.URL+"/api/items", `{"name":"a"}`)
-	res, err := New().ScanPerRequest(rr, modtest.Requester(t), scanCtxFor(srv.URL, ""))
+	res, err := New().ScanPerRequest(rr, modtest.Requester(t), modtest.ScanCtxWithTech(srv.URL))
 	require.NoError(t, err)
 	require.Len(t, res, 1)
-	assert.Equal(t, stackedEncoding, res[0].Metadata["encoding"])
+	assert.Equal(t, node2shellinfra.StackedEncoding, res[0].Metadata["encoding"])
 }
 
 func TestScanPerRequest_NoFinding(t *testing.T) {
@@ -297,7 +249,7 @@ func TestScanPerRequest_NoFinding(t *testing.T) {
 			raw, _ := io.ReadAll(r.Body)
 			switch r.Header.Get("Content-Encoding") {
 			case "":
-			case "br", stackedEncoding:
+			case "br", node2shellinfra.StackedEncoding:
 				raw = []byte("{}")
 			default:
 				w.Header().Set("X-Edge-Reject", "encoding")
@@ -322,13 +274,13 @@ func TestScanPerRequest_NoFinding(t *testing.T) {
 		{"decodes on any header naming br", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw, _ := io.ReadAll(r.Body)
 			if enc := r.Header.Get("Content-Encoding"); enc != "" {
-				body, ok := decode(raw, enc)
+				body, ok := modtest.DecodeContentEncoding(raw, enc, nil)
 				if !ok {
 					http.Error(w, "unsupported", http.StatusUnsupportedMediaType)
 					return
 				}
 				raw = body
-			} else if body, ok := decode(raw, r.Header.Get(decoyHeader)); ok {
+			} else if body, ok := modtest.DecodeContentEncoding(raw, r.Header.Get(decoyHeader), nil); ok {
 				raw = body
 			}
 			handleItems(w, raw)
@@ -346,9 +298,9 @@ func TestScanPerRequest_NoFinding(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := serve(t, tc.handler)
+			srv := modtest.Serve(t, tc.handler)
 			client := modtest.Requester(t)
-			sc := scanCtxFor(srv.URL, "express")
+			sc := modtest.ScanCtxWithTech(srv.URL, "express")
 			res, err := New().ScanPerHost(modtest.Request(t, srv.URL+"/"), client, sc)
 			require.NoError(t, err)
 			assert.Empty(t, res, "host lane")
@@ -368,7 +320,7 @@ func TestScanPerRequest_FlakyDecoderNotReported(t *testing.T) {
 	t.Parallel()
 	var brSeen int64
 	decoding := envoyFront(pythonApp)
-	srv := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := modtest.Serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Content-Encoding") == "br" && atomic.AddInt64(&brSeen, 1) > 2 {
 			pythonApp.ServeHTTP(w, r)
 			return
@@ -377,31 +329,8 @@ func TestScanPerRequest_FlakyDecoderNotReported(t *testing.T) {
 	}))
 
 	rr := modtest.RequestJSON(t, srv.URL+"/api/items", `{"name":"a"}`)
-	res, err := New().ScanPerRequest(rr, modtest.Requester(t), scanCtxFor(srv.URL, ""))
+	res, err := New().ScanPerRequest(rr, modtest.Requester(t), modtest.ScanCtxWithTech(srv.URL))
 	require.NoError(t, err)
 	assert.Empty(t, res)
 	assert.EqualValues(t, 3, atomic.LoadInt64(&brSeen), "the repeat round sent the third br probe")
-}
-
-func TestCarriesJSONBody(t *testing.T) {
-	t.Parallel()
-	assert.True(t, carriesJSONBody("POST", "application/json; charset=utf-8"))
-	assert.True(t, carriesJSONBody("PATCH", "application/vnd.api+json"))
-	assert.False(t, carriesJSONBody("PUT", "application/json"), "PUT {} can replace a resource")
-	assert.False(t, carriesJSONBody("GET", "application/json"))
-	assert.False(t, carriesJSONBody("POST", "application/x-www-form-urlencoded"))
-	assert.False(t, carriesJSONBody("POST", ""))
-}
-
-// The precomputed probe streams decode back to {} and {: the oracle depends on it.
-func TestEncodedProbesRoundTrip(t *testing.T) {
-	t.Parallel()
-	for _, e := range encodings {
-		out, ok := decode(e.empty, e.encoding)
-		require.True(t, ok, e.encoding)
-		assert.Equal(t, emptyBody, out, e.encoding)
-		out, ok = decode(e.malformed, e.encoding)
-		require.True(t, ok, e.encoding)
-		assert.Equal(t, malformedBody, out, e.encoding)
-	}
 }

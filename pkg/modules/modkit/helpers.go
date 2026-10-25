@@ -1,6 +1,7 @@
 package modkit
 
 import (
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -198,4 +199,30 @@ func HasJSExtension(pathLower string) bool {
 		}
 	}
 	return false
+}
+
+// ElideRequestBody renders a raw request for evidence with all but the first
+// keep bytes of its bodyLen-byte body replaced by a marker.
+//
+// Modules whose probe body is measured in MiB (php2shell's multipart nesting,
+// node2shell's Brotli stream) must never store the body on a result: the
+// finding travels through the database, the JSON envelope and the report, and a
+// 22 MiB request dump would be carried through all three. The head is kept
+// because the framing — request line, headers, Content-Length — is the part a
+// reader needs to reproduce the probe; the rest is generated filler the module
+// rebuilds from a handful of constants.
+//
+// Like Truncate, this is the shared cap: do not add a private elideBody to a
+// module package (pkg/modules/helper_dup_contract_test.go enforces this).
+//
+// raw is returned unchanged when the body already fits in keep, or when bodyLen
+// does not describe a suffix of raw (a caller mismatch, not something to
+// silently truncate around).
+func ElideRequestBody(raw []byte, bodyLen, keep int) string {
+	if bodyLen <= keep || bodyLen > len(raw) {
+		return string(raw)
+	}
+	head := len(raw) - bodyLen
+	return string(raw[:head+keep]) +
+		fmt.Sprintf("\n[... %d more bytes of the probe body elided]", bodyLen-keep)
 }

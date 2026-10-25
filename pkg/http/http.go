@@ -723,6 +723,15 @@ func NewRequester(options *types.Options, services *services.Services) (*Request
 			ResponseHeaderTimeout:  respHeaderTimeout,
 			MaxResponseHeaderBytes: 48 * 1024,
 			ReadBufferSize:         16 * 1024,
+			// Only requests that carry an explicit "Expect: 100-continue" header
+			// wait on this; every other request is unaffected. Left at the zero
+			// value, Go documents the opposite of what a caller setting that
+			// header wants — "no timeout and causes the body to be sent
+			// immediately, without waiting for the server to approve" — which
+			// silently discards the one benefit of advertising a huge body:
+			// letting an edge refuse it off the Content-Length before it is
+			// uploaded. The multi-MiB probes (node2shell) are the only senders.
+			ExpectContinueTimeout: 1 * time.Second,
 		}
 		applyExplicitProxy(t, options.ProxyURL, "scanner")
 		return t

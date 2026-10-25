@@ -126,6 +126,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/modules/active/nextjs_version_audit"
 	"github.com/vigolium/vigolium/pkg/modules/active/nginx_off_by_slash"
 	"github.com/vigolium/vigolium/pkg/modules/active/nginx_path_escape"
+	"github.com/vigolium/vigolium/pkg/modules/active/node2shell"
 	"github.com/vigolium/vigolium/pkg/modules/active/nosqli_error_based"
 	"github.com/vigolium/vigolium/pkg/modules/active/nosqli_operator_injection"
 	"github.com/vigolium/vigolium/pkg/modules/active/oast_probe"
@@ -437,6 +438,9 @@ func registerActiveModules(r *Registry) {
 	r.RegisterActive(express_trust_proxy_misconfig.New())
 	r.RegisterActive(express_directory_listing.New())
 	r.RegisterActive(brotli_request_decoding_exposure.New())
+	// The version oracle behind the exposure probe above: same decode gate,
+	// then a 22 MiB stream only an unpatched Brotli decoder accepts.
+	r.RegisterActive(node2shell.New())
 	// Active modules - Common Directory Listing
 	r.RegisterActive(common_directory_listing.New())
 	// Active modules - Rails Security

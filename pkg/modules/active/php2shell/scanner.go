@@ -184,7 +184,7 @@ func send(ctx *httpmsg.HttpRequestResponse, httpClient *http.Requester, path, bo
 		status:    resp.Response().StatusCode,
 		body:      resp.Body().String(),
 		poweredBy: poweredBy(resp.Response().Header.Get("X-Powered-By")),
-		request:   elideBody(raw, len(body)),
+		request:   modkit.ElideRequestBody(raw, len(body), maxEvidenceBytes),
 		response:  modkit.Truncate(resp.FullResponseString(), maxEvidenceBytes),
 	}, true
 }

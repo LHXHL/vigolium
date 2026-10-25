@@ -65,7 +65,7 @@ func TestScanPerRequest_MemoryExhaustedIsSuspect(t *testing.T) {
 	assert.EqualValues(t, 2, atomic.LoadInt64(&hits), "control + the first (1 MiB) probe, then stop")
 	assert.Less(t, len(r.Request), 8*1024, "the probe body must be elided from stored evidence")
 	assert.Contains(t, r.Request, "multipart/form-data; boundary=")
-	assert.Contains(t, r.Request, "more bytes of the multipart probe elided")
+	assert.Contains(t, r.Request, "more bytes of the probe body elided")
 }
 
 func TestScanPerRequest_EmptyFPMResponseIsSuspect(t *testing.T) {

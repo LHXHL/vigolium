@@ -50,14 +50,3 @@ func buildProbeBody(sizeMiB, parts int) []byte {
 	body := buf.Bytes()
 	return body[:len(body)-1]
 }
-
-// elideBody renders raw for evidence with all but the first maxEvidenceBytes of
-// its bodyLen-byte body replaced by a marker, so a 20 MiB probe is never stored.
-func elideBody(raw []byte, bodyLen int) string {
-	if bodyLen <= maxEvidenceBytes || bodyLen > len(raw) {
-		return string(raw)
-	}
-	head := len(raw) - bodyLen
-	return string(raw[:head+maxEvidenceBytes]) +
-		fmt.Sprintf("\n[... %d more bytes of the multipart probe elided]", bodyLen-maxEvidenceBytes)
-}

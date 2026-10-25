@@ -1,6 +1,6 @@
 # Scanner Modules Reference
 
-Vigolium ships with **334 scanner modules** — 215 active and 119 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
+Vigolium ships with **335 scanner modules** — 216 active and 119 passive — covering the OWASP Top 10 and beyond. The categorized tables below are a curated selection synchronized with the current registry. Run `vigolium module ls` (or call `GET /api/modules`) for all modules and the authoritative live metadata.
 
 ## Severity Scale
 
@@ -185,6 +185,7 @@ Active modules send modified requests to detect vulnerabilities via fuzzing, inj
 | `jwt-vulnerability` | JWT Vulnerability | Detects JWT algorithm confusion and weak signing vulnerabilities | Critical | Certain | `jwt`, `auth-bypass`, `moderate` |
 | `http-request-smuggling` | HTTP Request Smuggling | Detects HTTP request smuggling via CL.TE, TE.CL and CL.0 desync | Suspect | Tentative | `request-smuggling`, `heavy` |
 | `brotli-request-decoding-exposure` | Brotli Request Decoding Exposure | Flags servers that decode Brotli request bodies (app body parser, middleware, or an Envoy/Istio decompressor), the attack surface of CVE-2026-111497; stack-agnostic decode differential on JSON bodies (the answer must track the decoded content over two rounds, not the header), reported as a candidate; never sends the crash trigger | Info | Tentative | `brotli`, `cve`, `light` |
+| `node2shell` | node2shell Brotli Decoder Version Probe | The version oracle behind the exposure probe above: after the same cheap decode gate opens on plain `br`, sends a 23,068,764-byte Brotli stream that only a decoder without the CVE-2026-111497 fix accepts, over two rounds with the gate's three response classes re-proven in between, plus a size-matched malformed twin so the divergence is attributable to the decode and not to the body size; ~22 MiB of upload against a patched host, ~66 MiB against a candidate, once per origin | Suspect | Tentative | `brotli`, `cve`, `rce`, `intrusive` |
 
 ### API & Endpoint Security
 
