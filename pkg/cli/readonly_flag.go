@@ -39,6 +39,7 @@ var readOnlyCapableCommands = []string{
 	"finding", "traffic", "traffic body", "traffic headers", "endpoints", "params",
 	"db list", "db stats", "db export",
 	"log", "log ls", "export", "replay", "fuzz", "scan diff", "schema storage", "hosts",
+	"match-not-found",
 }
 
 // registerReadOnlyFlag adds the persistent --read-only flag to the root command.

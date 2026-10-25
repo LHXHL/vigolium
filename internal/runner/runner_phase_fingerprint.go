@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	"github.com/vigolium/vigolium/pkg/deparos/fingerprint"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/source"
+	"github.com/vigolium/vigolium/pkg/modules"
 	"github.com/vigolium/vigolium/pkg/terminal"
 	"github.com/vigolium/vigolium/pkg/types"
 	"github.com/vigolium/vigolium/pkg/work"
@@ -38,7 +40,9 @@ import (
 //
 // Redirects are not followed (a 301 from /robots.txt to /login is the answer),
 // and a WAF block page is kept rather than dropped (which edge answers is part
-// of the fingerprint).
+// of the fingerprint). A read that fails in transport is asked once more, and
+// every read still unanswered is named in the report's errors[] with the
+// executor's reason for it, so an omitted path is never mistaken for a 404.
 
 // fingerprintAutoLightThreshold is the target count above which the phase
 // defaults to light depth: a long list is a triage pass, and standard depth is
@@ -150,85 +154,232 @@ func observationFrom(p recon.ProbeRequest, rr *httpmsg.HttpRequestResponse) reco
 	return o
 }
 
+// fingerprintRetryBackoff is the pause before a round's network failures are
+// asked again. Short: it lets a host that dropped connections under the
+// round's burst drain, without stretching the pass.
+const fingerprintRetryBackoff = 750 * time.Millisecond
+
+// fingerprintRetryWorkers is the concurrency a round's retry runs at: two per
+// origin that failed, never more than the round's own. A host that dropped
+// reads under the round's concurrency is asked again at a pace it is far more
+// likely to answer — the operator's pacing (rate limit, per-host slots, the
+// adaptive limiter, which the requester feeds on every send) still applies.
+func fingerprintRetryWorkers(workers, failingOrigins int) int {
+	return max(1, min(workers, 2*failingOrigins))
+}
+
+// fingerprintBackoff waits d and reports whether ctx is still live.
+func fingerprintBackoff(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// fingerprintProbeRef ties one executor item back to its origin and probe.
+type fingerprintProbeRef struct {
+	origin string
+	probe  recon.ProbeRequest
+}
+
 // sendFingerprintRound puts one round of every origin's probes on the wire
 // through the executor and returns each origin's observations. A probe that
-// produced no response is reported as an observation with Err set.
+// failed in transport is asked once more, after a short backoff and at a
+// reduced concurrency; one that still has no answer is an observation with Err
+// and ErrKind set, the kind classified from the executor's typed drop reason.
 func (r *Runner) sendFingerprintRound(ctx context.Context, infra *phaseInfra, workers int,
 	origins []fingerprintOrigin, plan func(fingerprintOrigin) []recon.ProbeRequest) (map[string][]recon.Observation, error) {
-	type ref struct {
-		origin string
-		probe  recon.ProbeRequest
-	}
-	refs := map[*httpmsg.HttpRequestResponse]ref{}
-	var items []*httpmsg.HttpRequestResponse
+	refs := make([]fingerprintProbeRef, 0, len(origins))
 	for _, o := range origins {
 		for _, p := range plan(o) {
-			rr, err := buildFingerprintRequest(o.baseURL, p)
-			if err != nil {
-				zap.L().Debug("Fingerprint: unbuildable probe", zap.String("origin", o.baseURL), zap.String("path", p.Path), zap.Error(err))
-				continue
-			}
-			refs[rr] = ref{origin: o.baseURL, probe: p}
-			items = append(items, rr)
+			refs = append(refs, fingerprintProbeRef{origin: o.baseURL, probe: p})
 		}
 	}
-	if len(items) == 0 {
+	if len(refs) == 0 {
 		return map[string][]recon.Observation{}, nil
 	}
-
-	var mu sync.Mutex
-	got := map[*httpmsg.HttpRequestResponse]recon.Observation{}
-	var writer *database.RecordWriter
-	if r.repository != nil {
-		writer = r.newScanRecordWriter()
-	}
-	cfg := core.ExecutorConfig{
-		OnModuleError:    r.noteModuleError,
-		Phase:            string(PhaseFingerprint),
-		Workers:          workers,
-		Services:         infra.svc,
-		HTTPRequester:    infra.httpRequester,
-		Repository:       r.repository,
-		RecordWriter:     writer,
-		ScanUUID:         infra.scanUUID,
-		ProjectUUID:      r.options.ProjectUUID,
-		ScopeMatcher:     infra.scopeMatcher,
-		PauseCtrl:        r.pauseCtrl,
-		OnTraffic:        r.makeOnTrafficVerbose("fingerprint"),
-		RecordSource:     database.RecordSourceFingerprint,
-		DisableFeedback:  true,
-		KeepBlocked:      true,
-		NoRedirects:      true,
-		FetchStaticFiles: true,
-		OnResponse: func(item *work.WorkItem, rr *httpmsg.HttpRequestResponse) {
-			ref, ok := refs[item.Request]
-			if !ok {
-				return
-			}
-			obs := observationFrom(ref.probe, rr)
-			mu.Lock()
-			got[item.Request] = obs
-			mu.Unlock()
-		},
-	}
-	executor := core.NewExecutor(cfg, source.NewSliceSource(items, nil), nil, probePassiveModules())
-	_, err := executor.Execute(ctx)
-	r.currentPhase.Load().noteExecution(executor.Report())
-	r.shutdownWriters("fingerprint", writer)
+	results, err := r.executeReads(ctx, infra, fingerprintReads, workers, refs)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make(map[string][]recon.Observation, len(origins))
-	for _, rr := range items {
-		ref := refs[rr]
-		obs, ok := got[rr]
-		if !ok {
-			obs = recon.Observation{Req: ref.probe, URL: rr.Target(), Err: fmt.Errorf("no response (dead host, refused by scope or budget, or cancelled)")}
+	var retry []int
+	failing := map[string]bool{}
+	for i, obs := range results {
+		if obs.Err != nil && obs.ErrKind == recon.ProbeErrNetwork {
+			retry = append(retry, i)
+			failing[refs[i].origin] = true
 		}
-		out[ref.origin] = append(out[ref.origin], obs)
+	}
+	if len(retry) > 0 && fingerprintBackoff(ctx, fingerprintRetryBackoff) {
+		again := make([]fingerprintProbeRef, len(retry))
+		for j, i := range retry {
+			again[j] = refs[i]
+		}
+		zap.L().Debug("Fingerprint: retrying probes that failed in transport",
+			zap.Int("probes", len(again)), zap.Int("origins", len(failing)))
+		second, err := r.executeReads(ctx, infra, fingerprintReads, fingerprintRetryWorkers(workers, len(failing)), again)
+		if err != nil {
+			return nil, err
+		}
+		for j, i := range retry {
+			// The retry's outcome is the probe's, unless the retry only says the
+			// pass was cancelled: the first attempt's cause is the better fact.
+			if second[j].Err == nil || second[j].ErrKind != recon.ProbeErrCancelled {
+				results[i] = second[j]
+			}
+		}
+	}
+
+	out := make(map[string][]recon.Observation, len(origins))
+	for i, ref := range refs {
+		out[ref.origin] = append(out[ref.origin], results[i])
 	}
 	return out, nil
+}
+
+// readsConfig is how one batch of planned reads goes on the wire.
+type readsConfig struct {
+	phase NativePhase
+	// source labels the stored records; "" stores none (the answers are only
+	// read, e.g. the probe's icon, whose hash is the fact kept).
+	source string
+	// passive runs these modules on each answer.
+	passive func() []modules.PassiveModule
+	// keepBlocked keeps a WAF block page as the answer (which edge answers is
+	// part of a fingerprint) instead of dropping the item.
+	keepBlocked bool
+}
+
+// fingerprintReads stores every read as a fingerprint record and runs the
+// probe's fingerprint modules on it.
+var fingerprintReads = readsConfig{phase: PhaseFingerprint, source: database.RecordSourceFingerprint,
+	passive: probePassiveModules, keepBlocked: true}
+
+// executeReads sends refs through one executor run and returns one
+// observation per ref, in order. A read the executor reported unanswered
+// carries that reason's kind; one it never reported at all was cut off by
+// cancellation (or, with the context still live, skipped).
+func (r *Runner) executeReads(ctx context.Context, infra *phaseInfra, rc readsConfig, workers int,
+	refs []fingerprintProbeRef) ([]recon.Observation, error) {
+	results := make([]recon.Observation, len(refs))
+	index := make(map[*httpmsg.HttpRequestResponse]int, len(refs))
+	// settled tracks the DISPATCHED items only; an unbuildable ref never enters
+	// index, so the sweep below never asks about it.
+	settled := make([]bool, len(refs))
+	items := make([]*httpmsg.HttpRequestResponse, 0, len(refs))
+	for i, ref := range refs {
+		rr, err := buildFingerprintRequest(ref.origin, ref.probe)
+		if err != nil {
+			zap.L().Debug("Unbuildable planned read", zap.String("phase", string(rc.phase)), zap.String("origin", ref.origin), zap.String("path", ref.probe.Path), zap.Error(err))
+			results[i] = recon.Observation{Req: ref.probe, URL: ref.origin + ref.probe.Path,
+				Err: fmt.Errorf("unbuildable request: %w", err), ErrKind: recon.ProbeErrSkipped}
+			continue
+		}
+		index[rr] = i
+		items = append(items, rr)
+	}
+	if len(items) == 0 {
+		return results, nil
+	}
+
+	var mu sync.Mutex
+	settle := func(item *work.WorkItem, obs func(ref fingerprintProbeRef) recon.Observation) {
+		i, ok := index[item.Request]
+		if !ok {
+			return
+		}
+		o := obs(refs[i])
+		mu.Lock()
+		results[i], settled[i] = o, true
+		mu.Unlock()
+	}
+	var writer *database.RecordWriter
+	var repo *database.Repository
+	if r.repository != nil && rc.source != "" {
+		writer, repo = r.newScanRecordWriter(), r.repository
+	}
+	cfg := core.ExecutorConfig{
+		OnModuleError: r.noteModuleError,
+		Phase:         string(rc.phase),
+		Workers:       workers,
+		Services:      infra.svc,
+		HTTPRequester: infra.httpRequester,
+		Repository:    repo,
+		RecordWriter:  writer,
+		ScanUUID:      infra.scanUUID,
+		ProjectUUID:   r.options.ProjectUUID,
+		ScopeMatcher:  infra.scopeMatcher,
+		PauseCtrl:     r.pauseCtrl,
+		OnTraffic:     r.makeOnTrafficVerbose(string(rc.phase)),
+		RecordSource:  rc.source,
+		// A planned batch sends its reads and nothing else: no passive module
+		// may re-inject a URL it extracted. This switch is that, and only that —
+		// it does not touch the per-host limiter, which the requester feeds on
+		// every send whatever the executor's feedback setting.
+		DisableFeedback:  true,
+		KeepBlocked:      rc.keepBlocked,
+		NoRedirects:      true,
+		FetchStaticFiles: true,
+		OnResponse: func(item *work.WorkItem, rr *httpmsg.HttpRequestResponse) {
+			settle(item, func(ref fingerprintProbeRef) recon.Observation { return observationFrom(ref.probe, rr) })
+		},
+		OnUnanswered: func(item *work.WorkItem, reason string, cause error) {
+			settle(item, func(ref fingerprintProbeRef) recon.Observation {
+				kind, err := fingerprintUnanswered(reason, cause)
+				return recon.Observation{Req: ref.probe, URL: item.Request.Target(), Err: err, ErrKind: kind}
+			})
+		},
+	}
+	var passive []modules.PassiveModule
+	if rc.passive != nil {
+		passive = rc.passive()
+	}
+	executor := core.NewExecutor(cfg, source.NewSliceSource(items, nil), nil, passive)
+	_, err := executor.Execute(ctx)
+	r.currentPhase.Load().noteExecution(executor.Report())
+	r.shutdownWriters(string(rc.phase), writer)
+	if err != nil {
+		return nil, err
+	}
+	for rr, i := range index {
+		if settled[i] {
+			continue
+		}
+		o := recon.Observation{Req: refs[i].probe, URL: rr.Target(),
+			Err: errors.New("cancelled before an answer"), ErrKind: recon.ProbeErrCancelled}
+		if ctx.Err() == nil {
+			o.Err, o.ErrKind = errors.New("ended without an answer or a reason"), recon.ProbeErrSkipped
+		}
+		results[i] = o
+	}
+	return results, nil
+}
+
+// fingerprintUnanswered maps the executor's reason for an unanswered item to a
+// probe error kind and the error the report shows.
+func fingerprintUnanswered(reason string, cause error) (string, error) {
+	kind, fallback := recon.ProbeErrSkipped, "refused before the send ("+reason+")"
+	switch reason {
+	case core.DropFetchError:
+		kind, fallback = recon.ProbeErrNetwork, "no response"
+	case core.DropQuarantined:
+		kind, fallback = recon.ProbeErrNetwork, "host quarantined as unresponsive"
+	case core.DropBudget:
+		kind, fallback = recon.ProbeErrBudget, "request budget exhausted"
+	case core.DropOutOfScope:
+		kind, fallback = recon.ProbeErrScope, "refused by scope"
+	case core.DropBlocked:
+		kind, fallback = recon.ProbeErrBlocked, "blocked"
+	}
+	if cause != nil {
+		return kind, cause
+	}
+	return kind, errors.New(fallback)
 }
 
 // notFoundBaselineFrom learns an origin's not-found baseline from its answers
@@ -309,7 +460,9 @@ func (r *Runner) runFingerprintPhase(ctx context.Context, infra *phaseInfra) err
 	inputs := make([]database.HostObservationInput, 0, len(origins))
 	answered, soft := 0, 0
 	for _, o := range origins {
-		all := append(append([]recon.Observation{}, first[o.baseURL]...), second[o.baseURL]...)
+		a, b := first[o.baseURL], second[o.baseURL]
+		all := make([]recon.Observation, 0, len(a)+len(b))
+		all = append(append(all, a...), b...)
 		report := recon.Analyze(o.baseURL, all)
 		report.Depth = string(depth)
 		report.GeneratedAt = time.Now().UTC()
@@ -325,13 +478,7 @@ func (r *Runner) runFingerprintPhase(ctx context.Context, infra *phaseInfra) err
 			Hostname: o.host, Port: o.port, Fingerprint: report, NotFound: nf, Complete: ctx.Err() == nil,
 		})
 	}
-	if r.repository != nil {
-		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hostObservationSaveTimeout)
-		if err := r.repository.SaveHostObservations(saveCtx, r.options.ProjectUUID, infra.scanUUID, inputs); err != nil {
-			zap.L().Warn("Fingerprint: failed to persist host facts", zap.Error(err))
-		}
-		cancel()
-	}
+	r.persistHostObservations(ctx, infra.scanUUID, inputs, "Fingerprint: failed to persist host facts")
 
 	summary := fmt.Sprintf("completed — %s of %s origins answered",
 		terminal.Orange(strconv.Itoa(answered)), terminal.HiTeal(strconv.Itoa(len(origins))))

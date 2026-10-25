@@ -181,6 +181,7 @@ var dbIntents = map[string]string{
 	"schema storage":   "read",
 	"schema flags":     dbIntentNone,
 	"hosts":            "read",
+	"match-not-found":  "read",
 	"dns":              "write",
 	"fingerprint":      "write",
 	"skills":           dbIntentNone,

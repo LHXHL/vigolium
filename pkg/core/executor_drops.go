@@ -4,6 +4,8 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/vigolium/vigolium/pkg/work"
 )
 
 // Drop reasons: why an input item ended without its record in the store.
@@ -15,6 +17,11 @@ const (
 	DropStoreError  = "store_error"  // the database refused the write
 	DropOutOfScope  = "out_of_scope" // the answer was out of scope and scope applies on ingest
 )
+
+// SkipStaticFile is the OnUnanswered reason for an item the static-file
+// filter refused before the send. It is not a drop-ledger reason: the filter
+// is policy, not a failure, and the ledger counts failures.
+const SkipStaticFile = "static_file"
 
 // dropReasons is the closed set, in the order a ledger stores them.
 var dropReasons = [...]string{DropFetchError, DropBlocked, DropBudget, DropQuarantined, DropStoreError, DropOutOfScope}
@@ -81,6 +88,14 @@ func (d *dropLedger) sampleList() []DropSample {
 
 // noteDrop records that an item stored nothing, and why.
 func (e *Executor) noteDrop(url, reason string, err error) { e.drops.note(url, reason, err) }
+
+// noteUnanswered tells the OnUnanswered callback that item ends without a
+// baseline response, and why.
+func (e *Executor) noteUnanswered(item *work.WorkItem, reason string, err error) {
+	if e.cfg.OnUnanswered != nil {
+		e.cfg.OnUnanswered(item, reason, err)
+	}
+}
 
 // DropReasons returns how many input items ended without a stored record, per
 // reason (the Drop* constants). Reasons with no drops are absent.

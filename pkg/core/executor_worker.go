@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vigolium/vigolium/internal/config"
+	"github.com/vigolium/vigolium/pkg/core/hosterrors"
 	"github.com/vigolium/vigolium/pkg/http"
 	"github.com/vigolium/vigolium/pkg/httpmsg"
 	"github.com/vigolium/vigolium/pkg/input/source"
@@ -110,6 +111,7 @@ func (e *Executor) sendItem(ctx context.Context, item *work.WorkItem, itemCh cha
 		if e.staticStorageCandidate(item.Request) {
 			item.StaticMeta = true
 		} else {
+			e.noteUnanswered(item, SkipStaticFile, nil)
 			item.Complete()
 			return true
 		}
@@ -126,6 +128,7 @@ func (e *Executor) sendItem(ctx context.Context, item *work.WorkItem, itemCh cha
 		}
 		if !inScope {
 			e.scopeRejected.Add(1)
+			e.noteUnanswered(item, DropOutOfScope, nil)
 			item.Complete()
 			return true
 		}
@@ -134,6 +137,7 @@ func (e *Executor) sendItem(ctx context.Context, item *work.WorkItem, itemCh cha
 	// Dead-host breaker: drop items for a quarantined host:port, with a count
 	// (skipped_quarantined). Read-only — see skipQuarantined.
 	if e.skipQuarantined(item.Request) {
+		e.noteUnanswered(item, DropQuarantined, hosterrors.ErrUnresponsiveHost)
 		item.Complete()
 		return true
 	}
@@ -296,6 +300,7 @@ func (e *Executor) processItemDetached(t *itemTracker) {
 	if !ok {
 		if fetched.drop != "" {
 			e.noteDrop(req.Target(), fetched.drop, fetched.dropErr)
+			e.noteUnanswered(item, fetched.drop, fetched.dropErr)
 		}
 		return
 	}

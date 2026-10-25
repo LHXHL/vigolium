@@ -90,6 +90,7 @@ run `vigolium <command> -h`.
 - [vigolium kit wordlist](#vigolium-kit-wordlist)
 - [vigolium log](#vigolium-log)
 - [vigolium log ls](#vigolium-log-ls)
+- [vigolium match-not-found](#vigolium-match-not-found)
 - [vigolium module](#vigolium-module)
 - [vigolium module disable](#vigolium-module-disable)
 - [vigolium module enable](#vigolium-module-enable)
@@ -1139,6 +1140,7 @@ Fingerprint origins with a bounded set of reads and store the result as host fac
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
+| `--favicon` | - | bool | `false` | Fetch each answering origin's icon once (the page's <link rel="icon">, else /favicon.ico; redirects not followed) and hash it: mmh3 (Shodan http.favicon.hash, FOFA icon_hash), MD5, SHA-256. Stored per host:port; read it as 'favicon_mmh3' with 'vigolium hosts', or as 'favicon' on 'traffic -j' rows and jsonl http_record lines. Read by the probe phase (the fingerprint phase always fetches the icon) |
 | `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
 | `--full-body` | - | bool | `false` | Render complete request/response bodies (no truncation/stubbing) with --json, and whole (uncompacted) bodies with --markdown |
@@ -1178,7 +1180,7 @@ Fingerprint origins with a bounded set of reads and store the result as host fac
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
 | `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
-| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
+| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, targeted-respider; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |
 | `--parallel` | `-P` | int | `1` | Scan up to N targets concurrently as isolated child processes (requires -S -T --split-by-host, OR --db-isolate -T which merges into --db and exports one unified output; each target keeps its own --concurrency, so real in-flight requests ≈ N × --concurrency) |
 | `--param-mining` | - | bool | `false` | Mine hidden parameters (Arjun-style) on this scan's dynamic endpoints before the assessment, so injection modules test them too. Default: on at --intensity deep, off below; --param-mining=false turns it off at deep. Budget: dynamic-assessment.param_mining in config |
@@ -1342,7 +1344,7 @@ Read stored host facts: DNS, TLS certificate, fingerprint and not-found baseline
 |------|-------|------|---------|-------------|
 | `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
 | `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
-| `--has` | - | string | - | Only hosts carrying this fact: dns, fingerprint, not-found, tls |
+| `--has` | - | string | - | Only hosts carrying this fact: dns, favicon, fingerprint, not-found, tls |
 | `--history` | - | bool | `false` | Every observation, not just the latest per host:port |
 | `--host` | - | string | - | Only this hostname, or a pattern with * wildcards (same as the positional) |
 | `--limit` | `-n` | int | `100` | Maximum hosts to list (0 = all) |
@@ -1614,6 +1616,18 @@ List native scan and agentic scan sessions
 | `--no-tui` | - | bool | `false` | Force TUI off (escape hatch if TUI ever becomes default) |
 | `--reap` | - | bool | `false` | Finalize abandoned running scan rows as failed (stop_reason abandoned) and prune expired status.json files; writes the store |
 | `--tui` | - | bool | `false` | Open interactive TUI (arrow keys to navigate, enter to view details, c to copy id) |
+
+## vigolium match-not-found
+
+Classify responses read from stdin against their origin's stored not-found baseline
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--compact` | - | bool | `false` | With --json, drop each row's bulky keys (sample lists, excerpts, headers) and keep its metadata |
+| `--fields` | - | stringSlice | - | Restrict --json rows to these keys (comma-separated). Aliases such as status/length/title are accepted and emitted under the name you pass. An unknown name is an error, not a silent drop |
+| `--max-output-bytes` | - | int | `0` | With --json, cap the result document at N bytes by dropping whole trailing items (0 = unlimited). The document stays valid JSON and gains an output_budget object naming how many items were returned, how many were omitted, and the next --offset |
+| `--no-header` | - | bool | `false` | With --format tsv, omit the header line |
+| `--stateless` | `-S` | bool | `false` | Read from --db (a standalone .sqlite) with project scoping off; never writes to your project DB |
 
 ## vigolium module
 
@@ -1903,6 +1917,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
+| `--favicon` | - | bool | `false` | Fetch each answering origin's icon once (the page's <link rel="icon">, else /favicon.ico; redirects not followed) and hash it: mmh3 (Shodan http.favicon.hash, FOFA icon_hash), MD5, SHA-256. Stored per host:port; read it as 'favicon_mmh3' with 'vigolium hosts', or as 'favicon' on 'traffic -j' rows and jsonl http_record lines. Read by the probe phase (the fingerprint phase always fetches the icon) |
 | `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--fingerprint-depth` | - | string | - | With the fingerprint phase: reads per origin, light\|standard\|full (default standard, light past 50 targets; 'vigolium fingerprint --depth') |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
@@ -1943,7 +1958,7 @@ Run a single native scan phase (alias for scan --only <phase>)
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
 | `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
-| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
+| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, targeted-respider; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |
 | `--parallel` | `-P` | int | `1` | Scan up to N targets concurrently as isolated child processes (requires -S -T --split-by-host, OR --db-isolate -T which merges into --db and exports one unified output; each target keeps its own --concurrency, so real in-flight requests ≈ N × --concurrency) |
 | `--param-mining` | - | bool | `false` | Mine hidden parameters (Arjun-style) on this scan's dynamic endpoints before the assessment, so injection modules test them too. Default: on at --intensity deep, off below; --param-mining=false turns it off at deep. Budget: dynamic-assessment.param_mining in config |
@@ -2011,6 +2026,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--export-only` | - | stringSlice | - | Limit the --format jsonl envelope to these record types (comma-separated: http, findings, scans, modules, oast, source-repos, scopes). Defaults to 'http' on a probe-only run, where every finding is a tech detection already carried on the record's technology field. |
 | `--external-harvest` | - | bool | `false` | Enable external intelligence gathering phase (Wayback, CT logs, etc.) |
 | `--fail-on` | - | string | - | Exit non-zero if a finding at or above this severity is present (info\|suspect\|low\|medium\|high\|critical); findings marked false_positive/accepted_risk do not count — for CI/agent gating. Scoped to this scan; --soft-fail overrides; with -P it is evaluated per child. |
+| `--favicon` | - | bool | `false` | Fetch each answering origin's icon once (the page's <link rel="icon">, else /favicon.ico; redirects not followed) and hash it: mmh3 (Shodan http.favicon.hash, FOFA icon_hash), MD5, SHA-256. Stored per host:port; read it as 'favicon_mmh3' with 'vigolium hosts', or as 'favicon' on 'traffic -j' rows and jsonl http_record lines. Read by the probe phase (the fingerprint phase always fetches the icon) |
 | `--fields` | - | stringSlice | - | Restrict --json output to these top-level keys (comma-separated, e.g. id,severity,url). An unknown name is an error, not a silent drop |
 | `--fingerprint-depth` | - | string | - | With the fingerprint phase: reads per origin, light\|standard\|full (default standard, light past 50 targets; 'vigolium fingerprint --depth') |
 | `--follow-subdomains` | - | bool | `false` | Pull in-scope subdomains discovered in responses into the scan (exact hosts only, not the whole apex; auto-on at --intensity deep) |
@@ -2052,7 +2068,7 @@ Run a native scan — deterministic multi-phase vulnerability scanning
 | `--no-waf-pacing` | - | bool | `false` | Disable proactive CDN/WAF-edge pacing (don't pre-throttle per-host concurrency when a CloudFront/Cloudflare/etc. edge is detected); reactive back-off after a WAF block still applies |
 | `--oast-url` | - | string | - | Fixed out-of-band callback URL instead of interactsh; put {nonce} in it (https://{nonce}.cb.example.com) to attribute logged callbacks with 'vigolium oast ingest' |
 | `--omit-response` | - | bool | `false` | Omit raw HTTP request/response bytes from output file (keeps metadata, smaller files) |
-| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep; aliases accepted, see 'vigolium run --help') |
+| `--only` | - | string | - | Run only these phases (comma-separated: ingestion, probe, fingerprint, discovery, external-harvest, spidering, known-issue-scan, dynamic-assessment, extension, heuristics-check, port-sweep, targeted-respider; aliases accepted, see 'vigolium run --help') |
 | `--output` | `-o` | string | - | Write findings to specified output file |
 | `--parallel` | `-P` | int | `1` | Scan up to N targets concurrently as isolated child processes (requires -S -T --split-by-host, OR --db-isolate -T which merges into --db and exports one unified output; each target keeps its own --concurrency, so real in-flight requests ≈ N × --concurrency) |
 | `--param-mining` | - | bool | `false` | Mine hidden parameters (Arjun-style) on this scan's dynamic endpoints before the assessment, so injection modules test them too. Default: on at --intensity deep, off below; --param-mining=false turns it off at deep. Budget: dynamic-assessment.param_mining in config |

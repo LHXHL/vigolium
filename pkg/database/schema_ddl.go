@@ -529,6 +529,7 @@ var schemaTables = []string{
 		tls {{JSON}},
 		fingerprint {{JSON}},
 		not_found {{JSON}},
+		favicon {{JSON}},
 		complete {{BOOL}} NOT NULL DEFAULT {{FALSE}},
 		created_at {{TIMESTAMP}} NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(scan_uuid, hostname, port)
@@ -902,6 +903,9 @@ var columnMigrations = []columnMigration{
 	{"host_observations", "dns_caa", "{{JSON}}"},
 	{"host_observations", "fingerprint", "{{JSON}}"},
 	{"host_observations", "not_found", "{{JSON}}"},
+	// Schema v5: the origin's icon as the probe phase's --favicon hashed it.
+	// Nullable, no default: NULL means "not fetched".
+	{"host_observations", "favicon", "{{JSON}}"},
 }
 
 func init() {

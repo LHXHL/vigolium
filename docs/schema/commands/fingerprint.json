@@ -102,6 +102,9 @@
           },
           "type": "array"
         },
+        "favicon": {
+          "$ref": "#/$defs/recon.FaviconInfo"
+        },
         "tls": {
           "$ref": "#/$defs/tlsprobe.Info"
         },
@@ -666,6 +669,43 @@
         "url"
       ]
     },
+    "recon.ProbeError": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "probe": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "network",
+            "budget",
+            "scope",
+            "blocked",
+            "cancelled",
+            "skipped"
+          ]
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "kind",
+        "error"
+      ]
+    },
     "recon.SecurityHeadersAudit": {
       "properties": {
         "present": {
@@ -835,15 +875,6 @@
           },
           "type": "array"
         },
-        "method_matrix": {
-          "additionalProperties": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "type": "object"
-        },
         "login_candidates": {
           "items": {
             "$ref": "#/$defs/recon.LoginCandidate"
@@ -855,6 +886,12 @@
         },
         "probe_errors": {
           "type": "integer"
+        },
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/recon.ProbeError"
+          },
+          "type": "array"
         },
         "duration": {
           "type": "integer"

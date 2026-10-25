@@ -95,6 +95,9 @@ type hostView struct {
 	CertNotAfter string   `json:"cert_not_after,omitempty"`
 	SANs         []string `json:"sans,omitempty"`
 
+	// Favicon is the origin's icon: the probe's --favicon read, else the
+	// fingerprint report's. FaviconMMH3 lifts its mmh3.
+	Favicon     *recon.FaviconInfo         `json:"favicon,omitempty"`
 	TLS         *tlsprobe.Info             `json:"tls,omitempty"`
 	Fingerprint *recon.TechStackReport     `json:"fingerprint,omitempty"`
 	NotFound    *database.NotFoundBaseline `json:"not_found,omitempty"`
@@ -131,10 +134,14 @@ func newHostView(o *database.HostObservation) hostView {
 			}
 			v.Technology = append(v.Technology, name)
 		}
-		if fp.Favicon != nil {
-			h := fp.Favicon.MMH3
-			v.FaviconMMH3 = &h
-		}
+		v.Favicon = fp.Favicon
+	}
+	if o.Favicon != nil {
+		v.Favicon = o.Favicon
+	}
+	if v.Favicon != nil {
+		h := v.Favicon.MMH3
+		v.FaviconMMH3 = &h
 	}
 	if o.NotFound != nil {
 		soft := o.NotFound.SoftNotFound

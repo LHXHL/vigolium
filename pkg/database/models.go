@@ -448,6 +448,11 @@ type HostObservation struct {
 	Fingerprint *recon.TechStackReport `bun:"fingerprint,type:jsonb,nullzero" json:"fingerprint,omitempty"`
 	NotFound    *NotFoundBaseline      `bun:"not_found,type:jsonb,nullzero" json:"not_found,omitempty"`
 
+	// Favicon is the origin's icon as the probe phase's --favicon fetched and
+	// hashed it. Absent when the probe did not ask, or the origin serves no
+	// icon. (The fingerprint phase keeps its own copy inside Fingerprint.)
+	Favicon *recon.FaviconInfo `bun:"favicon,type:jsonb,nullzero" json:"favicon,omitempty"`
+
 	// Complete reports that the lookup actually ran to an answer. False marks an
 	// observation the run never finished - a cancelled or budget-limited
 	// prefetch - which is a different fact from a host that genuinely resolves to

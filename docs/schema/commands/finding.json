@@ -321,6 +321,9 @@
         "tls": {
           "$ref": "#/$defs/tlsprobe.Info"
         },
+        "favicon": {
+          "$ref": "#/$defs/recon.FaviconInfo"
+        },
         "technology": {
           "items": {
             "type": "string"
@@ -531,6 +534,34 @@
       "required": [
         "verdict",
         "at"
+      ]
+    },
+    "recon.FaviconInfo": {
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "mmh3": {
+          "type": "integer"
+        },
+        "md5": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url",
+        "mmh3",
+        "md5",
+        "sha256",
+        "size"
       ]
     },
     "tlsprobe.Fingerprints": {

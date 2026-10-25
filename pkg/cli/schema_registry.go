@@ -328,6 +328,8 @@ func init() {
 		Description: "One answer per name: every record type asked for, each record with its TTL, and how many answers were stored."})
 	registerCommandSchema(contract.Command{Name: "hosts", Item: hostView{},
 		Description: "Stored host facts per host:port: DNS, TLS certificate, fingerprint report and not-found baseline, with the survey facts lifted to the top."})
+	registerCommandSchema(contract.Command{Name: "match-not-found", Item: matchNotFoundItem{}, Extras: matchNotFoundExtras{},
+		Description: "One verdict per stdin line, in order: whether the response is its origin's not-found page (known false without a baseline or a body), and why; lines that did not parse are counted in failed."})
 	registerCommandSchema(contract.Command{Name: "schema flags", Item: flagUsageView{}, Extras: schemaFlagsExtras{},
 		Description: "One command's flags (for_command): name, shorthand, type, default, description, inherited."})
 	registerCommandSchema(contract.Command{Name: "schema storage", Item: storageTable{},

@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -516,7 +517,7 @@ func TestPhaseVocabulary_InternalAndOnlyAccepted(t *testing.T) {
 	for name, want := range map[string]struct{ internal, skippable bool }{
 		"heuristics-check":  {false, true},
 		"port-sweep":        {false, true},
-		"targeted-respider": {true, true},
+		"targeted-respider": {false, true},
 		"seed":              {true, false},
 		"preflight":         {true, true},
 		"extension":         {false, true},
@@ -618,6 +619,66 @@ func TestSkipHeuristicsAndRespider(t *testing.T) {
 	}
 }
 
+// TestOnlyTargetedRespider: --only may name targeted-respider beside spidering
+// and discovery, and the re-spider then runs with no assessment; it cannot be
+// named without them. Left unnamed, it keeps its default gate: it rides along
+// when an assessment runs, and not otherwise.
+func TestOnlyTargetedRespider(t *testing.T) {
+	plan := func(only string) (NativeScanPlan, error) {
+		opts := types.Options{OnlyPhase: only}
+		if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
+			return NativeScanPlan{}, err
+		}
+		return BuildNativeScanPlan(&opts), nil
+	}
+
+	for _, only := range []string{"discovery,spidering,targeted-respider", "deparos,spitolas,respider", "ingestion,crawl,re-spider"} {
+		p, err := plan(only)
+		if err != nil {
+			t.Fatalf("--only %s: %v", only, err)
+		}
+		for _, phase := range []NativePhase{PhaseDiscovery, PhaseSpidering, PhaseTargetedReSpider} {
+			if !planStepEnabled(p, phase) {
+				t.Errorf("--only %s: %s disabled", only, phase)
+			}
+		}
+		if planStepEnabled(p, PhaseDynamicAssessment) {
+			t.Errorf("--only %s enabled dynamic-assessment", only)
+		}
+	}
+
+	for _, only := range []string{"targeted-respider", "spidering,targeted-respider", "discovery,targeted-respider"} {
+		if _, err := plan(only); err == nil || !strings.Contains(err.Error(), "discovery,spidering,targeted-respider") {
+			t.Errorf("--only %s: err = %v, want the phases it needs named", only, err)
+		}
+	}
+
+	// Unnamed: rides on an assessment, as before.
+	if p, _ := plan("discovery,spidering,dast"); !planStepEnabled(p, PhaseTargetedReSpider) {
+		t.Error("--only discovery,spidering,dast: the re-spider no longer rides along")
+	}
+	if p, _ := plan("discovery,spidering"); planStepEnabled(p, PhaseTargetedReSpider) {
+		t.Error("--only discovery,spidering: the re-spider runs without being named or an assessment")
+	}
+	full := types.Options{SpideringEnabled: true}
+	if err := ApplyNativePhaseSelection(&full, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !planStepEnabled(BuildNativeScanPlan(&full), PhaseTargetedReSpider) {
+		t.Error("a full scan with spidering no longer schedules the re-spider")
+	}
+	if by := full.PhaseSelection[string(PhaseTargetedReSpider)]; by != "" {
+		t.Errorf("a full scan recorded a selection for the re-spider: %q", by)
+	}
+	unnamed := types.Options{OnlyPhase: "discovery,spidering"}
+	if err := ApplyNativePhaseSelection(&unnamed, nil); err != nil {
+		t.Fatal(err)
+	}
+	if by := unnamed.PhaseSelection[string(PhaseTargetedReSpider)]; by != "" {
+		t.Errorf("an --only that leaves the re-spider out recorded %q; its gate explains it", by)
+	}
+}
+
 func TestOnlyHeuristicsCheck(t *testing.T) {
 	opts := types.Options{OnlyPhase: "heuristics-check", HeuristicsCheck: "none"}
 	if err := ApplyNativePhaseSelection(&opts, nil); err != nil {
@@ -660,7 +721,7 @@ func TestSkipPreflightAccepted(t *testing.T) {
 }
 
 func TestInternalPhasesRejectedByOnly(t *testing.T) {
-	for _, phase := range []string{"seed", "targeted-respider", "respider", "preflight", "harvest-probe", "harvest-check"} {
+	for _, phase := range []string{"seed", "preflight", "harvest-probe", "harvest-check"} {
 		opts := types.Options{OnlyPhase: phase}
 		if err := ApplyNativePhaseSelection(&opts, nil); err == nil {
 			t.Errorf("--only %s accepted; internal steps cannot run alone", phase)

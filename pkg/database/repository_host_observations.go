@@ -98,6 +98,7 @@ func (r *Repository) SaveHostObservations(ctx context.Context, projectUUID, scan
 			TLS:         o.TLS,
 			Fingerprint: o.Fingerprint,
 			NotFound:    o.NotFound,
+			Favicon:     o.Favicon,
 			Complete:    o.Complete,
 		})
 	}
@@ -120,6 +121,7 @@ func (r *Repository) SaveHostObservations(ctx context.Context, projectUUID, scan
 			Set("tls = COALESCE(EXCLUDED.tls, ho.tls)").
 			Set("fingerprint = COALESCE(EXCLUDED.fingerprint, ho.fingerprint)").
 			Set("not_found = COALESCE(EXCLUDED.not_found, ho.not_found)").
+			Set("favicon = COALESCE(EXCLUDED.favicon, ho.favicon)").
 			Set("complete = EXCLUDED.complete").
 			Exec(ctx); err != nil {
 			return fmt.Errorf("save host observations: %w", err)
@@ -173,7 +175,7 @@ func (r *Repository) LookupHostObservation(ctx context.Context, projectUUID, sca
 	// Only the columns HostFacts carries: the fingerprint report and the
 	// not-found baseline are the bulk of a row, and this runs per endpoint
 	// emitted.
-	q := r.db.NewSelect().Model(row).Column("dns_a", "dns_aaaa", "dns_cname", "tls").
+	q := r.db.NewSelect().Model(row).Column("dns_a", "dns_aaaa", "dns_cname", "tls", "favicon").
 		Where("project_uuid = ?", defaultProjectUUID(projectUUID)).
 		Where("hostname = ?", dnsKey(hostname)).
 		Where("port = ?", port)
@@ -200,7 +202,7 @@ func (r *Repository) LookupHostObservation(ctx context.Context, projectUUID, sca
 // Facts renders a stored observation back into the output shape. The columns are
 // bun jsonb fields, so this is a field copy rather than a decode.
 func (o *HostObservation) Facts() HostFacts {
-	return HostFacts{A: o.DNSA, AAAA: o.DNSAAAA, CNAME: o.DNSCNAME, TLS: o.TLS}
+	return HostFacts{A: o.DNSA, AAAA: o.DNSAAAA, CNAME: o.DNSCNAME, TLS: o.TLS, Favicon: o.Favicon}
 }
 
 // HostObservationQuery selects host observations for `vigolium hosts`.
@@ -213,7 +215,8 @@ type HostObservationQuery struct {
 	HostPattern string
 	// History returns every observation; otherwise the latest per endpoint.
 	History bool
-	// Has keeps rows carrying a fact: "tls", "fingerprint", "not-found" or "dns".
+	// Has keeps rows carrying a fact: "tls", "fingerprint", "not-found",
+	// "favicon" or "dns".
 	Has string
 	// SoftNotFound keeps origins that answer 2xx/3xx to a missing path.
 	SoftNotFound bool
@@ -226,6 +229,7 @@ var hostObservationHas = map[string]string{
 	"tls":         "ho.tls IS NOT NULL",
 	"fingerprint": "ho.fingerprint IS NOT NULL",
 	"not-found":   "ho.not_found IS NOT NULL",
+	"favicon":     "ho.favicon IS NOT NULL",
 	"dns": "(ho.dns_a IS NOT NULL OR ho.dns_aaaa IS NOT NULL OR ho.dns_cname IS NOT NULL OR ho.dns_mx IS NOT NULL " +
 		"OR ho.dns_ns IS NOT NULL OR ho.dns_txt IS NOT NULL OR ho.dns_soa IS NOT NULL OR ho.dns_caa IS NOT NULL)",
 }

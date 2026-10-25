@@ -223,6 +223,7 @@ is rate-limited, metered, or behind a WAF you do not want to trip.
 |------|------|---------|-------------|
 | `--probe` | bool | `false` | Enable the host-sweep phase (same as `vigolium run probe`) |
 | `--tls-probe` | bool | `false` | Handshake each HTTPS target; record negotiated version/cipher and the leaf certificate per host:port (read back with `vigolium hosts -j`, and as `tls` on `traffic -j` rows) |
+| `--favicon` | bool | `false` | After the sweep, one icon read per answering origin (the page's `<link rel="icon">`, else `/favicon.ico`; not followed, not stored as a record), hashed like `fingerprint` does. Stored per host:port: `favicon_mmh3` and `favicon` in `vigolium hosts -j`, and `favicon` `{url, mmh3, md5, sha256, size}` on every `traffic -j` row and jsonl `http_record` line of the host. A redirecting target stores the icon of the origin it lands on |
 | `--depth` | string | auto | `fingerprint` only: `light` (~9 reads/origin), `standard` (~60), `full` (adds sensitive paths, OPTIONS on answered paths, source maps). Default standard, light past 50 targets |
 | `--redirect-mode` | string | `any` | `off` \| `same-host` \| `same-apex` \| `any`. `same-apex` follows within the registrable domain (`www.example.com` → `example.com` yes, `example.com` → `tracker.example.net` no). Applies to **every** phase, not just probe |
 | `--record-redirect-chain` | bool | `false` | Each followed hop becomes its own `http_records` row, chained by `parent_uuid`. Read by the probe phase |
@@ -509,7 +510,10 @@ Run a single scan phase directly. Equivalent to `vigolium scan --only <phase>`.
 Phase names and aliases come from the binary, not from this file:
 `vigolium strategy -j` lists every phase in `phases[]` with `canonical`,
 `aliases`, `skippable` and `only_accepted` (`internal` phases such as
-`param-mining` or `targeted-respider` can be skipped but not run alone).
+`param-mining` can be skipped but not run alone). `targeted-respider` is
+accepted by `--only` beside spidering and discovery:
+`--only discovery,spidering,targeted-respider` re-crawls the SPA routes
+discovery found and stores the records with no assessment.
 `vigolium run -h` and the `--only`/`--skip` help list the same names.
 
 The one alias with a catch: `audit` means `dynamic-assessment` on `--only` and
@@ -561,6 +565,12 @@ full` — sensitive-file paths, OPTIONS on every path that answered, and source 
 - A path counts as reachable only when it does not look like the origin's
   not-found answer, so a host that serves 200 for everything does not "have"
   `/actuator` and `/wp-login.php`.
+- A read that fails in transport is retried once after a short backoff at low
+  concurrency. Reads still unanswered are listed in `fingerprint.errors[]`
+  (`path`, `kind`: `network` | `budget` | `scope` | `blocked` | `cancelled` |
+  `skipped`, `error`; plus `method`, `probe`, and `host` for a vhost read) and
+  counted in `probe_errors`. A listed path was **not read** — do not treat it as
+  absent.
 
 `-j` is the scan document with the fingerprinted origins as `items` (the `hosts`
 view: `title`, `server`, `status_code`, `technology`, `favicon_mmh3`,
@@ -575,7 +585,8 @@ vigolium hosts --soft-404 -j --fields hostname,port,not_found
 
 The stored baseline then answers "is this record the not-found page?" for any
 later record from that origin: `vigolium traffic -j --fields url,matches_not_found`,
-or drop them with `--exclude-not-found`.
+or drop them with `--exclude-not-found`. For responses vigolium did not record,
+pipe them to `vigolium match-not-found -j` (see `data.md`).
 
 ## dns
 

@@ -30,8 +30,8 @@ func TestSchemaV4_MigratesV3Store(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if res.FromVersion != 3 || res.ToVersion != 4 || res.MinReaderVersion != 1 {
-		t.Fatalf("Migrate result = %+v, want 3 -> 4 with min_reader 1", res)
+	if res.FromVersion != 3 || res.ToVersion != currentSchemaVersion || res.MinReaderVersion != 1 {
+		t.Fatalf("Migrate result = %+v, want 3 -> %d with min_reader 1", res, currentSchemaVersion)
 	}
 	cols, err := listAllColumns(ctx, w)
 	if err != nil {

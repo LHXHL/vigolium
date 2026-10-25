@@ -589,8 +589,35 @@ candidates, scoped to the current project.
 
 `vigolium hosts` reads what runs stored about hosts rather than requests — DNS
 (`vigolium dns`), the TLS certificate (`fingerprint`, `run probe --tls-probe`),
-the fingerprint report and the not-found baseline. `vigolium schema storage`
-describes the database's tables and which `-j` field each column surfaces as.
+the icon hash (`fingerprint`, `run probe --favicon`; `favicon_mmh3`, and
+`favicon` with `url`/`mmh3`/`md5`), the fingerprint report and the not-found
+baseline. `vigolium schema storage` describes the database's tables and which
+`-j` field each column surfaces as.
+
+The fingerprint report says which reads have no answer: `fingerprint.errors[]`
+holds `{path, kind, error}` (plus `method`, `host` for a vhost read and
+`probe`), `kind` one of `network`, `budget`, `scope`, `blocked`, `cancelled`,
+`skipped`; `probe_errors` is their count. A transport failure was already
+retried once. Treat a path listed there as unread, not as absent.
+
+`vigolium match-not-found` applies the stored baseline to responses vigolium
+did not record. One JSON object per stdin line —
+`{"id", "url", "status", "headers": {name: value or [values]}, "body_b64"}` —
+and one item per answered line, in order:
+
+```bash
+my-fetcher | vigolium match-not-found -j
+# {"items":[{"id":"r1","url":"https://app.example/x","matches":true,"known":true,"reason":"signature"}, ...]}
+```
+
+`reason` is `status-404`/`status-410` (not-found by status), `signature`
+(compared with the origin's baseline; `matches` is the verdict), `no-baseline`
+or `no-body` (`known: false`: no answer). It is the decision `traffic --fields
+matches_not_found` makes for stored records. Omit `body_b64` when you have no
+body (`""` is an empty body); a decoded body over 30 MiB is cut to 30 MiB, as a
+recorded response would be. A line that does not parse is counted in `failed`
+and listed in `failures[]` (`line`, `id`, `error`); the rest are still answered.
+`--db` and `-S` select the store as for `hosts`. Never sends a request.
 
 ## Endpoint and parameter inventory
 

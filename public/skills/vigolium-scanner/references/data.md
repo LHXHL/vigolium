@@ -1277,27 +1277,63 @@ vigolium params --location query,json --min-occurrences 3
 Reads stored host facts, one row per host:port (the latest observation; `--history`
 for every run's): DNS answers (`vigolium dns`, the probe phase — port 0 for a
 DNS-only row), the TLS handshake and certificate (`fingerprint`, `run probe
---tls-probe`), the fingerprint report and the not-found baseline. Never sends a
-request.
+--tls-probe`), the icon hash (`fingerprint`, `run probe --favicon`), the
+fingerprint report and the not-found baseline. Never sends a request.
 
 | Flag | Effect |
 |---|---|
 | `--host <pattern>` | Hostname or `*` wildcard (same as the positional) |
 | `--scan-uuid <uuid>` | Only one run's observations |
-| `--has dns\|tls\|fingerprint\|not-found` | Only hosts carrying that fact |
+| `--has dns\|tls\|favicon\|fingerprint\|not-found` | Only hosts carrying that fact (`favicon`: the probe's `--favicon` read) |
 | `--soft-404` | Only origins answering 2xx/3xx to a missing path |
 | `--sans` | Distinct certificate DNS names, one per line (wildcards dropped) |
 | `--fields`, `--compact`, `--format tsv`, `-n`, `--offset` | Shaping and paging |
 
 Rows lift the survey facts to the top — `title`, `server`, `status_code`,
 `technology`, `favicon_mmh3`, `soft_not_found`, `tls_version`, `cert_not_after`,
-`sans` — beside `a`/`aaaa`/`cname`/`mx`/`ns`/`txt`/`soa`/`caa` and the nested
-`tls`, `fingerprint` and `not_found` documents (`--compact` drops the nested ones).
+`sans` — beside `a`/`aaaa`/`cname`/`mx`/`ns`/`txt`/`soa`/`caa`, `favicon`
+(`url`, `mmh3`, `md5`, `sha256`, `size`; the probe's read, else the fingerprint
+report's) and the nested `tls`, `fingerprint` and `not_found` documents
+(`--compact` drops the nested ones).
 
 ```bash
 vigolium hosts -j --compact
 vigolium hosts '*.example.com' --format tsv --fields hostname,port,title,favicon_mmh3
 vigolium hosts --has tls --sans
+```
+
+## match-not-found
+
+**Usage:** `<producer> | vigolium match-not-found [flags]`
+
+Says whether each response read from stdin is its origin's not-found page, for
+responses vigolium did not record. Same decision as `traffic --fields
+matches_not_found`: a 404/410 is not-found; any other status is compared with
+the baseline `vigolium fingerprint` stored for the URL's host:port. Never sends
+a request; `--db`/`-S` select the store as for `hosts`.
+
+Input, one JSON object per line:
+
+```json
+{"id": "r1", "url": "https://app.example/x", "status": 200, "headers": {"Content-Type": "text/html", "Set-Cookie": ["a=1", "b=2"]}, "body_b64": "PGh0bWw+..."}
+```
+
+- `headers` values are a string or a list of strings.
+- Omit `body_b64` (or send `null`) when you have no body; `""` is an empty body.
+- A decoded body over 30 MiB is cut to 30 MiB (the transport's own read cap).
+
+`-j` items, one per answered line, in input order:
+`{"id", "url", "matches": bool, "known": bool, "reason"}`. `reason` is
+`status-404`, `status-410`, `signature` (compared; `matches` is the verdict),
+`no-baseline` or `no-body` (`known: false` — no answer, `matches` means
+nothing). A line that does not parse is counted in top-level `failed` and listed
+in `failures[]` (`line`, `id`, `error`, first 20); the others are still answered.
+`--fields` and `--format tsv` shape the rows as on other read commands.
+
+```bash
+my-fetcher | vigolium match-not-found -j --fields id,matches,known
+vigolium match-not-found -S --db run.sqlite -j < responses.jsonl
+vigolium match-not-found --format tsv < responses.jsonl    # id, matches, known, reason, url
 ```
 
 ## export

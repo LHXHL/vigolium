@@ -289,6 +289,12 @@ type Options struct {
 	// belongs to the host, not to any one request (see pkg/tlsprobe).
 	TLSProbe bool
 
+	// ProbeFavicon makes the probe phase fetch each answering origin's icon
+	// once (the page's <link rel="icon">, else /favicon.ico), hash it the way
+	// the fingerprint phase does (mmh3 for Shodan/FOFA, MD5, SHA-256), and
+	// store it as a host observation (host_observations.favicon). --favicon.
+	ProbeFavicon bool
+
 	// FingerprintEnabled runs the fingerprint phase: per origin, a bounded set
 	// of reads (well-known paths, favicon, CORS preflight, OPTIONS, vhost
 	// variants, a not-found baseline) whose conclusions are stored as host facts.

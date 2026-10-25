@@ -113,6 +113,11 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	r.printPhaseDetail(fmt.Sprintf("Output: per-record %s and %s on each http_record row",
 		terminal.HiTeal("surface_score"),
 		terminal.HiTeal("technology")))
+	if r.options.ProbeFavicon {
+		r.printPhaseDetail(fmt.Sprintf("Favicon: %s %s",
+			terminal.HiTeal("one icon read per answering origin after the sweep"),
+			terminal.Gray("(--favicon; hashed mmh3/MD5/SHA-256, stored as a host fact)")))
+	}
 	// Proactive edge pacing is off by default here (one request per host has no
 	// burst to pre-empt). Stated rather than assumed: it is a safety default
 	// being turned off, and an operator who wants it back needs to know it went.
@@ -154,6 +159,10 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	}
 
 	authWalls := newAuthWallCollector()
+	var favicons *probeFaviconCollector
+	if r.options.ProbeFavicon {
+		favicons = newProbeFaviconCollector()
+	}
 
 	executorCfg := core.ExecutorConfig{
 		OnModuleError: r.noteModuleError,
@@ -183,6 +192,8 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 		// behind one IdP, so a sweep bounces off the same wall hundreds of times.
 		// Collected and reported once per wall below.
 		OnAuthWall: authWalls.Observe,
+		// A nil collector (no --favicon) keeps nothing; Observe is nil-receiver safe.
+		OnResponse: favicons.Observe,
 		OnResult: func(result *output.ResultEvent) {
 			if err := r.output.Write(result); err != nil {
 				zap.L().Error("Failed to write result", zap.Error(err))
@@ -230,6 +241,14 @@ func (r *Runner) runProbePhase(ctx context.Context, infra *phaseInfra) error {
 	if attempted > answered {
 		summary += terminal.Gray(fmt.Sprintf(" (%d attempted, %d did not respond)",
 			attempted, attempted-answered))
+	}
+	if favicons != nil && ctx.Err() == nil {
+		asked, found, err := r.runProbeFavicons(ctx, infra, pace.Concurrency, favicons)
+		if err != nil {
+			zap.L().Warn("Probe: favicon round failed", zap.Error(err))
+		} else if asked > 0 {
+			r.printPhaseDetail(probeFaviconSummary(asked, found))
+		}
 	}
 	r.printPhaseComplete("Probe", summary)
 	r.reportAuthWalls("Probe", authWalls)
@@ -396,6 +415,24 @@ const (
 // stop.
 const hostObservationSaveTimeout = 30 * time.Second
 
+// persistHostObservations writes a stage's observations on a context detached
+// from the phase's and bounded by hostObservationSaveTimeout — the policy above,
+// written once for every phase that stores host facts. failMsg is the warning a
+// failed write logs. Reports whether the write happened, for the stages that
+// count what they stored.
+func (r *Runner) persistHostObservations(ctx context.Context, scanUUID string, inputs []database.HostObservationInput, failMsg string) bool {
+	if r.repository == nil || len(inputs) == 0 {
+		return false
+	}
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hostObservationSaveTimeout)
+	defer cancel()
+	if err := r.repository.SaveHostObservations(saveCtx, r.options.ProjectUUID, scanUUID, inputs); err != nil {
+		zap.L().Warn(failMsg, zap.Error(err))
+		return false
+	}
+	return true
+}
+
 // sweepEndpoint is one distinct endpoint to prefetch: a hostname, plus the port
 // and scheme the sweep will contact it on.
 type sweepEndpoint struct {
@@ -490,14 +527,8 @@ func (r *Runner) prefetchProbeTargets(ctx context.Context, requestConcurrency in
 	// The rows it writes are marked incomplete, which is what tells a later
 	// reader the stage did not finish.
 	stored := 0
-	if r.repository != nil && len(observations) > 0 {
-		saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(ctx), hostObservationSaveTimeout)
-		if err := r.repository.SaveHostObservations(saveCtx, r.options.ProjectUUID, scanUUID, observations); err != nil {
-			zap.L().Warn("Probe: failed to persist host observations", zap.Error(err))
-		} else {
-			stored = len(observations)
-		}
-		saveCancel()
+	if r.persistHostObservations(ctx, scanUUID, observations, "Probe: failed to persist host observations") {
+		stored = len(observations)
 	}
 
 	detail := fmt.Sprintf("DNS: resolved %s of %s hostname(s)",

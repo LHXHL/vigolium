@@ -136,6 +136,7 @@ gone. Event table: **`references/agent-loop.md`**.
 | One record by identity | `vigolium traffic -j --uuid <uuid>` |
 | One body or header block | `vigolium traffic body <uuid> -o body.json` / `vigolium traffic headers <uuid> -j` |
 | Host facts: DNS, TLS cert, fingerprint | `vigolium hosts -j --compact` (`--sans` for cert names) |
+| Is my own fetch the soft-404 page? | `<producer> \| vigolium match-not-found -j` (stdin JSONL, see `data.md`) |
 | The database's tables and columns | `vigolium schema storage http_records` |
 
 **Confirm and record**

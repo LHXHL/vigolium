@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vigolium/vigolium/pkg/agent/recon"
 	"github.com/vigolium/vigolium/pkg/tlsprobe"
 )
 
@@ -358,5 +359,33 @@ func TestStoredHostFactsScanScopedPrefersThatRun(t *testing.T) {
 	got := NewStoredHostFacts(ctx, repo, "", "scan-old").Facts(host, 443)
 	if len(got.A) != 1 || got.A[0] != "192.0.2.1" {
 		t.Errorf("a = %v, want [192.0.2.1] — the named scan's own observation", got.A)
+	}
+}
+
+// TestStoredHostFactsIconOnlyRowKeepsCachedAddresses: a row holding only the
+// probe's icon (the origin a redirecting target landed on) carries the icon
+// and still takes its addresses from the process caches.
+func TestStoredHostFactsIconOnlyRowKeepsCachedAddresses(t *testing.T) {
+	db := newTestDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	const host = "icon-only.example.invalid"
+	dnsCache.Add(host, dnsEntry{
+		ip: "192.0.2.90", a: []string{"192.0.2.90"},
+		expiry: time.Now().Add(time.Hour), cnameChecked: true,
+	})
+	t.Cleanup(func() { dnsCache.Remove(host) })
+	icon := &recon.FaviconInfo{URL: "https://" + host + "/favicon.ico", MMH3: 42, MD5: "m"}
+	if err := repo.SaveHostObservations(ctx, "", "scan-1",
+		[]HostObservationInput{{Hostname: host, Port: 443, HostFacts: HostFacts{Favicon: icon}, Complete: true}}); err != nil {
+		t.Fatalf("SaveHostObservations: %v", err)
+	}
+	got := NewStoredHostFacts(ctx, repo, "", "scan-1").Facts(host, 443)
+	if got.Favicon == nil || got.Favicon.MMH3 != 42 {
+		t.Errorf("favicon = %+v, want the stored icon", got.Favicon)
+	}
+	if len(got.A) != 1 || got.A[0] != "192.0.2.90" {
+		t.Errorf("a = %v, want the cached [192.0.2.90]", got.A)
 	}
 }

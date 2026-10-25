@@ -102,6 +102,9 @@ type Observation struct {
 	// not hashed (a favicon hash over a prefix matches nothing).
 	Truncated bool
 	Err       error
+	// ErrKind classifies Err as one of the ProbeErr* kinds; "" with Err set is
+	// ProbeErrNetwork.
+	ErrKind string
 }
 
 // Follow-up bounds, exported so a caller can budget a pass without restating
@@ -190,8 +193,12 @@ func PlanFollowUp(baseURL string, depth Depth, first []Observation) []ProbeReque
 		return nil
 	}
 	base := baseObservation(first)
+	var basePage string
+	if base != nil {
+		basePage = base.Body
+	}
 
-	reqs := []ProbeRequest{{Kind: KindFavicon, Method: http.MethodGet, Path: faviconPath(parsed, base)}}
+	reqs := []ProbeRequest{FaviconRequest(parsed, basePage)}
 	if depth != DepthLight && base != nil {
 		for _, v := range vhostVariants(parsed.Host) {
 			reqs = append(reqs, ProbeRequest{Kind: KindVHost, Method: http.MethodGet, Path: "/", Host: v})
@@ -228,13 +235,35 @@ func baseObservation(obs []Observation) *Observation {
 
 var iconLinkRE = regexp.MustCompile(`(?is)<link\b[^>]*\brel\s*=\s*["'][^"']*\bicon\b[^"']*["'][^>]*>`)
 
-// faviconPath is the same-origin icon the base page links, or /favicon.ico.
-func faviconPath(origin *url.URL, base *Observation) string {
-	if base != nil {
-		for _, tag := range iconLinkRE.FindAllString(base.Body, 4) {
-			if p := sameOriginPath(origin, attrValue(tag, "href")); p != "" {
-				return p
-			}
+// FaviconRequest is the read that fetches an origin's icon: the same-origin
+// icon the origin's page links, or /favicon.ico when page is "" or links none.
+// The fingerprint phase and the probe phase's --favicon ask the same way, so
+// their hashes agree. It takes the page's HTML rather than an Observation
+// because that is all it reads — the probe's sweep holds no observation.
+func FaviconRequest(origin *url.URL, page string) ProbeRequest {
+	return ProbeRequest{Kind: KindFavicon, Method: http.MethodGet, Path: faviconPath(origin, page)}
+}
+
+// IconFrom hashes a favicon read's answer, nil when it is not an icon: no
+// answer, an unreachable status, a body cut short (a hash over a prefix
+// matches nothing), or a body that is not an image. baseURL is the origin the
+// read went to.
+func IconFrom(baseURL string, o *Observation) *FaviconInfo {
+	if o == nil || o.Err != nil || !isReachable(o.Status) || o.Truncated {
+		return nil
+	}
+	body := []byte(o.Body)
+	if !LooksLikeIcon(body) {
+		return nil
+	}
+	return HashFavicon(baseURL+o.Req.Path, body)
+}
+
+// faviconPath is the same-origin icon the page links, or /favicon.ico.
+func faviconPath(origin *url.URL, page string) string {
+	for _, tag := range iconLinkRE.FindAllString(page, 4) {
+		if p := sameOriginPath(origin, attrValue(tag, "href")); p != "" {
+			return p
 		}
 	}
 	return "/favicon.ico"
@@ -311,6 +340,7 @@ func Analyze(baseURL string, obs []Observation) *TechStackReport {
 		report.ProbeCount++
 		if o.Err != nil {
 			report.ProbeErrors++
+			report.Errors = append(report.Errors, probeErrorOf(o))
 			continue
 		}
 		r := asProbeResponse(o)
@@ -376,9 +406,11 @@ func Analyze(baseURL string, obs []Observation) *TechStackReport {
 				}
 			}
 		case KindFavicon:
-			if reachable && !o.Truncated && LooksLikeIcon([]byte(o.Body)) {
-				report.Favicon = HashFavicon(baseURL+o.Req.Path, []byte(o.Body))
-				report.FaviconHash = report.Favicon.MD5
+			if reachable {
+				if icon := IconFrom(baseURL, o); icon != nil {
+					report.Favicon = icon
+					report.FaviconHash = icon.MD5
+				}
 			}
 		case KindVHost:
 			if baseResp != nil {
@@ -405,6 +437,16 @@ func Analyze(baseURL string, obs []Observation) *TechStackReport {
 		report.AllowedMethods = nil
 	}
 	return report
+}
+
+// probeErrorOf names one unanswered probe for the report.
+func probeErrorOf(o *Observation) ProbeError {
+	kind := o.ErrKind
+	if kind == "" {
+		kind = ProbeErrNetwork
+	}
+	return ProbeError{Path: o.Req.Path, Method: o.Req.Method, Host: o.Req.Host, Probe: o.Req.Kind,
+		Kind: kind, Error: o.Err.Error()}
 }
 
 // notFoundShapes is how an origin answers a missing path, learned from its

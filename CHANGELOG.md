@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.5.6] - 2026-10-25
+
+### Added
+
+- `vigolium match-not-found` classifies stdin JSON-lines responses against stored not-found baselines.
+- `run probe --favicon` stores each origin's favicon hashes as a host fact; `hosts --has favicon`.
+- `fingerprint` reports unanswered reads in `errors[]` with a `kind`.
+- `--only discovery,spidering,targeted-respider` runs the SPA re-spider without dynamic assessment.
+
+### Fixed
+
+- `fingerprint` retries a transport-failed read once instead of reporting it as not found.
+- `fingerprint` and `hosts` schemas drop the never-filled `method_matrix`.
+
+### Changed
+
+- Schema v5: `host_observations` gains a `favicon` column.
+
 ## [v0.5.5] - 2026-10-24
 
 ### New Vulnerability Checks

@@ -63,6 +63,15 @@ type ExecutorConfig struct {
 	// pooled and reclaimed when the item completes, so a callback that keeps
 	// anything must copy it.
 	OnResponse func(item *work.WorkItem, rr *httpmsg.HttpRequestResponse)
+	// OnUnanswered is called once per input item that ends without a baseline
+	// response, with the reason it got none: DropFetchError, DropBlocked,
+	// DropBudget or DropQuarantined from the fetch, or DropOutOfScope,
+	// DropQuarantined or SkipStaticFile for an item refused before the send.
+	// err is the cause when there is one. An item a cancelled run never
+	// answered gets no call: cancellation says nothing about the item, and the
+	// caller can see its own context. Lets a phase that sends a fixed plan say
+	// why each missing answer is missing (the fingerprint phase's errors[]).
+	OnUnanswered func(item *work.WorkItem, reason string, err error)
 	// OnRecordStored is called once per input item whose primary record is in
 	// the store when the executor is done with it — newly written, or a dedup
 	// hit on an existing row — with that record's UUID. Lets a caller report

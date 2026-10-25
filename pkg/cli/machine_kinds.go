@@ -169,18 +169,19 @@ var machineKinds = map[string]machineKind{
 	"storage upload":   kindMutation,
 
 	// Schemas: the bare JSON Schema owns stdout without -j; -j is an envelope.
-	"schema":         kindRead, // bare `schema` lists
-	"schema list":    kindRead,
-	"schema command": kindStream,
-	"schema event":   kindStream,
-	"schema error":   kindStream,
-	"schema plan":    kindStream,
-	"schema all":     kindStream,
-	"schema storage": kindRead,
-	"schema flags":   kindRead,
-	"hosts":          kindRead,
-	"dns":            kindRead,
-	"fingerprint":    kindScan,
+	"schema":          kindRead, // bare `schema` lists
+	"schema list":     kindRead,
+	"schema command":  kindStream,
+	"schema event":    kindStream,
+	"schema error":    kindStream,
+	"schema plan":     kindStream,
+	"schema all":      kindStream,
+	"schema storage":  kindRead,
+	"schema flags":    kindRead,
+	"hosts":           kindRead,
+	"match-not-found": kindRead,
+	"dns":             kindRead,
+	"fingerprint":     kindScan,
 
 	"strategy": kindRead,
 	"update":   kindMutation,

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,18 +22,34 @@ type fingerprintFixture struct {
 	mu      sync.Mutex
 	methods map[string]int
 	hits    int
+	// dropFor is path -> how long after its first request every request for
+	// it has its connection closed without an answer (the transport's own
+	// immediate re-sends land inside the window); hitsAt is path -> when each
+	// request for it arrived.
+	dropFor map[string]time.Duration
+	hitsAt  map[string][]time.Time
 }
 
 var fixtureIcon = []byte("\x89PNG\r\n\x1a\n" + strings.Repeat("icon-bytes", 20))
 
 func newFingerprintFixture(t *testing.T) *fingerprintFixture {
 	t.Helper()
-	f := &fingerprintFixture{methods: map[string]int{}}
+	f := &fingerprintFixture{methods: map[string]int{}, dropFor: map[string]time.Duration{}, hitsAt: map[string][]time.Time{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.methods[r.Method]++
 		f.hits++
+		now := time.Now()
+		f.hitsAt[r.URL.Path] = append(f.hitsAt[r.URL.Path], now)
+		window, drop := f.dropFor[r.URL.Path]
+		drop = drop && now.Sub(f.hitsAt[r.URL.Path][0]) < window
 		f.mu.Unlock()
+		if drop {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
 		if o := r.Header.Get("Origin"); o != "" {
 			w.Header().Set("Access-Control-Allow-Origin", o)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -216,4 +233,77 @@ func TestFingerprintDocumentShapesAsHosts(t *testing.T) {
 	host := oneDoc(t, stdout, stderr)["items"].([]any)[0].(map[string]any)
 	assert.Equal(t, "Fixture App", host["title"])
 	assert.NotContains(t, host, "fingerprint", "--compact drops the nested report")
+}
+
+// fingerprintReport runs `fingerprint -j` and returns the one origin's nested
+// report.
+func fingerprintReport(t *testing.T, home string, args ...string) map[string]any {
+	t.Helper()
+	code, stdout, stderr := runA3(t, home, append([]string{"fingerprint", "-j"}, args...)...)
+	require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", stdout, stderr)
+	doc := oneDoc(t, stdout, stderr)
+	validateRegisteredMap(t, doc)
+	items := doc["items"].([]any)
+	require.Len(t, items, 1)
+	return items[0].(map[string]any)["fingerprint"].(map[string]any)
+}
+
+// A probe whose connection drops is asked once more after a backoff, and the
+// second answer is the one the report reads: no error, the path is found. The
+// drop window outlasts the transport's immediate re-sends, so only the phase's
+// own retry can recover the read.
+func TestFingerprintRetriesADroppedProbe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("re-execs the CLI")
+	}
+	f := newFingerprintFixture(t)
+	f.dropFor["/robots.txt"] = 300 * time.Millisecond
+	home := a3Home(t, "*")
+
+	fp := fingerprintReport(t, home, "-t", f.srv.URL, "--depth", "light", "--retries", "0")
+	assert.NotContains(t, fp, "errors", "the retry answered")
+	assert.Nil(t, fp["probe_errors"])
+	var paths []string
+	for _, w := range fp["well_known"].([]any) {
+		paths = append(paths, w.(map[string]any)["path"].(string))
+	}
+	assert.Contains(t, paths, "/robots.txt")
+}
+
+// A probe that never answers is retried once and then listed in errors[] as a
+// network failure; probe_errors counts it.
+func TestFingerprintListsProbeErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("re-execs the CLI")
+	}
+	f := newFingerprintFixture(t)
+	f.dropFor["/robots.txt"] = time.Hour
+	home := a3Home(t, "*")
+
+	fp := fingerprintReport(t, home, "-t", f.srv.URL, "--depth", "light", "--retries", "0")
+	assert.EqualValues(t, 1, fp["probe_errors"])
+	errs := fp["errors"].([]any)
+	require.Len(t, errs, 1)
+	e := errs[0].(map[string]any)
+	assert.Equal(t, "/robots.txt", e["path"])
+	assert.Equal(t, "network", e["kind"])
+	assert.Equal(t, "well-known", e["probe"])
+	assert.NotEmpty(t, e["error"])
+	f.mu.Lock()
+	hits := f.hitsAt["/robots.txt"]
+	f.mu.Unlock()
+	require.NotEmpty(t, hits)
+	assert.GreaterOrEqual(t, hits[len(hits)-1].Sub(hits[0]), 500*time.Millisecond, "the retry comes after the backoff")
+
+	// The request budget's refusals are named as such, not as network
+	// failures.
+	fp = fingerprintReport(t, home, "-t", f.srv.URL, "--depth", "light", "--max-requests-per-host", "3")
+	errs = fp["errors"].([]any)
+	require.NotEmpty(t, errs)
+	kinds := map[string]int{}
+	for _, raw := range errs {
+		kinds[raw.(map[string]any)["kind"].(string)]++
+	}
+	assert.Positive(t, kinds["budget"], "%v", errs)
+	assert.EqualValues(t, len(errs), fp["probe_errors"], "probe_errors counts every listed error")
 }

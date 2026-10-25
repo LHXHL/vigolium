@@ -132,6 +132,12 @@
     "description": "Native and agentic scan sessions with liveness (effective_status, stale, last_write_at); --reap adds reaped and status_files_removed."
   },
   {
+    "name": "match-not-found",
+    "kind": "command",
+    "envelope_kind": "read",
+    "description": "One verdict per stdin line, in order: whether the response is its origin's not-found page (known false without a baseline or a body), and why; lines that did not parse are counted in failed."
+  },
+  {
     "name": "module disable",
     "kind": "command",
     "envelope_kind": "mutation",

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/vigolium/vigolium/pkg/agent/recon"
+	"github.com/vigolium/vigolium/pkg/contract"
 	"github.com/vigolium/vigolium/pkg/tlsprobe"
 )
 
 // HostFacts are the per-host observations a run collects alongside its records:
-// the full DNS answer and, under --tls-probe, the TLS handshake and leaf
-// certificate.
+// the full DNS answer, under --tls-probe the TLS handshake and leaf
+// certificate, and under the probe's --favicon the origin's icon hashes.
 //
 // They are NOT columns, and not attached by HTTPRecord.MarshalJSON. Both
 // decisions follow from the same fact — these describe the HOST, not the
@@ -32,13 +34,26 @@ type HostFacts struct {
 	AAAA  []string       `json:"aaaa,omitempty"`
 	CNAME []string       `json:"cname,omitempty"`
 	TLS   *tlsprobe.Info `json:"tls,omitempty"`
+	// Favicon is the origin's icon (the page's <link rel="icon">, else
+	// /favicon.ico), hashed for search-engine pivots. Stored only: a run that
+	// fetched it wrote it to host_observations, and no process cache holds it.
+	Favicon *recon.FaviconInfo `json:"favicon,omitempty"`
 }
 
 // Empty reports whether this process observed nothing for the host. Empty facts
 // are omitted entirely rather than emitted as empty arrays: "not probed" and "no
 // records" are different answers.
 func (h HostFacts) Empty() bool {
-	return len(h.A) == 0 && len(h.AAAA) == 0 && len(h.CNAME) == 0 && h.TLS == nil
+	return len(h.A) == 0 && len(h.AAAA) == 0 && len(h.CNAME) == 0 && h.TLS == nil && h.Favicon == nil
+}
+
+// cacheableEmpty reports whether these facts hold nothing the process caches
+// could also supply. The icon is stored only (LookupHostFacts never returns
+// one), so it is cleared rather than counted - on a copy, so the field list
+// stays owned by Empty and a new fact joins this answer with it.
+func (h HostFacts) cacheableEmpty() bool {
+	h.Favicon = nil
+	return h.Empty()
 }
 
 // LookupHostFacts returns what this PROCESS observed for a record's host, or
@@ -174,9 +189,13 @@ func (s *StoredHostFacts) resolve(hostname string, port int) endpointFacts {
 		}
 	}
 	// Not stored: the process may still have it in cache - an endpoint observed
-	// after the observations were written, or a run that stored none.
-	if facts.Empty() {
+	// after the observations were written, or a run that stored none. The icon
+	// is stored only, so a row that holds nothing but the icon (the origin a
+	// redirecting target landed on) still takes its addresses and certificate
+	// from the caches.
+	if icon := facts.Favicon; facts.cacheableEmpty() {
 		facts = LookupHostFacts(key.host, port)
+		facts.Favicon = icon
 	}
 
 	if facts.Empty() {
@@ -229,7 +248,7 @@ func (h HostFacts) AsMap() map[string]any {
 // HostFactsFieldNames are the JSON keys AsMap can produce, for the --fields
 // allowlist. Derived from the struct so a new fact reaches the allowlist with
 // its emitter.
-var HostFactsFieldNames = []string{"a", "aaaa", "cname", "tls"}
+var HostFactsFieldNames = contract.JSONFieldNames(HostFacts{})
 
 // RecordWithHostFacts is an HTTPRecord serialized together with its host facts.
 // Marshals as the record's own object with the fact keys merged in at the top

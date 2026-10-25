@@ -1,7 +1,10 @@
 package recon
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -158,5 +161,56 @@ func TestAnalyzeDiscountsSoftNotFound(t *testing.T) {
 	}
 	if len(r.Stacks) != 1 || r.Stacks[0].Name != "wordpress" {
 		t.Errorf("stacks = %+v, want only wordpress", r.Stacks)
+	}
+}
+
+// Analyze names every unanswered probe in errors[], with its kind, and
+// probe_errors still counts all of them. A probe with no kind is a network
+// failure. method_matrix never appears: the planned pass cannot fill it.
+func TestAnalyzeListsProbeErrors(t *testing.T) {
+	obs := []Observation{
+		{Req: ProbeRequest{Kind: KindBase, Method: http.MethodGet, Path: "/"}, Status: 200,
+			Headers: http.Header{"Content-Type": {"text/html"}}, Body: "<title>x</title>"},
+		{Req: ProbeRequest{Kind: KindWellKnown, Method: http.MethodGet, Path: "/robots.txt"},
+			Err: errors.New("connection reset by peer")},
+		{Req: ProbeRequest{Kind: KindAPISpec, Method: http.MethodGet, Path: "/openapi.json", Meta: "openapi"},
+			Err: errors.New("request budget exhausted"), ErrKind: ProbeErrBudget},
+		{Req: ProbeRequest{Kind: KindVHost, Method: http.MethodGet, Path: "/", Host: "localhost"},
+			Err: errors.New("refused by scope"), ErrKind: ProbeErrScope},
+		{Req: ProbeRequest{Kind: KindCORS, Method: http.MethodOptions, Path: "/"},
+			Err: errors.New("cancelled before an answer"), ErrKind: ProbeErrCancelled},
+	}
+	report := Analyze("http://app.example", obs)
+	if report.ProbeCount != 5 || report.ProbeErrors != 4 {
+		t.Fatalf("probe_count/probe_errors = %d/%d, want 5/4", report.ProbeCount, report.ProbeErrors)
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Errors []map[string]any `json:"errors"`
+		Matrix any              `json:"method_matrix"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := []map[string]any{
+		{"path": "/robots.txt", "method": "GET", "probe": "well-known", "kind": "network", "error": "connection reset by peer"},
+		{"path": "/openapi.json", "method": "GET", "probe": "api-spec", "kind": "budget", "error": "request budget exhausted"},
+		{"path": "/", "method": "GET", "host": "localhost", "probe": "vhost", "kind": "scope", "error": "refused by scope"},
+		{"path": "/", "method": "OPTIONS", "probe": "cors", "kind": "cancelled", "error": "cancelled before an answer"},
+	}
+	if !reflect.DeepEqual(doc.Errors, want) {
+		t.Errorf("errors = %v\nwant     %v", doc.Errors, want)
+	}
+	if doc.Matrix != nil {
+		t.Errorf("method_matrix = %v, want absent", doc.Matrix)
+	}
+
+	// A clean pass carries no errors key at all.
+	clean, _ := json.Marshal(Analyze("http://app.example", obs[:1]))
+	if strings.Contains(string(clean), `"errors"`) {
+		t.Errorf("clean report carries errors: %s", clean)
 	}
 }

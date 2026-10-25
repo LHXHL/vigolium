@@ -913,7 +913,9 @@ func (db *DB) renderDDL(tmpl string) string {
 //	4  Host facts, additive (min reader stays 1): host_observations dns_mx,
 //	   dns_ns, dns_txt, dns_soa, dns_caa (`vigolium dns`), fingerprint and
 //	   not_found (the fingerprint phase).
-const currentSchemaVersion = 4
+//	5  host_observations.favicon (the probe phase's --favicon), additive (min
+//	   reader stays 1).
+const currentSchemaVersion = 5
 
 // legacyBackfillsVersion is the version that gated the pre-versioning backfills
 // and index reshaping in CreateSchema. A store at or past it has had them.

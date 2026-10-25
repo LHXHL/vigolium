@@ -81,9 +81,9 @@ func applyExportScope(opts *types.Options) error {
 // warnInertProbeFlags reports probe-phase flags the operator typed on a run that
 // will not execute the probe phase.
 //
-// Neither flag is silent about doing nothing today: --tls-probe is read only by
-// runProbePhase, and RecordRedirectChain reaches only the probe phase's
-// ExecutorConfig. The repo already settled this shape for the pace qualifiers —
+// Each of these flags is silent about doing nothing otherwise: --tls-probe and
+// --favicon are read only by runProbePhase, and RecordRedirectChain reaches
+// only the probe phase's ExecutorConfig. The repo already settled this shape for the pace qualifiers —
 // a qualifier naming a skipped phase "warns loudly rather than failing, but it
 // must not be silent, since that is a cap the operator believes is in force and
 // is not". Same reasoning: an operator who typed --tls-probe believes they are
@@ -96,6 +96,7 @@ func warnInertProbeFlags(opts *types.Options, cmd *cobra.Command) {
 	}
 	for _, f := range []struct{ name, effect string }{
 		{"tls-probe", "no TLS handshake is performed"},
+		{"favicon", "no icon is fetched"},
 		{"record-redirect-chain", "redirect hops are not recorded"},
 	} {
 		// flagOn, not Changed: `--tls-probe=false` is an operator saying they do

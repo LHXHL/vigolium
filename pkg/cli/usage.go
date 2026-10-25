@@ -222,7 +222,7 @@ var scanFlagGroups = []flagGroup{
 	{"Scanning", []string{"only", "skip", "dry-run", "strategy", "scanning-profile", "intensity", "scope-origin", "ignore-scope", "scanning-max-duration", "heuristics-check", "skip-heuristics", "oast-url"}},
 	{"Discovery", []string{"discover", "discover-max-time", "discovery-wordlist", "discovery-extensions", "discovery-max-depth", "no-discovery-fuzz", "no-prefix-breaker", "follow-subdomains", "port-sweep-ports", "param-mining"}},
 	{"Spidering", []string{"spider", "spider-max-time", "browser-engine", "browsers", "headless", "headed", "no-cdp", "no-forms", "browser-insecure", "require-auth", "no-carry-browser-session"}},
-	{"Probe (host sweep)", []string{"probe", "tls-probe", "redirect-mode", "record-redirect-chain", "depth", "fingerprint-depth"}},
+	{"Probe (host sweep)", []string{"probe", "tls-probe", "favicon", "redirect-mode", "record-redirect-chain", "depth", "fingerprint-depth"}},
 	{"Harvest", []string{"external-harvest"}},
 	{"KnownIssueScan", []string{"known-issue-scan", "known-issue-scan-tags", "known-issue-scan-exclude-tags", "known-issue-scan-severities", "known-issue-scan-templates-dir", "known-issue-scan-templates"}},
 	{"Request", []string{"method", "body", "header", "advanced-options", "retries", "stream"}},

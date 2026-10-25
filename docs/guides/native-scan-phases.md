@@ -17,7 +17,7 @@ truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 6. **Probe** (`probe`) - one request per target, passive modules only, no content discovery (an httpx-style host sweep). Opt-in: runs only with `--only probe` / `vigolium run probe`
 7. **Fingerprint** (`fingerprint`) - per origin, a bounded set of reads (well-known paths, favicon, CORS preflight, OPTIONS, Host-header variants, a not-found baseline) whose conclusions are stored as host facts (see [Fingerprint](#fingerprint)). Opt-in: `vigolium fingerprint` / `vigolium run fingerprint` / `--only fingerprint`
 8. **Discovery / Ingestion** (`discovery`) - parse inputs and perform content discovery
-9. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl, including client routes found only in the JavaScript (`spidering.route_seeds`). Runs only when spidering, discovery, and dynamic assessment are all enabled (and `discovery.respider` allows it)
+9. **Targeted re-spider** (`targeted-respider`) - re-crawl the rich/SPA routes discovery surfaced after the first browser crawl, including client routes found only in the JavaScript (`spidering.route_seeds`). Needs spidering and discovery (and `discovery.respider` allowing it); a full scan runs it when dynamic assessment is enabled too. `--only discovery,spidering,targeted-respider` runs it without an assessment, storing the re-crawled records for a later `--only dynamic-assessment` run; `--only` naming it without spidering and discovery (or ingestion) is a usage error
 10. **Seed** (`seed`) - when discovery/ingestion is skipped (for example `--only dynamic-assessment`), store the CLI targets as records so the assessment phases have something to scan. Not run under scan-on-receive
 11. **Param mining** (`param-mining`) - discover hidden parameters (Arjun-style) on this scan's dynamic endpoints and store each one as a record, so the assessment tests it too (see [Param Mining](#param-mining)). On at `--intensity deep` or with `--param-mining`; never without dynamic assessment
 12. **DynamicAssessment** (`dynamic-assessment`) - run active, passive, and extension modules
@@ -25,9 +25,10 @@ truth is `BuildNativeScanPlan` in `internal/runner/native_plan.go`):
 
 Every step above is a name in the phase vocabulary, so each `phase.started` /
 `phase.finished` id can be looked up in `vigolium strategy -j` (`phases[]`).
-`harvest-probe`, `targeted-respider`, `param-mining` and `seed` are **internal**: the plan schedules them on its
+`harvest-probe`, `param-mining` and `seed` are **internal**: the plan schedules them on its
 own gates, so `--only` rejects them. `--skip harvest-probe`, `--skip targeted-respider` and `--skip param-mining` are accepted
-(external-harvest, spidering and the assessment still run); `seed` cannot be skipped.
+(external-harvest, spidering and the assessment still run); `seed` cannot be skipped. `targeted-respider` is
+scheduled on its own gate too, but `--only` may name it beside spidering and discovery (see step 9).
 
 **Preflight** (`preflight`, internal, `--skip` only) runs before step 1 whenever the CLI targets are the
 scan's input (`-t`, positional URLs, `-T`, a piped URL list, `scan-url -S`): scope admission, then one GET
@@ -274,6 +275,16 @@ CORS preflight from a foreign Origin, Host-header variants, and three random pat
 as an `http_record` (`source fingerprint`). Redirects are not followed and only
 reads are sent. HTTPS origins always get the TLS handshake.
 
+A read that fails in transport (no response, a reset, a quarantined host) is
+asked once more after a short backoff, at two workers per failing origin, so a
+host that drops connections under the pass's concurrency still gets read. Every
+read still unanswered is listed in the report's `errors` —
+`{path, method, host, probe, kind, error}`, `kind` one of `network`, `budget`
+(`--max-requests[-per-host]` refused it), `scope`, `blocked`, `cancelled` or
+`skipped`, classified from the executor's reason rather than its message — and
+counted in `probe_errors`. A path missing from the report with no `errors` entry
+was read and not found.
+
 The conclusions are stored once per origin and run in `host_observations`: the
 report (stack, title, server, HTTP version, security headers, CORS verdict,
 allowed methods, well-known and API-definition hits, login forms, favicon mmh3/MD5)
@@ -342,7 +353,7 @@ Every phase answers to several spellings. They work identically with `--only`, `
 | `heuristics-check` | `heuristics`, `heuristic` |
 | `port-sweep` | `ports`, `portsweep`, `port-scan` |
 | `harvest-probe` (internal: `--skip` only) | `harvest-check` |
-| `targeted-respider` (internal: `--skip` only) | `respider`, `re-spider` |
+| `targeted-respider` (`--only` with spidering and discovery) | `respider`, `re-spider` |
 | `param-mining` (internal: `--skip` only) | `params`, `arjun`, `param-miner` |
 | `seed` (internal: neither) | |
 | `preflight` (internal: `--skip` only) | |

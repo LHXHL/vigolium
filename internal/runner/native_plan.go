@@ -39,7 +39,7 @@ type nativePhaseSpelling struct {
 	// Skippable reports whether --skip accepts this phase.
 	Skippable bool
 	// Internal marks a step the plan schedules on its own gates (seed fills in
-	// for a skipped ingestion, the re-spider rides on spidering). It is listed so
+	// for a skipped ingestion, harvest-probe rides on external-harvest). It is listed so
 	// every phase.* id a scan can emit is discoverable, is accepted by --skip
 	// when Skippable, and is never accepted by --only: it cannot run alone.
 	Internal bool
@@ -82,7 +82,13 @@ var nativePhaseVocabulary = []nativePhaseSpelling{
 	// reaches the target), so it cannot run alone; --skip leaves the stubs for
 	// those later phases to fetch unchecked.
 	{Canonical: "harvest-probe", Aliases: []string{"harvest-check"}, Skippable: true, Internal: true},
-	{Canonical: "targeted-respider", Aliases: []string{"respider", "re-spider"}, Skippable: true, Internal: true},
+	// targeted-respider re-crawls the rich/SPA routes discovery found after the
+	// browser crawl. A full scan schedules it on its own gate (spidering,
+	// discovery and an assessment to consume the records); --only may also name
+	// it, alongside spidering and discovery, to get the re-crawl into the store
+	// without an assessment (a caller that runs DAST as a separate invocation).
+	// It cannot run alone: see validateOnlyRespider.
+	{Canonical: "targeted-respider", Aliases: []string{"respider", "re-spider"}, Skippable: true},
 	// param-mining discovers hidden parameters on the endpoints the scan
 	// recorded, for the assessment to test. It rides on dynamic-assessment
 	// (deep or --param-mining), so it cannot run alone; `vigolium kit
@@ -249,10 +255,13 @@ func BuildNativeScanPlan(opts *types.Options) NativeScanPlan {
 		{Phase: PhaseFingerprint, Enabled: opts.FingerprintEnabled},
 		{Phase: PhaseDiscovery, Enabled: !opts.SkipIngestion},
 		// Re-spider rich/SPA routes that discovery surfaced after the one-shot
-		// browser crawl. Rides along only when browsers are allowed (spidering
-		// enabled), discovery ran, and an assessment phase will consume the new
-		// records. The config toggle + runtime gates are checked in the phase.
-		{Phase: PhaseTargetedReSpider, Enabled: opts.SpideringEnabled && !opts.SkipIngestion && !opts.SkipDynamicAssessment && !opts.SkipTargetedRespider},
+		// browser crawl. Needs browsers allowed (spidering enabled) and discovery
+		// run; beyond that it rides along when an assessment phase will consume
+		// the new records, or runs because --only named it (the records are the
+		// point: a later invocation assesses them). The config toggle + runtime
+		// gates are checked in the phase.
+		{Phase: PhaseTargetedReSpider, Enabled: opts.SpideringEnabled && !opts.SkipIngestion && !opts.SkipTargetedRespider &&
+			(!opts.SkipDynamicAssessment || OnlyPhaseSet(opts.OnlyPhase)[string(PhaseTargetedReSpider)])},
 		{Phase: PhaseSeed, Enabled: opts.SkipIngestion && !opts.ScanOnReceive && (opts.KnownIssueScanEnabled || !opts.SkipDynamicAssessment)},
 		// Hidden-parameter mining over the records every phase above stored, so
 		// the assessment below tests the parameters it confirms. See
@@ -415,8 +424,8 @@ func lookupPhaseSpelling(s string) (nativePhaseSpelling, bool) {
 }
 
 // IsOnlyPhaseSpelling reports whether --only (and `run <phase>`) accepts s.
-// Internal steps (seed, targeted-respider, preflight) are phase names but not
-// runnable on their own.
+// Internal steps (seed, harvest-probe, param-mining, preflight) are phase names
+// but not runnable on their own.
 func IsOnlyPhaseSpelling(s string) bool {
 	p, ok := lookupPhaseSpelling(s)
 	return ok && p.onlyAccepted()
@@ -446,6 +455,9 @@ func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled b
 			return err
 		}
 		opts.OnlyPhase = strings.Join(normalized, ",")
+		if err := validateOnlyRespider(allowed); err != nil {
+			return err
+		}
 
 		opts.DiscoverEnabled = allowed["discovery"]
 		opts.ExternalHarvestEnabled = allowed["external-harvest"]
@@ -532,6 +544,22 @@ func ApplyNativePhaseSelection(opts *types.Options, setExtensions func(enabled b
 	return nil
 }
 
+// validateOnlyRespider refuses an --only list that names targeted-respider
+// without the phases it re-crawls after: spidering (whose crawl it extends, and
+// whose having run is what allows a browser) and discovery or ingestion (whose
+// records are its candidates). Refused up front rather than accepted and then
+// silently skipped by the phase's runtime gate.
+func validateOnlyRespider(allowed map[string]bool) error {
+	if !allowed[string(PhaseTargetedReSpider)] {
+		return nil
+	}
+	if allowed["spidering"] && (allowed["discovery"] || allowed["ingestion"]) {
+		return nil
+	}
+	return fmt.Errorf("--only targeted-respider re-crawls what discovery found after spidering; " +
+		"list them with it: --only discovery,spidering,targeted-respider")
+}
+
 // noteOnlySelection records, for the scan plan, every --only-nameable phase
 // the --only list left out (and clears any earlier record for the ones it
 // names). The phases riding on others (harvest-probe, param-mining, …) are
@@ -544,6 +572,13 @@ func noteOnlySelection(opts *types.Options, allowed map[string]bool) {
 		id := p.Canonical
 		on := allowed[id]
 		switch id {
+		case string(PhaseTargetedReSpider):
+			// Named, it is selected; unnamed, it still rides on spidering,
+			// discovery and an assessment (the plan's gate), so --only leaving
+			// it out says nothing.
+			if !on {
+				continue
+			}
 		case "discovery":
 			on = allowed["discovery"] || allowed["ingestion"]
 		case "dynamic-assessment":
